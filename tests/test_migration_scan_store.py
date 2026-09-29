@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import re
 import stat
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -44,6 +46,16 @@ def _scan_dirs(env) -> set[str]:
 
 def _run_dir(env, run_id):
     return env["data_dir"] / "migration_runs" / str(run_id)
+
+
+def test_app_imports_without_posix_only_modules():
+    """The app starts on Windows, where the POSIX-only fcntl, termios, pwd and grp do not exist."""
+    blocked = ("fcntl", "termios", "pwd", "grp")
+    code = ("import sys\n"
+            f"sys.modules.update(dict.fromkeys({blocked!r}))\n"
+            "import celerp.main\n")
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.asyncio
@@ -223,6 +235,18 @@ async def test_scan_token_is_scoped_expiring_and_tamper_safe(client, session, mi
         t.join()
     assert overlaps[0] == 1
     monkeypatch.setattr(store, "_write_json", real_write)
+
+    # A token held by another request past the lock budget is refused, and the scan is kept.
+    from celerp import config_store
+    release = config_store.hold_lock(str(directory / ".lock"))
+    try:
+        with pytest.raises(store.ScanStoreError) as exc:
+            store.save_decisions(token, owner=bootstrap, decisions=MigrationDecisions(mode="full_history"))
+    finally:
+        release()
+    assert (exc.value.status_code, exc.value.detail) == (409, store.BUSY)
+    assert store.load_scan(token, owner=bootstrap).token == token
+    assert not (directory / ".lock").exists()
 
     # A stored path pointing outside the scan directory is refused and the scan removed.
     payload = json.loads((directory / "scan.json").read_text())

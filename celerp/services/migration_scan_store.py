@@ -14,7 +14,6 @@ by a file lock inside the token directory.
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import hashlib
 import json
 import os
@@ -31,6 +30,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from celerp import config_store
 from celerp.config import settings
 from celerp.importers.adapters import registry
 from celerp.importers.adapters.base import (
@@ -49,6 +49,7 @@ MAX_ARTIFACTS = 5
 MAX_AGGREGATE_BYTES = 2 * 1024**3
 
 EXPIRED = "This scan has expired. Upload the file again."
+BUSY = "This scan is being updated. Try again in a moment."
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")
 _STORED_RE = re.compile(r"artifact-\d+")
 _SOURCE_KEY_MAX = 200
@@ -131,12 +132,15 @@ def _discard(path: Path) -> None:
 
 @contextmanager
 def _token_lock(directory: Path) -> Iterator[None]:
-    fd = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    """Hold the token's lock, the same exclusive-create lock file protocol as the
+    config and update locks, so it behaves identically on every platform."""
+    release = config_store.hold_lock(str(directory / ".lock"))
+    if release is None:
+        raise ScanStoreError(409, BUSY)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
         yield
     finally:
-        os.close(fd)
+        release()
 
 
 # ── Serialization ────────────────────────────────────────────────────────────
