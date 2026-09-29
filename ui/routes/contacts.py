@@ -17,7 +17,7 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
-from ui.components.shell import base_shell, page_header, page_title
+from ui.components.shell import base_shell, info_tip, page_header, page_title
 from ui.components.table import search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_section as _shared_files_section, _DOCUMENT_TAGS
@@ -233,8 +233,7 @@ def _contact_info_card(
     attrs = {"hx_swap_oob": "outerHTML:#contact-info-card"} if oob else {}
     def _label_cell(key: str, label: str) -> FT:
         help_tip = (
-            Span("ⓘ", cls="info-tip", tabindex="0", role="img",
-                 **{"aria-label": company_name_help, "data-tip": company_name_help})
+            info_tip(company_name_help)
             if key == "company_name" and company_name_help else None
         )
         return Td(label, help_tip, cls="detail-label")
