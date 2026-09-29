@@ -79,3 +79,101 @@ def test_narrow_viewport_clamps_and_flips_below(page, ui_server, api):
     box = _bubble_box(page)
     assert _inside_viewport(page, box), box
     assert box["y"] >= tip.bounding_box()["y"], "with no room above, the tip opens below the icon"
+
+
+def _tab_to(page, index: int) -> None:
+    """Move keyboard focus with Tab until it lands on the ``index``-th info icon."""
+    for _ in range(80):
+        page.keyboard.press("Tab")
+        if page.evaluate("i => document.activeElement === document.querySelectorAll('.info-tip')[i]", index):
+            return
+    raise AssertionError("Tab never reached the info icon")
+
+
+def _near_icon(tip_box: dict, bubble_box: dict) -> bool:
+    """The bubble sits directly above or below the icon, not wherever it was first placed."""
+    above = abs(tip_box["y"] - (bubble_box["y"] + bubble_box["height"])) <= 12
+    below = abs(bubble_box["y"] - (tip_box["y"] + tip_box["height"])) <= 12
+    return above or below
+
+
+def test_tab_to_an_icon_below_the_fold_shows_its_tip(page, ui_server, api):
+    """Focusing an icon below the fold scrolls it into view; the tip opens next to it."""
+    page.set_viewport_size({"width": 1280, "height": 240})
+    page.goto(f"{ui_server}/settings/manufacturing", wait_until="domcontentloaded")
+    last = page.locator(".info-tip").count() - 1
+    tip = page.locator(".info-tip").nth(last)
+    assert tip.evaluate("el => el.getBoundingClientRect().top > window.innerHeight"), "icon must start below the fold"
+    _tab_to(page, last)
+    page.wait_for_timeout(300)
+    box = _bubble_box(page)
+    assert _inside_viewport(page, box), box
+    assert _near_icon(tip.bounding_box(), box), (tip.bounding_box(), box)
+
+
+def test_tip_follows_its_icon_on_scroll_and_closes_when_the_icon_leaves(page, ui_server, api):
+    page.set_viewport_size({"width": 1280, "height": 600})
+    page.goto(f"{ui_server}/settings/manufacturing", wait_until="domcontentloaded")
+    page.evaluate("() => { document.body.style.paddingBottom = '1500px'; }")
+    tip = page.locator(".info-tip").nth(1)
+    tip.evaluate("el => window.scrollBy(0, el.getBoundingClientRect().top - 350)")
+    tip.focus()
+    first = _bubble_box(page)
+    page.evaluate("() => window.scrollBy(0, 60)")
+    page.wait_for_timeout(300)
+    box = _bubble_box(page)
+    assert box != first and _near_icon(tip.bounding_box(), box), (first, tip.bounding_box(), box)
+    tip.evaluate("el => window.scrollBy(0, el.getBoundingClientRect().bottom + 20)")
+    assert tip.evaluate("el => el.getBoundingClientRect().bottom <= 0"), "the icon must have scrolled out of view"
+    page.locator(_BUBBLE).wait_for(state="hidden", timeout=3000)
+
+
+def test_opening_a_second_tip_releases_the_first(page, ui_server, api):
+    page.goto(f"{ui_server}/settings/manufacturing", wait_until="domcontentloaded")
+    first, second = page.locator(".info-tip").nth(0), page.locator(".info-tip").nth(1)
+    first.hover()
+    _bubble_box(page)
+    second.focus()
+    bubble_id = page.locator(_BUBBLE).get_attribute("id")
+    assert second.get_attribute("aria-describedby") == bubble_id
+    assert first.get_attribute("aria-describedby") is None
+    assert page.locator(_BUBBLE).inner_text() == second.get_attribute("data-tip")
+
+
+def test_tip_reopens_after_its_bubble_is_removed_from_the_page(page, ui_server, api):
+    page.goto(f"{ui_server}/settings/manufacturing", wait_until="domcontentloaded")
+    tip = page.locator(".info-tip").first
+    tip.focus()
+    _bubble_box(page)
+    page.keyboard.press("Escape")
+    page.evaluate("() => document.querySelector('[role=tooltip]').remove()")
+    tip.blur()
+    tip.focus()
+    _bubble_box(page)
+
+
+@pytest.fixture
+def touch_page(browser_context):
+    """A signed-in phone-sized page that receives touch taps."""
+    ctx = browser_context.browser.new_context(has_touch=True, is_mobile=True, viewport={"width": 390, "height": 800})
+    ctx.add_cookies(browser_context.cookies())
+    p = ctx.new_page()
+    yield p
+    ctx.close()
+
+
+def test_tap_toggles_the_tip_and_a_tap_elsewhere_closes_it(touch_page, ui_server, api):
+    page = touch_page
+    page.goto(f"{ui_server}/settings/manufacturing", wait_until="domcontentloaded")
+    tip = page.locator(".info-tip").first
+    checked = lambda: page.evaluate("() => [...document.querySelectorAll('input[type=checkbox]')].map(c => c.checked)")
+    before = checked()
+    tip.tap()
+    _bubble_box(page)
+    assert checked() == before, "tapping the icon must not change the setting its label wraps"
+    tip.tap()
+    page.locator(_BUBBLE).wait_for(state="hidden", timeout=3000)
+    tip.tap()
+    _bubble_box(page)
+    page.locator("h1, .page-title").first.tap()
+    page.locator(_BUBBLE).wait_for(state="hidden", timeout=3000)

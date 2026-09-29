@@ -584,36 +584,54 @@ document.addEventListener('click', function(e) {
 _INFO_TIP_JS = """
 // One tooltip for every .info-tip icon (info_tip). It lives under <body> with fixed
 // positioning, so no card's overflow can clip it: above the icon when there is room,
-// else below, and always pulled inside the viewport edges.
+// else below, and always pulled inside the viewport edges. It follows its icon on scroll
+// and resize, and closes once the icon leaves the viewport. On touch screens a tap on the
+// icon opens or closes it, and a tap anywhere else closes it.
 (function() {
-  var MARGIN = 8, GAP = 6, bubble = null, owner = null;
-  function hide() {
-    if (!owner) return;
-    owner.removeAttribute('aria-describedby');
-    owner = null;
-    bubble.classList.remove('info-tip-bubble--open');
-  }
-  function show(tip) {
-    var text = tip.getAttribute('data-tip');
-    if (!text) return;
-    if (!bubble) {
+  var MARGIN = 8, GAP = 6, bubble = null, owner = null, tapWasOpen = null;
+  function bubbleEl() {
+    // A page swap can remove the bubble from the document; build a fresh one when it has.
+    if (!bubble || !bubble.isConnected) {
       bubble = document.createElement('div');
       bubble.id = 'info-tip-bubble';
       bubble.className = 'info-tip-bubble';
       bubble.setAttribute('role', 'tooltip');
       document.body.appendChild(bubble);
     }
-    owner = tip;
-    bubble.textContent = text;
-    bubble.classList.add('info-tip-bubble--open');
-    tip.setAttribute('aria-describedby', bubble.id);
-    var r = tip.getBoundingClientRect(), b = bubble.getBoundingClientRect();
+    return bubble;
+  }
+  function hide() {
+    if (!owner) return;
+    owner.removeAttribute('aria-describedby');
+    owner = null;
+    if (bubble) bubble.classList.remove('info-tip-bubble--open');
+  }
+  function place() {
+    var r = owner.getBoundingClientRect(), b = bubble.getBoundingClientRect();
     var vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
     var top = r.top - GAP - b.height;
     if (top < MARGIN) top = Math.min(r.bottom + GAP, vh - MARGIN - b.height);
     var left = Math.min(r.left + r.width / 2 - b.width / 2, vw - MARGIN - b.width);
     bubble.style.top = Math.max(MARGIN, top) + 'px';
     bubble.style.left = Math.max(MARGIN, left) + 'px';
+  }
+  function show(tip) {
+    var text = tip.getAttribute('data-tip');
+    if (!text) return;
+    if (owner && owner !== tip) owner.removeAttribute('aria-describedby');
+    var el = bubbleEl();
+    owner = tip;
+    el.textContent = text;
+    el.classList.add('info-tip-bubble--open');
+    tip.setAttribute('aria-describedby', el.id);
+    place();
+  }
+  function follow() {
+    if (!owner) return;
+    var r = owner.getBoundingClientRect();
+    var vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+    if (!owner.isConnected || r.bottom <= 0 || r.top >= vh || r.right <= 0 || r.left >= vw) hide();
+    else place();
   }
   function tipOf(e) { return e.target && e.target.closest ? e.target.closest('.info-tip') : null; }
   document.addEventListener('mouseover', function(e) { var t = tipOf(e); if (t && t !== owner) show(t); });
@@ -624,9 +642,23 @@ _INFO_TIP_JS = """
   document.addEventListener('focusin', function(e) { var t = tipOf(e); if (t) show(t); });
   document.addEventListener('focusout', function(e) { if (tipOf(e) === owner) hide(); });
   document.addEventListener('keydown', function(e) { if (e.key === 'Escape') hide(); });
-  window.addEventListener('scroll', hide, true);
-  window.addEventListener('resize', hide);
-  document.addEventListener('htmx:afterSettle', function() { if (owner && !owner.isConnected) hide(); });
+  document.addEventListener('pointerdown', function(e) {
+    var t = tipOf(e);
+    tapWasOpen = (t && e.pointerType === 'touch') ? (t === owner) : null;
+    if (!t) hide();
+  }, true);
+  document.addEventListener('click', function(e) {
+    var t = tipOf(e);
+    if (!t) return;
+    // An icon inside a <label> must not also toggle the label's checkbox.
+    e.preventDefault();
+    if (tapWasOpen === null) return;
+    if (tapWasOpen) hide(); else show(t);
+    tapWasOpen = null;
+  });
+  window.addEventListener('scroll', follow, true);
+  window.addEventListener('resize', follow);
+  document.addEventListener('htmx:afterSettle', follow);
 })();
 """
 
