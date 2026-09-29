@@ -294,7 +294,6 @@ _LIST_TYPES = list(_REG_LIST_TYPES)
 _LIST_DATE_FIELDS = {"date", "link_expiry"}
 
 _PER_PAGE = 50
-_PER_PAGE_OPTIONS = [25, 50, 100, 250]
 
 # Every URL parameter the document list understands. One dict, read once per request, feeds
 # the API call, the date bar, the status cards, the sort links, the search box, pagination
@@ -1318,8 +1317,9 @@ def setup_routes(app):
         except APIError:
             company = {}
         date_from, date_to, _preset = await _doc_list_dates(request, state, company)
+        per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
-            params = _doc_api_params(state, date_from, date_to, limit=_PER_PAGE, offset=(page - 1) * _PER_PAGE)
+            params = _doc_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
             docs = (await api.list_docs(token, params)).get("items", [])
         except APIError as e:
             docs = []

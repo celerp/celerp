@@ -2565,9 +2565,11 @@ async def reseed_demo_items(
 
     Real inventory and demo items the user edited or used are never removed.
     """
+    from celerp.services.company_lock import lock_company
     from celerp.services.demo import replace_demo_items
 
-    company = await session.get(Company, company_id)
+    await lock_company(session, company_id)
+    company = await session.get(Company, company_id, populate_existing=True)
     vertical = (company.settings or {}).get("vertical") if company else None
     counts = await replace_demo_items(session, company_id, user.id, vertical)
     await session.commit()

@@ -261,6 +261,28 @@ class TestPickedPageSize:
                                   for u in page_links), page_links
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("path, api_fn, prefix", [
+        ("/docs/search?type=invoice", "list_docs", "INV"),
+        ("/lists/search?type=audit", "list_lists", "AUD"),
+    ])
+    async def test_search_honors_per_page(self, ui_client, path, api_fn, prefix):
+        rows = [{**_DOC, "entity_id": f"d{i}", "ref_id": f"{prefix}-{i:03d}", "doc_number": f"{prefix}-{i:03d}",
+                 "list_type": "audit"} for i in range(150)]
+
+        async def _page(_token, params):
+            return {"items": rows[params["offset"]:params["offset"] + params["limit"]], "total": len(rows)}
+
+        fetch = AsyncMock(side_effect=_page)
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch(f"ui.api_client.{api_fn}", new=fetch):
+            r = await ui_client.get(f"{path}&q=a&page=2&per_page=100", cookies=_cookies())
+        assert r.status_code == 200
+        params = fetch.call_args.args[1]
+        assert (params.get("limit"), params.get("offset")) == (100, 100), params
+        shown = set(re.findall(rf"{prefix}-\d{{3}}", r.text))
+        assert shown == {f"{prefix}-{i:03d}" for i in range(100, 150)}, sorted(shown)
+
+    @pytest.mark.asyncio
     async def test_subscriptions_honor_per_page(self, ui_client):
         subs = [{"entity_id": f"sub:{i}", "ref_id": f"SUB-{i:03d}", "status": "active"} for i in range(60)]
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
