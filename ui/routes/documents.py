@@ -3923,7 +3923,7 @@ celerpUpdateBulkAlloc();
             ),
             _date_filter_bar("/lists", date_from, date_to, preset,
                              extra_params=(f"&{_lists_extra}" if _lists_extra else ""), lang=lang),
-            _list_type_tabs(list_type),
+            _list_type_tabs(list_type, state),
             # Self-explanatory page: the shipping tab says what these are and what to do next.
             (P(t("lists.shipping_intro", lang), cls="section-hint") if list_type == "shipping_doc" else ""),
             _list_status_cards(summary, "all_issued" if all_issued_list else status, converted_to_type=converted_to_type_list, base_url=cards_base_url,
@@ -9860,10 +9860,12 @@ def _list_status_cards(summary: dict, active_status: str = "", converted_to_type
     return status_cards(cards, base_url, _active_key or None, show_all_card=False)
 
 
-def _list_type_tabs(active: str) -> FT:
+def _list_type_tabs(active: str, state: dict[str, str]) -> FT:
+    """Type tabs keep the date range and page size; search and status filters start fresh."""
+    kept = {k: state[k] for k in ("per_page", *_DATE_KEYS) if k in state}
     all_cls = "category-tab" + (" category-tab--active" if not active else "")
-    tabs = [A(t("doc.all"), href="/lists", cls=all_cls)]
+    tabs = [A(t("doc.all"), href="/lists" + (f"?{urlencode(kept)}" if kept else ""), cls=all_cls)]
     for lt in _LIST_TYPES:
         cls = "category-tab" + (" category-tab--active" if lt == active else "")
-        tabs.append(A(_list_behavior(lt).label, href=f"/lists?type={lt}", cls=cls))
+        tabs.append(A(_list_behavior(lt).label, href="/lists?" + urlencode({"type": lt, **kept}), cls=cls))
     return Div(*tabs, cls="category-tabs", id="type-tabs")

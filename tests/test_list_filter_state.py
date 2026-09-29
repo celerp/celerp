@@ -313,6 +313,23 @@ class TestPickedPageSize:
         assert links and all('href="/lists' in a and "hx-get" not in a for a in links), links
 
     @pytest.mark.asyncio
+    async def test_list_type_tabs_keep_dates_and_page_size(self, ui_client):
+        """Switching type keeps the chosen date range and page size, and starts a fresh
+        search and status filter for the new type."""
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": [], "total": 0})), \
+             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
+            r = await ui_client.get("/lists?type=audit&q=abc&status=void&preset=custom&from=2026-01-01&to=2026-01-31&per_page=100",
+                                    cookies=_cookies())
+        assert r.status_code == 200
+        tabs = re.search(r'<div[^>]*id="type-tabs".*?</div>', r.text, re.S).group(0)
+        hrefs = [h.replace("&amp;", "&") for h in re.findall(r'href="([^"]*)"', tabs)]
+        kept = "per_page=100&preset=custom&from=2026-01-01&to=2026-01-31"
+        assert hrefs[0] == f"/lists?{kept}", hrefs
+        assert f"/lists?type=quotation&{kept}" in hrefs, hrefs
+        assert not any("q=" in h or "status=" in h for h in hrefs), hrefs
+
+    @pytest.mark.asyncio
     async def test_subscriptions_honor_per_page(self, ui_client):
         subs = [{"entity_id": f"sub:{i}", "ref_id": f"SUB-{i:03d}", "status": "active"} for i in range(60)]
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
