@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from copy import deepcopy
+from functools import lru_cache
 from pathlib import Path
 
 from celerp.modules.loader import module_search_path, resolve_runtime_module_path
@@ -24,16 +25,22 @@ _PACKAGE = "celerp-verticals"
 _UNIT_FIELDS = ("default_sell_by", "default_purchase_unit", "default_weight_unit")
 
 
-def _data_dir() -> Path | None:
-    pkg = resolve_runtime_module_path(_PACKAGE, module_search_path())
+@lru_cache(maxsize=None)
+def _resolved_data_dir(search_path: str) -> Path | None:
+    pkg = resolve_runtime_module_path(_PACKAGE, search_path)
     return pkg / "celerp_verticals" if pkg is not None else None
 
 
-def _read_all(kind: str) -> list[dict]:
-    root = _data_dir()
-    folder = root / kind if root is not None else None
-    if folder is None or not folder.is_dir():
-        return []
+def _data_dir() -> Path | None:
+    return _resolved_data_dir(module_search_path())
+
+
+@lru_cache(maxsize=None)
+def _parse_folder(folder: Path, kind: str) -> tuple[dict, ...]:
+    """The library ships with the installed package and does not change while the
+    process runs, so each folder is parsed once."""
+    if not folder.is_dir():
+        return ()
     out: list[dict] = []
     for path in sorted(folder.glob("*.json")):
         try:
@@ -45,7 +52,13 @@ def _read_all(kind: str) -> list[dict]:
             log.warning("skipping %s file %s: no name", kind, path.name)
             continue
         out.append(data)
-    return out
+    return tuple(out)
+
+
+def _read_all(kind: str) -> list[dict]:
+    """A private copy per call, so no caller can change the cached library."""
+    root = _data_dir()
+    return deepcopy(list(_parse_folder(root / kind, kind))) if root is not None else []
 
 
 def list_presets(include_hidden: bool = False) -> list[dict]:

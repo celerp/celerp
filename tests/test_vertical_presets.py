@@ -91,3 +91,19 @@ async def test_item_create_applies_category_unit_defaults(client):
 def test_installed_preset_modules_skips_uninstalled():
     mods = vp.installed_preset_modules({"name": "p", "modules": ["celerp-inventory", "celerp-not-a-module"]})
     assert mods == ["celerp-inventory"]
+
+
+def test_catalog_is_read_once_per_process():
+    vp.list_presets()
+    with patch.object(vp, "resolve_runtime_module_path", wraps=vp.resolve_runtime_module_path) as resolve, \
+         patch.object(vp.json, "loads", wraps=json.loads) as parse:
+        vp.list_presets()
+        vp.load_preset("gemstones")
+        vp.load_category("diamond")
+    assert resolve.call_count == 0
+    assert parse.call_count == 0
+
+
+def test_cached_catalog_cannot_be_mutated_by_callers():
+    vp.load_preset("gemstones")["categories"].append("not-a-category")
+    assert "not-a-category" not in vp.load_preset("gemstones")["categories"]
