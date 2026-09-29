@@ -60,3 +60,23 @@ def test_navigation_modes():
     assert "goTo(this.getAttribute('href'))" in js and "hx-get" not in js
     plain = _html(0, 100, 250)
     assert "hx-get" not in plain and "window.location=this.value" in plain
+
+
+def test_past_the_end_marks_no_page_and_counts_no_rows():
+    """page=10 of 3: the body is empty, so no page is current and the label shows none of the
+    total; Prev leads back to the last real page."""
+    html = _html(900, 100, 250)
+    assert 'aria-current="page"' not in html, html
+    assert "0 of 250" in html and "201-250" not in html, html
+    assert re.search(r'<a href="/x\?offset=200&amp;limit=100"[^>]*>Prev</a>', html), html
+    assert re.search(r'<span[^>]*page-btn--disabled[^>]*>Next</span>', html), html
+
+
+def test_unaligned_offset_labels_the_rows_shown():
+    html = _html(30, 25, 250)
+    assert "31-55 of 250" in html, html
+    assert 'aria-current="page"' not in html, html
+
+
+def test_no_rows_renders_no_pager():
+    assert _html(0, 50, 0) == ""

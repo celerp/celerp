@@ -1735,6 +1735,7 @@
   "time.days_ago": "{n} วันที่แล้ว",
   "table.no_results_for_query": "ไม่พบผลลัพธ์สำหรับ '{q}'",
   "table.page_range": "{first}-{last} จาก {total}",
+  "table.page_range_none": "0 จาก {total}",
   "table.per_page_option": "{n} รายการต่อหน้า",
   "table.confirm_delete_row": "ลบสินค้านี้หรือไม่? การดำเนินการนี้ไม่สามารถย้อนกลับได้",
   "table.confirm_delete_selected": "ลบสินค้าที่เลือกหรือไม่? การดำเนินการนี้ไม่สามารถย้อนกลับได้",

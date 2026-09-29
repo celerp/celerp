@@ -1735,6 +1735,7 @@
   "time.days_ago": "{n} ngày trước",
   "table.no_results_for_query": "Không có kết quả cho '{q}'",
   "table.page_range": "{first}-{last} trên {total}",
+  "table.page_range_none": "0 trên {total}",
   "table.per_page_option": "{n} trên mỗi trang",
   "table.confirm_delete_row": "Xóa mục này? Thao tác này không thể hoàn tác.",
   "table.confirm_delete_selected": "Xóa các mục đã chọn? Thao tác này không thể hoàn tác.",

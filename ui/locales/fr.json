@@ -1736,6 +1736,7 @@
   "time.days_ago": "il y a {n}j",
   "table.no_results_for_query": "Aucun résultat pour « {q} »",
   "table.page_range": "{first}-{last} sur {total}",
+  "table.page_range_none": "0 sur {total}",
   "table.per_page_option": "{n} par page",
   "table.confirm_delete_row": "Supprimer cet élément ? Cette action est irréversible.",
   "table.confirm_delete_selected": "Supprimer les éléments sélectionnés ? Cette action est irréversible.",

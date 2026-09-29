@@ -1839,6 +1839,7 @@
   "time.days_ago": "{n}d በፊት",
   "table.no_results_for_query": "ለ'{q}' ምንም ውጤቶች የሉም",
   "table.page_range": "ከ{total} ውስጥ {first}-{last}",
+  "table.page_range_none": "ከ{total} ውስጥ 0",
   "table.per_page_option": "{n} በገጽ",
   "table.confirm_delete_row": "ይህ ዕቃ ይሰረዝ? ይህ ሊቀለበስ አይችልም።",
   "table.confirm_delete_selected": "የተመረጡ ንጥሎች ይሰረዙ? ይህ ሊቀለበስ አይችልም።",

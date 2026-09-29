@@ -1735,6 +1735,7 @@
   "time.days_ago": "منذ {n}d",
   "table.no_results_for_query": "لا توجد نتائج لـ '{q}'",
   "table.page_range": "{first}-{last} من {total}",
+  "table.page_range_none": "0 من {total}",
   "table.per_page_option": "{n} في كل صفحة",
   "table.confirm_delete_row": "هل تريد حذف هذا العنصر؟ لا يمكن التراجع عن هذه العملية.",
   "table.confirm_delete_selected": "هل تريد حذف العناصر المحددة؟ لا يمكن التراجع عن هذه العملية.",

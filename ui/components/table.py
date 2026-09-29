@@ -2385,18 +2385,28 @@ def compact_pages(page: int, total_pages: int) -> list[int | None]:
 
 def server_pager(offset: int, limit: int, total: int, href, *,
                  page_sizes: tuple[int, ...] = (25, 50, 100, 250, 500),
-                 hx_target: str | None = None, nav_js: str | None = None) -> FT:
+                 hx_target: str | None = None, nav_js: str | None = None) -> FT | str:
     """The one pager for server-paged data. Renders from the transport's offset/limit/total;
     `href(offset, limit)` builds each target URL, so every caller keeps its own query
-    convention and the page size rides along in every target.
+    convention and the page size rides along in every target. With no rows there is nothing
+    to page, so it renders nothing.
+
+    The range label always describes the rows actually shown for `offset`. A page is marked
+    current only when `offset` is exactly that page's start; past the last page none is, and
+    Prev leads back to the last page.
 
     Every control is a real link (plain navigation is the fallback). `hx_target` swaps that
     element in place instead (the response must contain it); `nav_js` names a page-level JS
     function that receives the target URL and decides how to get there."""
     limit = max(1, limit)
     total = max(0, total)
-    total_pages = max(1, (total + limit - 1) // limit)
-    page = min(total_pages, max(0, offset) // limit + 1)
+    offset = max(0, offset)
+    if not total:
+        return ""
+    total_pages = (total + limit - 1) // limit
+    # The page holding the first row shown; past the end, one beyond the last page.
+    page = min(total_pages + 1, offset // limit + 1)
+    current = page if offset % limit == 0 and page <= total_pages else None
 
     def _nav_attrs(url: str) -> dict:
         if nav_js:
@@ -2417,12 +2427,15 @@ def server_pager(offset: int, limit: int, total: int, href, *,
         return Span(label, cls="page-btn page-btn--disabled", aria_disabled="true")
 
     controls = [_edge(t('btn.prev'), page - 1, page > 1)]
-    controls += [Span("…", cls="page-gap") if p is None else _link(str(p), p, current=(p == page))
-                 for p in compact_pages(page, total_pages)]
+    controls += [Span("…", cls="page-gap") if p is None else _link(str(p), p, current=(p == current))
+                 for p in compact_pages(min(page, total_pages), total_pages)]
     controls.append(_edge(t('btn.next'), page + 1, page < total_pages))
 
-    first = (page - 1) * limit + 1 if total else 0
-    last = min(page * limit, total)
+    if offset < total:
+        label = t("table.page_range", first=f"{offset + 1:,}", last=f"{min(offset + limit, total):,}",
+                  total=f"{total:,}")
+    else:
+        label = t("table.page_range_none", total=f"{total:,}")
     if nav_js:
         onchange = f"{nav_js}(this.value)"
     elif hx_target:
@@ -2435,13 +2448,21 @@ def server_pager(offset: int, limit: int, total: int, href, *,
         onchange=onchange, cls="filter-select per-page-select",
     )
     return Nav(*controls,
-               Span(t("table.page_range", first=f"{first:,}", last=f"{last:,}", total=f"{total:,}"),
-                    cls="page-count"),
+               Span(label, cls="page-count"),
                size_select,
                cls="pagination")
 
 
-def pagination(page: int, total: int, per_page: int, base_url: str, extra_params: str = "") -> FT:
+def per_page_value(raw, default: int) -> int:
+    """The page size a `per_page` query value asks for; anything that is not an integer is
+    `default`."""
+    try:
+        return max(1, int(raw))
+    except (ValueError, TypeError):
+        return default
+
+
+def pagination(page: int, total: int, per_page: int, base_url: str, extra_params: str = "") -> FT | str:
     """`server_pager` for full-page lists addressed by `page`/`per_page` query params."""
     suffix = f"&{extra_params}" if extra_params else ""
 

@@ -21,7 +21,7 @@ import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
-from ui.components.table import breadcrumbs, display_enum, pagination, search_bar, status_cards
+from ui.components.table import breadcrumbs, display_enum, pagination, per_page_value, search_bar, status_cards
 from ui.config import get_token as _token, get_role as _get_role
 from ui.routes.settings import _check_permission
 from ui.i18n import t
@@ -230,6 +230,7 @@ def setup_routes(app) -> None:
             return r
         q = request.query_params.get("q", "")
         page = int(request.query_params.get("page", 1))
+        per_page = per_page_value(request.query_params.get("per_page"), _PER_PAGE)
 
         try:
             all_resp = await api.list_subscriptions(token, {"direction": direction, "limit": 1000})
@@ -252,7 +253,7 @@ def setup_routes(app) -> None:
                         or ql in (i.get("contact_company_name") or "").lower()]
 
         total = len(filtered)
-        page_items = filtered[(page - 1) * _PER_PAGE: page * _PER_PAGE]
+        page_items = filtered[(page - 1) * per_page: page * per_page]
         title = t("nav.subscriptions_sales") if direction == "sales" else t("nav.subscriptions_purchasing")
         extra = urlencode({k: v for k, v in {"direction": direction, "status": status, "q": q}.items() if v})
 
@@ -267,7 +268,7 @@ def setup_routes(app) -> None:
             ),
             _sub_status_cards(all_items, status, direction),
             _sub_table(page_items, direction),
-            pagination(page, total, _PER_PAGE, "/subscriptions", extra),
+            pagination(page, total, per_page, "/subscriptions", extra),
             cls="page-content",
         )
         return await base_shell(request, content, title=title,

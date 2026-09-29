@@ -1735,6 +1735,7 @@
   "time.days_ago": "{n}日前",
   "table.no_results_for_query": "「{q}」の検索結果はありません",
   "table.page_range": "{total}件中 {first}-{last}",
+  "table.page_range_none": "{total}件中 0",
   "table.per_page_option": "1ページあたり{n}件",
   "table.confirm_delete_row": "この項目を削除しますか？この操作は元に戻せません。",
   "table.confirm_delete_selected": "選択した項目を削除しますか？この操作は元に戻せません。",

@@ -18,7 +18,7 @@ from ui.api_client import APIError
 from celerp.services.units import default_receive_as
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
-from ui.components.table import search_bar, EMPTY, pagination, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
+from ui.components.table import search_bar, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.payment_terms import due_date_for_terms
@@ -404,7 +404,7 @@ async def _doc_list_dates(request: Request, state: dict[str, str], company: dict
     return date_from, date_to, default_preset
 
 
-_LIST_STATE_KEYS = ("q", "type", "status", "converted_to_type", "all_issued", "view", "preset", "from", "to")
+_LIST_STATE_KEYS = ("q", "type", "status", "converted_to_type", "all_issued", "view", "per_page", "preset", "from", "to")
 _LIST_STATUS_KEYS = ("status", "converted_to_type", "all_issued", "view")
 
 
@@ -1217,10 +1217,7 @@ def setup_routes(app):
         page = _page_number(request)
         sort = state.get("sort", "date")
         sort_dir = state.get("dir", "desc")
-        try:
-            per_page = max(1, int(state.get("per_page", _PER_PAGE)))
-        except (ValueError, TypeError):
-            per_page = _PER_PAGE
+        per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
             company = await api.get_company(token)
         except Exception:
@@ -3805,10 +3802,7 @@ celerpUpdateBulkAlloc();
             page = _page_number(request)
         except ValueError:
             page = 1
-        try:
-            per_page = max(1, int(request.query_params.get("per_page", _DEFAULT_PER_PAGE)))
-        except ValueError:
-            per_page = _DEFAULT_PER_PAGE
+        per_page = per_page_value(request.query_params.get("per_page"), _DEFAULT_PER_PAGE)
         offset = (page - 1) * per_page
         try:
             resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": per_page, "offset": offset, "resolve": "true"})
@@ -3896,12 +3890,13 @@ celerpUpdateBulkAlloc();
         status = state.get("status", "")
         converted_to_type_list = state.get("converted_to_type", "")
         page = _page_number(request)
+        per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
             company = await api.get_company(token)
         except APIError:
             company = {}
         date_from, date_to, preset = await _list_page_dates(request, state, company)
-        params = _list_api_params(state, date_from, date_to, limit=_PER_PAGE, offset=(page - 1) * _PER_PAGE)
+        params = _list_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
         all_issued_list = params.get("all_issued") == "1"
         try:
             result = await api.list_lists(token, params)
@@ -3942,7 +3937,7 @@ celerpUpdateBulkAlloc();
             _list_status_cards(summary, "all_issued" if all_issued_list else status, converted_to_type=converted_to_type_list, base_url=cards_base_url,
                                dates_chosen=any(state.get(k) for k in _DATE_KEYS)),
             _list_table(lists, lang=lang),
-            pagination(page, filtered_total, _PER_PAGE, "/lists", _state_query(state)),
+            pagination(page, filtered_total, per_page, "/lists", _state_query(state, without=("per_page",))),
             title=page_title("page.lists"),
             nav_active="lists",
             request=request,
@@ -3977,8 +3972,9 @@ celerpUpdateBulkAlloc();
         except APIError:
             company = {}
         date_from, date_to, _preset = await _list_page_dates(request, state, company)
+        per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
-            params = _list_api_params(state, date_from, date_to, limit=_PER_PAGE, offset=(page - 1) * _PER_PAGE)
+            params = _list_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
             lists = (await api.list_lists(token, params)).get("items", [])
         except APIError as e:
             logger.warning("API error on lists_search: %s", e.detail)

@@ -1735,6 +1735,7 @@
   "time.days_ago": "hace {n}d",
   "table.no_results_for_query": "No hay resultados para «{q}»",
   "table.page_range": "{first}-{last} de {total}",
+  "table.page_range_none": "0 de {total}",
   "table.per_page_option": "{n} por página",
   "table.confirm_delete_row": "¿Desea eliminar este elemento? Esta acción no se puede deshacer.",
   "table.confirm_delete_selected": "¿Desea eliminar los elementos seleccionados? Esta acción no se puede deshacer.",

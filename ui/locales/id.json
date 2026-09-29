@@ -1735,6 +1735,7 @@
   "time.days_ago": "{n} hari yang lalu",
   "table.no_results_for_query": "Tidak ada hasil untuk '{q}'",
   "table.page_range": "{first}-{last} dari {total}",
+  "table.page_range_none": "0 dari {total}",
   "table.per_page_option": "{n} per halaman",
   "table.confirm_delete_row": "Hapus item ini? Tindakan ini tidak dapat dibatalkan.",
   "table.confirm_delete_selected": "Hapus item yang dipilih? Tindakan ini tidak dapat dibatalkan.",

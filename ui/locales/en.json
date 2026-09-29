@@ -1858,6 +1858,7 @@
   "time.days_ago": "{n}d ago",
   "table.no_results_for_query": "No results for '{q}'",
   "table.page_range": "{first}-{last} of {total}",
+  "table.page_range_none": "0 of {total}",
   "table.per_page_option": "{n} per page",
   "table.confirm_delete_row": "Delete this item? This cannot be undone.",
   "table.confirm_delete_selected": "Delete selected items? This cannot be undone.",

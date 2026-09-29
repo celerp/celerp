@@ -141,7 +141,7 @@ class TestDocListState:
 class TestListPageState:
     @pytest.mark.asyncio
     async def test_list_page_default_card_active_and_cards_keep_type(self, ui_client):
-        list_lists = AsyncMock(return_value={"items": [], "total": 0})
+        list_lists = AsyncMock(return_value={"items": [], "total": 120})
         summary = AsyncMock(return_value={"count_by_status": {"open": 2}, "all_issued_count": 2})
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
              patch("ui.api_client.list_lists", new=list_lists), \
@@ -240,3 +240,32 @@ class TestSummaryDateWindow:
         assert r.json()["all_issued_count"] == 1, r.json()
         r = await client.get("/lists/summary", headers=headers)
         assert r.json()["all_issued_count"] == 3
+
+
+class TestPickedPageSize:
+    """The pager's page-size picker changes how many rows the page asks for."""
+
+    @pytest.mark.asyncio
+    async def test_lists_honor_per_page(self, ui_client):
+        list_lists = AsyncMock(return_value={"items": [], "total": 120})
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_lists", new=list_lists), \
+             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
+            r = await ui_client.get("/lists?type=audit&page=2&per_page=25", cookies=_cookies())
+        assert r.status_code == 200
+        params = list_lists.call_args.args[1]
+        assert (params.get("limit"), params.get("offset")) == (25, 25), params
+        assert "26-50 of 120" in r.text
+        page_links = re.findall(r'<a href="(/lists\?page=[^"]*)"', r.text)
+        assert page_links and all(u.count("per_page=") == 1 and "per_page=25" in u.replace("&amp;", "&")
+                                  for u in page_links), page_links
+
+    @pytest.mark.asyncio
+    async def test_subscriptions_honor_per_page(self, ui_client):
+        subs = [{"entity_id": f"sub:{i}", "ref_id": f"SUB-{i:03d}", "status": "active"} for i in range(60)]
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value={"items": subs})):
+            r = await ui_client.get("/subscriptions?page=2&per_page=25", cookies=_cookies())
+        assert r.status_code == 200
+        assert "26-50 of 60" in r.text
+        assert "SUB-025" in r.text and "SUB-050" not in r.text and "SUB-024" not in r.text
