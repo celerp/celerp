@@ -1314,7 +1314,7 @@ async def test_wf_import_csv_items_count_increases(client):
     assert r.status_code == 200
     assert r.json()["created"] == 3
     after = (await client.get("/items", headers=h)).json()["total"]
-    # Demo item is auto-wiped on first real import; after = exactly the 3 imported items
+    # The untouched demo item is removed by the first real import; after = exactly the 3 imported items
     assert after == 3
 
 
@@ -1807,7 +1807,7 @@ async def test_ie_import_valid_csv_items_count_increases(client):
     result = r.json()
     assert result["created"] == 5
     after = (await client.get("/items", headers=h)).json()["total"]
-    # Demo item is auto-wiped on first batch import, so after == created (not before + created)
+    # The untouched demo item is removed by the first batch import, so after == created (not before + created)
     assert after == result["created"]
 
 
