@@ -972,8 +972,9 @@ async def test_finalize_blocks_a_line_whose_item_was_merged_away(client):
     fin = await client.post(f"/lists/{audit}/finalize", headers=_h(t))
     assert fin.status_code == 409, fin.text
     # Both sources are merged away; either line may be the one reported, by its SKU.
-    label, _, _ = fin.json()["detail"].partition(": ")
-    assert label in {"MRG-1", "MRG-2"}
+    detail = fin.json()["detail"]
+    assert detail.partition(": ")[0] in {"MRG-1", "MRG-2"}
+    assert src not in detail and other not in detail
     assert (await _state(client, t, audit))["status"] == "draft"
 
 

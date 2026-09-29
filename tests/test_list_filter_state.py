@@ -300,6 +300,19 @@ class TestPickedPageSize:
         assert urls and all(filter_ in u and "per_page=100" in u for u in urls), urls
 
     @pytest.mark.asyncio
+    async def test_list_type_tabs_load_the_whole_page(self, ui_client):
+        """A type tab opens that type's page, so its search box, cards and pager all
+        follow the new type instead of keeping the previous one."""
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": [], "total": 0})), \
+             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
+            r = await ui_client.get("/lists?type=audit", cookies=_cookies())
+        assert r.status_code == 200
+        tabs = re.search(r'<div[^>]*id="type-tabs".*?</div>', r.text, re.S).group(0)
+        links = re.findall(r"<a[^>]*>", tabs)
+        assert links and all('href="/lists' in a and "hx-get" not in a for a in links), links
+
+    @pytest.mark.asyncio
     async def test_subscriptions_honor_per_page(self, ui_client):
         subs = [{"entity_id": f"sub:{i}", "ref_id": f"SUB-{i:03d}", "status": "active"} for i in range(60)]
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \

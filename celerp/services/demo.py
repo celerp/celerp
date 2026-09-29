@@ -34,7 +34,7 @@ _GENERIC_ITEMS: list[dict] = [
         "sell_by": "piece",
         "prices": {"Retail": 19.99, "Wholesale": 14.99, "Cost": 9.99},
         "status": "available",
-        "description": "This is a demo item. It will be removed when you import your first CSV.",
+        "description": "This is a demo item. Your first CSV import removes it unless you have edited or used it.",
         "barcode": "2000010000013",
         "attributes": {},
     },

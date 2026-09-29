@@ -9862,18 +9862,8 @@ def _list_status_cards(summary: dict, active_status: str = "", converted_to_type
 
 def _list_type_tabs(active: str) -> FT:
     all_cls = "category-tab" + (" category-tab--active" if not active else "")
-    tabs = [A(t("doc.all"), href="/lists", hx_get="/lists/search", hx_target="#list-table",
-               hx_swap="outerHTML", hx_push_url="/lists", cls=all_cls)]
+    tabs = [A(t("doc.all"), href="/lists", cls=all_cls)]
     for lt in _LIST_TYPES:
-        label = _list_behavior(lt).label
         cls = "category-tab" + (" category-tab--active" if lt == active else "")
-        tabs.append(A(
-            label,
-            href=f"/lists?type={lt}",
-            hx_get=f"/lists/search?type={lt}",
-            hx_target="#list-table",
-            hx_swap="outerHTML",
-            hx_push_url=f"/lists?type={lt}",
-            cls=cls,
-        ))
+        tabs.append(A(_list_behavior(lt).label, href=f"/lists?type={lt}", cls=cls))
     return Div(*tabs, cls="category-tabs", id="type-tabs")
