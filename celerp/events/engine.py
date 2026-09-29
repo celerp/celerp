@@ -69,7 +69,7 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
                         raise HTTPException(status_code=422, detail=str(exc)) from exc
                     event_date = instant.astimezone(zone).date()
         except (ValueError, TypeError):
-            return
+            raise HTTPException(status_code=422, detail=f"{event_date_str} is not a date. Enter it as YYYY-MM-DD.") from None
     else:
         try:
             zone = business_timezone((company.settings or {}).get("timezone"))

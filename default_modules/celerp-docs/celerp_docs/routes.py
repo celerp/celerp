@@ -109,8 +109,12 @@ class LineItem(BaseModel):
         return self
 
 
-def _calendar_date(v: str) -> str:
-    """A payment or refund date as YYYY-MM-DD, or ValueError when it is not a real date."""
+def _calendar_date(v: str | None) -> str | None:
+    """A date money moves on as YYYY-MM-DD, or ValueError when it is not a real date.
+
+    Left out (None) stays None where the date is optional."""
+    if v is None:
+        return None
     try:
         return _date.fromisoformat(str(v).strip()[:10]).isoformat()
     except ValueError:
@@ -2860,6 +2864,8 @@ class VoidPaymentBody(BaseModel):
     refund_date: str | None = None  # ISO date for the reversal JE (defaults to today)
     idempotency_key: str | None = None
 
+    _real_date = field_validator("refund_date")(_calendar_date)
+
 
 @router.post("/{entity_id}/void-payment")
 async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
@@ -3171,6 +3177,8 @@ class ApplyToInvoiceBody(BaseModel):
     date: str | None = None
     idempotency_key: str | None = None
 
+    _real_date = field_validator("date")(_calendar_date)
+
 
 @router.post("/{entity_id}/apply-to-invoice")
 async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
@@ -3292,6 +3300,8 @@ class CnRefundBody(BaseModel):
     reference: str | None = None
     idempotency_key: str | None = None
 
+    _real_date = field_validator("date")(_calendar_date)
+
 
 @router.post("/{entity_id}/cn-refund")
 async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
@@ -3369,6 +3379,8 @@ class BulkPaymentBody(BaseModel):
     bank_account: str | None = None
     reference: str | None = None
     idempotency_key: str | None = None
+
+    _real_date = field_validator("payment_date")(_calendar_date)
 
 
 @router.post("/bulk-payment")
