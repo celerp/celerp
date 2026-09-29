@@ -3274,5 +3274,11 @@
   "setup.business_type_required": "Scegli un tipo di attività per continuare.",
   "setup.unknown_business_type": "Tipo di attività sconosciuto: {value}",
   "settings.business_type_saved": "Tipo di attività salvato.",
-  "settings.business_type_saved_restart": "Tipo di attività salvato. Riavvia dalla pagina Moduli per caricarne i moduli."
+  "settings.business_type_saved_restart": "Tipo di attività salvato. Riavvia dalla pagina Moduli per caricarne i moduli.",
+  "settings.business_type_changes.categories": "Categorie aggiunte: {names}",
+  "settings.business_type_changes.modules": "Moduli attivati: {names}",
+  "settings.business_type_changes.settings": "Impostazioni aggiornate: {names}",
+  "settings.business_type_changes.demo_replaced": "Articoli demo sostituiti: {count}",
+  "settings.business_type_changes.demo_kept": "Articoli demo mantenuti perché modificati o utilizzati: {count}",
+  "settings.purchasing_payment_terms": "Termini di pagamento degli acquisti"
 }

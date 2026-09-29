@@ -3196,6 +3196,8 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .toast-container { position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999; display: flex; flex-direction: column; gap: 0.5rem; pointer-events: none; }
 .toast { pointer-events: all; display: flex; align-items: flex-start; gap: 0.75rem; padding: 0.75rem 1rem; border-radius: var(--radius); box-shadow: 0 4px 16px rgba(0,0,0,0.15); font-size: 0.875rem; max-width: 360px; opacity: 0; transform: translateY(8px); transition: opacity 0.2s ease, transform 0.2s ease; }
 .toast--visible { opacity: 1; transform: translateY(0); }
+/* A multi-line toast (a summary of changes) keeps its line breaks. */
+.toast__msg { white-space: pre-line; }
 .toast--error { background: #fef2f2; border: 1px solid rgba(239,68,68,0.4); color: #b91c1c; }
 .toast--success { background: #f0fdf4; border: 1px solid rgba(34,197,94,0.4); color: #15803d; }
 .toast--info { background: var(--c-bg-alt, #f8f9fa); border: 1px solid var(--c-border); color: var(--c-text); }

@@ -3274,5 +3274,11 @@
   "setup.business_type_required": "Wählen Sie einen Unternehmenstyp, um fortzufahren.",
   "setup.unknown_business_type": "Unbekannter Unternehmenstyp: {value}",
   "settings.business_type_saved": "Unternehmenstyp gespeichert.",
-  "settings.business_type_saved_restart": "Unternehmenstyp gespeichert. Starten Sie über die Seite Module neu, um die zugehörigen Module zu laden."
+  "settings.business_type_saved_restart": "Unternehmenstyp gespeichert. Starten Sie über die Seite Module neu, um die zugehörigen Module zu laden.",
+  "settings.business_type_changes.categories": "Hinzugefügte Kategorien: {names}",
+  "settings.business_type_changes.modules": "Aktivierte Module: {names}",
+  "settings.business_type_changes.settings": "Aktualisierte Einstellungen: {names}",
+  "settings.business_type_changes.demo_replaced": "Ersetzte Demo-Artikel: {count}",
+  "settings.business_type_changes.demo_kept": "Behaltene Demo-Artikel, weil sie bearbeitet oder verwendet wurden: {count}",
+  "settings.purchasing_payment_terms": "Zahlungsbedingungen für den Einkauf"
 }

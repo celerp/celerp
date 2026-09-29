@@ -3274,5 +3274,11 @@
   "setup.business_type_required": "Pilih jenis bisnis untuk melanjutkan.",
   "setup.unknown_business_type": "Jenis bisnis tidak dikenal: {value}",
   "settings.business_type_saved": "Jenis bisnis disimpan.",
-  "settings.business_type_saved_restart": "Jenis bisnis disimpan. Mulai ulang dari halaman Modul untuk memuat modulnya."
+  "settings.business_type_saved_restart": "Jenis bisnis disimpan. Mulai ulang dari halaman Modul untuk memuat modulnya.",
+  "settings.business_type_changes.categories": "Kategori ditambahkan: {names}",
+  "settings.business_type_changes.modules": "Modul diaktifkan: {names}",
+  "settings.business_type_changes.settings": "Pengaturan diperbarui: {names}",
+  "settings.business_type_changes.demo_replaced": "Item demo diganti: {count}",
+  "settings.business_type_changes.demo_kept": "Item demo dipertahankan karena sudah diedit atau digunakan: {count}",
+  "settings.purchasing_payment_terms": "Syarat pembayaran pembelian"
 }

@@ -3274,5 +3274,11 @@
   "setup.business_type_required": "ለመቀጠል የንግድ አይነት ይምረጡ።",
   "setup.unknown_business_type": "ያልታወቀ የንግድ አይነት: {value}",
   "settings.business_type_saved": "የንግድ አይነት ተቀምጧል።",
-  "settings.business_type_saved_restart": "የንግድ አይነት ተቀምጧል። ሞጁሎቹን ለመጫን ከሞጁሎች ገጽ እንደገና ያስጀምሩ።"
+  "settings.business_type_saved_restart": "የንግድ አይነት ተቀምጧል። ሞጁሎቹን ለመጫን ከሞጁሎች ገጽ እንደገና ያስጀምሩ።",
+  "settings.business_type_changes.categories": "የተጨመሩ ምድቦች፦ {names}",
+  "settings.business_type_changes.modules": "የነቁ ሞጁሎች፦ {names}",
+  "settings.business_type_changes.settings": "የተዘመኑ ቅንብሮች፦ {names}",
+  "settings.business_type_changes.demo_replaced": "የተተኩ የማሳያ እቃዎች፦ {count}",
+  "settings.business_type_changes.demo_kept": "ስለተስተካከሉ ወይም ስለተጠቀሙባቸው የተቀመጡ የማሳያ እቃዎች፦ {count}",
+  "settings.purchasing_payment_terms": "የግዢ የክፍያ ውሎች"
 }

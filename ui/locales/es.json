@@ -3274,5 +3274,11 @@
   "setup.business_type_required": "Elija un tipo de negocio para continuar.",
   "setup.unknown_business_type": "Tipo de negocio desconocido: {value}",
   "settings.business_type_saved": "Tipo de negocio guardado.",
-  "settings.business_type_saved_restart": "Tipo de negocio guardado. Reinicie desde la página Módulos para cargar sus módulos."
+  "settings.business_type_saved_restart": "Tipo de negocio guardado. Reinicie desde la página Módulos para cargar sus módulos.",
+  "settings.business_type_changes.categories": "Categorías añadidas: {names}",
+  "settings.business_type_changes.modules": "Módulos activados: {names}",
+  "settings.business_type_changes.settings": "Ajustes actualizados: {names}",
+  "settings.business_type_changes.demo_replaced": "Artículos de demostración reemplazados: {count}",
+  "settings.business_type_changes.demo_kept": "Artículos de demostración conservados porque se editaron o usaron: {count}",
+  "settings.purchasing_payment_terms": "Condiciones de pago de compras"
 }

@@ -3274,5 +3274,11 @@
   "setup.business_type_required": "เลือกประเภทธุรกิจเพื่อดำเนินการต่อ",
   "setup.unknown_business_type": "ไม่รู้จักประเภทธุรกิจ: {value}",
   "settings.business_type_saved": "บันทึกประเภทธุรกิจแล้ว",
-  "settings.business_type_saved_restart": "บันทึกประเภทธุรกิจแล้ว รีสตาร์ทจากหน้าโมดูลเพื่อโหลดโมดูลของประเภทนี้"
+  "settings.business_type_saved_restart": "บันทึกประเภทธุรกิจแล้ว รีสตาร์ทจากหน้าโมดูลเพื่อโหลดโมดูลของประเภทนี้",
+  "settings.business_type_changes.categories": "หมวดหมู่ที่เพิ่ม: {names}",
+  "settings.business_type_changes.modules": "โมดูลที่เปิดใช้: {names}",
+  "settings.business_type_changes.settings": "การตั้งค่าที่อัปเดต: {names}",
+  "settings.business_type_changes.demo_replaced": "สินค้าตัวอย่างที่แทนที่: {count}",
+  "settings.business_type_changes.demo_kept": "สินค้าตัวอย่างที่เก็บไว้เพราะมีการแก้ไขหรือใช้งานแล้ว: {count}",
+  "settings.purchasing_payment_terms": "เงื่อนไขการชำระเงินฝั่งจัดซื้อ"
 }

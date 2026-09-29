@@ -3274,5 +3274,11 @@
   "setup.business_type_required": "اختر نوع العمل للمتابعة.",
   "setup.unknown_business_type": "نوع عمل غير معروف: {value}",
   "settings.business_type_saved": "تم حفظ نوع العمل.",
-  "settings.business_type_saved_restart": "تم حفظ نوع العمل. أعد التشغيل من صفحة الوحدات لتحميل وحداته."
+  "settings.business_type_saved_restart": "تم حفظ نوع العمل. أعد التشغيل من صفحة الوحدات لتحميل وحداته.",
+  "settings.business_type_changes.categories": "الفئات المضافة: {names}",
+  "settings.business_type_changes.modules": "الوحدات المفعّلة: {names}",
+  "settings.business_type_changes.settings": "الإعدادات المحدّثة: {names}",
+  "settings.business_type_changes.demo_replaced": "العناصر التجريبية المستبدلة: {count}",
+  "settings.business_type_changes.demo_kept": "العناصر التجريبية المحتفظ بها لأنها عُدّلت أو استُخدمت: {count}",
+  "settings.purchasing_payment_terms": "شروط الدفع للمشتريات"
 }

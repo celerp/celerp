@@ -3274,5 +3274,11 @@
   "setup.business_type_required": "Choose a business type to continue.",
   "setup.unknown_business_type": "Unknown business type: {value}",
   "settings.business_type_saved": "Business type saved.",
-  "settings.business_type_saved_restart": "Business type saved. Restart from the Modules page to load its modules."
+  "settings.business_type_saved_restart": "Business type saved. Restart from the Modules page to load its modules.",
+  "settings.business_type_changes.categories": "Categories added: {names}",
+  "settings.business_type_changes.modules": "Modules enabled: {names}",
+  "settings.business_type_changes.settings": "Settings updated: {names}",
+  "settings.business_type_changes.demo_replaced": "Demo items replaced: {count}",
+  "settings.business_type_changes.demo_kept": "Demo items kept because they were edited or used: {count}",
+  "settings.purchasing_payment_terms": "Purchasing payment terms"
 }

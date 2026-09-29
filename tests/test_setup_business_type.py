@@ -4,6 +4,7 @@
 later change from Company Details. Both go through api.set_business_type only."""
 from __future__ import annotations
 
+import json
 import re
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, patch
@@ -235,3 +236,95 @@ class TestCompanyDetails:
         with patch("ui.api_client.set_business_type", new=AsyncMock(side_effect=APIError(403, "Forbidden"))):
             r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"}, cookies=_authed())
         assert "Forbidden" in r.text and "cell-error" in r.text
+
+
+class TestSetupRestart:
+    @pytest.mark.asyncio
+    async def test_restart_request_dropping_still_goes_to_activating(self, ui_client):
+        """The restart request can fail as the server goes down; setup still moves on
+        to the page that waits for the modules."""
+        with ExitStack() as stack:
+            stack.enter_context(patch("ui.api_client.patch_company", new=AsyncMock(return_value={})))
+            stack.enter_context(patch("ui.api_client.set_business_type",
+                                      new=AsyncMock(return_value={"restart_required": True})))
+            stack.enter_context(patch("ui.api_client.restart_system",
+                                      new=AsyncMock(side_effect=httpx.RemoteProtocolError("server closed"))))
+            r = await ui_client.post("/setup/company", data=_FULL_FORM, cookies=_authed())
+        assert r.status_code == 302
+        assert r.headers["location"].endswith("/setup/activating")
+
+
+_CHANGES = {"categories_added": ["Diamond", "Ruby"], "modules_enabled": ["Manufacturing"],
+            "settings_updated": ["inventory_method"], "defaults_updated": ["payment_terms", "terms_conditions"],
+            "demo_items_replaced": 9, "demo_items_kept": 1}
+
+
+def _toast(r) -> dict:
+    return json.loads(r.headers["HX-Trigger"])["celerpToast"]
+
+
+class TestCompanyDetailsSummary:
+    @pytest.mark.asyncio
+    async def test_change_summary_is_shown_until_dismissed(self, ui_client):
+        set_type = AsyncMock(return_value={"vertical": "fashion", "restart_required": False, "changes": _CHANGES})
+        with patch("ui.api_client.set_business_type", new=set_type):
+            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"}, cookies=_authed())
+        toast = _toast(r)
+        assert toast["persist"] is True
+        lines = toast["message"].split("\n")
+        assert lines[0] == "Business type saved."
+        assert "Categories added: Diamond, Ruby" in lines
+        assert "Modules enabled: Manufacturing" in lines
+        assert "Settings updated: Stock cutting method, Payment Terms, Terms & Conditions" in lines
+        assert "Demo items replaced: 9" in lines
+        assert "Demo items kept because they were edited or used: 1" in lines
+
+    @pytest.mark.asyncio
+    async def test_nothing_changed_is_a_plain_confirmation(self, ui_client):
+        empty = {k: ([] if isinstance(v, list) else 0) for k, v in _CHANGES.items()}
+        set_type = AsyncMock(return_value={"vertical": "fashion", "restart_required": False, "changes": empty})
+        with patch("ui.api_client.set_business_type", new=set_type):
+            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"}, cookies=_authed())
+        toast = _toast(r)
+        assert toast["message"] == "Business type saved."
+        assert "persist" not in toast
+
+    def test_toast_keeps_line_breaks(self):
+        from pathlib import Path
+        css = (Path(__file__).resolve().parents[1] / "ui" / "static" / "app.css").read_text()
+        assert re.search(r"\.toast__msg\s*\{[^}]*white-space:\s*pre-line", css)
+
+    def test_summary_copy_in_every_locale(self):
+        from pathlib import Path
+        keys = ("settings.business_type_changes.categories", "settings.business_type_changes.modules",
+                "settings.business_type_changes.settings", "settings.business_type_changes.demo_replaced",
+                "settings.business_type_changes.demo_kept", "settings.purchasing_payment_terms")
+        for path in sorted((Path(__file__).resolve().parents[1] / "ui" / "locales").glob("*.json")):
+            data = json.loads(path.read_text())
+            for key in keys:
+                assert data.get(key), f"{path.name}: {key}"
+
+
+class TestStoredTypeDisplay:
+    @pytest.mark.asyncio
+    async def test_hidden_stored_type_shows_its_label(self, ui_client):
+        with ExitStack() as stack:
+            _details_patches(stack, "owner", vertical="saas")
+            r = await ui_client.get("/finance/company-details", cookies=_authed("owner"))
+        assert "SaaS / Software" in r.text
+
+    @pytest.mark.asyncio
+    async def test_unknown_stored_type_shows_empty_marker(self, ui_client):
+        from ui.routes.settings import _company_display_cell
+        from fasthtml.common import to_xml
+        html = to_xml(_company_display_cell("vertical", "general"))
+        assert "general" not in html
+        assert ">--<" in html
+
+    @pytest.mark.asyncio
+    async def test_editor_opens_with_the_hidden_type_visible(self, ui_client):
+        with ExitStack() as stack:
+            _details_patches(stack, "owner", vertical="saas")
+            r = await ui_client.get("/settings/company/vertical/edit", cookies=_authed())
+        text_input = re.search(r'<input[^>]*combobox-input[^>]*>', r.text).group(0)
+        assert 'value="SaaS / Software"' in text_input

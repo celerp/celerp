@@ -3274,5 +3274,11 @@
   "setup.business_type_required": "Chọn loại hình kinh doanh để tiếp tục.",
   "setup.unknown_business_type": "Loại hình kinh doanh không xác định: {value}",
   "settings.business_type_saved": "Đã lưu loại hình kinh doanh.",
-  "settings.business_type_saved_restart": "Đã lưu loại hình kinh doanh. Khởi động lại từ trang Mô-đun để tải các mô-đun của nó."
+  "settings.business_type_saved_restart": "Đã lưu loại hình kinh doanh. Khởi động lại từ trang Mô-đun để tải các mô-đun của nó.",
+  "settings.business_type_changes.categories": "Danh mục đã thêm: {names}",
+  "settings.business_type_changes.modules": "Mô-đun đã bật: {names}",
+  "settings.business_type_changes.settings": "Cài đặt đã cập nhật: {names}",
+  "settings.business_type_changes.demo_replaced": "Mặt hàng mẫu đã thay thế: {count}",
+  "settings.business_type_changes.demo_kept": "Mặt hàng mẫu được giữ lại vì đã chỉnh sửa hoặc sử dụng: {count}",
+  "settings.purchasing_payment_terms": "Điều khoản thanh toán mua hàng"
 }

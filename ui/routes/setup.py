@@ -24,21 +24,31 @@ from ui.components.shell import auth_shell, flash, page_title
 from celerp.services.currencies import CURRENCIES, CURRENCY_CODES
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
-from celerp.services.vertical_presets import list_presets
+from celerp.services.vertical_presets import list_presets, load_preset
+
+
+def _preset_label(preset: dict) -> str:
+    """Resolved through t() at render time: first-party presets carry a ``label_key``;
+    a preset without one renders its ``display_name``."""
+    if preset.get("label_key"):
+        return t(preset["label_key"])
+    return preset.get("display_name") or preset["name"]
+
+
+def business_type_label(value: str) -> str | None:
+    """The label of a stored business type, hidden presets included (a company may
+    hold one from before it was hidden). None when no such preset exists."""
+    preset = load_preset(value, allow_hidden=True) if value else None
+    return _preset_label(preset) if preset else None
 
 
 def business_type_options() -> list[tuple[str, str]]:
     """The offered business types as [(value, label), ...].
 
     Built from the shared visible preset catalog (hidden presets are never offered).
-    Labels resolve through t() at render time: first-party presets carry a
-    ``label_key``; a preset without one renders its ``display_name``.
     'blank' sorts last; all others sort alphabetically by label.
     """
-    options = [
-        (p["name"], t(p["label_key"]) if p.get("label_key") else p.get("display_name", p["name"]))
-        for p in list_presets()
-    ]
+    options = [(p["name"], _preset_label(p)) for p in list_presets()]
     return (sorted((o for o in options if o[0] != "blank"), key=lambda o: o[1])
             + [o for o in options if o[0] == "blank"])
 
@@ -131,12 +141,17 @@ def setup_routes(app):
 
         try:
             result = await api.set_business_type(token, vertical)
-            if result.get("restart_required"):
-                # The type's modules load on restart; the activating page waits for them.
-                await api.restart_system(token)
-                return RedirectResponse("/setup/activating", status_code=302)
         except APIError as e:
             return _rerender(e.detail)
+        if result.get("restart_required"):
+            # The type's modules load on restart; the activating page waits for them.
+            # The server may drop this request as it goes down, so its outcome is not
+            # a failure of the setup step.
+            try:
+                await api.restart_system(token)
+            except Exception:
+                pass
+            return RedirectResponse("/setup/activating", status_code=302)
         return RedirectResponse("/setup/cloud", status_code=302)
 
     @app.get("/setup/activating")

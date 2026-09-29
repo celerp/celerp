@@ -3274,5 +3274,11 @@
   "setup.business_type_required": "続行するには業種を選択してください。",
   "setup.unknown_business_type": "不明な業種: {value}",
   "settings.business_type_saved": "業種を保存しました。",
-  "settings.business_type_saved_restart": "業種を保存しました。モジュールページから再起動すると、この業種のモジュールが読み込まれます。"
+  "settings.business_type_saved_restart": "業種を保存しました。モジュールページから再起動すると、この業種のモジュールが読み込まれます。",
+  "settings.business_type_changes.categories": "追加されたカテゴリ: {names}",
+  "settings.business_type_changes.modules": "有効化されたモジュール: {names}",
+  "settings.business_type_changes.settings": "更新された設定: {names}",
+  "settings.business_type_changes.demo_replaced": "置き換えたデモ商品: {count}",
+  "settings.business_type_changes.demo_kept": "編集または使用済みのため残したデモ商品: {count}",
+  "settings.purchasing_payment_terms": "仕入の支払条件"
 }

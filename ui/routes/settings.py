@@ -26,7 +26,7 @@ from celerp.services.auth import MIN_PASSWORD_LENGTH
 from celerp.services.pricing import ROUNDING_CHOICES
 from ui.i18n import t, get_lang, tier_label
 from ui.routes.documents import _action_error
-from ui.routes.setup import business_type_options
+from ui.routes.setup import business_type_label, business_type_options
 
 
 async def _check_permission(
@@ -880,11 +880,11 @@ def setup_routes(app):
 
         if field == "vertical":
             # Searchable combobox: the preset catalog can exceed ten entries.
-            labels = dict(business_type_options())
             return Td(
                 Div(
                     Input(
-                        type="text", value=labels.get(val, ""), placeholder=t("setup.choose_business_type"),
+                        type="text", value=business_type_label(val) or "",
+                        placeholder=t("setup.choose_business_type"),
                         cls="cell-input combobox-input", autofocus=True,
                     ),
                     Input(type="hidden", name="value", value=val, id=f"company-{field}-input"),
@@ -1014,15 +1014,17 @@ def setup_routes(app):
             except APIError as e:
                 return P(str(e.detail), cls="cell-error")
             cell = _company_display_cell(field, value)
-            if not result.get("restart_required"):
-                return Response(to_xml(cell), media_type="text/html",
-                                headers=toast_header(t("settings.business_type_saved")))
-            # The type's modules load on the next restart, which is run from the Modules page.
-            cell.children = (*cell.children, A(t("settings.restart_needed"), href="/modules",
-                                               cls="badge badge--warning ml-sm"))
+            restart = bool(result.get("restart_required"))
+            if restart:
+                # The type's modules load on the next restart, which is run from the Modules page.
+                cell.children = (*cell.children, A(t("settings.restart_needed"), href="/modules",
+                                                   cls="badge badge--warning ml-sm"))
+            changes = _business_type_change_lines(result.get("changes") or {})
+            headline = t("settings.business_type_saved_restart" if restart else "settings.business_type_saved")
+            # Changes made on the user's behalf stay on screen until dismissed.
             return Response(to_xml(cell), media_type="text/html",
-                            headers=toast_header(t("settings.business_type_saved_restart"),
-                                                 "success", persist=True))
+                            headers=toast_header("\n".join([headline, *changes]), "success",
+                                                 persist=restart or bool(changes)))
 
         try:
             await api.patch_company(token, {field: value})
@@ -2688,6 +2690,33 @@ def _preference_display_cell(key: str, value, lang: str = "en") -> FT:
     )
 
 
+# Company settings a business type change can update, by the label users know them by.
+_BUSINESS_TYPE_SETTING_LABELS = {
+    "inventory_method": "settings_inventory.stock_cutting_method",
+    "payment_terms": "label.payment_terms",
+    "purchasing_payment_terms": "settings.purchasing_payment_terms",
+    "terms_conditions": "page.terms_conditions",
+}
+
+
+def _business_type_change_lines(changes: dict) -> list[str]:
+    """One line per kind of change a business type change made on the user's behalf."""
+    setting_keys = [*(changes.get("settings_updated") or []), *(changes.get("defaults_updated") or [])]
+    settings_changed = [t(_BUSINESS_TYPE_SETTING_LABELS[k]) if k in _BUSINESS_TYPE_SETTING_LABELS else k
+                        for k in setting_keys]
+    lines = []
+    for key, names in (("categories", changes.get("categories_added")),
+                       ("modules", changes.get("modules_enabled")),
+                       ("settings", settings_changed)):
+        if names:
+            lines.append(t(f"settings.business_type_changes.{key}", names=", ".join(names)))
+    for key, count in (("demo_replaced", changes.get("demo_items_replaced")),
+                       ("demo_kept", changes.get("demo_items_kept"))):
+        if count:
+            lines.append(t(f"settings.business_type_changes.{key}", count=count))
+    return lines
+
+
 def _company_display_cell(field: str, value) -> FT:
     raw = str(value) if value and str(value).strip() else ""
     if field == "currency" and raw:
@@ -2697,7 +2726,7 @@ def _company_display_cell(field: str, value) -> FT:
         label_map = {v: t(label) for v, label in _FISCAL_MONTHS}
         display = label_map.get(raw, raw)
     elif field == "vertical" and raw:
-        display = dict(business_type_options()).get(raw, raw)
+        display = business_type_label(raw) or EMPTY
     else:
         display = raw or EMPTY
     return Td(
