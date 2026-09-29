@@ -44,9 +44,10 @@ async def _unique_slug(session: AsyncSession, name: str) -> str:
 
 async def _create_company(
     session: AsyncSession, *, owner: User, company_name: str, settings: dict, staged: bool = False,
+    company_id: uuid.UUID | None = None,
 ) -> Company:
     company = Company(
-        id=uuid.uuid4(), name=company_name, slug=await _unique_slug(session, company_name),
+        id=company_id or uuid.uuid4(), name=company_name, slug=await _unique_slug(session, company_name),
         settings=settings, is_active=not staged, is_migration_staged=staged,
     )
     session.add(company)
@@ -123,6 +124,14 @@ async def provision_additional_company(session: AsyncSession, *, user: User, com
 async def provision_migration_company(session: AsyncSession, *, owner: User, company_name: str) -> Company:
     """Create an inactive, migration-staged company: the owner link only, no seeds, no hooks."""
     return await _create_company(session, owner=owner, company_name=company_name, settings={}, staged=True)
+
+
+async def provision_copied_company(
+    session: AsyncSession, *, owner: User, company_name: str, company_id: uuid.UUID, settings: dict,
+) -> Company:
+    """Create an empty company for an opened company copy; its records come from the copy."""
+    return await _create_company(session, owner=owner, company_name=company_name, settings=settings,
+                                 company_id=company_id)
 
 
 async def ensure_default_location(session: AsyncSession, company_id: uuid.UUID) -> Location:

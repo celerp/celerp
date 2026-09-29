@@ -163,7 +163,7 @@ class LocalBackend:
         return settings.data_dir / "static" / "attachments"
 
     def _company_dir(self, company_id: str) -> Path:
-        d = self._root / str(company_id)
+        d = company_attachment_dir(company_id)
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -176,7 +176,7 @@ class LocalBackend:
     ) -> str:
         dest_name = f"{att_id}{_stored_extension(mime)}"
         root = self._company_dir(company_id).resolve()
-        dest = (root / dest_name).resolve() if _is_plain_name(att_id) else None
+        dest = (root / dest_name).resolve() if is_plain_name(att_id) else None
         if dest is None or dest.parent != root:
             raise ValueError(f"Invalid attachment id: {att_id!r}")
         dest.write_bytes(content)
@@ -199,7 +199,7 @@ class LocalBackend:
         await asyncio.to_thread((self._root / str(company_id) / name).unlink, missing_ok=True)
 
     async def delete_company(self, company_id: str) -> None:
-        if not _is_plain_name(str(company_id)):
+        if not is_plain_name(str(company_id)):
             raise ValueError(f"Invalid company id: {company_id!r}")
         path = self._root / str(company_id)
         if path.exists():
@@ -212,9 +212,15 @@ def _read_local(path: Path | None, max_bytes: int) -> bytes | None:
     return path.read_bytes()
 
 
-def _is_plain_name(name: str) -> bool:
+def is_plain_name(name: str) -> bool:
     """A single file name: no separator of either platform and no dot reference."""
     return bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name
+
+
+def company_attachment_dir(company_id: str) -> Path:
+    """The local folder that holds a company's attachment files."""
+    from celerp.config import settings  # lazy: settings not ready at import time
+    return settings.data_dir / "static" / "attachments" / str(company_id)
 
 
 def local_attachment_path(company_id: str, filename: str) -> Path | None:
@@ -226,10 +232,9 @@ def local_attachment_path(company_id: str, filename: str) -> Path | None:
     caller serves a 404 rather than another tenant's file. This owns the
     on-disk layout shared with :class:`LocalBackend`.
     """
-    if not _is_plain_name(filename):
+    if not is_plain_name(filename):
         return None
-    from celerp.config import settings  # lazy: settings not ready at import time
-    root = (settings.data_dir / "static" / "attachments" / str(company_id)).resolve()
+    root = company_attachment_dir(company_id).resolve()
     target = (root / filename).resolve()
     if target.parent != root or not target.is_file():
         return None
@@ -283,7 +288,7 @@ class S3Backend:
         content: bytes,
         mime: str,
     ) -> str:
-        if not _is_plain_name(att_id):
+        if not is_plain_name(att_id):
             raise ValueError(f"Invalid attachment id: {att_id!r}")
         key = f"attachments/{company_id}/{att_id}{_stored_extension(mime)}"
 
@@ -318,7 +323,7 @@ class S3Backend:
         return await self._read_name(company_id, stored_id + _stored_extension(mime), max_bytes)
 
     async def _read_name(self, company_id: str, name: str, max_bytes: int) -> bytes | None:
-        if not _is_plain_name(name):
+        if not is_plain_name(name):
             return None
         async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
             try:
@@ -341,7 +346,7 @@ class S3Backend:
             await client.delete_object(Bucket=self._bucket, Key=f"attachments/{company_id}/{name}")
 
     async def delete_company(self, company_id: str) -> None:
-        if not _is_plain_name(str(company_id)):
+        if not is_plain_name(str(company_id)):
             raise ValueError(f"Invalid company id: {company_id!r}")
         prefix = f"attachments/{company_id}/"
         async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
@@ -602,7 +607,7 @@ async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | 
     global _thumbnail_jobs
     att_id = str(attachment.get("id") or "")
     mime = attachment.get("mime")
-    if mime not in _IMAGE_MIMES or not _is_plain_name(att_id):
+    if mime not in _IMAGE_MIMES or not is_plain_name(att_id):
         return None
     backend = _backend_holding(str(attachment.get("url") or ""))
     try:

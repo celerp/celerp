@@ -827,8 +827,11 @@ def _launch_mode() -> str | None:
 def activate_payload(
     instance_id: str, *, first_boot: bool | None = None,
     activation_verifier: str | None = None, boot_id: str | None = None,
+    handoff_id: str | None = None,
 ) -> dict:
-    """Build Connect activation and check-in metadata."""
+    """Build Connect activation and check-in metadata.
+
+    ``handoff_id`` names the most recently opened company copy, when there is one."""
     import platform as _platform
 
     from celerp import __version__
@@ -845,6 +848,8 @@ def activate_payload(
         payload["activation_verifier"] = activation_verifier
     if boot_id:
         payload["boot_id"] = boot_id
+    if handoff_id:
+        payload["handoff_id"] = handoff_id
     from celerp.config import settings as _settings
     if _settings.backup_encryption_key:
         payload["backup_encryption_key"] = _settings.backup_encryption_key

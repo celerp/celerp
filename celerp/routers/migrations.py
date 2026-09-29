@@ -173,13 +173,13 @@ async def _upload_parts(request: Request) -> AsyncIterator[store.UploadPart]:
             pass
 
 
-async def _user_owner(ctx: AuthContext = Depends(get_auth_context)) -> AuthContext:
+async def user_owner(ctx: AuthContext = Depends(get_auth_context)) -> AuthContext:
     if not role_has_permission(ctx.company.settings, ctx.role, "manage_company_lifecycle"):
         raise HTTPException(status_code=403, detail=OWNER_ONLY)
     return ctx
 
 
-async def _ensure_not_bootstrapped(session: AsyncSession) -> None:
+async def ensure_not_bootstrapped(session: AsyncSession) -> None:
     if await session.scalar(select(User.id).limit(1)) is not None:
         raise HTTPException(status_code=409, detail=BOOTSTRAPPED)
 
@@ -255,7 +255,7 @@ async def sources() -> list[dict]:
 @limiter.limit("5/minute")
 async def bootstrap_scan(request: Request, session: AsyncSession = Depends(get_session),
                          x_setup_code: str | None = Header(None)) -> dict:
-    await _ensure_not_bootstrapped(session)
+    await ensure_not_bootstrapped(session)
     bootstrap.verify_setup_code(x_setup_code)
     scan = await store.create_scan(_upload_parts(request), owner=BOOTSTRAP)
     return {"scan_token": scan.token, "scan": migrations.scan_view(scan)}
@@ -263,13 +263,13 @@ async def bootstrap_scan(request: Request, session: AsyncSession = Depends(get_s
 
 @router.post("/bootstrap/scan/read")
 async def bootstrap_scan_read(payload: ScanTokenIn, session: AsyncSession = Depends(get_session)) -> dict:
-    await _ensure_not_bootstrapped(session)
+    await ensure_not_bootstrapped(session)
     return {"scan": migrations.scan_view(store.load_scan(payload.scan_token, owner=BOOTSTRAP))}
 
 
 @router.post("/bootstrap/decisions")
 async def bootstrap_decisions(payload: DecisionsIn, session: AsyncSession = Depends(get_session)) -> dict:
-    await _ensure_not_bootstrapped(session)
+    await ensure_not_bootstrapped(session)
     return await _save_decisions(BOOTSTRAP, payload)
 
 
@@ -284,10 +284,10 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
     The setup code is consumed only after the commit."""
     required = False
     async with _start_errors(session):
-        await _ensure_not_bootstrapped(session)
+        await ensure_not_bootstrapped(session)
         required = bootstrap.verify_setup_code(x_setup_code)
         await bootstrap.lock_bootstrap(session)
-        await _ensure_not_bootstrapped(session)
+        await ensure_not_bootstrapped(session)
         scan = store.load_scan(payload.scan_token, owner=BOOTSTRAP)
         decisions = await _prepare(scan)
         errors: dict[str, str] = {}
@@ -322,13 +322,13 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
 # ── Company owner ────────────────────────────────────────────────────────────
 
 @router.post("/scan")
-async def scan(request: Request, ctx: AuthContext = Depends(_user_owner)) -> dict:
+async def scan(request: Request, ctx: AuthContext = Depends(user_owner)) -> dict:
     result = await store.create_scan(_upload_parts(request), owner=("user", ctx.user.id))
     return {"scan_token": result.token, "scan": migrations.scan_view(result)}
 
 
 @router.post("/scan/read")
-async def scan_read(payload: ScanTokenIn, ctx: AuthContext = Depends(_user_owner),
+async def scan_read(payload: ScanTokenIn, ctx: AuthContext = Depends(user_owner),
                     session: AsyncSession = Depends(get_session)) -> dict:
     """The scan's view, or ``{"run_id"}`` of the run the caller already started from it,
     so a wizard whose start response was lost returns to that run."""
@@ -339,12 +339,12 @@ async def scan_read(payload: ScanTokenIn, ctx: AuthContext = Depends(_user_owner
 
 
 @router.post("/scan/decisions")
-async def scan_decisions(payload: DecisionsIn, ctx: AuthContext = Depends(_user_owner)) -> dict:
+async def scan_decisions(payload: DecisionsIn, ctx: AuthContext = Depends(user_owner)) -> dict:
     return await _save_decisions(("user", ctx.user.id), payload)
 
 
 @router.post("/start-from-scan", status_code=201)
-async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: AuthContext = Depends(_user_owner),
+async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: AuthContext = Depends(user_owner),
                           session: AsyncSession = Depends(get_session)) -> dict:
     """Start a migration from a scan, 201. A repeated start from the same scan answers 200
     with the run it already created, finishing that start if it died part way."""

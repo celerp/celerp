@@ -912,7 +912,7 @@ async def _cleanup_source(session: AsyncSession, run: MigrationRun) -> bool:
     return removed
 
 
-async def _company_tables(session: AsyncSession) -> list[str]:
+async def company_tables(session: AsyncSession) -> list[str]:
     return list((await session.scalars(text(
         "SELECT c.table_name FROM information_schema.columns c "
         "JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
@@ -931,7 +931,7 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         raise MigrationError(409, NO_UNFINISHED)
     if not await _try_xact_lock(session, run.id):
         raise MigrationError(409, ALREADY_RUNNING)
-    for table in await _company_tables(session):
+    for table in await company_tables(session):
         if table in _DISCARD_ORDER or table == MigrationCleanupTask.__tablename__:
             continue
         held = await session.scalar(text(f'SELECT 1 FROM "{table}" WHERE company_id = :c LIMIT 1'),

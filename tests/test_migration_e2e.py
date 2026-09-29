@@ -544,7 +544,7 @@ async def test_discard_after_real_migration_removes_everything(real_engine, monk
     if decisions["mode"] == "full_history":  # both full-history sources carry an attachment
         assert [p.name for p in stored.iterdir()]
     async with maker(real_engine)() as s:
-        tables = await migrations._company_tables(s)
+        tables = await migrations.company_tables(s)
         written = [t for t in tables if await s.scalar(
             text(f'SELECT count(*) FROM "{t}" WHERE company_id = :c'), {"c": company})]
         assert "import_batches" in written
