@@ -57,6 +57,7 @@ from celerp.models.migration import (
     MigrationStatus,
     can_transition,
 )
+from celerp.services import attachments
 from celerp.services import migration_scan_store as store
 from celerp.services.company_lock import lock_company
 from celerp.services.csv_export import csv_safe
@@ -787,6 +788,7 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         if held:
             raise MigrationError(409, f"This company has data in {table} that discard cannot remove safely. "
                                       "Nothing was deleted.")
+    company_id, run_id = str(company.id), run.id
     run_ids = list((await session.scalars(
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all())
     owner_id = run.created_by_user_id
@@ -802,8 +804,14 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
             redirect = "/setup"
     await session.commit()
     session.expunge_all()
-    for run_id in run_ids:
-        remove_source(run_id)
+    for discarded in run_ids:
+        remove_source(discarded)
+    try:
+        await attachments.delete_company_files(company_id)
+    except Exception as exc:
+        # The run row is gone with the company, so the outcome can only be logged.
+        logger.warning("Attachment files of discarded migration run %s could not be deleted: %s",
+                       run_id, type(exc).__name__)
     return redirect
 
 

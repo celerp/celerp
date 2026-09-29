@@ -334,7 +334,8 @@ async def test_sample_migration_finalizes_and_reconciles(real_engine, monkeypatc
 ])
 async def test_discard_after_real_migration_removes_everything(real_engine, monkeypatch, tmp_path, source, decisions):
     """Discarding a staged company after a real migration through the domain sinks
-    removes every company-scoped row the migration wrote, and the company itself."""
+    removes every company-scoped row the migration wrote, the company itself, and
+    the attachment files stored for it."""
     from sqlalchemy import text
 
     from celerp.importers.sample import SAMPLE_ARTIFACT
@@ -347,6 +348,9 @@ async def test_discard_after_real_migration_removes_everything(real_engine, monk
     assert rejected == []
     _passing(run)
     company = str(run.company_id)
+    stored = tmp_path / "static" / "attachments" / company
+    if decisions["mode"] == "full_history":  # both full-history sources carry an attachment
+        assert [p.name for p in stored.iterdir()]
     async with maker(real_engine)() as s:
         tables = await migrations._company_tables(s)
         written = [t for t in tables if await s.scalar(
@@ -360,3 +364,47 @@ async def test_discard_after_real_migration_removes_everything(real_engine, monk
         assert await s.scalar(text("SELECT count(*) FROM companies WHERE id = :c"), {"c": company}) == 0
         assert await s.scalar(text("SELECT count(*) FROM migration_entity_maps "
                                    "WHERE migration_run_id = :r"), {"r": str(run.id)}) == 0
+    assert not stored.exists()
+
+
+async def test_discard_keeps_attachment_files_until_commit_and_survives_a_storage_failure(
+        real_engine, monkeypatch, tmp_path, caplog):
+    """A discard that fails closed leaves the stored files in place; a storage backend
+    that cannot delete after the commit is logged by run id and never fails the discard."""
+    from sqlalchemy import text
+
+    from celerp.models.migration import MigrationRun
+    from celerp.services import attachments, migrations
+    from celerp.services.migrations import MigrationError
+    from fixtures.manager_io.support import BASIC
+
+    run, _ = await migrate(real_engine, BASIC.read_bytes(), "basic.manager", {"mode": "full_history"},
+                           monkeypatch, tmp_path)
+    company = str(run.company_id)
+    stored = tmp_path / "static" / "attachments" / company
+    files = sorted(p.name for p in stored.iterdir())
+    assert files
+
+    async with real_engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE discard_probe_rows (company_id uuid)"))
+        await conn.execute(text("INSERT INTO discard_probe_rows VALUES (:c)"), {"c": company})
+    try:
+        async with maker(real_engine)() as s:
+            with pytest.raises(MigrationError):
+                await migrations.discard(s, await s.get(MigrationRun, run.id))
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE discard_probe_rows"))
+    assert sorted(p.name for p in stored.iterdir()) == files
+
+    async def refuse(self, company_id):
+        raise OSError("device busy")
+
+    monkeypatch.setattr(attachments.LocalBackend, "delete_company", refuse)
+    caplog.set_level(logging.WARNING, logger="celerp.services.migrations")
+    async with maker(real_engine)() as s:
+        assert await migrations.discard(s, await s.get(MigrationRun, run.id)) == "/"
+    assert await count(real_engine, "companies", "id = :c", c=company) == 0
+    warnings = [r.getMessage() for r in caplog.records if r.name == "celerp.services.migrations"]
+    assert any(str(run.id) in m and "could not be deleted" in m for m in warnings), warnings
+    assert all(company not in m for m in warnings)

@@ -31,6 +31,7 @@ import asyncio
 import io
 import logging
 import mimetypes
+import shutil
 import time
 import uuid
 from datetime import datetime, timezone
@@ -136,6 +137,10 @@ class StorageBackend(Protocol):
         """Content this backend stored for ``company_id`` under ``stored_id``, or None."""
         ...
 
+    async def delete_company(self, company_id: str) -> None:
+        """Delete every file this backend stored for ``company_id``; raises when it cannot."""
+        ...
+
 
 # ── LocalBackend ──────────────────────────────────────────────────────────────
 
@@ -176,6 +181,13 @@ class LocalBackend:
     async def read_stored(self, company_id: str, stored_id: str, mime: str, max_bytes: int) -> bytes | None:
         """Read back the file stored under ``stored_id``, or None when there is none."""
         return _read_local(local_attachment_path(company_id, stored_id + _stored_extension(mime)), max_bytes)
+
+    async def delete_company(self, company_id: str) -> None:
+        if not _is_plain_name(str(company_id)):
+            raise ValueError(f"Invalid company id: {company_id!r}")
+        path = self._root / str(company_id)
+        if path.exists():
+            await asyncio.to_thread(shutil.rmtree, path)
 
 
 def _read_local(path: Path | None, max_bytes: int) -> bytes | None:
@@ -305,6 +317,23 @@ class S3Backend:
                 data = await stream.read(max_bytes + 1)
         return data if len(data) <= max_bytes else None
 
+    async def delete_company(self, company_id: str) -> None:
+        if not _is_plain_name(str(company_id)):
+            raise ValueError(f"Invalid company id: {company_id!r}")
+        prefix = f"attachments/{company_id}/"
+        async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
+            listing = {"Bucket": self._bucket, "Prefix": prefix}
+            while True:
+                page = await client.list_objects_v2(**listing)
+                keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+                if keys:
+                    resp = await client.delete_objects(Bucket=self._bucket, Delete={"Objects": keys, "Quiet": True})
+                    if resp.get("Errors"):
+                        raise OSError(f"{len(resp['Errors'])} stored files could not be deleted")
+                if not page.get("IsTruncated"):
+                    return
+                listing["ContinuationToken"] = page["NextContinuationToken"]
+
 
 # ── Backend factory ───────────────────────────────────────────────────────────
 
@@ -330,6 +359,18 @@ def get_backend() -> StorageBackend:
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
+async def delete_company_files(company_id: str) -> None:
+    """Delete every attachment file stored for a company, wherever it was stored:
+    the configured backend and, when that is a cloud backend, the local attachment
+    folder that holds files stored before it was configured. Raises when any
+    backend cannot delete."""
+    backends = [get_backend()]
+    if not isinstance(backends[0], LocalBackend):
+        backends.append(LocalBackend())
+    for backend in backends:
+        await backend.delete_company(company_id)
+
 
 async def store_upload(
     company_id: str,
