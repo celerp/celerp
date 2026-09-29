@@ -940,13 +940,11 @@ async def _write_upgrade_report(
     results: list[dict],
     company_id,
     from_version: str,
-    session: AsyncSession,
 ) -> str:
-    """Write a structured JSON upgrade report to disk and store the path in company settings.
+    """Write a structured JSON upgrade report to disk.
 
     Returns the absolute path of the written report file.
     """
-    from celerp.models.company import Company
     from celerp.config import settings as app_settings
 
     to_version = getattr(app_settings, "version", "unknown")
@@ -984,14 +982,6 @@ async def _write_upgrade_report(
 
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, default=str)
-
-    # Store path in company settings for UI retrieval
-    company = await session.get(Company, company_id)
-    if company:
-        settings = dict(company.settings or {})
-        settings["upgrade_report_path"] = report_path
-        company.settings = settings
-        session.add(company)
 
     return report_path
 
@@ -1060,7 +1050,7 @@ async def run_doctor(
 
         # Write upgrade report when from_version is provided with fix=true
         if fix and from_version:
-            report_path = await _write_upgrade_report(results, company_id, from_version, session)
+            report_path = await _write_upgrade_report(results, company_id, from_version)
             response["upgrade_report"] = report_path
 
     return response

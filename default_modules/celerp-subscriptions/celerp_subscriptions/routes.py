@@ -20,6 +20,7 @@ from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.company_lock import locked_company
 from celerp.services.terms import resolve_document_terms
 from celerp_docs.sequences import next_doc_ref
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
@@ -98,6 +99,7 @@ def _build_router() -> APIRouter:
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """Generate a finalized document from the subscription template immediately."""
+        company = await locked_company(session, company_id)
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
         if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
             raise HTTPException(status_code=404, detail="Subscription template not found")
@@ -105,7 +107,6 @@ def _build_router() -> APIRouter:
             raise HTTPException(status_code=409, detail="Cannot generate from a cancelled subscription")
 
         state = proj.state
-        company = await session.get(Company, company_id)
         target_doc_type = "invoice" if state.get("doc_type") == "subscription_invoice" else "purchase_order"
         today = date.today()
 

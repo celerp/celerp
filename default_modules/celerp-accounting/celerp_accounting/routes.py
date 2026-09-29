@@ -23,6 +23,7 @@ from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.company_lock import locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
 from celerp.services.line_measures import line_label
@@ -4047,8 +4048,7 @@ async def set_period_lock(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    from celerp.models.company import Company
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     settings = dict(company.settings or {})
     if payload.lock_date:
         _require_iso_date(payload.lock_date, "lock")
@@ -4077,8 +4077,7 @@ async def close_fiscal_year(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Close a fiscal year: zero revenue + expense accounts, transfer net income to Retained Earnings."""
-    from celerp.models.company import Company
-
+    company = await locked_company(session, company_id)
     year_end = payload.fiscal_year_end
     # Build account balances through the year-end date
     posted = await _je_rows(session, company_id)
@@ -4171,7 +4170,6 @@ async def close_fiscal_year(
     )
 
     # Set period lock to the year-end date
-    company = await session.get(Company, company_id)
     settings = dict(company.settings or {})
     settings["lock_date"] = year_end
     settings["lock_date_set_by"] = str(user.id)

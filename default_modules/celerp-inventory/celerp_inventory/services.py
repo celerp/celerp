@@ -26,7 +26,7 @@ from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import round_basis
-from celerp.services.company_lock import lock_company, lock_projections
+from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.importers.tabular import CsvImportSpec
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
@@ -2207,7 +2207,7 @@ async def _merge_category_schemas(session: AsyncSession, company_id, incoming: d
     the sole path that grows category schemas from imported attribute columns; it
     stages the change on the company row and leaves the commit to import_items.
     """
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         return
     settings = dict(company.settings)

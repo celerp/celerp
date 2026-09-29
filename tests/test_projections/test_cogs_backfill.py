@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import func, select, text
 
+from celerp.services.company_lock import locked_company
 from celerp.events.engine import emit_event
 from celerp.migrations._data_reconcile import get_meta
 from celerp.models.company import Company
@@ -132,7 +133,7 @@ async def _notifications(session, company_id) -> list[Notification]:
 
 
 async def _lock_period(session, company_id, lock_date: str) -> None:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     company.settings = {**(company.settings or {}), "lock_date": lock_date}
     session.add(company)
     await session.flush()

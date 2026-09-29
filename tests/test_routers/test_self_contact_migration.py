@@ -8,6 +8,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
+from celerp.services.company_lock import locked_company
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, User
 from celerp.models.projections import Projection
@@ -143,8 +144,8 @@ async def test_identity_backfill_address_taxid_phone(client, session):
     from celerp.models.company import Location
     from celerp_contacts.migrations import backfill_self_contact_identity
     await _register(client)
-    company = (await session.execute(select(Company))).scalars().first()
-    cid = company.id
+    cid = (await session.execute(select(Company.id))).scalars().first()
+    company = await locked_company(session, cid)
     sid = (company.settings or {})["self_contact_id"]  # set by the P1 seed
     # Company setup put tax_id/phone on company settings and the address on the Head Office Location.
     company.settings = {**(company.settings or {}), "tax_id": "TX-99", "phone": "+66 2 123"}

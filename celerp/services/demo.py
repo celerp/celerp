@@ -1722,10 +1722,10 @@ async def seed_demo_items(
     """Seed vertical-aware demo items and default price lists in company settings.
 
     A demo SKU already held by an item is skipped, so seeding never duplicates a SKU."""
-    from celerp.models.company import Company
+    from celerp.services.company_lock import locked_company
 
     # Seed default price lists into company settings if not already set
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is not None:
         settings = dict(company.settings or {})
         if "price_lists" not in settings:
@@ -1813,7 +1813,7 @@ async def seed_self_contacts(
     Called from both the initial registration flow and the create-additional-company flow.
     """
     import logging as _logging
-    from celerp.models.company import Company
+    from celerp.services.company_lock import locked_company
     _log = _logging.getLogger(__name__)
 
     entity_id = f"contact:{uuid.uuid4()}"
@@ -1843,7 +1843,7 @@ async def seed_self_contacts(
 
     # Cache the self-contact id for a direct (no-scan) lookup by the Company Details page.
     try:
-        company = await session.get(Company, company_id)
+        company = await locked_company(session, company_id)
         if company is not None:
             company.settings = {**(company.settings or {}), "self_contact_id": entity_id}
     except Exception as exc:

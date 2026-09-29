@@ -333,11 +333,13 @@ async def test_export_csv_strips_landed_cost_column_for_role_without_permission(
     view_inventory_costs, or landed goods cost leaks through the header."""
     from sqlalchemy import select as _select
     from celerp.models.company import Company
+    from celerp.services.company_lock import locked_company
 
     admin = await _reg(client)
     # Configure a 'Landed' cost price list on the company (stored, non-derived: its value
     # comes from the item, not a multiplier).
     co = (await session.execute(_select(Company))).scalars().first()
+    co = await locked_company(session, co.id)
     s = dict(co.settings or {})
     s["price_lists"] = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}, {"name": "Landed"}]
     co.settings = s

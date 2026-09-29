@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company import Company
+from celerp.services.company_lock import locked_company
 
 MAX_NOTES = 50
 MAX_KV_KEYS = 100
@@ -52,7 +53,7 @@ async def set_memory(
     memory: dict[str, Any],
 ) -> None:
     """Persist AI memory. Caller is responsible for committing the session."""
-    row = await session.get(Company, company_id)
+    row = await locked_company(session, company_id)
     if row is None:
         return
     settings = dict(row.settings)
@@ -67,6 +68,7 @@ async def add_note(
     content: str,
 ) -> None:
     """Append a note to AI memory, trimming to MAX_NOTES oldest."""
+    await locked_company(session, company_id)
     mem = await get_memory(session, company_id)
     notes = list(mem.get("notes", []))
     notes.append({"content": content, "added_at": datetime.now(timezone.utc).isoformat()})
@@ -83,6 +85,7 @@ async def set_kv(
     value: str,
 ) -> None:
     """Set a key-value fact in AI memory."""
+    await locked_company(session, company_id)
     mem = await get_memory(session, company_id)
     kv = dict(mem.get("kv", {}))
     if len(kv) >= MAX_KV_KEYS and key not in kv:

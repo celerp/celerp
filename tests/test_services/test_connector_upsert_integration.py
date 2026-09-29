@@ -20,6 +20,7 @@ import uuid
 import pytest
 from sqlalchemy import select, text
 
+from celerp.services.company_lock import locked_company
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 import celerp.connectors.upsert as u
@@ -1432,11 +1433,9 @@ async def test_woocommerce_balance_put_right_in_celerp_releases_the_order(use_te
 async def test_woocommerce_payment_books_to_the_chosen_deposit_account(use_test_session, settings, expected):
     """Store payments land on the connector's own deposit account, else the
     company's online-payments default, else Cash."""
-    from celerp.models.company import Company
-
     session = use_test_session
     cid = await _seed_company(session, "WooDeposit")
-    company = await session.get(Company, cid)
+    company = await locked_company(session, cid)
     company.settings = {**(company.settings or {}), **settings}
     await session.flush()
     order = {**_WOO_PLAIN_ORDER, "id": 2002, "date_paid": "2024-06-02T10:00:00"}

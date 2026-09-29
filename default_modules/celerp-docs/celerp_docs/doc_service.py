@@ -553,6 +553,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY,
         deposit_account,
     )
+    from celerp.services.company_lock import lock_company
     from celerp_docs.routes import (
         FulfillLinesRequest,
         _finalize_doc_impl,
@@ -606,6 +607,9 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         # One external order may arrive simultaneously by webhook, manual sync, and
         # scheduled reconciliation. Serialize its full materialize/post transition.
         await _lock_woocommerce_order(session, cid, order_id)
+        # The company before any doc row: posting the order finalizes it, which
+        # draws the next invoice number.
+        await lock_company(session, cid)
 
         existing = await session.get(
             Projection, {"company_id": cid, "entity_id": entity_id}, with_for_update=True

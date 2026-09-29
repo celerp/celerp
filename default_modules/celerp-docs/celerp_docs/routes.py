@@ -30,7 +30,7 @@ from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCL
 from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
-from celerp.services.company_lock import lock_company, lock_projections
+from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
@@ -1272,7 +1272,7 @@ async def get_sequences(company_id: str = Depends(get_current_company_id), user=
 
 @router.patch("/sequences/{doc_type}")
 async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("manage_module_settings"), session: AsyncSession = Depends(get_session)) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     try:
@@ -1611,14 +1611,9 @@ async def create_doc(
                 [li.model_dump() for li in payload.line_items], None,
             )
 
-    # Lock the company row (SELECT ... FOR UPDATE) for the rest of the
-    # transaction so concurrent doc creation can't read the same numbering
-    # counter and mint duplicate refs (e.g. two CN-2606-0002).
-    company = (
-        await session.execute(
-            select(Company).where(Company.id == company_id).with_for_update()
-        )
-    ).scalar_one_or_none()
+    # Concurrent doc creation must not read the same numbering counter and
+    # mint duplicate refs (e.g. two CN-2606-0002).
+    company = await locked_company(session, company_id)
     # Re-check under the same serialization lock that owns numbering. A concurrent
     # retry can only reach this point before the first request commits; once it does,
     # the second request observes the original event and returns without consuming a
@@ -1947,6 +1942,9 @@ async def _payments_tip_suffix(session, company_id) -> str:
     company = await session.get(Company, company_id)
     if company is None or (company.settings or {}).get("pay_tip_shown"):
         return ""
+    company = await locked_company(session, company_id)
+    if (company.settings or {}).get("pay_tip_shown"):
+        return ""
     settings = dict(company.settings or {})
     settings["pay_tip_shown"] = True
     company.settings = settings
@@ -2069,8 +2067,9 @@ async def _finalize_doc_impl(
     commit: bool = True,
 ) -> dict:
     """Finalize with caller-owned transaction support for domain integrations."""
-    # An invoice's recognized COGS reads lot costs that a cost correction may be
-    # rewriting; the company lock orders the two.
+    # Company before the doc row: finalizing may draw the next invoice or bill number, and an
+    # invoice's recognized COGS reads lot costs that a cost correction may be rewriting.
+    _company = await locked_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     # A closed memo is terminal, settled paperwork; finalize maps closed->final in the
     # reducer, silently stripping the terminal status and its close metadata. Refuse under
@@ -2090,8 +2089,6 @@ async def _finalize_doc_impl(
     finalize_data: dict = {}
     event_type = "doc.finalized"
 
-    # Load company once for base currency (used for validation and JE conversion).
-    _company = await session.get(Company, company_id)
     _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
 
     _require_doc_rate_http(_initial_doc_state, _base_currency)
@@ -4094,6 +4091,8 @@ async def create_shipment_from_docs(
     # concurrent close cannot slip a status change between this read and the shipment
     # commit (TOCTOU). Validate in the caller's selection order off the locked rows.
     named = await _lock_copied_contacts(session, company_id, doc_ids)
+    # The company comes next: the shipment draws the next shipping-doc number.
+    company = await locked_company(session, company_id)
     locked = await _get_docs_for_update(session, company_id, doc_ids)
     _assert_contacts_unchanged(named, locked.values())
     states = []
@@ -4151,7 +4150,6 @@ async def create_shipment_from_docs(
     _ship_to = next((s.get("contact_shipping_address") for s in states
                      if s.get("contact_shipping_address")), None)
     _attn = next((s.get("shipping_attn") for s in states if s.get("shipping_attn")), None)
-    company = await session.get(Company, company_id)
     ref_id = next_doc_ref(company, list_sequence_key("shipping_doc"))
     new_entity_id = f"list:{ref_id}"
     data = {k: v for k, v in {
@@ -4179,6 +4177,8 @@ async def create_shipment_from_docs(
 @router.post("/{entity_id}/convert")
 async def convert_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     named = await _lock_copied_contacts(session, company_id, [entity_id])
+    # Company before the doc row: a conversion draws the next invoice or bill number.
+    company = await locked_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     _assert_contacts_unchanged(named, [row])
     state = row.state
@@ -4198,7 +4198,6 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
             session, company_id,
             (li.get("entity_id") or li.get("item_id") or "" for li in state.get("line_items") or []),
         )
-        company = await session.get(Company, company_id)
         ref = next_doc_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
         new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type"}}
@@ -4222,7 +4221,6 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         # re-bill. Only a genuinely-not-issued memo (draft/void) is rejected here.
         if state.get("status") not in ("final", "sent", "received", "partially_received", "converted"):
             raise HTTPException(status_code=409, detail="Memo must be issued before converting to invoice")
-        company = await session.get(Company, company_id)
         ref = next_doc_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
 
@@ -4364,7 +4362,6 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
     if state.get("doc_type") == "consignment_in":
         if state.get("status") not in ("final", "sent", "received", "partially_received"):
             raise HTTPException(status_code=409, detail="Consignment In must be issued before converting to vendor bill")
-        company = await session.get(Company, company_id)
         ref = next_doc_ref(company, "bill")
         new_doc_id = f"doc:{ref}"
         new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type"}}
@@ -4380,8 +4377,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
                 float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
                 for li in state.get("line_items", [])
             )
-        _consign_company = await session.get(Company, company_id)
-        _consign_base_currency = (_consign_company.settings.get("currency", "USD") if _consign_company else "USD")
+        _consign_base_currency = (company.settings.get("currency", "USD") if company else "USD")
         await auto_je.create_for_bill_conversion(
             session, company_id=company_id, user_id=user.id, doc_id=new_doc_id, doc={**state, "total": bill_total},
             base_currency=_consign_base_currency,
@@ -5309,10 +5305,10 @@ async def create_list(
     require_currency_code(payload.currency)
     # Contact before company, the lock order every contact-reference writer takes.
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
-    # Lock the company row so concurrent creates cannot read the same numbering counter.
-    company = (
-        await session.execute(select(Company).where(Company.id == company_id).with_for_update())
-    ).scalar_one_or_none()
+    # Lock the company row so concurrent creates cannot read the same numbering counter, then
+    # re-check the key under that lock: a retry racing the first request returns the original
+    # list instead of consuming a second number. Mirrors create_doc.
+    company = await locked_company(session, company_id)
     if (done := await _replay()) is not None:
         return done
     ref_id = payload.ref_id or next_doc_ref(company, list_sequence_key(payload.list_type))
@@ -6090,6 +6086,7 @@ async def convert_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     named = await _lock_copied_contacts(session, company_id, [entity_id])
+    company = await locked_company(session, company_id)
     row = await _get_list_for_update(session, company_id, entity_id)
     _assert_contacts_unchanged(named, [row])
     state = row.state
@@ -6117,7 +6114,6 @@ async def convert_list(
             },
         )
 
-    company = await session.get(Company, company_id)
     ref = next_doc_ref(company, payload.target_type)
     new_doc_id = f"doc:{ref}"
     new_data = {k: v for k, v in state.items()
@@ -6152,10 +6148,10 @@ async def duplicate_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     named = await _lock_copied_contacts(session, company_id, [entity_id])
+    company = await locked_company(session, company_id)
     row = await _get_list_for_update(session, company_id, entity_id)
     _assert_contacts_unchanged(named, [row])
     state = row.state
-    company = await session.get(Company, company_id)
     ref_id = next_doc_ref(company, list_sequence_key(state.get("list_type")))
     new_entity_id = f"list:{ref_id}"
     new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type", "ref_id", "share_token"}}
@@ -8172,7 +8168,7 @@ async def create_audit_list(
     """Create a location-bound audit as a DRAFT manifest pre-seeded with the location's physical
     items. The manifest is reviewed/extended in draft (scan adds more); Finalize freezes each line's
     on-hand snapshot, then counting happens in the finalized stage."""
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
     lines: list[dict] = []
@@ -8665,7 +8661,7 @@ async def create_writeoff_list(
     not a location scan."""
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="Select at least one item to write off")
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     lines: list[dict] = []
     for eid in payload.entity_ids:
         item = await session.get(Projection, {"company_id": company_id, "entity_id": eid})

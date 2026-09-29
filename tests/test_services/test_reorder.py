@@ -13,6 +13,7 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
+from celerp.services.company_lock import locked_company
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.models.notification import Notification
@@ -190,7 +191,7 @@ async def test_below_reorder_but_in_stock_is_medium_priority(session):
 
 @pytest.mark.asyncio
 async def test_low_stock_disabled_setting_is_noop(session):
-    co = await _company(session, "OffCo")
+    co = await locked_company(session, (await _company(session, "OffCo")).id)
     co.settings = {"reorder_alerts_enabled": False}
     session.add(co)
     await session.flush()

@@ -66,7 +66,7 @@ async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict |
     if not country:
         return
 
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         return
 
@@ -401,7 +401,7 @@ async def patch_role_permissions(
     if not perm.grantable:
         raise HTTPException(status_code=403, detail=f"The {perm.key} permission is fixed and cannot be reassigned")
 
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings or {})
@@ -894,7 +894,7 @@ async def patch_item_schema(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
@@ -933,7 +933,7 @@ async def patch_category_schema(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
@@ -1007,7 +1007,7 @@ async def create_category(
     key = _slugify_category(name)
     if not key:
         raise HTTPException(status_code=422, detail="name produces an empty key")
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings or {})
@@ -1039,7 +1039,7 @@ async def rename_category(
     new_key = _slugify_category(new_name)
     if not new_key:
         raise HTTPException(status_code=422, detail="name produces an empty key")
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings or {})
@@ -1084,7 +1084,7 @@ async def delete_category(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from celerp.models.projections import Projection
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings or {})
@@ -1132,7 +1132,7 @@ async def patch_column_prefs(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Merge column visibility prefs. Any user (not admin-only) can save their view prefs."""
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
@@ -1171,7 +1171,7 @@ async def patch_taxes(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
@@ -1198,7 +1198,7 @@ async def import_taxes_batch(
 
     NOTE: This remains the legacy settings-import format (records are raw dicts).
     """
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -1275,7 +1275,7 @@ async def patch_payment_terms(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
@@ -1300,7 +1300,7 @@ async def import_payment_terms_batch(
     - If name exists (case-insensitive): skipped
     - Else: created
     """
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -1361,7 +1361,7 @@ async def patch_contact_tags(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
@@ -1391,7 +1391,7 @@ async def patch_contact_defaults(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
@@ -1413,9 +1413,10 @@ async def get_terms_conditions(company_id=Depends(get_current_company_id), sessi
     configured = company.settings.get("terms_conditions")
     templates = terms_templates(company.settings)
     if configured is not None and templates != configured:
-        settings = dict(company.settings)
-        settings["terms_conditions"] = templates
-        company.settings = settings
+        company = await locked_company(session, company_id)
+        templates = terms_templates(company.settings)
+        if company.settings.get("terms_conditions") != templates:
+            company.settings = {**company.settings, "terms_conditions": templates}
         await session.commit()
     return templates
 
@@ -1427,7 +1428,7 @@ async def patch_terms_conditions(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
@@ -1447,6 +1448,11 @@ async def _seed_purchasing_key(
     """Return purchasing data; on first access, copy from sales data and persist."""
     existing = company.settings.get(key)
     if existing is not None:
+        return existing
+    company = await locked_company(session, company.id)
+    existing = company.settings.get(key)
+    if existing is not None:
+        await session.commit()
         return existing
     import copy
     source = company.settings.get(sales_key) or default
@@ -1476,7 +1482,7 @@ async def patch_purchasing_taxes(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
@@ -1494,7 +1500,7 @@ async def import_purchasing_taxes_batch(
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     res = BatchImportResult(created=0, skipped=0, errors=[])
@@ -1547,7 +1553,7 @@ async def patch_purchasing_payment_terms(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
@@ -1565,7 +1571,7 @@ async def import_purchasing_payment_terms_batch(
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     res = BatchImportResult(created=0, skipped=0, errors=[])
@@ -1638,7 +1644,7 @@ async def put_units(
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     _validate_units(payload.units)
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
@@ -1767,7 +1773,7 @@ async def enable_module(
     from celerp.modules.registry import enable, get_enabled
     from celerp.config import set_enabled_modules
 
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     company.settings = enable(company.settings or {}, module_name)
@@ -1787,7 +1793,7 @@ async def disable_module(
     from celerp.modules.registry import disable, get_enabled
     from celerp.config import remove_enabled_module
 
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     company.settings = disable(company.settings or {}, module_name)
@@ -1818,7 +1824,7 @@ async def delete_module(
     from celerp.modules.registry import disable, get_enabled
     from celerp.config import remove_enabled_module
 
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
 
@@ -2422,6 +2428,9 @@ async def get_price_lists(
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     existing = company.settings.get("price_lists")
+    if existing is None:
+        company = await locked_company(session, company_id)
+        existing = company.settings.get("price_lists")
     if existing is not None:
         price_lists = existing
     else:
@@ -2454,7 +2463,7 @@ async def patch_price_lists(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
@@ -2489,7 +2498,7 @@ async def patch_base_price_list(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
@@ -2526,7 +2535,7 @@ async def patch_default_price_list(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)

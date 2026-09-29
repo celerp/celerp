@@ -89,7 +89,10 @@ def preview_pattern(pattern: str, prefix: str, seq_num: int = 1) -> str:
 
 
 def next_doc_ref(company: Company, doc_type: str) -> str:
-    """Generate the next document reference and increment the sequence counter."""
+    """Generate the next document reference and increment the sequence counter.
+
+    ``company`` must come from locked_company(), taken before any document row lock;
+    a counter change on any other company object is refused at flush."""
     if doc_type not in _PREFIX_BY_DOC_TYPE:
         raise ValueError(f"Unsupported doc_type for sequence: {doc_type}")
 
@@ -144,7 +147,9 @@ def get_all_sequences(company: Company) -> list[dict]:
 
 def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
                     pattern: str | None = None, next_num: int | None = None) -> dict:
-    """Update numbering config for a single doc type. Returns the updated sequence."""
+    """Update numbering config for a single doc type. Returns the updated sequence.
+
+    ``company`` must come from locked_company(), as for next_doc_ref()."""
     if doc_type not in _PREFIX_BY_DOC_TYPE:
         raise ValueError(f"Unsupported doc_type: {doc_type}")
 
