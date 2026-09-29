@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Test that demo item prices work even without the inventory projection handler.
 
-Root cause: setup wizard calls reseed BEFORE restarting the API, so the
-celerp-inventory module's projection handler isn't loaded. The default
+Root cause: setup sets the business type (which reseeds demo items) BEFORE
+restarting the API, so the celerp-inventory module's projection handler isn't loaded. The default
 fallback handler {**state, **data} doesn't interpret item.pricing.set
 events correctly. Fix: include prices in attributes of item.created.
 """
@@ -20,8 +20,8 @@ async def _headers(client) -> dict:
 async def test_prices_with_handler_loaded(client):
     """Normal case: inventory module loaded, prices should work."""
     h = await _headers(client)
-    await client.patch("/companies/me", json={"settings": {"vertical": "gemstones"}}, headers=h)
-    await client.post("/companies/me/demo/reseed?vertical=gemstones", headers=h)
+    r = await client.post("/companies/me/business-type", json={"vertical": "gemstones"}, headers=h)
+    assert r.status_code == 200, r.text
     
     items = (await client.get("/items", headers=h)).json()["items"]
     assert len(items) >= 3
@@ -35,12 +35,11 @@ async def test_prices_without_handler(client):
     """Simulates wizard flow: inventory handler NOT loaded during reseed.
     Prices should still appear via attributes promotion."""
     h = await _headers(client)
-    await client.patch("/companies/me", json={"settings": {"vertical": "gemstones"}}, headers=h)
-    
+
     # Mock _get_module_handlers to return empty dict (no inventory handler)
     with mock_patch("celerp.projections.engine._get_module_handlers", return_value={}):
-        r = await client.post("/companies/me/demo/reseed?vertical=gemstones", headers=h)
-        assert r.status_code == 200
+        r = await client.post("/companies/me/business-type", json={"vertical": "gemstones"}, headers=h)
+        assert r.status_code == 200, r.text
     
     items = (await client.get("/items", headers=h)).json()["items"]
     print(f"\nItems without handler: {len(items)}")
@@ -57,10 +56,10 @@ async def test_prices_without_handler(client):
 async def test_ui_table_renders_prices_without_handler(client):
     """Full simulation: reseed without handler, then render data_table."""
     h = await _headers(client)
-    await client.patch("/companies/me", json={"settings": {"vertical": "gemstones"}}, headers=h)
-    
+
     with mock_patch("celerp.projections.engine._get_module_handlers", return_value={}):
-        await client.post("/companies/me/demo/reseed?vertical=gemstones", headers=h)
+        r = await client.post("/companies/me/business-type", json={"vertical": "gemstones"}, headers=h)
+        assert r.status_code == 200, r.text
     
     schema = (await client.get("/companies/me/item-schema", headers=h)).json()
     items = (await client.get("/items", headers=h)).json()["items"]

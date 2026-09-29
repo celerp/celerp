@@ -233,7 +233,7 @@ def test_duplicate_action(page: Page, ui_server: str, api):
 # ── LA-12: Type tab filtering ─────────────────────────────────────────────────
 
 def test_type_tab_filters_table(page: Page, ui_server: str, api):
-    """LA-12: Clicking a type tab updates the list table via HTMX."""
+    """LA-12: Clicking a type tab opens that type's lists."""
     _create_list(api, "quotation")
     _create_list(api, "transfer")
     page.goto(f"{ui_server}/lists", wait_until="domcontentloaded")
@@ -241,7 +241,7 @@ def test_type_tab_filters_table(page: Page, ui_server: str, api):
     tab = page.locator("#type-tabs a:has-text('Quotation')")
     expect(tab).to_be_visible()
     tab.click()
-    page.wait_for_timeout(800)  # allow HTMX to swap
+    page.wait_for_url("**/lists?type=quotation")
     _no_crash(page, "post-tab-filter")
     table = page.locator("#list-table")
     expect(table).to_be_visible()

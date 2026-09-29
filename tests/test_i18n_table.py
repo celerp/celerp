@@ -33,7 +33,7 @@ _XX = {
     "table.select_all_option": "XX_SELECT_ALL",
     "table.search_ellipsis": "XX_SEARCH_DOTS",
     "enum.item_status.archived": "XX_ARCHIVED",
-    "table.records_count": "XX_RECORDS {n}",
+    "table.page_range": "XX_RANGE {first} {last} {total}",
     "label._add_new": "XX_ADD_NEW",
 }
 
@@ -82,9 +82,9 @@ def test_display_enum_translates_status_label():
     assert display_enum("archived", "item_status") != "archived"
 
 
-def test_pagination_records_count_translates():
+def test_pagination_range_translates():
     out = to_xml(pagination(1, 5, 25, "/items"))
-    assert "XX_RECORDS" in out
+    assert "XX_RANGE 1 5 5" in out
 
 
 def test_add_new_option_label_translates():

@@ -5,11 +5,16 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import get_history
 
 from celerp.models.company import Company
 from celerp.models.projections import Projection
+
+# Ids of the companies loaded with locked_company() in the session's current transaction.
+_LOCKED = "celerp_locked_companies"
 
 
 async def lock_company(session: AsyncSession, company_id) -> None:
@@ -58,3 +63,38 @@ async def lock_projections(session: AsyncSession, company_id, entity_ids) -> dic
         .execution_options(populate_existing=True)
     )).scalars().all()
     return {r.entity_id: r for r in rows}
+
+
+async def locked_company(session: AsyncSession, company_id) -> Company | None:
+    """Take the company lock, then load the company as the previous holder committed it.
+
+    For a read-modify-write of the company row itself (its settings in particular):
+    reading after the lock means a concurrent writer's change is built on, never
+    overwritten by a stale copy.
+
+    Company settings are one JSON value, so this is the only way to change them:
+    a flush that changes the settings of a company not loaded here is refused.
+    Document numbering keeps its counters in the settings and follows the same rule.
+    """
+    await lock_company(session, company_id)
+    company = await session.get(Company, company_id, populate_existing=True)
+    if company is not None:
+        session.info.setdefault(_LOCKED, set()).add(company.id)
+    return company
+
+
+@event.listens_for(Session, "before_flush")
+def _settings_change_needs_the_lock(session: Session, flush_context, instances) -> None:
+    locked = session.info.get(_LOCKED, ())
+    for obj in session.dirty:
+        if isinstance(obj, Company) and obj.id not in locked and get_history(obj, "settings").has_changes():
+            raise RuntimeError(
+                f"Company {obj.id} settings changed without locked_company(); load the company "
+                "with it before reading the settings to change"
+            )
+
+
+@event.listens_for(Session, "after_transaction_end")
+def _lock_released(session: Session, transaction) -> None:
+    if transaction.parent is None:
+        session.info.pop(_LOCKED, None)

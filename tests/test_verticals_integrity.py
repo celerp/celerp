@@ -140,3 +140,27 @@ def test_service_type():
 def test_simple_business_onboarding_has_demo_rows(vertical: str):
     """Service / simple verticals seed at least one demo row for first-run UX."""
     assert _VERTICAL_ITEMS.get(vertical), f"{vertical} has no demo rows"
+
+
+@pytest.mark.parametrize("table", ["_VERTICAL_PAYMENT_TERMS", "_VERTICAL_TERMS_CONDITIONS"])
+def test_default_terms_are_keyed_by_preset_name(table: str):
+    """Business-type default terms are keyed by real preset names, so a company of
+    that type actually receives them and no entry is unreachable."""
+    from celerp.services import demo
+    assert set(getattr(demo, table)) <= {p["name"] for p in _all_presets()}
+
+
+def test_setup_catalog_never_defaults_to_first_preset():
+    """With nothing stored, the setup business-type control selects only an empty,
+    disabled placeholder, and the control is required."""
+    import re
+    from fasthtml.common import to_xml
+    from ui.routes.setup import _company_details_form
+    html = to_xml(_company_details_form({}))
+    select = re.search(r'<select[^>]*name="vertical"[^>]*>.*?</select>', html, re.S)
+    assert select, "setup form has no business-type select"
+    assert "required" in select.group(0).split(">", 1)[0]
+    options = re.findall(r"<option[^>]*>", select.group(0))
+    selected = [o for o in options if re.search(r"\sselected", o)]
+    assert len(selected) == 1
+    assert 'value=""' in selected[0] and "disabled" in selected[0]

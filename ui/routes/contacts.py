@@ -7,7 +7,7 @@ import asyncio as _asyncio
 import json as _json
 import logging
 from datetime import date, datetime, timezone as _tz
-from urllib.parse import quote_plus as _quote_plus
+from urllib.parse import quote_plus as _quote_plus, urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fasthtml.common import *
@@ -17,8 +17,8 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
-from ui.components.shell import base_shell, page_header, page_title
-from ui.components.table import search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
+from ui.components.shell import base_shell, info_tip, page_header, page_title
+from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_section as _shared_files_section, _DOCUMENT_TAGS
 from celerp.services.currencies import CURRENCY_CODES as _CURRENCY_CODES
@@ -233,8 +233,7 @@ def _contact_info_card(
     attrs = {"hx_swap_oob": "outerHTML:#contact-info-card"} if oob else {}
     def _label_cell(key: str, label: str) -> FT:
         help_tip = (
-            Span("ⓘ", cls="info-tip", tabindex="0", role="img",
-                 **{"aria-label": company_name_help, "data-tip": company_name_help})
+            info_tip(company_name_help)
             if key == "company_name" and company_name_help else None
         )
         return Td(label, help_tip, cls="detail-label")
@@ -713,7 +712,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
     label = t(f"nav.{nav_key}")
     base_url = f"/contacts/{contact_type}s"
     create_url = f"/contacts/create?type={contact_type}"
-    search_url = "/contacts/content"
+    search_url = f"/contacts/content?type={contact_type}"
     schema = _contact_schema(contact_type)
     et = f"{contact_type}s"
 
@@ -731,7 +730,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
     return await base_shell(
         page_header(
             label,
-            search_bar(placeholder=t("contacts.search_placeholder", scope=label.lower()), target="#contacts-content", url=search_url,
+            search_bar(placeholder=t("contacts.search_placeholder", scope=label.lower()), target="#contacts-content", url=search_url, value=q,
                        label=t("contacts.search_scope", scope=label.lower())),
             Button(t("contacts.new_type", type=label[:-1]), hx_post=create_url, hx_swap="none", cls="btn btn--primary") if _can_edit else "",
             A(t("btn.export_csv"), href=f"{base_url}/export/csv", cls="btn btn--secondary") if _can_import_export else "",
@@ -938,10 +937,7 @@ def setup_routes(app):
         page = int(request.query_params.get("page", 1))
         sort = request.query_params.get("sort", "created_at")
         sort_dir = request.query_params.get("dir", "desc")
-        try:
-            per_page = max(1, int(request.query_params.get("per_page", _PER_PAGE)))
-        except (ValueError, TypeError):
-            per_page = _PER_PAGE
+        per_page = per_page_value(request.query_params.get("per_page"), _PER_PAGE)
 
         params = {"limit": per_page, "offset": (page - 1) * per_page, "contact_type": "customer"}
         if q:
@@ -980,10 +976,7 @@ def setup_routes(app):
         page = int(request.query_params.get("page", 1))
         sort = request.query_params.get("sort", "created_at")
         sort_dir = request.query_params.get("dir", "desc")
-        try:
-            per_page = max(1, int(request.query_params.get("per_page", _PER_PAGE)))
-        except (ValueError, TypeError):
-            per_page = _PER_PAGE
+        per_page = per_page_value(request.query_params.get("per_page"), _PER_PAGE)
 
         params = {"limit": per_page, "offset": (page - 1) * per_page, "contact_type": "vendor"}
         if q:
@@ -1092,10 +1085,7 @@ def setup_routes(app):
         page = int(request.query_params.get("page", 1))
         sort = request.query_params.get("sort", "created_at")
         sort_dir = request.query_params.get("dir", "desc")
-        try:
-            per_page = max(1, int(request.query_params.get("per_page", _PER_PAGE)))
-        except (ValueError, TypeError):
-            per_page = _PER_PAGE
+        per_page = per_page_value(request.query_params.get("per_page"), _PER_PAGE)
 
         params = {"limit": per_page, "offset": (page - 1) * per_page, "contact_type": contact_type}
         if q:
@@ -1104,7 +1094,7 @@ def setup_routes(app):
             resp = await api.list_contacts(token, params)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             resp = {"items": [], "total": 0}
         try:
             company = await api.get_company(token)
@@ -1117,7 +1107,11 @@ def setup_routes(app):
         # Placeholder entries bubble to the top so users notice them
         _placeholder = f"New {contact_type.title()}"
         contacts = sorted(contacts, key=lambda c: (0 if (c.get("name") or "").strip() == _placeholder else 1))
-        return _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency)
+        page_query = urlencode([(k, v) for k, v in request.query_params.multi_items() if k != "type"])
+        return search_results(
+            _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency),
+            f"/contacts/{contact_type}s?{page_query}",
+        )
 
     # ── /contacts/create ─────────────────────────────────────────────────
 
@@ -1277,7 +1271,8 @@ def setup_routes(app):
         except Exception:
             company = {}
         # Organized like a customer/vendor page: Contact Info card (the company's identity - name, email,
-        # phone, tax id) on the left, a Settings card (currency/timezone/fiscal) on the right, then the
+        # phone, tax id) on the left, a Settings card (currency/timezone/fiscal, plus business
+        # type for roles that may change it) on the right, then the
         # billing/shipping address book, then tabs. Files is the FIRST tab (the company's whole file
         # library, with a quick-upload dropzone); Documents/Notes/Activity follow. No tags / financial cards.
         from ui.routes.settings import _company_settings_card
@@ -1291,7 +1286,12 @@ def setup_routes(app):
                     hide_fields=("currency", "billing_address", "shipping_address"),
                     company_name_help=t("contacts.company_name_help"),
                 ), cls="detail-col-left"),
-                Div(_company_settings_card(company, get_lang(request)), cls="detail-col-right"),
+                Div(_company_settings_card(
+                    company, get_lang(request),
+                    can_change_business_type=role_has_permission(
+                        company.get("settings") or {}, api.role_from_company(company),
+                        "manage_company_lifecycle"),
+                ), cls="detail-col-right"),
                 cls="detail-layout",
             ),
             _addresses_section(contact),

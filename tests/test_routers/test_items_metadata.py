@@ -39,8 +39,10 @@ async def _set_company_settings(session, patch: dict) -> None:
     """
     from sqlalchemy import select
     from celerp.models.company import Company
+    from celerp.services.company_lock import locked_company
 
     co = (await session.execute(select(Company))).scalars().first()
+    co = await locked_company(session, co.id)
     merged = dict(co.settings or {})
     merged.update(patch)
     co.settings = merged

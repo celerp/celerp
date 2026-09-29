@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 """Shared constants for the docs module."""
 
+from celerp.services.doc_balance import MEMO_LIVE_STATUSES
+
 # Per-doc-type allowlist: maps doc_type → set of statuses where fulfill-lines is permitted.
 # Only doc types listed here support the fulfill-lines / revert-lines endpoints.
 # Adding a new status requires an explicit decision per doc type (true-predicate design).
@@ -9,7 +11,7 @@
 # is handled by POST /receive (creates parcels). fulfill-lines is outbound-only.
 # UI counterpart: ui/routes/documents.py _fin_show_fulfill — keep in sync manually (different package).
 FULFILLABLE_STATUSES: dict[str, frozenset[str]] = {
-    "memo":    frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"}),
+    "memo":    MEMO_LIVE_STATUSES,
     "invoice": frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
 }
 

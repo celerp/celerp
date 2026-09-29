@@ -517,11 +517,15 @@ a:hover { text-decoration: underline; }
 .filter-select:focus { outline: none; border-color: var(--c-accent); }
 
 /* ─── Pagination ──────────────────────────────────────────────────────── */
-.pagination { display: flex; gap: 4px; align-items: center; margin-top: 12px; }
-.page-btn { padding: 4px 9px; background: var(--c-bg3); border: 1px solid var(--c-border); border-radius: var(--radius); font-size: 12px; color: var(--c-text2); }
+/* One treatment for every pager: server_pager and the client-side table_pager. */
+.pagination { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 12px; }
+.page-btn { padding: 4px 9px; background: var(--c-bg3); border: 1px solid var(--c-border); border-radius: var(--radius); font-size: 12px; color: var(--c-text2); cursor: pointer; }
 .page-btn:hover { background: var(--c-border); text-decoration: none; }
 .page-btn--active { background: var(--c-accent); color: #fff; border-color: var(--c-accent2); }
+.page-btn--disabled, .page-btn:disabled { opacity: 0.45; cursor: default; pointer-events: none; }
+.page-gap { font-size: 12px; color: var(--c-text2); padding: 0 2px; }
 .page-count { font-size: 11px; color: var(--c-text2); margin-left: 8px; }
+.pagination .per-page-select { margin-left: auto; font-size: 12px; padding: 2px 6px; }
 
 /* ─── KPI grid ────────────────────────────────────────────────────────── */
 .kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
@@ -931,9 +935,6 @@ a:hover { text-decoration: underline; }
 .row-menu-item:hover { background: var(--c-bg3); text-decoration: none; }
 .row-menu-item--danger { color: var(--c-red); }
 .row-menu-item--danger:hover { background: rgba(239,68,68,0.1); }
-
-/* ─── Per-page selector ───────────────────────────────────────────────── */
-.per-page-select { margin-left: auto; }
 
 /* ─── Category tabs (inventory) ───────────────────────────────────────── */
 .category-tabs { display: flex; gap: 0; margin-bottom: 12px; border: 1px solid var(--c-border); border-radius: var(--radius); overflow: hidden; }
@@ -3195,17 +3196,14 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .toast-container { position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999; display: flex; flex-direction: column; gap: 0.5rem; pointer-events: none; }
 .toast { pointer-events: all; display: flex; align-items: flex-start; gap: 0.75rem; padding: 0.75rem 1rem; border-radius: var(--radius); box-shadow: 0 4px 16px rgba(0,0,0,0.15); font-size: 0.875rem; max-width: 360px; opacity: 0; transform: translateY(8px); transition: opacity 0.2s ease, transform 0.2s ease; }
 .toast--visible { opacity: 1; transform: translateY(0); }
+/* A multi-line toast (a summary of changes) keeps its line breaks. */
+.toast__msg { white-space: pre-line; }
 .toast--error { background: #fef2f2; border: 1px solid rgba(239,68,68,0.4); color: #b91c1c; }
 .toast--success { background: #f0fdf4; border: 1px solid rgba(34,197,94,0.4); color: #15803d; }
 .toast--info { background: var(--c-bg-alt, #f8f9fa); border: 1px solid var(--c-border); color: var(--c-text); }
 .toast__action { color: inherit; font-weight: 600; text-decoration: underline; flex-shrink: 0; }
 .toast__close { margin-left: auto; background: none; border: none; cursor: pointer; font-size: 1.1rem; line-height: 1; padding: 0; opacity: 0.6; flex-shrink: 0; }
 .toast__close:hover { opacity: 1; }
-.table-pagination { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0; justify-content: flex-end; }
-.per-page-select { font-size: 12px; padding: 2px 6px; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-bg2); color: var(--c-text); cursor: pointer; }
-.history-footer { display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0.75rem 0.25rem; }
-.history-page-btns { display: flex; align-items: center; gap: 0.25rem; }
-.history-per-page { display: flex; align-items: center; gap: 0.4rem; }
 .btn--active { background: var(--c-accent); color: #fff; border-color: var(--c-accent); }
 
 
@@ -3241,13 +3239,13 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .settings-toggle-child { margin-left: 1.75rem; }
 .info-tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px;
   margin-left: 5px; border-radius: 50%; font-size: 10px; line-height: 1; color: var(--c-text2);
-  border: 1px solid var(--c-border); cursor: help; position: relative; user-select: none; vertical-align: middle; flex: none; }
+  border: 1px solid var(--c-border); cursor: help; user-select: none; vertical-align: middle; flex: none; }
 .info-tip:hover, .info-tip:focus { color: var(--c-accent); border-color: var(--c-accent); outline: none; }
-.info-tip::after { content: attr(data-tip); position: absolute; left: 50%; bottom: 140%; transform: translateX(-50%);
-  width: 250px; max-width: 60vw; padding: 8px 10px; border-radius: 6px; background: var(--c-text); color: #fff;
+.info-tip-bubble { position: fixed; top: 0; left: 0; z-index: 1000; width: 250px; max-width: calc(100vw - 16px);
+  padding: 8px 10px; border-radius: 6px; background: var(--c-text); color: #fff;
   font-size: 12px; line-height: 1.45; text-align: left; white-space: normal; box-shadow: 0 2px 10px rgba(0,0,0,.2);
-  opacity: 0; visibility: hidden; transition: opacity .12s ease; z-index: 50; pointer-events: none; }
-.info-tip:hover::after, .info-tip:focus::after { opacity: 1; visibility: visible; }
+  opacity: 0; visibility: hidden; transition: opacity .12s ease; pointer-events: none; }
+.info-tip-bubble--open { opacity: 1; visibility: visible; }
 
 /* --- Doc-type explanatory banner --- */
 .info-banner { display: flex; align-items: flex-start; gap: 8px; padding: 10px 14px; margin-bottom: 14px;
@@ -3319,8 +3317,6 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .sortable-th.sort-asc .sort-ind::after { content: " \25B2"; }
 .sortable-th.sort-desc .sort-ind::after { content: " \25BC"; }
 .enh-page-hidden { display: none; }
-.enh-pager { display: flex; align-items: center; gap: 10px; margin-top: 8px; justify-content: flex-end; }
-.enh-page-info { font-size: 12px; color: var(--c-text2); }
 
 /* Discreet reload control beside the doc price-list select (repulls current prices). */
 .reprice-refresh { display: flex; align-items: center; justify-content: center; padding: 2px; background: none; border: none; border-radius: var(--radius); cursor: pointer; color: var(--c-text2); }

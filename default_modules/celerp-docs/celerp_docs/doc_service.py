@@ -553,6 +553,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY,
         deposit_account,
     )
+    from celerp.services.company_lock import lock_company
     from celerp_docs.routes import (
         FulfillLinesRequest,
         _finalize_doc_impl,
@@ -561,6 +562,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         _get_doc,
         apply_doc_payment,
     )
+    from celerp.services.doc_balance import outstanding_balance
 
     order_id = str(order["id"])
     idem_key = f"woocommerce:order:{order_id}"
@@ -605,6 +607,9 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         # One external order may arrive simultaneously by webhook, manual sync, and
         # scheduled reconciliation. Serialize its full materialize/post transition.
         await _lock_woocommerce_order(session, cid, order_id)
+        # The company before any doc row: posting the order finalizes it, which
+        # draws the next invoice number.
+        await lock_company(session, cid)
 
         existing = await session.get(
             Projection, {"company_id": cid, "entity_id": entity_id}, with_for_update=True
@@ -1138,7 +1143,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         if (
             wc_status in {"processing", "completed"}
             and order.get("date_paid")
-            and float(doc.state.get("amount_outstanding") or 0) > 0
+            and float(outstanding_balance(doc.state) or 0) > 0
         ):
             if await find_event_by_idempotency(session, cid, f"{idem_key}:payment") is not None:
                 # WooCommerce's payment was already recorded once; a balance
@@ -1153,7 +1158,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             await apply_doc_payment(
                 session, cid, entity_id,
                 {
-                    "amount": float(doc.state.get("amount_outstanding") or 0),
+                    "amount": float(outstanding_balance(doc.state)),
                     "payment_date": payment_date,
                     "currency": doc.state.get("currency"),
                     "method": order.get("payment_method") or "woocommerce",

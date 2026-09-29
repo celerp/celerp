@@ -394,7 +394,7 @@ async def test_doc_export_reads_in_batches_and_only_the_exported_fields(client, 
     tok = await _reg(client)
     company_id = await _company_id(client, tok)
     await _seed_docs(session, company_id, {
-        f"doc:exp-{i:03d}": {"ref_id": f"INV-{i:03d}", "due_date": "2020-01-01", "total": None, "total_amount": 5.0,
+        f"doc:exp-{i:03d}": {"ref_id": f"INV-{i:03d}", "status": "final", "due_date": "2020-01-01", "total": None, "total_amount": 5.0,
                              "line_items": [{"description": "x" * 50}]}
         for i in range(3)
     })

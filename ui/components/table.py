@@ -548,14 +548,15 @@ def sortable_th(label, col: int, *, center: bool = False, right: bool = False) -
 
 
 def table_pager(table_id: str) -> FT:
-    """Client-side pager controls for a `js-table` (hidden until the table spans >1 page)."""
+    """Client-side pager controls for a `js-table` (hidden until the table spans >1 page). Data
+    loaded in full pages in the browser; it shares server_pager's look, not its behavior."""
     return Div(
-        Button(f"‹ {t('btn.prev')}", type="button", cls="btn btn--xs btn--ghost",
+        Button(t('btn.prev'), type="button", cls="page-btn",
                **{"data-page-nav": "prev", "data-page-for": table_id}),
-        Span("", cls="enh-page-info"),
-        Button(f"{t('btn.next')} ›", type="button", cls="btn btn--xs btn--ghost",
+        Span("", cls="page-count enh-page-info"),
+        Button(t('btn.next'), type="button", cls="page-btn",
                **{"data-page-nav": "next", "data-page-for": table_id}),
-        cls="enh-pager", style="display:none", **{"data-pager-for": table_id},
+        cls="pagination", style="display:none", **{"data-pager-for": table_id},
     )
 
 
@@ -2362,47 +2363,117 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
     )
 
 
-def pagination(page: int, total: int, per_page: int, base_url: str, extra_params: str = "") -> FT:
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    sep = "&" if "?" in base_url or extra_params else "?"
+def compact_pages(page: int, total_pages: int) -> list[int | None]:
+    """Page numbers for a compact pager: first, current +/- 1, last, with `None` marking an
+    ellipsis gap, so the real page count (and the last page) is reachable up front."""
+    out: list[int | None] = []
+    if page > 2:
+        out.append(1)
+    if page > 3:
+        out.append(None)
+    if page > 1:
+        out.append(page - 1)
+    out.append(page)
+    if page < total_pages:
+        out.append(page + 1)
+    if page < total_pages - 2:
+        out.append(None)
+    if page < total_pages - 1:
+        out.append(total_pages)
+    return out
 
-    def _href(p: int) -> str:
-        params = f"page={p}&per_page={per_page}"
-        if extra_params:
-            params += f"&{extra_params}"
-        return f"{base_url}?{params}"
 
-    pages = [
-        A(str(p), href=_href(p),
-          cls=f"page-btn {'page-btn--active' if p == page else ''}")
-        for p in range(max(1, page - 2), min(total_pages, page + 3))
-    ]
-    return Div(
-        *(([A("«", href=_href(page - 1), cls="page-btn")] if page > 1 else []) +
-          pages +
-          ([A("»", href=_href(page + 1), cls="page-btn")] if page < total_pages else [])),
-        Span(t("table.records_count", n=f"{total:,}"), cls="page-count"),
-        _per_page_selector(per_page, base_url, extra_params),
-        cls="pagination",
+def server_pager(offset: int, limit: int, total: int, href, *,
+                 page_sizes: tuple[int, ...] = (25, 50, 100, 250, 500),
+                 hx_target: str | None = None, nav_js: str | None = None) -> FT | str:
+    """The one pager for server-paged data. Renders from the transport's offset/limit/total;
+    `href(offset, limit)` builds each target URL, so every caller keeps its own query
+    convention and the page size rides along in every target. With no rows there is nothing
+    to page, so it renders nothing.
+
+    The range label always describes the rows actually shown for `offset`. A page is marked
+    current only when `offset` is exactly that page's start; past the last page none is, and
+    Prev leads back to the last page.
+
+    Every control is a real link (plain navigation is the fallback). `hx_target` swaps that
+    element in place instead (the response must contain it); `nav_js` names a page-level JS
+    function that receives the target URL and decides how to get there."""
+    limit = max(1, limit)
+    total = max(0, total)
+    offset = max(0, offset)
+    if not total:
+        return ""
+    total_pages = (total + limit - 1) // limit
+    # The page holding the first row shown; past the end, one beyond the last page.
+    page = min(total_pages + 1, offset // limit + 1)
+    current = page if offset % limit == 0 and page <= total_pages else None
+
+    def _nav_attrs(url: str) -> dict:
+        if nav_js:
+            return {"onclick": f"event.preventDefault();{nav_js}(this.getAttribute('href'))"}
+        if hx_target:
+            return {"hx_get": url, "hx_target": hx_target, "hx_select": hx_target, "hx_swap": "outerHTML"}
+        return {}
+
+    def _link(label: str, p: int, *, current: bool = False) -> FT:
+        url = href((p - 1) * limit, limit)
+        extra = {"aria-current": "page"} if current else {}
+        return A(label, href=url, cls="page-btn" + (" page-btn--active" if current else ""),
+                 **_nav_attrs(url), **extra)
+
+    def _edge(label: str, p: int, enabled: bool) -> FT:
+        if enabled:
+            return _link(label, p)
+        return Span(label, cls="page-btn page-btn--disabled", aria_disabled="true")
+
+    controls = [_edge(t('btn.prev'), page - 1, page > 1)]
+    controls += [Span("…", cls="page-gap") if p is None else _link(str(p), p, current=(p == current))
+                 for p in compact_pages(min(page, total_pages), total_pages)]
+    controls.append(_edge(t('btn.next'), page + 1, page < total_pages))
+
+    if offset < total:
+        label = t("table.page_range", first=f"{offset + 1:,}", last=f"{min(offset + limit, total):,}",
+                  total=f"{total:,}")
+    else:
+        label = t("table.page_range_none", total=f"{total:,}")
+    if nav_js:
+        onchange = f"{nav_js}(this.value)"
+    elif hx_target:
+        onchange = f"htmx.ajax('GET',this.value,{{target:'{hx_target}',select:'{hx_target}',swap:'outerHTML'}})"
+    else:
+        onchange = "window.location=this.value"
+    sizes = sorted(set(page_sizes) | {limit})
+    size_select = Select(
+        *[Option(t("table.per_page_option", n=n), value=href(0, n), selected=(n == limit)) for n in sizes],
+        onchange=onchange, cls="filter-select per-page-select",
     )
+    return Nav(*controls,
+               Span(label, cls="page-count"),
+               size_select,
+               cls="pagination")
 
 
-def _per_page_selector(current: int, base_url: str, extra_params: str = "") -> FT:
-    options = [25, 50, 100, 250, 500]
-    # Navigate full-page (consistent with the numbered page links above), resetting to page 1.
-    # The previous version did an HTMX swap hardcoded to hx_target="#inventory-content", so the
-    # dropdown was dead on every page that isn't /inventory (e.g. /docs — issue #171).
+def per_page_value(raw, default: int) -> int:
+    """The page size a `per_page` query value asks for; anything that is not an integer is
+    `default`."""
+    try:
+        return max(1, int(raw))
+    except (ValueError, TypeError):
+        return default
+
+
+def pagination(page: int, total: int, per_page: int, base_url: str, extra_params: str = "") -> FT | str:
+    """`server_pager` for full-page lists addressed by `page`/`per_page` query params."""
     suffix = f"&{extra_params}" if extra_params else ""
-    return Select(
-        *[Option(t("table.per_page_option", n=n), value=str(n), selected=(n == current)) for n in options],
-        name="per_page",
-        onchange=f"window.location='{base_url}?per_page='+this.value+'&page=1{suffix}'",
-        cls="filter-select per-page-select",
-    )
+
+    def _href(offset: int, limit: int) -> str:
+        return f"{base_url}?page={offset // limit + 1}&per_page={limit}{suffix}"
+
+    return server_pager((page - 1) * per_page, per_page, total, _href)
 
 
 def search_bar(placeholder: str = "", target: str = "#data-table", url: str = "",
-               help: FT | None = None, label: str = "") -> FT:
+               help: FT | None = None, label: str = "", value: str = "") -> FT:
     placeholder = placeholder or t("table.search_dots")
     # Enter key → insert comma (for barcode scanner multi-scan: each scan ends with Enter,
     # becoming a comma-separated OR query without submitting the form).
@@ -2417,6 +2488,7 @@ def search_bar(placeholder: str = "", target: str = "#data-table", url: str = ""
     inp = Input(
         type="search",
         name="q",
+        value=value,
         placeholder=placeholder,
         hx_get=url,
         hx_trigger="input changed delay:300ms",
@@ -2437,6 +2509,14 @@ def search_bar(placeholder: str = "", target: str = "#data-table", url: str = ""
     # Small centered scope label ("Search available inventory") so the on-page
     # box is instantly distinguishable from the global header search.
     return Div(Small(label, cls="search-scope-label"), inner, cls="search-scope")
+
+
+def search_results(fragment: FT, page_url: str, *out_of_band: FT):
+    """The response to a search_bar or sort request: the result fragment, with the page's own
+    URL for the address bar, so a reload or a shared link opens the whole page. Page controls
+    outside the fragment that carry the search are passed as out_of_band (hx_swap_oob) elements."""
+    from starlette.responses import HTMLResponse
+    return HTMLResponse("".join(to_xml(ft) for ft in (fragment, *out_of_band)), headers={"HX-Push-Url": page_url})
 
 
 def table_search(table_id: str, placeholder: str = "") -> FT:

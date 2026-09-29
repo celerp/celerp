@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import pytest
 import pytest_asyncio
 
+from celerp.services.company_lock import locked_company
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.services.pick import PickResult, compute_pick_plan
@@ -3408,7 +3409,7 @@ async def test_live_fulfillment_business_date_controls_lock_and_adjustment(
         json={"line_entity_ids": [lot_b]},
     )).status_code == 200
 
-    company = await session.get(Company, cid)
+    company = await locked_company(session, cid)
     company.settings = {**(company.settings or {}), "timezone": "Asia/Bangkok", "lock_date": "2026-09-24"}
     await session.commit()
 
@@ -3451,7 +3452,7 @@ async def test_split_fulfillment_period_lock_uses_company_timezone(
         {"sku": sku, "name": sku, "quantity": 3, "unit_price": 50.0, "entity_id": lot},
     ])
 
-    company = await session.get(Company, cid)
+    company = await locked_company(session, cid)
     company.settings = {**(company.settings or {}), "timezone": "Asia/Bangkok", "lock_date": "2026-09-24"}
     await session.commit()
 

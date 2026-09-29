@@ -31,7 +31,7 @@ def _seed_paged_list(api, n_lines: int = 60) -> str:
     """Create a draft quotation list with enough stored lines to paginate.
 
     A draft quotation renders the editable line table with the pager whose page
-    controls route through celerpPageNav (documents.py:586) - the HTMX
+    controls route through celerpPageNav - the HTMX
     outerHTML re-swap path the first defect lives on. Lines render from their
     stored values, so no catalog item has to exist.
     """
@@ -53,7 +53,7 @@ def _seed_paged_list(api, n_lines: int = 60) -> str:
 
 def _active_page(page) -> str:
     """The page number the pager currently marks active, inside the lines section."""
-    active = page.locator("#list-line-detail .btn--active, [id^=list-line-section-] .btn--active").last
+    active = page.locator("#list-line-detail .page-btn--active, [id^=list-line-section-] .page-btn--active").last
     active.wait_for(state="visible", timeout=6000)
     return active.inner_text().strip()
 
@@ -87,9 +87,9 @@ def test_inline_script_survives_htmx_outerhtml_reswap(page, ui_server, api):
 
     # First navigation: page 1 -> page 2. This is the HTMX outerHTML re-swap of the
     # lines section that re-evaluates the inline script.
-    page.get_by_role("button", name="2", exact=True).click()
+    page.get_by_role("link", name="2", exact=True).click()
     page.wait_for_function(
-        "() => {const a=document.querySelector('[id^=list-line-section-] .btn--active');"
+        "() => {const a=document.querySelector('[id^=list-line-section-] .page-btn--active');"
         " return a && a.textContent.trim() === '2';}",
         timeout=8000,
     )
@@ -97,9 +97,9 @@ def test_inline_script_survives_htmx_outerhtml_reswap(page, ui_server, api):
 
     # Second navigation: page 2 -> page 3. At HEAD the pager is already dead after
     # the first re-swap threw, so the active page stays on 2.
-    page.get_by_role("button", name="3", exact=True).click()
+    page.get_by_role("link", name="3", exact=True).click()
     page.wait_for_function(
-        "() => {const a=document.querySelector('[id^=list-line-section-] .btn--active');"
+        "() => {const a=document.querySelector('[id^=list-line-section-] .page-btn--active');"
         " return a && a.textContent.trim() === '3';}",
         timeout=8000,
     )

@@ -4,18 +4,20 @@
 """Demo data seeding for new companies.
 
 Seeds vertical-aware demo items so new users see a working UI immediately.
-All demo records carry source="demo" and are auto-wiped on first successful
-import of that entity type.
+All demo records carry source="demo". The first successful import of that entity
+type removes the ones the user never edited or used.
 """
 
 from __future__ import annotations
 
 import uuid
+from copy import deepcopy
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event
-from celerp.services.terms import DEFAULT_TERMS_CONDITIONS as _DEFAULT_TERMS_CONDITIONS
+from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS
+from celerp.services.terms import DEFAULT_TERMS_CONDITIONS as _DEFAULT_TERMS_CONDITIONS, normalize_terms_templates
 
 
 _DEMO_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")  # sentinel, not a real user
@@ -32,7 +34,7 @@ _GENERIC_ITEMS: list[dict] = [
         "sell_by": "piece",
         "prices": {"Retail": 19.99, "Wholesale": 14.99, "Cost": 9.99},
         "status": "available",
-        "description": "This is a demo item. It will be removed when you import your first CSV.",
+        "description": "This is a demo item. Your first CSV import removes it unless you have edited or used it.",
         "barcode": "2000010000013",
         "attributes": {},
     },
@@ -1476,17 +1478,6 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
 }
 
 
-# --- Default payment terms (used when no vertical match) ---
-_DEFAULT_PAYMENT_TERMS: list[dict] = [
-    {"name": "Pay in Advance", "days": 0, "description": "Full payment before delivery"},
-    {"name": "Cash on Delivery", "days": 0, "description": "Payment on receipt of goods"},
-    {"name": "Deposit (50%)", "days": 0, "description": "50% deposit upfront, balance on delivery"},
-    {"name": "Net 7", "days": 7, "description": "Due within 7 days"},
-    {"name": "Net 15", "days": 15, "description": "Due within 15 days"},
-    {"name": "Net 30", "days": 30, "description": "Due within 30 days"},
-    {"name": "Net 60", "days": 60, "description": "Due within 60 days"},
-]
-
 # Industry-specific payment terms
 _VERTICAL_PAYMENT_TERMS: dict[str, list[dict]] = {
     "gemstones": [
@@ -1497,13 +1488,6 @@ _VERTICAL_PAYMENT_TERMS: dict[str, list[dict]] = {
         {"name": "Net 60", "days": 60, "description": "Due within 60 days"},
         {"name": "Consignment 90", "days": 90, "description": "Consignment terms, settle within 90 days"},
     ],
-    "jewelry": [
-        {"name": "Pay in Advance", "days": 0, "description": "Full payment before production"},
-        {"name": "Deposit (50%)", "days": 0, "description": "50% deposit, balance on completion"},
-        {"name": "Net 30", "days": 30, "description": "Due within 30 days"},
-        {"name": "Net 60", "days": 60, "description": "Due within 60 days"},
-        {"name": "Consignment 60", "days": 60, "description": "Consignment, settle within 60 days"},
-    ],
     "food_beverage": [
         {"name": "Pay in Advance", "days": 0, "description": "Prepayment required"},
         {"name": "Cash on Delivery", "days": 0, "description": "Payment on receipt"},
@@ -1511,15 +1495,7 @@ _VERTICAL_PAYMENT_TERMS: dict[str, list[dict]] = {
         {"name": "Net 14", "days": 14, "description": "Due within 14 days"},
         {"name": "Net 30", "days": 30, "description": "Due within 30 days"},
     ],
-    "construction": [
-        {"name": "Deposit (30%)", "days": 0, "description": "30% deposit on order"},
-        {"name": "Deposit (50%)", "days": 0, "description": "50% deposit on order"},
-        {"name": "Net 30", "days": 30, "description": "Due within 30 days"},
-        {"name": "Net 45", "days": 45, "description": "Due within 45 days"},
-        {"name": "Net 60", "days": 60, "description": "Due within 60 days"},
-        {"name": "Net 90", "days": 90, "description": "Due within 90 days"},
-    ],
-    "agriculture": [
+    "agricultural": [
         {"name": "Pay in Advance", "days": 0, "description": "Prepayment for seasonal goods"},
         {"name": "Cash on Delivery", "days": 0, "description": "Payment at harvest/delivery"},
         {"name": "Net 14", "days": 14, "description": "Due within 14 days"},
@@ -1546,33 +1522,7 @@ _VERTICAL_PAYMENT_TERMS: dict[str, list[dict]] = {
         {"name": "Net 60", "days": 60, "description": "Due within 60 days"},
         {"name": "Consignment 60", "days": 60, "description": "Consignment, settle within 60 days"},
     ],
-    "pharmaceuticals": [
-        {"name": "Pay in Advance", "days": 0, "description": "Prepayment required"},
-        {"name": "Net 30", "days": 30, "description": "Due within 30 days"},
-        {"name": "Net 45", "days": 45, "description": "Due within 45 days"},
-        {"name": "Net 60", "days": 60, "description": "Due within 60 days"},
-    ],
     "hardware": [
-        {"name": "Cash on Delivery", "days": 0, "description": "Payment on receipt"},
-        {"name": "Net 15", "days": 15, "description": "Due within 15 days"},
-        {"name": "Net 30", "days": 30, "description": "Due within 30 days"},
-        {"name": "Net 60", "days": 60, "description": "Due within 60 days"},
-    ],
-    "chemicals": [
-        {"name": "Pay in Advance", "days": 0, "description": "Prepayment for hazmat shipments"},
-        {"name": "Net 30", "days": 30, "description": "Due within 30 days"},
-        {"name": "Net 45", "days": 45, "description": "Due within 45 days"},
-        {"name": "Net 60", "days": 60, "description": "Due within 60 days"},
-    ],
-    "medical_devices": [
-        {"name": "Deposit (50%)", "days": 0, "description": "50% deposit on order"},
-        {"name": "Net 30", "days": 30, "description": "Due within 30 days"},
-        {"name": "Net 45", "days": 45, "description": "Due within 45 days"},
-        {"name": "Net 60", "days": 60, "description": "Due within 60 days"},
-        {"name": "Net 90", "days": 90, "description": "Hospital/institution terms"},
-    ],
-    "general_trading": [
-        {"name": "Pay in Advance", "days": 0, "description": "Prepayment required"},
         {"name": "Cash on Delivery", "days": 0, "description": "Payment on receipt"},
         {"name": "Net 15", "days": 15, "description": "Due within 15 days"},
         {"name": "Net 30", "days": 30, "description": "Due within 30 days"},
@@ -1588,20 +1538,178 @@ _VERTICAL_TERMS_CONDITIONS: dict[str, list[dict]] = {
         {"name": "Gemstone Consignment In Terms", "text": "Consigned stones remain property of the consignor. Settlement within agreed terms or return of goods.", "doc_types": ["consignment_in"], "default_for": ["consignment_in"]},
         {"name": "Gemstone Purchase Terms", "text": "Stones must match the agreed grade, weight, and certification.", "doc_types": ["purchase_order", "bill"], "default_for": ["purchase_order", "bill"]},
     ],
-    "jewelry": [
-        {"name": "Jewelry Sales Terms", "text": "All jewelry sold as described with applicable hallmarks.", "doc_types": ["invoice", "receipt", "credit_note"], "default_for": ["invoice", "receipt", "credit_note"]},
-        {"name": "Jewelry Consignment Out Terms", "text": "Consigned pieces remain property of the consignor. Insurance is the consignee's responsibility.", "doc_types": ["memo"], "default_for": ["memo"]},
-        {"name": "Jewelry Consignment In Terms", "text": "Consigned pieces remain property of the consignor. Settlement on sold items per agreed schedule.", "doc_types": ["consignment_in"], "default_for": ["consignment_in"]},
-    ],
     "food_beverage": [
         {"name": "F&B Sales Terms", "text": "All products sold meet applicable food safety standards.", "doc_types": ["invoice", "receipt", "credit_note"], "default_for": ["invoice", "receipt", "credit_note"]},
         {"name": "F&B Purchase Terms", "text": "Products must meet agreed quality and safety standards.", "doc_types": ["purchase_order", "bill"], "default_for": ["purchase_order", "bill"]},
     ],
-    "construction": [
-        {"name": "Construction Sales Terms", "text": "Materials supplied as specified per contract.", "doc_types": ["invoice", "receipt", "credit_note"], "default_for": ["invoice", "receipt", "credit_note"]},
-        {"name": "Construction Purchase Terms", "text": "Materials must meet project specifications and applicable building codes.", "doc_types": ["purchase_order", "bill"], "default_for": ["purchase_order", "bill"]},
-    ],
 }
+
+
+def payment_terms_for(vertical: str | None) -> list[dict]:
+    """The system default payment terms for a business type (generic when it has none)."""
+    return deepcopy(_VERTICAL_PAYMENT_TERMS.get(vertical or "", DEFAULT_PAYMENT_TERMS))
+
+
+def terms_conditions_for(vertical: str | None) -> list[dict]:
+    """The system default T&C templates for a business type (generic when it has none)."""
+    return normalize_terms_templates(_VERTICAL_TERMS_CONDITIONS.get(vertical or "", _DEFAULT_TERMS_CONDITIONS))
+
+
+# The generic payment terms companies were set up with before Net 90 joined the list.
+# A company still holding it never edited it.
+_EARLIER_GENERIC_PAYMENT_TERMS = [t for t in DEFAULT_PAYMENT_TERMS if t["name"] != "Net 90"]
+
+# (settings key, default getter, normaliser, seeded when missing, earlier system
+# values). Purchasing payment terms are copied from the sales terms on first use,
+# so a missing list is left for that copy instead of being seeded here.
+_DEFAULT_GETTERS = (
+    ("payment_terms", payment_terms_for, deepcopy, True, [_EARLIER_GENERIC_PAYMENT_TERMS]),
+    ("purchasing_payment_terms", payment_terms_for, deepcopy, False, [_EARLIER_GENERIC_PAYMENT_TERMS]),
+    ("terms_conditions", terms_conditions_for, normalize_terms_templates, True, []),
+)
+
+
+def reconcile_vertical_defaults(settings: dict, previous_vertical: str | None, target_vertical: str | None) -> dict:
+    """Move system-owned payment terms and T&C templates to the target business type.
+
+    A list is still system-owned when it equals the generic defaults (current or
+    earlier) or the previous business type's defaults, or when it is missing and
+    seeded from the defaults. Those become the target's defaults; anything the user
+    edited is kept."""
+    out = dict(settings)
+    for key, getter, normalize, seed_missing, earlier in _DEFAULT_GETTERS:
+        current = out.get(key)
+        if current is None:
+            untouched = seed_missing
+        else:
+            system = [getter(None), getter(previous_vertical), *earlier]
+            untouched = normalize(current) in [normalize(v) for v in system]
+        if untouched:
+            out[key] = getter(target_vertical)
+    return out
+
+
+async def demo_item_ids(session: AsyncSession, company_id: uuid.UUID) -> list[str]:
+    """Every item the demo seeder created for the company, touched or not."""
+    import sqlalchemy as sa
+    from celerp.models.ledger import LedgerEntry
+
+    return list((await session.execute(
+        sa.select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_type == "item",
+            LedgerEntry.source == "demo",
+        ).distinct()
+    )).scalars().all())
+
+
+async def delete_demo_items(session: AsyncSession, company_id: uuid.UUID, entity_ids: list[str]) -> None:
+    """Remove the given items completely: their projection and every ledger row.
+
+    Runs inside the caller's transaction and does not commit."""
+    import sqlalchemy as sa
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    if not entity_ids:
+        return
+    await session.execute(sa.delete(Projection).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(entity_ids),
+    ))
+    await session.execute(sa.delete(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(entity_ids),
+    ))
+
+
+async def _untouched_demo_items(session: AsyncSession, company_id: uuid.UUID, entity_ids: list[str]) -> list[str]:
+    """The demo items that are still exactly as seeded and used nowhere.
+
+    An item is touched when any of its ledger rows came from somewhere other than
+    the demo seeder, and used when another record (a document line, a movement, a
+    note) mentions its id or its SKU. Demo ids and SKUs all contain "demo-", so one
+    case-insensitive pass per table finds every candidate mention."""
+    import sqlalchemy as sa
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    touched = set((await session.execute(
+        sa.select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id.in_(entity_ids),
+            LedgerEntry.source != "demo",
+        ).distinct()
+    )).scalars().all())
+    skus = dict((await session.execute(
+        sa.select(Projection.entity_id, Projection.state["sku"].as_string()).where(
+            Projection.company_id == company_id, Projection.entity_id.in_(entity_ids),
+        )
+    )).all())
+    mentions: list[str] = []
+    for model, column in ((Projection, Projection.state), (LedgerEntry, LedgerEntry.data)):
+        mentions.extend((await session.execute(
+            sa.select(sa.cast(column, sa.Text)).where(
+                model.company_id == company_id,
+                model.entity_id.not_in(entity_ids),
+                sa.cast(column, sa.Text).ilike("%demo-%"),
+            )
+        )).scalars().all())
+
+    def used(entity_id: str) -> bool:
+        needles = [entity_id] + ([f'"{skus[entity_id]}"'] if skus.get(entity_id) else [])
+        return any(needle in text for text in mentions for needle in needles)
+
+    return [eid for eid in entity_ids if eid not in touched and not used(eid)]
+
+
+async def delete_untouched_demo_items(session: AsyncSession, company_id: uuid.UUID) -> tuple[int, int]:
+    """Delete the demo items the user never edited or used; the rest stay as they are.
+
+    Runs inside the caller's transaction and does not commit. Returns how many demo
+    items were deleted and how many were kept."""
+    demo_ids = await demo_item_ids(session, company_id)
+    removable = await _untouched_demo_items(session, company_id, demo_ids) if demo_ids else []
+    await delete_demo_items(session, company_id, removable)
+    return len(removable), len(demo_ids) - len(removable)
+
+
+async def replace_demo_items(
+    session: AsyncSession,
+    company_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    vertical: str | None,
+) -> dict[str, int]:
+    """Swap the company's untouched demo inventory for the given business type's set.
+
+    Demo items the user edited or used anywhere are kept as they are. When at
+    least one demo item was replaced, the new type's set is seeded, minus any SKU a
+    kept item still holds. A company with no demo items left (for example after
+    its first import) gets none back. Runs inside the caller's transaction and does
+    not commit. Returns how many demo items were replaced and how many were kept."""
+    import sqlalchemy as sa
+    from celerp.models.company import Location
+
+    replaced, kept = await delete_untouched_demo_items(session, company_id)
+    if replaced:
+        default_location = (await session.execute(
+            sa.select(Location).where(Location.company_id == company_id, Location.is_default == True).limit(1)  # noqa: E712
+        )).scalars().first()
+        await seed_demo_items(session, company_id, actor_id, vertical=vertical,
+                              default_location_id=default_location.id if default_location else None)
+    return {"replaced": replaced, "kept": kept}
+
+
+async def _skus_in_use(session: AsyncSession, company_id: uuid.UUID, skus: list[str]) -> set[str]:
+    import sqlalchemy as sa
+    from celerp.models.projections import Projection
+
+    sku = Projection.state["sku"].as_string()
+    return set((await session.execute(
+        sa.select(sku).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+            sku.in_(skus),
+        )
+    )).scalars().all())
 
 
 async def seed_demo_items(
@@ -1611,11 +1719,13 @@ async def seed_demo_items(
     vertical: str | None = None,
     default_location_id: uuid.UUID | None = None,
 ) -> None:
-    """Seed vertical-aware demo items and default price lists in company settings."""
-    from celerp.models.company import Company
+    """Seed vertical-aware demo items and default price lists in company settings.
+
+    A demo SKU already held by an item is skipped, so seeding never duplicates a SKU."""
+    from celerp.services.company_lock import locked_company
 
     # Seed default price lists into company settings if not already set
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is not None:
         settings = dict(company.settings or {})
         if "price_lists" not in settings:
@@ -1626,17 +1736,19 @@ async def seed_demo_items(
             ]
         if "default_price_list" not in settings:
             settings["default_price_list"] = "Retail"
-        # Seed payment terms if not already set
+        # Seed payment terms and T&C templates if not already set
         if "payment_terms" not in settings:
-            settings["payment_terms"] = _VERTICAL_PAYMENT_TERMS.get(vertical or "", _DEFAULT_PAYMENT_TERMS)
-        # Seed T&C templates if not already set
+            settings["payment_terms"] = payment_terms_for(vertical)
         if "terms_conditions" not in settings:
-            settings["terms_conditions"] = _VERTICAL_TERMS_CONDITIONS.get(vertical or "", _DEFAULT_TERMS_CONDITIONS)
+            settings["terms_conditions"] = terms_conditions_for(vertical)
         company.settings = settings
     items = _VERTICAL_ITEMS.get(vertical or "", _GENERIC_ITEMS) if vertical else _GENERIC_ITEMS
-    for i, data in enumerate(items, start=1):
+    taken = await _skus_in_use(session, company_id, [data["sku"] for data in items])
+    for data in items:
+        sku = data["sku"]
+        if sku in taken:
+            continue
         entity_id = f"item:demo-{uuid.uuid4()}"
-        sku = data.get("sku", f"DEMO-{i:03d}")
         prices = data.get("prices") or {}
         # Build price fields keyed by lowercase price list name + "_price".
         # These go directly into the item.created payload so they land at top-level
@@ -1650,7 +1762,7 @@ async def seed_demo_items(
         }
         payload = {
             "sku": sku,
-            "name": data.get("name", f"[DEMO] Item {i}"),
+            "name": data["name"],
             "category": data.get("category", "General"),
             "inventory_type": data.get("inventory_type"),
             "quantity": data.get("quantity", 1),
@@ -1701,7 +1813,7 @@ async def seed_self_contacts(
     Called from both the initial registration flow and the create-additional-company flow.
     """
     import logging as _logging
-    from celerp.models.company import Company
+    from celerp.services.company_lock import locked_company
     _log = _logging.getLogger(__name__)
 
     entity_id = f"contact:{uuid.uuid4()}"
@@ -1731,7 +1843,7 @@ async def seed_self_contacts(
 
     # Cache the self-contact id for a direct (no-scan) lookup by the Company Details page.
     try:
-        company = await session.get(Company, company_id)
+        company = await locked_company(session, company_id)
         if company is not None:
             company.settings = {**(company.settings or {}), "self_contact_id": entity_id}
     except Exception as exc:

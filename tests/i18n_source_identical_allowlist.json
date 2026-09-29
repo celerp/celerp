@@ -72,6 +72,7 @@
     "dashboard.pipeline",
     "doc.incoterms",
     "doc.status",
+    "doc.website",
     "documents.bank",
     "documents.bcc",
     "documents.cc",

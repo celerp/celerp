@@ -3,12 +3,19 @@
 """
 Comprehensive tests for the setup wizard flow and related kernel wiring.
 
-Coverage targets:
-  A. ui/routes/setup.py     — all GET/POST handlers, form rendering, redirect logic
-  B. celerp/main.py         — ENABLED_MODULES env-var path vs. config.toml fallback
-  C. ui/routes/settings.py  — module-gated tabs, setup_done banner, company tab field display
-  D. _load_verticals()      — preset dir loading, blank-last ordering, error tolerance
-  E. Fringe / integration   — unauthenticated, API errors, missing presets dir, etc.
+Coverage:
+  A.  GET /setup/company            form rendering and pre-fill
+  B.  POST /setup/company           validation, business type, restart and redirects
+  C.  GET /setup/activating         module activation page and poll script
+  C2. GET /setup/activating-status  activation status reporting
+  D.  GET /setup/cloud              cloud offer page
+  E.  Legacy setup redirect routes
+  F.  business_type_options()       preset loading, blank-last ordering, error tolerance
+  G.  celerp/main.py                ENABLED_MODULES env var vs config.toml fallback
+  H.  settings.py                   module-gated tabs
+  I.  settings.py                   setup_done banner with modules loaded
+  J.  Company tab                   flat dict field display
+  K.  Fringe cases                  unauthenticated, API errors, partial company data
 """
 
 from __future__ import annotations
@@ -133,8 +140,12 @@ class TestSetupCompanyPost:
 
     @pytest.mark.asyncio
     async def test_blank_vertical_redirects_to_cloud(self, ui_client):
-        """Choosing blank vertical → /setup/cloud (no preset applied)."""
-        with patch("ui.api_client.patch_company", new=AsyncMock(return_value={})):
+        """Choosing blank is a deliberate valid type: it is set, needs no restart, and setup moves on."""
+        set_type = AsyncMock(return_value={"vertical": "blank", "restart_required": False})
+        with (
+            patch("ui.api_client.patch_company", new=AsyncMock(return_value={})),
+            patch("ui.api_client.set_business_type", new=set_type),
+        ):
             r = await ui_client.post(
                 "/setup/company",
                 data={"vertical": "blank", "currency": "USD", "timezone": "UTC", "fiscal_year_start": "01"},
@@ -142,83 +153,45 @@ class TestSetupCompanyPost:
             )
         assert r.status_code in (302, 303)
         assert r.headers.get("location", "").endswith("/setup/cloud")
+        set_type.assert_awaited_once()
+        assert set_type.await_args.args[1] == "blank"
 
     @pytest.mark.asyncio
-    async def test_industry_vertical_calls_apply_preset_and_restart(self, ui_client):
-        """Choosing a real vertical seeds categories directly via patch_category_schema and calls /system/restart."""
-        restart_called = []
-        modules_written = []
-        patch_schema_calls = []
-
-        class FakeResp:
-            @property
-            def is_error(self): return False
-            def json(self): return {"ok": True}
-
-        class FakeClient:
-            async def post(self, url, **kw):
-                if "restart" in url:
-                    restart_called.append(url)
-                return FakeResp()
-            async def get(self, url, **kw):
-                return type("R", (), {"is_error": False, "json": lambda self: {"name": "Test", "settings": {}}})()
-            async def patch(self, url, **kw):
-                if "category-schema" in url:
-                    patch_schema_calls.append(url)
-                return FakeResp()
-            async def __aenter__(self): return self
-            async def __aexit__(self, *a): pass
-
-        def _capture_modules(mods):
-            modules_written.append(mods)
-
+    async def test_industry_vertical_sets_business_type_and_restarts(self, ui_client):
+        """A type whose modules are not running yet is set through the business-type
+        operation, then the existing restart primitive runs and setup waits on the
+        activating page."""
+        set_type = AsyncMock(return_value={"vertical": "gemstones", "restart_required": True})
+        restart = AsyncMock(return_value={"ok": True})
         with (
             patch("ui.api_client.patch_company", new=AsyncMock(return_value={})),
-            patch("ui.api_client._client", return_value=FakeClient()),
-            patch("ui.routes.setup._set_enabled_modules", side_effect=_capture_modules),
+            patch("ui.api_client.set_business_type", new=set_type),
+            patch("ui.api_client.restart_system", new=restart),
         ):
             r = await ui_client.post(
                 "/setup/company",
-                data={"vertical": "gemstones", "currency": "USD", "timezone": "UTC", "fiscal_year_start": "01"},
+                data={"vertical": "gemstones", "currency": "USD", "timezone": "UTC"},
                 cookies=_authed(),
             )
-
         assert r.status_code in (302, 303)
-        assert "/setup/activating" in r.headers.get("location", "")
-        # Modules were written to config (list from gemstones preset)
-        assert len(modules_written) == 1
-        assert isinstance(modules_written[0], list)
-        assert len(modules_written[0]) > 0
-        # Category schemas were seeded directly (9 categories in gemstones preset)
-        assert len(patch_schema_calls) == 9, (
-            f"Expected 9 category schema patch calls for gemstones but got {patch_schema_calls}. "
-            "Without this, gemstone columns won't appear in the inventory column manager."
-        )
-        # Restart was triggered
-        assert len(restart_called) == 1
+        assert r.headers.get("location", "").endswith("/setup/activating")
+        assert set_type.await_args.args[1] == "gemstones"
+        restart.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_industry_vertical_redirects_to_activating(self, ui_client):
-        """After preset + restart call, redirect goes to /setup/activating."""
-        class FakeResp:
-            @property
-            def is_error(self): return False
-
-        class FakeClient:
-            async def post(self, url, **kw): return FakeResp()
-            async def __aenter__(self): return self
-            async def __aexit__(self, *a): pass
-
+    async def test_no_restart_when_modules_already_running(self, ui_client):
+        restart = AsyncMock(return_value={"ok": True})
         with (
             patch("ui.api_client.patch_company", new=AsyncMock(return_value={})),
-            patch("ui.api_client._client", return_value=FakeClient()),
+            patch("ui.api_client.set_business_type",
+                  new=AsyncMock(return_value={"vertical": "gemstones", "restart_required": False})),
+            patch("ui.api_client.restart_system", new=restart),
         ):
             r = await ui_client.post(
-                "/setup/company",
-                data={"vertical": "food_beverage", "currency": "USD"},
-                cookies=_authed(),
+                "/setup/company", data={"vertical": "gemstones", "currency": "USD"}, cookies=_authed(),
             )
-        assert "/setup/activating" in r.headers.get("location", "")
+        assert r.headers.get("location", "").endswith("/setup/cloud")
+        restart.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_patch_company_error_re_renders_form(self, ui_client):
@@ -252,26 +225,24 @@ class TestSetupCompanyPost:
         assert r.status_code == 200  # renders form with empty company
 
     @pytest.mark.asyncio
-    async def test_apply_preset_api_error_still_redirects_to_activating(self, ui_client):
-        """Even if apply-preset raises, the wizard still proceeds (fire-and-forget)."""
-        class FakeClient:
-            async def post(self, url, **kw):
-                raise Exception("network error")
-            async def __aenter__(self): return self
-            async def __aexit__(self, *a): pass
-
+    async def test_business_type_error_does_not_advance(self, ui_client):
+        """A failed business-type step keeps the user on the form with what they submitted."""
+        from ui.api_client import APIError
+        restart = AsyncMock()
         with (
             patch("ui.api_client.patch_company", new=AsyncMock(return_value={})),
-            patch("ui.api_client._client", return_value=FakeClient()),
+            patch("ui.api_client.set_business_type", new=AsyncMock(side_effect=APIError(500, "type failed"))),
+            patch("ui.api_client.restart_system", new=restart),
         ):
             r = await ui_client.post(
                 "/setup/company",
-                data={"vertical": "gemstones"},
+                data={"vertical": "gemstones", "currency": "EUR"},
                 cookies=_authed(),
             )
-        # Should still redirect to activating (exception is swallowed)
-        assert r.status_code in (302, 303)
-        assert "/setup/activating" in r.headers.get("location", "")
+        assert r.status_code == 200
+        assert b"type failed" in r.content
+        assert b'<option value="gemstones" selected>' in r.content
+        restart.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_default_currency_is_thb_when_missing(self, ui_client):
@@ -515,11 +486,16 @@ class TestSetupLegacyRedirects:
 
 
 # ===========================================================================
-# F. _load_verticals() logic
+# F. business_type_options() logic
 # ===========================================================================
 
-class TestLoadVerticals:
-    """_load_verticals() — reads preset JSONs, orders blank last."""
+def _presets_at(presets_dir: Path):
+    """Point the shared preset catalog at a test directory holding presets_dir."""
+    return patch("celerp.services.vertical_presets._data_dir", return_value=presets_dir.parent)
+
+
+class TestBusinessTypeOptions:
+    """business_type_options() - reads preset JSONs, orders blank last."""
 
     def _make_presets_dir(self, tmp_path: Path, presets: list[dict]) -> Path:
         d = tmp_path / "presets"
@@ -536,10 +512,10 @@ class TestLoadVerticals:
         ])
         import ui.i18n as i18n
         import ui.routes.setup as setup_mod
-        with patch.object(setup_mod, "_PRESETS_DIR", presets_dir):
+        with _presets_at(presets_dir):
             i18n.set_lang("de")
             try:
-                labels = dict(setup_mod._load_verticals())
+                labels = dict(setup_mod.business_type_options())
             finally:
                 i18n.set_lang("en")
         assert labels["gemstones"] == "Edelsteine & Schmuck"
@@ -549,13 +525,13 @@ class TestLoadVerticals:
         import ui.routes.setup as setup_mod
         locales = Path(setup_mod.__file__).resolve().parents[1] / "locales"
         catalogs = {p.stem: json.loads(p.read_text()) for p in locales.glob("*.json")}
-        for preset in setup_mod._PRESETS_DIR.glob("*.json"):
-            data = json.loads(preset.read_text())
-            if data.get("hidden"):
-                continue
+        from celerp.services.vertical_presets import list_presets
+        shipped = list_presets()
+        assert shipped, "the shipped preset catalog must resolve"
+        for data in shipped:
             key = data.get("label_key")
-            assert key, f"{preset.name} has no label_key"
-            assert catalogs["en"][key] == data["display_name"], preset.name
+            assert key, f"{data['name']} has no label_key"
+            assert catalogs["en"][key] == data["display_name"], data["name"]
             missing = [lang for lang, cat in catalogs.items() if key not in cat]
             assert not missing, f"{key} missing in {missing}"
 
@@ -567,8 +543,8 @@ class TestLoadVerticals:
         ])
         import importlib
         import ui.routes.setup as setup_mod
-        with patch.object(setup_mod, "_PRESETS_DIR", presets_dir):
-            result = setup_mod._load_verticals()
+        with _presets_at(presets_dir):
+            result = setup_mod.business_type_options()
         assert result[-1][0] == "blank", "blank must be last"
 
     def test_hidden_preset_excluded(self, tmp_path):
@@ -579,8 +555,8 @@ class TestLoadVerticals:
             {"name": "blank", "display_name": "Blank"},
         ])
         import ui.routes.setup as setup_mod
-        with patch.object(setup_mod, "_PRESETS_DIR", presets_dir):
-            result = setup_mod._load_verticals()
+        with _presets_at(presets_dir):
+            result = setup_mod.business_type_options()
         names = [n for n, _ in result]
         assert "property_rental" not in names, "hidden preset must be excluded"
         assert "gemstones" in names
@@ -592,24 +568,24 @@ class TestLoadVerticals:
             {"name": "fashion", "display_name": "Fashion"},
         ])
         import ui.routes.setup as setup_mod
-        with patch.object(setup_mod, "_PRESETS_DIR", presets_dir):
-            result = setup_mod._load_verticals()
+        with _presets_at(presets_dir):
+            result = setup_mod.business_type_options()
         labels = [label for _, label in result]
         assert labels == sorted(labels)
 
     def test_empty_presets_dir_returns_empty(self, tmp_path):
-        empty_dir = tmp_path / "empty"
+        empty_dir = tmp_path / "presets"
         empty_dir.mkdir()
         import ui.routes.setup as setup_mod
-        with patch.object(setup_mod, "_PRESETS_DIR", empty_dir):
-            result = setup_mod._load_verticals()
+        with _presets_at(empty_dir):
+            result = setup_mod.business_type_options()
         assert result == []
 
     def test_missing_presets_dir_returns_empty(self, tmp_path):
-        missing = tmp_path / "nonexistent"
+        missing = tmp_path / "presets"
         import ui.routes.setup as setup_mod
-        with patch.object(setup_mod, "_PRESETS_DIR", missing):
-            result = setup_mod._load_verticals()
+        with _presets_at(missing):
+            result = setup_mod.business_type_options()
         assert result == []
 
     def test_malformed_json_skipped(self, tmp_path):
@@ -618,8 +594,8 @@ class TestLoadVerticals:
         (presets_dir / "good.json").write_text(json.dumps({"name": "good", "display_name": "Good"}))
         (presets_dir / "bad.json").write_text("NOT VALID JSON {{{")
         import ui.routes.setup as setup_mod
-        with patch.object(setup_mod, "_PRESETS_DIR", presets_dir):
-            result = setup_mod._load_verticals()
+        with _presets_at(presets_dir):
+            result = setup_mod.business_type_options()
         names = [n for n, _ in result]
         assert "good" in names
         assert "bad" not in names
@@ -630,8 +606,8 @@ class TestLoadVerticals:
         (presets_dir / "nope.json").write_text(json.dumps({"display_name": "No name key"}))
         (presets_dir / "ok.json").write_text(json.dumps({"name": "ok", "display_name": "OK"}))
         import ui.routes.setup as setup_mod
-        with patch.object(setup_mod, "_PRESETS_DIR", presets_dir):
-            result = setup_mod._load_verticals()
+        with _presets_at(presets_dir):
+            result = setup_mod.business_type_options()
         names = [n for n, _ in result]
         assert "ok" in names
 
@@ -640,8 +616,8 @@ class TestLoadVerticals:
             {"name": "blank", "display_name": "Blank"},
         ])
         import ui.routes.setup as setup_mod
-        with patch.object(setup_mod, "_PRESETS_DIR", presets_dir):
-            result = setup_mod._load_verticals()
+        with _presets_at(presets_dir):
+            result = setup_mod.business_type_options()
         assert len(result) == 1
         assert result[0][0] == "blank"
 
@@ -977,37 +953,6 @@ class TestCompanyDetailsFormPreFill:
 
 class TestSetupFringe:
     """Edge cases that reveal integration bugs."""
-
-    @pytest.mark.asyncio
-    async def test_post_blank_vertical_does_not_call_apply_preset(self, ui_client):
-        """blank vertical must never touch /companies/me/apply-preset."""
-        api_calls = []
-
-        class FakeClient:
-            async def post(self, url, **kw):
-                api_calls.append(url)
-
-                class R:
-                    @property
-                    def is_error(self): return False
-                return R()
-            async def __aenter__(self): return self
-            async def __aexit__(self, *a): pass
-
-        with (
-            patch("ui.api_client.patch_company", new=AsyncMock(return_value={})),
-            patch("ui.api_client._client", return_value=FakeClient()),
-        ):
-            r = await ui_client.post(
-                "/setup/company",
-                data={"vertical": "blank"},
-                cookies=_authed(),
-            )
-        assert r.status_code in (302, 303)
-        assert all("apply-preset" not in u for u in api_calls), \
-            f"apply-preset must NOT be called for blank vertical; got calls: {api_calls}"
-        assert all("restart" not in u for u in api_calls), \
-            f"/system/restart must NOT be called for blank vertical; got calls: {api_calls}"
 
     @pytest.mark.asyncio
     async def test_activating_page_max_attempts_message_present(self, ui_client):

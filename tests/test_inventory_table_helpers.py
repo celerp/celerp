@@ -2,6 +2,8 @@
 
 Pure unit tests - no DB, no HTTP.
 """
+import re
+
 import pytest
 from ui.api_client import _flatten_item_attrs
 
@@ -364,23 +366,28 @@ class TestVirtualCostTotalColumn:
 
 class TestPerPageSelector:
     """#171: the per-page dropdown must navigate to the current page's own URL (resetting to
-    page 1), not HTMX-swap a hardcoded #inventory-content target — which made it dead on /docs."""
+    page 1), not HTMX-swap a hardcoded #inventory-content target, which made it dead on /docs."""
+
+    @staticmethod
+    def _size_select(html: str) -> str:
+        return re.search(r'<select[^>]*per-page-select.*?</select>', html, re.S).group(0)
 
     def test_navigates_to_base_url_not_hardcoded_inventory_target(self):
-        from ui.components.table import _per_page_selector
+        from ui.components.table import pagination
         from fasthtml.common import to_xml
-        html = to_xml(_per_page_selector(50, "/docs", "q=&type=invoice&sort=date&dir=desc"))
+        html = self._size_select(to_xml(pagination(3, 400, 50, "/docs", "q=&type=invoice&sort=date&dir=desc")))
         assert "inventory-content" not in html, "still hardcodes the inventory swap target"
         assert "hx-get" not in html and "hx-target" not in html
-        assert "onchange" in html
-        assert "/docs?per_page=" in html and "page=1" in html
-        assert "type=invoice" in html  # carries the existing filter state
+        assert "window.location=this.value" in html
+        values = re.findall(r'value="([^"]*)"', html)
+        assert "/docs?page=1&amp;per_page=100&amp;q=&amp;type=invoice&amp;sort=date&amp;dir=desc" in values
+        assert all("page=1&amp;" in v and "type=invoice" in v for v in values)
 
     def test_works_for_inventory_too(self):
-        from ui.components.table import _per_page_selector
+        from ui.components.table import pagination
         from fasthtml.common import to_xml
-        html = to_xml(_per_page_selector(100, "/inventory", "status=sold"))
-        assert "/inventory?per_page=" in html and "status=sold" in html
+        html = self._size_select(to_xml(pagination(1, 400, 100, "/inventory", "status=sold")))
+        assert "/inventory?page=1&amp;per_page=25&amp;status=sold" in html
 
 
 class TestMixedSelectSystemValue:

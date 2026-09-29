@@ -625,6 +625,7 @@ class TestModuleDataPurge:
             self, client, session, tmp_path):
         from test_helpers import perm_setup
         from celerp.models.company import Company
+        from celerp.services.company_lock import locked_company
         from sqlalchemy import select as sa_select
         ctx = await perm_setup(client, session)
         # Simulate the pre-change grandfathered state the raised floor still bars:
@@ -632,6 +633,7 @@ class TestModuleDataPurge:
         # into company.settings. The floor (admin) clamps operator out at read, so
         # the purge is still refused.
         company = (await session.execute(sa_select(Company))).scalars().first()
+        company = await locked_company(session, company.id)
         settings = dict(company.settings or {})
         rg = dict(settings.get("role_grants") or {})
         rg["manage_company_settings"] = ["operator", "manager", "admin", "owner"]

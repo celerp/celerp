@@ -16,10 +16,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
-import asyncio
 import json
-import logging
-from pathlib import Path
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -27,74 +24,33 @@ from ui.components.shell import auth_shell, flash, page_title
 from celerp.services.currencies import CURRENCIES, CURRENCY_CODES
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
-from celerp.config import set_enabled_modules as _set_enabled_modules
-
-logger = logging.getLogger(__name__)
-
-_PRESETS_DIR = (
-    Path(__file__).parent.parent.parent
-    / "default_modules" / "celerp-verticals" / "celerp_verticals" / "presets"
-)
-_CATEGORIES_DIR = (
-    Path(__file__).parent.parent.parent
-    / "default_modules" / "celerp-verticals" / "celerp_verticals" / "categories"
-)
+from celerp.services.vertical_presets import list_presets, load_preset
 
 
-async def _seed_vertical_categories(token: str, vertical: str) -> int:
-    """Seed category schemas for a vertical directly via core API (no verticals module needed).
+def _preset_label(preset: dict) -> str:
+    """Resolved through t() at render time: first-party presets carry a ``label_key``;
+    a preset without one renders its ``display_name``."""
+    if preset.get("label_key"):
+        return t(preset["label_key"])
+    return preset.get("display_name") or preset["name"]
 
-    Reads the preset JSON, loads each category definition, and patches the schema
-    into company settings via the always-available /me/category-schema/{category} endpoint.
-    Returns the number of categories applied.
+
+def business_type_label(value: str) -> str | None:
+    """The label of a stored business type, hidden presets included (a company may
+    hold one from before it was hidden). None when no such preset exists."""
+    preset = load_preset(value, allow_hidden=True) if value else None
+    return _preset_label(preset) if preset else None
+
+
+def business_type_options() -> list[tuple[str, str]]:
+    """The offered business types as [(value, label), ...].
+
+    Built from the shared visible preset catalog (hidden presets are never offered).
+    'blank' sorts last; all others sort alphabetically by label.
     """
-    preset_file = _PRESETS_DIR / f"{vertical}.json"
-    if not preset_file.exists():
-        return 0
-    preset = json.loads(preset_file.read_text())
-    applied = 0
-    for cat_name in (preset.get("categories") or []):
-        cat_file = _CATEGORIES_DIR / f"{cat_name}.json"
-        if not cat_file.exists():
-            continue
-        cat = json.loads(cat_file.read_text())
-        display_name = cat.get("display_name", cat_name)
-        fields = cat.get("fields") or []
-        try:
-            await api.patch_category_schema(token, display_name, fields)
-            applied += 1
-        except Exception:
-            pass
-    return applied
-
-
-def _load_verticals() -> list[tuple[str, str]]:
-    """Load vertical options from preset files. Returns [(value, label), ...].
-
-    Labels resolve through t() at render time: first-party presets carry a
-    ``label_key``; a preset without one renders its ``display_name``.
-    'blank' preset sorts last. All others sort alphabetically by label.
-    Presets flagged "hidden": true are skipped — used to stage a vertical that the
-    product can't yet honestly support (see the preset's "hidden_reason").
-    """
-    pinned_last: list[tuple[str, str]] = []
-    options: list[tuple[str, str]] = []
-    if _PRESETS_DIR.exists():
-        for p in sorted(_PRESETS_DIR.glob("*.json")):
-            try:
-                data = json.loads(p.read_text())
-                if data.get("hidden"):
-                    continue
-                label = t(data["label_key"]) if data.get("label_key") else data["display_name"]
-                entry = (data["name"], label)
-                if data["name"] == "blank":
-                    pinned_last.append(entry)
-                else:
-                    options.append(entry)
-            except Exception:
-                pass
-    options.sort(key=lambda x: x[1])
-    return options + pinned_last
+    options = [(p["name"], _preset_label(p)) for p in list_presets()]
+    return (sorted((o for o in options if o[0] != "blank"), key=lambda o: o[1])
+            + [o for o in options if o[0] == "blank"])
 
 _TIMEZONES = [
     "Asia/Bangkok", "Asia/Singapore", "Asia/Tokyo", "Asia/Hong_Kong",
@@ -125,36 +81,38 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
+        lang = get_lang(request)
 
-        data = {
+        # Every failure rerenders from what the user submitted, never from stored
+        # company state, so nothing they typed or chose is lost.
+        submitted = {
             "currency": str(form.get("currency", "THB")),
             "timezone": str(form.get("timezone", "Asia/Bangkok")),
             "tax_id": str(form.get("tax_id", "")).strip(),
             "phone": str(form.get("phone", "")).strip(),
             "address": str(form.get("address", "")).strip(),
+            "vertical": str(form.get("vertical", "")).strip(),
         }
+        data = {k: v for k, v in submitted.items() if k != "vertical"}
+        vertical = submitted["vertical"]
 
-        if data["currency"] not in CURRENCY_CODES:
-            try:
-                company = await api.get_company(token)
-            except APIError:
-                company = {}
+        def _rerender(error: str):
             return auth_shell(
-                _company_details_form(company, error=t("setup.invalid_currency", value=repr(data["currency"])), lang=get_lang(request)),
+                _company_details_form(submitted, error=error, lang=lang),
                 title=page_title("page.company_setup"),
             )
+
+        if data["currency"] not in CURRENCY_CODES:
+            return _rerender(t("setup.invalid_currency", value=repr(data["currency"])))
+        if not vertical:
+            return _rerender(t("setup.business_type_required"))
+        if vertical not in {value for value, _ in business_type_options()}:
+            return _rerender(t("setup.unknown_business_type", value=repr(vertical)))
 
         try:
             await api.patch_company(token, data)
         except APIError as e:
-            try:
-                company = await api.get_company(token)
-            except APIError:
-                company = {}
-            return auth_shell(
-                _company_details_form(company, error=e.detail, lang=get_lang(request)),
-                title=page_title("page.company_setup"),
-            )
+            return _rerender(e.detail)
 
         # Mirror the company identity onto the self-contact - the Company Details page and the document
         # letterhead read the self-contact, not company settings / the Location. address -> Head Office
@@ -181,53 +139,19 @@ def setup_routes(app):
         except Exception:
             pass
 
-        # Apply vertical preset if one was chosen (blank = no preset, no-op)
-        vertical = str(form.get("vertical", "blank"))
-        if vertical != "blank":
-            preset_file = _PRESETS_DIR / f"{vertical}.json"
-            if preset_file.exists():
-                preset = json.loads(preset_file.read_text())
-                preset_modules: list[str] = preset.get("modules") or []
-                if preset_modules:
-                    await asyncio.to_thread(_set_enabled_modules, preset_modules)
-                    # Sync enabled state into company settings (DB) so the modules tab
-                    # shows the correct enabled/disabled badge without a manual toggle.
-                    for mod_name in preset_modules:
-                        try:
-                            async with api._client(token) as c:
-                                await c.post(f"/companies/me/modules/{mod_name}/enable")
-                        except Exception:
-                            pass
-            # Seed category schemas for this vertical directly (bypasses verticals module
-            # which may not be loaded yet — core patch_category_schema is always available)
+        try:
+            result = await api.set_business_type(token, vertical)
+        except APIError as e:
+            return _rerender(e.detail)
+        if result.get("restart_required"):
+            # The type's modules load on restart; the activating page waits for them.
+            # The server may drop this request as it goes down, so its outcome is not
+            # a failure of the setup step.
             try:
-                await _seed_vertical_categories(token, vertical)
-            except Exception:
-                pass
-            # Store the vertical name in company settings so the dashboard can use it
-            try:
-                async with api._client(token) as c:
-                    raw = api._raise(await c.get("/companies/me")).json()
-                    settings = dict(raw.get("settings") or {})
-                    settings["vertical"] = vertical
-                    api._raise(await c.patch("/companies/me", json={"name": raw.get("name", ""), "settings": settings}))
-            except Exception as exc:
-                logger.warning("storing vertical failed during setup wizard: %s", exc)
-            # Re-seed demo items with vertical-aware examples now that vertical is set
-            try:
-                async with api._client(token) as c:
-                    r = await c.post(f"/companies/me/demo/reseed?vertical={vertical}")
-                    logger.info("demo reseed response: status=%s body=%s", r.status_code, r.text[:200])
-            except Exception as exc:
-                logger.warning("demo reseed failed during setup wizard: %s", exc)
-            # Trigger graceful API restart so new modules load (sentinel written by /system/restart)
-            try:
-                async with api._client(token) as c:
-                    await c.post("/system/restart")
+                await api.restart_system(token)
             except Exception:
                 pass
             return RedirectResponse("/setup/activating", status_code=302)
-
         return RedirectResponse("/setup/cloud", status_code=302)
 
     @app.get("/setup/activating")
@@ -393,6 +317,9 @@ def _wizard_steps(current: int, lang: str = "en") -> FT:
 def _company_details_form(company: dict, error: str | None = None, lang: str = "en") -> FT:
     # company is already flattened by api.get_company (_flatten_company); fall back to settings sub-dict too
     s = {**(company.get("settings") or {}), **company}
+    options = business_type_options()
+    offered = {val for val, _ in options}
+    chosen = s.get("vertical") or ""
     return Div(
         Form(
             _wizard_steps(2, lang=lang),
@@ -450,9 +377,10 @@ def _company_details_form(company: dict, error: str | None = None, lang: str = "
             Div(
                 Label(t("label.business_type"), For="vertical", cls="form-label"),
                 Select(
-                    *[Option(label, value=val, selected=(val == s.get("vertical", "general")))
-                      for val, label in _load_verticals()],
-                    id="vertical", name="vertical", cls="form-input",
+                    Option(t("setup.choose_business_type"), value="", disabled=True,
+                           selected=chosen not in offered),
+                    *[Option(label, value=val, selected=(val == chosen)) for val, label in options],
+                    id="vertical", name="vertical", required=True, cls="form-input",
                 ),
                 cls="form-group",
             ),

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.doc_balance import canonical_doc_type, doc_value, is_awaiting_payment, is_owed, outstanding_balance, today_iso
 from celerp.services.permissions import require_permission
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -27,6 +28,15 @@ def _parse_d(val: str | None) -> Decimal:
         return Decimal(str(val))
     except Exception:
         return Decimal(0)
+
+
+def _aged_balance(state: dict, doc_types: tuple[str, ...]) -> Decimal | None:
+    """What a document of one of ``doc_types`` awaiting payment still owes, or None when it is not
+    aged: another type, not awaiting payment, or settled."""
+    doc_type = canonical_doc_type(state.get("doc_type", state.get("type", "")))
+    if doc_type not in doc_types or not is_awaiting_payment(doc_type, state.get("status")) or not is_owed(state):
+        return None
+    return outstanding_balance(state)
 
 
 def _doc_cogs(inv: dict) -> Decimal:
@@ -71,7 +81,7 @@ async def ar_aging(
         )
     ).scalars().all()
 
-    today = date.today()
+    today = date.fromisoformat(today_iso())
 
     # customer_id -> {current, d30, d60, d90, d90plus}
     buckets: dict[str, dict[str, Decimal]] = defaultdict(lambda: {
@@ -82,20 +92,14 @@ async def ar_aging(
 
     for row in rows:
         state = row.state
-        doc_type = state.get("doc_type", state.get("type", ""))
-        if doc_type not in ("invoice", "Invoice"):
-            continue
-        status = state.get("status", "")
-        if status in ("void", "paid", "draft"):
-            continue
-        outstanding = _parse_d(state.get("amount_outstanding") or state.get("total"))
-        if outstanding <= 0:
+        outstanding = _aged_balance(state, ("invoice",))
+        if outstanding is None:
             continue
 
         customer_id = state.get("contact_id") or state.get("customer_id") or "unlinked"
         names[customer_id] = state.get("contact_name") or state.get("customer_name") or "Unlinked Invoices"
 
-        due_date_str = state.get("due_date") or state.get("date") or today.isoformat()
+        due_date_str = doc_value(state, "due_date") or state.get("date") or today.isoformat()
         try:
             due = date.fromisoformat(due_date_str[:10])
         except ValueError:
@@ -159,7 +163,7 @@ async def ap_aging(
         )
     ).scalars().all()
 
-    today = date.today()
+    today = date.fromisoformat(today_iso())
 
     buckets: dict[str, dict[str, Decimal]] = defaultdict(lambda: {
         "current": Decimal(0), "d30": Decimal(0), "d60": Decimal(0),
@@ -169,20 +173,14 @@ async def ap_aging(
 
     for row in rows:
         state = row.state
-        doc_type = state.get("doc_type", state.get("type", ""))
-        if doc_type not in ("purchase_order", "bill", "PO"):
-            continue
-        status = state.get("status", "")
-        if status in ("void", "received", "draft", "paid"):
-            continue
-        outstanding = _parse_d(state.get("amount_outstanding") or state.get("total"))
-        if outstanding <= 0:
+        outstanding = _aged_balance(state, ("purchase_order", "bill"))
+        if outstanding is None:
             continue
 
         supplier_id = state.get("contact_id") or state.get("supplier_id") or "Unlinked"
         names[supplier_id] = state.get("contact_name") or state.get("supplier_name") or supplier_id
 
-        due_date_str = state.get("due_date") or state.get("expected_delivery") or today.isoformat()
+        due_date_str = doc_value(state, "due_date") or state.get("expected_delivery") or today.isoformat()
         try:
             due = date.fromisoformat(due_date_str[:10])
         except ValueError:

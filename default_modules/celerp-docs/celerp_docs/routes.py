@@ -26,11 +26,11 @@ from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
-from celerp.inventory_codes import MAX_SCAN_CODE_LEN
+from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
-from celerp.services.company_lock import lock_company, lock_projections
+from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
@@ -52,6 +52,7 @@ from celerp.services.payment_terms import company_payment_terms, due_date_for_te
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES
+from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance, today_iso
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
 )
@@ -952,20 +953,6 @@ def _doc_sort_field(f: DocListFilters) -> str:
     return field
 
 
-# Older keys a document may carry a displayed value under (imported documents store their
-# number, dates and amounts this way). The list row is filled from them when the current key
-# is missing or empty, and the sort orders by them, so the order on the page is the order of
-# what the page shows. A stored 0 is a value, not a gap.
-_DOC_DISPLAY_FALLBACKS = {
-    "doc_number": ("ref", "ref_id"),
-    "contact_name": ("contact_id", "contact_external_id"),
-    "issue_date": ("created_at",),
-    "due_date": ("payment_due_date",),
-    "total": ("total_amount",),
-    "amount_outstanding": ("outstanding_balance",),
-}
-
-
 _SQL_NUMBER_PATTERN = r"^[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?$"
 
 
@@ -985,7 +972,7 @@ def _doc_sql_order(field: str, descending: bool) -> list:
     else:
         values = [
             _func.nullif(Projection.state[k].as_string(), "")
-            for k in (field, *_DOC_DISPLAY_FALLBACKS.get(field, ()))
+            for k in (field, *DOC_FIELD_FALLBACKS.get(field, ()))
         ]
         expr = _func.coalesce(*values) if len(values) > 1 else values[0]
         if field in _DOC_NUMERIC_SORT_FIELDS:
@@ -995,18 +982,10 @@ def _doc_sql_order(field: str, descending: bool) -> list:
     return [expr.asc().nulls_first(), Projection.entity_id.asc()]
 
 
-def _doc_value(state: dict, field: str):
-    """The value a document shows for ``field``: the field itself, else its first non-empty older
-    key (``_DOC_DISPLAY_FALLBACKS``)."""
-    value = state.get(field)
-    if value in (None, ""):
-        value = next((state[k] for k in _DOC_DISPLAY_FALLBACKS.get(field, ()) if state.get(k) not in (None, "")), value)
-    return value
-
-
 def _doc_display(state: dict) -> dict:
-    """``state`` with each displayed field filled from its older keys (``_doc_value``)."""
-    return state | {field: _doc_value(state, field) for field in _DOC_DISPLAY_FALLBACKS}
+    """``state`` with each displayed field filled from its older keys (``doc_value``). The sort
+    orders by the same keys, so the order on the page is the order of what the page shows."""
+    return state | {field: doc_value(state, field) for field in DOC_FIELD_FALLBACKS}
 
 
 def _doc_row(r: Projection) -> dict:
@@ -1016,7 +995,7 @@ def _doc_row(r: Projection) -> dict:
 
 
 # The state keys the row-by-row filters of ``_doc_filter`` read, before display fallbacks.
-_DOC_FILTER_KEYS = ("status", "due_date", "fulfillment_status", "return_received_items", "received_items")
+_DOC_FILTER_KEYS = ("doc_type", "status", "due_date", "amount_outstanding", "total", "fulfillment_status", "return_received_items", "received_items")
 
 
 def _doc_filter(f: DocListFilters, today: str):
@@ -1024,7 +1003,7 @@ def _doc_filter(f: DocListFilters, today: str):
     or None when none is set and every filter is in the SQL WHERE."""
     checks = []
     if f.overdue_only:
-        checks.append(lambda x: x.get("due_date") and x["due_date"] < today and x.get("status") not in ("draft", "void"))
+        checks.append(lambda x: is_overdue_document(x, today))
     if f.unfulfilled_only:
         checks.append(lambda x: x.get("status") not in ("draft", "void", "closed") and x.get("fulfillment_status") != "fulfilled")
     if f.not_restocked:
@@ -1035,20 +1014,34 @@ def _doc_filter(f: DocListFilters, today: str):
 
 
 def _doc_base_amounts(state: dict, fields: tuple[str, ...], base_currency: str) -> dict[str, Decimal] | None:
-    """``fields`` of a document (``_doc_value``; missing is 0) in the company currency, each
-    rounded at its precision, or None when the document cannot be valued there: its exchange
-    rate is unknown or invalid (``doc_rate``), or an amount is not a number. None is never
-    counted as 0 or at a rate of 1."""
+    """``fields`` of a document (``doc_value``; missing is 0, and ``amount_outstanding`` is what
+    it still owes, ``outstanding_balance``) in the company currency, each rounded at its
+    precision, or None when the document cannot be valued there: its exchange rate is unknown or
+    invalid (``doc_rate``), or an amount is not a number. None is never counted as 0 or at a rate
+    of 1."""
     try:
         rate = doc_rate(state, base_currency)
         if rate is None:
             return None
-        amounts = {f: to_decimal(_doc_value(state, f) or 0) for f in fields}
+        amounts = {
+            f: outstanding_balance(state) if f == "amount_outstanding" else to_decimal(doc_value(state, f) or 0)
+            for f in fields
+        }
     except (ArithmeticError, TypeError, ValueError):
         return None
-    if not all(a.is_finite() for a in amounts.values()):
+    if not all(a is not None and a.is_finite() for a in amounts.values()):
         return None
     return {f: round_money(a * rate, base_currency) for f, a in amounts.items()}
+
+
+def _payable_balance(state: dict) -> Decimal:
+    """What a document still owes (``outstanding_balance``) at its currency's precision, for a
+    payment, credit or refund to be checked against; 409 when the recorded balance is not a
+    number."""
+    balance = outstanding_balance(state)
+    if balance is None:
+        raise HTTPException(status_code=409, detail="The document's outstanding balance is not a number")
+    return round_money(balance, str(state.get("currency") or "USD").upper())
 
 
 async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, *, limit: int | None, offset: int = 0) -> dict:
@@ -1059,7 +1052,7 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     # in Python over the SQL-ordered rows, so both paths share one ORDER BY.
     base_where = _doc_sql_where(company_id, f)
     order_by = _doc_sql_order(_doc_sort_field(f), f.dir == "desc")
-    keep = _doc_filter(f, _date.today().isoformat())
+    keep = _doc_filter(f, today_iso())
 
     if keep is not None:
         rows = (await session.execute(select(Projection).where(*base_where).order_by(*order_by))).scalars().all()
@@ -1149,7 +1142,7 @@ async def get_doc_summary(
 
     Totals are in the company currency (``_doc_base_amounts``). A document that cannot be valued
     there is left out of every total and counted in ``unvalued_count``."""
-    today = _date.today().isoformat()
+    today = today_iso()
     company = await session.get(Company, company_id)
     base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
     summary_where = _doc_sql_where(company_id, _dc_replace(filters, status=None, status_in=None, exclude_status=None, all_issued=False))
@@ -1160,7 +1153,6 @@ async def get_doc_summary(
     ), Decimal(0))
     count_by_status: dict[str, int] = {}
     invoice_count = 0
-    _AWAITING_STATUSES = {"final", "sent", "awaiting_payment", "partial"}
     awaiting_payment_count = 0
     overdue_count = 0
     paid_count = 0
@@ -1195,11 +1187,10 @@ async def get_doc_summary(
             if state.get("fulfillment_status") != "fulfilled":
                 unfulfilled_count += 1
                 add("unfulfilled", amounts, "total")
-            if st in _AWAITING_STATUSES:
+            if is_awaiting_payment(dt, st):
                 awaiting_payment_count += 1
                 add("awaiting_payment", amounts, "amount_outstanding")
-                due = _doc_value(state, "due_date") or ""
-                if due and due < today:
+                if is_overdue_document(state, today):
                     overdue_count += 1
                     add("overdue", amounts, "amount_outstanding")
                 if st == "sent":
@@ -1215,10 +1206,10 @@ async def get_doc_summary(
                 if amounts is None:
                     unvalued_count += 1
                 add("memo", amounts, "total")
-            if dt in ("memo", "consignment_in"):
-                due = _doc_value(state, "due_date") or ""
-                if due and due < today:
-                    overdue_count += 1
+            if is_awaiting_payment(dt, st):
+                awaiting_payment_count += 1
+            if is_overdue_document(state, today):
+                overdue_count += 1
             if dt == "credit_note":
                 if not (state.get("return_received_items") or []):
                     not_restocked_count += 1
@@ -1281,7 +1272,7 @@ async def get_sequences(company_id: str = Depends(get_current_company_id), user=
 
 @router.patch("/sequences/{doc_type}")
 async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("manage_module_settings"), session: AsyncSession = Depends(get_session)) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     try:
@@ -1620,14 +1611,9 @@ async def create_doc(
                 [li.model_dump() for li in payload.line_items], None,
             )
 
-    # Lock the company row (SELECT ... FOR UPDATE) for the rest of the
-    # transaction so concurrent doc creation can't read the same numbering
-    # counter and mint duplicate refs (e.g. two CN-2606-0002).
-    company = (
-        await session.execute(
-            select(Company).where(Company.id == company_id).with_for_update()
-        )
-    ).scalar_one_or_none()
+    # Concurrent doc creation must not read the same numbering counter and
+    # mint duplicate refs (e.g. two CN-2606-0002).
+    company = await locked_company(session, company_id)
     # Re-check under the same serialization lock that owns numbering. A concurrent
     # retry can only reach this point before the first request commits; once it does,
     # the second request observes the original event and returns without consuming a
@@ -1744,7 +1730,8 @@ async def create_doc(
 
     if payload.doc_type == "credit_note" and payload.original_doc_id:
         inv = await _get_doc(session, company_id, payload.original_doc_id)
-        outstanding = max(0.0, float(inv.state.get("amount_outstanding", inv.state.get("total", 0)) or 0) - float(payload.total))
+        outstanding = to_stored_float(max(Decimal(0), _payable_balance(inv.state) - round_money(
+            payload.total, str(inv.state.get("currency") or "USD").upper())))
         await emit_event(
             session,
             company_id=company_id,
@@ -1955,6 +1942,9 @@ async def _payments_tip_suffix(session, company_id) -> str:
     company = await session.get(Company, company_id)
     if company is None or (company.settings or {}).get("pay_tip_shown"):
         return ""
+    company = await locked_company(session, company_id)
+    if (company.settings or {}).get("pay_tip_shown"):
+        return ""
     settings = dict(company.settings or {})
     settings["pay_tip_shown"] = True
     company.settings = settings
@@ -2028,7 +2018,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
 
     sent_to = payload.sent_to
     view_url = pay_url = None
-    amount_due = float(row.state.get("amount_outstanding", row.state.get("total", 0)) or 0)
+    amount_due = float(outstanding_balance(row.state) or 0)
     if sent_to:
         # Emailing a document always shares it (an email with no viewable
         # document is pointless); send_view_url returns None only when no link
@@ -2077,8 +2067,9 @@ async def _finalize_doc_impl(
     commit: bool = True,
 ) -> dict:
     """Finalize with caller-owned transaction support for domain integrations."""
-    # An invoice's recognized COGS reads lot costs that a cost correction may be
-    # rewriting; the company lock orders the two.
+    # Company before the doc row: finalizing may draw the next invoice or bill number, and an
+    # invoice's recognized COGS reads lot costs that a cost correction may be rewriting.
+    _company = await locked_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     # A closed memo is terminal, settled paperwork; finalize maps closed->final in the
     # reducer, silently stripping the terminal status and its close metadata. Refuse under
@@ -2098,8 +2089,6 @@ async def _finalize_doc_impl(
     finalize_data: dict = {}
     event_type = "doc.finalized"
 
-    # Load company once for base currency (used for validation and JE conversion).
-    _company = await session.get(Company, company_id)
     _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
 
     _require_doc_rate_http(_initial_doc_state, _base_currency)
@@ -2679,8 +2668,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
             detail=f"Payment currency {payment_currency} does not match document currency {doc_currency}",
         )
     body["currency"] = doc_currency
-    outstanding_d = round_money(
-        doc_state.get("amount_outstanding", doc_state.get("total", 0)) or 0, doc_currency)
+    outstanding_d = _payable_balance(doc_state)
     if outstanding_d <= 0:
         raise HTTPException(status_code=409, detail="Invoice already fully paid")
     amount_d = round_money(body["amount"], doc_currency)
@@ -3224,10 +3212,8 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
     amount_d = round_money(payload.amount, cn_currency)
     if amount_d <= 0:
         raise HTTPException(status_code=422, detail="Application amount must be positive")
-    cn_outstanding = round_money(
-        cn.get("amount_outstanding", cn.get("total", 0)) or 0, cn_currency)
-    inv_outstanding = round_money(
-        inv.get("amount_outstanding", inv.get("total", 0)) or 0, inv_currency)
+    cn_outstanding = _payable_balance(cn)
+    inv_outstanding = _payable_balance(inv)
     if amount_d > cn_outstanding:
         raise HTTPException(status_code=409, detail="Amount exceeds credit note balance")
     if amount_d > inv_outstanding:
@@ -3323,8 +3309,7 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
     amount_d = round_money(payload.amount, currency)
     if amount_d <= 0:
         raise HTTPException(status_code=422, detail="Refund amount must be positive")
-    cn_outstanding = round_money(
-        cn.get("amount_outstanding", cn.get("total", 0)) or 0, currency)
+    cn_outstanding = _payable_balance(cn)
     if amount_d > cn_outstanding:
         raise HTTPException(status_code=409, detail="Refund amount exceeds credit note balance")
     amount = to_stored_float(amount_d)
@@ -3404,13 +3389,10 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
 
     payable = []
     for doc_id, state in docs:
-        if state.get("status") not in {"sent", "final", "partial", "awaiting_payment"}:
+        if not (is_awaiting_payment(state.get("doc_type"), state.get("status")) and is_owed(state)):
             continue
         currency = str(state.get("currency") or "USD").upper()
-        outstanding = round_money(
-            state.get("amount_outstanding", state.get("total", 0)) or 0, currency)
-        if outstanding > 0:
-            payable.append((doc_id, state, currency, outstanding))
+        payable.append((doc_id, state, currency, _payable_balance(state)))
     if not payable:
         raise HTTPException(status_code=409, detail="No documents in payable status")
 
@@ -4109,6 +4091,8 @@ async def create_shipment_from_docs(
     # concurrent close cannot slip a status change between this read and the shipment
     # commit (TOCTOU). Validate in the caller's selection order off the locked rows.
     named = await _lock_copied_contacts(session, company_id, doc_ids)
+    # The company comes next: the shipment draws the next shipping-doc number.
+    company = await locked_company(session, company_id)
     locked = await _get_docs_for_update(session, company_id, doc_ids)
     _assert_contacts_unchanged(named, locked.values())
     states = []
@@ -4166,7 +4150,6 @@ async def create_shipment_from_docs(
     _ship_to = next((s.get("contact_shipping_address") for s in states
                      if s.get("contact_shipping_address")), None)
     _attn = next((s.get("shipping_attn") for s in states if s.get("shipping_attn")), None)
-    company = await session.get(Company, company_id)
     ref_id = next_doc_ref(company, list_sequence_key("shipping_doc"))
     new_entity_id = f"list:{ref_id}"
     data = {k: v for k, v in {
@@ -4194,6 +4177,8 @@ async def create_shipment_from_docs(
 @router.post("/{entity_id}/convert")
 async def convert_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     named = await _lock_copied_contacts(session, company_id, [entity_id])
+    # Company before the doc row: a conversion draws the next invoice or bill number.
+    company = await locked_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     _assert_contacts_unchanged(named, [row])
     state = row.state
@@ -4213,7 +4198,6 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
             session, company_id,
             (li.get("entity_id") or li.get("item_id") or "" for li in state.get("line_items") or []),
         )
-        company = await session.get(Company, company_id)
         ref = next_doc_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
         new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type"}}
@@ -4237,7 +4221,6 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         # re-bill. Only a genuinely-not-issued memo (draft/void) is rejected here.
         if state.get("status") not in ("final", "sent", "received", "partially_received", "converted"):
             raise HTTPException(status_code=409, detail="Memo must be issued before converting to invoice")
-        company = await session.get(Company, company_id)
         ref = next_doc_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
 
@@ -4379,7 +4362,6 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
     if state.get("doc_type") == "consignment_in":
         if state.get("status") not in ("final", "sent", "received", "partially_received"):
             raise HTTPException(status_code=409, detail="Consignment In must be issued before converting to vendor bill")
-        company = await session.get(Company, company_id)
         ref = next_doc_ref(company, "bill")
         new_doc_id = f"doc:{ref}"
         new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type"}}
@@ -4395,8 +4377,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
                 float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
                 for li in state.get("line_items", [])
             )
-        _consign_company = await session.get(Company, company_id)
-        _consign_base_currency = (_consign_company.settings.get("currency", "USD") if _consign_company else "USD")
+        _consign_base_currency = (company.settings.get("currency", "USD") if company else "USD")
         await auto_je.create_for_bill_conversion(
             session, company_id=company_id, user_id=user.id, doc_id=new_doc_id, doc={**state, "total": bill_total},
             base_currency=_consign_base_currency,
@@ -4820,10 +4801,10 @@ async def export_docs_csv(
     out_cols = resolve_export_cols(cols, _DOC_EXPORT_COLS, _DOC_EXPORT_COLS)
     base_where = _doc_sql_where(company_id, filters)
     order_by = _doc_sql_order(_doc_sort_field(filters), filters.dir == "desc")
-    keep = _doc_filter(filters, _date.today().isoformat())
+    keep = _doc_filter(filters, today_iso())
     # Read only the state keys the exported columns and the row filters need, never whole documents.
     fields = {c for c in out_cols if c != "entity_id"} | (set(_DOC_FILTER_KEYS) if keep else set())
-    keys = sorted(fields | {k for field in fields for k in _DOC_DISPLAY_FALLBACKS.get(field, ())})
+    keys = sorted(fields | {k for field in fields for k in DOC_FIELD_FALLBACKS.get(field, ())})
 
     async def _rows():
         stmt = (
@@ -5324,10 +5305,10 @@ async def create_list(
     require_currency_code(payload.currency)
     # Contact before company, the lock order every contact-reference writer takes.
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
-    # Lock the company row so concurrent creates cannot read the same numbering counter.
-    company = (
-        await session.execute(select(Company).where(Company.id == company_id).with_for_update())
-    ).scalar_one_or_none()
+    # Lock the company row so concurrent creates cannot read the same numbering counter, then
+    # re-check the key under that lock: a retry racing the first request returns the original
+    # list instead of consuming a second number. Mirrors create_doc.
+    company = await locked_company(session, company_id)
     if (done := await _replay()) is not None:
         return done
     ref_id = payload.ref_id or next_doc_ref(company, list_sequence_key(payload.list_type))
@@ -6008,9 +5989,7 @@ async def finalize_list(
                     continue
                 seen.add(key)
             lines.append(l)
-        for l in lines:
-            item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
-            l["on_hand"] = float(item.state.get("quantity") or 0) if (item and item.entity_type == "item") else 0.0
+        await _lock_audit_lines(session, company_id, lines, keep_unlinked_on_hand=False)
         data["line_items"] = lines
     elif milestone:
         data[milestone] = now
@@ -6107,6 +6086,7 @@ async def convert_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     named = await _lock_copied_contacts(session, company_id, [entity_id])
+    company = await locked_company(session, company_id)
     row = await _get_list_for_update(session, company_id, entity_id)
     _assert_contacts_unchanged(named, [row])
     state = row.state
@@ -6134,7 +6114,6 @@ async def convert_list(
             },
         )
 
-    company = await session.get(Company, company_id)
     ref = next_doc_ref(company, payload.target_type)
     new_doc_id = f"doc:{ref}"
     new_data = {k: v for k, v in state.items()
@@ -6169,10 +6148,10 @@ async def duplicate_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     named = await _lock_copied_contacts(session, company_id, [entity_id])
+    company = await locked_company(session, company_id)
     row = await _get_list_for_update(session, company_id, entity_id)
     _assert_contacts_unchanged(named, [row])
     state = row.state
-    company = await session.get(Company, company_id)
     ref_id = next_doc_ref(company, list_sequence_key(state.get("list_type")))
     new_entity_id = f"list:{ref_id}"
     new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type", "ref_id", "share_token"}}
@@ -8079,7 +8058,72 @@ async def _set_list_fields(session, company_id, entity_id, user, fields: dict):
 
 def _ambiguous_sku_detail(code: str) -> str:
     """The one message for an ambiguous SKU: never silently pick a lot - the operator disambiguates."""
-    return f"Multiple items share SKU '{code}'. Scan its barcode or pick a specific lot."
+    return f"{code}: multiple items share this SKU; scan a barcode or choose a lot"
+
+
+def _unknown_code_detail(code: str) -> str:
+    return f"{code}: no matching barcode or SKU"
+
+
+def _sku_note(code: str, item: Projection) -> str:
+    """The item's SKU as context after the scanned code, unless the code already was that SKU."""
+    sku = (item.state or {}).get("sku")
+    return f" (SKU {sku})" if sku and sku != code else ""
+
+
+def _locked_barcode_moved(code: str, item: Projection | None, lines: list[dict]) -> bool:
+    """True when `code` is some line's locked barcode but no longer resolves to that line's item,
+    even when it now resolves to another item that is also on the audit."""
+    item_id = item.entity_id if item is not None else None
+    return any(l.get("barcode") == code and l.get("item_id") != item_id for l in lines)
+
+
+def _locked_manifest_failure(code: str, item: Projection | None, lines: list[dict]) -> tuple[str, str]:
+    """(reason, label) for a code that checks off no line of a locked audit. A manifest keys
+    physical identity by item_id; a SKU is only context. A code equal to a line's locked barcode
+    that no longer resolves to that line's item means the identifier moved after locking: counting
+    it against the old line could adjust the wrong stock, so it is reported, never checked off."""
+    if _locked_barcode_moved(code, item, lines):
+        return ("audit_identifier_changed",
+                f"{code}: this barcode changed after the audit was locked; review the audit before counting")
+    if item is None:
+        return "unknown_code", _unknown_code_detail(code)
+    sku = (item.state or {}).get("sku")
+    if sku and any(l.get("sku") == sku for l in lines):
+        return "not_on_audit", f"{code}: not on this audit. SKU {sku} is present on a different lot."
+    return "not_on_audit", f"{code}: not on this audit{_sku_note(code, item)}"
+
+
+# What a locked audit line records about its physical item. Refreshed from the item at lock time;
+# counts, comments and any other line field are left as the user set them.
+_AUDIT_IDENTITY_FIELDS = ("sku", "name", "barcode")
+
+
+async def _lock_audit_lines(session: AsyncSession, company_id: str, lines: list[dict],
+                            *, keep_unlinked_on_hand: bool) -> None:
+    """In place: refresh each linked line's identity from its item and freeze its on-hand, so the
+    locked manifest agrees with the item every later scan resolves to. A line whose item no longer
+    exists, or was merged into another (no scan resolves to it again), blocks the lock: it could
+    never be counted and its stock never adjusted. An unlinked line has no item to read: with
+    `keep_unlinked_on_hand` it keeps the on-hand it already carries, otherwise it freezes at 0."""
+    for l in lines:
+        key = l.get("item_id")
+        item = await session.get(Projection, {"company_id": company_id, "entity_id": key}) if key else None
+        if key:
+            label = l.get("sku") or l.get("name") or "A line"
+            if item is None or item.entity_type != "item":
+                raise HTTPException(status_code=409,
+                                    detail=f"{label}: its inventory item no longer exists. Remove the line, then try again.")
+            if str((item.state or {}).get("status") or "").lower() in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES:
+                raise HTTPException(status_code=409,
+                                    detail=f"{label}: its inventory item was merged into another item. "
+                                           "Remove the line, then try again.")
+        if item is None:
+            l["on_hand"] = float(l.get("on_hand") or 0) if keep_unlinked_on_hand else 0.0
+            continue
+        fresh = _scan_line_from_item(item, "audit", None)
+        l.update({f: fresh[f] for f in _AUDIT_IDENTITY_FIELDS})
+        l["on_hand"] = float(item.state.get("quantity") or 0)
 
 
 def _normalize_line_item_ids(lines: list) -> None:
@@ -8124,7 +8168,7 @@ async def create_audit_list(
     """Create a location-bound audit as a DRAFT manifest pre-seeded with the location's physical
     items. The manifest is reviewed/extended in draft (scan adds more); Finalize freezes each line's
     on-hand snapshot, then counting happens in the finalized stage."""
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
     lines: list[dict] = []
@@ -8243,9 +8287,10 @@ async def scan_list(
         else:
             item = res.one if res is not None else None
             if item is None:
-                reason, detail = "unknown_code", f"Unknown barcode or SKU: {code}"
+                reason, detail = (_locked_manifest_failure(code, None, lines) if status == FINALIZED
+                                  else ("unknown_code", _unknown_code_detail(code)))
             elif str((item.state or {}).get("status") or "").lower() == "draft":
-                reason, detail = "draft_item", f"{(item.state or {}).get('sku') or code}: item is a draft - make it available first"
+                reason, detail = "draft_item", f"{code}: item is a draft - make it available first{_sku_note(code, item)}"
         if detail is not None:
             failed.append({"code": code, "reason": reason, "label": detail})
             results.append({"code": code, "state": "error", "reason": reason, "label": detail})
@@ -8268,7 +8313,7 @@ async def scan_list(
                 # against the live `lines`, so this dedups both within-batch and against
                 # persisted lines - matching the audit branch's set semantics above.
                 if idx is not None:
-                    detail = f"{item.state.get('sku') or code}: already on the list"
+                    detail = f"{code}: already on the list{_sku_note(code, item)}"
                     failed.append({"code": code, "reason": "duplicate_scan", "label": detail})
                     results.append({"code": code, "state": "error", "reason": "duplicate_scan", "label": detail})
                     continue
@@ -8294,11 +8339,12 @@ async def scan_list(
                 result_state = "added"
         else:
             # FINALIZED audit: the manifest is LOCKED - scanning only checks off items already on the
-            # list and never adds. An item not on the list is reported (add it while still a draft).
-            if idx is None:
-                detail = f"{item.state.get('sku') or code} is not on this audit"
-                failed.append({"code": code, "reason": "not_on_audit", "label": detail})
-                results.append({"code": code, "state": "error", "reason": "not_on_audit", "label": detail})
+            # list and never adds. An item not on the list is reported (add it while still a draft), as
+            # is a code that is another line's locked barcode.
+            if idx is None or _locked_barcode_moved(code, item, lines):
+                reason, detail = _locked_manifest_failure(code, item, lines)
+                failed.append({"code": code, "reason": reason, "label": detail})
+                results.append({"code": code, "state": "error", "reason": reason, "label": detail})
                 continue
             ln = lines.pop(idx)
             ln["audited_at"] = now        # confirm presence -> the row highlights as accounted for
@@ -8615,7 +8661,7 @@ async def create_writeoff_list(
     not a location scan."""
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="Select at least one item to write off")
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     lines: list[dict] = []
     for eid in payload.entity_ids:
         item = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
@@ -8901,10 +8947,7 @@ async def change_list_type(
     fields: dict = {"list_type": new_type}
     if new_type == "audit" and status == FINALIZED:
         lines = [dict(l) for l in (state.get("line_items") or [])]
-        for l in lines:
-            item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
-            l["on_hand"] = (float(item.state.get("quantity") or 0)
-                            if (item and item.entity_type == "item") else l.get("on_hand", 0.0))
+        await _lock_audit_lines(session, company_id, lines, keep_unlinked_on_hand=True)
         fields["line_items"] = lines
     await _set_list_fields(session, company_id, entity_id, user, fields)
     await session.commit()

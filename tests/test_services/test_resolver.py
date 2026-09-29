@@ -75,7 +75,7 @@ def test_duplicate_barcode_result_is_flagged_and_never_first_picked():
     assert dup.ambiguous is False     # ambiguity is the SKU-only concept, distinct from this
     solo = ResolveResult("barcode", ["m1"])
     assert solo.duplicate_physical is False and solo.one == "m1"
-    assert duplicate_barcode_detail("900001") == "Duplicate physical code '900001' exists on multiple inventory items"
+    assert duplicate_barcode_detail("900001") == "900001: more than one inventory item has this physical code"
 
 
 async def _deactivate(session, cid, eid, into):

@@ -25,6 +25,7 @@ from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken
 from celerp.services import payments as pay
 from celerp.services.auth import get_current_user, require_install_owner
+from celerp.services.doc_balance import outstanding_balance
 from celerp.services.money import currency_dp, to_minor_units
 from celerp.services.permissions import require_permission
 
@@ -63,7 +64,9 @@ async def _doc_for_token(session: AsyncSession, token: str, *, require_active: b
 
 
 def _outstanding(state: dict) -> float:
-    return float(state.get("amount_outstanding", state.get("total", 0)) or 0)
+    """What the document still owes (``outstanding_balance``); 0, so not payable, when the
+    recorded balance is not a number."""
+    return float(outstanding_balance(state) or 0)
 
 
 async def _company_owner_id(session: AsyncSession, company_id):

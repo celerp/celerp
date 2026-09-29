@@ -872,8 +872,8 @@ class TestSearchPartials:
         ):
             r = await ui_client.get("/inventory?status=sold&q=ruby", cookies=_authed())
         assert r.status_code == 200
-        assert b"3 records" in r.content, "pagination did not use the filtered list total"
-        assert b"137 records" not in r.content, "pagination still uses the unfiltered valuation count"
+        assert b"1-3 of 3" in r.content, "pagination did not use the filtered list total"
+        assert b"of 137" not in r.content, "pagination still uses the unfiltered valuation count"
 
 
 # ── Company switcher ──────────────────────────────────────────────────────────
@@ -10634,12 +10634,14 @@ class TestListScanInPlace:
 
     @pytest.mark.asyncio
     async def test_list_page_scan_script_swaps_tbody_in_place(self, ui_client):
-        # The list scan branch refetches this page and swaps #line-body instead of reloading.
+        # The list scan branch refetches the page of lines being viewed and swaps #line-body instead
+        # of reloading. In-place paging never changes the URL, so the refetch cannot use location.href.
         with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
             r = await ui_client.get("/lists/list:1", cookies=_authed())
         assert r.status_code == 200
         assert "DOMParser" in r.text
-        assert "fetch(location.href)" in r.text
+        assert "'?offset=' + _CELERP_LINE_OFFSET" in r.text
+        assert "fetch(location.href)" not in r.text
 
     @pytest.mark.asyncio
     async def test_list_page_has_scan_add_button(self, ui_client):
@@ -10659,7 +10661,7 @@ class TestListScanInPlace:
         # committed, letting a retry duplicate them. The body carries any Unicode safely.
         _bad = "ዕቃ-99"
         _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}],
-                "failed": [{"code": _bad, "reason": "unknown_code", "label": f"Unknown barcode or SKU: {_bad}"}]}
+                "failed": [{"code": _bad, "reason": "unknown_code", "label": f"{_bad}: no matching barcode or SKU"}]}
         with patch("ui.api_client.scan_list", new=AsyncMock(return_value=_res)), \
              patch("ui.api_client.get_list_page",
                    new=AsyncMock(return_value={"list": self._DRAFT, "version": 1})):
@@ -17448,17 +17450,17 @@ async def test_lists_export_csv_streams_with_progress_header(ui_client):
 
 
 def test_compact_pages_shows_full_count_and_last():
-    """#154: the doc-history pager must surface the real page count and a reachable last
+    """#154: the pager must surface the real page count and a reachable last
     page, not just current ±1. (None marks an ellipsis gap.)"""
-    from ui.routes.documents import _compact_pages
-    assert _compact_pages(1, 1) == [1]
-    assert _compact_pages(1, 2) == [1, 2]
-    assert _compact_pages(1, 3) == [1, 2, 3]            # all pages visible up front
-    assert _compact_pages(2, 3) == [1, 2, 3]
-    assert _compact_pages(1, 10) == [1, 2, None, 10]    # last page reachable from page 1
-    assert _compact_pages(5, 10) == [1, None, 4, 5, 6, None, 10]
-    assert _compact_pages(9, 10) == [1, None, 8, 9, 10]
-    assert _compact_pages(10, 10) == [1, None, 9, 10]
+    from ui.components.table import compact_pages
+    assert compact_pages(1, 1) == [1]
+    assert compact_pages(1, 2) == [1, 2]
+    assert compact_pages(1, 3) == [1, 2, 3]            # all pages visible up front
+    assert compact_pages(2, 3) == [1, 2, 3]
+    assert compact_pages(1, 10) == [1, 2, None, 10]    # last page reachable from page 1
+    assert compact_pages(5, 10) == [1, None, 4, 5, 6, None, 10]
+    assert compact_pages(9, 10) == [1, None, 8, 9, 10]
+    assert compact_pages(10, 10) == [1, None, 9, 10]
 
 
 @pytest.mark.asyncio

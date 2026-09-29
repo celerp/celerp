@@ -23,14 +23,16 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.business_time import business_date_at
+from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import round_basis
-from celerp.services.company_lock import lock_company, lock_projections
+from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.importers.tabular import CsvImportSpec
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
 from celerp.services.money import to_stored_float, unit_price_from_total
 from celerp.services.permissions import role_has_permission
+from celerp.services.vertical_presets import list_categories
 from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, price_key
 from celerp.services.units import (
     build_unit_map,
@@ -1860,14 +1862,7 @@ async def build_import_records(
     company = await session.get(Company, company_id)
     currency = ((company.settings or {}).get("currency") if company else None) or "USD"
 
-    cat_sell_by: dict[str, str] = {}
-    try:
-        from celerp_verticals.routes import _all_categories  # type: ignore
-        for cat in _all_categories().values():
-            if cat.get("default_sell_by"):
-                cat_sell_by[cat["name"]] = cat["default_sell_by"]
-    except ImportError:
-        pass
+    cat_sell_by = {c["name"]: c["default_sell_by"] for c in list_categories() if c.get("default_sell_by")}
 
     units = await get_company_units(session, company_id)
     unit_canonical = {u["name"].lower(): u["name"] for u in units}
@@ -2212,7 +2207,7 @@ async def _merge_category_schemas(session: AsyncSession, company_id, incoming: d
     the sole path that grows category schemas from imported attribute columns; it
     stages the change on the company row and leaves the commit to import_items.
     """
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         return
     settings = dict(company.settings)
@@ -2251,8 +2246,6 @@ async def commit_import_batch(
     item, and only when it names the same entity id. Semantic upserts arrive as
     ``item.patched`` records whose idempotency key is already target+content aware.
     """
-    from sqlalchemy import delete as _delete
-
     from celerp_inventory.models_import_batch import ImportBatch
     from celerp.models.ledger import LedgerEntry
 
@@ -2542,27 +2535,8 @@ async def commit_import_batch(
         session.add(batch)
         batch_id = str(new_batch_id)
 
-        # Auto-wipe demo items on first real import.
-        demo_eids = (await session.execute(
-            select(LedgerEntry.entity_id).where(
-                LedgerEntry.company_id == company_id,
-                LedgerEntry.source == "demo",
-                LedgerEntry.entity_type == "item",
-            ).distinct()
-        )).scalars().all()
-        if demo_eids:
-            await session.execute(
-                _delete(Projection).where(
-                    Projection.company_id == company_id,
-                    Projection.entity_id.in_(demo_eids),
-                )
-            )
-            await session.execute(
-                _delete(LedgerEntry).where(
-                    LedgerEntry.company_id == company_id,
-                    LedgerEntry.entity_id.in_(demo_eids),
-                )
-            )
+        # The first real import clears the demo items the user never edited or used.
+        await delete_untouched_demo_items(session, company_id)
 
     await session.commit()
     return BatchImportResult(

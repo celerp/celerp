@@ -23,6 +23,7 @@ from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services.company_lock import locked_company
 
 _log = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ def _blank(v) -> bool:
 async def migrate_self_contacts(session: AsyncSession, company_id, actor_id=None) -> dict:
     """Collapse one company's legacy customer+vendor self-contacts into a single both+is_self record.
     Emits events only; the caller commits. Returns a summary dict (status: noop | migrated)."""
+    company = await locked_company(session, company_id)
     cust_key = f"reg:contact:customer:{company_id}"
     vend_key = f"reg:contact:vendor:{company_id}"
     rows = (await session.execute(
@@ -155,7 +157,6 @@ async def migrate_self_contacts(session: AsyncSession, company_id, actor_id=None
         docs_repointed = result.get("docs_updated", 0)
 
     # 3. Cache the canonical self-contact id for the Company Details page's direct lookup.
-    company = await session.get(Company, company_id)
     if company is not None:
         company.settings = {**(company.settings or {}), "self_contact_id": winner.entity_id}
 
@@ -169,18 +170,18 @@ async def migrate_all_self_contacts(session: AsyncSession, actor_id=None) -> lis
     """Run migrate_self_contacts for every company, committing per company so one failure does not abort
     the batch. Idempotent and cheap on re-run: companies whose self_contact_id is already cached (new
     seed or previously migrated) are skipped without touching the ledger. Returns per-company summaries."""
-    companies = (await session.execute(select(Company))).scalars().all()
+    companies = (await session.execute(select(Company.id, Company.settings))).all()
     results: list[dict] = []
-    for company in companies:
-        if (company.settings or {}).get("self_contact_id"):
+    for company_id, settings in companies:
+        if (settings or {}).get("self_contact_id"):
             continue  # already seeded under the new model, or already migrated - nothing to do
         try:
-            res = await migrate_self_contacts(session, company.id, actor_id)
+            res = await migrate_self_contacts(session, company_id, actor_id)
             await session.commit()
         except Exception as exc:  # one bad company must not abort the batch
             await session.rollback()
-            _log.warning("migrate_self_contacts failed for company %s: %s", company.id, exc)
-            res = {"company_id": str(company.id), "status": "error", "error": str(exc)}
+            _log.warning("migrate_self_contacts failed for company %s: %s", company_id, exc)
+            res = {"company_id": str(company_id), "status": "error", "error": str(exc)}
         results.append(res)
     return results
 

@@ -313,6 +313,15 @@ def _module_candidates(
     return out
 
 
+def module_search_path() -> str:
+    """Every directory an installed module can live in, as a MODULE_DIR-style string:
+    the MODULE_DIR entries (administrative precedence) followed by the bundled and
+    trusted dirs. Lets a caller locate an installed module's data even when the
+    module system is off or the module is not enabled."""
+    entries = [e.strip() for e in os.environ.get("MODULE_DIR", "").split(",") if e.strip()]
+    return ",".join([*entries, *(str(d) for d in _BUNDLED_MODULES_DIRS)])
+
+
 def resolve_module_path(
     name: str, module_dir: str | Path | None = None,
 ) -> Path | None:
@@ -512,6 +521,28 @@ def is_running(pkg_name: str) -> bool:
     start — that bug made ai/backup spin forever on the activating screen.
     """
     return any(m["name"] == pkg_name for m in _loaded) or is_core_folded(pkg_name)
+
+
+def restart_would_load(pkg_name: str) -> bool:
+    """True when a server restart would load *pkg_name*.
+
+    That needs the module system on with an installed copy in MODULE_DIR, and an
+    enabled list the restart re-reads from the config file: under the supervisor
+    ENABLED_MODULES is rebuilt from config on every restart, while outside it a set
+    ENABLED_MODULES pins the list and only the names it holds can load."""
+    if not _module_candidates(pkg_name):
+        return False
+    pinned = os.environ.get("ENABLED_MODULES", "")
+    if not pinned or os.environ.get("CELERP_SUPERVISED") == "1":
+        return True
+    return pkg_name in {n.strip() for n in pinned.split(",")}
+
+
+def module_label(pkg_name: str) -> str:
+    """The module's display name from its manifest, or the package name."""
+    path = resolve_runtime_module_path(pkg_name, module_search_path())
+    meta = read_manifest_metadata(path) if path is not None else {}
+    return meta.get("display_name") or meta.get("label") or pkg_name
 
 
 # Fields to extract from PLUGIN_MANIFEST for display purposes.

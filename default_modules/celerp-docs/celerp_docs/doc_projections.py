@@ -189,7 +189,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current, to_decimal(current.get("amount_paid", 0)) + to_decimal(data["amount"]))
         current["amount_paid"] = to_stored_float(paid)
         current["amount_outstanding"] = to_stored_float(outstanding)
-        current["status"] = "paid" if outstanding == 0 else "partial"
+        current["status"] = _payment_status(paid, outstanding)
         # Build payments list
         current.setdefault("payments", [])
         current["payments"].append({

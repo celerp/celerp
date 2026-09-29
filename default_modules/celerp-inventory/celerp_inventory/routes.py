@@ -41,6 +41,7 @@ from celerp.services.auth import get_current_company_id, get_current_user, get_c
 from celerp.services.auto_je import create_for_item_transform
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility, restricted_field_keys
 from celerp.services.csv_export import csv_stream, resolve_export_cols
+from celerp.services.demo import demo_item_ids
 from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS, DEFAULT_ITEM_SCHEMA, NUMERIC_SCHEMA_TYPES
 from celerp.services.permissions import (
     assert_role_permission,
@@ -58,6 +59,7 @@ from celerp.services.pricing import (
     stored_price,
 )
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
+from celerp.services.vertical_presets import load_category
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_basis, round_money, to_decimal, to_stored_float
 from celerp.schemas.numbers import FiniteFloat
@@ -1384,14 +1386,7 @@ async def get_field_values(
     import re as _re
     if field in _BLOCKED_FIELDS or not _re.match(r'^[a-zA-Z][a-zA-Z0-9_]*$', field):
         raise HTTPException(status_code=400, detail=f"Field '{field}' not available for suggestions")
-    from celerp.models.ledger import LedgerEntry as _LE
-    demo_eids = set((await session.execute(
-        select(_LE.entity_id).where(
-            _LE.company_id == company_id,
-            _LE.source == "demo",
-            _LE.entity_type == "item",
-        ).distinct()
-    )).scalars().all())
+    demo_eids = set(await demo_item_ids(session, company_id))
     stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
     rows = (await session.execute(stmt)).scalars().all()
     seen: set[str] = set()
@@ -1908,7 +1903,7 @@ def _resolve_from_candidates(barcode_matches, rfid_matches, gtin_matches, sku_ma
 def duplicate_barcode_detail(code: str) -> str:
     """The single operator-facing message for a physical code that resolves to more than
     one lot, shared by every scan surface so the wording is sourced in one place."""
-    return f"Duplicate physical code '{code}' exists on multiple inventory items"
+    return f"{code}: more than one inventory item has this physical code"
 
 
 # Statuses whose items are retained for history but are no longer a current physical
@@ -2183,20 +2178,14 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
             raise HTTPException(status_code=422, detail=f"{_amt} cannot be negative")
 
     # Apply category defaults for purchase_unit and weight_unit if not explicitly provided
-    if payload.category:
-        try:
-            from celerp_verticals.routes import _all_categories  # type: ignore
-            _cats = _all_categories()
-            _cat = _cats.get(payload.category)
-            if _cat:
-                if payload.purchase_unit is None and _cat.get("default_purchase_unit"):
-                    data["purchase_unit"] = _cat["default_purchase_unit"]
-                if payload.purchase_conversion_factor is None:
-                    data["purchase_conversion_factor"] = 1
-                if data.get("weight_unit") is None and _cat.get("default_weight_unit"):
-                    data["weight_unit"] = _cat["default_weight_unit"]
-        except ImportError:
-            pass
+    _cat = load_category(payload.category) if payload.category else None
+    if _cat:
+        if payload.purchase_unit is None and _cat.get("default_purchase_unit"):
+            data["purchase_unit"] = _cat["default_purchase_unit"]
+        if payload.purchase_conversion_factor is None:
+            data["purchase_conversion_factor"] = 1
+        if data.get("weight_unit") is None and _cat.get("default_weight_unit"):
+            data["weight_unit"] = _cat["default_weight_unit"]
 
     # Ensure status is set (not part of ItemCreate model but required for projections).
     # Manual creation starts as draft: the item stays authorable (amounts and costs

@@ -18,7 +18,8 @@ from ui.api_client import APIError
 from celerp.services.units import default_receive_as
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
-from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
+from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
+from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.payment_terms import due_date_for_terms
@@ -293,7 +294,6 @@ _LIST_TYPES = list(_REG_LIST_TYPES)
 _LIST_DATE_FIELDS = {"date", "link_expiry"}
 
 _PER_PAGE = 50
-_PER_PAGE_OPTIONS = [25, 50, 100, 250]
 
 # Every URL parameter the document list understands. One dict, read once per request, feeds
 # the API call, the date bar, the status cards, the sort links, the search box, pagination
@@ -404,7 +404,7 @@ async def _doc_list_dates(request: Request, state: dict[str, str], company: dict
     return date_from, date_to, default_preset
 
 
-_LIST_STATE_KEYS = ("q", "type", "status", "converted_to_type", "all_issued", "view", "preset", "from", "to")
+_LIST_STATE_KEYS = ("q", "type", "status", "converted_to_type", "all_issued", "view", "per_page", "preset", "from", "to")
 _LIST_STATUS_KEYS = ("status", "converted_to_type", "all_issued", "view")
 
 
@@ -461,6 +461,90 @@ async def _list_page_dates(request: Request, state: dict[str, str], company: dic
         return "", "", "all"
     date_from, date_to = _resolve_preset(default_preset)
     return date_from, date_to, default_preset
+
+
+async def _doc_results(token: str, state: dict[str, str], date_from: str, date_to: str,
+                       page: int, per_page: int) -> tuple[list[dict], int, dict]:
+    """(docs on the page, filtered total, summary) for a document list state."""
+    import asyncio as _asyncio
+    params = _doc_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
+    docs_resp, summary = await _asyncio.gather(
+        api.list_docs(token, params),
+        api.get_doc_summary(token, _summary_params(params, _DOC_SUMMARY_KEYS)),
+    )
+    docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
+    total = docs_resp.get("total", len(docs)) if isinstance(docs_resp, dict) else len(docs)
+    return docs, total, summary if isinstance(summary, dict) else {}
+
+
+def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, summary: dict,
+                  page: int, per_page: int, currency: str | None, lang: str) -> FT:
+    """Summary, status cards, table and pager for a document list state: the page embeds it
+    and the live search replaces it, so all four always describe the same result set."""
+    doc_type = state.get("type", "")
+    status = state.get("status", "")
+    # The status cards keep the dates and sort; the sort links and pages keep everything.
+    cards_base_url = "/docs?" + urlencode({"type": doc_type, **{k: v for k, v in state.items() if k not in _DOC_STATUS_KEYS and k != "type"}})
+    return Div(
+        _summary_bar(summary, doc_type, currency, lang),
+        _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang,
+                          status_in=state.get("status_in", ""), overdue_only=bool(state.get("overdue_only")),
+                          unfulfilled_only=bool(state.get("unfulfilled_only")),
+                          not_restocked=bool(state.get("not_restocked")), not_stocked=bool(state.get("not_stocked")),
+                          all_issued=_doc_api_params(state, "", "", limit=None).get("all_issued") == "1",
+                          converted_to_type=state.get("converted_to_type", ""), base_url=cards_base_url),
+        _doc_table(
+            docs,
+            sort=state.get("sort", "date"),
+            sort_dir=state.get("dir", "desc"),
+            base_params={**state, "page": str(page)},
+            doc_type=doc_type,
+            lang=lang,
+            currency=currency,
+            is_drafts_view=state.get("view") == "drafts" or status == "draft",
+        ),
+        pagination(page, total_count, per_page, "/docs", _state_query(state, without=("per_page",))),
+        id="doc-content",
+    )
+
+
+def _search_controls(base: str, state: dict[str, str], date_from: str, date_to: str, preset: str,
+                     can_export: bool, lang: str, oob: bool = False) -> tuple[FT, FT]:
+    """(Export CSV link, date filter bar) for /docs or /lists. Both carry the page state, search
+    included, so a search response sends them again out of band (oob=True)."""
+    swap = {"hx_swap_oob": "true"} if oob else {}
+    extra = _state_query(state, without=_DATE_KEYS)
+    export = A(t("btn.export_csv"), href=f"/{base}/export/csv?" + _state_query(state), cls="btn btn--secondary",
+               id=f"{base}-export", **swap) if can_export else ""
+    dates = Div(_date_filter_bar(f"/{base}", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "",
+                                 lang=lang), id=f"{base}-dates", **swap)
+    return export, dates
+
+
+async def _list_results(token: str, state: dict[str, str], date_from: str, date_to: str,
+                        page: int, per_page: int) -> tuple[list[dict], int, dict]:
+    """(lists on the page, filtered total, summary) for a lists page state."""
+    params = _list_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
+    result = await api.list_lists(token, params)
+    lists = result.get("items", [])
+    summary = await api.get_list_summary(token, _summary_params(params, _LIST_SUMMARY_KEYS))
+    return lists, result.get("total", len(lists)), summary
+
+
+def _lists_content(state: dict[str, str], lists: list[dict], total_count: int, summary: dict,
+                   page: int, per_page: int, lang: str) -> FT:
+    """Status cards, table and pager for a lists page state: the page embeds it and the live
+    search replaces it, so all three always describe the same result set."""
+    all_issued = _list_api_params(state, "", "", limit=None).get("all_issued") == "1"
+    return Div(
+        _list_status_cards(summary, "all_issued" if all_issued else state.get("status", ""),
+                           converted_to_type=state.get("converted_to_type", ""),
+                           base_url="/lists?" + _state_query(state, without=_LIST_STATUS_KEYS),
+                           dates_chosen=any(state.get(k) for k in _DATE_KEYS)),
+        _list_table(lists, lang=lang),
+        pagination(page, total_count, per_page, "/lists", _state_query(state, without=("per_page",))),
+        id="list-content",
+    )
 
 _DOC_TYPES = ["invoice", "purchase_order", "bill", "receipt", "credit_note", "memo", "consignment_in", "list"]
 # Doc types that support per-line inventory item status display (fetch + render).
@@ -727,90 +811,40 @@ def _action_error(msg: str):
     )
 
 
-def _compact_pages(page: int, total_pages: int) -> list[int | None]:
-    """Page numbers to show in a compact pager: first, current +/- 1, last, with `None`
-    marking an ellipsis gap. Drives the doc-history pager so the real page count (and the
-    last page) is reachable up front (#154)."""
-    out: list[int | None] = []
-    if page > 2:
-        out.append(1)
-    if page > 3:
-        out.append(None)
-    if page > 1:
-        out.append(page - 1)
-    out.append(page)
-    if page < total_pages:
-        out.append(page + 1)
-    if page < total_pages - 2:
-        out.append(None)
-    if page < total_pages - 1:
-        out.append(total_pages)
-    return out
+_LINE_PAGE_CAP = 100
 
 
-def _list_line_pager(entity_id: str, offset: int, limit: int, total: int, editable: bool = False) -> FT | None:
-    """Pager for the list-detail line table, reusing the compact-page layout and the
-    HTMX outerHTML-swap shape used by the document history pager. Each control swaps
-    the lines container in place, so paging never reloads the page. Returns None when
-    the whole list fits in one page (nothing to page through).
+def _line_window(params) -> tuple[int, int]:
+    """The (offset, limit) window of list lines a request addresses, from its query or form
+    params. Limit is capped so one request never renders more than one bounded page."""
+    try:
+        offset = max(0, int(params.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        limit = int(params.get("limit", _LINE_PAGE_CAP))
+    except (TypeError, ValueError):
+        limit = _LINE_PAGE_CAP
+    return offset, max(1, min(limit, _LINE_PAGE_CAP))
 
-    On an editable (draft) list, paging must not silently drop unsaved row edits, so
-    each control routes through `celerpPageNav`, which saves the current page first
-    (slice-PATCH under optimistic-concurrency check) and only then swaps. A clean page
-    navigates straight through. On a finalized list there is nothing to save, so the
-    controls swap directly via HTMX."""
+
+def _list_line_section_id(entity_id: str) -> str:
+    """DOM id of a list's line section (rows + pager), the swap target for line paging.
+    Entity ids carry colons, which break CSS selectors."""
+    return "list-line-section-" + entity_id.replace(":", "-").replace("/", "-")
+
+
+def _list_line_pager(entity_id: str, offset: int, limit: int, total: int, save_first: bool = False) -> FT | None:
+    """Pager for a list's line table, or None when every line fits on one page. Controls
+    swap the line section in place. `save_first` (a draft whose rows are editable) routes
+    them through celerpPageNav, which saves unsaved row edits before leaving the page."""
     if total <= limit:
         return None
-    limit = max(1, limit)
-    total_pages = max(1, (total + limit - 1) // limit)
-    page = (offset // limit) + 1
-    safe_id = entity_id.replace(":", "-").replace("/", "-")
-    target = f"#list-line-section-{safe_id}"
-
-    def _btn(p: int, active: bool = False):
-        target_offset = (p - 1) * limit
-        if editable:
-            return Button(
-                str(p),
-                type="button",
-                cls=f"btn btn--ghost btn--xs{'  btn--active' if active else ''}",
-                onclick=f"celerpPageNav({target_offset}, {limit})",
-            )
-        return Button(
-            str(p),
-            cls=f"btn btn--ghost btn--xs{'  btn--active' if active else ''}",
-            hx_get=f"/lists/{entity_id}?offset={target_offset}&limit={limit}",
-            hx_target=target,
-            hx_select=target,
-            hx_swap="outerHTML",
-        )
-
-    page_btns = [
-        Span("...", cls="text-muted") if p is None else _btn(p, active=(p == page))
-        for p in _compact_pages(page, total_pages)
-    ]
-    if editable:
-        per_page_select = Select(
-            *[Option(str(n), value=str(n), selected=(limit == n)) for n in (25, 50, 100)],
-            cls="per-page-select",
-            onchange="celerpPageNav(0, parseInt(this.value, 10))",
-            name="limit",
-        )
-    else:
-        per_page_select = Select(
-            *[Option(str(n), value=str(n), selected=(limit == n)) for n in (25, 50, 100)],
-            cls="per-page-select",
-            hx_get=f"/lists/{entity_id}?offset=0",
-            hx_target=target,
-            hx_select=target,
-            hx_swap="outerHTML",
-            hx_include="this",
-            name="limit",
-        )
-    return Div(
-        Div(*page_btns, cls="history-page-btns"),
-        Div(Span(t("documents.show_label"), cls="text-muted"), per_page_select, cls="history-per-page"),
-        cls="history-footer list-line-pager",
+    return server_pager(
+        offset, limit, total, lambda o, l: f"/lists/{entity_id}?offset={o}&limit={l}",
+        page_sizes=(25, 50, 100),
+        hx_target=None if save_first else "#" + _list_line_section_id(entity_id),
+        nav_js="celerpPageNav" if save_first else None,
     )
 
 
@@ -1255,22 +1289,9 @@ def setup_routes(app):
         q = state.get("q", "")
         doc_type = state.get("type", "")
         status = state.get("status", "")
-        status_in = state.get("status_in", "")
-        contact_id = state.get("contact_id", "")
-        overdue_only = bool(state.get("overdue_only"))
-        unfulfilled_only = bool(state.get("unfulfilled_only"))
-        not_restocked = bool(state.get("not_restocked"))
-        not_stocked = bool(state.get("not_stocked"))
-        converted_to_type = state.get("converted_to_type", "")
         view = state.get("view", "")  # "drafts" = drafts-only mode
-        ids = ",".join(x.strip() for x in state.get("ids", "").split(",") if x.strip())
         page = _page_number(request)
-        sort = state.get("sort", "date")
-        sort_dir = state.get("dir", "desc")
-        try:
-            per_page = max(1, int(state.get("per_page", _PER_PAGE)))
-        except (ValueError, TypeError):
-            per_page = _PER_PAGE
+        per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
             company = await api.get_company(token)
         except Exception:
@@ -1281,27 +1302,16 @@ def setup_routes(app):
         # Drafts are segregated: only shown when ?view=drafts or explicit ?status=draft.
         # All other views exclude drafts by default (like email treats Drafts).
         is_drafts_view = view == "drafts" or status == "draft"
-        params = _doc_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
-        all_issued = params.get("all_issued") == "1"
         has_status_filter = any(state.get(k) for k in _DOC_STATUS_KEYS)
         try:
-            import asyncio as _asyncio
-            docs_resp, summary = await _asyncio.gather(
-                api.list_docs(token, params),
-                api.get_doc_summary(token, _summary_params(params, _DOC_SUMMARY_KEYS)),
-            )
-            docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
-            draft_count = summary.get("draft_count", 0) if isinstance(summary, dict) else 0
+            docs, total_count, summary = await _doc_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            docs_resp, docs, summary, draft_count = {}, [], {}, 0
+            docs, total_count, summary = [], 0, {}
+        draft_count = summary.get("draft_count", 0)
 
-        # Links that switch one dimension keep every other: the date bar keeps the filters,
-        # the status cards keep the dates and sort, the sort links and pages keep everything.
-        date_bar_extra = _state_query(state, without=_DATE_KEYS)
-        cards_base_url = "/docs?" + urlencode({"type": doc_type, **{k: v for k, v in state.items() if k not in _DOC_STATUS_KEYS and k != "type"}})
-        total_count = docs_resp.get("total", len(docs)) if isinstance(docs_resp, dict) else len(docs)
+        # The date bar keeps the filters when it switches the dates.
 
         # Auto-redirect to drafts when no finalized docs exist but drafts do.
         # Prevents the "where did my draft go?" confusion for new users.
@@ -1319,13 +1329,17 @@ def setup_routes(app):
         create_type = doc_type or "invoice"
         _role = _get_role(request)
         _settings = company.get("settings") or {}
+        export_link, date_bar = _search_controls(
+            "docs", state, date_from, date_to, preset,
+            role_has_permission(_settings, _role, "import_export_data"), lang)
         return await base_shell(
             page_header(
                 section_title,
                 search_bar(
                     placeholder=t("documents.search_docs_placeholder"),
-                    target="#doc-table",
+                    target="#doc-content",
                     url=search_url,
+                    value=q,
                     label=t("documents.search_section", section=section_title.lower()),
                 ),
                 Button(
@@ -1334,24 +1348,12 @@ def setup_routes(app):
                     hx_swap="none",
                     cls="btn btn--primary",
                 ) if role_has_permission(_settings, _role, "edit_documents") else "",
-                A(t("btn.export_csv"), href="/docs/export/csv?" + _state_query(state), cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
+                export_link,
                 A(t("btn.import"), href="/docs/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") or role_has_permission(_settings, _role, "edit_documents") else "",
             ),
             _doc_type_intro(doc_type),
-            _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{date_bar_extra}" if date_bar_extra else "", lang=lang),
-            _summary_bar(summary, doc_type, currency, lang),
-            _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang, status_in=status_in, overdue_only=overdue_only, unfulfilled_only=unfulfilled_only, not_restocked=not_restocked, not_stocked=not_stocked, all_issued=all_issued, converted_to_type=converted_to_type, base_url=cards_base_url),
-            _doc_table(
-                docs,
-                sort=sort,
-                sort_dir=sort_dir,
-                base_params={**state, "page": str(page)},
-                doc_type=doc_type,
-                lang=lang,
-                currency=currency,
-                is_drafts_view=is_drafts_view,
-            ),
-            pagination(page, total_count, per_page, "/docs", _state_query(state, without=("per_page",))),
+            date_bar,
+            _docs_content(state, docs, total_count, summary, page, per_page, currency, lang),
             title=page_title(section_label_key),
             nav_active=_doc_nav_key(doc_type),
             lang=lang,
@@ -1369,21 +1371,20 @@ def setup_routes(app):
             company = await api.get_company(token)
         except APIError:
             company = {}
-        date_from, date_to, _preset = await _doc_list_dates(request, state, company)
+        date_from, date_to, preset = await _doc_list_dates(request, state, company)
+        per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
-            params = _doc_api_params(state, date_from, date_to, limit=_PER_PAGE, offset=(page - 1) * _PER_PAGE)
-            docs = (await api.list_docs(token, params)).get("items", [])
+            docs, total_count, summary = await _doc_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
-            docs = []
-        return _doc_table(
-            docs,
-            sort=state.get("sort", "date"),
-            sort_dir=state.get("dir", "desc"),
-            base_params={**state, "page": str(page)},
-            doc_type=state.get("type", ""),
-            lang=get_lang(request),
-            currency=company.get("currency") or None,
-            is_drafts_view=state.get("view") == "drafts" or state.get("status") == "draft",
+            if e.status == 401:
+                raise
+            docs, total_count, summary = [], 0, {}
+        lang = get_lang(request)
+        can_export = role_has_permission(company.get("settings") or {}, _get_role(request), "import_export_data")
+        return search_results(
+            _docs_content(state, docs, total_count, summary, page, per_page, company.get("currency") or None, lang),
+            "/docs?" + _state_query(state),
+            *_search_controls("docs", state, date_from, date_to, preset, can_export, lang, oob=True),
         )
 
     @app.get("/docs/export/csv")
@@ -2052,15 +2053,7 @@ def setup_routes(app):
         contact_name = docs[0].get("contact_name") or ""
         doc_type = docs[0].get("doc_type") or "invoice"
 
-        payable = []
-        for d in docs:
-            if d.get("status") in ("draft", "void", "paid"):
-                continue
-            cur = str(d.get("currency") or "USD").upper()
-            amount = round_money(
-                d.get("amount_outstanding") or d.get("outstanding_balance") or 0, cur)
-            if amount > 0:
-                payable.append(d)
+        payable = [d for d in docs if is_awaiting_payment(d.get("doc_type"), d.get("status")) and is_owed(d)]
         currencies = {str(d.get("currency") or "USD").upper() for d in payable}
         if len(currencies) > 1:
             return Div(
@@ -2073,8 +2066,7 @@ def setup_routes(app):
         payable.sort(key=lambda d: d.get("due_date") or d.get("issue_date") or "")
         skipped = len(docs) - len(payable)
         total_outstanding_d = round_money(
-            sum((to_decimal(d.get("amount_outstanding") or d.get("outstanding_balance") or 0)
-                 for d in payable), to_decimal(0)),
+            sum((outstanding_balance(d) for d in payable), to_decimal(0)),
             currency,
         )
         total_outstanding = to_stored_float(total_outstanding_d)
@@ -2084,8 +2076,7 @@ def setup_routes(app):
             eid = d.get("entity_id") or d.get("id", "")
             doc_num = d.get("doc_number") or d.get("ref_id") or eid
             due = d.get("due_date") or "--"
-            outstanding = to_stored_float(round_money(
-                d.get("amount_outstanding") or d.get("outstanding_balance") or 0, currency))
+            outstanding = to_stored_float(round_money(outstanding_balance(d), currency))
             alloc_rows.append(Tr(
                 Td(doc_num),
                 Td(str(due)[:10]),
@@ -3524,7 +3515,7 @@ celerpUpdateBulkAlloc();
             # Filter to open invoices with outstanding > 0
             open_inv = []
             for inv in invoices:
-                outstanding = float(inv.get("amount_outstanding") or inv.get("outstanding_balance") or 0)
+                outstanding = float(outstanding_balance(inv) or 0)
                 if inv.get("status") not in ("draft", "void", "paid") and outstanding > 0:
                     open_inv.append({
                         "id": inv.get("entity_id") or inv.get("id", ""),
@@ -3855,10 +3846,7 @@ celerpUpdateBulkAlloc();
             page = _page_number(request)
         except ValueError:
             page = 1
-        try:
-            per_page = max(1, int(request.query_params.get("per_page", _DEFAULT_PER_PAGE)))
-        except ValueError:
-            per_page = _DEFAULT_PER_PAGE
+        per_page = per_page_value(request.query_params.get("per_page"), _DEFAULT_PER_PAGE)
         offset = (page - 1) * per_page
         try:
             resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": per_page, "offset": offset, "resolve": "true"})
@@ -3866,7 +3854,6 @@ celerpUpdateBulkAlloc();
             total = int(resp.get("total", len(entries))) if isinstance(resp, dict) else len(entries)
         except Exception:
             entries, total = [], 0
-        total_pages = max(1, (total + per_page - 1) // per_page)
         from ui.components.activity import format_timestamp, detail_from_entry, _event_display, _is_uuid
         EMPTY = "--"
         def _row(e: dict):
@@ -3880,33 +3867,10 @@ celerpUpdateBulkAlloc();
             actor_display = actor if (actor and not _is_uuid(actor)) else EMPTY
             return Tr(event_cell, Td(ts_display), Td(actor_display), Td(detail or EMPTY))
         rows = [_row(e) for e in entries]
-        def _page_btn(p: int, label: str = None, active: bool = False):
-            return Button(
-                label or str(p),
-                cls=f"btn btn--ghost btn--xs{'  btn--active' if active else ''}",
-                hx_get=f"/docs/{entity_id}/history?page={p}&per_page={per_page}",
-                hx_target=f"#doc-history-{safe_id}",
-                hx_swap="outerHTML",
-            )
-        # Compact page list from the real total: first … current±1 … last, so the full
-        # page count shows up front and the last page is directly reachable (#154).
-        page_btns = [
-            Span("…", cls="text-muted") if p is None else _page_btn(p, active=(p == page))
-            for p in _compact_pages(page, total_pages)
-        ]
-        per_page_select = Select(
-            *[Option(str(n), value=str(n), selected=(per_page == n)) for n in (10, 20, 50, 100)],
-            cls="per-page-select",
-            hx_get=f"/docs/{entity_id}/history?page=1",
-            hx_target=f"#doc-history-{safe_id}",
-            hx_swap="outerHTML",
-            hx_include="this",
-            name="per_page",
-        )
-        footer = Div(
-            Div(*page_btns, cls="history-page-btns"),
-            Div(Span(t("documents.show_label"), cls="text-muted"), per_page_select, cls="history-per-page"),
-            cls="history-footer",
+        footer = server_pager(
+            offset, per_page, total,
+            lambda o, l: f"/docs/{entity_id}/history?page={o // l + 1}&per_page={l}",
+            page_sizes=(10, 20, 50, 100), hx_target=f"#doc-history-{safe_id}",
         )
         if not entries and page == 1:
             content = P(t("documents.no_activity_recorded"), cls="empty-state-msg")
@@ -3967,28 +3931,20 @@ celerpUpdateBulkAlloc();
         state = _list_page_state(request)
         q = state.get("q", "")
         list_type = state.get("type", "")
-        status = state.get("status", "")
-        converted_to_type_list = state.get("converted_to_type", "")
         page = _page_number(request)
+        per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
             company = await api.get_company(token)
         except APIError:
             company = {}
         date_from, date_to, preset = await _list_page_dates(request, state, company)
-        params = _list_api_params(state, date_from, date_to, limit=_PER_PAGE, offset=(page - 1) * _PER_PAGE)
-        all_issued_list = params.get("all_issued") == "1"
         try:
-            result = await api.list_lists(token, params)
-            lists = result.get("items", [])
-            filtered_total = result.get("total", len(lists))
-            summary = await api.get_list_summary(token, _summary_params(params, _LIST_SUMMARY_KEYS))
+            lists, filtered_total, summary = await _list_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             lists, summary, filtered_total = [], {}, 0
         lang = get_lang(request)
-        _lists_extra = _state_query(state, without=_DATE_KEYS)
-        cards_base_url = "/lists?" + _state_query(state, without=_LIST_STATUS_KEYS)
         _role = _get_role(request)
         _settings = company.get("settings") or {}
         # Audits are location-bound, not blank drafts: send the user through the location picker.
@@ -3999,24 +3955,24 @@ celerpUpdateBulkAlloc();
                               hx_swap="none", cls="btn btn--primary", title=t("documents.new_shipping_doc_tooltip"))
         else:
             _new_btn = Button(t("page.new_list"), hx_post="/lists/create-blank", hx_swap="none", cls="btn btn--primary", title=t("documents.new_list_tooltip"))
+        export_link, date_bar = _search_controls(
+            "lists", state, date_from, date_to, preset,
+            role_has_permission(_settings, _role, "import_export_data"), lang)
         return await base_shell(
             page_header(
                 t("page.lists", lang),
-                search_bar(placeholder=t("documents.search_ref_customer_short"), target="#list-table", url="/lists/search",
+                search_bar(placeholder=t("documents.search_ref_customer_short"), target="#list-content",
+                           url="/lists/search?" + _state_query(state, without=("q",)), value=q,
                            label=t("documents.search_lists")),
                 _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
-                A(t("btn.export_csv"), href="/lists/export/csv?" + _state_query(state), cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
+                export_link,
                 A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
             ),
-            _date_filter_bar("/lists", date_from, date_to, preset,
-                             extra_params=(f"&{_lists_extra}" if _lists_extra else ""), lang=lang),
-            _list_type_tabs(list_type),
+            date_bar,
+            _list_type_tabs(list_type, state),
             # Self-explanatory page: the shipping tab says what these are and what to do next.
             (P(t("lists.shipping_intro", lang), cls="section-hint") if list_type == "shipping_doc" else ""),
-            _list_status_cards(summary, "all_issued" if all_issued_list else status, converted_to_type=converted_to_type_list, base_url=cards_base_url,
-                               dates_chosen=any(state.get(k) for k in _DATE_KEYS)),
-            _list_table(lists, lang=lang),
-            pagination(page, filtered_total, _PER_PAGE, "/lists", _state_query(state)),
+            _lists_content(state, lists, filtered_total, summary, page, per_page, lang),
             title=page_title("page.lists"),
             nav_active="lists",
             request=request,
@@ -4050,14 +4006,22 @@ celerpUpdateBulkAlloc();
             company = await api.get_company(token)
         except APIError:
             company = {}
-        date_from, date_to, _preset = await _list_page_dates(request, state, company)
+        date_from, date_to, preset = await _list_page_dates(request, state, company)
+        per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
-            params = _list_api_params(state, date_from, date_to, limit=_PER_PAGE, offset=(page - 1) * _PER_PAGE)
-            lists = (await api.list_lists(token, params)).get("items", [])
+            lists, filtered_total, summary = await _list_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
+            if e.status == 401:
+                raise
             logger.warning("API error on lists_search: %s", e.detail)
-            lists = []
-        return _list_table(lists, lang=get_lang(request))
+            lists, filtered_total, summary = [], 0, {}
+        lang = get_lang(request)
+        can_export = role_has_permission(company.get("settings") or {}, _get_role(request), "import_export_data")
+        return search_results(
+            _lists_content(state, lists, filtered_total, summary, page, per_page, lang),
+            "/lists?" + _state_query(state),
+            *_search_controls("lists", state, date_from, date_to, preset, can_export, lang, oob=True),
+        )
 
     @app.get("/lists/export/csv")
     async def lists_export_csv(request: Request):
@@ -4243,16 +4207,7 @@ celerpUpdateBulkAlloc();
         # pass; instead read the requested window (limit hard-capped at 100) and render
         # only that page, with a pager to reach the rest. Off-page lines stay in place -
         # this only bounds what is fetched and rendered per request.
-        _PAGE_CAP = 100
-        try:
-            _line_offset = max(0, int(request.query_params.get("offset", 0)))
-        except (TypeError, ValueError):
-            _line_offset = 0
-        try:
-            _line_limit = int(request.query_params.get("limit", _PAGE_CAP))
-        except (TypeError, ValueError):
-            _line_limit = _PAGE_CAP
-        _line_limit = max(1, min(_line_limit, _PAGE_CAP))
+        _line_offset, _line_limit = _line_window(request.query_params)
         try:
             resp = await api.get_list_page(token, entity_id, offset=_line_offset, limit=_line_limit)
         except APIError as e:
@@ -4572,15 +4527,15 @@ celerpUpdateBulkAlloc();
             return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
 
-    async def _audit_line_tbody(token: str, entity_id: str) -> FT:
+    async def _audit_line_tbody(token: str, entity_id: str, offset: int, limit: int) -> FT:
         """Render the editable audit tbody for #line-body swap.
 
-        Reads one bounded page (so backend top-insert ordering is preserved per GDR 2.n) and
-        enriches the On-hand column from the item_meta that page carries, never pulling the whole
-        list through the unbounded read. It emits the shared editable row set.
+        Reads the page the user is viewing (offset/limit as the pager rendered it), so the swapped
+        rows always match the pager around them, and enriches the On-hand column from the
+        item_meta that page carries, never pulling the whole list through the unbounded read.
+        It emits the shared editable row set.
         """
-        _PAGE_CAP = 100
-        resp = await api.get_list_page(token, entity_id, offset=0, limit=_PAGE_CAP)
+        resp = await api.get_list_page(token, entity_id, offset=offset, limit=limit)
         lst = resp.get("list", {}) or {}
         line_items = resp.get("items", []) or []
         # On-hand comes from the page's own item_meta (quantity), so no extra metadata round-trip is
@@ -4702,7 +4657,7 @@ celerpUpdateBulkAlloc();
         # audit is editable, so it reloads like every other building list to keep its inputs.
         html = ""
         if (lst.get("list_type") or "") == "audit" and lst.get("status") in (_LF, _LC):
-            html = to_xml(await _audit_line_tbody(token, entity_id))
+            html = to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form)))
         # The scanned write advanced the list projection version; hand the fresh version back so the
         # client's optimistic-lock token tracks it (a later line save must not 409 on a stale version).
         return _JSON({"scanned": (res or {}).get("scanned", 0),
@@ -4725,7 +4680,7 @@ celerpUpdateBulkAlloc();
             await api.set_scanned(token, entity_id, ids or None, scanned)
         except APIError as e:
             return _R(str(e.detail), status_code=e.status or 400)
-        return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id)))
+        return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form))))
 
     @app.post("/lists/{entity_id}/line/{item_id}")
     async def list_audit_set_count(request: Request, entity_id: str, item_id: str):
@@ -5350,8 +5305,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     payments = [p for p in (doc.get("payments") or []) if p.get("status") != "deleted"]
     total_val = float(doc.get("total") or doc.get("total_amount") or 0)
     amount_paid = float(doc.get("amount_paid") or 0)
-    outstanding_d = round_money(
-        doc.get("amount_outstanding") or doc.get("outstanding_balance") or 0, currency)
+    outstanding_d = round_money(outstanding_balance(doc) or 0, currency)
     outstanding = to_stored_float(outstanding_d)
     money_dp = currency_dp(currency)
     money_step = "1" if money_dp == 0 else "0." + ("0" * (money_dp - 1)) + "1"
@@ -5934,10 +5888,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     is_draft = status == "draft"
     # Remaining balance (net of applied payments/credits) - what a Pay button
     # would charge; all payment hints/labels use this, never the face total.
-    try:
-        _pay_due = float(doc.get("amount_outstanding", doc.get("total", 0)) or 0)
-    except (TypeError, ValueError):
-        _pay_due = 0.0
+    _pay_due = float(outstanding_balance(doc) or 0)
     list_type = (doc.get("list_type") or "") if doc_type == "list" else ""
     pol = _list_column_policy(doc_type, list_type, status)
     # Write-off entry columns (qty_out / account / comment). Built once for every render path (draft
@@ -5971,11 +5922,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     _can_delete = role_has_permission(_s, role, "delete_documents")
     _can_pay = role_has_permission(_s, role, "record_payments")
     # The interactive line section renders while BUILDING (draft, any type) or COUNTING (a finalized
-    # audit: scan-to-count + editable Counted cells). Line structure edits are draft-only; a finalized
-    # audit only gates the Counted cells open (pol["counted_editable"]). Without the edit
-    # permission there are no line controls (the API enforces it; the UI must not offer
-    # controls that would 403).
-    is_editable = (is_draft or (pol["audit"] and status == _LF)) and _can_edit
+    # audit: scan-to-count + editable Counted cells). Counting never implies building: line structure
+    # (and the page-save path that persists it) is draft-only, while a finalized audit only gates the
+    # Counted cells open (pol["counted_editable"]). Without the edit permission there are no line
+    # controls (the API enforces it; the UI must not offer controls that would 403).
+    can_edit_lines = is_draft and _can_edit
+    can_count_audit = pol["audit"] and status == _LF and _can_edit
+    is_editable = can_edit_lines or can_count_audit
 
     def _static_ident_cell_content(li: dict):
         """Identifier for a read-only line cell per the company mode: the primary
@@ -7176,7 +7129,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Table(
                     *([_line_colgroup] if _line_colgroup else []),
                     _line_thead,
-                    Tbody(*rows, id=line_body_id),
+                    Tbody(*rows, id=line_body_id, data_line_count=str(len(line_items))),
                     cls="data-table doc-lines" + (" doc-lines--invoice" if is_invoice_layout else "")
                         + (" doc-lines--status" if _draft_show_item_status else "")
                         + (" doc-lines--no-money" if pol["no_money"] and not pol["customs"] else "")
@@ -7187,7 +7140,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             ),
             (_list_line_pager(entity_id, line_offset, line_limit,
                               line_total if line_total is not None else len(line_items),
-                              editable=True) if is_list else None),
+                              save_first=can_edit_lines) if is_list else None),
             Div(
                 # Hidden only on a locked (counting) audit manifest. A draft audit is editable like any
                 # other building list, so it keeps the "Add item" affordance alongside scan-to-add.
@@ -7256,6 +7209,7 @@ function _celerpPatchListField(input, url, persistFirst=false) {{
    of lines, so a save overwrites exactly the positions this page occupies and leaves
    every off-page row untouched. Docs are never paged (offset 0). */
 window._CELERP_LINE_OFFSET = {int(line_offset)};
+window._CELERP_LINE_LIMIT = {int(line_limit)};
 /* Length of the stored window this page loaded. A save REPLACES exactly
    [offset, offset+original_count) so a shorter submitted page truncates deleted rows and
    a longer one inserts; after each save it becomes the count just written. */
@@ -7286,6 +7240,9 @@ function _celerpUnitFromTotal(total, qty) {{
 window._CELERP_DOC_TYPE = {repr(doc_type)};
 window._CELERP_IS_LIST = {repr("true" if is_list else "false")};
 window._CELERP_IS_DRAFT = {repr("true" if is_draft else "false")};
+// A counting (finalized) audit renders this section too, but its line structure is locked:
+// nothing on it may write the line array.
+window._CELERP_CAN_EDIT_LINES = {"true" if can_edit_lines else "false"};
 /* Translated UI strings resolved in Python at render time (R2: never splice
    translated text into JS source; hand it over as one config object). */
 window._L = {_json.dumps({
@@ -7332,6 +7289,7 @@ window._L = {_json.dumps({
     "confirm_set_available": t("documents.confirm_set_available"),
     "could_not_set_reserved": t("documents.could_not_set_reserved"),
     "could_not_set_available": t("documents.could_not_set_available"),
+    "audit_lines_locked": t("documents.audit_lines_locked"),
 })};
 """ + (f"""
 /* Item-status badges, serialized from the Python _STATUS_BADGE dict (the
@@ -7371,7 +7329,9 @@ function _celerpDocTypeParam() {{
     // a submission run against stale rows.
     async function _installListBody(html, version) {{
         if (!html) {{
-            const page = await fetch(location.href);
+            // The page being viewed, not location.href: in-place paging never changes the URL.
+            const page = await fetch(_CELERP_BASE + _CELERP_EID + '?offset=' + _CELERP_LINE_OFFSET
+                + '&limit=' + _CELERP_LINE_LIMIT);
             const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
             const fresh = doc.getElementById('{line_body_id}');
             html = fresh ? fresh.outerHTML : '';
@@ -7382,6 +7342,8 @@ function _celerpDocTypeParam() {{
         const swapped = document.getElementById('{line_body_id}');
         htmx.process(swapped);
         swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+        // The installed rows are the stored window now, so the next save replaces exactly them.
+        if (swapped.dataset.lineCount != null) _CELERP_ORIGINAL_COUNT = Number(swapped.dataset.lineCount);
         celerpUpdateTotals();
         _celerpHadLines = true;
         if (version != null) _celerpEntityVersion = version;
@@ -7418,7 +7380,8 @@ function _celerpDocTypeParam() {{
         const performScan = async () => {{
             let data;
             try {{
-                const fd = new URLSearchParams({{barcode: raw, run_key: pendingRunKey}});
+                const fd = new URLSearchParams({{barcode: raw, run_key: pendingRunKey,
+                    offset: _CELERP_LINE_OFFSET, limit: _CELERP_LINE_LIMIT}});
                 if (plSelect) fd.append('price_list', plSelect.value);
                 const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
                 if (!resp.ok) {{
@@ -8340,6 +8303,7 @@ function _celerpCollectLines() {{
     return lines;
 }}
 async function _celerpPersistOnce() {{
+    if (!window._CELERP_CAN_EDIT_LINES) return true;
     const revision = window._celerpLineRevision;
     const lines = _celerpCollectLines();
     // A null return means the collector aborted on an invalid quantity and has
@@ -8435,17 +8399,19 @@ function _celerpPersist() {{
     window._celerpLineRevision += 1;
     return _celerpMutate(_celerpPersistOnce);
 }}
-/* Save the current page, then swap to another page of the same list. Paging a draft must
-   never silently drop unsaved edits, so a failed save (including a stale-version conflict)
+/* Swap to another page of the same draft list. Paging must never silently drop unsaved
+   edits: a dirty page saves first, and a failed save (including a stale-version conflict)
    holds the current page in place with its message showing. A clean page saves nothing and
    swaps straight through. */
-async function celerpPageNav(offset, limit) {{
-    const ok = await _celerpPersist();
-    if (!ok) return;
-    const url = _CELERP_BASE + _CELERP_EID + '?offset=' + offset + '&limit=' + limit;
-    const safeId = _CELERP_EID.replace(/[:/]/g, '-');
-    const sel = '#list-line-section-' + safeId;
-    const target = document.getElementById('list-line-section-' + safeId);
+async function celerpPageNav(url) {{
+    if (_celerpLinesDirty()) {{
+        clearTimeout(_celerpSaveTimer);
+        _celerpSaveTimer = null;
+        const ok = await _celerpMutate(_celerpPersistOnce);
+        if (!ok) return;
+    }}
+    const sel = '#{_list_line_section_id(entity_id)}';
+    const target = document.querySelector(sel);
     if (target) {{
         // The list route returns the whole page, so extract just the lines section from it
         // (hx select) before swapping it in place.
@@ -8748,6 +8714,7 @@ async function celerpCsvImport(input, entityId) {{
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{ if(cb.value) ids.push(cb.value); }});
     var fd=new URLSearchParams();
     fd.append('scanned', scanned?'1':'0');
+    fd.append('offset', window._CELERP_LINE_OFFSET); fd.append('limit', window._CELERP_LINE_LIMIT);
     ids.forEach(function(id){{ fd.append('selected', id); }});
     try{{
       var resp=await fetch('/lists/{entity_id}/set-scanned', {{method:'POST', body:fd}});
@@ -8762,6 +8729,13 @@ async function celerpCsvImport(input, entityId) {{
     _hideBtns(); _update();
   }};
   window.liBulkDeleteConfirmed=function(){{
+    // A counting audit's item list is locked: keep every row and say why.
+    if(!window._CELERP_CAN_EDIT_LINES){{
+      if(window.celerpToast) celerpToast(_L.audit_lines_locked,'error');
+      if(sel) sel.value='';
+      _hideBtns();
+      return;
+    }}
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{cb.closest('tr').remove();}});
     celerpUpdateTotals(); celerpAutoSave();
     if(sel) sel.value='';
@@ -8791,10 +8765,9 @@ async function celerpCsvImport(input, entityId) {{
             cls="lines-section",
         )
         if is_list:
-            # Wrap the editable list lines in the pager's swap target so a page control can
-            # replace the whole section (rows + pager) in place after saving the current page.
-            _draft_safe_id = entity_id.replace(":", "-").replace("/", "-")
-            lines_section = Div(lines_section, id=f"list-line-section-{_draft_safe_id}")
+            # Wrap the interactive list lines in the pager's swap target so a page control can
+            # replace the whole section (rows + pager) in place.
+            lines_section = Div(lines_section, id=_list_line_section_id(entity_id))
     else:
         # Show checkboxes + bulk toolbar on finalized docs when celerp-labels is installed
         # or when doc type supports per-line fulfill/revert
@@ -8987,7 +8960,6 @@ async function celerpCsvImport(input, entityId) {{
         _colspan = len(_thead_base)
         _fin_bulk_id = "fin-lines-body"
         _fin_total = line_total if line_total is not None else len(line_items)
-        _fin_safe_id = entity_id.replace(":", "-").replace("/", "-")
         _fin_pager = _list_line_pager(entity_id, line_offset, line_limit, _fin_total) if is_list else None
         lines_section = Div(
             _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, show_reserve=_fin_show_reserve, is_inbound=_is_vendor_doc, inbound_line_items=line_items if _is_vendor_doc else None, locations=locations) if _fin_show_bulk else None,
@@ -9168,7 +9140,7 @@ async function celerpCsvImport(input, entityId) {{
             _fin_pager,
         )
         if is_list:
-            lines_section = Div(lines_section, id=f"list-line-section-{_fin_safe_id}")
+            lines_section = Div(lines_section, id=_list_line_section_id(entity_id))
 
     # --- Totals ---
     # Compute gross (pre-discount) and net (post-discount) subtotals. Every per-line amount is
@@ -9451,6 +9423,7 @@ async function celerpCsvImport(input, entityId) {{
                 Div(Div(t("doc.phone"), cls="form-label"), _cell("company_phone", doc.get("company_phone") or "--"), cls="form-group"),
                 Div(Div(t("doc.email"), cls="form-label"), _cell("company_email", doc.get("company_email") or "--"), cls="form-group"),
                 Div(Div(t("doc.tax_id"), cls="form-label"), _cell("company_tax_id", doc.get("company_tax_id") or "--"), cls="form-group"),
+                Div(Div(t("doc.website"), cls="form-label"), _cell("company_website", doc.get("company_website") or "--"), cls="form-group"),
                 cls="doc-section doc-section--half",
             ),
             Div(
@@ -9627,7 +9600,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         _active_key = ""
 
     if doc_type == "invoice":
-        _AWAITING_STATUSES = "final,sent,awaiting_payment,partial"
+        _AWAITING_STATUSES = awaiting_status_param("invoice")
         _PAID_STATUSES = "paid"
         _ALL_ISSUED_STATUSES = "final,sent,awaiting_payment,paid,partial"
 
@@ -9745,13 +9718,14 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             _active_key = "overdue"
         elif active_status:
             _active_key = active_status
+        elif status_in == awaiting_status_param("bill"):
+            _active_key = "awaiting_payment"
 
-        _AWAITING_STATUSES_BILL = "final,sent,awaiting_payment,partial"
         cards = [
             {"label": t("status.draft", lang),           "count": draft_cnt,       "total": None, "status": "draft",        "color": "gray",   "_url": f"{base_url}&status=draft",                        "_active_key": "draft"},
             {"label": t("status.all_issued", lang),      "count": all_issued_cnt,  "total": None, "status": "all_issued",   "color": "blue",   "_url": f"{base_url}&all_issued=1",                        "_active_key": "all_issued"},
             {"label": t("documents.not_stocked_goods", lang), "count": not_stocked_cnt, "total": None, "status": "not_stocked",  "color": "orange", "_url": f"{base_url}&not_stocked=1",                       "_active_key": "not_stocked"},
-            {"label": t("status.awaiting_payment", lang),"count": awaiting,        "total": None, "status": "awaiting_payment","color": "yellow","_url": f"{base_url}&status_in={_AWAITING_STATUSES_BILL}","_active_key": "awaiting_payment"},
+            {"label": t("status.awaiting_payment", lang),"count": awaiting,        "total": None, "status": "awaiting_payment","color": "yellow","_url": f"{base_url}&status_in={awaiting_status_param('bill')}","_active_key": "awaiting_payment"},
             {"label": t("status.overdue", lang),         "count": overdue,         "total": None, "status": "overdue",      "color": "red",    "_url": f"{base_url}&overdue_only=1",                      "_active_key": "overdue"},
             {"label": t("label.paid", lang),             "count": paid_cnt,        "total": None, "status": "paid",         "color": "green"},
             {"label": t("btn.void", lang),               "count": void_cnt,        "total": None, "status": "void",         "color": "gray"},
@@ -9809,11 +9783,12 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=True)
 
     # Generic fallback for remaining doc types (receipt, etc.)
+    # No document has the status "overdue": its card counts and links the overdue filter, and
+    # stays out of the All count, since each overdue document is already counted by its status.
     _DEFAULT_CARDS = [
         ("draft", t("status.draft", lang), "gray"),
         ("awaiting_payment", t("status.awaiting_payment", lang), "yellow"),
         ("paid", t("label.paid", lang), "green"),
-        ("overdue", t("status.overdue", lang), "red"),
         ("void", t("btn.void", lang), "gray"),
     ]
     card_defs = _DEFAULT_CARDS
@@ -9834,7 +9809,9 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         {"label": label, "count": counts[s], "total": totals[s], "status": s, "color": color}
         for s, label, color in card_defs
     ]
-    return status_cards(cards, base_url, active_status or None, currency=currency)
+    cards.insert(3, {"label": t("status.overdue", lang), "count": _sm.get("overdue_count", 0), "total": None, "status": "overdue",
+                     "color": "red", "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"})
+    return status_cards(cards, base_url, "overdue" if overdue_only else (active_status or None), total_override=sum(counts.values()), currency=currency)
 
 
 def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None, lang: str = "en") -> FT:
@@ -9933,20 +9910,12 @@ def _list_status_cards(summary: dict, active_status: str = "", converted_to_type
     return status_cards(cards, base_url, _active_key or None, show_all_card=False)
 
 
-def _list_type_tabs(active: str) -> FT:
+def _list_type_tabs(active: str, state: dict[str, str]) -> FT:
+    """Type tabs keep the date range and page size; search and status filters start fresh."""
+    kept = {k: state[k] for k in ("per_page", *_DATE_KEYS) if k in state}
     all_cls = "category-tab" + (" category-tab--active" if not active else "")
-    tabs = [A(t("doc.all"), href="/lists", hx_get="/lists/search", hx_target="#list-table",
-               hx_swap="outerHTML", hx_push_url="/lists", cls=all_cls)]
+    tabs = [A(t("doc.all"), href="/lists" + (f"?{urlencode(kept)}" if kept else ""), cls=all_cls)]
     for lt in _LIST_TYPES:
-        label = _list_behavior(lt).label
         cls = "category-tab" + (" category-tab--active" if lt == active else "")
-        tabs.append(A(
-            label,
-            href=f"/lists?type={lt}",
-            hx_get=f"/lists/search?type={lt}",
-            hx_target="#list-table",
-            hx_swap="outerHTML",
-            hx_push_url=f"/lists?type={lt}",
-            cls=cls,
-        ))
+        tabs.append(A(_list_behavior(lt).label, href="/lists?" + urlencode({"type": lt, **kept}), cls=cls))
     return Div(*tabs, cls="category-tabs", id="type-tabs")

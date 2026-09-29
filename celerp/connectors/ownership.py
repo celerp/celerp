@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.config import ensure_instance_id
 from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig
+from celerp.services.company_lock import lock_company
 
 
 class ConnectorOwnershipError(RuntimeError):
@@ -128,9 +129,9 @@ async def _lock_active_company(
         cid = uuid.UUID(str(company_id))
     except (TypeError, ValueError) as exc:
         raise ConnectorOwnershipError("Connector company is invalid") from exc
-    company = await session.get(
-        Company, cid, with_for_update=for_update, populate_existing=True
-    )
+    if for_update:
+        await lock_company(session, cid)
+    company = await session.get(Company, cid, populate_existing=True)
     if company is None or not company.is_active:
         raise ConnectorOwnershipError("Connector company is inactive")
     return company

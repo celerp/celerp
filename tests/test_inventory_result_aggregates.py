@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.services.auth import get_token_claims
+from celerp.services.company_lock import locked_company
 from test_helpers import create_location, perm_setup
 
 pytestmark = pytest.mark.asyncio
@@ -62,7 +63,6 @@ def _items(loc1: str, loc2: str) -> list[tuple[str, str, dict]]:
 
 @pytest.fixture
 async def seeded(client, session):
-    from celerp.models.company import Company
     from celerp.models.projections import Projection
 
     ctx = await perm_setup(client, session)
@@ -84,7 +84,7 @@ async def seeded(client, session):
             company_id=company_id, entity_id=entity_id, entity_type="item", state=state,
             version=1, location_id=uuid.UUID(loc), created_at=now, updated_at=now,
         ))
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     company.settings = {**(company.settings or {}), "price_lists": _PRICE_LISTS, "base_price_list": "Retail"}
     await session.flush()
     return {**ctx, "loc1": loc1, "loc2": loc2, "preexisting_skus": preexisting_skus}
@@ -216,11 +216,10 @@ async def test_holdings_and_sold_totals_unchanged(client, seeded):
 
 @pytest.fixture
 async def seeded_currency(client, session, seeded, request):
-    from celerp.models.company import Company
     from celerp.models.projections import Projection
 
     company_id = uuid.UUID(str(get_token_claims(seeded["admin_h"]["Authorization"].split()[1])["company_id"]))
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     company.settings = {**company.settings, "currency": request.param}
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "item",
@@ -260,11 +259,10 @@ async def test_filtered_totals_agree_with_store_valuation(client, seeded_currenc
 
 
 async def _set_rings(session, seeded, states: dict[str, dict], **settings) -> None:
-    from celerp.models.company import Company
     from celerp.models.projections import Projection
 
     company_id = uuid.UUID(str(get_token_claims(seeded["admin_h"]["Authorization"].split()[1])["company_id"]))
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     company.settings = {**company.settings, **settings}
     for entity_id, patch in states.items():
         row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})

@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from celerp.models.company import Company
+from celerp.services.company_lock import locked_company
 from test_cost_restatement import _item, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_receipt_accounting import _doc, _receive
 
@@ -42,7 +42,7 @@ async def test_receiving_and_returning_need_the_right_to_receive_goods(client, s
     po, item_id = await _received_po(client, session, auth, qty=2)
     other = await _doc(client, auth, "purchase_order",
                        [{"item_id": item_id, "name": "Lot", "quantity": 3, "unit_price": 14.0}])
-    company = await session.get(Company, auth["company_id"])
+    company = await locked_company(session, auth["company_id"])
     company.settings = {**(company.settings or {}), "role_grants": {"fulfill_documents": ["owner"]}}
     await session.commit()
     before = await _stock(session, auth, item_id)

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pytest
 
+from celerp.services.company_lock import locked_company
 from celerp.services.auth import get_token_claims
 from test_helpers import default_location_id, register_admin
 
@@ -71,8 +72,7 @@ async def _global_items(session, company_id, q="", limit=100):
 
 
 async def _set_inventory_method(session, company_id, method):
-    from celerp.models.company import Company
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     company.settings = {**(company.settings or {}), "inventory_method": method}
     await session.flush()
 

@@ -26,6 +26,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.services.doc_balance import doc_value, is_overdue_document, outstanding_balance, today_iso
+
 log = logging.getLogger(__name__)
 
 # Velocity-assist constants (used only to *suggest* a value; never stored).
@@ -191,24 +193,17 @@ async def _detect_expiring(session: AsyncSession, company) -> list[dict]:
 
 
 async def _detect_overdue(session: AsyncSession, company) -> list[dict]:
-    """Invoices past their due date with a positive outstanding balance."""
-    from datetime import date
-
-    today = date.today().isoformat()
+    """Overdue invoices (``is_overdue_document``) with what each still owes."""
+    today = today_iso()
     rows = await _projections(session, company, "doc")
     out: list[dict] = []
     for r in rows:
         st = r.state or {}
-        if st.get("doc_type") != "invoice" or st.get("status") in ("void", "paid", "draft", "converted"):
+        if st.get("doc_type") != "invoice" or not is_overdue_document(st, today):
             continue
-        due = st.get("due_date")
-        if not due or str(due)[:10] >= today:
-            continue
-        bal = float(st.get("amount_outstanding", st.get("total", 0)) or 0)
-        if bal <= 0:
-            continue
-        out.append({"entity_id": r.entity_id, "name": st.get("ref_id") or r.entity_id,
-                    "due_date": str(due)[:10], "balance": bal, "currency": st.get("currency", "USD")})
+        out.append({"entity_id": r.entity_id, "name": doc_value(st, "doc_number") or r.entity_id,
+                    "due_date": str(doc_value(st, "due_date"))[:10], "balance": float(outstanding_balance(st)),
+                    "currency": st.get("currency", "USD")})
     return out
 
 
@@ -256,12 +251,14 @@ def _digest_lines(items: list[dict], line, limit: int = 5) -> str:
     return "\n".join(out)
 
 
-async def run_all_alerts(session: AsyncSession, company) -> object | None:
+async def run_all_alerts(session: AsyncSession, company_id) -> object | None:
     """Run every enabled proactive check and, on newly-alerting items, emit ONE
     combined digest (notification + optional email). Idempotent per latch; each
     check re-arms independently when an item leaves its alert set."""
     from celerp.notifications import service as notif_service
+    from celerp.services.company_lock import locked_company
 
+    company = await locked_company(session, company_id)
     settings = dict(company.settings or {})
     sections: list[tuple[str, list[dict], object]] = []
     urgent = False
@@ -342,14 +339,15 @@ async def reorder_alert_loop() -> None:
                 companies = (await session.execute(
                     select(Company).where(Company.is_active.is_(True))
                 )).scalars().all()
-                for company in companies:
-                    if not _scan_due(company, now):
-                        continue
-                    try:
-                        await run_all_alerts(session, company)
-                    except Exception as exc:
-                        log.error("alerts: scan failed for %s: %s", company.id, exc)
+                due = [company.id for company in companies if _scan_due(company, now)]
                 await session.commit()
+                for company_id in due:
+                    try:
+                        await run_all_alerts(session, company_id)
+                        await session.commit()
+                    except Exception as exc:
+                        await session.rollback()
+                        log.error("alerts: scan failed for %s: %s", company_id, exc)
         except Exception as exc:
             log.error("alerts: loop error: %s", exc)
         await asyncio.sleep(_CHECK_INTERVAL_SECONDS)

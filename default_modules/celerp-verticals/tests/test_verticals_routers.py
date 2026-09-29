@@ -52,7 +52,7 @@ async def test_apply_preset_schemas_stored(client):
 
 @pytest.mark.asyncio
 async def test_apply_preset_idempotent(client):
-    """Applying the same preset twice overwrites without duplicating fields."""
+    """Applying the same preset twice adds nothing the first application did not."""
     tok = await _reg(client)
     r1 = await client.post("/companies/me/apply-preset", params={"vertical": "gemstones"}, headers=_h(tok))
     r2 = await client.post("/companies/me/apply-preset", params={"vertical": "gemstones"}, headers=_h(tok))
@@ -66,6 +66,28 @@ async def test_apply_preset_idempotent(client):
     # Diamond fields should not be duplicated
     diamond_keys = [f["key"] for f in schemas["diamond"]]
     assert len(diamond_keys) == len(set(diamond_keys))
+
+
+@pytest.mark.asyncio
+async def test_apply_preset_keeps_existing_company_settings(client):
+    """A preset only adds company settings the company does not have yet."""
+    tok = await _reg(client)
+    r = await client.patch("/companies/me", json={"settings": {"inventory_method": "lifo"}}, headers=_h(tok))
+    assert r.status_code == 200, r.text
+    r = await client.post("/companies/me/apply-preset", params={"vertical": "agricultural"}, headers=_h(tok))
+    assert r.status_code == 200, r.text
+    assert r.json()["company_settings"] == {}
+    settings = (await client.get("/companies/me", headers=_h(tok))).json()["settings"]
+    assert settings["inventory_method"] == "lifo"
+
+
+@pytest.mark.asyncio
+async def test_apply_preset_adds_missing_company_settings(client):
+    tok = await _reg(client)
+    r = await client.post("/companies/me/apply-preset", params={"vertical": "agricultural"}, headers=_h(tok))
+    assert r.json()["company_settings"] == {"inventory_method": "fefo"}
+    settings = (await client.get("/companies/me", headers=_h(tok))).json()["settings"]
+    assert settings["inventory_method"] == "fefo"
 
 
 @pytest.mark.asyncio

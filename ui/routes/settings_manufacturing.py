@@ -19,7 +19,7 @@ from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header, page_title, toast_header
+from ui.components.shell import base_shell, info_tip, page_header, page_title, toast_header
 from ui.config import get_token as _token
 from ui.i18n import t
 from ui.routes.manufacturing import _wc_table
@@ -29,18 +29,12 @@ def _mfg_settings(company: dict) -> dict:
     return ((company.get("settings") or {}).get("manufacturing") or {})
 
 
-def _info(text: str) -> FT:
-    """Small info-icon tooltip (hover/focus reveals the explanation)."""
-    return Span("ⓘ", cls="info-tip", tabindex="0", role="img",
-                **{"aria-label": text, "data-tip": text})
-
-
 def _work_centers_card(centers: list, loc_names: dict) -> FT:
     """Work-centers settings card. Chrome resolves via t() at render time."""
     return Div(
         Div(
             H2(Span(t("settings_manufacturing.work_centers")),
-               _info(t("settings_manufacturing.work_centers_info")),
+               info_tip(t("settings_manufacturing.work_centers_info")),
                cls="section-title"),
             Button(t("settings_manufacturing.add_work_center"), type="button", cls="btn btn--sm btn--primary",
                    hx_post="/manufacturing/work-centers/new", hx_target="#wc-table", hx_swap="outerHTML"),
@@ -62,7 +56,7 @@ def _production_rules_form(require_issued: bool, auto_create: bool, auto_complet
                 Input(type="checkbox", name="require_issued_before_complete", value="1",
                       checked=require_issued),
                 Span(t("settings_manufacturing.require_issued_label")),
-                _info(t("settings_manufacturing.require_issued_info")),
+                info_tip(t("settings_manufacturing.require_issued_info")),
                 cls="settings-toggle",
             ),
             cls="form-group",
@@ -72,7 +66,7 @@ def _production_rules_form(require_issued: bool, auto_create: bool, auto_complet
                 Input(type="checkbox", name="auto_create_work_orders", value="1", checked=auto_create,
                       onchange="document.getElementById('auto-complete-row').style.display = this.checked ? '' : 'none'"),
                 Span(t("settings_manufacturing.auto_create_label")),
-                _info(t("settings_manufacturing.auto_create_info")),
+                info_tip(t("settings_manufacturing.auto_create_info")),
                 cls="settings-toggle",
             ),
             cls="form-group",
@@ -81,7 +75,7 @@ def _production_rules_form(require_issued: bool, auto_create: bool, auto_complet
             Label(
                 Input(type="checkbox", name="auto_complete_work_orders", value="1", checked=auto_complete),
                 Span(t("settings_manufacturing.auto_complete_label")),
-                _info(t("settings_manufacturing.auto_complete_info")),
+                info_tip(t("settings_manufacturing.auto_complete_info")),
                 cls="settings-toggle",
             ),
             cls="form-group settings-toggle-child", id="auto-complete-row",

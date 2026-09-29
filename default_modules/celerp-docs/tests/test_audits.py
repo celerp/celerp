@@ -248,7 +248,7 @@ async def test_scan_duplicate_barcode_is_reported_not_silently_picked(client, mo
     fail = body["failed"][0]
     assert fail["code"] == "880001"
     assert fail["reason"] == "duplicate_barcode"
-    assert fail["label"] == "Duplicate physical code '880001' exists on multiple inventory items"
+    assert fail["label"] == "880001: more than one inventory item has this physical code"
     assert (await _state(client, t, q))["line_items"] == []  # nothing appended
 
 
@@ -734,7 +734,7 @@ async def test_scan_list_dedups_same_barcode_in_one_batch(client):
     fail = [f for f in body["failed"] if f["reason"] == "duplicate_scan"]
     assert len(fail) == 1
     assert fail[0]["code"] == "810001"
-    assert fail[0]["label"] == "D1: already on the list"
+    assert fail[0]["label"] == "810001: already on the list (SKU D1)"
     skus = [l["sku"] for l in (await _state(client, t, q))["line_items"]]
     assert sorted(skus) == ["D1", "D2"]
 
@@ -758,7 +758,7 @@ async def test_scan_list_dedups_against_existing_line(client):
     assert body["scanned"] == 0
     fail = body["failed"][0]
     assert fail["reason"] == "duplicate_scan"
-    assert fail["label"] == "E1: already on the list"
+    assert fail["label"] == "820001: already on the list (SKU E1)"
     assert len((await _state(client, t, q))["line_items"]) == 1   # still one line
 
 
@@ -815,3 +815,183 @@ async def test_scan_list_excludes_merged_sku_fallback(client, session):
     assert body["scanned"] == 0                       # the merged source is not resolved via sku
     assert [f["reason"] for f in body["failed"]] == ["unknown_code"]
     assert (await _state(client, t, q)).get("line_items") in (None, [])
+
+
+# --- physical identity: finalize refresh + input-first scan feedback -------
+
+async def _set_item(client, t, item_id, field, old, new):
+    r = await client.patch(f"/items/{item_id}", headers=_h(t),
+                           json={"fields_changed": {field: {"old": old, "new": new}}})
+    assert r.status_code == 200, r.text
+
+
+async def _scan(client, t, audit_id, code) -> dict:
+    r = await client.post(f"/lists/{audit_id}/scan", headers=_h(t), json={"barcode": code})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+@pytest.mark.asyncio
+async def test_scan_feedback_leads_with_the_scanned_code(client):
+    """Every scan failure starts with exactly what the operator entered, then the SKU as context."""
+    t = await _register(client)
+    loc, other = await _location(client, t, "A"), await _location(client, t, "B")
+    await _item(client, t, "ON-1", loc=loc, qty=1, barcode="3001")
+    await _item(client, t, "OFF-1", loc=other, qty=1, barcode="3099")
+    audit = (await _audit(client, t, loc))["id"]
+    await _finalize(client, t, audit)
+
+    ok = await _scan(client, t, audit, "3001")
+    assert ok["results"][0]["state"] == "audited"
+
+    off = (await _scan(client, t, audit, "3099"))["failed"][0]
+    assert off["reason"] == "not_on_audit"
+    assert off["label"] == "3099: not on this audit (SKU OFF-1)"
+
+    nf = (await _scan(client, t, audit, "NOPE"))["failed"][0]
+    assert nf["label"] == "NOPE: no matching barcode or SKU"
+
+
+@pytest.mark.asyncio
+async def test_other_lot_sharing_a_manifest_sku_is_rejected_as_a_different_lot(client):
+    """Two lots share a SKU; only one is on the audit. Scanning the other lot's barcode stays
+    rejected (by physical identity, never by SKU) and says why; scanning the SKU itself is still
+    ambiguous and fails closed."""
+    t = await _register(client)
+    loc, other = await _location(client, t, "A"), await _location(client, t, "B")
+    await _item(client, t, "LOT", loc=loc, qty=1, barcode="4001")
+    await _item(client, t, "LOT", loc=other, qty=1, barcode="4002")
+    audit = (await _audit(client, t, loc))["id"]
+    await _finalize(client, t, audit)
+
+    other_lot = await _scan(client, t, audit, "4002")
+    assert other_lot["scanned"] == 0
+    fail = other_lot["failed"][0]
+    assert fail["reason"] == "not_on_audit"  # a barcode scan never becomes SKU-ambiguous
+    assert fail["label"] == "4002: not on this audit. SKU LOT is present on a different lot."
+
+    assert (await _scan(client, t, audit, "4001"))["results"][0]["state"] == "audited"
+
+    amb = (await _scan(client, t, audit, "LOT"))["failed"][0]
+    assert amb["reason"] == "ambiguous_sku"
+    assert amb["label"].startswith("LOT: ")
+
+
+@pytest.mark.asyncio
+async def test_finalize_refreshes_line_identity_from_the_item(client):
+    """A barcode changed while the audit was a draft is what gets locked, so scanning the item's
+    current barcode checks it off."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    iid = await _item(client, t, "ID-1", loc=loc, qty=2, barcode="5001")
+    audit = (await _audit(client, t, loc))["id"]
+    await _set_item(client, t, iid, "barcode", "5001", "5002")
+    await _finalize(client, t, audit)
+    line = (await _state(client, t, audit))["line_items"][0]
+    assert line["barcode"] == "5002" and line["item_id"] == iid
+    assert (await _scan(client, t, audit, "5002"))["results"][0]["state"] == "audited"
+
+
+@pytest.mark.asyncio
+async def test_finalize_blocks_a_line_whose_item_no_longer_exists(client, session):
+    """Line writes refuse unknown items, so this is legacy data: a manifest line whose item record
+    is gone. Finalize fails closed and names the line by SKU, never by internal id."""
+    from sqlalchemy import delete
+    from celerp.models.projections import Projection
+
+    t = await _register(client)
+    loc = await _location(client, t)
+    iid = await _item(client, t, "GONE-1", loc=loc, qty=2, barcode="5101")
+    audit = (await _audit(client, t, loc))["id"]
+    await session.execute(delete(Projection).where(Projection.entity_id == iid))
+    await session.commit()
+    fin = await client.post(f"/lists/{audit}/finalize", headers=_h(t))
+    assert fin.status_code == 409, fin.text
+    assert "GONE-1" in fin.json()["detail"] and iid not in fin.json()["detail"]
+    assert (await _state(client, t, audit))["status"] == "draft"
+
+
+@pytest.mark.asyncio
+async def test_locked_barcode_that_changed_is_reported_not_checked_off(client):
+    """An audit locked before the finalize refresh can carry a barcode that now belongs to another
+    item, or to none. That scan must say the identifier changed, never check off the old line."""
+    t = await _register(client)
+    loc, other = await _location(client, t, "A"), await _location(client, t, "B")
+    moved = await _item(client, t, "OLD-1", loc=loc, qty=1, barcode="6001")
+    gone = await _item(client, t, "OLD-2", loc=loc, qty=1, barcode="6002")
+    audit = (await _audit(client, t, loc))["id"]
+    await _finalize(client, t, audit)
+    # After locking: 6001 moves to a new item elsewhere, 6002 is retired.
+    await _set_item(client, t, moved, "barcode", "6001", "6011")
+    await _item(client, t, "NEW-1", loc=other, qty=1, barcode="6001")
+    await _set_item(client, t, gone, "barcode", "6002", "6012")
+
+    for code in ("6001", "6002"):
+        res = await _scan(client, t, audit, code)
+        assert res["scanned"] == 0, res
+        fail = res["failed"][0]
+        assert fail["reason"] == "audit_identifier_changed", fail
+        assert fail["label"].startswith(f"{code}: ")
+    assert all(l.get("audited_at") is None for l in (await _state(client, t, audit))["line_items"])
+
+
+@pytest.mark.asyncio
+async def test_locked_barcode_now_on_another_audited_item_is_reported(client):
+    """Both items are on the audit. After locking, one item's barcode moves to the other. Scanning
+    that code resolves to an item that IS on the audit, but it matches the other line's locked
+    barcode: which physical item was scanned is unknown, so nothing is checked off."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    first = await _item(client, t, "SW-1", loc=loc, qty=1, barcode="7101")
+    second = await _item(client, t, "SW-2", loc=loc, qty=1, barcode="7102")
+    audit = (await _audit(client, t, loc))["id"]
+    await _finalize(client, t, audit)
+    await _set_item(client, t, first, "barcode", "7101", "7111")
+    await _set_item(client, t, second, "barcode", "7102", "7101")
+
+    res = await _scan(client, t, audit, "7101")
+    assert res["scanned"] == 0, res
+    fail = res["failed"][0]
+    assert fail["reason"] == "audit_identifier_changed", fail
+    assert fail["label"].startswith("7101: ")
+    assert all(l.get("audited_at") is None for l in (await _state(client, t, audit))["line_items"])
+
+
+@pytest.mark.asyncio
+async def test_finalize_blocks_a_line_whose_item_was_merged_away(client):
+    """An item merged into another while the audit is a draft keeps its record, but no scan can
+    ever resolve to it again, so its line could never be counted. Finalize fails closed."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    src = await _item(client, t, "MRG-1", loc=loc, qty=1, barcode="7201")
+    other = await _item(client, t, "MRG-2", loc=loc, qty=1, barcode="7202")
+    audit = (await _audit(client, t, loc))["id"]
+    r = await client.post("/items/merge", headers=_h(t),
+                          json={"source_entity_ids": [src, other], "target_sku_from": other})
+    assert r.status_code == 200, r.text
+    fin = await client.post(f"/lists/{audit}/finalize", headers=_h(t))
+    assert fin.status_code == 409, fin.text
+    # Both sources are merged away; either line may be the one reported, by its SKU.
+    detail = fin.json()["detail"]
+    assert detail.partition(": ")[0] in {"MRG-1", "MRG-2"}
+    assert src not in detail and other not in detail
+    assert (await _state(client, t, audit))["status"] == "draft"
+
+
+@pytest.mark.asyncio
+async def test_change_type_to_audit_keeps_unlinked_line_on_hand(client):
+    """Re-typing a finalized list to audit refreshes linked lines from their items; a line with no
+    item has nothing to refresh from, so it keeps the on-hand it already had."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    it = await _item(client, t, "UL-1", loc=loc, qty=3, barcode="7301")
+    r = await client.post("/lists", headers=_h(t), json={"list_type": "quotation", "line_items": [
+        {"item_id": it, "sku": "UL-1", "name": "UL-1", "quantity": 1},
+        {"name": "Loose bin", "quantity": 1, "on_hand": 4.0}]})
+    assert r.status_code == 200, r.text
+    audit = r.json()["id"]
+    await _finalize(client, t, audit)
+    r = await client.post(f"/lists/{audit}/change-type", headers=_h(t), json={"list_type": "audit"})
+    assert r.status_code == 200, r.text
+    loose = [l for l in (await _state(client, t, audit))["line_items"] if l.get("name") == "Loose bin"]
+    assert loose and loose[0]["on_hand"] == 4.0, loose

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+from celerp.services.company_lock import locked_company
 from celerp.modules import slots
 from celerp.services.auth import get_token_claims
 from test_helpers import register_admin, grant_permission
@@ -27,8 +28,7 @@ async def _set_enabled_modules(session, company_id, value):
     get_current_company_settings read sees exactly this within the test's
     savepoint-joined transaction.
     """
-    from celerp.models.company import Company
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     settings = dict(company.settings or {})
     if value is _ABSENT:
         settings.pop("enabled_modules", None)

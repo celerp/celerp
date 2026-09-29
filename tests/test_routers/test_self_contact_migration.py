@@ -8,6 +8,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
+from celerp.services.company_lock import locked_company
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, User
 from celerp.models.projections import Projection
@@ -143,8 +144,8 @@ async def test_identity_backfill_address_taxid_phone(client, session):
     from celerp.models.company import Location
     from celerp_contacts.migrations import backfill_self_contact_identity
     await _register(client)
-    company = (await session.execute(select(Company))).scalars().first()
-    cid = company.id
+    cid = (await session.execute(select(Company.id))).scalars().first()
+    company = await locked_company(session, cid)
     sid = (company.settings or {})["self_contact_id"]  # set by the P1 seed
     # Company setup put tax_id/phone on company settings and the address on the Head Office Location.
     company.settings = {**(company.settings or {}), "tax_id": "TX-99", "phone": "+66 2 123"}
@@ -163,3 +164,31 @@ async def test_identity_backfill_address_taxid_phone(client, session):
 
     # Idempotent: re-run changes nothing.
     assert await backfill_self_contact_identity(session, cid) is False
+
+
+@pytest.mark.asyncio
+async def test_migrate_all_continues_after_a_failing_company(committed_engine, monkeypatch):
+    """One company failing the migration does not stop the others."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from celerp_contacts import migrations
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as s:
+        for _ in range(2):
+            cid = uuid.uuid4()
+            s.add(Company(id=cid, name="MigCo", slug=f"mig-{cid.hex[:8]}", settings={}))
+        await s.commit()
+
+    calls: list = []
+
+    async def _migrate(session, company_id, actor_id=None):
+        calls.append(company_id)
+        if len(calls) == 1:
+            raise RuntimeError("migration failed")
+        return {"company_id": str(company_id), "status": "noop"}
+
+    monkeypatch.setattr(migrations, "migrate_self_contacts", _migrate)
+    async with factory() as s:
+        results = await migrations.migrate_all_self_contacts(s)
+    assert [r["status"] for r in results] == ["error", "noop"]

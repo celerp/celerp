@@ -141,7 +141,7 @@ async def test_list_detail_renders_one_page(ui_app):
     assert 0 < rendered <= _PAGE_LIMIT, (
         f"the render must be bounded to one page (<= {_PAGE_LIMIT} rows), "
         f"got {rendered} distinct line rows")
-    assert "line-pager" in html or "list-line-pager" in html, (
+    assert 'class="pagination"' in html, (
         "a large list must render a pager to reach off-page lines")
     assert page_mock.await_count >= 1, (
         "the detail view must fetch its page through the bounded endpoint, "
@@ -159,3 +159,98 @@ async def test_list_detail_field_edit_page_absolute_idx(ui_app):
         "page-2 edit cells must address page-absolute stored indices (offset+i); "
         f"got indices starting at {min(indices)}")
     assert max(indices) < 200, f"page 2 must not run past its window; got up to {max(indices)}"
+
+
+def _finalized_audit(n_lines: int) -> dict:
+    """A finalized audit (the locked counting manifest) with n_lines lines."""
+    return {
+        "entity_id": "list:aud",
+        "id": "list:aud",
+        "list_type": "audit",
+        "doc_type": "list",
+        "status": "finalized",
+        "created_at": "2026-01-01",
+        "version": 3,
+        "line_items": [
+            {"item_id": f"item:{i}", "sku": f"SKU{i}", "name": f"Item {i}", "quantity": 1}
+            for i in range(n_lines)
+        ],
+    }
+
+
+async def _audit_request(ui_app, method: str, path: str, data: dict | None = None,
+                         extra: dict | None = None) -> tuple[object, AsyncMock]:
+    payload = _finalized_audit(250)
+    page_mock = AsyncMock(side_effect=_page_side_effect(payload))
+    mocks = {**_base_stubs(payload, page_mock), **(extra or {})}
+    with _Patches(mocks):
+        async with AsyncClient(transport=ASGITransport(app=ui_app),
+                               base_url="http://ui", follow_redirects=False) as c:
+            if method == "GET":
+                r = await c.get(path, cookies=_cookies())
+            else:
+                r = await c.post(path, data=data or {}, cookies=_cookies())
+    assert r.status_code == 200, r.text
+    return r, page_mock
+
+
+def _pager_html(html: str) -> str:
+    m = re.search(r'<nav class="pagination">.*?</nav>', html, re.S)
+    assert m, "a 250-line audit must render the line pager"
+    return m.group(0)
+
+
+@pytest.mark.asyncio
+async def test_finalized_audit_pager_swaps_without_saving(ui_app):
+    """Counting a finalized audit is not structural editing: its line pager swaps the
+    line section in place and never routes through the draft save-before-leave path."""
+    r, _ = await _audit_request(ui_app, "GET", "/lists/list:aud")
+    pager = _pager_html(r.text)
+    assert "celerpPageNav" not in pager, "finalized audit paging must not save draft lines"
+    assert 'hx-get="/lists/list:aud?offset=100&amp;limit=100"' in pager
+    assert "window._CELERP_CAN_EDIT_LINES = false" in r.text
+
+
+@pytest.mark.asyncio
+async def test_draft_list_pager_saves_first(ui_app):
+    """A draft list's editable rows route paging through the save-before-leave path."""
+    payload = _finalized_list(250)
+    payload["status"] = "draft"
+    page_mock = AsyncMock(side_effect=_page_side_effect(payload))
+    with _Patches(_base_stubs(payload, page_mock)):
+        async with AsyncClient(transport=ASGITransport(app=ui_app),
+                               base_url="http://ui", follow_redirects=False) as c:
+            r = await c.get("/lists/list:big", cookies=_cookies())
+    assert r.status_code == 200, r.text
+    assert "celerpPageNav(this.getAttribute('href'))" in _pager_html(r.text)
+    assert "window._CELERP_CAN_EDIT_LINES = true" in r.text
+
+
+def _tbody_offsets(page_mock: AsyncMock) -> list[int]:
+    """Offsets of the page reads that rendered rows (limit > 1; limit=1 is a header read)."""
+    return [c.kwargs.get("offset", 0) for c in page_mock.await_args_list
+            if c.kwargs.get("limit", 100) > 1]
+
+
+@pytest.mark.asyncio
+async def test_scan_on_page_two_rerenders_page_two(ui_app):
+    """A scan submitted from page 2 re-renders page 2, not page 1 under a page-2 pager."""
+    scan = AsyncMock(return_value={"scanned": 1, "failed": []})
+    r, page_mock = await _audit_request(
+        ui_app, "POST", "/lists/list:aud/scan",
+        data={"barcode": "SKU150", "offset": "100", "limit": "100"},
+        extra={"ui.api_client.scan_list": scan})
+    assert _tbody_offsets(page_mock) == [100]
+    assert "SKU150" in r.json()["html"] and "SKU0<" not in r.json()["html"]
+
+
+@pytest.mark.asyncio
+async def test_set_scanned_on_page_two_rerenders_page_two(ui_app):
+    """Mark/Clear scanned from page 2 re-renders page 2."""
+    mark = AsyncMock(return_value={})
+    r, page_mock = await _audit_request(
+        ui_app, "POST", "/lists/list:aud/set-scanned",
+        data={"scanned": "1", "offset": "100", "limit": "100"},
+        extra={"ui.api_client.set_scanned": mark})
+    assert _tbody_offsets(page_mock) == [100]
+    assert "SKU150" in r.text and "SKU0<" not in r.text

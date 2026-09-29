@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 
+from celerp.services.company_lock import locked_company
 from celerp.services.money import to_minor_units
 
 
@@ -209,14 +210,13 @@ async def test_backup_push_records_and_is_idempotent(client, session, payments_o
 @pytest.mark.asyncio
 async def test_backup_push_uses_company_deposit_account(client, session, payments_on):
     """The deposit GL account is the company setting, defaulting to Cash."""
-    from celerp.models.company import Company
     from celerp.models.projections import Projection
     from celerp_docs.routes_payments import record_stripe_payment
 
     tok = await _register(client)
     eid, token = await _payable_invoice(client, tok)
     cid = _company_id(tok)
-    company = await session.get(Company, cid)
+    company = await locked_company(session, cid)
     company.settings = {**(company.settings or {}), "stripe_deposit_account": "1055"}
     await session.commit()
 
