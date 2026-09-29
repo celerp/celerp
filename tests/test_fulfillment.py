@@ -3479,7 +3479,7 @@ async def test_split_fulfillment_period_lock_uses_company_timezone(
 
 
 @pytest.mark.asyncio
-async def test_invoice_cross_lot_revert_voids_true_up_and_refulfill_posts_new_cycle(
+async def test_invoice_cross_lot_revert_trues_back_and_refulfill_posts_new_cycle(
     client, session, auth, _setup_ids
 ):
     from celerp.models.projections import Projection
@@ -3516,7 +3516,9 @@ async def test_invoice_cross_lot_revert_voids_true_up_and_refulfill_posts_new_cy
 
     session.expire_all()
     adj0 = await session.get(Projection, {"company_id": cid, "entity_id": adj0_id})
-    assert adj0.state.get("status") == "void"
+    assert adj0.state.get("status") == "posted"
+    back = await session.get(Projection, {"company_id": cid, "entity_id": f"je:auto:{doc1}:cogs-adj:reverse-0:l0"})
+    assert back is not None and back.state.get("status") == "posted"
     assert (await _je_net(client, auth["headers"])).get("5100") == 200.0
 
     rf = await client.post(f"/docs/{doc1}/fulfill-lines", headers=auth["headers"],
@@ -3620,33 +3622,3 @@ async def test_fulfill_two_same_sku_bound_lots_draws_each_lot_once(
 
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 260.0, nets
-
-
-@pytest.mark.asyncio
-async def test_reversing_adjustments_leaves_similarly_named_documents_alone(client, session, auth, _setup_ids):
-    """Document ids are free text on import, so an id containing _ or % must match
-    only its own fulfillment adjustments."""
-    from celerp.models.projections import Projection
-    from celerp.services import auto_je
-
-    cid = _setup_ids["company_id"]
-    uid = _setup_ids["user_id"]
-    for doc_id in ("doc:IMP-A_", "doc:IMP-AB", "doc:IMP-%", "doc:IMP-XY"):
-        await auto_je.create_for_doc_cogs_adjustment(
-            session, company_id=cid, user_id=uid, doc_id=doc_id, delta=5.0,
-            cycle_tag="fulfill-0:l0", doc_number=doc_id,
-        )
-    await session.commit()
-
-    for doc_id in ("doc:IMP-A_", "doc:IMP-%"):
-        await auto_je.void_for_doc_cogs_adjustments(
-            session, company_id=cid, user_id=uid, doc_id=doc_id, line_indices={0})
-    await session.commit()
-
-    session.expire_all()
-    status = {}
-    for doc_id in ("doc:IMP-A_", "doc:IMP-AB", "doc:IMP-%", "doc:IMP-XY"):
-        je = await session.get(Projection, {"company_id": cid, "entity_id": f"je:auto:{doc_id}:cogs-adj:fulfill-0:l0"})
-        status[doc_id] = je.state.get("status")
-    assert status == {"doc:IMP-A_": "void", "doc:IMP-AB": "posted",
-                      "doc:IMP-%": "void", "doc:IMP-XY": "posted"}

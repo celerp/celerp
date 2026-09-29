@@ -8,19 +8,22 @@ See context/2026-0614-freight-tracking-plan.md sections 3 and 6.
 """
 from __future__ import annotations
 
+from celerp.services.money import round_money, to_stored_float
+
 
 def allocate_landed_cost(
     goods: list[dict],
     components: list[dict],
+    currency: str,
 ) -> dict[str, dict[str, float]]:
     """Allocate landed-cost components across goods lines by value.
 
     goods:      [{"key": str, "value": float (extended base-currency cost), "qty": float}]
     components: [{"kind": str, "amount": float (base-currency, capitalisable only)}]
 
-    Returns {goods_key: {kind: per_unit_landed}}. Per kind, the rounded shares sum exactly to the
-    component pool (residual assigned to the largest line); falls back to a quantity basis when the
-    total goods value is zero. Per-unit amounts are kept at full precision; callers round the final
+    Returns {goods_key: {kind: per_unit_landed}}. Per kind, the shares, rounded to the minor unit of
+    `currency` (the base currency), sum exactly to the component pool (residual assigned to the largest
+    line); falls back to a quantity basis when the total goods value is zero. Per-unit amounts are kept at full precision; callers round the final
     landed total (unit x quantity).
     """
     result: dict[str, dict[str, float]] = {g["key"]: {} for g in goods}
@@ -49,14 +52,14 @@ def allocate_landed_cost(
     for kind, pool in by_kind.items():
         if pool <= 0:
             continue
-        shares: dict[str, float] = {g["key"]: round(pool * _basis(g) / basis_total, 2) for g in goods}
-        residual = round(pool - sum(shares.values()), 2)
+        shares = {g["key"]: round_money(pool * _basis(g) / basis_total, currency) for g in goods}
+        residual = round_money(pool, currency) - sum(shares.values())
         if residual:
-            shares[largest["key"]] = round(shares[largest["key"]] + residual, 2)
+            shares[largest["key"]] += residual
         for g in goods:
             qty = float(g["qty"])
             if qty:
-                result[g["key"]][kind] = shares[g["key"]] / qty  # per-unit, full precision
+                result[g["key"]][kind] = to_stored_float(shares[g["key"]]) / qty  # per-unit, full precision
     return result
 
 
@@ -101,4 +104,4 @@ async def compute_bill_landed_allocation(session, company_id, doc_state: dict) -
                 inv_type = proj.state.get("inventory_type")
         if not is_non_stock_line(inv_type, li.get("sell_by")) and base_amt > 0 and li.get("sku"):
             goods.append({"key": li.get("sku"), "value": base_amt, "qty": float(li.get("quantity") or 0)})
-    return allocate_landed_cost(goods, components)
+    return allocate_landed_cost(goods, components, base_currency)

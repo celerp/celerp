@@ -1993,6 +1993,9 @@ async def _finalize_doc_impl(
     commit: bool = True,
 ) -> dict:
     """Finalize with caller-owned transaction support for domain integrations."""
+    # An invoice's recognized COGS reads lot costs that a cost correction may be
+    # rewriting; the company lock orders the two.
+    await lock_item_code_namespace(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     # A closed memo is terminal, settled paperwork; finalize maps closed->final in the
     # reducer, silently stripping the terminal status and its close metadata. Refuse under
@@ -2350,6 +2353,7 @@ async def renumber_doc(
 
 @router.post("/{entity_id}/unvoid")
 async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    await lock_item_code_namespace(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("status") != "void":
@@ -2367,6 +2371,15 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
     )
     # Restore the JEs the void reversed (idempotent - uses doc-scoped keys)
     await auto_je.create_for_doc_unvoided(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
+    if state.get("doc_type") == "invoice":
+        # Cost corrections made while the invoice was void apply once it stands again.
+        try:
+            await auto_je.reconcile_doc_cogs(
+                session, company_id=company_id, user_id=user.id, doc_id=entity_id,
+                cycle_tag=f"unvoid-{entry.id}", ts=None, trigger="doc.unvoided",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # TODO: actual re-fulfillment after unvoid would need inventory availability check.
     # For now, restore the fulfillment_status field so the UI reflects prior state.
@@ -6410,16 +6423,14 @@ async def _fulfill_lines_impl(
             del fetched[parent_eid]
 
     total_cogs = 0.0
-    actual_cogs_by_line: dict[int, float] = {}
+    fulfilled_lines: set[int] = set()
     for item_eid in to_fulfill:
         item_proj = fetched[item_eid]
         qty = float(item_proj.state.get("quantity", 0))
-        cost_total = item_proj.state.get("cost_total")
-        item_cogs = float(cost_total) if cost_total is not None else float(item_proj.state.get("cost_price") or 0) * qty
-        total_cogs += item_cogs
+        total_cogs += auto_je.lot_cost_of_sale(item_proj.state)
         _line_idx = fulfillment_line_index.get(item_eid)
         if _line_idx is not None:
-            actual_cogs_by_line[_line_idx] = actual_cogs_by_line.get(_line_idx, 0.0) + item_cogs
+            fulfilled_lines.add(_line_idx)
         await emit_event(
             session,
             company_id=cid,
@@ -6441,20 +6452,17 @@ async def _fulfill_lines_impl(
             metadata_={"doc_id": entity_id, "line_index": _line_idx},
         )
 
-    # True up recognized COGS one document line at a time so partial reversal is exact.
+    # True up the invoice's recognized COGS to the actual cost of what it shipped.
     if doc_type == "invoice" and to_fulfill:
-        _recognized_allocs = await auto_je.recognized_cogs_allocations(session, company_id, entity_id)
-        if _recognized_allocs is not None:
-            _cycle = int(state.get("fulfill_cycle") or 0)
-            for _idx in sorted(actual_cogs_by_line):
-                _recognized = float((_recognized_allocs.get(str(_idx)) or {}).get("amount") or 0)
-                _delta = actual_cogs_by_line[_idx] - _recognized
-                await auto_je.create_for_doc_cogs_adjustment(
-                    session, company_id=cid, user_id=uid, doc_id=entity_id,
-                    delta=_delta, cycle_tag=f"fulfill-{_cycle}:l{_idx}",
-                    doc_number=state.get("doc_number") or state.get("ref_id") or entity_id,
-                    ts=fulfillment_date,
-                )
+        _lines = "-".join(str(i) for i in sorted(fulfilled_lines))
+        try:
+            await auto_je.reconcile_doc_cogs(
+                session, company_id=cid, user_id=uid, doc_id=entity_id,
+                cycle_tag=f"fulfill-{int(state.get('fulfill_cycle') or 0)}:l{_lines}",
+                ts=fulfillment_date, trigger="doc.fulfilled",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # Optimistically compute doc fulfillment_status. Service lines count as fulfilled (they are
     # rendered, not drawn from stock) so a service-only or mixed doc can reach "fulfilled".
@@ -6530,40 +6538,13 @@ async def fulfill_lines(
     return await _fulfill_lines_impl(entity_id, body, company_id, user, session, commit=True)
 
 
-async def _fulfilled_line_index(
-    session, company_id, doc_id: str, doc_state: dict, item: Projection,
-) -> int | None:
-    for idx, line in enumerate(doc_state.get("line_items", [])):
-        if (line.get("entity_id") or line.get("item_id")) == item.entity_id:
-            return idx
-    from celerp.models.ledger import LedgerEntry
-    rows = (await session.execute(
-        select(LedgerEntry).where(
-            LedgerEntry.company_id == company_id,
-            LedgerEntry.entity_id == item.entity_id,
-            LedgerEntry.event_type == "item.fulfilled",
-        ).order_by(LedgerEntry.id.desc())
-    )).scalars().all()
-    for event in rows:
-        if (event.data or {}).get("source_doc_id") != doc_id:
-            continue
-        idx = (event.metadata_ or {}).get("line_index")
-        if isinstance(idx, int):
-            return idx
-        break
-    sku = str((item.state or {}).get("sku") or "").strip()
-    matches = [idx for idx, line in enumerate(doc_state.get("line_items", []))
-               if str(line.get("sku") or "").strip() == sku]
-    return matches[0] if len(matches) == 1 else None
-
-
 async def _expand_invoice_line_allocations(
     session, company_id, doc_id: str, doc_state: dict,
     item_ids: list[str], fetched: dict[str, Projection],
 ) -> set[int]:
     requested_indices: set[int] = set()
     for item_eid in list(item_ids):
-        idx = await _fulfilled_line_index(session, company_id, doc_id, doc_state, fetched[item_eid])
+        idx = await auto_je.doc_line_of_lot(session, company_id, doc_id, doc_state, item_eid, fetched[item_eid].state or {})
         if idx is None:
             raise HTTPException(status_code=409, detail="Cannot safely identify the invoice line for this legacy fulfillment.")
         requested_indices.add(idx)
@@ -6572,7 +6553,7 @@ async def _expand_invoice_line_allocations(
         for idx in requested_indices if 0 <= idx < len(doc_state.get("line_items") or [])
     }
     for item in await _memo_allocation_items(session, company_id, doc_id):
-        idx = await _fulfilled_line_index(session, company_id, doc_id, doc_state, item)
+        idx = await auto_je.doc_line_of_lot(session, company_id, doc_id, doc_state, item.entity_id, item.state or {})
         if idx is None:
             if item.entity_id not in item_ids and str((item.state or {}).get("sku") or "").strip() in requested_skus:
                 raise HTTPException(status_code=409, detail="Cannot safely identify every lot in this legacy invoice fulfillment.")
@@ -6615,14 +6596,6 @@ async def _reverse_whole_lines(
         if doc_type == "invoice" or settings.get("lock_date")
         else now_dt.date().isoformat()
     )
-    if reversed_line_indices:
-        try:
-            await auto_je.void_for_doc_cogs_adjustments(
-                session, company_id=cid, user_id=uid, doc_id=entity_id,
-                line_indices=reversed_line_indices,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
     for item_eid in to_revert:
         item_proj = fetched[item_eid]
         qty = float(item_proj.state.get("quantity", 0))
@@ -6647,6 +6620,17 @@ async def _reverse_whole_lines(
             idempotency_key=str(uuid.uuid4()),
             metadata_={"doc_id": entity_id},
         )
+    if reversed_line_indices:
+        # The lines are back to their finalize allocation (plus any cost corrections since).
+        _lines = "-".join(str(i) for i in sorted(reversed_line_indices))
+        try:
+            await auto_je.reconcile_doc_cogs(
+                session, company_id=cid, user_id=uid, doc_id=entity_id,
+                cycle_tag=f"reverse-{int(state.get('fulfill_cycle') or 0)}:l{_lines}",
+                ts=reversal_date, trigger="doc.fulfillment_reversed",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # Optimistically compute doc fulfillment_status
     newly_available = set(to_revert)

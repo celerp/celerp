@@ -170,6 +170,32 @@ async def test_correction_after_a_shortfall_is_refused(client, session, auth):
     assert r.status_code == 409, r.text
 
 
+@pytest.mark.asyncio
+async def test_correction_after_an_undone_audit_carries_the_new_cost(client, session, auth):
+    item_id, loc = await _located_item(client, session, auth, 10, 100.0)
+    audit, _ = await _audit_count(client, auth, item_id, loc, 4)
+    r = await client.post(f"/lists/{audit}/undo-adjust", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+
+    r = await _set_cost(client, auth, item_id, 120.0)
+    assert r.status_code == 200, r.text
+    state = await _state(session, auth, item_id)
+    assert (state["quantity"], state["cost_base"], state["cost_total"]) == (10, 120.0, 120.0)
+
+
+@pytest.mark.asyncio
+async def test_correction_after_an_audit_that_still_stands_is_refused(client, session, auth):
+    item_id, loc = await _located_item(client, session, auth, 10, 100.0)
+    audit, _ = await _audit_count(client, auth, item_id, loc, 4)
+    r = await client.post(f"/lists/{audit}/undo-adjust", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    await _audit_count(client, auth, item_id, loc, 6)
+
+    r = await _set_cost(client, auth, item_id, 120.0)
+    assert r.status_code == 409, r.text
+    assert (await _state(session, auth, item_id))["cost_total"] == 60.0
+
+
 # -- Zero-quantity unit cost with landed cost, promoted by new stock ----------
 
 async def _promoted_lot(client, session, auth) -> str:

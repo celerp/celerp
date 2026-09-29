@@ -8,7 +8,7 @@ import types
 import uuid
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
@@ -294,6 +294,51 @@ async def test_audit_undo_refuses_after_later_cost_change(_db_engine):
         await _cleanup(factory, company_id, user_id)
 
 
+@pytest.mark.asyncio
+async def test_refinalize_waits_for_a_cost_correction_in_flight(_db_engine):
+    """A re-finalized invoice keeps its number, so nothing else makes it wait."""
+    from celerp_docs.routes import _finalize_doc_impl
+    from celerp_inventory.services import restate_item_cost
+
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = await _seed_company(factory)
+    user_id = await _seed_user(factory)
+    await _seed_chart(factory, company_id)
+    item_id, doc_id = "item:FIN-RACE", "doc:FIN-RACE"
+    await _seed_item(factory, company_id, item_id, qty=1, cost_total=100)
+    async with factory() as s:
+        await emit_event(
+            s, company_id=company_id, entity_id=doc_id, entity_type="doc", event_type="doc.created",
+            data={"doc_type": "invoice", "status": "draft", "ref_id": "INV-RACE", "revert_count": 1,
+                  "currency": "USD",
+                  "line_items": [{"sku": "FIN-RACE", "name": "FIN-RACE", "quantity": 1,
+                                  "unit_price": 200.0, "entity_id": item_id, "item_id": item_id}],
+                  "subtotal": 200.0, "total": 200.0},
+            actor_id=user_id, location_id=None, source="test",
+            idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+        await s.commit()
+    correction, finalize = factory(), factory()
+    try:
+        await restate_item_cost(
+            correction, company_id, item_id, event_type="item.updated",
+            data={"fields_changed": {"cost_total": {"old": 100, "new": 120}}},
+            actor_id=user_id, source="test", idempotency_key=str(uuid.uuid4()),
+        )
+        task = asyncio.create_task(_finalize_doc_impl(
+            doc_id, company_id, types.SimpleNamespace(id=user_id), finalize, commit=True))
+        await asyncio.sleep(0.3)
+        assert not task.done()
+        await correction.commit()
+        await asyncio.wait_for(task, timeout=10)
+        async with factory() as s:
+            assert await _account_net(s, company_id, "5100") == 120.0
+    finally:
+        await correction.close()
+        await finalize.close()
+        await _cleanup(factory, company_id, user_id)
+
+
 async def _contact(client, h, name: str) -> str:
     r = await client.post("/crm/contacts", headers=h, json={"name": name, "contact_type": "customer"})
     assert r.status_code == 200, r.text
@@ -455,3 +500,84 @@ async def test_kwd_credit_refund_rejects_sub_minor_unit_amount(client, session):
     )
     assert r.status_code == 422, r.text
     assert "must be positive" in r.json()["detail"]
+
+
+async def _account_net(session, company_id, account: str) -> float:
+    session.expire_all()
+    rows = (await session.execute(
+        select(Projection).where(Projection.company_id == company_id,
+                                 Projection.entity_type == "journal_entry")
+    )).scalars().all()
+    return round(sum(float(e.get("debit") or 0) - float(e.get("credit") or 0)
+                     for p in rows if p.state.get("status") == "posted"
+                     for e in p.state.get("entries", []) if e.get("account") == account), 3)
+
+
+@pytest.mark.asyncio
+async def test_true_ups_on_two_lines_round_once_for_the_invoice(client, session):
+    auth = await _auth_company(session, "USD")
+    lines, first_lots = [], []
+    for n in range(2):
+        sku = f"USD-TU{n}-{uuid.uuid4().hex[:6]}"
+        lot_a = await _api_item(client, auth, sku, 1, 1.00)
+        lot_b = await _api_item(client, auth, sku, 1, 1.00)
+        await _api_item(client, auth, sku, 1, 1.004)
+        other = await _invoice(client, auth, lot_b, sku, 1)
+        lines.append({"entity_id": lot_a, "sku": sku, "name": sku,
+                      "quantity": 2, "unit_price": 5.0, "sell_by": "piece"})
+        first_lots.append((lot_b, other))
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "line_items": lines, "total": 20.0})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    assert (await client.post(f"/docs/{doc}/finalize", headers=auth["headers"])).status_code == 200
+    for lot_b, other in first_lots:
+        r = await client.post(f"/docs/{other}/fulfill-lines", headers=auth["headers"],
+                              json={"line_entity_ids": [lot_b]})
+        assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{doc}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [ln["entity_id"] for ln in lines]})
+    assert r.status_code == 200, r.text
+
+    # Each line leaves at 2.004 against 2.00 recognized: 0.008 for the invoice rounds to 0.01.
+    session.expire_all()
+    rows = (await session.execute(
+        select(Projection).where(Projection.company_id == auth["company_id"],
+                                 Projection.entity_id.like(f"je:auto:{doc}:cogs-adj:%"))
+    )).scalars().all()
+    amounts = [sum(float(e["debit"]) - float(e["credit"]) for e in p.state["entries"] if e["account"] == "5100")
+               for p in rows if p.state.get("status") == "posted"]
+    assert amounts == [0.01]
+
+
+@pytest.mark.asyncio
+async def test_kwd_landed_cost_capitalises_every_fils(client, session):
+    auth = await _auth_company(session, "KWD")
+    h = auth["headers"]
+    loc = (await client.post("/companies/me/locations", headers=h, json={"name": "WH", "type": "warehouse"})).json()["id"]
+    goods = []
+    for n in range(3):
+        sku = f"KWD-LC{n}-{uuid.uuid4().hex[:6]}"
+        r = await client.post("/items", headers=h, json={"status": "available", "sku": sku, "name": sku,
+                                                           "quantity": 0, "sell_by": "piece"})
+        assert r.status_code == 200, r.text
+        goods.append((r.json()["id"], sku))
+    r = await client.post("/items", headers=h, json={"status": "available", "sku": "FRT", "name": "FRT", "quantity": 0,
+                                                      "sell_by": "piece", "inventory_type": "freight",
+                                                      "landed_cost_kind": "freight"})
+    frt = r.json()["id"]
+    line = lambda eid, sku, price: {"entity_id": eid, "sku": sku, "name": sku, "quantity": 1, "unit_price": price,
+                                    "line_total": price, "sell_by": "piece", "receive_as": "stock"}
+    r = await client.post("/docs", headers=h, json={"doc_type": "bill", "total": 31.234, "line_items": [
+        *(line(eid, sku, 10.0) for eid, sku in goods), line(frt, "FRT", 1.234)]})
+    assert r.status_code == 200, r.text
+    bill = r.json()["id"]
+    assert (await client.post(f"/docs/{bill}/finalize", headers=h)).status_code == 200
+    assert await _account_net(session, auth["company_id"], "1130-FRT") == 1.234
+
+    r = await client.post(f"/docs/{bill}/receive", headers=h, json={"location_id": loc, "received_items": [
+        {"item_id": eid, "sku": sku, "name": sku, "quantity_received": 1, "cost_price": 10.0, "receive_as": "stock"}
+        for eid, sku in goods]})
+    assert r.status_code == 200, r.text
+    assert await _account_net(session, auth["company_id"], "1130-FRT") == 0.0
+    assert await _account_net(session, auth["company_id"], "1130-P") == 31.234

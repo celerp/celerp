@@ -9,6 +9,7 @@ lot, in one transaction, or the correction is refused and nothing changes.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -78,22 +79,45 @@ async def _cost(session, auth, entity_id: str):
     return (await _state(session, auth, entity_id)).get("cost_total")
 
 
-async def _sell(client, session, auth, item_id: str) -> str:
-    """Invoice the whole lot on line 0, finalize, and fulfil it."""
-    state = await _state(session, auth, item_id)
+async def _invoice(client, session, auth, *item_ids: str) -> str:
+    """Invoice each whole lot on its own line, in order, and finalize."""
+    lines = []
+    for item_id in item_ids:
+        state = await _state(session, auth, item_id)
+        lines.append({"sku": state["sku"], "name": "Lot", "quantity": state["quantity"],
+                      "unit_price": 500.0, "entity_id": item_id})
     r = await client.post("/docs", headers=auth["headers"], json={
         "doc_type": "invoice", "ref_id": f"INV-{uuid.uuid4().hex[:6]}",
-        "line_items": [{"sku": state["sku"], "name": "Lot", "quantity": state["quantity"],
-                        "unit_price": 500.0, "entity_id": item_id}],
-        "total": 500.0,
+        "line_items": lines, "total": 500.0 * len(lines),
     })
     assert r.status_code == 200, r.text
     doc_id = r.json()["id"]
     assert (await client.post(f"/docs/{doc_id}/finalize", headers=auth["headers"])).status_code == 200
-    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
-                          json={"line_entity_ids": [item_id]})
-    assert r.status_code == 200, r.text
     return doc_id
+
+
+async def _fulfil(client, doc_id: str, auth, *item_ids: str) -> None:
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": list(item_ids)})
+    assert r.status_code == 200, r.text
+
+
+async def _sell(client, session, auth, *item_ids: str) -> str:
+    """Invoice each whole lot on its own line, finalize, and fulfil them."""
+    doc_id = await _invoice(client, session, auth, *item_ids)
+    await _fulfil(client, doc_id, auth, *item_ids)
+    return doc_id
+
+
+async def _doc_cogs(session, auth, doc_id: str) -> float:
+    """Cost of goods sold the document's posted entries recognize in total."""
+    session.expire_all()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == auth["company_id"],
+        Projection.entity_type == "journal_entry",
+        Projection.entity_id.like(f"je:auto:{doc_id}:%"),
+    ))).scalars().all()
+    return round(sum(_cogs(r.state) for r in rows if r.state.get("status") == "posted"), 2)
 
 
 async def _cogs_adjustments(session, auth, doc_id: str) -> dict[str, dict]:
@@ -205,7 +229,7 @@ async def test_sold_merge_result_posts_cogs_adjustment(client, session, auth, ne
     adjustments = await _cogs_adjustments(session, auth, doc)
     assert len(adjustments) == 1
     (je_id, je), = adjustments.items()
-    assert je_id.startswith(f"je:auto:{doc}:cogs-adj:restate-") and je_id.endswith(":l0")
+    assert re.fullmatch(rf"je:auto:{re.escape(doc)}:cogs-adj:restate-[0-9a-f]{{16}}", je_id)
     assert je["status"] == "posted"
     assert _cogs(je) == delta
     inventory = [x for x in je["entries"] if x["account"] != "5100"]
@@ -235,23 +259,88 @@ async def test_sold_item_correction_is_dated_today_in_business_time(client, sess
 
 
 @pytest.mark.asyncio
-async def test_reversal_voids_the_correction_and_refulfilment_uses_corrected_cost(client, session, auth):
+async def test_reversal_keeps_the_corrected_cost_recognized(client, session, auth):
     a, b = await _item(client, auth, 100.0), await _item(client, auth, 50.0)
     c = await _merge(client, auth, [a, b])
     doc = await _sell(client, session, auth, c)
     assert (await _set_cost(client, auth, a, 120.0)).status_code == 200
+    assert await _doc_cogs(session, auth, doc) == 170.0
     r = await client.post(f"/docs/{doc}/revert-lines", headers=auth["headers"], json={"line_entity_ids": [c]})
     assert r.status_code == 200, r.text
-    adjustments = await _cogs_adjustments(session, auth, doc)
-    assert [s["status"] for s in adjustments.values()] == ["void"]
     assert (await _state(session, auth, c))["status"] == "available"
     assert await _cost(session, auth, c) == 170.0
+    # The invoice still stands, so it still recognizes the corrected cost of its goods.
+    assert await _doc_cogs(session, auth, doc) == 170.0
 
-    r = await client.post(f"/docs/{doc}/fulfill-lines", headers=auth["headers"], json={"line_entity_ids": [c]})
+    await _fulfil(client, doc, auth, c)
+    assert await _doc_cogs(session, auth, doc) == 170.0
+
+
+# -- COGS: a correction before fulfilment reaches the finalized invoice ------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fulfil_after", [False, True])
+async def test_correction_after_finalize_adjusts_the_recognized_cogs(client, session, auth, fulfil_after):
+    item = await _item(client, auth, 100.0)
+    doc = await _invoice(client, session, auth, item)
+    assert await _doc_cogs(session, auth, doc) == 100.0
+    assert (await _set_cost(client, auth, item, 120.0)).status_code == 200
+    assert await _doc_cogs(session, auth, doc) == 120.0
+    if fulfil_after:
+        await _fulfil(client, doc, auth, item)
+        assert await _doc_cogs(session, auth, doc) == 120.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("correct_while_void", [False, True])
+async def test_voiding_and_restoring_the_invoice_keeps_the_corrected_cost(client, session, auth, correct_while_void):
+    item = await _item(client, auth, 100.0)
+    doc = await _invoice(client, session, auth, item)
+    if not correct_while_void:
+        assert (await _set_cost(client, auth, item, 120.0)).status_code == 200
+    r = await client.post(f"/docs/{doc}/void", headers=auth["headers"], json={})
     assert r.status_code == 200, r.text
-    live = [s for s in (await _cogs_adjustments(session, auth, doc)).values() if s["status"] == "posted"]
-    # Recognized 150 at finalize; the corrected lot leaves at 170.
-    assert [_cogs(s) for s in live] == [20.0]
+    assert await _doc_cogs(session, auth, doc) == 0.0
+    if correct_while_void:
+        assert (await _set_cost(client, auth, item, 120.0)).status_code == 200
+        assert await _doc_cogs(session, auth, doc) == 0.0
+    r = await client.post(f"/docs/{doc}/unvoid", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    assert await _doc_cogs(session, auth, doc) == 120.0
+
+
+@pytest.mark.asyncio
+async def test_correction_of_a_merge_source_reaches_the_invoice_of_the_result(client, session, auth):
+    a, b = await _item(client, auth, 100.0), await _item(client, auth, 50.0)
+    c = await _merge(client, auth, [a, b])
+    doc = await _invoice(client, session, auth, c)
+    assert (await _set_cost(client, auth, a, 90.0)).status_code == 200
+    assert await _doc_cogs(session, auth, doc) == 140.0
+    await _fulfil(client, doc, auth, c)
+    assert await _doc_cogs(session, auth, doc) == 140.0
+
+
+@pytest.mark.asyncio
+async def test_reverting_the_invoice_to_draft_ends_its_recognition(client, session, auth):
+    item = await _item(client, auth, 100.0)
+    doc = await _invoice(client, session, auth, item)
+    assert (await _set_cost(client, auth, item, 120.0)).status_code == 200
+    r = await client.post(f"/docs/{doc}/revert-to-draft", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    assert await _doc_cogs(session, auth, doc) == 0.0
+    assert (await client.post(f"/docs/{doc}/finalize", headers=auth["headers"])).status_code == 200
+    assert await _doc_cogs(session, auth, doc) == 120.0
+
+
+@pytest.mark.asyncio
+async def test_small_corrections_on_two_lines_round_once_for_the_invoice(client, session, auth):
+    a, b = await _item(client, auth, 1.0), await _item(client, auth, 1.0)
+    doc = await _sell(client, session, auth, a, b)
+    assert await _doc_cogs(session, auth, doc) == 2.0
+    assert (await _set_cost(client, auth, a, 1.004)).status_code == 200
+    assert (await _set_cost(client, auth, b, 1.004)).status_code == 200
+    # 2.008 recognized in total rounds to 2.01, not 2.00 + 0.00 + 0.00.
+    assert await _doc_cogs(session, auth, doc) == 2.01
 
 
 # -- Fail closed: nothing changes when the consequence is not exact ---------

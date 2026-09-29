@@ -879,31 +879,40 @@ async def create_for_doc_cogs_backfill(session, *, company_id, user_id, doc_id: 
     )
 
 
-async def recognized_cogs_allocations(session, company_id, doc_id: str) -> dict | None:
-    """The per-line COGS the doc's live finalize-family JE recognized.
+@dataclass
+class RecognizedCogs:
+    """The per-line COGS a doc's live finalize-family JE recognized.
+
+    cycle is the recognition root of that JE (fin, fin:2, ...), shared by its
+    unvoid restores; allocations is the snapshot keyed by line index."""
+
+    cycle: str
+    allocations: dict
+
+
+def _finalize_root(doc_id: str, je_id: str) -> str | None:
+    """The finalize cycle root of a doc's JE id (fin, fin:2), or None for any other JE."""
+    prefix = f"je:auto:{doc_id}:"
+    if not je_id.startswith(prefix):
+        return None
+    root = _recognition_root(je_id[len(prefix):])
+    return root if root is not None and (root == "fin" or root.startswith("fin:")) else None
+
+
+async def recognized_cogs(session, company_id, doc_id: str) -> RecognizedCogs | None:
+    """The COGS the doc's currently posted finalize-family JE recognized.
 
     Reads the allocation snapshot off the creation event of the currently posted
     finalize-family JE (fin, a re-finalize cycle, or an unvoid restore of one).
-    Returns the allocations dict keyed by line index, or None when no posted
-    finalize-family JE carries a snapshot - which is every doc finalized before
-    snapshots existed, where fulfillment has no recognized basis to true up
-    against and must post no adjustment.
+    None when no posted finalize-family JE carries a snapshot - which is every doc
+    finalized before snapshots existed, where there is no recognized basis to
+    true up against and no adjustment may be posted.
     """
     from celerp.models.ledger import LedgerEntry
 
-    prefix = f"je:auto:{doc_id}:"
-    rows = (await session.execute(_select(Projection).where(
-        Projection.company_id == company_id,
-        Projection.entity_type == "journal_entry",
-    ))).scalars().all()
     live = None
-    for row in rows:
-        if not row.entity_id.startswith(prefix):
-            continue
-        suffix = row.entity_id[len(prefix):]
-        if not (suffix == "fin" or suffix.startswith("fin:")):
-            continue
-        if (row.state or {}).get("status") != "posted":
+    for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items():
+        if _finalize_root(doc_id, row.entity_id) is None or (row.state or {}).get("status") != "posted":
             continue
         if live is None or (
             row.created_at is not None
@@ -922,9 +931,176 @@ async def recognized_cogs_allocations(session, company_id, doc_id: str) -> dict 
         .order_by(LedgerEntry.id.desc())
         .limit(1)
     )).scalars().first()
-    if created is None:
+    allocations = ((created.metadata_ or {}) if created is not None else {}).get("cogs_allocations")
+    if not allocations:
         return None
-    return (created.metadata_ or {}).get("cogs_allocations") or None
+    return RecognizedCogs(cycle=_finalize_root(doc_id, live.entity_id), allocations=allocations)
+
+
+def lot_cost_of_sale(state: dict) -> float:
+    """What a lot costs when it leaves on a sale: its cost_total, or its unit
+    cost_price times its quantity when it carries no total."""
+    cost_total = state.get("cost_total")
+    if cost_total is not None:
+        return float(cost_total)
+    return float(state.get("cost_price") or 0) * float(state.get("quantity") or 0)
+
+
+async def doc_line_of_lot(session, company_id, doc_id: str, doc_state: dict, lot_id: str, lot_state: dict) -> int | None:
+    """The index of the doc line a lot belongs to: the line naming the lot, else the
+    line its latest fulfillment for this doc recorded, else the only line of its SKU."""
+    from celerp.models.ledger import LedgerEntry
+
+    line_items = doc_state.get("line_items", [])
+    for idx, line in enumerate(line_items):
+        if (line.get("entity_id") or line.get("item_id")) == lot_id:
+            return idx
+    rows = (await session.execute(
+        _select(LedgerEntry).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id == lot_id,
+            LedgerEntry.event_type == "item.fulfilled",
+        ).order_by(LedgerEntry.id.desc())
+    )).scalars().all()
+    for event in rows:
+        if (event.data or {}).get("source_doc_id") != doc_id:
+            continue
+        idx = (event.metadata_ or {}).get("line_index")
+        if isinstance(idx, int) and not isinstance(idx, bool):
+            return idx
+        break
+    sku = str(lot_state.get("sku") or "").strip()
+    matches = [idx for idx, line in enumerate(line_items) if str(line.get("sku") or "").strip() == sku]
+    return matches[0] if len(matches) == 1 else None
+
+
+async def allocations_naming_lot(session, company_id, lot_id: str) -> dict[tuple[str, str, int], float]:
+    """{(doc_id, finalize cycle, line index): quantity} for every current finalize
+    allocation that prices a line at this lot.
+
+    Current means the doc's latest finalize cycle, whether that cycle's JE is
+    posted or voided, so a correction reaches a voided invoice when it is restored.
+    A doc reverted to draft has no current cycle until it is finalized again."""
+    from sqlalchemy import Text, cast
+
+    from celerp.models.ledger import LedgerEntry
+
+    rows = (await session.execute(
+        _select(LedgerEntry.entity_id, LedgerEntry.metadata_).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.event_type == "acc.journal_entry.created",
+            cast(LedgerEntry.metadata_, Text).like(f"%{lot_id}%"),
+        )
+    )).all()
+    found: dict[tuple[str, str, int], float] = {}
+    for je_id, metadata_ in rows:
+        doc_id = (metadata_ or {}).get("doc_id")
+        allocations = (metadata_ or {}).get("cogs_allocations") or {}
+        cycle = _finalize_root(str(doc_id), je_id) if doc_id else None
+        if cycle is None or not allocations:
+            continue
+        doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
+        if doc is None:
+            continue
+        revert_count = int((doc.state or {}).get("revert_count") or 0)
+        if cycle != (f"fin:{revert_count}" if revert_count else "fin"):
+            continue
+        for idx, alloc in allocations.items():
+            qty = sum(float(lot.get("qty") or 0) for lot in alloc.get("lots", [])
+                      if lot.get("lot_entity_id") == lot_id)
+            if qty:
+                found[(doc_id, cycle, int(idx))] = qty
+    return found
+
+
+async def _recorded_repricings(session, company_id, doc_id: str, cycle: str) -> dict[int, float]:
+    """line index -> total cost correction recorded against the doc's finalize cycle."""
+    from sqlalchemy import Text, cast
+
+    from celerp.models.ledger import LedgerEntry
+
+    rows = (await session.execute(
+        _select(LedgerEntry.metadata_).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_type == "item",
+            cast(LedgerEntry.metadata_, Text).like("%cogs_repriced%"),
+        )
+    )).scalars().all()
+    by_line: dict[int, float] = {}
+    for metadata_ in rows:
+        for rec in (metadata_ or {}).get("cogs_repriced") or []:
+            if rec.get("doc_id") == doc_id and rec.get("cycle") == cycle:
+                line = int(rec["line"])
+                by_line[line] = by_line.get(line, 0.0) + float(rec["amount"])
+    return by_line
+
+
+async def _lots_out_on_doc(session, company_id, doc_id: str) -> list[Projection]:
+    """The lots whose latest fulfillment event for this doc ships them (not reversed)."""
+    from celerp.models.ledger import LedgerEntry
+
+    rows = (await session.execute(
+        _select(LedgerEntry.entity_id, LedgerEntry.event_type).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_type == "item",
+            LedgerEntry.event_type.in_(("item.fulfilled", "item.fulfillment_reversed")),
+            LedgerEntry.data["source_doc_id"].as_string() == doc_id,
+        ).order_by(LedgerEntry.id)
+    )).all()
+    last: dict[str, str] = {}
+    for entity_id, event_type in rows:
+        last[entity_id] = event_type
+    lots = []
+    for entity_id, event_type in sorted(last.items()):
+        if event_type != "item.fulfilled":
+            continue
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+        if row is not None:
+            lots.append(row)
+    return lots
+
+
+async def reconcile_doc_cogs(
+    session, *, company_id, user_id, doc_id: str, cycle_tag: str, ts: str | None,
+    trigger: str, memo: str | None = None, context: dict | None = None,
+) -> None:
+    """Bring an invoice's booked COGS to what it recognizes today, in one entry.
+
+    A shipped line recognizes the actual cost of the lots it shipped. A line not
+    shipped recognizes its finalize allocation plus every cost correction since
+    recorded against that allocation. The difference from the COGS the invoice's
+    live entries already book is rounded once, for the whole invoice, and posted
+    through create_for_doc_cogs_adjustment. An invoice with no recognized
+    allocation on record posts nothing. Raises ValueError when a shipped lot
+    cannot be matched to one of the invoice's lines.
+    """
+    recognized = await recognized_cogs(session, company_id, doc_id)
+    if recognized is None:
+        return
+    doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
+    doc_state = (doc.state or {}) if doc is not None else {}
+    shipped: dict[int, float] = {}
+    for lot in await _lots_out_on_doc(session, company_id, doc_id):
+        idx = await doc_line_of_lot(session, company_id, doc_id, doc_state, lot.entity_id, lot.state or {})
+        if idx is None:
+            raise ValueError("cannot safely identify the invoice line of every shipped lot")
+        shipped[idx] = shipped.get(idx, 0.0) + lot_cost_of_sale(lot.state or {})
+    repriced = await _recorded_repricings(session, company_id, doc_id, recognized.cycle)
+    truth = sum(shipped.values())
+    for idx, alloc in recognized.allocations.items():
+        if int(idx) not in shipped:
+            truth += float(alloc.get("amount") or 0) + repriced.get(int(idx), 0.0)
+    booked = sum(
+        float(e.get("debit") or 0) - float(e.get("credit") or 0)
+        for row in (await _doc_recognition_jes(session, company_id, doc_id)).values()
+        if (row.state or {}).get("status") == "posted"
+        for e in (row.state or {}).get("entries", []) if e.get("account") == "5100"
+    )
+    await create_for_doc_cogs_adjustment(
+        session, company_id=company_id, user_id=user_id, doc_id=doc_id, delta=truth - booked,
+        cycle_tag=cycle_tag, doc_number=doc_state.get("doc_number") or doc_state.get("ref_id") or doc_id,
+        ts=ts, trigger=trigger, memo=memo, context=context,
+    )
 
 
 async def create_for_doc_cogs_adjustment(
@@ -932,19 +1108,14 @@ async def create_for_doc_cogs_adjustment(
     ts: str | None = None, trigger: str = "doc.fulfilled", memo: str | None = None,
     context: dict | None = None,
 ) -> None:
-    """Post a COGS true-up JE for a document line: by default the fulfillment
-    difference between the actual cost of the lots drawn and the COGS recognized
-    at finalize.
+    """Post one COGS true-up JE for a document (see reconcile_doc_cogs).
 
-    A positive delta (actual cost above recognized) debits 5100 and relieves
-    inventory; a negative one reverses that. cycle_tag scopes the JE id and its
-    idempotency keys to the fulfillment cycle plus the batch of lines fulfilled
-    in one call (fulfill-0:l0-1, fulfill-1:l2, ...), so replaying a batch is a
-    no-op while each distinct batch, and each re-finalize cycle, trues up on
-    its own JE. A retrospective cost correction of a sold lot posts through the
-    same rule with its own trigger, memo, and context (the item and the
-    correction's identity) and a cycle_tag ending in the line (:l{index}), so
-    reversing that line voids it like any fulfillment true-up.
+    A positive delta debits 5100 and relieves inventory; a negative one reverses
+    that. The delta is rounded once to the company currency and nothing posts when
+    it rounds to zero. cycle_tag scopes the JE id and its idempotency keys to the
+    event that triggered it (fulfill-0:l0-1, reverse-1:l2, restate-<id>), so
+    replaying that event is a no-op while each distinct event trues up on its
+    own JE.
     """
     currency = await company_currency(session, company_id)
     rounded = round_money(delta, currency)  # one amount, used on both sides
@@ -968,63 +1139,13 @@ async def create_for_doc_cogs_adjustment(
         je_id=f"je:auto:{doc_id}:cogs-adj:{cycle_tag}",
         idem_create=je_idempotency_key(doc_id, f"cogs_adjustment:{cycle_tag}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"cogs_adjustment:{cycle_tag}", "p"),
-        memo=memo or f"COGS adjustment for {doc_number} at fulfillment",
+        memo=memo or f"COGS adjustment for {doc_number}",
         ts=ts,
         entries=entries,
         metadata_={
             "trigger": trigger, "doc_id": doc_id, "cogs_delta": to_stored_float(rounded), **(context or {}),
         },
     )
-
-
-async def void_for_doc_cogs_adjustments(
-    session, *, company_id, user_id, doc_id: str, line_indices: set[int] | None
-) -> None:
-    """Void live fulfillment true-ups for the reversed document lines."""
-    prefix = f"je:auto:{doc_id}:cogs-adj:"
-    jes = await _doc_recognition_jes(session, company_id, doc_id)
-    live = [r for suffix, r in jes.items()
-            if suffix.startswith("cogs-adj:") and (r.state or {}).get("status") == "posted"]
-    if not live:
-        return
-    if line_indices is None:
-        raise ValueError("cannot safely identify the fulfillment adjustment for this legacy allocation")
-
-    targets: list[Projection] = []
-    for row in live:
-        suffix = row.entity_id[len(prefix):].split(":unvoid:", 1)[0]
-        if ":l" not in suffix:
-            raise ValueError("cannot safely identify a legacy fulfillment adjustment")
-        line_part = suffix.rsplit(":l", 1)[1]
-        try:
-            batch_lines = {int(x) for x in line_part.split("-") if x != ""}
-        except ValueError as exc:
-            raise ValueError("cannot safely identify a legacy fulfillment adjustment") from exc
-        if not (batch_lines & line_indices):
-            continue
-        if not batch_lines.issubset(line_indices):
-            raise ValueError(
-                "cannot safely reverse only part of a legacy multi-line COGS adjustment; "
-                "reverse the affected lines together"
-            )
-        targets.append(row)
-
-    for row in targets:
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=row.entity_id,
-            entity_type="journal_entry",
-            event_type="acc.journal_entry.voided",
-            data=je_void_data(f"Reversed: {doc_id} fulfillment reversed", row.state or {}),
-            actor_id=user_id,
-            location_id=None,
-            source="auto_je",
-            idempotency_key=je_idempotency_key(
-                doc_id, f"fulfillment_reversed:{row.entity_id[len(prefix):]}", "void"
-            ),
-            metadata_={"trigger": "doc.fulfillment_reversed", "doc_id": doc_id},
-        )
 
 
 async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str) -> None:
