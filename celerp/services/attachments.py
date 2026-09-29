@@ -163,7 +163,7 @@ class LocalBackend:
         return settings.data_dir / "static" / "attachments"
 
     def _company_dir(self, company_id: str) -> Path:
-        d = company_attachment_dir(company_id)
+        d = self._root / str(company_id)
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -219,8 +219,7 @@ def is_plain_name(name: str) -> bool:
 
 def company_attachment_dir(company_id: str) -> Path:
     """The local folder that holds a company's attachment files."""
-    from celerp.config import settings  # lazy: settings not ready at import time
-    return settings.data_dir / "static" / "attachments" / str(company_id)
+    return LocalBackend()._root / str(company_id)
 
 
 def local_attachment_path(company_id: str, filename: str) -> Path | None:

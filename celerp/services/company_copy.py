@@ -54,6 +54,7 @@ EXCLUDED_TABLES = {
     "user_companies": "people and their roles belong to the installation",
     "connector_configs": "connector credentials",
     "connector_sources": "connector links to outside services",
+    "marketplace_configs": "marketplace connection settings and credentials",
     "sync_runs": "connector sync history",
     "outbound_queue": "messages waiting to leave this installation",
     "doc_share_tokens": "share links issued by this installation",
