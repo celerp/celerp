@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.importers.results import ImportOutcome
+from celerp.importers.schema import IMPORT_ITEM_STATUSES
 from celerp.inventory_codes import (
     PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
     validate_barcode,
@@ -2265,12 +2266,6 @@ async def adjust_item_quantity(
     )
 
 
-# Statuses an imported item may start in. Every other status (sold, merged, reserved,
-# memo_out...) is reached only through the events that move stock, so an import
-# never manufactures one.
-IMPORT_STATUSES = ("available", "draft", "archived")
-
-
 async def write_import_batch(
     session: AsyncSession,
     company_id,
@@ -2386,10 +2381,10 @@ async def write_import_batch(
 
         # A status changes through the status action, never through an upsert patch.
         if status and event_type != "item.patched":
-            if status not in IMPORT_STATUSES:
+            if status not in IMPORT_ITEM_STATUSES:
                 outcome.add(entity_id, "rejected",
                     f"Row (SKU={data.get('sku', '?')}): an imported item cannot start as {status}; "
-                    f"use {', '.join(IMPORT_STATUSES[:-1])} or {IMPORT_STATUSES[-1]}"
+                    f"use {', '.join(IMPORT_ITEM_STATUSES[:-1])} or {IMPORT_ITEM_STATUSES[-1]}"
                 )
                 continue
             data["status"] = status

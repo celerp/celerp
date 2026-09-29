@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import (
     AfterValidator,
@@ -341,6 +341,13 @@ class CIFContact(CIFSourceRecord):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+# Statuses an imported item may start in. Every other status (sold, merged, reserved,
+# memo_out...) is reached only through the events that move stock, so an import
+# never manufactures one. The inventory item writer enforces the same list.
+ImportItemStatus = Literal["available", "draft", "archived"]
+IMPORT_ITEM_STATUSES: tuple[str, ...] = get_args(ImportItemStatus)
+
+
 class CIFItem(CIFSourceRecord):
     """A single inventory item master."""
     sku: str | None = None
@@ -354,7 +361,7 @@ class CIFItem(CIFSourceRecord):
     total_cost: CIFDecimal | None = None
     wholesale_price: CIFDecimal | None = None
     retail_price: CIFDecimal | None = None
-    status: Literal["available", "archived", "memo_out", "production", "sold", "void"]
+    status: ImportItemStatus
     category: str | None = None
     parent_external_id: str | None = None     # split lineage
     barcode: str | None = None

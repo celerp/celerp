@@ -167,3 +167,18 @@ def test_reconciliation_requires_explicit_tolerance_rule():
         assert tol.kind in ("exact", "currency_rounding"), row
         if tol.kind == "currency_rounding":
             assert tol.currency == row.currency and tol.precision is not None, row
+
+
+def test_a_migration_item_starts_only_in_a_status_the_item_writer_accepts():
+    # One allowlist decides both what a manifest may carry and what the inventory writer
+    # imports, so a manifest never holds an item the writer would reject mid-run.
+    from celerp.importers.schema import IMPORT_ITEM_STATUSES, CIFItem
+    from celerp_inventory import services
+
+    assert services.IMPORT_ITEM_STATUSES is IMPORT_ITEM_STATUSES
+    item = {**PROVENANCE, "source_type": "InventoryItem", "name": "Widget"}
+    assert [CIFItem.model_validate({**item, "status": s}).status for s in IMPORT_ITEM_STATUSES] == [
+        "available", "draft", "archived"]
+    for lifecycle in ("memo_out", "production", "sold", "void", "merged"):
+        with pytest.raises(ValidationError, match="status"):
+            CIFItem.model_validate({**item, "status": lifecycle})
