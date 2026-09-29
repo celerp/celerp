@@ -933,3 +933,63 @@ async def test_locked_barcode_that_changed_is_reported_not_checked_off(client):
         assert fail["reason"] == "audit_identifier_changed", fail
         assert fail["label"].startswith(f"{code}: ")
     assert all(l.get("audited_at") is None for l in (await _state(client, t, audit))["line_items"])
+
+
+@pytest.mark.asyncio
+async def test_locked_barcode_now_on_another_audited_item_is_reported(client):
+    """Both items are on the audit. After locking, one item's barcode moves to the other. Scanning
+    that code resolves to an item that IS on the audit, but it matches the other line's locked
+    barcode: which physical item was scanned is unknown, so nothing is checked off."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    first = await _item(client, t, "SW-1", loc=loc, qty=1, barcode="7101")
+    second = await _item(client, t, "SW-2", loc=loc, qty=1, barcode="7102")
+    audit = (await _audit(client, t, loc))["id"]
+    await _finalize(client, t, audit)
+    await _set_item(client, t, first, "barcode", "7101", "7111")
+    await _set_item(client, t, second, "barcode", "7102", "7101")
+
+    res = await _scan(client, t, audit, "7101")
+    assert res["scanned"] == 0, res
+    fail = res["failed"][0]
+    assert fail["reason"] == "audit_identifier_changed", fail
+    assert fail["label"].startswith("7101: ")
+    assert all(l.get("audited_at") is None for l in (await _state(client, t, audit))["line_items"])
+
+
+@pytest.mark.asyncio
+async def test_finalize_blocks_a_line_whose_item_was_merged_away(client):
+    """An item merged into another while the audit is a draft keeps its record, but no scan can
+    ever resolve to it again, so its line could never be counted. Finalize fails closed."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    src = await _item(client, t, "MRG-1", loc=loc, qty=1, barcode="7201")
+    other = await _item(client, t, "MRG-2", loc=loc, qty=1, barcode="7202")
+    audit = (await _audit(client, t, loc))["id"]
+    r = await client.post("/items/merge", headers=_h(t),
+                          json={"source_entity_ids": [src, other], "target_sku_from": other})
+    assert r.status_code == 200, r.text
+    fin = await client.post(f"/lists/{audit}/finalize", headers=_h(t))
+    assert fin.status_code == 409, fin.text
+    detail = fin.json()["detail"]
+    assert detail.startswith("MRG-1: ") and src not in detail
+    assert (await _state(client, t, audit))["status"] == "draft"
+
+
+@pytest.mark.asyncio
+async def test_change_type_to_audit_keeps_unlinked_line_on_hand(client):
+    """Re-typing a finalized list to audit refreshes linked lines from their items; a line with no
+    item has nothing to refresh from, so it keeps the on-hand it already had."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    it = await _item(client, t, "UL-1", loc=loc, qty=3, barcode="7301")
+    r = await client.post("/lists", headers=_h(t), json={"list_type": "quotation", "line_items": [
+        {"item_id": it, "sku": "UL-1", "name": "UL-1", "quantity": 1},
+        {"name": "Loose bin", "quantity": 1, "on_hand": 4.0}]})
+    assert r.status_code == 200, r.text
+    audit = r.json()["id"]
+    await _finalize(client, t, audit)
+    r = await client.post(f"/lists/{audit}/change-type", headers=_h(t), json={"list_type": "audit"})
+    assert r.status_code == 200, r.text
+    loose = [l for l in (await _state(client, t, audit))["line_items"] if l.get("name") == "Loose bin"]
+    assert loose and loose[0]["on_hand"] == 4.0, loose

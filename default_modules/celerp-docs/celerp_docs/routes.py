@@ -26,7 +26,7 @@ from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
-from celerp.inventory_codes import MAX_SCAN_CODE_LEN
+from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
@@ -6004,7 +6004,7 @@ async def finalize_list(
                     continue
                 seen.add(key)
             lines.append(l)
-        await _lock_audit_lines(session, company_id, lines)
+        await _lock_audit_lines(session, company_id, lines, keep_unlinked_on_hand=False)
         data["line_items"] = lines
     elif milestone:
         data[milestone] = now
@@ -8086,13 +8086,19 @@ def _sku_note(code: str, item: Projection) -> str:
     return f" (SKU {sku})" if sku and sku != code else ""
 
 
+def _locked_barcode_moved(code: str, item: Projection | None, lines: list[dict]) -> bool:
+    """True when `code` is some line's locked barcode but no longer resolves to that line's item,
+    even when it now resolves to another item that is also on the audit."""
+    item_id = item.entity_id if item is not None else None
+    return any(l.get("barcode") == code and l.get("item_id") != item_id for l in lines)
+
+
 def _locked_manifest_failure(code: str, item: Projection | None, lines: list[dict]) -> tuple[str, str]:
     """(reason, label) for a code that checks off no line of a locked audit. A manifest keys
     physical identity by item_id; a SKU is only context. A code equal to a line's locked barcode
     that no longer resolves to that line's item means the identifier moved after locking: counting
     it against the old line could adjust the wrong stock, so it is reported, never checked off."""
-    item_id = item.entity_id if item is not None else None
-    if any(l.get("barcode") == code and l.get("item_id") != item_id for l in lines):
+    if _locked_barcode_moved(code, item, lines):
         return ("audit_identifier_changed",
                 f"{code}: this barcode changed after the audit was locked; review the audit before counting")
     if item is None:
@@ -8108,19 +8114,27 @@ def _locked_manifest_failure(code: str, item: Projection | None, lines: list[dic
 _AUDIT_IDENTITY_FIELDS = ("sku", "name", "barcode")
 
 
-async def _lock_audit_lines(session: AsyncSession, company_id: str, lines: list[dict]) -> None:
+async def _lock_audit_lines(session: AsyncSession, company_id: str, lines: list[dict],
+                            *, keep_unlinked_on_hand: bool) -> None:
     """In place: refresh each linked line's identity from its item and freeze its on-hand, so the
     locked manifest agrees with the item every later scan resolves to. A line whose item no longer
-    exists blocks the lock: its stock could never be adjusted. Unlinked lines freeze at 0."""
+    exists, or was merged into another (no scan resolves to it again), blocks the lock: it could
+    never be counted and its stock never adjusted. An unlinked line has no item to read: with
+    `keep_unlinked_on_hand` it keeps the on-hand it already carries, otherwise it freezes at 0."""
     for l in lines:
         key = l.get("item_id")
         item = await session.get(Projection, {"company_id": company_id, "entity_id": key}) if key else None
-        if key and (item is None or item.entity_type != "item"):
+        if key:
             label = l.get("sku") or l.get("name") or "A line"
-            raise HTTPException(status_code=409,
-                                detail=f"{label}: its inventory item no longer exists. Remove the line, then try again.")
+            if item is None or item.entity_type != "item":
+                raise HTTPException(status_code=409,
+                                    detail=f"{label}: its inventory item no longer exists. Remove the line, then try again.")
+            if str((item.state or {}).get("status") or "").lower() in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES:
+                raise HTTPException(status_code=409,
+                                    detail=f"{label}: its inventory item was merged into another item. "
+                                           "Remove the line, then try again.")
         if item is None:
-            l["on_hand"] = 0.0
+            l["on_hand"] = float(l.get("on_hand") or 0) if keep_unlinked_on_hand else 0.0
             continue
         fresh = _scan_line_from_item(item, "audit", None)
         l.update({f: fresh[f] for f in _AUDIT_IDENTITY_FIELDS})
@@ -8340,8 +8354,9 @@ async def scan_list(
                 result_state = "added"
         else:
             # FINALIZED audit: the manifest is LOCKED - scanning only checks off items already on the
-            # list and never adds. An item not on the list is reported (add it while still a draft).
-            if idx is None:
+            # list and never adds. An item not on the list is reported (add it while still a draft), as
+            # is a code that is another line's locked barcode.
+            if idx is None or _locked_barcode_moved(code, item, lines):
                 reason, detail = _locked_manifest_failure(code, item, lines)
                 failed.append({"code": code, "reason": reason, "label": detail})
                 results.append({"code": code, "state": "error", "reason": reason, "label": detail})
@@ -8947,7 +8962,7 @@ async def change_list_type(
     fields: dict = {"list_type": new_type}
     if new_type == "audit" and status == FINALIZED:
         lines = [dict(l) for l in (state.get("line_items") or [])]
-        await _lock_audit_lines(session, company_id, lines)
+        await _lock_audit_lines(session, company_id, lines, keep_unlinked_on_hand=True)
         fields["line_items"] = lines
     await _set_list_fields(session, company_id, entity_id, user, fields)
     await session.commit()
