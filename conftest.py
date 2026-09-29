@@ -616,6 +616,7 @@ def _refuse_live_database():
 
 
 from celerp.models.base import Base
+import celerp.models.marketplace  # noqa: F401,E402 - registers marketplace_configs, as celerp/migrations/env.py does
 
 # Session-scoped engine: created once, shared across all tests to avoid OOM from
 # 1000+ engine create/dispose cycles when test_ui.py + test_routers/ run together.
