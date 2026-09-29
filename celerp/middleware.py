@@ -76,9 +76,11 @@ class MaxBodySizeMiddleware:
         # Bulk file/cert import and backup restore legitimately upload large archives;
         # exempt them from the body cap. Bulk imports are bounded by the WS tunnel frame
         # size and the per-file 50 MB limit in store_upload(); a .celerp-backup restore is
-        # a trusted whole-instance archive (DB + files) that is inherently large.
+        # a trusted whole-instance archive (DB + files) that is inherently large. The two
+        # migration scan uploads stream to disk under their own per-file and total caps.
         if scope.get("path", "").endswith(
-            ("/items/files/bulk", "/items/attachments/bulk", "/backup/import", "/backup/import-bootstrap")
+            ("/items/files/bulk", "/items/attachments/bulk", "/backup/import", "/backup/import-bootstrap",
+             "/migrations/bootstrap/scan", "/migrations/scan")
         ):
             await self.app(scope, receive, send)
             return
