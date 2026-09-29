@@ -42,6 +42,28 @@ async def lock_contacts(session: AsyncSession, company_id, contact_ids) -> dict[
     return {r.entity_id: r for r in rows if r.entity_type == "contact"}
 
 
+async def lock_referencing_records(session: AsyncSession, company_id, contact_ids) -> list[Projection]:
+    """Lock every Document and List whose contact_id is one of contact_ids, in entity_id order.
+
+    Callers lock the contacts themselves first (lock_contacts), the order every
+    contact-reference writer takes.
+    """
+    want = sorted({str(c) for c in contact_ids if c})
+    if not want:
+        return []
+    return list((await session.execute(
+        select(Projection)
+        .where(
+            Projection.company_id == company_id,
+            Projection.entity_type.in_(("doc", "list")),
+            Projection.state["contact_id"].as_string().in_(want),
+        )
+        .order_by(Projection.entity_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalars().all())
+
+
 def contact_accepts(state: dict, contact_type: str) -> bool:
     """Whether a contact serves as contact_type (customer or vendor). An untyped contact is a customer."""
     return (state.get("contact_type") or "customer") in CONTACT_TYPE_FILTER[contact_type]

@@ -8,6 +8,18 @@ from decimal import Decimal
 
 from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
 
+# Older Lists named their counterparty customer_id/customer_name (transfers: receiver).
+# Replay folds them into the canonical contact fields, so every reader sees one pair.
+_LEGACY_LIST_CONTACT = {"customer_id": "contact_id", "customer_name": "contact_name", "receiver": "contact_name"}
+
+
+def _fold_legacy_list_contact(state: dict) -> None:
+    """Move legacy List counterparty fields onto contact_id/contact_name; a canonical value wins."""
+    for legacy, canonical in _LEGACY_LIST_CONTACT.items():
+        value = state.pop(legacy, None)
+        if value and not state.get(canonical):
+            state[canonical] = value
+
 
 def _recalc_list_totals(state: dict) -> dict:
     """Recompute subtotal, discount_amount, tax_amount, total from line_items + header fields.
@@ -437,6 +449,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     # --- List events (entity_type="list") ---
     elif event_type == "list.created":
         current.update({"entity_type": "list", **data})
+        _fold_legacy_list_contact(current)
         current.setdefault("status", "draft")
         current.setdefault("line_items", [])
         current.setdefault("subtotal", 0.0)
@@ -449,7 +462,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         for field, change in data["fields_changed"].items():
             if field == "currency" and current.get("currency") is not None and current.get("status") != "draft":
                 continue  # a List's currency is fixed once it leaves draft
-            current[field] = change.get("new")
+            current[_LEGACY_LIST_CONTACT.get(field, field)] = change.get("new")
         current = _recalc_list_totals(current)
     elif event_type == "list.finalized":
         # draft -> finalized. Carries status + finalize milestone (sent_at / issued_at) and, for
@@ -477,9 +490,12 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if data.get("reason"):
             current["void_reason"] = data["reason"]
 
-    elif event_type in {"doc.patched", "list.patched"}:
+    elif event_type == "doc.patched":
         # CSV upsert: merge data fields into existing state
         current.update(data)
+    elif event_type == "list.patched":
+        # CSV upsert: merge data fields into existing state, legacy counterparty fields as contact fields
+        current.update({_LEGACY_LIST_CONTACT.get(k, k): v for k, v in data.items()})
 
     else:
         raise ValueError(f"Unsupported event: {event_type}")

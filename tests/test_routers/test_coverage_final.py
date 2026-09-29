@@ -293,7 +293,7 @@ async def test_share_view_list_entity(client):
             "event_type": "list.created",
             "source": "test",
             "idempotency_key": f"list-share-{uuid.uuid4().hex}",
-            "data": {"list_type": "quotation", "ref_id": "PL-001", "customer_name": "Test Customer", "total": 100},
+            "data": {"list_type": "quotation", "ref_id": "PL-001", "contact_name": "Test Customer", "total": 100},
         }
     ]})
     assert r3.status_code == 200, r3.text
@@ -418,7 +418,7 @@ async def test_share_public_list_page_discount_row(client):
             "data": {
                 "list_type": "quotation",
                 "ref_id": "DISC-001",
-                "customer_name": "Customer A",
+                "contact_name": "Customer A",
                 "total": 90,
                 "discount": 10,
                 "discount_type": "flat",
@@ -491,7 +491,7 @@ async def test_lists_date_filter(client):
             "data": {
                 "list_type": "price_list",
                 "ref_id": "DATEFLT-001",
-                "customer_name": "DateFilterCo",
+                "contact_name": "DateFilterCo",
                 "total": 50,
                 "date": today_str,
             },
@@ -515,7 +515,7 @@ async def test_lists_date_filter(client):
 
 @pytest.mark.asyncio
 async def test_lists_export_csv_q_filter(client):
-    """GET /lists/export/csv?q=... filters by ref_id or customer_name (lines 187-188)."""
+    """GET /lists/export/csv?q=... filters by ref_id or contact_name (lines 187-188)."""
     tok = await _reg(client)
     list_id = f"list:{uuid.uuid4()}"
     await client.post("/lists/import/batch", headers=_h(tok), json={"records": [
@@ -524,7 +524,7 @@ async def test_lists_export_csv_q_filter(client):
             "event_type": "list.created",
             "source": "test",
             "idempotency_key": f"csv-q-{uuid.uuid4().hex}",
-            "data": {"list_type": "price_list", "ref_id": "UNIQUE-CSV-Q", "customer_name": "BigCo", "total": 50},
+            "data": {"list_type": "price_list", "ref_id": "UNIQUE-CSV-Q", "contact_name": "BigCo", "total": 50},
         }
     ]})
 

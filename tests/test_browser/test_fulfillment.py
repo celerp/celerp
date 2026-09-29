@@ -440,7 +440,7 @@ def test_draft_quotation_bulk_reserve(page, ui_server, api):
     item = _create_item(api, sku, qty=1)
     r = api.post("/lists", json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": item, "entity_id": item}],
     })

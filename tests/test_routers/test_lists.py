@@ -26,7 +26,7 @@ def _h(token: str) -> dict:
 async def _create_list(client, token, **overrides) -> str:
     payload = {
         "list_type": "sale",
-        "customer_name": "Test Customer",
+        "contact_name": "Test Customer",
         "line_items": [
             {"name": "Ruby Ring", "quantity": 2, "unit_price": 5000, "line_total": 10000},
             {"name": "Gold Chain", "quantity": 1, "unit_price": 3000, "line_total": 3000},
@@ -54,7 +54,7 @@ class TestListCRUD:
     async def test_create_list_returns_entity_id_and_ref(self, client):
         token = await _register(client)
         r = await client.post("/lists", headers=_h(token), json={
-            "list_type": "sale", "customer_name": "Alice",
+            "list_type": "sale", "contact_name": "Alice",
             "line_items": [{"name": "A", "quantity": 1, "unit_price": 100, "line_total": 100}],
             "subtotal": 100, "total": 100,
         })
@@ -73,7 +73,7 @@ class TestListCRUD:
         body = r.json()
         assert body["id"] == eid
         assert body["status"] == "draft"
-        assert body["customer_name"] == "Test Customer"
+        assert body["contact_name"] == "Test Customer"
         assert body["list_type"] == "sale"
         assert len(body["line_items"]) == 2
 
@@ -87,7 +87,7 @@ class TestListCRUD:
     async def test_list_lists_returns_dict_format(self, client):
         token = await _register(client)
         await _create_list(client, token)
-        await _create_list(client, token, customer_name="Second")
+        await _create_list(client, token, contact_name="Second")
         r = await client.get("/lists", headers=_h(token))
         assert r.status_code == 200
         body = r.json()
@@ -122,8 +122,8 @@ class TestListCRUD:
     @pytest.mark.asyncio
     async def test_list_lists_search(self, client):
         token = await _register(client)
-        eid = await _create_list(client, token, customer_name="Sakura Gems")
-        await _create_list(client, token, customer_name="Atlas Mining")
+        eid = await _create_list(client, token, contact_name="Sakura Gems")
+        await _create_list(client, token, contact_name="Atlas Mining")
         ref = (await client.get(f"/lists/{eid}", headers=_h(token))).json()["ref_id"]
 
         # search by customer name
@@ -139,7 +139,7 @@ class TestListCRUD:
     async def test_list_lists_pagination(self, client):
         token = await _register(client)
         for i in range(5):
-            await _create_list(client, token, customer_name=f"C{i}")
+            await _create_list(client, token, contact_name=f"C{i}")
 
         r = await client.get("/lists?limit=2&offset=0", headers=_h(token))
         body = r.json()
@@ -159,14 +159,14 @@ class TestListCRUD:
 
         r = await client.patch(f"/lists/{eid}", headers=_h(token), json={
             "fields_changed": {
-                "customer_name": {"old": "Test Customer", "new": "Updated Customer"},
+                "contact_name": {"old": "Test Customer", "new": "Updated Customer"},
                 "notes": {"old": None, "new": "Special handling"},
             },
         })
         assert r.status_code == 200
 
         detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
-        assert detail["customer_name"] == "Updated Customer"
+        assert detail["contact_name"] == "Updated Customer"
         assert detail["notes"] == "Special handling"
 
     @pytest.mark.asyncio
@@ -365,7 +365,7 @@ class TestListDuplicate:
     @pytest.mark.asyncio
     async def test_duplicate_creates_new_draft(self, client):
         token = await _register(client)
-        eid = await _create_list(client, token, customer_name="Original Corp")
+        eid = await _create_list(client, token, contact_name="Original Corp")
         # finalize the original so it's not a draft
         await client.post(f"/lists/{eid}/finalize", headers=_h(token))
 
@@ -376,7 +376,7 @@ class TestListDuplicate:
 
         dup = (await client.get(f"/lists/{new_eid}", headers=_h(token))).json()
         assert dup["status"] == "draft"
-        assert dup["customer_name"] == "Original Corp"
+        assert dup["contact_name"] == "Original Corp"
         assert dup["source_list_id"] == eid
         assert len(dup["line_items"]) == 2
 
@@ -404,7 +404,7 @@ class TestListImport:
             "entity_id": "list:IMP-001",
             "event_type": "list.created",
             "data": {
-                "ref_id": "IMP-001", "list_type": "sale", "customer_name": "Imported",
+                "ref_id": "IMP-001", "list_type": "sale", "contact_name": "Imported",
                 "line_items": [{"name": "Gem", "quantity": 1, "unit_price": 500, "line_total": 500}],
                 "subtotal": 500, "total": 500, "status": "draft",
             },
@@ -416,7 +416,7 @@ class TestListImport:
         assert r.json()["idempotency_hit"] is False
 
         detail = (await client.get("/lists/list:IMP-001", headers=_h(token))).json()
-        assert detail["customer_name"] == "Imported"
+        assert detail["contact_name"] == "Imported"
 
     @pytest.mark.asyncio
     async def test_import_idempotent(self, client):
@@ -476,7 +476,7 @@ class TestListImport:
                 "entity_id": f"list:BATCH-{i:03d}",
                 "event_type": "list.created",
                 "data": {"ref_id": f"BATCH-{i:03d}", "status": "draft", "line_items": [],
-                         "customer_name": f"Customer {i}"},
+                         "contact_name": f"Customer {i}"},
                 "source": "old_system",
                 "idempotency_key": f"batch-key-{i:03d}",
             }
@@ -555,7 +555,7 @@ class TestListExportCSV:
     @pytest.mark.asyncio
     async def test_export_csv_headers_and_content(self, client):
         token = await _register(client)
-        await _create_list(client, token, customer_name="CSV Corp")
+        await _create_list(client, token, contact_name="CSV Corp")
         r = await client.get("/lists/export/csv", headers=_h(token))
         assert r.status_code == 200
         assert "text/csv" in r.headers["content-type"]
@@ -569,8 +569,8 @@ class TestListExportCSV:
     @pytest.mark.asyncio
     async def test_export_csv_filters(self, client):
         token = await _register(client)
-        await _create_list(client, token, list_type="sale", customer_name="A")
-        await _create_list(client, token, list_type="consignment", customer_name="B")
+        await _create_list(client, token, list_type="sale", contact_name="A")
+        await _create_list(client, token, list_type="consignment", contact_name="B")
 
         r = await client.get("/lists/export/csv?list_type=consignment", headers=_h(token))
         lines = r.text.strip().split("\n")

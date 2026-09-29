@@ -61,7 +61,7 @@ async def _invoice(client, tok, total: float, contact_id: str = "c:1", contact_n
 
 async def _list(client, tok) -> str:
     r = await client.post("/lists", headers=_h(tok), json={
-        "list_type": "quotation", "customer_name": "Alice",
+        "list_type": "quotation", "contact_name": "Alice",
         "line_items": [{"name": "Ring", "quantity": 1, "unit_price": 10, "line_total": 10}],
         "subtotal": 10, "discount": 0, "discount_type": "flat", "tax": 0, "total": 10, "currency": "THB",
     })
@@ -123,7 +123,7 @@ async def test_list_summary_follows_search_filter(client):
     tok = await _reg(client)
     await _list(client, tok)
     r = await client.post("/lists", headers=_h(tok), json={
-        "list_type": "quotation", "customer_name": "Zed",
+        "list_type": "quotation", "contact_name": "Zed",
         "line_items": [{"name": "Ring", "quantity": 1, "unit_price": 10, "line_total": 10}],
         "subtotal": 10, "discount": 0, "discount_type": "flat", "tax": 0, "total": 10, "currency": "THB",
     })

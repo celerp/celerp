@@ -203,7 +203,7 @@ async def test_list_not_visible_to_other_tenant(client):
 
     r = await client.post(
         "/lists",
-        json={"list_type": "sale", "ref_id": "CT-LIST-001", "customer_name": "Cust", "total": 1.0},
+        json={"list_type": "sale", "ref_id": "CT-LIST-001", "contact_name": "Cust", "total": 1.0},
         headers=ha,
     )
     assert r.status_code == 200, r.text
@@ -226,7 +226,7 @@ async def test_list_action_blocked_for_other_tenant(client):
 
     r = await client.post(
         "/lists",
-        json={"list_type": "sale", "ref_id": "CT-LIST-002", "customer_name": "Cust", "total": 1.0},
+        json={"list_type": "sale", "ref_id": "CT-LIST-002", "contact_name": "Cust", "total": 1.0},
         headers=ha,
     )
     assert r.status_code == 200

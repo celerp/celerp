@@ -1100,7 +1100,7 @@ class ListCreated(BaseModel):
     model_config = {"extra": "allow"}
     list_type: str | None = None
     ref_id: str | None = None
-    customer_id: str | None = None
+    contact_id: str | None = None
     status: str = "draft"
 
 

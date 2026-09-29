@@ -1096,7 +1096,7 @@ def _send_to_option_list(items: list[dict], kind: str) -> FT:
             label = t("documents.memo_ref", ref=ref)
         elif kind == "list":
             ref = d.get("ref_id") or eid.split(":")[-1][:8]
-            contact = d.get("customer_name") or d.get("receiver") or ""
+            contact = d.get("contact_name") or ""
             label = t("documents.list_ref", ref=ref)
         else:
             ref = d.get("ref_id") or d.get("doc_number") or eid.split(":")[-1][:8]
@@ -1944,8 +1944,6 @@ def setup_routes(app):
             return _HR(f"<p>Error: {e.detail}</p>", status_code=e.status)
         layout = request.query_params.get("layout") or None
         lst.setdefault("doc_type", "list")
-        if not lst.get("contact_name"):
-            lst["contact_name"] = lst.get("receiver") or lst.get("customer_name") or ""
         if not lst.get("issue_date"):
             lst["issue_date"] = lst.get("created_at") or lst.get("date")
         if lst.get("contact_id"):
@@ -4233,9 +4231,6 @@ celerpUpdateBulkAlloc();
         # Inject doc_type so _doc_detail() treats it as a list
         lst.setdefault("doc_type", "list")
 
-        # Map list "receiver"/"customer_name" → standard contact fields
-        if not lst.get("contact_name"):
-            lst["contact_name"] = lst.get("receiver") or lst.get("customer_name") or lst.get("customer_id") or ""
         if not lst.get("issue_date"):
             lst["issue_date"] = lst.get("created_at") or lst.get("date")
 

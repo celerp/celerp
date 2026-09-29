@@ -38,7 +38,7 @@ from celerp.services.line_measures import line_label, splitting_allowed
 from celerp.services.document_lines import line_item_id
 from celerp.services.attachments import store_upload
 from celerp.services.csv_export import csv_stream, resolve_export_cols
-from celerp.services.currencies import CURRENCY_CODES
+from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
@@ -386,24 +386,26 @@ async def _get_doc(session: AsyncSession, company_id, entity_id: str, *, for_upd
     return row
 
 
-async def _validate_doc_contact_reference(session: AsyncSession, company_id, contact_id: str) -> None:
-    """Reject a reference that resolves to the wrong/deleted local projection.
+async def _lock_contact_reference(session: AsyncSession, company_id, contact_id: str) -> Projection | None:
+    """Lock the local contact a Document or List is about to reference, and refuse a bad one.
 
-    Documents deliberately support snapshot/external contact identifiers that do
-    not have a local CRM projection (imports and historical records rely on it),
-    so absence is valid. If an id *does* resolve locally, however, it must name a
-    live contact rather than another entity type.
+    Documents and Lists deliberately support snapshot/external contact identifiers that do
+    not have a local CRM projection (imports and historical records rely on it), so absence
+    is valid and returns None. An id that *does* resolve locally must name a live contact.
+    The row stays locked until commit, so a concurrent merge or delete (which lock the same
+    rows first) cannot retire it underneath the new reference.
     """
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None:
-        return
-    if row.entity_type != "contact":
-        raise HTTPException(status_code=422, detail="contact_id refers to a non-contact record")
-    if (row.state or {}).get("deleted"):
+    contact = (await lock_contacts(session, company_id, [contact_id])).get(contact_id)
+    if contact is None:
+        if await session.get(Projection, {"company_id": company_id, "entity_id": contact_id}) is not None:
+            raise HTTPException(status_code=422, detail="contact_id refers to a non-contact record")
+        return None
+    if (contact.state or {}).get("deleted"):
         raise HTTPException(
             status_code=422,
             detail="This contact has been deleted and cannot be used on documents.",
         )
+    return contact
 
 
 async def _get_docs_for_update(session: AsyncSession, company_id, entity_ids) -> dict[str, Projection]:
@@ -1399,10 +1401,8 @@ async def create_doc(
             raise HTTPException(status_code=409, detail="Credit note total cannot exceed original invoice total")
 
     if payload.contact_id:
-        await _validate_doc_contact_reference(session, company_id, payload.contact_id)
-
-    if payload.currency and payload.currency not in CURRENCY_CODES:
-        raise HTTPException(status_code=422, detail=f"Invalid currency code: {payload.currency}")
+        await _lock_contact_reference(session, company_id, payload.contact_id)
+    require_currency_code(payload.currency)
 
     _assert_date_order(payload.model_dump(exclude_none=True))
 
@@ -1571,6 +1571,7 @@ async def create_doc(
 @router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     fields_changed = dict(payload.fields_changed)
+    require_currency_code((fields_changed.get("currency") or {}).get("new"))
     selecting = "contact_id" in fields_changed
     new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
     idem_key = payload.idempotency_key
@@ -3585,9 +3586,8 @@ async def create_shipment_from_docs(
         "line_items": lines,
         "currency": first.get("currency"),
         "contact_id": first.get("contact_id") if single_consignee else None,
-        "contact_name": first.get("contact_name") if single_consignee else None,
-        "customer_name": (first.get("contact_name") or first.get("customer_name"))
-                         if single_consignee else None,
+        "contact_name": (first.get("contact_name") or first.get("customer_name"))
+                        if single_consignee else None,
         "contact_shipping_address": _ship_to if single_consignee else None,
         "shipping_attn": _attn if single_consignee else None,
         # Consigned goods are still the sender's property: customs-wise "not for
@@ -4257,8 +4257,6 @@ lists_router = APIRouter(dependencies=[Depends(get_current_user)])
 class ListCreatePayload(BaseModel):
     list_type: str | None = None
     ref_id: str | None = None
-    customer_id: str | None = None
-    customer_name: str | None = None
     contact_id: str | None = None
     contact_name: str | None = None
     line_items: list[dict] = Field(default_factory=list)
@@ -4359,11 +4357,8 @@ def _list_sort_date():
 
 
 def _list_customer():
-    """The customer a list shows: its customer name, else its receiver, else its customer id.
-    The index rows, the search and the CSV export all read this one expression."""
-    return _func.coalesce(*(
-        _func.nullif(Projection.state[k].as_string(), "") for k in ("customer_name", "receiver", "customer_id")
-    ))
+    """The customer a list shows. The index rows, the search and the CSV export all read this one expression."""
+    return _func.nullif(Projection.state["contact_name"].as_string(), "")
 
 
 def _list_converted(target_type: str | None = None) -> list:
@@ -4378,12 +4373,12 @@ def _list_converted(target_type: str | None = None) -> list:
 
 def _list_search_where(q: str):
     """SQL predicate for the free-text list search over the reference, the shown customer and
-    the customer id."""
+    the contact id."""
     ql = f"%{q.lower()}%"
     return _sa.or_(
         _func.lower(Projection.state["ref_id"].as_string()).like(ql),
         _func.lower(_list_customer()).like(ql),
-        _func.lower(Projection.state["customer_id"].as_string()).like(ql),
+        _func.lower(Projection.state["contact_id"].as_string()).like(ql),
     )
 
 
@@ -4716,8 +4711,10 @@ async def create_list(
 
     if (done := await _replay()) is not None:
         return done
-    if payload.currency and payload.currency not in CURRENCY_CODES:
-        raise HTTPException(status_code=422, detail=f"Invalid currency code: {payload.currency}")
+    require_currency_code(payload.currency)
+    # Contact before company, the lock order every contact-reference writer takes.
+    if payload.contact_id:
+        await _lock_contact_reference(session, company_id, payload.contact_id)
     # Lock the company row so concurrent creates cannot read the same numbering counter, then
     # re-check the key under that lock: a retry racing the first request returns the original
     # list instead of consuming a second number. Mirrors create_doc.
@@ -4766,6 +4763,7 @@ async def patch_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     fields_changed = dict(payload.fields_changed)
+    require_currency_code((fields_changed.get("currency") or {}).get("new"))
     selecting = "contact_id" in fields_changed
     new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
     idem_key = payload.idempotency_key
@@ -4981,10 +4979,7 @@ async def _lock_selected_contact(session: AsyncSession, company_id, settings: di
         return None
     # The selection copies the contact's addresses, email and phone onto the record.
     assert_role_permission(settings, role, "view_contacts")
-    contact = (await lock_contacts(session, company_id, [contact_id])).get(contact_id)
-    if contact is None:
-        await _validate_doc_contact_reference(session, company_id, contact_id)
-    return contact
+    return await _lock_contact_reference(session, company_id, contact_id)
 
 
 async def _contact_selection_values(
@@ -5016,8 +5011,6 @@ async def _contact_selection_values(
         return values
 
     cstate = contact.state or {}
-    if cstate.get("deleted"):
-        raise HTTPException(status_code=422, detail="This contact has been deleted and cannot be used on documents.")
     vendor_side = kind == "doc" and state.get("doc_type") in VENDOR_DOC_TYPES
     role_name = "vendor" if vendor_side else "customer"
     if not contact_accepts(cstate, role_name):
@@ -5707,7 +5700,7 @@ async def import_list(
 async def import_lists_template():
     from fastapi.responses import PlainTextResponse
     return PlainTextResponse(
-        "entity_id,event_type,idempotency_key,ref_id,list_type,customer_id,customer_name,total,currency,status\n",
+        "entity_id,event_type,idempotency_key,ref_id,list_type,contact_id,contact_name,total,currency,status\n",
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=lists.csv"},
     )
@@ -8262,7 +8255,7 @@ async def send_list(
         ref = row.state.get("ref_id") or entity_id.split(":")[-1]
         company_row = await session.get(Company, company_id)
         sender = company_row.name if company_row else "Your supplier"
-        contact = row.state.get("customer_name") or "there"
+        contact = row.state.get("contact_name") or "there"
         subject = (payload.subject or "").strip() or f"Quotation #{ref} from {sender}"
         html, text = compose_doc_email(
             doc_type_label="Quotation", doc_number=ref, sender_name=sender,

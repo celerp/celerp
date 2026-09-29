@@ -276,7 +276,7 @@ async def test_export_lists_csv_matches_index_filters(client):
     t = await _register(client)
     a = await _quotation(client, t, ref_id="EXP-A")
     r = await client.post("/lists", headers=_h(t),
-                          json={"list_type": "quotation", "ref_id": "EXP-B", "customer_id": "cust:zebra-unique"})
+                          json={"list_type": "quotation", "ref_id": "EXP-B", "contact_id": "cust:zebra-unique"})
     assert r.status_code == 200, r.text
 
     def _refs(text: str) -> list[str]:
@@ -486,12 +486,12 @@ async def test_converted_card_and_filter_agree_on_a_reopened_list(client, sessio
 
 @pytest.mark.asyncio
 async def test_list_csv_carries_the_customer_and_date_the_index_shows(client, session):
-    """A list with only a receiver shows the receiver as its customer, and a list with an issue
-    date is dated by it. The index row, the search and the CSV line all carry those same values."""
+    """A list shows its contact name as its customer, and a list with an issue date is dated
+    by it. The index row, the search and the CSV line all carry those same values."""
     t = await _register(client)
     list_id = await _quotation(client, t, ref_id="SHOWN-1")
     await _emit_list_event(session, list_id, "list.patched",
-                           {"customer_name": "", "receiver": "Harbour Receiving", "issue_date": "2026-03-04"})
+                           {"contact_name": "Harbour Receiving", "issue_date": "2026-03-04"})
 
     rows = (await client.get("/lists?q=harbour", headers=_h(t))).json()["items"]
     assert len(rows) == 1

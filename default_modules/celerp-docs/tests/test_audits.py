@@ -620,7 +620,7 @@ async def test_list_patch_optimistic_version_rejects_stale_writes(client):
 
     # Correct version -> applied, and the returned version advances.
     r1 = await client.patch(f"/lists/{q}", headers=_h(t),
-                            json={"fields_changed": {"customer_name": {"new": "Acme"}},
+                            json={"fields_changed": {"contact_name": {"new": "Acme"}},
                                   "expected_version": v0})
     assert r1.status_code == 200
     v1 = r1.json()["version"]
@@ -628,22 +628,22 @@ async def test_list_patch_optimistic_version_rejects_stale_writes(client):
 
     # Stale version (v0 again) -> rejected, list unchanged.
     r2 = await client.patch(f"/lists/{q}", headers=_h(t),
-                            json={"fields_changed": {"customer_name": {"new": "Evil"}},
+                            json={"fields_changed": {"contact_name": {"new": "Evil"}},
                                   "expected_version": v0})
     assert r2.status_code == 409
-    assert (await _state(client, t, q))["customer_name"] == "Acme"
+    assert (await _state(client, t, q))["contact_name"] == "Acme"
 
     # Fresh version -> applied again.
     r3 = await client.patch(f"/lists/{q}", headers=_h(t),
-                            json={"fields_changed": {"customer_name": {"new": "Beta"}},
+                            json={"fields_changed": {"contact_name": {"new": "Beta"}},
                                   "expected_version": v1})
     assert r3.status_code == 200
 
     # No expected_version -> unchecked, still applied.
     r4 = await client.patch(f"/lists/{q}", headers=_h(t),
-                            json={"fields_changed": {"customer_name": {"new": "Gamma"}}})
+                            json={"fields_changed": {"contact_name": {"new": "Gamma"}}})
     assert r4.status_code == 200
-    assert (await _state(client, t, q))["customer_name"] == "Gamma"
+    assert (await _state(client, t, q))["contact_name"] == "Gamma"
 
 
 @pytest.mark.asyncio

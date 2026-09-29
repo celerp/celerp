@@ -2098,7 +2098,7 @@ async def test_reserve_lines_on_quotation_list(client, session, auth, _setup_ids
 
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": eid, "entity_id": eid}],
     })
@@ -2126,7 +2126,7 @@ async def test_reserve_lines_on_draft_quotation_list(client, session, auth, _set
 
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": eid, "entity_id": eid}],
     })
@@ -2177,7 +2177,7 @@ async def test_reserve_lines_rejects_voided_list(client, session, auth, _setup_i
     eid = await _create_item(client, auth, sku, 1, cost_price=100.0)
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": eid, "entity_id": eid}],
     })
@@ -2313,7 +2313,7 @@ async def test_create_list_allows_foreign_reserved_line(client, session, auth, _
 
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": eid, "entity_id": eid}],
     })
@@ -2390,7 +2390,7 @@ async def test_convert_list_transfers_reservation_to_new_doc(client, session, au
 
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": eid, "entity_id": eid}],
     })
@@ -2421,7 +2421,7 @@ async def test_convert_list_rejects_line_reserved_elsewhere(client, session, aut
 
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": eid, "entity_id": eid}],
     })
@@ -2504,7 +2504,7 @@ async def test_reserved_conflict_detail_structured(client, session, auth, _setup
     # List-convert path (its own 422 raise from _scan_reserved_lines).
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": eid, "entity_id": eid}],
     })

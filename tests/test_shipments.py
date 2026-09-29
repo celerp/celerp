@@ -31,7 +31,7 @@ _LINE = {"name": "Widget", "sku": "W1", "quantity": 3, "unit_price": 10.5,
 
 async def _make_list(client, tok, list_type, **extra) -> dict:
     r = await client.post("/lists", json={
-        "list_type": list_type, "customer_name": "Buyer",
+        "list_type": list_type, "contact_name": "Buyer",
         "line_items": [dict(_LINE)],
         **extra,
     }, headers=_h(tok))
@@ -239,7 +239,7 @@ async def test_mixed_customers_consolidate_with_a_blank_consignee(client: AsyncC
     state = (await client.get(f"/lists/{r.json()['id']}", headers=_h(tok))).json()
     assert state["source_docs"] == [inv_a, inv_other]
     assert len(state["line_items"]) == 2
-    for field in ("contact_id", "contact_name", "customer_name",
+    for field in ("contact_id", "contact_name",
                   "contact_shipping_address", "shipping_attn"):
         assert not state.get(field), f"{field} must stay blank on a mixed-customer shipment"
 

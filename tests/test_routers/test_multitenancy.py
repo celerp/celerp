@@ -111,7 +111,7 @@ async def test_cross_company_list_isolation(client):
 
     r = await client.post(
         "/lists",
-        json={"list_type": "quote", "ref_id": "L-A-1", "customer_name": "Cust", "total": 1.0},
+        json={"list_type": "quote", "ref_id": "L-A-1", "contact_name": "Cust", "total": 1.0},
         headers=headers_a_boot,
     )
     assert r.status_code == 200

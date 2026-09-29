@@ -355,9 +355,7 @@ def managed_fields(document: dict, target: BookTarget) -> dict:
     fields["line_items"] = _lines(document, target.kind)
     fields["currency"] = document.get("currency")
     if target.kind == "list":
-        # A list names its counterparty as customer_name, and holds its tax as
-        # one rate per line or one header rate.
-        fields["customer_name"] = document.get("company_name")
+        # A list holds its tax as one rate per line or one header rate.
         fields["discount"] = document.get("discount") or 0
         fields["discount_type"] = document.get("discount_type") or "flat"
         fields["tax"] = _tax_rate(document.get("doc_taxes")) or document.get("tax_rate") or 0
