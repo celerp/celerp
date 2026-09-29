@@ -93,7 +93,8 @@ def _build_router() -> APIRouter:
         settings, categories = merge_missing_preset_categories(dict(company.settings or {}), preset)
         for name in modules:
             settings = enable_in_settings(settings, name)
-        extra = preset.get("company_settings") or {}
+        # Additive: a setting the company already has is never overwritten.
+        extra = {k: v for k, v in (preset.get("company_settings") or {}).items() if k not in settings}
         settings.update(extra)
         company.settings = settings
         await session.commit()
