@@ -305,25 +305,16 @@ def _lock_key(run_id: uuid.UUID) -> str:
     return f"migration:{run_id}"
 
 
-async def _try_key_lock(session: AsyncSession, key: str) -> bool:
-    return bool(await session.scalar(text("SELECT pg_try_advisory_xact_lock(hashtext(:k))"), {"k": key}))
-
-
 async def _try_xact_lock(session: AsyncSession, run_id: uuid.UUID) -> bool:
-    return await _try_key_lock(session, _lock_key(run_id))
+    return bool(await session.scalar(text("SELECT pg_try_advisory_xact_lock(hashtext(:k))"),
+                                     {"k": _lock_key(run_id)}))
 
 
-async def lock_scan_for_start(session: AsyncSession, scan: store.ScanSession) -> None:
-    """Hold the scan for one start until the caller's transaction ends.
-
-    Call before anything is provisioned: a second start from the same scan is refused
-    while the first is in progress, and after it commits, because the scan is gone."""
-    if not await _try_key_lock(session, f"migration-scan:{scan.token}"):
-        raise MigrationError(409, SCAN_ALREADY_STARTED)
-    try:
-        store.load_scan(scan.token, owner=scan.owner)
-    except store.ScanStoreError:
-        raise MigrationError(409, SCAN_ALREADY_STARTED) from None
+async def lock_scan_claim(session: AsyncSession, claim: str) -> MigrationRun | None:
+    """Serialize starts from one scan until the caller's transaction ends; returns the run
+    already holding the claim, if any. Take it before anything is provisioned."""
+    await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"migration-scan:{claim}"})
+    return await session.scalar(select(MigrationRun).where(MigrationRun.scan_claim_sha256 == claim))
 
 
 def _illegal(action: str, run: MigrationRun) -> MigrationError:
@@ -332,34 +323,75 @@ def _illegal(action: str, run: MigrationRun) -> MigrationError:
 
 async def create_run(session: AsyncSession, *, company: Company, user: User, scan: store.ScanSession,
                      decisions: MigrationDecisions) -> MigrationRun:
-    """Claim the scan's files for a new run of *company*. Does not commit or start it."""
+    """A ``preparing`` run of *company* holding the scan's claim; the files stay in the scan
+    until ``claim_source``. The caller holds ``lock_scan_claim`` and commits."""
     adapter = _adapter(scan.adapter_key)
-    run_id = uuid.uuid4()
-    artifacts = store.claim_for_run(scan.token, owner=scan.owner, run_id=run_id)
-    try:
-        first = artifacts[0]
-        run = MigrationRun(
-            id=run_id, company_id=company.id, created_by_user_id=user.id,
-            source_system=adapter.key, source_artifact_name=first.original_name,
-            prepared_by=decisions.prepared_by, source_artifact_sha256=first.sha256,
-            source_schema_version=scan.scan.source_schema_version, adapter_version=adapter.adapter_version,
-            cif_version=MIGRATION_CIF_VERSION, mode=str(decisions.mode), status=_S.READY.value, phase_state={},
-            coverage={"entries": [c.model_dump(mode="json") for c in scan.scan.coverage]},
-            mapping_decisions=store.decisions_json(decisions),
-            source_summary={
-                "artifacts": [{"name": a.path.name, "original_name": a.original_name,
-                               "size_bytes": a.size_bytes, "sha256": a.sha256} for a in artifacts],
-                "bootstrap": scan.owner[0] == "bootstrap",
-                "sample": len(artifacts) == 1 and first.sha256 == _sample_sha256(),
-            },
-            reconciliation={}, error_summary={},
-        )
-        session.add(run)
-        await session.flush()
-    except BaseException:
-        remove_source(run_id)
-        raise
+    await asyncio.to_thread(store.verify_unchanged, scan.token, owner=scan.owner)
+    first = scan.artifacts[0]
+    run = MigrationRun(
+        company_id=company.id, created_by_user_id=user.id, scan_claim_sha256=store.scan_claim(scan.token),
+        source_system=adapter.key, source_artifact_name=first.original_name,
+        prepared_by=decisions.prepared_by, source_artifact_sha256=first.sha256,
+        source_schema_version=scan.scan.source_schema_version, adapter_version=adapter.adapter_version,
+        cif_version=MIGRATION_CIF_VERSION, mode=str(decisions.mode), status=_S.PREPARING.value, phase_state={},
+        coverage={"entries": [c.model_dump(mode="json") for c in scan.scan.coverage]},
+        mapping_decisions=store.decisions_json(decisions),
+        source_summary={
+            "artifacts": [{"name": a.path.name, "original_name": a.original_name,
+                           "size_bytes": a.size_bytes, "sha256": a.sha256} for a in scan.artifacts],
+            "bootstrap": scan.owner[0] == "bootstrap",
+            "sample": len(scan.artifacts) == 1 and first.sha256 == _sample_sha256(),
+        },
+        reconciliation={}, error_summary={},
+    )
+    session.add(run)
+    await session.flush()
     return run
+
+
+async def claim_source(session: AsyncSession, run_id: uuid.UUID, *, token: str | None, start: bool) -> bool:
+    """Finish a start: move the claimed scan's files into run storage, then start the run
+    (*start*) or leave it ready. Commits.
+
+    Idempotent, so a repeated start and startup recovery both finish a start that died
+    part way; only a ``preparing`` run is changed. Returns whether this call started the
+    run, so exactly one caller schedules the runner. A source found in neither place
+    fails the run."""
+    run = await session.get(MigrationRun, run_id)
+    if run is None:
+        return False
+    await lock_scan_claim(session, run.scan_claim_sha256)
+    await _lock_run(session, run)
+    if run.status != _S.PREPARING:
+        await session.commit()
+        return False
+    try:
+        await asyncio.to_thread(store.claim_for_run, token, run_id=run.id,
+                                stored_names=[a["name"] for a in run.source_summary["artifacts"]])
+    except store.SourceMissingError as exc:
+        run.status = _S.FAILED.value
+        run.error_summary = {"message": exc.detail}
+        await session.commit()
+        return False
+    run.status = _S.READY.value
+    if start:
+        await request_start(session, run)
+    await session.commit()
+    return start
+
+
+async def recover_preparing_runs(session: AsyncSession) -> int:
+    """Finish every start that died after its run was committed; the owner starts each
+    recovered run from its progress page. Returns how many were examined."""
+    rows = (await session.execute(select(MigrationRun.id, MigrationRun.scan_claim_sha256)
+                                  .where(MigrationRun.status == _S.PREPARING.value))).all()
+    for run_id, claim in rows:
+        try:
+            await claim_source(session, run_id, token=store.find_scan_token(claim), start=False)
+        except Exception as exc:
+            await session.rollback()
+            logger.warning("Migration %s could not be recovered: %s", run_id, type(exc).__name__)
+    return len(rows)
 
 
 def remove_source(run_id: uuid.UUID) -> None:
@@ -918,7 +950,7 @@ async def run_view(session: AsyncSession, run: MigrationRun) -> dict:
         "coverage": (run.coverage or {}).get("entries", []),
         "error_summary": run.error_summary or {},
         "retention_until": (_retention_start(run) + timedelta(days=RETENTION_DAYS)).isoformat() if retained else None,
-        "source_deleted": not store.run_dir(run.id).exists(),
+        "source_deleted": run.status != _S.PREPARING and not store.run_dir(run.id).exists(),
         "prepared_by": run.prepared_by,
         "is_bootstrap_run": bool(run.source_summary.get("bootstrap")),
         "is_sample": bool(run.source_summary.get("sample")),
@@ -954,6 +986,15 @@ async def mark_stale_runs_interrupted(session: AsyncSession, company_id: uuid.UU
             marked += 1
     await session.commit()
     return marked
+
+
+async def housekeeping(session: AsyncSession) -> None:
+    """Startup maintenance. Preparing runs claim their scans before expired scans are
+    purged, so a start that died just before its files moved never loses them."""
+    await recover_preparing_runs(session)
+    store.purge_expired()
+    await mark_stale_runs_interrupted(session)
+    await purge_run_sources(session)
 
 
 def reconciliation_pack_csv(run: MigrationRun) -> str:

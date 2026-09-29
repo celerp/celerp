@@ -6,7 +6,9 @@ An upload is streamed to disk under a fresh random token, bounded by the file
 count, each source's per-file limit and an aggregate limit, recognised by content
 and inspected read only. The scan lives at ``<data_dir>/migration_scans/<token>/``
 (0700, files 0600) until it expires, is replaced by the same owner's next scan, or
-is claimed by a run, which moves its files to ``<data_dir>/migration_runs/<run_id>/``.
+is claimed by a run. A run records the scan's claim (``scan_claim``) in its committed
+row before ``claim_for_run`` moves the files to ``<data_dir>/migration_runs/<run_id>/``,
+so a claimed scan is always either still here or already in run storage.
 Every rejection removes whatever was written. Updates to one token are serialized
 by a file lock inside the token directory.
 """
@@ -51,6 +53,7 @@ MAX_AGGREGATE_BYTES = 2 * 1024**3
 EXPIRED = "This scan has expired. Upload the file again."
 BUSY = "This scan is being updated. Try again in a moment."
 STORE_FAILED = "The file could not be stored. Try again."
+SOURCE_MISSING = "The uploaded file for this migration is missing. Discard it and upload the file again."
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")
 _STORED_RE = re.compile(r"artifact-\d+")
 _SOURCE_KEY_MAX = 200
@@ -61,6 +64,10 @@ ScanOwner = tuple[str, "uuid.UUID | None"]
 
 class ScanStoreError(HTTPException):
     """A scan request that cannot be served; the detail is shown to the user."""
+
+
+class SourceMissingError(ScanStoreError):
+    """A claimed scan's files are neither in the scan nor in the run's directory."""
 
 
 @dataclass(frozen=True)
@@ -421,8 +428,22 @@ def save_decisions(token: str, *, owner: ScanOwner, decisions: MigrationDecision
         return _read(token, directory, owner)
 
 
-def claim_for_run(token: str, *, owner: ScanOwner, run_id: uuid.UUID) -> ArtifactSet:
-    """Move a scan's files to the run's directory after checking they are unchanged."""
+def scan_claim(token: str) -> str:
+    """The durable, non-secret identity a run keeps of the scan it was started from."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def find_scan_token(claim: str) -> str | None:
+    """The token of the stored scan whose claim is *claim*, if it is still stored."""
+    root = _scans_root()
+    if not root.exists():
+        return None
+    return next((d.name for d in root.iterdir() if scan_claim(d.name) == claim), None)
+
+
+def verify_unchanged(token: str, *, owner: ScanOwner) -> ScanSession:
+    """The scan, after checking its files are the ones that were scanned; a changed file
+    discards the scan."""
     directory = _directory(token)
     with _token_lock(directory):
         session = _read(token, directory, owner)
@@ -430,16 +451,34 @@ def claim_for_run(token: str, *, owner: ScanOwner, run_id: uuid.UUID) -> Artifac
             if hashlib.sha256(artifact.path.read_bytes()).hexdigest() != artifact.sha256:
                 _discard(directory)
                 raise ScanStoreError(409, "The uploaded file changed after it was scanned. Upload it again.")
-        target = run_dir(run_id)
+    return session
+
+
+def claim_for_run(token: str | None, *, run_id: uuid.UUID, stored_names: list[str]) -> None:
+    """Move a claimed scan's files into the run's directory, then remove the scan.
+
+    Idempotent: a file already in the run's directory stays there, so a start that died
+    part way is finished by calling again. Raises ``SourceMissingError`` when a file is
+    in neither place. The claim, not the scan's expiry, decides whether the files belong
+    to the run, and they were verified when the claim was made."""
+    target = run_dir(run_id)
+    directory = _scans_root() / token if token and _TOKEN_RE.fullmatch(token) else None
+    moves = []
+    for name in stored_names:
+        if not _STORED_RE.fullmatch(name):
+            raise ValueError("stored artifact name is not a scan artifact")
+        if (target / name).is_file():
+            continue
+        if directory is None or not (directory / name).is_file():
+            raise SourceMissingError(410, SOURCE_MISSING)
+        moves.append(name)
+    if moves:
         _private_dir(runs_root())
-        target.mkdir(mode=0o700)
-        claimed = []
-        for artifact in session.artifacts:
-            moved = target / artifact.path.name
-            os.replace(artifact.path, moved)
-            claimed.append(Artifact(moved, artifact.original_name, artifact.size_bytes, artifact.sha256))
-    _discard(directory)
-    return claimed
+        target.mkdir(mode=0o700, exist_ok=True)
+    for name in moves:
+        os.replace(directory / name, target / name)
+    if directory is not None:
+        _discard(directory)
 
 
 def delete_scan(token: str) -> None:

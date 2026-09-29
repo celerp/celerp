@@ -258,14 +258,14 @@ async def test_scan_token_is_scoped_expiring_and_tamper_safe(client, session, mi
         store.load_scan(token, owner=bootstrap)
     assert exc.value.status_code == 410 and not directory.exists()
 
-    # An artifact changed after the scan is refused when the run claims it.
+    # An artifact changed after the scan is refused when a run is created from it.
     r = await scan_upload(client, data, headers={"X-Setup-Code": code_config})
     token = r.json()["scan_token"]
     directory = migration_env["data_dir"] / "migration_scans" / token
     artifact = directory / good["artifacts"][0]["stored_name"]
     artifact.write_bytes(artifact.read_bytes() + b"tampered")
     with pytest.raises(store.ScanStoreError) as exc:
-        store.claim_for_run(token, owner=bootstrap, run_id=uuid.uuid4())
+        store.verify_unchanged(token, owner=bootstrap)
     assert exc.value.status_code == 409 and not directory.exists()
 
     # Expiry.

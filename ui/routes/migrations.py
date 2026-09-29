@@ -46,7 +46,7 @@ SCAN_COOKIE = "celerp_migration_scan"
 SCAN_TTL_SECONDS = 3600
 SOURCE_REQUEST_URL = "https://celerp.com/migrate/request"
 _SEARCHABLE_OVER = 10
-_ACTIVE_STATUSES = ("running", "cancel_requested", "reconciling")
+_ACTIVE_STATUSES = ("preparing", "running", "cancel_requested", "reconciling")
 _RESUMABLE_STATUSES = ("cancelled", "interrupted", "failed")
 _PHASES = (
     "company_settings", "currencies_taxes_accounts", "contacts_locations", "inventory_masters",

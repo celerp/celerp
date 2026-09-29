@@ -3384,6 +3384,7 @@
   "migration.phase_status.done": "Selesai",
   "migration.phase_status.failed": "Gagal",
   "migration.status.ready": "Siap dimulai",
+  "migration.status.preparing": "Menyiapkan",
   "migration.status.running": "Berjalan",
   "migration.status.cancel_requested": "Sedang dibatalkan",
   "migration.status.cancelled": "Dibatalkan",

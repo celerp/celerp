@@ -829,3 +829,22 @@ async def test_move_another_company_starts_clean_wizard(ui, router, fake_api):
     assert posted["mappings"] == {"account:fx-gain": _ACCOUNT_OPTIONS[0]}
     assert posted["prepared_by"] == "Example Bookkeeping"
     assert fake_api.runs[previous] == before
+
+
+@pytest.mark.asyncio
+async def test_staged_session_lands_on_its_migration_run(ui, router, fake_api):
+    """A first owner whose start response was lost signs in to the staged company;
+    every landing page sends them to that run instead of ERP pages the API refuses."""
+    _owner(ui)
+    run_id = fake_api.add_run("preparing")
+    staged = "This company is still being moved into Celerp. Finish or discard the migration first."
+    router.overrides[("GET", "/companies/me")] = lambda request: _json(403, {"detail": staged})
+    router.overrides[("GET", "/migrations/staged")] = lambda request: _json(200, fake_api.runs[run_id])
+    for path in ("/", "/login"):
+        r = await ui.get(path)
+        assert r.status_code == 302 and r.headers["location"] == f"/migrations/{run_id}", path
+
+    r = await ui.get(f"/migrations/{run_id}")
+    assert r.status_code == 200
+    assert "Preparing" in _visible(r)
+    assert 'hx-trigger="every 2s"' in _page(r)

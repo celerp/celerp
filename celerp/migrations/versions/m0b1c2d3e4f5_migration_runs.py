@@ -26,6 +26,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(as_uuid=True), primary_key=True),
         sa.Column("company_id", sa.Uuid(as_uuid=True), sa.ForeignKey("companies.id"), nullable=False),
         sa.Column("created_by_user_id", sa.Uuid(as_uuid=True), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column("scan_claim_sha256", sa.String(64), nullable=False),
         sa.Column("source_system", sa.String(64), nullable=False),
         sa.Column("source_artifact_name", sa.Text(), nullable=True),
         sa.Column("prepared_by", sa.String(200), nullable=True),
@@ -47,6 +48,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.UniqueConstraint("scan_claim_sha256", name="migration_runs_scan_claim_sha256_key"),
     )
     op.create_index("ix_migration_runs_company_id", "migration_runs", ["company_id"])
 

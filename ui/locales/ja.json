@@ -3384,6 +3384,7 @@
   "migration.phase_status.done": "完了",
   "migration.phase_status.failed": "失敗",
   "migration.status.ready": "開始準備完了",
+  "migration.status.preparing": "準備中",
   "migration.status.running": "処理中",
   "migration.status.cancel_requested": "取消処理中",
   "migration.status.cancelled": "取消済み",

@@ -3384,6 +3384,7 @@
   "migration.phase_status.done": "Đã xong",
   "migration.phase_status.failed": "Thất bại",
   "migration.status.ready": "Sẵn sàng bắt đầu",
+  "migration.status.preparing": "Đang chuẩn bị",
   "migration.status.running": "Đang chạy",
   "migration.status.cancel_requested": "Đang hủy",
   "migration.status.cancelled": "Đã hủy",

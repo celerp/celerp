@@ -3384,6 +3384,7 @@
   "migration.phase_status.done": "ተጠናቋል",
   "migration.phase_status.failed": "አልተሳካም",
   "migration.status.ready": "ለመጀመር ዝግጁ",
+  "migration.status.preparing": "በመዘጋጀት ላይ",
   "migration.status.running": "በሂደት ላይ",
   "migration.status.cancel_requested": "እየተሰረዘ ነው",
   "migration.status.cancelled": "ተሰርዟል",

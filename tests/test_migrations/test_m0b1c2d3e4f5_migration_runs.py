@@ -40,13 +40,13 @@ def base_db():
     admin.dispose()
 
 
-def _insert_run(conn, company_id, user_id) -> uuid.UUID:
+def _insert_run(conn, company_id, user_id, claim: str | None = None) -> uuid.UUID:
     run_id = uuid.uuid4()
     conn.execute(text(
-        "INSERT INTO migration_runs (id, company_id, created_by_user_id, source_system,"
+        "INSERT INTO migration_runs (id, company_id, created_by_user_id, scan_claim_sha256, source_system,"
         " source_artifact_sha256, adapter_version, cif_version, mode, status, created_at)"
-        " VALUES (:id, :cid, :uid, 'manager_io', :sha, '1', '2', 'full_history', 'ready', NOW())"
-    ), {"id": run_id, "cid": company_id, "uid": user_id, "sha": "a" * 64})
+        " VALUES (:id, :cid, :uid, :claim, 'manager_io', :sha, '1', '2', 'full_history', 'preparing', NOW())"
+    ), {"id": run_id, "cid": company_id, "uid": user_id, "claim": claim or uuid.uuid4().hex * 2, "sha": "a" * 64})
     return run_id
 
 
@@ -65,7 +65,7 @@ def test_migration_runs_schema_upgrade_integrity(base_db):
     with base_db.begin() as conn:
         conn.execute(text("INSERT INTO companies (id, name) VALUES (:id, 'Staged')"), {"id": company_id})
         conn.execute(text("INSERT INTO users (id, email) VALUES (:id, 'owner@example.com')"), {"id": user_id})
-        run_id = _insert_run(conn, company_id, user_id)
+        run_id = _insert_run(conn, company_id, user_id, claim="c" * 64)
         _insert_map(conn, run_id, "c-1")
 
     with base_db.connect() as conn:
@@ -80,6 +80,12 @@ def test_migration_runs_schema_upgrade_integrity(base_db):
         with base_db.begin() as conn:
             _insert_map(conn, run_id, "c-1")
     assert "uq_migration_entity_map_source" in str(dup.value)
+
+    # One scan claim starts at most one run.
+    with pytest.raises(IntegrityError) as dup:
+        with base_db.begin() as conn:
+            _insert_run(conn, company_id, user_id, claim="c" * 64)
+    assert "migration_runs_scan_claim_sha256_key" in str(dup.value)
 
     with pytest.raises(IntegrityError):
         with base_db.begin() as conn:

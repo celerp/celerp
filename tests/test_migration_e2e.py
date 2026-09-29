@@ -48,10 +48,11 @@ async def migrate(engine, data: bytes, name: str, decisions: dict, monkeypatch, 
         scan = store.save_decisions(scan.token, owner=owner, decisions=chosen)
         company = await provisioning.provision_migration_company(s, owner=user, company_name=scan.scan.company_name)
         run = await migrations.create_run(s, company=company, user=user, scan=scan, decisions=chosen)
-        await migrations.request_start(s, run)
+        run_id = run.id
         await s.commit()
-    await migrations.run_migration(run.id)
-    return await load_run(engine, run.id), rejected
+        await migrations.claim_source(s, run_id, token=scan.token, start=True)
+    await migrations.run_migration(run_id)
+    return await load_run(engine, run_id), rejected
 
 
 # ── Lifecycle hooks and staged companies ──────────────────────────────────────

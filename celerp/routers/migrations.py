@@ -22,6 +22,7 @@ import logging
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
@@ -202,19 +203,35 @@ async def _save_decisions(owner: store.ScanOwner, payload: DecisionsIn) -> dict:
     return {"scan": migrations.scan_view(store.save_decisions(payload.scan_token, owner=owner, decisions=decisions))}
 
 
-async def _start(session: AsyncSession, *, user: User, company_name: str, scan: store.ScanSession,
+async def _stage(session: AsyncSession, *, user: User, company_name: str, scan: store.ScanSession,
                  decisions) -> MigrationRun:
-    """Stage the company, claim the scan and persist the run as running. The caller commits,
-    then schedules the runner."""
-    await migrations.lock_scan_for_start(session, scan)
+    """Start, phase one: the staged company and a preparing run holding the scan's claim.
+    The caller holds the claim lock and commits."""
     company = await provision_migration_company(session, owner=user, company_name=company_name)
-    run = await migrations.create_run(session, company=company, user=user, scan=scan, decisions=decisions)
+    return await migrations.create_run(session, company=company, user=user, scan=scan, decisions=decisions)
+
+
+@asynccontextmanager
+async def _start_errors(session: AsyncSession) -> AsyncIterator[None]:
+    """Roll back a failed start step; an unexpected failure is logged and shown plainly."""
     try:
-        await migrations.request_start(session, run)
-    except BaseException:
-        migrations.remove_source(run.id)
+        yield
+    except HTTPException:
+        await session.rollback()
         raise
-    return run
+    except Exception:
+        await session.rollback()
+        logger.exception("Migration start failed")
+        raise HTTPException(status_code=500, detail="Migration could not start.") from None
+
+
+async def _claim(session: AsyncSession, run_id: uuid.UUID, scan_token: str) -> None:
+    """Start, phase two, after phase one committed: move the source into the run and start
+    it. Only the call that started the run schedules the runner."""
+    async with _start_errors(session):
+        started = await migrations.claim_source(session, run_id, token=scan_token, start=True)
+    if started:
+        migrations.schedule_run(run_id)
 
 
 async def _owned_run(session: AsyncSession, run_id: uuid.UUID, ctx: AuthContext) -> MigrationRun:
@@ -259,12 +276,14 @@ async def bootstrap_decisions(payload: DecisionsIn, session: AsyncSession = Depe
 @router.post("/bootstrap/start", status_code=201)
 async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Depends(get_session),
                           x_setup_code: str | None = Header(None)) -> dict:
-    """Create the first owner, the staged company and the running migration in one commit.
+    """Create the first owner, the staged company and a preparing run in one commit, then
+    start it (``_claim``).
 
-    The bootstrap lock serializes racing starts; the loser re-checks and is refused.
+    The bootstrap lock serializes racing starts; the loser re-checks and is refused. If the
+    response is lost after the commit, the owner signs in and is taken back to the run.
     The setup code is consumed only after the commit."""
     required = False
-    try:
+    async with _start_errors(session):
         await _ensure_not_bootstrapped(session)
         required = bootstrap.verify_setup_code(x_setup_code)
         await bootstrap.lock_bootstrap(session)
@@ -285,29 +304,19 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
         if errors:
             raise HTTPException(status_code=422, detail=errors)
         user = await create_install_owner(session, name=name, email=email, password=payload.password)
-        run = await _start(session, user=user, company_name=company_name, scan=scan, decisions=decisions)
-        try:
-            # The first owner has no other company, so they are signed in to the staged one;
-            # its token reaches the migration routes only.
-            tokens = await issue_token_pair(session, user=user, company=await session.get(Company, run.company_id),
-                                            role="owner")
-        except BaseException:
-            migrations.remove_source(run.id)
-            raise
-    except HTTPException:
-        await session.rollback()
-        raise
-    except Exception:
-        await session.rollback()
-        logger.exception("Bootstrap migration start failed")
-        raise HTTPException(status_code=500, detail="Migration could not start.") from None
+        run = await _stage(session, user=user, company_name=company_name, scan=scan, decisions=decisions)
+        run_id = run.id
+        # The first owner has no other company, so they are signed in to the staged one;
+        # its token reaches the migration routes only. Issuing the tokens commits.
+        tokens = await issue_token_pair(session, user=user, company=await session.get(Company, run.company_id),
+                                        role="owner")
     if required:
         try:
             await asyncio.to_thread(bootstrap.clear_setup_code)
         except Exception:
             logger.warning("Setup-code cleanup failed after bootstrap migration start", exc_info=True)
-    migrations.schedule_run(run.id)
-    return {**tokens, "run_id": str(run.id)}
+    await _claim(session, run_id, payload.scan_token)
+    return {**tokens, "run_id": str(run_id)}
 
 
 # ── Company owner ────────────────────────────────────────────────────────────
@@ -329,26 +338,28 @@ async def scan_decisions(payload: DecisionsIn, ctx: AuthContext = Depends(_user_
 
 
 @router.post("/start-from-scan", status_code=201)
-async def start_from_scan(payload: StartFromScanIn, ctx: AuthContext = Depends(_user_owner),
+async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: AuthContext = Depends(_user_owner),
                           session: AsyncSession = Depends(get_session)) -> dict:
-    scan = store.load_scan(payload.scan_token, owner=("user", ctx.user.id))
-    decisions = await _prepare(scan)
-    errors: dict[str, str] = {}
-    company_name = _company_name(payload.company_name, errors)
-    if errors:
-        raise HTTPException(status_code=422, detail=errors)
-    try:
-        run = await _start(session, user=ctx.user, company_name=company_name, scan=scan, decisions=decisions)
+    """Start a migration from a scan, 201. A repeated start from the same scan answers 200
+    with the run it already created, finishing that start if it died part way."""
+    async with _start_errors(session):
+        run = await migrations.lock_scan_claim(session, store.scan_claim(payload.scan_token))
+        if run is None:
+            scan = store.load_scan(payload.scan_token, owner=("user", ctx.user.id))
+            decisions = await _prepare(scan)
+            errors: dict[str, str] = {}
+            company_name = _company_name(payload.company_name, errors)
+            if errors:
+                raise HTTPException(status_code=422, detail=errors)
+            run = await _stage(session, user=ctx.user, company_name=company_name, scan=scan, decisions=decisions)
+        elif run.created_by_user_id == ctx.user.id:
+            response.status_code = 200
+        else:
+            raise migrations.MigrationError(409, migrations.SCAN_ALREADY_STARTED)
+        run_id = run.id
         await session.commit()
-    except HTTPException:
-        await session.rollback()
-        raise
-    except Exception:
-        await session.rollback()
-        logger.exception("Migration start failed")
-        raise HTTPException(status_code=500, detail="Migration could not start.") from None
-    migrations.schedule_run(run.id)
-    return {"run_id": str(run.id)}
+    await _claim(session, run_id, payload.scan_token)
+    return {"run_id": str(run_id)}
 
 
 # ── Runs ─────────────────────────────────────────────────────────────────────

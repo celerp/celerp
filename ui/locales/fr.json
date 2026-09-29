@@ -3384,6 +3384,7 @@
   "migration.phase_status.done": "Terminé",
   "migration.phase_status.failed": "Échoué",
   "migration.status.ready": "Prêt à démarrer",
+  "migration.status.preparing": "Préparation",
   "migration.status.running": "En cours",
   "migration.status.cancel_requested": "Annulation en cours",
   "migration.status.cancelled": "Annulé",

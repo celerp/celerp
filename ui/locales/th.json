@@ -3384,6 +3384,7 @@
   "migration.phase_status.done": "เสร็จสิ้น",
   "migration.phase_status.failed": "ล้มเหลว",
   "migration.status.ready": "พร้อมเริ่มดำเนินการ",
+  "migration.status.preparing": "กำลังเตรียม",
   "migration.status.running": "กำลังดำเนินการ",
   "migration.status.cancel_requested": "กำลังยกเลิก",
   "migration.status.cancelled": "ยกเลิกแล้ว",

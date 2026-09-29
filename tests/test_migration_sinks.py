@@ -44,7 +44,7 @@ async def _sink_context(client, session, read_attachment):
         select(UserCompany.company_id).where(UserCompany.user_id == user.id)
     )).scalar_one()
     run = MigrationRun(
-        company_id=company_id, created_by_user_id=user.id, source_system="manager_io",
+        company_id=company_id, created_by_user_id=user.id, scan_claim_sha256="1" * 64, source_system="manager_io",
         source_artifact_sha256="0" * 64, adapter_version="test", cif_version="2", mode="full_history",
     )
     session.add(run)

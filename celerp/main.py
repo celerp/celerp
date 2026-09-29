@@ -378,15 +378,13 @@ async def lifespan(_app: FastAPI):
     except Exception:
         logging.getLogger(__name__).exception("AI batch job sweep failed (non-fatal)")
 
-    # Company migrations: delete expired scans, mark runs whose runner died with the
-    # last process as interrupted (resumable), and delete source files past retention.
+    # Company migrations: finish interrupted starts, delete expired scans, mark runs whose
+    # runner died with the last process as interrupted, and delete sources past retention.
     try:
         from celerp.db import LifecycleSessionLocal as _MigrationSweepSession
-        from celerp.services import migration_scan_store, migrations as migration_service
-        migration_scan_store.purge_expired()
+        from celerp.services import migrations as migration_service
         async with _MigrationSweepSession() as _migration_session:
-            await migration_service.mark_stale_runs_interrupted(_migration_session)
-            await migration_service.purge_run_sources(_migration_session)
+            await migration_service.housekeeping(_migration_session)
     except Exception:
         logging.getLogger(__name__).exception("Migration housekeeping failed (non-fatal)")
 

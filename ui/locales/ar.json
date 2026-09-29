@@ -3384,6 +3384,7 @@
   "migration.phase_status.done": "منتهٍ",
   "migration.phase_status.failed": "فشل",
   "migration.status.ready": "جاهز للبدء",
+  "migration.status.preparing": "قيد التحضير",
   "migration.status.running": "قيد التنفيذ",
   "migration.status.cancel_requested": "جارٍ الإلغاء",
   "migration.status.cancelled": "تم الإلغاء",

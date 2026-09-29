@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Durable migration runs and their source-to-Celerp entity maps.
 
-A run imports one source into one staged company. The row is the authoritative
+A run imports one source into one staged company. It is committed as
+``preparing`` before its source files leave the scan store, so a start that dies
+part way is finished by a retry or by startup recovery. The row is the authoritative
 state: status, current phase and per-phase progress survive restarts, and the
 entity map makes every batch safe to re-run.
 """
@@ -21,6 +23,7 @@ from celerp.models.base import Base
 
 
 class MigrationStatus(StrEnum):
+    PREPARING = "preparing"
     READY = "ready"
     RUNNING = "running"
     CANCEL_REQUESTED = "cancel_requested"
@@ -51,6 +54,7 @@ PHASE_ORDER: tuple[MigrationPhase, ...] = tuple(MigrationPhase)
 
 _S = MigrationStatus
 LEGAL_TRANSITIONS: dict[MigrationStatus, frozenset[MigrationStatus]] = {
+    _S.PREPARING: frozenset({_S.READY, _S.FAILED}),
     _S.READY: frozenset({_S.RUNNING}),
     _S.RUNNING: frozenset({_S.CANCEL_REQUESTED, _S.INTERRUPTED, _S.FAILED, _S.RECONCILING}),
     _S.CANCEL_REQUESTED: frozenset({_S.CANCELLED, _S.INTERRUPTED, _S.FAILED}),
@@ -77,6 +81,9 @@ class MigrationRun(Base):
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
+    # SHA-256 of the scan token the run was started from: the durable, non-secret claim
+    # that lets a repeated or recovered start find this run instead of creating another.
+    scan_claim_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     source_system: Mapped[str] = mapped_column(String(64), nullable=False)
     source_artifact_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     prepared_by: Mapped[str | None] = mapped_column(String(200), nullable=True)

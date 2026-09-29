@@ -342,10 +342,10 @@ async def staged_run(engine, *, spec: dict | None = None, decisions: dict | None
         scan = store.save_decisions(scan.token, owner=owner, decisions=chosen)
         company = await provisioning.provision_migration_company(s, owner=user, company_name="Fake Co")
         run = await migrations.create_run(s, company=company, user=user, scan=scan, decisions=chosen)
-        if start:
-            await migrations.request_start(s, run)
+        ids = run.id, company.id, user.id
         await s.commit()
-        return run.id, company.id, user.id
+        await migrations.claim_source(s, run.id, token=scan.token, start=start)
+        return ids
 
 
 async def load_run(engine, run_id):
