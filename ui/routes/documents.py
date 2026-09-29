@@ -9379,6 +9379,7 @@ async function celerpCsvImport(input, entityId) {{
                 Div(Div(t("doc.phone"), cls="form-label"), _cell("company_phone", doc.get("company_phone") or "--"), cls="form-group"),
                 Div(Div(t("doc.email"), cls="form-label"), _cell("company_email", doc.get("company_email") or "--"), cls="form-group"),
                 Div(Div(t("doc.tax_id"), cls="form-label"), _cell("company_tax_id", doc.get("company_tax_id") or "--"), cls="form-group"),
+                Div(Div(t("doc.website"), cls="form-label"), _cell("company_website", doc.get("company_website") or "--"), cls="form-group"),
                 cls="doc-section doc-section--half",
             ),
             Div(
