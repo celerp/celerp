@@ -60,8 +60,10 @@ def _pg_admin(url: str):
 
 
 @pytest.fixture
-def first_run_ui():
-    """API and UI servers in subprocesses on a fresh, empty database."""
+def first_run_ui(tmp_path):
+    """API and UI servers in subprocesses on a fresh, empty database and data directory.
+    A shared data directory would let two first-run servers replace each other's
+    bootstrap scan, which has one owner per install."""
     base_url = os.environ["DATABASE_URL"]
     parts = urlsplit(base_url)
     db_name = f"{parts.path.lstrip('/')}_firstrun"
@@ -78,7 +80,7 @@ def first_run_ui():
     # migration writes through.
     module_dirs = ",".join(str(_REPO_ROOT / d) for d in ("default_modules", "premium_modules"))
     env = {**os.environ, "DATABASE_URL": db_url, "API_URL": api_base, "CELERP_API_URL": api_base,
-           "MODULE_DIR": module_dirs}
+           "MODULE_DIR": module_dirs, "CELERP_DATA_DIR": str(tmp_path / "data")}
     procs = []
     try:
         for target, port in (("celerp.main:app", api_port), ("ui.app:app", ui_port)):

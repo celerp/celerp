@@ -146,6 +146,7 @@ class FakeMigrationAPI:
         self.runs: dict[str, dict] = {}
         self.recon: dict[str, dict] = {}
         self.decisions_posted: list[dict] = []
+        self.started: dict[str, str] = {}  # scan token -> the run a company-mode start created
         self.scan_error = False
         self.expired = False
         self.with_questions = True
@@ -176,6 +177,8 @@ class FakeMigrationAPI:
             return _json(200, {"scan_token": token, "scan": self.scans[token]["scan"]})
         if method == "POST" and path in ("/migrations/bootstrap/scan/read", "/migrations/scan/read"):
             data = json.loads(body)
+            if path == "/migrations/scan/read" and data.get("scan_token") in self.started:
+                return _json(200, {"run_id": self.started[data["scan_token"]]})
             if self.expired or data.get("scan_token") not in self.scans:
                 return _json(410, {"detail": "This scan has expired. Upload the file again."})
             return _json(200, {"scan": self.scans[data["scan_token"]]["scan"]})
@@ -189,10 +192,15 @@ class FakeMigrationAPI:
             return _json(200, {"scan": scan})
         if method == "POST" and path in ("/migrations/bootstrap/start", "/migrations/start-from-scan"):
             data = json.loads(body)
+            if path == "/migrations/start-from-scan" and data.get("scan_token") in self.started:
+                return _json(200, {"run_id": self.started[data["scan_token"]]})
             if data.get("scan_token") not in self.scans:
                 return _json(410, {"detail": "This scan has expired. Upload the file again."})
             run_id = self.add_run("running", company_name=data.get("company_name") or "")
             if path == "/migrations/start-from-scan":
+                # The API moves the scan's files into the run: the scan itself is gone.
+                del self.scans[data["scan_token"]]
+                self.started[data["scan_token"]] = run_id
                 return _json(201, {"run_id": run_id})
             return _json(201, {"access_token": make_test_token("owner"),
                                "refresh_token": "refresh-new", "run_id": run_id})
@@ -848,3 +856,25 @@ async def test_staged_session_lands_on_its_migration_run(ui, router, fake_api):
     assert r.status_code == 200
     assert "Preparing" in _visible(r)
     assert 'hx-trigger="every 2s"' in _page(r)
+
+
+@pytest.mark.asyncio
+async def test_company_mode_lost_start_response_returns_to_the_same_run(ui, router, fake_api):
+    """The start's response never arrived, so the browser still holds the scan: every
+    wizard step and a repeated start lead back to the run it created, never a second one."""
+    _owner(ui)
+    base = "/setup/new-company/migrate"
+    r = await ui.post(f"{base}/scan", files=_UPLOAD, data={"source": "manager_io"})
+    scan_token = _cookie_value(r, SCAN_COOKIE)
+    ui.cookies.set(SCAN_COOKIE, scan_token)
+    r = await ui.post(f"{base}/start", data={"company_name": "Harbor Goods Ltd"})
+    assert r.status_code == 303, r.text
+    run_url = r.headers["location"]
+    ui.cookies.set(SCAN_COOKIE, scan_token)
+
+    for step in ("/coverage", "/mapping", "/review"):
+        r = await ui.get(f"{base}{step}")
+        assert r.status_code == 303 and r.headers["location"] == run_url, (step, r.status_code)
+    r = await ui.post(f"{base}/start", data={"company_name": "Harbor Goods Ltd"})
+    assert r.status_code == 303 and r.headers["location"] == run_url, r.text
+    assert len(fake_api.runs) == 1

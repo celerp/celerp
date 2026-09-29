@@ -328,7 +328,13 @@ async def scan(request: Request, ctx: AuthContext = Depends(_user_owner)) -> dic
 
 
 @router.post("/scan/read")
-async def scan_read(payload: ScanTokenIn, ctx: AuthContext = Depends(_user_owner)) -> dict:
+async def scan_read(payload: ScanTokenIn, ctx: AuthContext = Depends(_user_owner),
+                    session: AsyncSession = Depends(get_session)) -> dict:
+    """The scan's view, or ``{"run_id"}`` of the run the caller already started from it,
+    so a wizard whose start response was lost returns to that run."""
+    run_id = await migrations.started_run_id(session, store.scan_claim(payload.scan_token), ctx.user.id)
+    if run_id is not None:
+        return {"run_id": str(run_id)}
     return {"scan": migrations.scan_view(store.load_scan(payload.scan_token, owner=("user", ctx.user.id)))}
 
 

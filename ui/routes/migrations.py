@@ -105,8 +105,12 @@ def _clear_scan_cookie(resp, mode: _Mode, request: Request) -> None:
 
 
 async def _read_scan(request: Request, mode: _Mode, token: str) -> dict:
-    """The scan entry for a token: the API's scan view plus the Prepared by name. Raises APIError."""
-    scan = await api.migration_scan_read(_api_token(request, mode), token)
+    """The scan entry for a token: the API's scan view plus the Prepared by name, or
+    ``{"run_id"}`` when a run was already started from the scan. Raises APIError."""
+    body = await api.migration_scan_read(_api_token(request, mode), token)
+    if "run_id" in body:
+        return {"run_id": body["run_id"]}
+    scan = body["scan"]
     saved = (scan.get("decisions") or {}).get("prepared_by")
     return {"scan": scan, "prepared_by": saved or request.cookies.get(PREPARED_BY_COOKIE, "")}
 
@@ -221,12 +225,18 @@ async def _current_scan(request: Request, mode: _Mode):
     if not token:
         return None, _expired(request, mode)
     try:
-        return token, await _read_scan(request, mode, token)
+        entry = await _read_scan(request, mode, token)
     except APIError as e:
         if e.status == 410:
             return None, _expired(request, mode, str(e.detail))
         return None, _page(request, auth_header(t("migration.title")), flash(str(e.detail)), _back(mode.back),
                            status_code=e.status if e.status >= 400 else 502)
+    if "run_id" in entry:
+        # The start went through but its response was lost: continue with that run.
+        resp = RedirectResponse(f"/migrations/{entry['run_id']}", status_code=303)
+        _clear_scan_cookie(resp, mode, request)
+        return None, resp
+    return token, entry
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +375,7 @@ async def _choose_source(request: Request, mode: _Mode):
             entry = await _read_scan(request, mode, token)
         except APIError:
             entry = None  # no readable scan: nothing to replace
-        if entry is not None and source != entry["scan"].get("source_system"):
+        if entry is not None and "scan" in entry and source != entry["scan"].get("source_system"):
             if q.get("confirm") != "1":
                 return _change_source_page(request, mode, entry, source)
             clear = True
@@ -731,23 +741,31 @@ def _account_error(values: dict) -> str | None:
 async def _start(request: Request, mode: _Mode):
     if (denied := await _gate(request, mode)) is not None:
         return denied
-    token, entry = await _current_scan(request, mode)
-    if token is None:
-        return entry
+    # The scan is read only to show the review page again: a repeated start whose first
+    # response was lost finds its scan already claimed, and the API returns that run.
+    token = request.cookies.get(SCAN_COOKIE)
+    if not token:
+        return _expired(request, mode)
     form = await request.form()
     values = {k: str(form.get(k, "")).strip() for k in ("company_name", "name", "email")}
     values["password"] = str(form.get("password", ""))
     values["confirm_password"] = str(form.get("confirm_password", ""))
     setup_code = str(form.get("setup_code", "")).strip() or None
+
+    async def review(**feedback):
+        scan_token, entry = await _current_scan(request, mode)
+        if scan_token is None:
+            return entry
+        return await _review_page(request, mode, entry, values=values, **feedback)
+
     if not values["company_name"]:
-        return await _review_page(request, mode, entry, values=values, error=t("settings.all_fields_required"))
+        return await review(error=t("settings.all_fields_required"))
     try:
         if mode.bootstrap:
             if (problem := _account_error(values)) is not None:
-                return await _review_page(request, mode, entry, values=values, error=problem)
+                return await review(error=problem)
             if await _setup_code_required(mode) and not setup_code:
-                return await _review_page(request, mode, entry, values=values,
-                                          error=t("auth.setup_code_required"))
+                return await review(error=t("auth.setup_code_required"))
             started = await api.migration_bootstrap_start(
                 token, values["company_name"], values["name"], values["email"], values["password"],
                 setup_code=setup_code)
@@ -757,8 +775,8 @@ async def _start(request: Request, mode: _Mode):
         if e.status == 410:
             return _expired(request, mode, str(e.detail))
         if isinstance(e.detail, dict):
-            return await _review_page(request, mode, entry, values=values, errors=e.detail)
-        return await _review_page(request, mode, entry, values=values, error=str(e.detail))
+            return await review(errors=e.detail)
+        return await review(error=str(e.detail))
     resp = RedirectResponse(f"/migrations/{started['run_id']}", status_code=303)
     if mode.bootstrap:
         # The first owner has no working session yet. A company-mode start keeps the

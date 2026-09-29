@@ -317,6 +317,12 @@ async def lock_scan_claim(session: AsyncSession, claim: str) -> MigrationRun | N
     return await session.scalar(select(MigrationRun).where(MigrationRun.scan_claim_sha256 == claim))
 
 
+async def started_run_id(session: AsyncSession, claim: str, user_id: uuid.UUID) -> uuid.UUID | None:
+    """The run *user_id* already started from the scan holding *claim*, if any."""
+    return await session.scalar(select(MigrationRun.id).where(
+        MigrationRun.scan_claim_sha256 == claim, MigrationRun.created_by_user_id == user_id))
+
+
 def _illegal(action: str, run: MigrationRun) -> MigrationError:
     return MigrationError(409, f"Cannot {action} a migration that is {run.status}.")
 

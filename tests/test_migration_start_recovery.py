@@ -344,3 +344,30 @@ async def test_bootstrap_lost_response_recovers_through_login(real_client, real_
     assert await count(real_engine, "users") == 0
     assert await count(real_engine, "companies") == 0
     assert (await load_run(real_engine, uuid.UUID(run_id))) is None
+
+
+@pytest.mark.asyncio
+async def test_reading_a_started_scan_names_its_run_to_its_creator_only(real_client, real_engine, migration_env):
+    """After a lost start response the wizard reads its scan again and is sent to the run."""
+    from sqlalchemy import update
+
+    from celerp.models.company import User
+    from celerp.models.migration import MigrationRun
+
+    admin_token = await register_admin(real_client)
+    scan_token = await _scan(real_client, admin_token)
+    r = await _start(real_client, admin_token, scan_token)
+    run_id = r.json()["run_id"]
+    read = {"scan_token": scan_token}
+    r = await real_client.post("/migrations/scan/read", headers=auth(admin_token), json=read)
+    assert r.status_code == 200 and r.json() == {"run_id": run_id}, r.text
+
+    async with maker(real_engine)() as s:
+        other = User(email="other@example.com", name="Other")
+        s.add(other)
+        await s.flush()
+        await s.execute(update(MigrationRun).where(MigrationRun.id == uuid.UUID(run_id))
+                        .values(created_by_user_id=other.id))
+        await s.commit()
+    r = await real_client.post("/migrations/scan/read", headers=auth(admin_token), json=read)
+    assert r.status_code == 410, r.text
