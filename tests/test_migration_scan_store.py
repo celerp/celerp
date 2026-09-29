@@ -383,3 +383,44 @@ async def test_migration_source_retention_and_cleanup(real_engine, migration_env
     assert "source_cleanup" not in run.source_summary
     assert not _run_dir(migration_env, stuck).exists()
     assert await count(real_engine, "migration_runs") == 3
+
+
+@pytest.mark.asyncio
+async def test_save_decisions_storage_failure_is_reported_and_keeps_the_scan(migration_env, monkeypatch):
+    from celerp import config_store
+    from celerp.importers.adapters.base import MigrationDecisions
+    from celerp.services import migration_scan_store as store
+
+    owner = ("user", uuid.uuid4())
+    scan = await store.create_scan(upload_parts(("books.fake", fake_bytes())), owner=owner)
+    directory = migration_env["data_dir"] / "migration_scans" / scan.token
+    before = (directory / "scan.json").read_bytes()
+    decisions = MigrationDecisions(mode="full_history")
+
+    def refuse(*args, **kwargs):
+        raise OSError("disk full")
+
+    real_replace = store.os.replace
+    for target, name, replacement in ((store.os, "replace", refuse),
+                                      (config_store, "hold_lock", refuse)):
+        with monkeypatch.context() as patched, pytest.raises(store.ScanStoreError) as exc:
+            patched.setattr(target, name, replacement)
+            store.save_decisions(scan.token, owner=owner, decisions=decisions)
+        assert (exc.value.status_code, exc.value.detail) == (500, "The file could not be stored. Try again."), name
+        assert (directory / "scan.json").read_bytes() == before, name
+        kept = sorted(p.name for p in directory.iterdir())
+        assert kept == sorted([a.path.name for a in scan.artifacts] + ["scan.json"]), name
+        assert store.load_scan(scan.token, owner=owner).decisions is None
+    assert store.os.replace is real_replace
+
+    # A scan removed while the request waits for its lock is reported as expired, not as a crash.
+    real_hold = config_store.hold_lock
+
+    def removed_first(path, *args, **kwargs):
+        store._discard(directory)
+        return real_hold(path, *args, **kwargs)
+
+    monkeypatch.setattr(config_store, "hold_lock", removed_first)
+    with pytest.raises(store.ScanStoreError) as exc:
+        store.save_decisions(scan.token, owner=owner, decisions=decisions)
+    assert (exc.value.status_code, exc.value.detail) == (410, EXPIRED)

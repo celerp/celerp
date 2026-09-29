@@ -50,6 +50,7 @@ MAX_AGGREGATE_BYTES = 2 * 1024**3
 
 EXPIRED = "This scan has expired. Upload the file again."
 BUSY = "This scan is being updated. Try again in a moment."
+STORE_FAILED = "The file could not be stored. Try again."
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")
 _STORED_RE = re.compile(r"artifact-\d+")
 _SOURCE_KEY_MAX = 200
@@ -93,9 +94,13 @@ def _open_artifact(path: Path):
 
 def _write_json(path: Path, payload: dict) -> None:
     tmp = path.with_name(path.name + ".tmp")
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-        json.dump(payload, fh)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _remove_tree(path: Path) -> None:
@@ -134,7 +139,12 @@ def _discard(path: Path) -> None:
 def _token_lock(directory: Path) -> Iterator[None]:
     """Hold the token's lock, the same exclusive-create lock file protocol as the
     config and update locks, so it behaves identically on every platform."""
-    release = config_store.hold_lock(str(directory / ".lock"))
+    try:
+        release = config_store.hold_lock(str(directory / ".lock"))
+    except FileNotFoundError as exc:  # the scan was removed while this request waited
+        raise ScanStoreError(410, EXPIRED) from exc
+    except OSError as exc:
+        raise ScanStoreError(500, STORE_FAILED) from exc
     if release is None:
         raise ScanStoreError(409, BUSY)
     try:
@@ -255,7 +265,7 @@ async def _stream_file(part: UploadPart, path: Path, *, per_file: int, remaining
     try:
         fh = _open_artifact(path)
     except OSError as exc:
-        raise ScanStoreError(500, "The file could not be stored. Try again.") from exc
+        raise ScanStoreError(500, STORE_FAILED) from exc
     try:
         async for chunk in part.chunks:
             size += len(chunk)
@@ -268,7 +278,7 @@ async def _stream_file(part: UploadPart, path: Path, *, per_file: int, remaining
                 for start in range(0, len(chunk), _WRITE_BYTES):
                     fh.write(chunk[start:start + _WRITE_BYTES])
             except OSError as exc:
-                raise ScanStoreError(500, "The file could not be stored. Try again.") from exc
+                raise ScanStoreError(500, STORE_FAILED) from exc
     finally:
         fh.close()
     if size == 0:
@@ -357,7 +367,7 @@ async def create_scan(files: AsyncIterable[UploadPart], *, owner: ScanOwner) -> 
                 "decisions": None,
             })
         except OSError as exc:
-            raise ScanStoreError(500, "The file could not be stored. Try again.") from exc
+            raise ScanStoreError(500, STORE_FAILED) from exc
     except BaseException:
         _discard(directory)
         raise
@@ -402,9 +412,12 @@ def save_decisions(token: str, *, owner: ScanOwner, decisions: MigrationDecision
     with _token_lock(directory):
         _read(token, directory, owner)
         path = directory / "scan.json"
-        data = json.loads(path.read_text())
-        data["decisions"] = decisions_json(decisions)
-        _write_json(path, data)
+        try:
+            data = json.loads(path.read_text())
+            data["decisions"] = decisions_json(decisions)
+            _write_json(path, data)
+        except OSError as exc:
+            raise ScanStoreError(500, STORE_FAILED) from exc
         return _read(token, directory, owner)
 
 
