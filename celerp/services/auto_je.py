@@ -415,7 +415,7 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     )
 
 
-async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float, refund_number: int | None = None) -> None:
+async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float, refund_number: int | None = None, already_given_back: float = 0.0) -> None:
     """Reverse a payment JE, or the refunded share of it, by creating a counter-entry.
 
     refund_date: ISO date for the reversal JE (defaults to today if None). Used when
@@ -427,9 +427,17 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
         touched, on a document that is back to unpaid.
     refund_number: set for a refund of part or all of the payment; each refund of the
         payment is its own entry, reversing `amount` of it at the payment's rates.
+    already_given_back: how much of the payment earlier refunds reversed. Each piece
+        reverses what the payment's total so far converts to, less what the earlier pieces
+        did, so the pieces add up to exactly what the payment posted.
     """
-    ledger_amount = to_base(float(amount), checked_exchange_rate(doc_rate), base_currency)
-    bank_amount = to_base(float(amount), checked_exchange_rate(settlement_rate), base_currency)
+    def _piece(rate: float) -> float:
+        rate = checked_exchange_rate(rate)
+        before = to_decimal(to_base(already_given_back, rate, base_currency))
+        return to_stored_float(to_decimal(to_base(to_decimal(already_given_back) + to_decimal(amount), rate, base_currency)) - before)
+
+    ledger_amount = _piece(doc_rate)
+    bank_amount = _piece(settlement_rate)
     if refund_number is None:
         kind, key, trigger = "payvoid", f"void_{payment_index}", "doc.payment.voided"
         memo = f"Auto JE for {doc_id} payment void (index {payment_index})"
@@ -496,6 +504,13 @@ async def create_for_cn_application(session, *, company_id, user_id, doc_id: str
         ],
         metadata_={"trigger": "cn.applied", "doc_id": doc_id, "cn_id": cn_id},
     )
+
+
+def bill_line_kind(line: dict) -> str:
+    """What a bill line brings in: stock, an expense or an asset. A line naming no item
+    or SKU, and no kind, is an expense."""
+    kind = str(line.get("receive_as") or "").strip().lower()
+    return kind or ("stock" if line.get("sku") or line.get("item_id") else "expense")
 
 
 def po_receipt_account(doc: dict, receive_as: str = "stock") -> str:
@@ -751,7 +766,7 @@ async def create_for_bill_conversion(
                 # Landed-cost charge (freight/insurance/duty/import_vat): clearing or 1150.
                 account = landed_acct
             else:
-                account = _INVENTORY_ACCT if (li.get("sku") or li.get("item_id")) else "6950"
+                account = _INVENTORY_ACCT if bill_line_kind(li) == "stock" else "6950"
             lines.append((account, line_total))
         # Input VAT: debit the EFFECTIVE tax that create_doc rolled into `total` (line `taxes[].amount`
         # + doc_taxes), not a per-line `tax_rate` the structured-tax create path never sets.

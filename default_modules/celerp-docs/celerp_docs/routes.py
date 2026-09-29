@@ -109,6 +109,14 @@ class LineItem(BaseModel):
         return self
 
 
+def _calendar_date(v: str) -> str:
+    """A payment or refund date as YYYY-MM-DD, or ValueError when it is not a real date."""
+    try:
+        return _date.fromisoformat(str(v).strip()[:10]).isoformat()
+    except ValueError:
+        raise ValueError("Enter the date as YYYY-MM-DD.") from None
+
+
 def _stored_conversion_rate(v: float | None) -> float | None:
     """The rate as a document stores it, or ValueError naming what is wrong.
 
@@ -385,6 +393,8 @@ class DocPaymentBody(BaseModel):
     source_doc_id: str | None = None
     target_doc_id: str | None = None
     idempotency_key: str | None = None
+
+    _real_date = field_validator("payment_date")(_calendar_date)
 
     @field_validator("conversion_rate")
     @classmethod
@@ -2117,7 +2127,7 @@ async def _finalize_doc_impl(
     # Bills with only non-stock line items skip receiving and go straight to awaiting_payment.
     if doc_type == "bill":
         _line_items = _initial_doc_state.get("line_items") or []
-        _has_stock = any((li.get("receive_as") or "stock") == "stock" for li in _line_items)
+        _has_stock = any(auto_je.bill_line_kind(li) == "stock" for li in _line_items)
         if not _has_stock:
             finalize_data["skip_receiving"] = True
 
@@ -2773,6 +2783,8 @@ class RefundBody(BaseModel):
     reason: str | None = None
     idempotency_key: str | None = None
 
+    _real_date = field_validator("payment_date")(_calendar_date)
+
 
 def _refundable(payment: dict, currency: str):
     """What is left of a payment to give back."""
@@ -2811,6 +2823,7 @@ async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = 
             detail=f"At most {to_stored_float(max(left, 0))} {currency} of this payment can still be refunded.",
         )
     refund_number = int(payment.get("refund_count", 0))
+    given_back = float(payment.get("refunded") or 0)
     refund_data = payload.model_dump(exclude_none=True, exclude={"payment_date", "idempotency_key"})
     refund_data.update(amount=to_stored_float(amount_d), currency=currency, refund_date=payload.payment_date,
                        method=payload.method or payment.get("method"))
@@ -2830,7 +2843,7 @@ async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = 
         base_currency=(company.settings.get("currency", "USD") if company else "USD"),
         doc_rate=float(row.state.get("conversion_rate") or 1),
         settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1),
-        refund_number=refund_number,
+        refund_number=refund_number, already_given_back=given_back,
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -2867,6 +2880,7 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
     remaining = _refundable(payment, str(row.state.get("currency") or "USD").upper())
     if payment.get("refunded") and remaining <= 0:
         raise HTTPException(status_code=409, detail="This payment has been refunded in full, so there is nothing left to void.")
+    given_back = float(payment.get("refunded") or 0)
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
@@ -2896,6 +2910,7 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
             # difference in the receivable and in the bank.
             doc_rate=float(row.state.get("conversion_rate") or 1),
             settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1),
+            already_given_back=given_back,
         )
     else:
         # Credit-note settlement: void the paired payment on the other doc,
@@ -3485,7 +3500,7 @@ def _resolve_inbound_line(doc: dict, it: ReceivedItem, item_skus: dict[str, str]
     line = lines[index]
     line_item = line.get("item_id") or None
     line_sku = str(line.get("sku") or "").strip() or None
-    line_kind = line.get("receive_as") or "stock"
+    line_kind = auto_je.bill_line_kind(line) if doc_type == "bill" else line.get("receive_as") or "stock"
     if it.item_id and it.item_id != line_item and not (line_item is None and line_sku
                                                       and item_skus.get(it.item_id) == line_sku):
         raise HTTPException(status_code=422, detail=f"{what}: that item is not the one on line {index + 1} of this {label}.")
@@ -3562,14 +3577,16 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     if doc_type not in ("purchase_order", "bill", "consignment_in"):
         raise HTTPException(status_code=409, detail="receive is only valid for bills, purchase orders, and consignment_in documents")
 
-    try:
-        location_uuid = uuid.UUID(payload.location_id)
-    except Exception:
-        location_uuid = None
-    if location_uuid is not None and (await session.execute(
-        select(Location.id).where(Location.id == location_uuid, Location.company_id == company_id)
-    )).scalar_one_or_none() is None:
-        raise HTTPException(status_code=422, detail="That location does not exist. Choose one of your locations.")
+    location_uuid = None
+    if payload.location_id:
+        try:
+            location_uuid = uuid.UUID(payload.location_id)
+        except ValueError:
+            location_uuid = None
+        if location_uuid is None or (await session.execute(
+            select(Location.id).where(Location.id == location_uuid, Location.company_id == company_id)
+        )).scalar_one_or_none() is None:
+            raise HTTPException(status_code=422, detail="That location does not exist. Choose one of your locations.")
 
     is_consignment = doc_type == "consignment_in"
     # Inbound docs always create new parcels - never adjust an existing item's qty.

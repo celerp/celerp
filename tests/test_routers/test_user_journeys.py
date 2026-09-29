@@ -608,7 +608,7 @@ async def test_crud_po_receive(client):
         f"/docs/{eid}/receive",
         headers=_h(token),
         json={
-            "location_id": "loc:1",
+            "location_id": "",
             "received_items": [{"po_line_index": 0, "sku": "PO-ITEM-1", "name": "PO Item 1", "quantity_received": 2, "sell_by": "piece"}],
         },
     )
@@ -878,7 +878,7 @@ async def test_acct_trial_balance_balanced_after_po_receive(client):
     await client.post(
         f"/docs/{eid}/receive",
         headers=_h(token),
-        json={"location_id": "loc:1", "received_items": [{"po_line_index": 0, "sku": "PO-TB", "name": "PO TB", "quantity_received": 2, "sell_by": "piece"}]},
+        json={"location_id": "", "received_items": [{"po_line_index": 0, "sku": "PO-TB", "name": "PO TB", "quantity_received": 2, "sell_by": "piece"}]},
     )
     tb = (await client.get("/accounting/trial-balance", headers=_h(token))).json()
     assert _tb_balanced(tb)
@@ -945,7 +945,7 @@ async def test_acct_po_receive_creates_inventory_debit(client):
     await client.post(
         f"/docs/{po_id}/receive",
         headers=_h(token),
-        json={"location_id": "loc:1", "received_items": [{"po_line_index": 0, "sku": "INV-DBT", "name": "INV Debit Test", "quantity_received": 2, "sell_by": "piece"}]},
+        json={"location_id": "", "received_items": [{"po_line_index": 0, "sku": "INV-DBT", "name": "INV Debit Test", "quantity_received": 2, "sell_by": "piece"}]},
     )
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
     je = next(e for e in ledger if po_id in (e["data"].get("memo") or "") and "received" in (e["data"].get("memo") or ""))
@@ -961,7 +961,7 @@ async def test_acct_po_receive_creates_ap_credit(client):
     await client.post(
         f"/docs/{po_id}/receive",
         headers=_h(token),
-        json={"location_id": "loc:1", "received_items": [{"po_line_index": 0, "sku": "AP-CRD", "name": "AP Credit Test", "quantity_received": 2, "sell_by": "piece"}]},
+        json={"location_id": "", "received_items": [{"po_line_index": 0, "sku": "AP-CRD", "name": "AP Credit Test", "quantity_received": 2, "sell_by": "piece"}]},
     )
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
     je = next(e for e in ledger if po_id in (e["data"].get("memo") or "") and "received" in (e["data"].get("memo") or ""))
@@ -1069,7 +1069,7 @@ async def test_acct_balance_sheet_after_po_receive(client):
     await client.post(
         f"/docs/{po_id}/receive",
         headers=_h(token),
-        json={"location_id": "loc:1", "received_items": [{"po_line_index": 0, "sku": "BS-PO", "name": "BS PO item", "quantity_received": 5, "sell_by": "piece"}]},
+        json={"location_id": "", "received_items": [{"po_line_index": 0, "sku": "BS-PO", "name": "BS PO item", "quantity_received": 5, "sell_by": "piece"}]},
     )
     r = await client.get("/accounting/balance-sheet", headers=_h(token))
     assert r.status_code == 200
@@ -1147,7 +1147,7 @@ async def test_wf_full_po_lifecycle_inventory_increment(client):
     await client.post(
         f"/docs/{po_id}/receive",
         headers=h,
-        json={"location_id": "loc:1", "received_items": [{"po_line_index": 0, "item_id": item_id, "quantity_received": 2}]},
+        json={"location_id": "", "received_items": [{"po_line_index": 0, "item_id": item_id, "quantity_received": 2}]},
     )
     updated = (await client.get(f"/items/{item_id}", headers=h)).json()
     assert updated["quantity"] == 7
@@ -1162,7 +1162,7 @@ async def test_wf_po_receive_creates_new_item(client):
     await client.post(
         f"/docs/{po_id}/receive",
         headers=h,
-        json={"location_id": "loc:1", "received_items": [{"po_line_index": 0, "sku": new_sku, "name": "New from PO", "quantity_received": 2, "sell_by": "piece"}]},
+        json={"location_id": "", "received_items": [{"po_line_index": 0, "sku": new_sku, "name": "New from PO", "quantity_received": 2, "sell_by": "piece"}]},
     )
     items = (await client.get("/items", headers=h)).json()["items"]
     assert any(i.get("sku") == new_sku and i.get("quantity") == 2 for i in items)
@@ -1730,7 +1730,7 @@ async def test_edge_receive_non_po_doc_rejected(client):
     r = await client.post(
         f"/docs/{inv_id}/receive",
         headers=h,
-        json={"location_id": "loc:1", "received_items": []},
+        json={"location_id": "", "received_items": []},
     )
     assert r.status_code == 409
 

@@ -245,7 +245,7 @@ async def _po(client, auth, lines: list[dict]) -> str:
 
 async def _receive(client, auth, po: str, item_id: str, qty: float, **extra):
     return await client.post(f"/docs/{po}/receive", headers=auth["headers"], json={
-        "location_id": "loc:1",
+        "location_id": "",
         "received_items": [{"po_line_index": 0, "item_id": item_id, "quantity_received": qty,
                             "receive_as": "stock", **extra}],
     })

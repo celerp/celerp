@@ -131,6 +131,35 @@ async def test_voiding_a_partly_refunded_payment_reverses_only_what_is_left(clie
     assert (doc["amount_paid"], doc["amount_outstanding"]) == (0.0, 100.0)
 
 
+@pytest.mark.parametrize("finish", ["void", "refund"])
+@pytest.mark.asyncio
+async def test_giving_back_a_foreign_currency_payment_in_pieces_leaves_nothing_behind(client, session, auth, finish):
+    inv = await _invoice(client, auth, 100.0, currency="EUR", conversion_rate=1.105)
+    index = await _pay(client, session, auth, inv, 100.0, conversion_rate=1.105)
+    assert await _books(session, auth, "1111", "1120") == {"1111": 110.5, "1120": 0.0}
+
+    for amount in (1.0, 1.0, 1.0):
+        assert (await _refund(client, inv, auth, payment_index=index, amount=amount)).status_code == 200
+    if finish == "void":
+        r = await client.post(f"/docs/{inv}/void-payment", headers=auth["headers"], json={"payment_index": index})
+    else:
+        r = await _refund(client, inv, auth, payment_index=index, amount=97.0)
+    assert r.status_code == 200, r.text
+    assert await _books(session, auth, "1111", "1120", "6960") == {"1111": 0.0, "1120": 110.5, "6960": 0.0}
+
+
+@pytest.mark.parametrize("when", ["not-a-date", "2026-02-30", ""])
+@pytest.mark.asyncio
+async def test_a_refund_needs_a_real_date(client, session, auth, when):
+    inv = await _invoice(client, auth, 100.0)
+    index = await _pay(client, session, auth, inv, 100.0)
+
+    r = await _refund(client, inv, auth, payment_index=index, amount=30.0, payment_date=when)
+    assert r.status_code == 422, r.text
+    assert await _books(session, auth, "1111") == {"1111": 100.0}
+    assert (await _state(session, auth, inv))["amount_paid"] == 100.0
+
+
 @pytest.mark.asyncio
 async def test_a_refunded_payment_cannot_be_deleted(client, session, auth):
     inv = await _invoice(client, auth, 100.0)

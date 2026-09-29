@@ -38,7 +38,7 @@ async def _doc(client, auth, doc_type: str, lines: list[dict], **extra) -> str:
 
 async def _receive(client, auth, doc_id: str, *items: dict):
     return await client.post(f"/docs/{doc_id}/receive", headers=auth["headers"], json={
-        "location_id": "loc:1",
+        "location_id": "",
         "received_items": [{"receive_as": "stock", **it} for it in items],
     })
 
@@ -405,7 +405,7 @@ async def test_concurrent_receipts_both_count(_db_engine):
         await s.commit()
 
     def body() -> ReceiveBody:
-        return ReceiveBody(location_id="loc:1", received_items=[
+        return ReceiveBody(location_id="", received_items=[
             {"po_line_index": 0, "item_id": item_id, "quantity_received": 5}])
 
     first, second = factory(), factory()

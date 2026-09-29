@@ -137,7 +137,7 @@ async def _receive(client, session, auth):
     sku = (await _state(session, auth, po))["line_items"][0]["sku"]
     line = {"po_line_index": 0, "sku": sku, "name": "Beads", "quantity_received": 4, "receive_as": "stock"}
     return "POST", f"/docs/{po}/receive", \
-        {"location_id": "loc:1", "received_items": [line]}, \
+        {"location_id": "", "received_items": [line]}, \
         {"received_items": [{**line, "quantity_received": 3}]}
 
 
@@ -153,7 +153,7 @@ async def _receive_into_stock(client, session, auth):
     assert r.status_code == 200, r.text
     line = {"po_line_index": 0, "item_id": item_id, "quantity_received": 4, "receive_as": "stock"}
     return "POST", f"/docs/{r.json()['id']}/receive", \
-        {"location_id": "loc:1", "received_items": [line]}, \
+        {"location_id": "", "received_items": [line]}, \
         {"received_items": [{**line, "quantity_received": 3}]}
 
 
@@ -166,7 +166,7 @@ async def _return_items(client, session, auth):
     doc = r.json()["id"]
     assert (await client.post(f"/docs/{doc}/finalize", headers=auth["headers"])).status_code == 200
     r = await client.post(f"/docs/{doc}/receive", headers=auth["headers"], json={
-        "location_id": "loc:1", "received_items": [
+        "location_id": "", "received_items": [
             {"po_line_index": 0, "sku": sku, "name": sku, "quantity_received": 3, "receive_as": "stock"}]})
     assert r.status_code == 200, r.text
     [item_id] = (await _state(session, auth, doc))["received_item_ids"]
@@ -355,7 +355,7 @@ async def test_the_longest_key_works_on_a_document_with_a_long_number(client, se
     assert r.status_code == 200, r.text
     po = r.json()["id"]
     sku = (await _state(session, auth, po))["line_items"][0]["sku"]
-    body = {"location_id": "loc:1", "idempotency_key": "k" * 200, "received_items": [
+    body = {"location_id": "", "idempotency_key": "k" * 200, "received_items": [
         {"po_line_index": 0, "sku": sku, "name": "Beads", "quantity_received": 4, "receive_as": "stock"}]}
     for _ in range(2):
         r = await client.post(f"/docs/{po}/receive", headers=auth["headers"], json=body)

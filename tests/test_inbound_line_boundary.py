@@ -94,6 +94,22 @@ async def test_a_receipt_takes_the_line_s_kind(client, session, auth):
 
 
 @pytest.mark.asyncio
+async def test_a_bill_line_booked_as_an_expense_is_not_received_as_stock(client, session, auth):
+    bill = await _doc(client, auth, "bill", [
+        {"sku": f"LOT-{uuid.uuid4().hex[:6]}", "name": "Lot", "quantity": 1, "unit_price": 50.0},
+        {"name": "Consulting", "quantity": 1, "unit_price": 100.0},
+    ])
+    r = await client.post(f"/docs/{bill}/finalize", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    r = await _receive(client, auth, bill, {"po_line_index": 1, "quantity_received": 1})
+    assert r.status_code == 422, r.text
+    r = await _receive(client, auth, bill, {"po_line_index": 1, "receive_as": "stock", "quantity_received": 1})
+    assert r.status_code == 422, r.text
+    state = await _state(session, auth, bill)
+    assert not state.get("received_items") and not state.get("received_item_ids")
+
+
+@pytest.mark.asyncio
 async def test_only_goods_the_document_received_can_be_returned(client, session, auth):
     po, _ = await _received_po(client, session, auth)
     never_received = await _item(client, auth, 50.0, qty=5)
@@ -133,15 +149,16 @@ async def test_a_return_quantity_must_be_a_positive_number(client, session, auth
     assert not (await _state(session, auth, po)).get("returned_items")
 
 
+@pytest.mark.parametrize("location", ["00000000-0000-4000-8000-000000000001", "no-such-place"])
 @pytest.mark.asyncio
-async def test_a_receipt_into_a_location_that_does_not_exist_is_refused(client, session, auth):
+async def test_a_receipt_into_a_location_that_does_not_exist_is_refused(client, session, auth, location):
     item_id = await _item(client, auth, 100.0, qty=10)
     po = await _doc(client, auth, "purchase_order",
                     [{"item_id": item_id, "name": "Lot", "quantity": 2, "unit_price": 14.0}])
     before = await _stock(session, auth, item_id)
 
     r = await client.post(f"/docs/{po}/receive", headers=auth["headers"], json={
-        "location_id": str(uuid.uuid4()),
+        "location_id": location,
         "received_items": [{"po_line_index": 0, "item_id": item_id, "quantity_received": 2}],
     })
     assert r.status_code == 422, r.text

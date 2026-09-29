@@ -342,7 +342,7 @@ async def test_po_receive_quotation_convert_and_credit_note_adjustment(client, s
         f"/docs/{po_id}/receive",
         headers=_h(token),
         json={
-            "location_id": "loc:1",
+            "location_id": "",
             "received_items": [
                 {"po_line_index": 0, "item_id": item_id, "quantity_received": 2},
                 {"po_line_index": 1, "sku": "NEW-PO", "name": "New PO Item", "quantity_received": 3},
@@ -2417,7 +2417,7 @@ async def test_po_receive_known_item_still_adjusts_qty(client, session):
     rec_r = await client.post(
         f"/docs/{po_id}/receive", headers=_h(token),
         json={
-            "location_id": "loc:1",
+            "location_id": "",
             "received_items": [
                 {"po_line_index": 0, "item_id": item_id, "quantity_received": 5, "receive_as": "stock"},
             ],
