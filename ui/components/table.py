@@ -2511,11 +2511,12 @@ def search_bar(placeholder: str = "", target: str = "#data-table", url: str = ""
     return Div(Small(label, cls="search-scope-label"), inner, cls="search-scope")
 
 
-def search_results(fragment: FT, page_url: str):
+def search_results(fragment: FT, page_url: str, *out_of_band: FT):
     """The response to a search_bar or sort request: the result fragment, with the page's own
-    URL for the address bar, so a reload or a shared link opens the whole page."""
+    URL for the address bar, so a reload or a shared link opens the whole page. Page controls
+    outside the fragment that carry the search are passed as out_of_band (hx_swap_oob) elements."""
     from starlette.responses import HTMLResponse
-    return HTMLResponse(to_xml(fragment), headers={"HX-Push-Url": page_url})
+    return HTMLResponse("".join(to_xml(ft) for ft in (fragment, *out_of_band)), headers={"HX-Push-Url": page_url})
 
 
 def table_search(table_id: str, placeholder: str = "") -> FT:

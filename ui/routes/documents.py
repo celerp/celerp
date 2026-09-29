@@ -508,6 +508,19 @@ def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, sum
     )
 
 
+def _search_controls(base: str, state: dict[str, str], date_from: str, date_to: str, preset: str,
+                     can_export: bool, lang: str, oob: bool = False) -> tuple[FT, FT]:
+    """(Export CSV link, date filter bar) for /docs or /lists. Both carry the page state, search
+    included, so a search response sends them again out of band (oob=True)."""
+    swap = {"hx_swap_oob": "true"} if oob else {}
+    extra = _state_query(state, without=_DATE_KEYS)
+    export = A(t("btn.export_csv"), href=f"/{base}/export/csv?" + _state_query(state), cls="btn btn--secondary",
+               id=f"{base}-export", **swap) if can_export else ""
+    dates = Div(_date_filter_bar(f"/{base}", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "",
+                                 lang=lang), id=f"{base}-dates", **swap)
+    return export, dates
+
+
 async def _list_results(token: str, state: dict[str, str], date_from: str, date_to: str,
                         page: int, per_page: int) -> tuple[list[dict], int, dict]:
     """(lists on the page, filtered total, summary) for a lists page state."""
@@ -1299,7 +1312,6 @@ def setup_routes(app):
         draft_count = summary.get("draft_count", 0)
 
         # The date bar keeps the filters when it switches the dates.
-        date_bar_extra = _state_query(state, without=_DATE_KEYS)
 
         # Auto-redirect to drafts when no finalized docs exist but drafts do.
         # Prevents the "where did my draft go?" confusion for new users.
@@ -1317,6 +1329,9 @@ def setup_routes(app):
         create_type = doc_type or "invoice"
         _role = _get_role(request)
         _settings = company.get("settings") or {}
+        export_link, date_bar = _search_controls(
+            "docs", state, date_from, date_to, preset,
+            role_has_permission(_settings, _role, "import_export_data"), lang)
         return await base_shell(
             page_header(
                 section_title,
@@ -1333,11 +1348,11 @@ def setup_routes(app):
                     hx_swap="none",
                     cls="btn btn--primary",
                 ) if role_has_permission(_settings, _role, "edit_documents") else "",
-                A(t("btn.export_csv"), href="/docs/export/csv?" + _state_query(state), cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
+                export_link,
                 A(t("btn.import"), href="/docs/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") or role_has_permission(_settings, _role, "edit_documents") else "",
             ),
             _doc_type_intro(doc_type),
-            _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{date_bar_extra}" if date_bar_extra else "", lang=lang),
+            date_bar,
             _docs_content(state, docs, total_count, summary, page, per_page, currency, lang),
             title=page_title(section_label_key),
             nav_active=_doc_nav_key(doc_type),
@@ -1356,7 +1371,7 @@ def setup_routes(app):
             company = await api.get_company(token)
         except APIError:
             company = {}
-        date_from, date_to, _preset = await _doc_list_dates(request, state, company)
+        date_from, date_to, preset = await _doc_list_dates(request, state, company)
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
             docs, total_count, summary = await _doc_results(token, state, date_from, date_to, page, per_page)
@@ -1364,9 +1379,12 @@ def setup_routes(app):
             if e.status == 401:
                 raise
             docs, total_count, summary = [], 0, {}
+        lang = get_lang(request)
+        can_export = role_has_permission(company.get("settings") or {}, _get_role(request), "import_export_data")
         return search_results(
-            _docs_content(state, docs, total_count, summary, page, per_page, company.get("currency") or None, get_lang(request)),
+            _docs_content(state, docs, total_count, summary, page, per_page, company.get("currency") or None, lang),
             "/docs?" + _state_query(state),
+            *_search_controls("docs", state, date_from, date_to, preset, can_export, lang, oob=True),
         )
 
     @app.get("/docs/export/csv")
@@ -3927,7 +3945,6 @@ celerpUpdateBulkAlloc();
                 return RedirectResponse("/login", status_code=302)
             lists, summary, filtered_total = [], {}, 0
         lang = get_lang(request)
-        _lists_extra = _state_query(state, without=_DATE_KEYS)
         _role = _get_role(request)
         _settings = company.get("settings") or {}
         # Audits are location-bound, not blank drafts: send the user through the location picker.
@@ -3938,6 +3955,9 @@ celerpUpdateBulkAlloc();
                               hx_swap="none", cls="btn btn--primary", title=t("documents.new_shipping_doc_tooltip"))
         else:
             _new_btn = Button(t("page.new_list"), hx_post="/lists/create-blank", hx_swap="none", cls="btn btn--primary", title=t("documents.new_list_tooltip"))
+        export_link, date_bar = _search_controls(
+            "lists", state, date_from, date_to, preset,
+            role_has_permission(_settings, _role, "import_export_data"), lang)
         return await base_shell(
             page_header(
                 t("page.lists", lang),
@@ -3945,11 +3965,10 @@ celerpUpdateBulkAlloc();
                            url="/lists/search?" + _state_query(state, without=("q",)), value=q,
                            label=t("documents.search_lists")),
                 _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
-                A(t("btn.export_csv"), href="/lists/export/csv?" + _state_query(state), cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
+                export_link,
                 A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
             ),
-            _date_filter_bar("/lists", date_from, date_to, preset,
-                             extra_params=(f"&{_lists_extra}" if _lists_extra else ""), lang=lang),
+            date_bar,
             _list_type_tabs(list_type, state),
             # Self-explanatory page: the shipping tab says what these are and what to do next.
             (P(t("lists.shipping_intro", lang), cls="section-hint") if list_type == "shipping_doc" else ""),
@@ -3987,7 +4006,7 @@ celerpUpdateBulkAlloc();
             company = await api.get_company(token)
         except APIError:
             company = {}
-        date_from, date_to, _preset = await _list_page_dates(request, state, company)
+        date_from, date_to, preset = await _list_page_dates(request, state, company)
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
             lists, filtered_total, summary = await _list_results(token, state, date_from, date_to, page, per_page)
@@ -3996,9 +4015,12 @@ celerpUpdateBulkAlloc();
                 raise
             logger.warning("API error on lists_search: %s", e.detail)
             lists, filtered_total, summary = [], 0, {}
+        lang = get_lang(request)
+        can_export = role_has_permission(company.get("settings") or {}, _get_role(request), "import_export_data")
         return search_results(
-            _lists_content(state, lists, filtered_total, summary, page, per_page, get_lang(request)),
+            _lists_content(state, lists, filtered_total, summary, page, per_page, lang),
             "/lists?" + _state_query(state),
+            *_search_controls("lists", state, date_from, date_to, preset, can_export, lang, oob=True),
         )
 
     @app.get("/lists/export/csv")

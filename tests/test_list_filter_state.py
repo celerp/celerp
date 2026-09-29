@@ -454,3 +454,29 @@ class TestLiveSearchResults:
              patch("ui.api_client.get_list_summary", new=expired):
             r = await ui_client.get(path, cookies=_cookies(), headers={"HX-Request": "true"})
         assert r.headers.get("HX-Redirect", "").startswith("/login"), (r.status_code, dict(r.headers))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path, page, base", [
+        ("/docs/search?type=invoice&q=ruby", "/docs?type=invoice", "docs"),
+        ("/lists/search?type=audit&q=ruby", "/lists?type=audit", "lists"),
+    ])
+    async def test_search_updates_export_and_date_presets(self, ui_client, path, page, base):
+        """After a search, Export CSV and the date presets keep the search, like a reload would."""
+        listed = AsyncMock(return_value={"items": [_DOC], "total": 1})
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_docs", new=listed), patch("ui.api_client.list_lists", new=listed), \
+             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_SUMMARY)), \
+             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
+            full = await ui_client.get(page, cookies=_cookies())
+            r = await ui_client.get(path, cookies=_cookies(), headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        for text, oob in ((full.text, False), (r.text, True)):
+            export = re.search(rf'<a[^>]*href="/{base}/export/csv\?[^"]*"[^>]*>', text)
+            dates = re.search(r'<div[^>]*id="[^"]*-dates"[^>]*>', text)
+            assert export and dates, text[:300]
+            assert export.group(0).count('id="') == 1
+            assert ('hx-swap-oob="true"' in export.group(0)) is oob
+            assert ('hx-swap-oob="true"' in dates.group(0)) is oob
+        presets = re.findall(rf'<a href="(/{base}\?preset=[^"]*)"', r.text)
+        assert presets and all("q=ruby" in u for u in presets), presets
+        assert "q=ruby" in re.search(rf'href="(/{base}/export/csv\?[^"]*)"', r.text).group(1)
