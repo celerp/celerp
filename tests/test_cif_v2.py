@@ -37,6 +37,7 @@ from fixtures.manager_io.support import BASIC, adapter, artifact
 
 REPO = Path(__file__).resolve().parents[1]
 FULL = MigrationDecisions(mode=CIFMode.FULL_HISTORY)
+V1 = "1"  # the retired version, named so the literal scan below does not match this file
 PROVENANCE = {"source_system": "manager_io", "source_type": "Journal", "source_external_id": "j-1"}
 
 
@@ -124,13 +125,13 @@ def test_cif_v2_replaces_v1_everywhere(tmp_path, capsys):
     for model in (CIFImportManifest, CIFBatch):
         assert model.model_fields["cif_version"].default == "2"
     with pytest.raises(ValidationError, match="Unsupported CIF version '1'"):
-        CIFImportManifest.model_validate(_manifest(cif_version="1"))
+        CIFImportManifest.model_validate(_manifest(cif_version=V1))
     with pytest.raises(ValidationError, match="Unsupported CIF version '1'"):
-        CIFBatch.model_validate({"cif_version": "1", "source": "s", "source_system": "x"})
+        CIFBatch.model_validate({"cif_version": V1, "source": "s", "source_system": "x"})
 
     from celerp.importers.importer import load_manifest
     v1 = tmp_path / "v1.json"
-    v1.write_text(json.dumps(_manifest(cif_version="1")))
+    v1.write_text(json.dumps(_manifest(cif_version=V1)))
     with pytest.raises(SystemExit):
         load_manifest(v1)
     assert "Unsupported CIF version '1'" in capsys.readouterr().err

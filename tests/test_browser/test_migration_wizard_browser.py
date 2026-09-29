@@ -73,7 +73,12 @@ def first_run_ui():
 
     api_port, ui_port = _free_port(), _free_port()
     api_base = f"http://127.0.0.1:{api_port}"
-    env = {**os.environ, "DATABASE_URL": db_url, "API_URL": api_base, "CELERP_API_URL": api_base}
+    # The browser session's in-process import of celerp.main leaves MODULE_DIR empty in
+    # this environment; the subprocesses need the bundled modules, whose sinks the
+    # migration writes through.
+    module_dirs = ",".join(str(_REPO_ROOT / d) for d in ("default_modules", "premium_modules"))
+    env = {**os.environ, "DATABASE_URL": db_url, "API_URL": api_base, "CELERP_API_URL": api_base,
+           "MODULE_DIR": module_dirs}
     procs = []
     try:
         for target, port in (("celerp.main:app", api_port), ("ui.app:app", ui_port)):
@@ -119,15 +124,17 @@ def _unit_proofs():
     return module
 
 
-def _sample_artifact() -> Path:
-    from celerp.importers.sample import SAMPLE_ARTIFACT
-    return Path(SAMPLE_ARTIFACT)
+def _source_artifact() -> Path:
+    """A Manager book that is not the sample: the sample file itself is recognized by
+    content and finishes with the sample completion page."""
+    from fixtures.manager_io.support import BASIC
+    return BASIC
 
 
 def _upload(page, prepared_by: str) -> None:
     assert "Your file stays on this Celerp server." in page.content()
     assert page.locator('a:has-text("Back")').count() >= 1
-    page.set_input_files('input[name="files"]', str(_sample_artifact()))
+    page.set_input_files('input[name="files"]', str(_source_artifact()))
     page.fill('input[name="prepared_by"]', prepared_by)
     page.click('button[type="submit"]:has-text("Analyze")')
     page.wait_for_url(re.compile(r"/migrate/coverage$"))
