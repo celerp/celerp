@@ -43,6 +43,7 @@ from ui.config import (
     set_session_cookies,
 )
 from ui.i18n import get_lang, t
+from ui.routes.auth import auth_header
 
 SCAN_COOKIE = "celerp_migration_scan"
 SCAN_TTL_SECONDS = 3600
@@ -155,15 +156,6 @@ def _page(request: Request, *content, status_code: int = 200):
     return HTMLResponse(to_xml(page), status_code=status_code)
 
 
-def _header(title: str, subtitle: str = "") -> FT:
-    return Div(
-        Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-        H1(title, cls="auth-title"),
-        P(subtitle, cls="auth-subtitle") if subtitle else "",
-        cls="auth-header",
-    )
-
-
 def _back(href: str) -> FT:
     label = t("auth.back_to_setup") if href == "/setup" else t("btn.back")
     return P(A(label, href=href, cls="auth-link"), cls="auth-alt-action")
@@ -208,7 +200,7 @@ def choice_card(label: str, desc: str, *, href: str | None = None, post_to: str 
 def chooser(title: str, subtitle: str, cards: list, back: FT | str = "") -> FT:
     """The setup choice screen shared by /setup and /setup/new-company."""
     return Div(
-        _header(title, subtitle),
+        auth_header(title, subtitle),
         Div(*cards, cls="quick-links-grid"),
         back,
         cls="onboarding-card setup-chooser",
@@ -236,7 +228,7 @@ async def _gate(request: Request, mode: _Mode):
         return RedirectResponse("/login", status_code=302)
     from celerp.services.permissions import role_has_permission
     if not role_has_permission({}, get_role(request), "manage_company_lifecycle"):
-        return _page(request, _header(t("migration.title")),
+        return _page(request, auth_header(t("migration.title")),
                      flash(t("migration.owner_only")), _back(mode.back), status_code=403)
     return None
 
@@ -247,7 +239,7 @@ def _api_token(request: Request, mode: _Mode) -> str | None:
 
 def _expired(request: Request, mode: _Mode, message: str | None = None):
     _forget_scan(request.cookies.get(SCAN_COOKIE))
-    resp = _page(request, _header(t("migration.title")),
+    resp = _page(request, auth_header(t("migration.title")),
                  flash(message or t("migration.scan_expired")),
                  A(t("migration.upload_again"), href=mode.base, cls="btn btn--primary btn--full"),
                  _back(mode.back))
@@ -346,7 +338,7 @@ async def _source_page(request: Request, mode: _Mode, *, selected: str = "", pre
     return _page(
         request,
         _steps(1),
-        _header(t("migration.title"), t("migration.source_subtitle")),
+        auth_header(t("migration.title"), t("migration.source_subtitle")),
         flash(error) if error else "",
         flash(sources_error) if sources_error else "",
         upload,
@@ -361,7 +353,7 @@ def _change_source_page(request: Request, mode: _Mode, entry: dict, source: str)
     return _page(
         request,
         _steps(1),
-        _header(t("migration.change_source_title"),
+        auth_header(t("migration.change_source_title"),
                 t("migration.change_source_body", file=scan.get("file_name", ""))),
         Form(
             Input(type="hidden", name="source", value=source),
@@ -552,7 +544,7 @@ def _coverage_page(request: Request, mode: _Mode, entry: dict, errors: dict | No
     return _page(
         request,
         _steps(2),
-        _header(t("migration.coverage_title"), t("migration.coverage_subtitle")),
+        auth_header(t("migration.coverage_title"), t("migration.coverage_subtitle")),
         flash(error) if error else "",
         _summary(scan),
         _coverage_table(scan),
@@ -600,7 +592,7 @@ def _mapping_page(request: Request, mode: _Mode, entry: dict, errors: dict | Non
     return _page(
         request,
         _steps(3),
-        _header(t("migration.mapping_title"), t("migration.mapping_subtitle")),
+        auth_header(t("migration.mapping_title"), t("migration.mapping_subtitle")),
         flash(error) if error else "",
         Form(
             Input(type="hidden", name="step", value="mapping"),
@@ -714,7 +706,7 @@ async def _review_page(request: Request, mode: _Mode, entry: dict, *, values: di
     return _page(
         request,
         _steps(4),
-        _header(t("migration.review_title"), t("migration.review_subtitle")),
+        auth_header(t("migration.review_title"), t("migration.review_subtitle")),
         flash(error) if error else "",
         Table(Tbody(*[Tr(Td(k), Td(v)) for k, v in rows]), cls="data-table"),
         H3(t("migration.records")),
@@ -814,7 +806,7 @@ async def _start(request: Request, mode: _Mode):
 # ---------------------------------------------------------------------------
 
 def _run_error_page(request: Request, message: str):
-    return _page(request, _header(t("migration.title")), flash(message), _back("/"))
+    return _page(request, auth_header(t("migration.title")), flash(message), _back("/"))
 
 
 def _phase_label(phase: dict) -> str:
@@ -900,7 +892,7 @@ def _progress_page(request: Request, run: dict, error: str | None = None):
     return _page(
         request,
         _steps(5),
-        _header(t("migration.progress_title", company=run.get("company_name", "")),
+        auth_header(t("migration.progress_title", company=run.get("company_name", "")),
                 t("migration.progress_subtitle")),
         _progress_fragment(run, error),
         P(t("migration.retention"), cls="form-hint"),
@@ -1023,13 +1015,13 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None):
     except APIError as e:
         if e.status != 409:
             return _run_error_page(request, str(e.detail))
-        return _page(request, _steps(6), _header(t("migration.verify_title")), flash(error) if error else "",
+        return _page(request, _steps(6), auth_header(t("migration.verify_title")), flash(error) if error else "",
                      P(str(e.detail), cls="form-hint"), _back(f"/migrations/{run_id}"))
     rows = recon.get("rows") or []
     return _page(
         request,
         _steps(6),
-        _header(t("migration.verify_title"), t("migration.verify_subtitle")),
+        auth_header(t("migration.verify_title"), t("migration.verify_subtitle")),
         flash(error) if error else "",
         Table(
             Thead(Tr(Th(t("migration.col_check")), Th(t("migration.col_source"), cls="cell--number"),
@@ -1072,7 +1064,7 @@ async def _complete_page(request: Request, run: dict):
     if _is_sample(run):
         return _page(
             request,
-            _header(t("migration.sample_done_title"), t("migration.sample_done_body")),
+            auth_header(t("migration.sample_done_title"), t("migration.sample_done_body")),
             pack,
             A(t("migration.move_first_company"), href=COMPANY.base, cls="btn btn--primary btn--full"),
             A(t("migration.open_sample"), href="/dashboard", cls="btn btn--secondary btn--full mt-sm"),
@@ -1084,7 +1076,7 @@ async def _complete_page(request: Request, run: dict):
     totals = [row for row in rows if row.get("check") in _TOTAL_CHECKS]
     return _page(
         request,
-        _header(t("migration.success_title"), run.get("company_name", "")),
+        auth_header(t("migration.success_title"), run.get("company_name", "")),
         Table(
             Thead(Tr(Th(t("migration.col_check")), Th(t("migration.col_celerp"), cls="cell--number"))),
             Tbody(*[Tr(Td(_check_label(row)), Td(str(row.get("celerp") or "--"), cls="cell--number"))
@@ -1102,7 +1094,7 @@ def _discard_page(request: Request, run: dict, error: str | None = None):
     run_id = run["id"]
     return _page(
         request,
-        _header(t("migration.discard")),
+        auth_header(t("migration.discard")),
         flash(error) if error else "",
         P(t("migration.discard_confirm", company=run.get("company_name", ""))),
         Form(Button(t("migration.discard"), type="submit", cls="btn btn--danger btn--full"),

@@ -33,6 +33,16 @@ from celerp.config import settings as _settings
 from celerp.services.auth import MIN_PASSWORD_LENGTH
 
 
+def auth_header(title: str, subtitle: str = "") -> FT:
+    """The logo, title and optional subtitle that open every sign-in and setup card."""
+    return Div(
+        Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
+        H1(title, cls="auth-title"),
+        P(subtitle, cls="auth-subtitle") if subtitle else "",
+        cls="auth-header",
+    )
+
+
 def _consume_restore_notice() -> dict | None:
     """Read and clear the one-shot restore notice the importer persists.
 
@@ -565,11 +575,7 @@ def setup_routes(app):
 def _login_form(email: str = "", error: str | None = None, notice: str = "", next_url: str = "/") -> FT:
     lang = "en"
     return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("page.sign_in_to_celerp"), cls="auth-title"),
-            cls="auth-header",
-        ),
+        auth_header(t("page.sign_in_to_celerp")),
         notice,
         Form(
             flash(error) if error else "",
@@ -644,12 +650,7 @@ def _setup_form(
             cls="form-group",
         )
     return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("page.set_up_your_workspace"), cls="auth-title"),
-            P(t("msg.you_are_first_admin", lang), cls="auth-subtitle"),
-            cls="auth-header",
-        ),
+        auth_header(t("page.set_up_your_workspace"), t("msg.you_are_first_admin", lang)),
         Form(
             flash(error) if error else "",
             Div(Label(t("label.company_name", lang), For="company_name", cls="form-label"),
@@ -692,12 +693,7 @@ def _setup_import_form(
     # restrict the UI; warn-and-continue is the rule).
     if warning:
         return Div(
-            Div(
-                Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-                H1(t("auth.restore_complete"), cls="auth-title"),
-                P(warning, cls="auth-subtitle"),
-                cls="auth-header",
-            ),
+            auth_header(t("auth.restore_complete"), warning),
             Div(
                 A(
                     t("auth.continue_to_login"),
@@ -714,12 +710,7 @@ def _setup_import_form(
             cls="auth-card",
         )
     return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("page.restore_from_backup"), cls="auth-title"),
-            P(t("auth.upload_backup_desc"), cls="auth-subtitle"),
-            cls="auth-header",
-        ),
+        auth_header(t("page.restore_from_backup"), t("auth.upload_backup_desc")),
         Form(
             flash(error) if error else "",
             Div(
@@ -763,12 +754,7 @@ def _onboarding_view() -> FT:
         ("/onboarding/upload/cif", t("auth.import_from_cif"), t("auth.cif_bundle_desc"), "cif"),
     ]
     return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("page.welcome_lets_load_your_data"), cls="auth-title"),
-            P(t("msg.onboarding_subtitle"), cls="auth-subtitle"),
-            cls="auth-header",
-        ),
+        auth_header(t("page.welcome_lets_load_your_data"), t("msg.onboarding_subtitle")),
         Div(
             # Featured first: link the cloud account. For an App-Store-acquired Shopify
             # merchant this claims the subscription + binds the store (then it auto-syncs);
@@ -905,12 +891,7 @@ def _company_picker_panel(companies: list[dict]) -> FT:
 
 def _forgot_password_form(error: str | None = None) -> FT:
     return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("auth.forgot_password"), cls="auth-title"),
-            P(t("auth.enter_your_email_and_well_send_a_reset_link"), cls="auth-subtitle"),
-            cls="auth-header",
-        ),
+        auth_header(t("auth.forgot_password"), t("auth.enter_your_email_and_well_send_a_reset_link")),
         Form(
             flash(error) if error else "",
             Div(Label(t("th.email"), For="email", cls="form-label"),
@@ -927,12 +908,7 @@ def _forgot_password_form(error: str | None = None) -> FT:
 
 def _forgot_password_sent() -> FT:
     return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("page.check_your_email"), cls="auth-title"),
-            P(t("auth.if_that_email_exists_youll_receive_a_reset_link_sh"), cls="auth-subtitle"),
-            cls="auth-header",
-        ),
+        auth_header(t("page.check_your_email"), t("auth.if_that_email_exists_youll_receive_a_reset_link_sh")),
         Div(
             A(t("auth.back_to_login"), href="/login", cls="btn btn--primary"),
             cls="text-center mt-md",
@@ -943,12 +919,7 @@ def _forgot_password_sent() -> FT:
 
 def _reset_password_form(token: str = "", error: str | None = None) -> FT:
     return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("page.reset_your_password"), cls="auth-title"),
-            P(t("auth.enter_your_new_password_below"), cls="auth-subtitle"),
-            cls="auth-header",
-        ),
+        auth_header(t("page.reset_your_password"), t("auth.enter_your_new_password_below")),
         Form(
             flash(error) if error else "",
             Input(type="hidden", name="token", value=token),
