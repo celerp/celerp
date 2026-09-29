@@ -2561,14 +2561,14 @@ async def reseed_demo_items(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Replace the demo items with the set for the company's current business type.
+    """Replace the untouched demo items with the set for the company's current business type.
 
-    Only demo-sourced items are removed, so a reseed never touches real inventory.
+    Real inventory and demo items the user edited or used are never removed.
     """
     from celerp.services.demo import replace_demo_items
 
     company = await session.get(Company, company_id)
     vertical = (company.settings or {}).get("vertical") if company else None
-    wiped = await replace_demo_items(session, company_id, user.id, vertical)
+    counts = await replace_demo_items(session, company_id, user.id, vertical)
     await session.commit()
-    return {"ok": True, "vertical": vertical, "wiped": wiped}
+    return {"ok": True, "vertical": vertical, **counts}

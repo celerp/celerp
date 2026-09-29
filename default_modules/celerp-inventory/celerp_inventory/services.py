@@ -23,6 +23,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.business_time import business_date_at
+from celerp.services.demo import delete_demo_items, demo_item_ids
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import round_basis
 from celerp.services.company_lock import lock_company, lock_projections
@@ -2245,8 +2246,6 @@ async def commit_import_batch(
     item, and only when it names the same entity id. Semantic upserts arrive as
     ``item.patched`` records whose idempotency key is already target+content aware.
     """
-    from sqlalchemy import delete as _delete
-
     from celerp_inventory.models_import_batch import ImportBatch
     from celerp.models.ledger import LedgerEntry
 
@@ -2537,26 +2536,7 @@ async def commit_import_batch(
         batch_id = str(new_batch_id)
 
         # Auto-wipe demo items on first real import.
-        demo_eids = (await session.execute(
-            select(LedgerEntry.entity_id).where(
-                LedgerEntry.company_id == company_id,
-                LedgerEntry.source == "demo",
-                LedgerEntry.entity_type == "item",
-            ).distinct()
-        )).scalars().all()
-        if demo_eids:
-            await session.execute(
-                _delete(Projection).where(
-                    Projection.company_id == company_id,
-                    Projection.entity_id.in_(demo_eids),
-                )
-            )
-            await session.execute(
-                _delete(LedgerEntry).where(
-                    LedgerEntry.company_id == company_id,
-                    LedgerEntry.entity_id.in_(demo_eids),
-                )
-            )
+        await delete_demo_items(session, company_id, await demo_item_ids(session, company_id))
 
     await session.commit()
     return BatchImportResult(

@@ -1605,27 +1605,104 @@ def terms_conditions_for(vertical: str | None) -> list[dict]:
     return normalize_terms_templates(_VERTICAL_TERMS_CONDITIONS.get(vertical or "", _DEFAULT_TERMS_CONDITIONS))
 
 
+# (settings key, default getter, normaliser, seeded when missing). Purchasing
+# payment terms are copied from the sales terms on first use, so a missing list
+# is left for that copy instead of being seeded here.
 _DEFAULT_GETTERS = (
-    ("payment_terms", payment_terms_for, deepcopy),
-    ("terms_conditions", terms_conditions_for, normalize_terms_templates),
+    ("payment_terms", payment_terms_for, deepcopy, True),
+    ("purchasing_payment_terms", payment_terms_for, deepcopy, False),
+    ("terms_conditions", terms_conditions_for, normalize_terms_templates, True),
 )
 
 
 def reconcile_vertical_defaults(settings: dict, previous_vertical: str | None, target_vertical: str | None) -> dict:
     """Move system-owned payment terms and T&C templates to the target business type.
 
-    A list is still system-owned when it is missing or equals the generic defaults
-    or the previous business type's defaults. Those become the target's defaults;
-    anything the user edited is kept."""
+    A list is still system-owned when it equals the generic defaults or the
+    previous business type's defaults, or when it is missing and seeded from the
+    defaults. Those become the target's defaults; anything the user edited is kept."""
     out = dict(settings)
-    for key, getter, normalize in _DEFAULT_GETTERS:
+    for key, getter, normalize, seed_missing in _DEFAULT_GETTERS:
         current = out.get(key)
-        untouched = current is None or normalize(current) in (
-            normalize(getter(None)), normalize(getter(previous_vertical)),
-        )
+        if current is None:
+            untouched = seed_missing
+        else:
+            untouched = normalize(current) in (normalize(getter(None)), normalize(getter(previous_vertical)))
         if untouched:
             out[key] = getter(target_vertical)
     return out
+
+
+async def demo_item_ids(session: AsyncSession, company_id: uuid.UUID) -> list[str]:
+    """Every item the demo seeder created for the company, touched or not."""
+    import sqlalchemy as sa
+    from celerp.models.ledger import LedgerEntry
+
+    return list((await session.execute(
+        sa.select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_type == "item",
+            LedgerEntry.source == "demo",
+        ).distinct()
+    )).scalars().all())
+
+
+async def delete_demo_items(session: AsyncSession, company_id: uuid.UUID, entity_ids: list[str]) -> None:
+    """Remove the given items completely: their projection and every ledger row.
+
+    Runs inside the caller's transaction and does not commit."""
+    import sqlalchemy as sa
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    if not entity_ids:
+        return
+    await session.execute(sa.delete(Projection).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(entity_ids),
+    ))
+    await session.execute(sa.delete(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(entity_ids),
+    ))
+
+
+async def _untouched_demo_items(session: AsyncSession, company_id: uuid.UUID, entity_ids: list[str]) -> list[str]:
+    """The demo items that are still exactly as seeded and used nowhere.
+
+    An item is touched when any of its ledger rows came from somewhere other than
+    the demo seeder, and used when another record (a document line, a movement, a
+    note) mentions its id or its SKU. Demo ids and SKUs all contain "demo-", so one
+    case-insensitive pass per table finds every candidate mention."""
+    import sqlalchemy as sa
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    touched = set((await session.execute(
+        sa.select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id.in_(entity_ids),
+            LedgerEntry.source != "demo",
+        ).distinct()
+    )).scalars().all())
+    skus = dict((await session.execute(
+        sa.select(Projection.entity_id, Projection.state["sku"].as_string()).where(
+            Projection.company_id == company_id, Projection.entity_id.in_(entity_ids),
+        )
+    )).all())
+    mentions: list[str] = []
+    for model, column in ((Projection, Projection.state), (LedgerEntry, LedgerEntry.data)):
+        mentions.extend((await session.execute(
+            sa.select(sa.cast(column, sa.Text)).where(
+                model.company_id == company_id,
+                model.entity_id.not_in(entity_ids),
+                sa.cast(column, sa.Text).ilike("%demo-%"),
+            )
+        )).scalars().all())
+
+    def used(entity_id: str) -> bool:
+        needles = [entity_id] + ([f'"{skus[entity_id]}"'] if skus.get(entity_id) else [])
+        return any(needle in text for text in mentions for needle in needles)
+
+    return [eid for eid in entity_ids if eid not in touched and not used(eid)]
 
 
 async def replace_demo_items(
@@ -1633,34 +1710,43 @@ async def replace_demo_items(
     company_id: uuid.UUID,
     actor_id: uuid.UUID,
     vertical: str | None,
-) -> int:
-    """Swap the company's demo inventory for the given business type's demo set.
+) -> dict[str, int]:
+    """Swap the company's untouched demo inventory for the given business type's set.
 
-    Only ledger rows with source="demo" (and their projections) are removed; real
-    items are never touched. Runs inside the caller's transaction and does not
-    commit. Returns how many demo items were removed."""
+    Demo items the user edited or used anywhere are kept as they are. When at
+    least one demo item was replaced, the new type's set is seeded, minus any SKU a
+    kept item still holds. A company with no demo items left (for example after
+    its first import) gets none back. Runs inside the caller's transaction and does
+    not commit. Returns how many demo items were replaced and how many were kept."""
     import sqlalchemy as sa
     from celerp.models.company import Location
-    from celerp.models.ledger import LedgerEntry
+
+    demo_ids = await demo_item_ids(session, company_id)
+    if not demo_ids:
+        return {"replaced": 0, "kept": 0}
+    replaceable = await _untouched_demo_items(session, company_id, demo_ids)
+    if replaceable:
+        await delete_demo_items(session, company_id, replaceable)
+        default_location = (await session.execute(
+            sa.select(Location).where(Location.company_id == company_id, Location.is_default == True).limit(1)  # noqa: E712
+        )).scalars().first()
+        await seed_demo_items(session, company_id, actor_id, vertical=vertical,
+                              default_location_id=default_location.id if default_location else None)
+    return {"replaced": len(replaceable), "kept": len(demo_ids) - len(replaceable)}
+
+
+async def _skus_in_use(session: AsyncSession, company_id: uuid.UUID, skus: list[str]) -> set[str]:
+    import sqlalchemy as sa
     from celerp.models.projections import Projection
 
-    demo_rows = (
-        LedgerEntry.company_id == company_id,
-        LedgerEntry.entity_type == "item",
-        LedgerEntry.source == "demo",
-    )
-    demo_ids = [row[0] for row in await session.execute(sa.select(LedgerEntry.entity_id).where(*demo_rows).distinct())]
-    if demo_ids:
-        await session.execute(sa.delete(Projection).where(
-            Projection.company_id == company_id, Projection.entity_id.in_(demo_ids),
-        ))
-        await session.execute(sa.delete(LedgerEntry).where(*demo_rows))
-    default_location = (await session.execute(
-        sa.select(Location).where(Location.company_id == company_id, Location.is_default == True).limit(1)  # noqa: E712
-    )).scalars().first()
-    await seed_demo_items(session, company_id, actor_id, vertical=vertical,
-                          default_location_id=default_location.id if default_location else None)
-    return len(demo_ids)
+    sku = Projection.state["sku"].as_string()
+    return set((await session.execute(
+        sa.select(sku).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+            sku.in_(skus),
+        )
+    )).scalars().all())
 
 
 async def seed_demo_items(
@@ -1670,7 +1756,9 @@ async def seed_demo_items(
     vertical: str | None = None,
     default_location_id: uuid.UUID | None = None,
 ) -> None:
-    """Seed vertical-aware demo items and default price lists in company settings."""
+    """Seed vertical-aware demo items and default price lists in company settings.
+
+    A demo SKU already held by an item is skipped, so seeding never duplicates a SKU."""
     from celerp.models.company import Company
 
     # Seed default price lists into company settings if not already set
@@ -1692,9 +1780,12 @@ async def seed_demo_items(
             settings["terms_conditions"] = terms_conditions_for(vertical)
         company.settings = settings
     items = _VERTICAL_ITEMS.get(vertical or "", _GENERIC_ITEMS) if vertical else _GENERIC_ITEMS
-    for i, data in enumerate(items, start=1):
+    taken = await _skus_in_use(session, company_id, [data["sku"] for data in items])
+    for data in items:
+        sku = data["sku"]
+        if sku in taken:
+            continue
         entity_id = f"item:demo-{uuid.uuid4()}"
-        sku = data.get("sku", f"DEMO-{i:03d}")
         prices = data.get("prices") or {}
         # Build price fields keyed by lowercase price list name + "_price".
         # These go directly into the item.created payload so they land at top-level
@@ -1708,7 +1799,7 @@ async def seed_demo_items(
         }
         payload = {
             "sku": sku,
-            "name": data.get("name", f"[DEMO] Item {i}"),
+            "name": data["name"],
             "category": data.get("category", "General"),
             "inventory_type": data.get("inventory_type"),
             "quantity": data.get("quantity", 1),

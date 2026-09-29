@@ -41,6 +41,7 @@ from celerp.services.auth import get_current_company_id, get_current_user, get_c
 from celerp.services.auto_je import create_for_item_transform
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility, restricted_field_keys
 from celerp.services.csv_export import csv_stream, resolve_export_cols
+from celerp.services.demo import demo_item_ids
 from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS, DEFAULT_ITEM_SCHEMA, NUMERIC_SCHEMA_TYPES
 from celerp.services.permissions import (
     assert_role_permission,
@@ -1385,14 +1386,7 @@ async def get_field_values(
     import re as _re
     if field in _BLOCKED_FIELDS or not _re.match(r'^[a-zA-Z][a-zA-Z0-9_]*$', field):
         raise HTTPException(status_code=400, detail=f"Field '{field}' not available for suggestions")
-    from celerp.models.ledger import LedgerEntry as _LE
-    demo_eids = set((await session.execute(
-        select(_LE.entity_id).where(
-            _LE.company_id == company_id,
-            _LE.source == "demo",
-            _LE.entity_type == "item",
-        ).distinct()
-    )).scalars().all())
+    demo_eids = set(await demo_item_ids(session, company_id))
     stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
     rows = (await session.execute(stmt)).scalars().all()
     seen: set[str] = set()

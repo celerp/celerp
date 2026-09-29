@@ -538,6 +538,13 @@ def restart_would_load(pkg_name: str) -> bool:
     return pkg_name in {n.strip() for n in pinned.split(",")}
 
 
+def module_label(pkg_name: str) -> str:
+    """The module's display name from its manifest, or the package name."""
+    path = resolve_runtime_module_path(pkg_name, module_search_path())
+    meta = read_manifest_metadata(path) if path is not None else {}
+    return meta.get("display_name") or meta.get("label") or pkg_name
+
+
 # Fields to extract from PLUGIN_MANIFEST for display purposes.
 # All must be string or list-of-strings literals in __init__.py (safe for ast.literal_eval).
 _MANIFEST_DISPLAY_FIELDS: frozenset[str] = frozenset({

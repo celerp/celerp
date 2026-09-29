@@ -222,12 +222,12 @@ async def test_demo_reseed_full_wizard_flow(client):
     assert r.status_code == 200
     body = r.json()
     assert body["vertical"] == "gemstones"
-    assert body["wiped"] >= 1
+    assert body["replaced"] >= 1
 
     # DEMO-001 must be gone, gemstone items must appear
     items = (await client.get("/items", headers=headers)).json()["items"]
     skus = {i["sku"] for i in items}
-    assert "DEMO-001" not in skus, "DEMO-001 should be wiped after reseed"
+    assert "DEMO-001" not in skus, "DEMO-001 should be replaced after reseed"
     assert "DEMO-DIA-001" in skus, "Diamond demo item should appear after gemstones reseed"
     assert "DEMO-JWL-001" in skus, "Jewelry demo item should appear after gemstones reseed"
 

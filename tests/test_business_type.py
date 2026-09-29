@@ -225,6 +225,158 @@ async def test_lifecycle_permission_required(client):
     assert (await _settings(client, h)).get("vertical") is None
 
 
+# -- demo replacement keeps anything the user touched ------------------------------
+
+async def _demo_by_sku(client, h) -> dict[str, dict]:
+    return {i["sku"]: i for i in await _items(client, h) if str(i.get("sku", "")).startswith("DEMO-")}
+
+
+async def _rename(client, h, item_id: str, name: str) -> None:
+    r = await client.patch(f"/items/{item_id}", headers=h,
+                           json={"fields_changed": {"name": {"old": None, "new": name}}})
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_edited_demo_item_is_kept_with_its_history(client):
+    h = await _owner(client)
+    await _set(client, h, "gemstones")
+    edited = (await _demo_by_sku(client, h))["DEMO-DIA-001"]
+    await _rename(client, h, edited["id"], "My own diamond")
+    r = await _set(client, h, "fashion")
+    assert r.status_code == 200, r.text
+    demo = await _demo_by_sku(client, h)
+    assert demo["DEMO-DIA-001"]["id"] == edited["id"]
+    assert demo["DEMO-DIA-001"]["name"] == "My own diamond"
+    assert "DEMO-RUB-001" not in demo, "untouched demo items of the old type are replaced"
+    assert "DEMO-FSH-001" in demo, "the new type's demo set is seeded"
+
+
+@pytest.mark.asyncio
+async def test_demo_item_used_on_a_document_is_kept(client):
+    h = await _owner(client)
+    await _set(client, h, "gemstones")
+    used = (await _demo_by_sku(client, h))["DEMO-RUB-001"]
+    r = await client.post("/docs", headers=h, json={
+        "doc_type": "invoice", "contact_id": "c:1", "contact_name": "Buyer",
+        "line_items": [{"item_id": used["id"], "sku": used["sku"], "description": "Ruby",
+                        "quantity": 1, "unit_price": 5, "line_total": 5}],
+        "subtotal": 5, "tax": 0, "total": 5,
+    })
+    assert r.status_code == 200, r.text
+    await _set(client, h, "fashion")
+    demo = await _demo_by_sku(client, h)
+    assert demo.get("DEMO-RUB-001", {}).get("id") == used["id"]
+    assert "DEMO-DIA-001" not in demo
+
+
+@pytest.mark.asyncio
+async def test_no_demo_items_left_means_nothing_is_seeded(client):
+    h = await _owner(client)
+    imp = await client.post("/items/import/batch", headers=h, json={"records": [{
+        "entity_id": "item:real-imp-1", "event_type": "item.created", "source": "csv",
+        "idempotency_key": "real-imp-1",
+        "data": {"sku": "REAL-IMP-1", "name": "Imported", "quantity": 2, "sell_by": "piece"},
+    }]})
+    assert imp.status_code == 200, imp.text
+    assert not await _demo_by_sku(client, h), "the first import removes the demo set"
+    r = await _set(client, h, "gemstones")
+    assert r.status_code == 200, r.text
+    assert not await _demo_by_sku(client, h), "a type change must not bring demo items back"
+    assert r.json()["changes"]["demo_items_replaced"] == 0
+
+
+@pytest.mark.asyncio
+async def test_partial_replacement_never_duplicates_a_sku(client):
+    """Kept demo items keep their SKU; the new set is seeded without any SKU that is
+    already in use."""
+    h = await _owner(client)
+    await _set(client, h, "gemstones")
+    edited = (await _demo_by_sku(client, h))["DEMO-DIA-001"]
+    await _rename(client, h, edited["id"], "Kept diamond")
+    await _set(client, h, "fashion")
+    await _set(client, h, "gemstones")
+    skus = [i["sku"] for i in await _items(client, h)]
+    assert skus.count("DEMO-DIA-001") == 1
+    demo = await _demo_by_sku(client, h)
+    assert demo["DEMO-DIA-001"]["id"] == edited["id"]
+    assert "DEMO-RUB-001" in demo, "the rest of the gemstones set is seeded again"
+
+
+# -- the change summary ------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_change_reports_what_it_changed(client):
+    h = await _owner(client)
+    await _set(client, h, "blank")
+    r = await _set(client, h, "gemstones")
+    assert r.status_code == 200, r.text
+    changes = r.json()["changes"]
+    assert "Diamond" in changes["categories_added"]
+    assert "Manufacturing" in changes["modules_enabled"], "modules are reported by display name"
+    assert "Industry Verticals" not in changes["modules_enabled"], "already enabled by the blank type"
+    assert changes["settings_updated"] == []
+    assert changes["defaults_updated"] == ["payment_terms", "terms_conditions"]
+    assert changes["demo_items_replaced"] == 3, "the blank type's three demo items"
+    assert changes["demo_items_kept"] == 0
+
+
+@pytest.mark.asyncio
+async def test_change_reports_preset_settings(client):
+    h = await _owner(client)
+    changes = (await _set(client, h, "agricultural")).json()["changes"]
+    assert changes["settings_updated"] == ["inventory_method"]
+    assert changes["defaults_updated"] == ["payment_terms"]
+
+
+@pytest.mark.asyncio
+async def test_repeat_reports_nothing_changed(client):
+    h = await _owner(client)
+    await _set(client, h, "gemstones")
+    again = (await _set(client, h, "gemstones")).json()["changes"]
+    assert again == {"categories_added": [], "modules_enabled": [], "settings_updated": [],
+                     "defaults_updated": [], "demo_items_replaced": 0, "demo_items_kept": 0}
+
+
+@pytest.mark.asyncio
+async def test_kept_demo_items_are_counted(client):
+    h = await _owner(client)
+    await _set(client, h, "gemstones")
+    await _rename(client, h, (await _demo_by_sku(client, h))["DEMO-DIA-001"]["id"], "Mine")
+    changes = (await _set(client, h, "fashion")).json()["changes"]
+    assert changes["demo_items_kept"] == 1
+    assert changes["demo_items_replaced"] == 9
+
+
+# -- purchasing payment terms follow the same ownership rule -----------------------
+
+@pytest.mark.asyncio
+async def test_untouched_purchasing_terms_follow_the_type(client):
+    h = await _owner(client)
+    assert (await client.get("/companies/me/purchasing-payment-terms", headers=h)).status_code == 200
+    await _set(client, h, "gemstones")
+    assert (await _settings(client, h))["purchasing_payment_terms"] == payment_terms_for("gemstones")
+
+
+@pytest.mark.asyncio
+async def test_customised_purchasing_terms_survive(client):
+    h = await _owner(client)
+    mine = [{"name": "Supplier 45", "days": 45, "description": "Ours"}]
+    r = await client.patch("/companies/me/purchasing-payment-terms", headers=h, json={"terms": mine})
+    assert r.status_code == 200, r.text
+    await _set(client, h, "gemstones")
+    assert (await _settings(client, h))["purchasing_payment_terms"] == mine
+
+
+@pytest.mark.asyncio
+async def test_purchasing_terms_not_created_by_a_type_change(client):
+    h = await _owner(client)
+    await _set(client, h, "gemstones")
+    assert "purchasing_payment_terms" not in await _settings(client, h)
+
+
+# -- one payment-terms default -----------------------------------------------------
+
 @pytest.mark.asyncio
 async def test_generic_payment_terms_are_the_list_users_see(client):
     import celerp.routers.companies as companies
