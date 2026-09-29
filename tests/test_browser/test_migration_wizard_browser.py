@@ -109,6 +109,16 @@ def first_run_page(playwright, first_run_ui):
 # Journey helpers
 # ---------------------------------------------------------------------------
 
+def _unit_proofs():
+    """The unit proof module, loaded by path: it holds the fake migration API."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / "test_setup_migration_ui.py"
+    spec = importlib.util.spec_from_file_location("migration_ui_unit_proofs", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sample_artifact() -> Path:
     from celerp.importers.sample import SAMPLE_ARTIFACT
     return Path(SAMPLE_ARTIFACT)
@@ -228,11 +238,10 @@ def test_migration_wizard_browser_existing_owner(page, fresh_company):
 @pytest.fixture
 def fake_migration_api(ui_server, monkeypatch):
     """Route only the UI's migration API calls to the in-test fake."""
-    from tests.test_setup_migration_ui import FakeMigrationAPI
     import ui.api_client as api
     from ui.config import API_BASE
 
-    fake = FakeMigrationAPI()
+    fake = _unit_proofs().FakeMigrationAPI()
     real = httpx.AsyncHTTPTransport()
 
     class _Split(httpx.AsyncBaseTransport):
@@ -253,7 +262,7 @@ def fake_migration_api(ui_server, monkeypatch):
 
 
 def test_migration_ui_mapping_uses_shared_searchable_select(page, fake_migration_api):
-    from tests.test_setup_migration_ui import _ACCOUNT_OPTIONS
+    first_option = _unit_proofs()._ACCOUNT_OPTIONS[0]
 
     def _to_coverage():
         page.goto("/setup/new-company/migrate")
@@ -267,7 +276,7 @@ def test_migration_ui_mapping_uses_shared_searchable_select(page, fake_migration
     wrap = page.locator(".combobox-wrap")
     assert wrap.count() == 1
     hidden = wrap.locator('input[type="hidden"]')
-    assert hidden.input_value() == _ACCOUNT_OPTIONS[0]
+    assert hidden.input_value() == first_option
     box = wrap.locator(".combobox-input")
     box.click()
     page.wait_for_selector(".combobox-list.open", timeout=3000)
@@ -275,7 +284,7 @@ def test_migration_ui_mapping_uses_shared_searchable_select(page, fake_migration
     assert page.locator(".combobox-option:visible").filter(has_text="Income account 11").count() == 1
     page.keyboard.press("Escape")
     page.wait_for_selector(".combobox-list.open", state="detached", timeout=3000)
-    assert hidden.input_value() == _ACCOUNT_OPTIONS[0]
+    assert hidden.input_value() == first_option
 
     fake_migration_api.with_questions = False
     _to_coverage()
