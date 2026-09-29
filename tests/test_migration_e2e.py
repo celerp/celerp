@@ -325,3 +325,38 @@ async def test_sample_migration_finalizes_and_reconciles(real_engine, monkeypatc
     page = to_xml(await _complete_page(request, view))
     assert "That&#x27;s the whole migration." in page or "That's the whole migration." in page
     assert "Move your first company" in page
+
+
+@pytest.mark.parametrize("source, decisions", [
+    ("basic", {"mode": "full_history"}),
+    ("basic", {"mode": "cutover", "cutover_date": "2026-02-28"}),
+    ("sample", {"mode": "full_history"}),
+])
+async def test_discard_after_real_migration_removes_everything(real_engine, monkeypatch, tmp_path, source, decisions):
+    """Discarding a staged company after a real migration through the domain sinks
+    removes every company-scoped row the migration wrote, and the company itself."""
+    from sqlalchemy import text
+
+    from celerp.importers.sample import SAMPLE_ARTIFACT
+    from celerp.models.migration import MigrationRun
+    from celerp.services import migrations
+    from fixtures.manager_io.support import BASIC
+
+    path = {"basic": BASIC, "sample": SAMPLE_ARTIFACT}[source]
+    run, rejected = await migrate(real_engine, path.read_bytes(), path.name, decisions, monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    company = str(run.company_id)
+    async with maker(real_engine)() as s:
+        tables = await migrations._company_tables(s)
+        written = [t for t in tables if await s.scalar(
+            text(f'SELECT count(*) FROM "{t}" WHERE company_id = :c'), {"c": company})]
+        assert "import_batches" in written
+        assert await migrations.discard(s, await s.get(MigrationRun, run.id)) == "/"
+    async with maker(real_engine)() as s:
+        for table in tables:
+            assert await s.scalar(text(f'SELECT count(*) FROM "{table}" WHERE company_id = :c'),
+                                  {"c": company}) == 0, table
+        assert await s.scalar(text("SELECT count(*) FROM companies WHERE id = :c"), {"c": company}) == 0
+        assert await s.scalar(text("SELECT count(*) FROM migration_entity_maps "
+                                   "WHERE migration_run_id = :r"), {"r": str(run.id)}) == 0

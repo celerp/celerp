@@ -105,7 +105,7 @@ IMPORT_PHASES: tuple[MigrationPhase, ...] = tuple(PHASE_GROUPS)
 
 # Tables a staged migration company may hold rows in, in safe delete order. A
 # company row in any other table means discard cannot prove the graph complete.
-_DISCARD_ORDER = ("ledger", "projections", "bank_accounts", "accounts", "locations",
+_DISCARD_ORDER = ("import_batches", "ledger", "projections", "bank_accounts", "accounts", "locations",
                   "migration_runs", "user_companies")
 
 _BLOCKS_FULL_HISTORY = (CoverageClass.UNCLASSIFIED, CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER)
