@@ -17,54 +17,47 @@ and inspect its connect_args.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import os
 
 import pytest
 
 
-@pytest.fixture
-def production_engine():
-    """celerp.db.engine as built by the production (pooled) branch.
+@contextlib.contextmanager
+def _production_db_module():
+    """celerp.db rebuilt by the production (pooled) branch, then put back exactly as it was.
 
-    Clears CELERP_TEST_NULLPOOL, reloads the module so the pooled engine is
-    constructed, disposes it, and restores the test-mode module so no other test
-    inherits a pooled (loop-bound) engine.
+    Clears CELERP_TEST_NULLPOOL and reloads the module so the pooled engines are built.
+    Afterwards the module's original namespace is restored rather than reloaded again, so
+    every other test keeps the same engine and the same get_session the app depends on.
     """
-    saved = os.environ.get("CELERP_TEST_NULLPOOL")
-    os.environ.pop("CELERP_TEST_NULLPOOL", None)
     import celerp.db as dbmod
-    try:
-        importlib.reload(dbmod)
-        yield dbmod.engine
-    finally:
-        if saved is not None:
-            os.environ["CELERP_TEST_NULLPOOL"] = saved
-        else:
-            os.environ.pop("CELERP_TEST_NULLPOOL", None)
-        importlib.reload(dbmod)
-
-
-@pytest.fixture
-def production_db():
-    """The reloaded celerp.db module built by the production (pooled) branch.
-
-    Same reload dance as production_engine, but yields the whole module so a test
-    can inspect both the bounded request engine and the unbounded lifecycle engine
-    built alongside it.
-    """
-    saved = os.environ.get("CELERP_TEST_NULLPOOL")
-    os.environ.pop("CELERP_TEST_NULLPOOL", None)
-    import celerp.db as dbmod
+    saved_env = os.environ.pop("CELERP_TEST_NULLPOOL", None)
+    saved_ns = dict(vars(dbmod))
     try:
         importlib.reload(dbmod)
         yield dbmod
     finally:
-        if saved is not None:
-            os.environ["CELERP_TEST_NULLPOOL"] = saved
-        else:
-            os.environ.pop("CELERP_TEST_NULLPOOL", None)
-        importlib.reload(dbmod)
+        if saved_env is not None:
+            os.environ["CELERP_TEST_NULLPOOL"] = saved_env
+        vars(dbmod).clear()
+        vars(dbmod).update(saved_ns)
+
+
+@pytest.fixture
+def production_engine():
+    """celerp.db.engine as built by the production (pooled) branch."""
+    with _production_db_module() as dbmod:
+        yield dbmod.engine
+
+
+@pytest.fixture
+def production_db():
+    """The celerp.db module as built by the production (pooled) branch, so a test can
+    inspect both the bounded request engine and the unbounded lifecycle engine."""
+    with _production_db_module() as dbmod:
+        yield dbmod
 
 
 def test_api_engine_bounded_timeouts(production_engine):
