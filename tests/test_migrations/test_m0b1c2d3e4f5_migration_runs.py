@@ -94,6 +94,14 @@ def test_migration_runs_schema_upgrade_integrity(base_db):
         with base_db.begin() as conn:
             _insert_run(conn, company_id, uuid.uuid4())
 
+    # A cleanup task outlives the company and runs it names: no foreign keys.
+    with base_db.begin() as conn:
+        conn.execute(text("INSERT INTO migration_cleanup_tasks (id, company_id, run_ids, created_at)"
+                          " VALUES (gen_random_uuid(), :cid, :runs, NOW())"),
+                     {"cid": uuid.uuid4(), "runs": f'["{uuid.uuid4()}"]'})
+    with base_db.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM migration_cleanup_tasks")).scalar_one() == 1
+
     with base_db.begin() as conn:
         conn.execute(text("DELETE FROM migration_runs WHERE id = :id"), {"id": run_id})
     with base_db.connect() as conn:

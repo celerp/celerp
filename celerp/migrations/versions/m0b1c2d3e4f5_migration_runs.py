@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Add migration_runs and migration_entity_maps for durable company migrations, and the
+"""Add migration_runs and migration_entity_maps for durable company migrations,
+migration_cleanup_tasks for the files of discarded staged companies, and the
 server-controlled companies.is_migration_staged flag.
 
 Revision ID: m0b1c2d3e4f5
@@ -75,8 +76,17 @@ def upgrade() -> None:
     op.create_index("ix_migration_entity_maps_migration_run_id", "migration_entity_maps", ["migration_run_id"])
     op.create_index("idx_migration_entity_map_run_status", "migration_entity_maps", ["migration_run_id", "status"])
 
+    op.create_table(
+        "migration_cleanup_tasks",
+        sa.Column("id", sa.Uuid(as_uuid=True), primary_key=True),
+        sa.Column("company_id", sa.Uuid(as_uuid=True), nullable=False),
+        sa.Column("run_ids", sa.JSON(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    )
+
 
 def downgrade() -> None:
+    op.drop_table("migration_cleanup_tasks")
     op.drop_table("migration_entity_maps")
     op.drop_table("migration_runs")
     op.drop_column("companies", "is_migration_staged")

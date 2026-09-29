@@ -371,7 +371,8 @@ async def test_discard_after_real_migration_removes_everything(real_engine, monk
 async def test_discard_keeps_attachment_files_until_commit_and_survives_a_storage_failure(
         real_engine, monkeypatch, tmp_path, caplog):
     """A discard that fails closed leaves the stored files in place; a storage backend
-    that cannot delete after the commit is logged by run id and never fails the discard."""
+    that cannot delete after the commit never fails the discard and leaves a cleanup
+    task for the startup sweep, logged by task id only."""
     from sqlalchemy import text
 
     from celerp.models.migration import MigrationRun
@@ -406,6 +407,9 @@ async def test_discard_keeps_attachment_files_until_commit_and_survives_a_storag
     async with maker(real_engine)() as s:
         assert await migrations.discard(s, await s.get(MigrationRun, run.id)) == "/"
     assert await count(real_engine, "companies", "id = :c", c=company) == 0
+    async with maker(real_engine)() as s:
+        task_id = await s.scalar(text("SELECT id FROM migration_cleanup_tasks WHERE company_id = :c"), {"c": company})
+    assert task_id is not None
     warnings = [r.getMessage() for r in caplog.records if r.name == "celerp.services.migrations"]
-    assert any(str(run.id) in m and "could not be deleted" in m for m in warnings), warnings
+    assert any(str(task_id) in m and "kept for a retry" in m for m in warnings), warnings
     assert all(company not in m for m in warnings)

@@ -60,6 +60,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.models.migration import (
     PHASE_ORDER,
+    MigrationCleanupTask,
     MigrationEntityMap,
     MigrationPhase,
     MigrationRun,
@@ -392,14 +393,6 @@ async def recover_preparing_runs(session: AsyncSession) -> int:
             await session.rollback()
             logger.warning("Migration %s could not be recovered: %s", run_id, type(exc).__name__)
     return len(rows)
-
-
-def remove_source(run_id: uuid.UUID) -> None:
-    """Best-effort removal of a run's source files; a failure is logged."""
-    try:
-        store.remove_run_dir(run_id)
-    except OSError:
-        logger.warning("Migration source for run %s could not be removed", run_id, exc_info=True)
 
 
 async def get_owned_migration_run(session: AsyncSession, run_id: uuid.UUID, user_id: uuid.UUID) -> MigrationRun:
@@ -885,7 +878,10 @@ async def _company_tables(session: AsyncSession) -> list[str]:
 
 
 async def discard(session: AsyncSession, run: MigrationRun) -> str:
-    """Delete a staged company, its runs and their files; returns where the user goes next."""
+    """Delete a staged company and its runs, then their files; returns where the user goes next.
+
+    The files are deleted after the commit through a cleanup task committed with the
+    deletes, so a storage failure never blocks the user and is retried at startup."""
     await _lock_run(session, run)
     company = await session.get(Company, run.company_id)
     if run.status == _S.COMPLETED or not company.is_migration_staged:
@@ -900,11 +896,12 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         if held:
             raise MigrationError(409, f"This company has data in {table} that discard cannot remove safely. "
                                       "Nothing was deleted.")
-    company_id, run_id = str(company.id), run.id
     run_ids = list((await session.scalars(
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all())
     owner_id = run.created_by_user_id
     bootstrap = bool(run.source_summary.get("bootstrap"))
+    task = MigrationCleanupTask(company_id=company.id, run_ids=[str(r) for r in run_ids])
+    session.add(task)
     for table in _DISCARD_ORDER:
         await session.execute(text(f'DELETE FROM "{table}" WHERE company_id = :c'), {"c": str(company.id)})
     await session.execute(text("DELETE FROM companies WHERE id = :c"), {"c": str(company.id)})
@@ -915,16 +912,37 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
             await session.execute(text("DELETE FROM users WHERE id = :u"), {"u": str(owner_id)})
             redirect = "/setup"
     await session.commit()
+    task_id = task.id
     session.expunge_all()
-    for discarded in run_ids:
-        remove_source(discarded)
-    try:
-        await attachments.delete_company_files(company_id)
-    except Exception as exc:
-        # The run row is gone with the company, so the outcome can only be logged.
-        logger.warning("Attachment files of discarded migration run %s could not be deleted: %s",
-                       run_id, type(exc).__name__)
+    await run_cleanup_task(session, task_id)
     return redirect
+
+
+async def run_cleanup_task(session: AsyncSession, task_id: uuid.UUID) -> bool:
+    """Delete a discarded company's run sources and attachment files, then its cleanup
+    task. Files already gone count as deleted. A failure keeps the task for the startup
+    sweep and is logged by task id only; never raises. Returns whether the task is done."""
+    try:
+        task = await session.scalar(select(MigrationCleanupTask).where(MigrationCleanupTask.id == task_id)
+                                    .with_for_update(skip_locked=True))
+        if task is None:  # done, or another sweep holds it
+            return True
+        for run_id in task.run_ids:
+            await asyncio.to_thread(store.remove_run_dir, uuid.UUID(run_id))
+        await attachments.delete_company_files(str(task.company_id))
+        await session.delete(task)
+        await session.commit()
+        return True
+    except Exception as exc:
+        await session.rollback()
+        logger.warning("Migration cleanup task %s is kept for a retry at startup: %s", task_id, type(exc).__name__)
+        return False
+
+
+async def sweep_cleanup_tasks(session: AsyncSession) -> int:
+    """Retry every pending cleanup task. Returns how many remain."""
+    task_ids = (await session.scalars(select(MigrationCleanupTask.id))).all()
+    return sum([not await run_cleanup_task(session, task_id) for task_id in task_ids])
 
 
 def _retention_start(run: MigrationRun) -> datetime:
@@ -995,6 +1013,7 @@ async def housekeeping(session: AsyncSession) -> None:
     store.purge_expired()
     await mark_stale_runs_interrupted(session)
     await purge_run_sources(session)
+    await sweep_cleanup_tasks(session)
 
 
 def reconciliation_pack_csv(run: MigrationRun) -> str:

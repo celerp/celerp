@@ -302,7 +302,7 @@ async def real_engine(_db_engine, monkeypatch):
 
     async def _truncate():
         async with engine.begin() as conn:
-            await conn.execute(text("TRUNCATE users, companies RESTART IDENTITY CASCADE"))
+            await conn.execute(text("TRUNCATE users, companies, migration_cleanup_tasks RESTART IDENTITY CASCADE"))
 
     await _truncate()
     monkeypatch.setattr(celerp.db, "engine", engine)

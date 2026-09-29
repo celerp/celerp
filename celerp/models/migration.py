@@ -130,3 +130,18 @@ class MigrationEntityMap(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     # `metadata` is reserved on declarative classes; the column keeps the planned name.
     meta: Mapped[dict] = mapped_column("metadata", sa.JSON, nullable=False, default=dict)
+
+
+class MigrationCleanupTask(Base):
+    """Files of a discarded staged company still to delete: its run sources and its
+    attachment files. Written in the discard transaction and deleted once the files are
+    gone, so a storage failure is retried at startup. No foreign keys: the company and
+    runs it names no longer exist, and paths are derived from the ids, never stored."""
+    __tablename__ = "migration_cleanup_tasks"
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), nullable=False)
+    run_ids: Mapped[list] = mapped_column(sa.JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
