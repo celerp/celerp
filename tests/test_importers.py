@@ -43,26 +43,28 @@ def _minimal_manifest() -> dict:
     return {
         "cif_version": CIF_VERSION,
         "source": "test",
+        "source_system": "test",
+        "adapter_version": "1",
         "exported_at": "2026-01-01T00:00:00",
         "bundle": {
             "items": [],
             "contacts": [],
             "documents": [],
         },
-        "stats": {},
+        "source_summary": {},
     }
 
 
 def _make_item() -> CIFItem:
     return CIFItem(
-        external_id="item:001",
+        source_system="test", source_type="Item", source_external_id="item:001",
         name="Test Stone",
         status="available",
     )
 
 
 def _make_contact() -> CIFContact:
-    return CIFContact(external_id="c:001", name="Alice")
+    return CIFContact(source_system="test", source_type="Contact", source_external_id="c:001", name="Alice")
 
 
 def _make_line_item() -> CIFLineItem:
@@ -76,7 +78,7 @@ def _make_line_item() -> CIFLineItem:
 
 def _make_document() -> CIFDocument:
     return CIFDocument(
-        external_id="doc:001",
+        source_system="test", source_type="Document", source_external_id="doc:001",
         doc_type="invoice",
         status="paid",
         total=Decimal("100.00"),
@@ -143,7 +145,7 @@ def test_entity_type_values() -> None:
 
 def test_cif_item_minimal() -> None:
     item = _make_item()
-    assert item.external_id == "item:001"
+    assert item.source_external_id == "item:001"
     assert item.name == "Test Stone"
     assert item.status == "available"
     assert item.metadata == {}
@@ -151,7 +153,7 @@ def test_cif_item_minimal() -> None:
 
 def test_cif_item_full() -> None:
     item = CIFItem(
-        external_id="item:002",
+        source_system="test", source_type="Item", source_external_id="item:002",
         sku="SKU-001",
         name="Ruby",
         description="Red ruby",
@@ -187,14 +189,14 @@ def test_cif_item_full() -> None:
 
 def test_cif_contact_minimal() -> None:
     c = _make_contact()
-    assert c.external_id == "c:001"
+    assert c.source_external_id == "c:001"
     assert c.name == "Alice"
     assert c.email is None
 
 
 def test_cif_contact_full() -> None:
     c = CIFContact(
-        external_id="c:002",
+        source_system="test", source_type="Contact", source_external_id="c:002",
         name="Bob",
         email="bob@example.com",
         phone="+1234",
@@ -236,7 +238,7 @@ def test_cif_document_minimal() -> None:
 def test_cif_document_with_dates() -> None:
     from datetime import date
     doc = CIFDocument(
-        external_id="doc:002",
+        source_system="test", source_type="Document", source_external_id="doc:002",
         doc_type="purchase_order",
         status="draft",
         total=Decimal("200.00"),
@@ -296,7 +298,9 @@ def test_manifest_with_bundle() -> None:
     data = _minimal_manifest()
     data["bundle"]["items"] = [
         {
-            "external_id": "item:001",
+            "source_system": "test",
+            "source_type": "Item",
+            "source_external_id": "item:001",
             "name": "Stone",
             "status": "available",
         }
@@ -396,11 +400,11 @@ def test_dry_run_returns_empty_result(capsys) -> None:
     manifest = CIFImportManifest.model_validate({
         **_minimal_manifest(),
         "bundle": {
-            "items": [{"external_id": "i:1", "name": "Stone", "status": "available"}],
+            "items": [{"source_system": "test", "source_type": "Item", "source_external_id": "i:1", "name": "Stone", "status": "available"}],
             "contacts": [],
             "documents": [],
         },
-        "stats": {"items": 1},
+        "source_summary": {"items": 1},
     })
     result = asyncio.run(importer.run(manifest))
     captured = capsys.readouterr()
@@ -442,8 +446,8 @@ async def test_run_calls_batch_endpoints() -> None:
     manifest = CIFImportManifest.model_validate({
         **_minimal_manifest(),
         "bundle": {
-            "items": [{"external_id": "i:1", "name": "Stone", "status": "available"}],
-            "contacts": [{"external_id": "c:1", "name": "Alice"}],
+            "items": [{"source_system": "test", "source_type": "Item", "source_external_id": "i:1", "name": "Stone", "status": "available"}],
+            "contacts": [{"source_system": "test", "source_type": "Item", "source_external_id": "c:1", "name": "Alice"}],
             "documents": [],
         },
     })
@@ -466,7 +470,7 @@ async def test_run_handles_batch_error() -> None:
     manifest = CIFImportManifest.model_validate({
         **_minimal_manifest(),
         "bundle": {
-            "items": [{"external_id": "i:1", "name": "Stone", "status": "available"}],
+            "items": [{"source_system": "test", "source_type": "Item", "source_external_id": "i:1", "name": "Stone", "status": "available"}],
             "contacts": [],
             "documents": [],
         },

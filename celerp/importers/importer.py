@@ -189,11 +189,11 @@ class BundleImporter:
             # ── Contacts first (foreign key dependency for docs) ──────────────
             contact_records = [
                 {
-                    "entity_id": f"contact:{c.external_id}",
+                    "entity_id": f"contact:{c.source_external_id}",
                     "event_type": "crm.contact.created",
                     "data": {"name": c.name, "email": c.email, "phone": c.phone, **c.metadata},
                     "source": source,
-                    "idempotency_key": f"cif:contact:{c.external_id}",
+                    "idempotency_key": f"cif:contact:{c.source_external_id}",
                 }
                 for c in bundle.contacts
             ]
@@ -203,10 +203,10 @@ class BundleImporter:
             # ── Items ─────────────────────────────────────────────────────────
             item_records = [
                 {
-                    "entity_id": f"item:{item.external_id}",
+                    "entity_id": f"item:{item.source_external_id}",
                     "event_type": "item.snapshot",
                     "data": {
-                        "external_id": item.external_id,
+                        "external_id": item.source_external_id,
                         "sku": item.sku,
                         "name": item.name,
                         "description": item.description,
@@ -226,7 +226,7 @@ class BundleImporter:
                         **item.metadata,
                     },
                     "source": source,
-                    "idempotency_key": f"cif:item:{item.external_id}",
+                    "idempotency_key": f"cif:item:{item.source_external_id}",
                 }
                 for item in bundle.items
             ]
@@ -236,10 +236,10 @@ class BundleImporter:
             # ── Documents ─────────────────────────────────────────────────────
             doc_records = [
                 {
-                    "entity_id": f"doc:{d.external_id}",
+                    "entity_id": f"doc:{d.source_external_id}",
                     "event_type": "doc.created",
                     "data": {
-                        "external_id": d.external_id,
+                        "external_id": d.source_external_id,
                         "doc_type": d.doc_type,
                         "status": d.status,
                         "contact_external_id": d.contact_external_id,
@@ -263,7 +263,7 @@ class BundleImporter:
                         **d.metadata,
                     },
                     "source": source,
-                    "idempotency_key": f"cif:doc:{d.external_id}",
+                    "idempotency_key": f"cif:doc:{d.source_external_id}",
                 }
                 for d in bundle.documents
             ]
@@ -277,7 +277,7 @@ class BundleImporter:
 
     def _dry_run_report(self, manifest: CIFImportManifest) -> None:
         bundle = manifest.bundle
-        stats = manifest.stats
+        summary = manifest.source_summary
         bs = self.batch_size
 
         est_batches = (
@@ -293,8 +293,8 @@ class BundleImporter:
         print(f"    Items:     {len(bundle.items)}")
         print(f"    Contacts:  {len(bundle.contacts)}")
         print(f"    Documents: {len(bundle.documents)}")
-        print(f"\n  Stats from manifest:")
-        for k, v in stats.items():
+        print(f"\n  Source summary:")
+        for k, v in summary.items():
             print(f"    {k}: {v}")
         print(f"\n  Batch size: {bs}  |  Estimated HTTP calls: {est_batches}")
         print("\n  ✓ Manifest validated OK — no data posted (--dry-run)")
