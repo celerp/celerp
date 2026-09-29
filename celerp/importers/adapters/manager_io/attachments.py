@@ -135,10 +135,10 @@ def read_attachment(book: Book, reader: ManagerReader, key: str) -> bytes:
 
 
 def drop_uncarried(book: Book, screened: Screened, carried: set[str]) -> None:
-    """Reject accepted attachments whose target record this migration does not import (cutover)."""
+    """Reject accepted attachments whose target record this migration does not import."""
     for key, accepted in list(screened.accepted.items()):
         if accepted.target not in carried:
             del screened.accepted[key]
-            screened.rejected[key] = "Its target record is before the cutover date and is not imported."
+            screened.rejected[key] = "Its target record is not imported by this migration."
             book.accept("Attachment", key, label=REJECTED, klass=CoverageClass.MAPPED_WITH_LOSS,
                         note="Rejected attachments are listed in the run summary and not imported.")
