@@ -7,7 +7,7 @@ Flow:
     /setup           → step 1: create first admin + company name
     /setup/company   → step 2: company details + business type (vertical)
     /onboarding      → getting-started hub (bring in data or start manually)
-    /setup/cloud     → optional cloud offer, reachable from the hub and settings
+    /setup/cloud     → optional cloud offer, reachable by direct link
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import json
+import logging
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -25,6 +26,8 @@ from celerp.services.currencies import CURRENCIES, CURRENCY_CODES
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
 from celerp.services.vertical_presets import list_presets, load_preset
+
+logger = logging.getLogger(__name__)
 
 
 def _preset_label(preset: dict) -> str:
@@ -148,8 +151,8 @@ def setup_routes(app):
         # so failing to store it never undoes the completed setup.
         try:
             await api.patch_company(token, {"onboarding_pending": True})
-        except APIError:
-            pass
+        except APIError as e:
+            logger.warning("Could not set onboarding_pending: %s", e.detail)
         if result.get("restart_required"):
             # The type's modules load on restart; the activating page waits for them.
             # The server may drop this request as it goes down, so its outcome is not

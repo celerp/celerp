@@ -163,13 +163,11 @@ async def discard_import_csv(token: str, form) -> None:
 
 
 async def resolve_import_csv(token: str, form) -> str:
-    """CSV text from the staged reference (csv_ref) or the inline csv_data field."""
+    """CSV text from the staged reference (csv_ref). Empty if missing, invalid, expired, or foreign."""
     csv_ref = str(form.get("csv_ref", "") or "")
-    if csv_ref:
-        text = await load_import_csv(token, csv_ref)
-        if text:
-            return text
-    return str(form.get("csv_data", "") or "")
+    if not csv_ref:
+        return ""
+    return await load_import_csv(token, csv_ref) or ""
 
 
 # ---------------------------------------------------------------------------

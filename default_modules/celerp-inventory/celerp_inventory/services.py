@@ -2028,6 +2028,11 @@ class ImportBuild:
     rows: list[dict]                # input rows with each category resolved to its canonical key
 
 
+def import_created_item_id(company_id, key: str) -> str:
+    """Deterministic entity id of the item a create row makes under its retry key."""
+    return f"item:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{key}')}"
+
+
 async def build_import_records(
     session: AsyncSession,
     company_id,
@@ -2036,6 +2041,7 @@ async def build_import_records(
     upsert: bool,
     dry_run: bool,
     create_missing_locations: bool = False,
+    create_key: str | None = None,
 ) -> ImportBuild:
     """Transform mapped business rows into semantic item import records.
 
@@ -2047,6 +2053,10 @@ async def build_import_records(
     ``locations_to_create`` and are accepted only when the caller is authorised to
     create company locations; commit then creates those locations before resolving
     the rows. An upsert that omits ``location_name`` preserves the target location.
+
+    ``create_key`` is the commit's batch key. An upsert row whose resolved target is
+    the item this same batch created at that row stays a create, so an exact retry
+    dedupes instead of patching the item it made.
     """
     loc_rows = (await session.execute(
         select(Location).where(Location.company_id == company_id)
@@ -2183,6 +2193,11 @@ async def build_import_records(
                     "message": f"SKU '{sku}' matches multiple lots; include a barcode to choose one",
                 })
                 continue
+            if (
+                target is not None and create_key
+                and target.entity_id == import_created_item_id(company_id, f"{create_key}:row:{i + 1}")
+            ):
+                target = None
 
         # Location is required for a new item. Upsert without an explicit location
         # preserves the target's current location rather than inventing a default.
@@ -2463,10 +2478,6 @@ async def import_items(
     resulting patch, so the same patch dedupes but a later changed patch still applies.
     """
     can_create_locations = role_has_permission(settings, role, "manage_company_settings")
-    build = await build_import_records(
-        session, company_id, rows, upsert=upsert, dry_run=False,
-        create_missing_locations=can_create_locations,
-    )
 
     # Creation retry identity belongs to the import content + row ordinal, not
     # SKU/barcode. This keeps same-SKU/no-SKU rows distinct inside one file while
@@ -2480,11 +2491,15 @@ async def import_items(
             sort_keys=True, separators=(",", ":"), default=str,
         )
         batch_key = f"csv:{hashlib.sha256(canonical_batch.encode()).hexdigest()}"
+    build = await build_import_records(
+        session, company_id, rows, upsert=upsert, dry_run=False,
+        create_missing_locations=can_create_locations, create_key=batch_key,
+    )
     for rec in build.records:
         if rec["event_type"] == "item.created":
             key = f"{batch_key}:{rec['idempotency_key']}"
             rec["idempotency_key"] = rec["data"]["idempotency_key"] = key
-            rec["entity_id"] = f"item:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{key}')}"
+            rec["entity_id"] = import_created_item_id(company_id, key)
 
     user = SimpleNamespace(id=actor_id)
 
@@ -2677,6 +2692,13 @@ async def write_import_batch(
                     continue
                 if not body.upsert:
                     outcome.add(primary.entity_id, "skipped")
+                    continue
+                current = await session.get(
+                    Projection, {"company_id": company_id, "entity_id": entity_id}
+                )
+                if current is not None and all((current.state or {}).get(k) == v for k, v in data.items()):
+                    # An exact retry: the item already holds this content.
+                    skipped += 1
                     continue
                 event_type = "item.patched"
                 canonical_patch = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)

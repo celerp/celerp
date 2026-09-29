@@ -33,7 +33,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from ui.routes.csv_import import _read_stage, MAPPING_ATTRIBUTE, MAPPING_SKIP
+from ui.routes.csv_import import _read_stage, _write_stage, MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC, _CORE_ITEM_COLS
 from test_helpers import make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
@@ -153,6 +153,11 @@ async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url:
 
 
 _TEST_COMPANY_ID = "00000000-0000-0000-0000-00000000c0de"
+
+
+def _stage_csv(csv_text: str) -> str:
+    """Stage CSV text under this file's test company and return its csv_ref."""
+    return _write_stage(_TEST_COMPANY_ID, csv_text)
 
 
 def _role_from_token(token: str | None) -> str:
@@ -7740,11 +7745,11 @@ class TestInventoryImportFlow:
     async def test_import_errors_download(self, ui_client):
         """POST /inventory/import/errors must return a CSV file with _errors column."""
         import csv as _csv, io as _io
-        csv_data = "sku,name,location_name\nS1,,Main Office\n"
+        csv_ref = _stage_csv("sku,name,location_name\nS1,,Main Office\n")
         r = await ui_client.post(
             "/inventory/import/errors",
             cookies=_authed(),
-            data={"csv_data": csv_data},
+            data={"csv_ref": csv_ref},
         )
         assert r.status_code == 200
         assert "csv" in r.headers.get("content-type", "").lower() or "attachment" in r.headers.get("content-disposition", "")
@@ -7762,12 +7767,12 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_import_confirm_all_valid_imports(self, ui_client):
         """Confirm forwards mapped rows to the server importer and renders the outcome."""
-        csv_data = "sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\nS2,Ring,Main Office,piece\n"
+        csv_ref = _stage_csv("sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\nS2,Ring,Main Office,piece\n")
         with patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 2, "skipped": 0, "updated": 0, "errors": []})):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data, "preview_hash": _PREVIEW_HASH},
+                data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"import-card--success" in r.content
@@ -7776,12 +7781,12 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_import_confirm_unknown_location_auto_created(self, ui_client):
         """An unknown location_name is resolved server-side; the browser just renders the result."""
-        csv_data = "sku,name,location_name,sell_by\nS1,Widget,New Warehouse,piece\n"
+        csv_ref = _stage_csv("sku,name,location_name,sell_by\nS1,Widget,New Warehouse,piece\n")
         with patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data, "preview_hash": _PREVIEW_HASH},
+                data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"import-card--success" in r.content
@@ -7789,12 +7794,12 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_import_confirm_no_location_column_uses_default(self, ui_client):
         """A CSV with no location_name column relies on the server's default-location resolution."""
-        csv_data = "sku,name,sell_by\nS1,Widget,piece\n"
+        csv_ref = _stage_csv("sku,name,sell_by\nS1,Widget,piece\n")
         with patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data, "preview_hash": _PREVIEW_HASH},
+                data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"import-card--success" in r.content
@@ -7802,7 +7807,7 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_import_confirm_unresolved_location_reported_per_row(self, ui_client):
         """When the server cannot resolve a row's location it returns a per-row error, rendered in the result."""
-        csv_data = "sku,name,sell_by\nS1,Widget,piece\n"
+        csv_ref = _stage_csv("sku,name,sell_by\nS1,Widget,piece\n")
         server_result = {
             "created": 0, "skipped": 0, "updated": 0,
             "errors": ["Row 1: No location resolved: add a location_name column or set a default location"],
@@ -7811,7 +7816,7 @@ class TestInventoryImportFlow:
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data, "preview_hash": _PREVIEW_HASH},
+                data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"import-card--error" in r.content
@@ -7822,14 +7827,14 @@ class TestInventoryImportFlow:
         """A 600-row CSV is one import call carrying one operation key and the
         reviewed hash; the server batches its own writes."""
         rows = "\n".join(f"SKU{i:04d},Item {i},Main Office,piece" for i in range(600))
-        csv_data = f"sku,name,location_name,sell_by\n{rows}\n"
+        csv_ref = _stage_csv(f"sku,name,location_name,sell_by\n{rows}\n")
 
         import_rows_mock = AsyncMock(return_value={"created": 600, "skipped": 0, "updated": 0, "errors": []})
         with patch("ui.api_client.import_rows", new=import_rows_mock):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data, "preview_hash": _PREVIEW_HASH},
+                data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert import_rows_mock.await_count == 1
@@ -7843,12 +7848,12 @@ class TestInventoryImportFlow:
     async def test_import_confirm_timeout_shows_friendly_error(self, ui_client):
         """A 504 APIError (timeout) from the server importer renders an informative error message."""
         from ui.api_client import APIError
-        csv_data = "sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\n"
+        csv_ref = _stage_csv("sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\n")
         with patch("ui.api_client.import_rows", new=AsyncMock(side_effect=APIError(504, "Request timed out"))):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data, "preview_hash": _PREVIEW_HASH},
+                data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"timed out" in r.content.lower() or b"504" in r.content or b"failed" in r.content.lower()
@@ -7857,7 +7862,7 @@ class TestInventoryImportFlow:
     async def test_import_weight_unit_invalid_fails_validation(self, ui_client):
         """weight_unit value not in company units fails preview validation and renders the fix path."""
         from celerp.services.units import DEFAULT_UNITS
-        csv_data = "sku,name,sell_by,weight,weight_unit\nS1,Ring,carat,100,badunit\n"
+        csv_bytes = b"sku,name,sell_by,weight,weight_unit\nS1,Ring,carat,100,badunit\n"
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -7866,7 +7871,7 @@ class TestInventoryImportFlow:
             r = await ui_client.post(
                 "/inventory/import/preview",
                 cookies=_authed(),
-                data={"csv_data": csv_data},
+                files={"csv_file": ("items.csv", csv_bytes, "text/csv")},
             )
         assert r.status_code == 200
         # "badunit" is not a valid unit → fix table shown (error path)
@@ -7901,11 +7906,11 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_locations_errors_download(self, ui_client):
         import csv as _csv, io as _io
-        csv_data = "name,type\n,store\n"
+        csv_ref = _stage_csv("name,type\n,store\n")
         r = await ui_client.post(
             "/settings/import/locations/errors",
             cookies=_authed(),
-            data={"csv_data": csv_data},
+            data={"csv_ref": csv_ref},
         )
         assert r.status_code == 200
         reader = list(_csv.DictReader(_io.StringIO(r.text)))
@@ -7926,11 +7931,11 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_taxes_errors_download(self, ui_client):
         import csv as _csv, io as _io
-        csv_data = "name,rate,tax_type,is_default,description\n,notanumber,both,true,\n"
+        csv_ref = _stage_csv("name,rate,tax_type,is_default,description\n,notanumber,both,true,\n")
         r = await ui_client.post(
             "/settings/import/taxes/errors",
             cookies=_authed(),
-            data={"csv_data": csv_data},
+            data={"csv_ref": csv_ref},
         )
         assert r.status_code == 200
         reader = list(_csv.DictReader(_io.StringIO(r.text)))
@@ -7951,11 +7956,11 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_terms_errors_download(self, ui_client):
         import csv as _csv, io as _io
-        csv_data = "name,days,description\nNet 30,notanumber,\n"
+        csv_ref = _stage_csv("name,days,description\nNet 30,notanumber,\n")
         r = await ui_client.post(
             "/settings/import/payment-terms/errors",
             cookies=_authed(),
-            data={"csv_data": csv_data},
+            data={"csv_ref": csv_ref},
         )
         assert r.status_code == 200
         reader = list(_csv.DictReader(_io.StringIO(r.text)))

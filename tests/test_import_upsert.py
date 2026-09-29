@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 import ui.api_client as api_client
+from ui.routes.csv_import import stash_import_csv
 
 from test_helpers import make_authed_token
 
@@ -87,15 +89,23 @@ async def test_items_upsert_true_emits_patch(client, session):
     r1 = await client.post("/items/import/batch", headers=headers, json={"records": [record]})
     assert r1.json()["created"] == 1
 
-    # Second import with upsert=True — should update
+    # Resending identical content with upsert=True is an exact retry: nothing changes
+    same = await client.post("/items/import/batch", headers=headers, json={"records": [record], "upsert": True})
+    assert same.status_code == 200
+    assert (same.json()["updated"], same.json()["skipped"]) == (0, 1)
+
+    # Changed content with upsert=True updates the item it created
+    record = {**record, "data": {**record["data"], "name": "Upsert Item renamed"}}
     r2 = await client.post("/items/import/batch", headers=headers, json={"records": [record], "upsert": True})
     assert r2.status_code == 200
     body = r2.json()
     assert body["created"] == 0
     assert body["updated"] == 1
     assert body["skipped"] == 0
+    item = (await client.get(f"/items/{entity_id}", headers=headers)).json()
+    assert item["name"] == "Upsert Item renamed"
 
-    # Third call with upsert=True — should skip (upsert key already exists)
+    # Third call with upsert=True - should skip (upsert key already exists)
     r3 = await client.post("/items/import/batch", headers=headers, json={"records": [record], "upsert": True})
     assert r3.status_code == 200
     body3 = r3.json()
@@ -235,12 +245,26 @@ def _numbered_via(client, headers):
     return numbered_ids
 
 
+def _mock_company(monkeypatch, company_id) -> None:
+    """These tests call import screen handlers with a fake request whose token is a
+    literal stand-in ("tok"), not a real JWT, so the real api.get_company would reject
+    it. Route it to the company the test actually set up, for the csv-ref staging and
+    lookup the confirm handler performs through resolve_import_csv/discard_import_csv."""
+    monkeypatch.setattr(api_client, "get_company", AsyncMock(return_value={"id": str(company_id)}))
+
+
+async def _staged_form(token: str, csv_text: str, **extra) -> _Form:
+    """Stage csv_text and return a _Form carrying its csv_ref, the way a real upload does."""
+    ref = await stash_import_csv(token, csv_text)
+    return _Form({"csv_ref": ref, **extra})
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("resource", ["docs", "lists"])
 async def test_reimporting_a_spreadsheet_updates_the_record_it_created(client, session, monkeypatch, resource):
     from ui.routes import docs_import, lists_import
 
-    _, _, token = await _setup(session)
+    company_id, _, token = await _setup(session)
     headers = {"Authorization": f"Bearer {token}"}
     screen = docs_import if resource == "docs" else lists_import
 
@@ -253,14 +277,15 @@ async def test_reimporting_a_spreadsheet_updates_the_record_it_created(client, s
     monkeypatch.setattr(screen, "_token", lambda request: "tok")
     monkeypatch.setattr(api_client, "batch_import", _batch)
     monkeypatch.setattr(api_client, "numbered_ids", _numbered_via(client, headers))
+    _mock_company(monkeypatch, company_id)
     routes = _Routes()
     screen.setup_routes(routes)
     confirm = routes.post_routes[f"/{resource}/import/confirm"]
 
     head, row = (("doc_type,doc_number,status,due_date", "invoice,RE-1,draft,{due}") if resource == "docs"
                  else ("ref_id,status,notes", "RE-1,draft,{due}"))
-    await confirm(_Form({"csv_data": f"{head}\n{row.format(due='2026-01-31')}\n"}))
-    await confirm(_Form({"csv_data": f"{head}\n{row.format(due='2026-02-28')}\n", "upsert": "1"}))
+    await confirm(await _staged_form("tok", f"{head}\n{row.format(due='2026-01-31')}\n"))
+    await confirm(await _staged_form("tok", f"{head}\n{row.format(due='2026-02-28')}\n", upsert="1"))
 
     rows = (await _search("tok", {"q": "RE-1"}))["items"]
     assert len(rows) == 1, rows
@@ -271,7 +296,7 @@ async def test_reimporting_a_spreadsheet_updates_the_record_it_created(client, s
 async def _docs_import_screen(client, session, monkeypatch):
     from ui.routes import docs_import
 
-    _, _, token = await _setup(session)
+    company_id, _, token = await _setup(session)
     headers = {"Authorization": f"Bearer {token}"}
 
     async def _batch(_tok, path, records, upsert=False):
@@ -283,6 +308,7 @@ async def _docs_import_screen(client, session, monkeypatch):
     monkeypatch.setattr(docs_import, "_token", lambda request: "tok")
     monkeypatch.setattr(docs_import.api, "batch_import", _batch)
     monkeypatch.setattr(docs_import.api, "numbered_ids", _numbered_via(client, headers))
+    _mock_company(monkeypatch, company_id)
     routes = _Routes()
     docs_import.setup_routes(routes)
     confirm = routes.post_routes["/docs/import/confirm"]
@@ -291,20 +317,23 @@ async def _docs_import_screen(client, session, monkeypatch):
         rows = (await _search("tok", {"q": number}))["items"]
         return [(await client.get(f"/docs/{r['id']}", headers=headers)).json() for r in rows]
 
-    return headers, confirm, numbered
+    async def stage(csv_text: str, **extra):
+        return await _staged_form("tok", csv_text, **extra)
+
+    return headers, confirm, numbered, stage
 
 
 @pytest.mark.asyncio
 async def test_importing_a_document_made_in_the_app_updates_it(client, session, monkeypatch):
-    headers, confirm, numbered = await _docs_import_screen(client, session, monkeypatch)
+    headers, confirm, numbered, stage = await _docs_import_screen(client, session, monkeypatch)
     r = await client.post("/docs", headers=headers, json={
         "doc_type": "quotation", "line_items": [{"name": "Service", "quantity": 1, "unit_price": 10.0}]})
     assert r.status_code == 200, r.text
     doc_id = r.json()["id"]
     number = (await client.get(f"/docs/{doc_id}", headers=headers)).json()["ref_id"]
 
-    await confirm(_Form({"csv_data": f"doc_type,doc_number,status,due_date\nquotation,{number},draft,2099-02-28\n",
-                         "upsert": "1"}))
+    await confirm(await stage(f"doc_type,doc_number,status,due_date\nquotation,{number},draft,2099-02-28\n",
+                               upsert="1"))
     docs = await numbered(number)
     assert [d["id"] for d in docs] == [doc_id]
     assert docs[0]["due_date"] == "2099-02-28"
@@ -312,10 +341,9 @@ async def test_importing_a_document_made_in_the_app_updates_it(client, session, 
 
 @pytest.mark.asyncio
 async def test_reimporting_with_the_type_written_differently_updates_the_same_document(client, session, monkeypatch):
-    _, confirm, numbered = await _docs_import_screen(client, session, monkeypatch)
-    await confirm(_Form({"csv_data": "doc_type,doc_number,status,due_date\ninvoice,RE-2,draft,2026-01-31\n"}))
-    await confirm(_Form({"csv_data": "doc_type,doc_number,status,due_date\nInvoice,RE-2,draft,2026-02-28\n",
-                         "upsert": "1"}))
+    _, confirm, numbered, stage = await _docs_import_screen(client, session, monkeypatch)
+    await confirm(await stage("doc_type,doc_number,status,due_date\ninvoice,RE-2,draft,2026-01-31\n"))
+    await confirm(await stage("doc_type,doc_number,status,due_date\nInvoice,RE-2,draft,2026-02-28\n", upsert="1"))
     docs = await numbered("RE-2")
     assert [(d["doc_type"], d["due_date"]) for d in docs] == [("invoice", "2026-02-28")]
 
@@ -352,6 +380,7 @@ async def _import_screen(client, session, monkeypatch, resource: str):
     monkeypatch.setattr(screen, "_token", lambda request: "tok")
     monkeypatch.setattr(api_client, "batch_import", _batch)
     monkeypatch.setattr(api_client, "numbered_ids", _numbered_via(client, headers))
+    _mock_company(monkeypatch, company_id)
     routes = _Routes()
     screen.setup_routes(routes)
     return company_id, headers, routes.post_routes[f"/{resource}/import/confirm"], sent
@@ -385,7 +414,7 @@ async def test_reimporting_a_number_two_records_share_is_an_error_row(client, se
     for _ in range(2):
         await _seed_numbered(session, company_id, resource, "AMB-1")
 
-    panel = await confirm(_Form({"csv_data": _csv(resource, "AMB-1", "2099-02-28"), "upsert": "1"}))
+    panel = await confirm(await _staged_form("tok", _csv(resource, "AMB-1", "2099-02-28"), upsert="1"))
     assert await _numbered_count(session, company_id, "AMB-1") == 2
     assert sent == []
     assert "AMB-1" in to_xml(panel)
@@ -397,7 +426,7 @@ async def test_a_near_match_never_stands_in_for_the_number_imported(client, sess
     company_id, headers, confirm, _ = await _import_screen(client, session, monkeypatch, resource)
     near = await _seed_numbered(session, company_id, resource, "NM-10")
 
-    await confirm(_Form({"csv_data": _csv(resource, "NM-1", "2099-02-28"), "upsert": "1"}))
+    await confirm(await _staged_form("tok", _csv(resource, "NM-1", "2099-02-28"), upsert="1"))
     assert await _numbered_count(session, company_id, "NM-1") == 1
     record = (await client.get(f"/{resource}/{near}", headers=headers)).json()
     assert record.get("due_date" if resource == "docs" else "notes") in (None, "")

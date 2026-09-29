@@ -430,6 +430,43 @@ async def _item_count(session, company_id: str) -> int:
     )).scalar_one()
 
 
+async def _business_snapshot(session, company_id: str) -> dict:
+    """Every business effect an item import can have, read fresh from the database."""
+    from sqlalchemy import select
+
+    from celerp.models.company import Company, Location
+    from celerp.models.import_batch import ImportBatch
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+    cid = uuid.UUID(company_id)
+    session.expire_all()
+    projections = (await session.execute(select(Projection).where(Projection.company_id == cid))).scalars().all()
+    items = {p.entity_id: (p.state, p.version, p.location_id, p.updated_at) for p in projections if p.entity_type == "item"}
+    ledger = sorted(
+        (e.id, e.entity_id, e.event_type, e.idempotency_key)
+        for e in (await session.execute(select(LedgerEntry).where(LedgerEntry.company_id == cid))).scalars().all()
+    )
+    batches = sorted(
+        (str(b.id), b.row_count, b.status, tuple(b.entity_ids))
+        for b in (await session.execute(select(ImportBatch).where(ImportBatch.company_id == cid))).scalars().all()
+    )
+    locations = sorted(
+        loc.name for loc in (await session.execute(select(Location).where(Location.company_id == cid))).scalars().all()
+    )
+    company = await session.get(Company, cid)
+    return {
+        "item_count": len(items),
+        "items": items,
+        "quantities": {eid: v[0].get("quantity") for eid, v in items.items()},
+        "projections": sorted((p.entity_type, p.entity_id, p.version) for p in projections),
+        "ledger_count": len(ledger),
+        "ledger": ledger,
+        "import_batches": batches,
+        "locations": locations,
+        "category_schemas": (company.settings or {}).get("category_schemas"),
+    }
+
+
 async def _rows_preview(client, h, rows, *, upsert=False, key="op-1") -> dict:
     r = await client.post("/items/import/rows/preview", json={"rows": rows, "upsert": upsert, "idempotency_key": key}, headers=h)
     assert r.status_code == 200, r.text
@@ -680,42 +717,99 @@ class TestPreviewCommitInvariant:
         hb = (await client.get(f"/items/import/preview?file_id={fid}&sheet=Two", headers=perm["admin_h"])).json()["preview_hash"]
         assert ha != hb
 
-    # Whole-import identity -------------------------------------------------
+    # INV-IMPORT-02: one logical import is semantically built once ------------
 
     @pytest.mark.asyncio
-    async def test_large_import_is_one_semantic_build_with_bounded_writes(self, client, perm, monkeypatch):
+    async def test_inv_import_02_large_import_is_built_once_and_written_in_bounded_chunks(self, client, session, perm, monkeypatch):
         import celerp_inventory.services as svc
-        builds, batches = [], []
+        events: list[tuple] = []
         real_build, real_commit = svc.build_import_records, svc.commit_import_batch
 
         async def build_spy(*a, **k):
-            builds.append(len(a[2]))
+            events.append(("build", len(a[2]), k["dry_run"]))
             return await real_build(*a, **k)
 
         async def commit_spy(session, company_id, user, role, settings, body):
-            batches.append(len(body.records))
+            events.append(("write", len(body.records)))
             return await real_commit(session, company_id, user, role, settings, body)
 
-        rows = [{"name": f"Item {i}", "sell_by": "piece", "quantity": "1"} for i in range(501)]
-        ph = (await _rows_preview(client, perm["admin_h"], rows, key="big"))["preview_hash"]
+        # Rows 1 and 1001 share a SKU no existing item carries, under update-existing.
+        # Resolved once against the pre-commit state, both are creates. Were row 1001
+        # resolved after the first chunk's writes, it would find row 1's item as its
+        # unique SKU match and patch it instead.
+        rows = [{"name": "Shared first", "sku": "INV02-SHARED", "sell_by": "piece", "quantity": "1"}]
+        rows += [{"name": f"Item {i}", "sell_by": "piece", "quantity": "1"} for i in range(2, 1001)]
+        rows.append({"name": "Shared last", "sku": "INV02-SHARED", "sell_by": "piece", "quantity": "2"})
+        assert len(rows) == 1001
+        preview = await _rows_preview(client, perm["admin_h"], rows, upsert=True, key="big")
+        assert preview["errors"] == []
         monkeypatch.setattr(svc, "build_import_records", build_spy)
         monkeypatch.setattr(svc, "commit_import_batch", commit_spy)
-        r = await _rows_commit(client, perm["admin_h"], rows, key="big", preview_hash=ph)
+        r = await _rows_commit(client, perm["admin_h"], rows, upsert=True, key="big", preview_hash=preview["preview_hash"])
         assert r.status_code == 200, r.text
-        assert r.json()["created"] == 501
-        assert builds.count(501) == 2  # the bound preview, then the writer: each over the whole import
-        assert batches == [500, 1]
+        body = r.json()
+        assert (body["created"], body["updated"], body["errors"]) == (1001, 0, [])
+        # One writer build over the whole import, preceded only by the bound preview's
+        # dry-run recheck of the same rows; both run before any chunk is written.
+        assert events == [
+            ("build", 1001, True), ("build", 1001, False),
+            ("write", 500), ("write", 500), ("write", 1),
+        ]
+        assert [e for e in events if e[0] == "build" and e[2] is False] == [("build", 1001, False)]
+        states = await _item_states(session, perm["company_id"])
+        assert len([s for s in states if s["name"].startswith(("Item ", "Shared "))]) == 1001
+        shared = sorted((s["name"], float(s["quantity"])) for s in states if s.get("sku") == "INV02-SHARED")
+        assert shared == [("Shared first", 1.0), ("Shared last", 2.0)]
+
+    # INV-IMPORT-01: an exact retry changes no business state ----------------
 
     @pytest.mark.asyncio
-    async def test_identical_rows_are_distinct_creates_and_exact_retry_is_a_no_op(self, client, session, perm):
-        rows = [{"name": "Same", "sell_by": "piece", "quantity": "1"}] * 2
-        ph = (await _rows_preview(client, perm["admin_h"], rows, key="twins"))["preview_hash"]
-        first = await _rows_commit(client, perm["admin_h"], rows, key="twins", preview_hash=ph)
-        assert first.json()["created"] == 2
-        count = await _item_count(session, perm["company_id"])
-        again = await _rows_commit(client, perm["admin_h"], rows, key="twins", preview_hash=ph)
-        assert again.status_code == 200 and again.json()["created"] == 0
-        assert await _item_count(session, perm["company_id"]) == count
+    @pytest.mark.parametrize("mode", ["create", "upsert"])
+    async def test_inv_import_01_exact_retry_changes_no_business_state(self, client, session, perm, mode):
+        h = perm["admin_h"]
+        if mode == "create":
+            upsert = False
+            # Identical rows are distinct lots; one row also creates a location and
+            # grows a category schema from an attribute column.
+            rows = [{"name": "Same", "sell_by": "piece", "quantity": "1"}] * 2 + [
+                {"name": "Annexed", "sku": "RT-N", "category": "red_a", "sell_by": "piece", "quantity": "4",
+                 "retail_price": "12", "location_name": "Annex", "finish": "matte"},
+            ]
+        else:
+            upsert = True
+            await _seed_items(client, h, [
+                {"name": "Seed A", "sku": "RT-A", "sell_by": "piece", "quantity": "1"},
+                {"name": "Seed B", "sku": "RT-B", "sell_by": "piece", "quantity": "2", "cost_price": "5"},
+            ], key="retry-seed")
+            rows = [
+                {"name": "Seed A renamed", "sku": "RT-A", "sell_by": "piece", "quantity": "3", "retail_price": "12"},
+                {"name": "Seed B", "sku": "RT-B", "cost_price": "7"},
+                {"name": "New C", "sku": "RT-C", "sell_by": "piece", "quantity": "5"},
+            ]
+        key = f"retry-{mode}"
+        ph = (await _rows_preview(client, h, rows, upsert=upsert, key=key))["preview_hash"]
+
+        before = await _business_snapshot(session, perm["company_id"])
+        first = await _rows_commit(client, h, rows, upsert=upsert, key=key, preview_hash=ph)
+        assert first.status_code == 200 and first.json()["errors"] == [], first.text
+        after_first = await _business_snapshot(session, perm["company_id"])
+        again = await _rows_commit(client, h, rows, upsert=upsert, key=key, preview_hash=ph)
+        assert again.status_code == 200, again.text
+        after_second = await _business_snapshot(session, perm["company_id"])
+
+        # The first commit did real work: new lots, and for the upsert two patches
+        # plus a cost restatement on the ledger.
+        new_items = set(after_first["items"]) - set(before["items"])
+        if mode == "create":
+            assert len(new_items) == 3
+            assert after_first["locations"] == sorted(before["locations"] + ["Annex"])
+            assert "finish" in str(after_first["category_schemas"]["red_a"])
+        else:
+            assert len(new_items) == 1
+            assert after_first["ledger_count"] == before["ledger_count"] + 4
+        for part in ("item_count", "items", "quantities", "projections", "ledger_count", "ledger",
+                     "import_batches", "locations", "category_schemas"):
+            assert after_second[part] == after_first[part], part
 
     @pytest.mark.asyncio
     async def test_rows_envelope_is_bounded_by_the_tabular_limits(self, client, perm):
