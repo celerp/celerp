@@ -418,3 +418,53 @@ async def test_manufacturing_recost_follows_merge_lineage(client, session, auth)
     await _recost_run_lots(session, auth["company_id"], user, "mfg:order-1", run, 130.0)
     await session.commit()
     assert await _cost(session, auth, merged) == 180.0
+
+
+# -- Zero-quantity unit cost: one normalization for price, edit and CSV -------
+
+async def _set_unit_cost_at_zero(client, auth, item_id: str, path: str) -> None:
+    if path == "price":
+        r = await client.post(f"/items/{item_id}/price", headers=auth["headers"],
+                              json={"price_type": "cost_price", "new_price": 12.5})
+    elif path == "patch":
+        r = await client.patch(f"/items/{item_id}", headers=auth["headers"],
+                               json={"fields_changed": {"cost_price": {"old": None, "new": 12.5}}})
+    else:
+        record = {"entity_id": item_id, "event_type": "item.patched", "source": "csv_import",
+                  "data": {"name": "Lot", "cost_price": 12.5},
+                  "idempotency_key": f"csv:item:{item_id}:patch:{uuid.uuid4().hex}"}
+        r = await client.post("/items/import/batch", headers=auth["headers"], json={"records": [record]})
+        assert r.json()["updated"] == 1, r.json()
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["price", "patch", "csv"])
+async def test_zero_quantity_unit_cost_survives_new_stock_and_sale(client, session, auth, path):
+    # A lot that once had a cost basis, now empty: the new unit cost replaces it.
+    item_id = await _item(client, auth, 40.0, qty=0)
+    await _set_unit_cost_at_zero(client, auth, item_id, path)
+    state = await _state(session, auth, item_id)
+    assert state.get("cost_price") == 12.5
+    assert state.get("cost_total") is None and state.get("cost_base") is None
+
+    r = await client.post(f"/items/{item_id}/adjust", headers=auth["headers"], json={"new_qty": 4})
+    assert r.status_code == 200, r.text
+    item = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert item["cost_price"] == 12.5
+    assert item["cost_total"] == 50.0
+
+    doc_id = await _sell(client, session, auth, item_id)
+    session.expire_all()
+    fin = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": f"je:auto:{doc_id}:fin"})
+    assert _cogs(fin.state) == 50.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["price", "patch", "csv"])
+async def test_unit_cost_with_stock_sets_the_basis(client, session, auth, path):
+    item_id = await _item(client, auth, None, qty=4)
+    await _set_unit_cost_at_zero(client, auth, item_id, path)
+    state = await _state(session, auth, item_id)
+    assert state["cost_base"] == 50.0 and state["cost_total"] == 50.0
+    assert "cost_price" not in state

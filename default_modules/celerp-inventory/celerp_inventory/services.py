@@ -2389,19 +2389,19 @@ async def commit_import_batch(
 
         # A patched goods cost is restated like an edit on the item page (merge and
         # COGS consequences included); the row applies whole or not at all.
-        new_basis = None
+        # The cost is applied after the patch, as the same item.updated cost edit the item
+        # page makes, so it normalizes against the row's resulting quantity.
+        cost_change = None
         if event_type == "item.patched" and stored_proj is not None and COST_ITEM_KEYS & set(data):
             cost_total, cost_price = data.pop("cost_total", None), data.pop("cost_price", None)
-            try:
-                if cost_total not in (None, ""):
-                    new_basis = float(cost_total)
-                elif cost_price not in (None, ""):
-                    quantity = data.get("quantity", (stored_proj.state or {}).get("quantity"))
-                    new_basis = float(cost_price) * float(quantity or 0)
-            except (TypeError, ValueError):
-                errors.append(f"Row (SKU={data.get('sku', '?')}): cost must be a number")
-                skipped += 1
-                continue
+            field, value = ("cost_total", cost_total) if cost_total not in (None, "") else ("cost_price", cost_price)
+            if value not in (None, ""):
+                try:
+                    cost_change = {field: {"new": float(value)}}
+                except (TypeError, ValueError):
+                    errors.append(f"Row (SKU={data.get('sku', '?')}): cost must be a number")
+                    skipped += 1
+                    continue
 
         try:
             async with session.begin_nested():
@@ -2419,10 +2419,10 @@ async def commit_import_batch(
                     idempotency_key=idem_key,
                     metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
                 )
-                if new_basis is not None and not getattr(entry, "was_deduped", False):
+                if cost_change is not None and not getattr(entry, "was_deduped", False):
                     await restate_item_cost(
                         session, company_id, entity_id,
-                        event_type="item.cost_adjusted", data={"cost_total": round(new_basis, 2)},
+                        event_type="item.updated", data={"fields_changed": cost_change},
                         actor_id=user.id, source=rec.source, idempotency_key=f"{idem_key}:cost",
                     )
         except CostRestatementConflict as exc:
