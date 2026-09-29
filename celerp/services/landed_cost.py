@@ -8,6 +8,8 @@ See context/2026-0614-freight-tracking-plan.md sections 3 and 6.
 """
 from __future__ import annotations
 
+from collections.abc import Hashable
+
 from celerp.services.money import round_money, to_stored_float
 
 
@@ -15,10 +17,10 @@ def allocate_landed_cost(
     goods: list[dict],
     components: list[dict],
     currency: str,
-) -> dict[str, dict[str, float]]:
+) -> dict[Hashable, dict[str, float]]:
     """Allocate landed-cost components across goods lines by value.
 
-    goods:      [{"key": str, "value": float (extended base-currency cost), "qty": float}]
+    goods:      [{"key": hashable line key, "value": float (extended base-currency cost), "qty": float}]
     components: [{"kind": str, "amount": float (base-currency, capitalisable only)}]
 
     Returns {goods_key: {kind: per_unit_landed}}. Per kind, the shares, rounded to the minor unit of
@@ -26,7 +28,7 @@ def allocate_landed_cost(
     line); falls back to a quantity basis when the total goods value is zero. Per-unit amounts are kept at full precision; callers round the final
     landed total (unit x quantity).
     """
-    result: dict[str, dict[str, float]] = {g["key"]: {} for g in goods}
+    result: dict[Hashable, dict[str, float]] = {g["key"]: {} for g in goods}
     if not goods:
         return result
 
@@ -66,16 +68,17 @@ def allocate_landed_cost(
 _KIND_BY_CLEARING = {"1130-FRT": "freight", "1130-INS": "insurance", "1130-DTY": "duty", "1130-IVT": "import_vat"}
 
 
-async def compute_bill_landed_allocation(session, company_id, doc_state: dict) -> dict[str, dict[str, float]]:
-    """Allocate a bill's capitalisable charge lines across its stocked goods lines, keyed by goods SKU.
+async def compute_bill_landed_allocation(session, company_id, doc_state: dict) -> dict[int, dict[str, float]]:
+    """Allocate a bill's capitalisable charge lines across the lines it brings in as stock.
 
-    Returns {sku: {kind: per_unit_landed}}. Recoverable import VAT is excluded (it does not capitalise);
+    Returns {line index: {kind: landed per unit of the line's quantity}}. Every stock line
+    takes its share, whether or not it names an item or SKU. Recoverable import VAT is excluded (it does not capitalise);
     landed amounts are converted to base currency by the bill conversion rate. Reuses the same
     account-routing logic as the bill JE so cost allocation and GL postings stay consistent.
     """
     from celerp.models.company import Company
     from celerp.models.projections import Projection
-    from celerp.services.auto_je import landed_account_for_line
+    from celerp.services.auto_je import bill_line_kind, landed_account_for_line
     from celerp.services.money import require_doc_rate, to_base
     from celerp.services.units import is_non_stock_line
 
@@ -84,7 +87,7 @@ async def compute_bill_landed_allocation(session, company_id, doc_state: dict) -
     rate = require_doc_rate(doc_state, base_currency)
     components: list[dict] = []
     goods: list[dict] = []
-    for li in doc_state.get("line_items", []):
+    for index, li in enumerate(doc_state.get("line_items", [])):
         line_total = float(li.get("line_total") or
                            (float(li.get("quantity") or 0) * float(li.get("unit_price") or 0)))
         base_amt = to_base(line_total, rate, base_currency)
@@ -95,13 +98,15 @@ async def compute_bill_landed_allocation(session, company_id, doc_state: dict) -
             continue
         if acct == "1150":
             continue  # recoverable import VAT: not capitalised
-        # Goods line: include if it is stocked (skip service/non-stock lines).
+        # Goods line: include if the bill brings it in as stock (skip service/non-stock lines).
+        if bill_line_kind(li) != "stock":
+            continue
         inv_type = None
         item_id = li.get("item_id") or li.get("entity_id")
         if item_id:
             proj = await session.get(Projection, {"company_id": company_id, "entity_id": str(item_id)})
             if proj:
                 inv_type = proj.state.get("inventory_type")
-        if not is_non_stock_line(inv_type, li.get("sell_by")) and base_amt > 0 and li.get("sku"):
-            goods.append({"key": li.get("sku"), "value": base_amt, "qty": float(li.get("quantity") or 0)})
+        if not is_non_stock_line(inv_type, li.get("sell_by")) and base_amt > 0:
+            goods.append({"key": index, "value": base_amt, "qty": float(li.get("quantity") or 0)})
     return allocate_landed_cost(goods, components, base_currency)

@@ -3645,7 +3645,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     # Landed-cost allocation: spread this bill's freight/duty/insurance/non-recoverable-VAT charges
     # across its stocked goods lines (by value). Received parcels carry their per-unit share so each
     # item's cost reflects landed cost; per-unit storage prorates naturally to the received quantity.
-    bill_alloc: dict[str, dict[str, float]] = {}
+    bill_alloc: dict[int, dict[str, float]] = {}
     landed_drawdown: dict[str, float] = {}   # per-kind landed cost capitalised by this receipt
     if doc_type == "bill":
         bill_alloc = await compute_bill_landed_allocation(session, company_id, row.state)
@@ -3782,11 +3782,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             sku_ref: dict = template_state
 
             # Bill line item: explicit user-set fields take highest priority over sku_ref
-            doc_line: dict = next(
-                (li for li in row.state.get("line_items", [])
-                 if str(li.get("sku") or "").strip() == _sku.strip()),
-                {},
-            )
+            _lines = row.state.get("line_items") or []
+            doc_line: dict = _lines[it.po_line_index] if 0 <= it.po_line_index < len(_lines) else {}
 
             # Fields to inherit from existing item; barcode and rfid_epc excluded (both are
             # per-physical-unit: a received parcel is a new unit, so it mints a fresh barcode
@@ -3826,9 +3823,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             _recv_barcode_idx += 1
             if received_cost is not None:
                 item_data["cost_total"] = received_cost
-            # Attach the per-unit landed cost allocated to this goods line: the projection derives
-            # cost_total = cost_base + Σ(unit × quantity), so the parcel carries its landed share.
-            _landed = bill_alloc.get(_sku.strip(), {})
+            # Attach the landed cost allocated to this goods line, per stock unit: the projection
+            # derives cost_total = cost_base + Σ(unit × quantity), so the parcel carries its landed share.
+            _landed = {k: u / conversion for k, u in bill_alloc.get(it.po_line_index, {}).items()}
             if _landed:
                 item_data["landed_contributions"] = {f"{entity_id}::{k}": u for k, u in _landed.items()}
                 for _k, _u in _landed.items():
