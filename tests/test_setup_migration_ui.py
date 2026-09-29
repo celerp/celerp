@@ -539,6 +539,8 @@ async def test_existing_new_company_landing_offers_fresh_or_migrate(ui, router, 
     assert r.status_code in (302, 303)
     assert "error" in r.headers["location"]
 
+    ui.cookies.clear()  # the create response seated the stubbed new-company tokens
+    _owner(ui)
     r = await ui.get("/setup/new-company/migrate")
     assert r.status_code == 200
     assert _back(_page(r), "/setup/new-company")
