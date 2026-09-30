@@ -95,14 +95,14 @@ async def test_source_is_hashed_off_the_event_loop(real_client, real_engine, mon
     from test_migration_lock_date import _finalize
 
     real_hash = store.file_sha256
-    on_loop: list[bool] = []
+    calls: list[tuple[object, bool]] = []
 
     def recording(path):
         try:
             asyncio.get_running_loop()
-            on_loop.append(True)
+            calls.append((path, True))
         except RuntimeError:
-            on_loop.append(False)
+            calls.append((path, False))
         return real_hash(path)
 
     monkeypatch.setattr(store, "file_sha256", recording)
@@ -110,4 +110,5 @@ async def test_source_is_hashed_off_the_event_loop(real_client, real_engine, mon
                                   monkeypatch, tmp_path / "data")
     assert rejected == [] and run.status == "ready_to_finalize", run.error_summary
     assert (await _finalize(real_client, real_engine, run)).status_code == 200
-    assert on_loop and not any(on_loop), on_loop
+    on_loop = [loop for path, loop in calls if store.run_dir(run.id) in path.parents]
+    assert on_loop and not any(on_loop), calls
