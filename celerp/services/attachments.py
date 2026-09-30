@@ -89,6 +89,27 @@ def _stored_extension(mime: str) -> str:
     return _MIME_EXTENSIONS.get(mime, "")
 
 
+_EXTENSION_MIMES = {ext: mime for mime, ext in _MIME_EXTENSIONS.items()}
+
+
+def stored_file_type(name: str) -> str | None:
+    """The allowed type a stored file name carries: the type whose stored extension ends
+    the name. None for any other name, so a file is never stored under an extension its
+    type does not give it."""
+    stem, dot, ext = name.rpartition(".")
+    return _EXTENSION_MIMES.get(f".{ext}") if dot and stem and is_plain_name(name) else None
+
+
+def stored_file_name(name: str, mime: str) -> str | None:
+    """``name`` with the stored extension of ``mime`` in place of its own; None when
+    ``mime`` is not an allowed type."""
+    ext = _MIME_EXTENSIONS.get(mime)
+    if ext is None:
+        return None
+    stem, dot, _ = name.rpartition(".")
+    return f"{stem if dot and stem else name}{ext}"
+
+
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
 
 
@@ -616,12 +637,12 @@ async def read_company_file(company_id, url: str, max_bytes: int) -> bytes | Non
 
 async def store_company_file(company_id, name: str, content: bytes) -> str:
     """Store ``content`` for this company under the stored file name ``name`` through the
-    configured backend; returns the new URL."""
-    stem, dot, ext = name.rpartition(".")
-    mime = next((m for m, e in _MIME_EXTENSIONS.items() if dot and e == f".{ext}"), None)
-    if mime is None or not stem:
-        stem, mime = name, "application/octet-stream"
-    return await get_backend().store(str(company_id), stem, content, mime)
+    configured backend; returns the new URL. Raises ValueError when ``name`` does not end in
+    the stored extension of an allowed type."""
+    mime = stored_file_type(name)
+    if mime is None:
+        raise ValueError(f"Unsupported file type: {name}")
+    return await get_backend().store(str(company_id), name.rpartition(".")[0], content, mime)
 
 
 async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | None:

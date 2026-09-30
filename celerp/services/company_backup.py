@@ -109,6 +109,7 @@ TOO_LARGE = "This company backup is too large to restore here." + _NOT_RESTORED
 TOO_LARGE_UPLOAD = "This file is too large for a company backup upload." + _NOT_RESTORED
 UNSAVABLE = "This company backup has records this Celerp cannot save." + _NOT_RESTORED
 ATTACHMENT_FAILED = "Celerp could not save an attachment file from this backup." + _NOT_RESTORED
+ATTACHMENT_TYPE = "This company backup has an attachment file of a type Celerp does not store: {name}." + _NOT_RESTORED
 MISMATCH = "The restored company did not match the backup ({table})." + _NOT_RESTORED
 ALREADY_SET_UP = "This Celerp is already set up." + _NOT_RESTORED
 NOT_A_MEMBER = ("This backup was already restored here as a company you are not a member of."
@@ -366,18 +367,34 @@ def _without(columns: list[str]) -> str:
 
 # ── Export ───────────────────────────────────────────────────────────────────
 
-def _collect_urls(value, company_id, found: dict[str, str]) -> None:
-    """Record every attachment URL stored for ``company_id`` in a value, by stored name."""
+def _collect_urls(value, company_id, found: dict[str, str], types: dict[str, str]) -> None:
+    """Record every attachment URL stored for ``company_id`` in a value, by stored name, and
+    the type recorded beside a URL in the same object."""
     if isinstance(value, str):
         name = attachments.company_file_name(company_id, value)
         if name is not None and found.setdefault(name, value) != value:
             raise BackupError(409, f"This company has two attachment files named {name}." + _NOT_BACKED_UP)
     elif isinstance(value, dict):
+        if isinstance(value.get("url"), str) and isinstance(value.get("mime"), str):
+            types.setdefault(value["url"], value["mime"])
         for v in value.values():
-            _collect_urls(v, company_id, found)
+            _collect_urls(v, company_id, found, types)
     elif isinstance(value, list):
         for v in value:
-            _collect_urls(v, company_id, found)
+            _collect_urls(v, company_id, found, types)
+
+
+def _backup_name(name: str, url: str, types: dict[str, str]) -> str:
+    """The name a stored file travels under: its own when it ends in its type's stored
+    extension, otherwise renamed to the stored extension of the type recorded beside it
+    (files stored before extensions were derived from the type). Refused when neither
+    gives an allowed type, since a restore would refuse the file."""
+    mime = attachments.stored_file_type(name) or types.get(url)
+    backup_name = attachments.stored_file_name(name, mime) if mime else None
+    if backup_name is None:
+        raise BackupError(409, f"This company has an attachment file of a type Celerp does not store: {url}."
+                          + _NOT_BACKED_UP)
+    return backup_name
 
 
 def _module_versions(names: set[str]) -> dict[str, str]:
@@ -410,7 +427,8 @@ async def export_company(session: AsyncSession, company_id, out: Path, *,
         tables.append(name)
     settings = _kept_settings(company.settings)
     found: dict[str, str] = {}
-    _collect_urls(settings, company_id, found)
+    types: dict[str, str] = {}
+    _collect_urls(settings, company_id, found, types)
     enabled = get_enabled(settings)
     manifest: dict = {
         "format": FORMAT, "format_version": FORMAT_VERSION, "backup_id": str(uuid.uuid4()),
@@ -434,20 +452,26 @@ async def export_company(session: AsyncSession, company_id, out: Path, *,
                 with zf.open(f"tables/{name}.jsonl", "w", force_zip64=True) as fh:
                     async for batch in _batches(session, table, company_id, expr):
                         for line in batch:
-                            _collect_urls(json.loads(line), company_id, found)
+                            _collect_urls(json.loads(line), company_id, found, types)
                             body = line.encode() + b"\n"
                             digest.update(body)
                             fh.write(body)
                         rows += len(batch)
                 manifest["tables"][name] = {"columns": table.insertable, "rows": rows, "sha256": digest.hexdigest()}
+            names: dict[str, str] = {}
             for name in sorted(found):
+                backup_name = _backup_name(name, found[name], types)
+                if names.setdefault(backup_name, name) != name:
+                    raise BackupError(409, f"This company has two attachment files named {backup_name}."
+                                      + _NOT_BACKED_UP)
+            for backup_name, name in sorted(names.items()):
                 url = found[name]
                 body = await attachments.read_company_file(company_id, url, MAX_MEMBER_BYTES)
                 if body is None:
                     raise BackupError(409, f"This company has an attachment file Celerp cannot read: {url}."
                                       + _NOT_BACKED_UP)
-                zf.writestr(f"attachments/{name}", body)
-                manifest["attachments"].append({"url": url, "name": name, "size": len(body),
+                zf.writestr(f"attachments/{backup_name}", body)
+                manifest["attachments"].append({"url": url, "name": backup_name, "size": len(body),
                                                 "sha256": hashlib.sha256(body).hexdigest()})
             zf.writestr("manifest.json", json.dumps(manifest, indent=1))
         partial.replace(out)
@@ -520,9 +544,13 @@ def _check_manifest(m) -> None:
         ok = ok and len(set(names)) == len(names) and all(
             isinstance(f, dict) and isinstance(f.get("url"), str) and isinstance(f.get("name"), str)
             and attachments.is_plain_name(f["name"]) and _is_count(f.get("size"))
-            and isinstance(f.get("sha256"), str) for f in files)
+            and isinstance(f.get("sha256"), str)
+            and attachments.company_file_name(company["id"], f["url"]) is not None for f in files)
     if not ok:
         raise BackupError(422, DAMAGED)
+    for f in files:
+        if attachments.stored_file_type(f["name"]) is None:
+            raise BackupError(422, ATTACHMENT_TYPE.format(name=f["name"]))
 
 
 class _Budget:

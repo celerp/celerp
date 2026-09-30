@@ -2356,3 +2356,62 @@ async def test_deactivated_restored_company_not_reused(real_engine, real_client,
                   c=first["company_id"])
     again = _r_created(await restore(real_client, tok, data, "new_company"))
     assert again["company_id"] != first["company_id"]
+
+
+def _bk_with_attachment(data: bytes, name: str, url: str, body: bytes) -> bytes:
+    """The backup with one more attachment file under ``name`` for ``url``, hashes rewritten."""
+    parts = members(data)
+    m = json.loads(parts.pop("manifest.json"))
+    parts[f"attachments/{name}"] = body
+    m["attachments"].append({"url": url, "name": name, "size": len(body), "sha256": sha256(body)})
+    return rezip({**parts, "manifest.json": json.dumps(m).encode()})
+
+
+@pytest.mark.parametrize("name", ["evil.html", "evil.svg", "evil.png.html", "evil", ".png"])
+async def test_restore_refuses_attachment_of_unstored_type(real_engine, real_client, tmp_path, monkeypatch, name):
+    """An attachment file whose name does not carry the stored extension of an allowed type
+    is refused before anything is written, so a backup cannot plant a page that runs in the app."""
+    _bk_local(monkeypatch, tmp_path)
+    user, cid, tok = await _bk_setup(real_engine)
+    body = b"<html><body><script>document.title = 'x'</script></body></html>"
+    data = _bk_with_attachment(await download(real_client, tok), name, f"/static/attachments/{cid}/{name}", body)
+    folders = set((tmp_path / "static" / "attachments").glob("*"))
+    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "a type Celerp does not store")
+    assert set((tmp_path / "static" / "attachments").glob("*")) == folders
+
+
+async def test_restore_refuses_attachment_url_of_another_company(real_engine, real_client, tmp_path, monkeypatch):
+    """An attachment listed under a URL that is not a file of the backed-up company is refused."""
+    _bk_local(monkeypatch, tmp_path)
+    user, _, tok = await _bk_setup(real_engine)
+    url = f"/static/attachments/{uuid.uuid4()}/photo.png"
+    data = _bk_with_attachment(await download(real_client, tok), "photo.png", url, b"photo")
+    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "damaged")
+
+
+async def test_attachment_named_before_type_extensions_round_trips(real_engine, real_client, tmp_path, monkeypatch):
+    """A file stored under the name it was uploaded with travels under its recorded type's
+    extension and restores; one with no allowed type stops the backup."""
+    _bk_local(monkeypatch, tmp_path)
+    _, cid, tok = await _bk_setup(real_engine)
+    url = _bk_local_file(tmp_path, cid, "scan.html", b"png-bytes")
+    state = {"attachments": [{"url": url, "mime": "image/png", "filename": "scan.html"}]}
+    await _bk_sql(real_engine, "UPDATE projections SET state = CAST(:d AS json) WHERE company_id = :c",
+                  c=cid, d=json.dumps(state))
+    data = await download(real_client, tok)
+    [entry] = manifest(data)["attachments"]
+    assert (entry["url"], entry["name"]) == (url, "scan.png")
+    assert members(data)["attachments/scan.png"] == b"png-bytes"
+    new = await _bk_restore_new(real_client, tok, data)
+    assert (tmp_path / "static" / "attachments" / new / "scan.png").read_bytes() == b"png-bytes"
+    assert not (tmp_path / "static" / "attachments" / new / "scan.html").exists()
+    restored = json.loads(await _bk_scalar(real_engine, "SELECT state::text FROM projections WHERE company_id = :c",
+                                           c=uuid.UUID(new)))
+    assert restored["attachments"][0]["url"] == f"/static/attachments/{new}/scan.png"
+
+    state["attachments"][0]["mime"] = "text/html"
+    await _bk_sql(real_engine, "UPDATE projections SET state = CAST(:d AS json) WHERE company_id = :c",
+                  c=cid, d=json.dumps(state))
+    r = await real_client.get("/company-backups/download", headers=auth(tok))
+    assert r.status_code == 409, r.text
+    assert "a type Celerp does not store" in r.json()["detail"] and r.json()["detail"].endswith("Nothing was backed up.")
