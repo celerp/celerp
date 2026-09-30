@@ -3324,6 +3324,8 @@
   "migration.file": "Datei",
   "migration.base_currency": "Basiswährung",
   "migration.period": "Zeitraum",
+  "migration.lock_date": "Sperrdatum",
+  "migration.lock_date_notice": "Ihre Datei sperrt die Bücher bis einschließlich {date}. Beim Abschließen wird hier dieselbe Periodensperre gesetzt, danach kann nichts mit Datum am oder vor dem {date} gebucht oder geändert werden.",
   "migration.currencies": "Währungen",
   "migration.no_records": "Keine Datensätze gefunden.",
   "migration.record_type": "Datensatztyp",

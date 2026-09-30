@@ -31,11 +31,18 @@ from decimal import Decimal
 from functools import lru_cache, partial
 
 from fastapi import HTTPException
-from sqlalchemy import select, text, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import cast, delete, select, text, update
+from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.importers.adapters.base import Artifact, MigrationDecisions, ScanError, SourceAdapter
+from celerp.importers.adapters.base import (
+    Artifact,
+    MigrationDecisions,
+    ScanError,
+    SourceAdapter,
+    SourceRevisionError,
+)
+from celerp.events.engine import find_event_by_idempotency, write_period_lock
 from celerp.importers.adapters.registry import get_adapter
 from celerp.importers.schema import (
     MIGRATION_CIF_VERSION,
@@ -85,6 +92,8 @@ SCAN_ALREADY_STARTED = "This upload was already used to start a migration, or it
 NO_UNFINISHED = "This company has no unfinished migration to discard."
 NOTHING_TO_MIGRATE = "The source file contains no records to migrate."
 OLDER_IMPORTER = "This migration was created by an older importer version and must be restarted."
+CHANGED_LOCK_DATE = ("The lock date in the source file has changed since this migration started. "
+                     "Restore the original file or start a new migration.")
 
 _S = MigrationStatus
 _P = MigrationPhase
@@ -236,7 +245,7 @@ def validate_decisions(scan: store.ScanSession, body: dict) -> MigrationDecision
         adapter = _adapter(scan.adapter_key)
         try:
             adapter.build_manifest(scan.artifacts, decisions)
-        except ScanError as exc:
+        except (ScanError, SourceRevisionError) as exc:
             errors["cutover_date"] = str(exc)
     if errors:
         raise MigrationError(422, errors)
@@ -267,6 +276,7 @@ def scan_view(scan: store.ScanSession) -> dict:
         "base_currency": s.base_currency,
         "period_start": s.period_start.isoformat() if s.period_start else None,
         "period_end": s.period_end.isoformat() if s.period_end else None,
+        "lock_date": s.lock_date.isoformat() if s.lock_date else None,
         "currencies": list(s.currencies),
         "object_counts": dict(s.object_counts),
         "features": list(s.features),
@@ -338,7 +348,8 @@ async def create_run(session: AsyncSession, *, company: Company, user: User, sca
         company_id=company.id, created_by_user_id=user.id, scan_claim_sha256=store.scan_claim(scan.token),
         source_system=adapter.key, source_artifact_name=first.original_name,
         prepared_by=decisions.prepared_by, source_artifact_sha256=first.sha256,
-        source_schema_version=scan.scan.source_schema_version, adapter_version=adapter.adapter_version,
+        source_schema_version=scan.scan.source_schema_version, source_lock_date=scan.scan.lock_date,
+        adapter_version=adapter.adapter_version,
         cif_version=MIGRATION_CIF_VERSION, mode=str(decisions.mode), status=_S.PREPARING.value, phase_state={},
         coverage={"entries": [c.model_dump(mode="json") for c in scan.scan.coverage]},
         mapping_decisions=store.decisions_json(decisions),
@@ -610,6 +621,20 @@ def _require_same_importer(run: MigrationRun, adapter: SourceAdapter) -> None:
         raise IncompatibleImporterVersion()
 
 
+class ChangedLockDate(Exception):
+    """The source now carries a different lock date from the one the run recorded."""
+
+    def __init__(self) -> None:
+        super().__init__(CHANGED_LOCK_DATE)
+
+
+def _require_same_lock_date(run: MigrationRun, manifest: CIFImportManifest) -> None:
+    """A run installs the lock date it recorded when it was created; a source whose lock
+    date has moved since would verify books against a different lock, so it is refused."""
+    if manifest.lock_date != run.source_lock_date:
+        raise ChangedLockDate()
+
+
 async def run_migration(run_id: uuid.UUID) -> None:
     """Run or resume one migration to ready_to_finalize, failed or cancelled.
 
@@ -625,6 +650,7 @@ async def run_migration(run_id: uuid.UUID) -> None:
         try:
             await _run_locked(run_id)
         finally:
+            await _clean_run_attachments(run_id)
             await holder.execute(text("SELECT pg_advisory_unlock(hashtext(:k))"), {"k": _lock_key(run_id)})
             await holder.commit()
 
@@ -642,9 +668,10 @@ async def _run_locked(run_id: uuid.UUID) -> None:
             adapter, artifacts, decisions = _source(run)
             _require_same_importer(run, adapter)
             manifest = await asyncio.to_thread(adapter.build_manifest, artifacts, decisions)
+            _require_same_lock_date(run, manifest)
             steps = _phase_steps(manifest)
             read_attachment = partial(adapter.read_attachment, artifacts)
-        except Exception as exc:  # a missing source, adapter or module sink, or a changed importer: nothing written
+        except Exception as exc:  # a missing source, adapter or module sink, or a changed importer or lock date: nothing written
             await _fail(maker, run_id, stopped_at, _phase_entry(state, stopped_at)["cursor"], exc)
             return
     targets: dict[str, str | None] = {}
@@ -676,16 +703,19 @@ async def _run_locked(run_id: uuid.UUID) -> None:
                     result = await batch[0].sink.import_batch(context, records)
                     validate_batch_result(records, result)  # any rejected record rolls the batch back
                     await _record_mappings(s, run_id, batch[0].group, result.mappings, targets)
-                    cursor += len(batch)
-                    entry = {**entry, "cursor": cursor, "created": entry["created"] + result.created,
-                             "skipped": entry["skipped"] + result.skipped, "errors": 0,
-                             "status": "done" if cursor >= len(phase_steps) else "running"}
-                    state[phase.value] = entry
-                    status = await _checkpoint(s, run_id, phase, state)
+                    advanced = cursor + len(batch)
+                    written = {**entry, "cursor": advanced, "created": entry["created"] + result.created,
+                               "skipped": entry["skipped"] + result.skipped, "errors": 0,
+                               "status": "done" if advanced >= len(phase_steps) else "running"}
+                    status = await _checkpoint(s, run_id, phase, {**state, phase.value: written})
                     await s.commit()
             except Exception as exc:
+                # The cursor the database last confirmed: a commit whose outcome is unknown is
+                # replayed from the batch start, and the sinks skip whatever did land.
                 await _fail(maker, run_id, phase, entry["cursor"], exc)
                 return
+            cursor, entry = advanced, written
+            state[phase.value] = entry
             if await _stop_if_cancelled(maker, run_id, status):
                 return
 
@@ -826,8 +856,18 @@ async def _reconcile_run(maker, run_id: uuid.UUID, state: dict, expected: list[t
 
 # ── Finish, discard and housekeeping ─────────────────────────────────────────
 
+async def is_company_migration_staged(session: AsyncSession, company_id: uuid.UUID) -> bool:
+    """Whether *company_id* is a company staged for a migration and not yet finished.
+
+    This is the one test every other module uses. It reads the migration's own staging
+    flag, never ``is_active``: a deactivated company is not staged, and a staged company
+    stays staged until its migration finalizes."""
+    return bool(await session.scalar(select(Company.is_migration_staged).where(Company.id == company_id)))
+
+
 async def finalize(session: AsyncSession, run: MigrationRun) -> MigrationRun:
-    """Re-check verification under the company lock, then activate the company in one commit."""
+    """Re-check verification under the company lock, then install the source's lock date and
+    activate the company in one commit, so the company never becomes normal without its lock."""
     await _lock_run(session, run)
     if run.status != _S.READY_TO_FINALIZE:
         raise _illegal("finalize", run)
@@ -840,6 +880,8 @@ async def finalize(session: AsyncSession, run: MigrationRun) -> MigrationRun:
             raise MigrationError(409, "Verification no longer matches the source. Resume the migration to re-run it.")
         company = await session.get(Company, run.company_id)
         await add_missing_required_defaults(session, run.company_id)
+        if run.source_lock_date:
+            write_period_lock(company, run.source_lock_date.isoformat(), run.created_by_user_id)
         company.is_active = True
         company.is_migration_staged = False
         run.reconciliation = report
@@ -894,7 +936,7 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     if not await _try_xact_lock(session, run.id):
         raise MigrationError(409, ALREADY_RUNNING)
     for table in await _company_tables(session):
-        if table in _DISCARD_ORDER:
+        if table in _DISCARD_ORDER or table == MigrationCleanupTask.__tablename__:
             continue
         held = await session.scalar(text(f'SELECT 1 FROM "{table}" WHERE company_id = :c LIMIT 1'),
                                     {"c": str(company.id)})
@@ -905,6 +947,9 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all())
     owner_id = run.created_by_user_id
     bootstrap = bool(run.source_summary.get("bootstrap"))
+    # The company task removes every file of the company, the staged ones included.
+    await session.execute(delete(MigrationCleanupTask).where(
+        MigrationCleanupTask.company_id == company.id, MigrationCleanupTask.attachment.is_not(None)))
     task = MigrationCleanupTask(company_id=company.id, run_ids=[str(r) for r in run_ids])
     session.add(task)
     for table in _DISCARD_ORDER:
@@ -923,18 +968,32 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     return redirect
 
 
-async def run_cleanup_task(session: AsyncSession, task_id: uuid.UUID) -> bool:
-    """Delete a discarded company's run sources and attachment files, then its cleanup
-    task. Files already gone count as deleted. A failure keeps the task for the startup
-    sweep and is logged by task id only; never raises. Returns whether the task is done."""
+async def _delete_task_files(session: AsyncSession, task: MigrationCleanupTask) -> None:
+    """Delete what *task* names. An attachment task's file is deleted only while no
+    committed record links it: the link and the task's deletion commit together, so a
+    linked file whose task survives is never removed."""
+    if task.attachment is None:
+        for run_id in task.run_ids:
+            await asyncio.to_thread(store.remove_run_dir, uuid.UUID(run_id))
+        await attachments.delete_company_files(str(task.company_id))
+        return
+    if await find_event_by_idempotency(session, task.company_id, task.attachment["idempotency_key"]) is None:
+        await attachments.delete_stored_file(str(task.company_id), task.attachment["file_id"],
+                                             task.attachment["mime"])
+
+
+async def _run_task(session: AsyncSession, task_id: uuid.UUID, *, runner_holds_lock: bool) -> bool:
     try:
         task = await session.scalar(select(MigrationCleanupTask).where(MigrationCleanupTask.id == task_id)
                                     .with_for_update(skip_locked=True))
         if task is None:  # done, or another sweep holds it
             return True
-        for run_id in task.run_ids:
-            await asyncio.to_thread(store.remove_run_dir, uuid.UUID(run_id))
-        await attachments.delete_company_files(str(task.company_id))
+        # A live runner may be about to link an attachment task's file: leave it to that runner.
+        if task.attachment is not None and not runner_holds_lock \
+                and not await _try_xact_lock(session, uuid.UUID(task.run_ids[0])):
+            await session.rollback()
+            return False
+        await _delete_task_files(session, task)
         await session.delete(task)
         await session.commit()
         return True
@@ -942,6 +1001,27 @@ async def run_cleanup_task(session: AsyncSession, task_id: uuid.UUID) -> bool:
         await session.rollback()
         logger.warning("Migration cleanup task %s is kept for a retry at startup: %s", task_id, type(exc).__name__)
         return False
+
+
+async def run_cleanup_task(session: AsyncSession, task_id: uuid.UUID) -> bool:
+    """Delete the files a cleanup task names, then the task: a discarded company's run
+    sources and attachment files, or one staged attachment file no committed record
+    links. Files already gone count as deleted. A failure, or a runner still working on
+    the task's run, keeps the task for the startup sweep and is logged by task id only;
+    never raises. Returns whether the task is done."""
+    return await _run_task(session, task_id, runner_holds_lock=False)
+
+
+async def _clean_run_attachments(run_id: uuid.UUID) -> None:
+    """Remove the files a run's batches stored but never linked. Called by the runner while
+    it still holds the run's lock, so no batch of this run can be linking them."""
+    async with _maker()() as s:
+        task_ids = (await s.scalars(select(MigrationCleanupTask.id).where(
+            MigrationCleanupTask.attachment.is_not(None),
+            cast(MigrationCleanupTask.run_ids, JSONB).contains([str(run_id)]),
+        ))).all()
+        for task_id in task_ids:
+            await _run_task(s, task_id, runner_holds_lock=True)
 
 
 async def sweep_cleanup_tasks(session: AsyncSession) -> int:
@@ -965,6 +1045,7 @@ async def run_view(session: AsyncSession, run: MigrationRun) -> dict:
         "source_system": run.source_system,
         "mode": run.mode,
         "cutover_date": (run.mapping_decisions or {}).get("cutover_date"),
+        "lock_date": run.source_lock_date.isoformat() if run.source_lock_date else None,
         "status": run.status,
         "current_phase": run.current_phase,
         "phases": [{"phase": p.value, "label": PHASE_LABELS[p],
@@ -1038,6 +1119,7 @@ def reconciliation_pack_csv(run: MigrationRun) -> str:
         ("Source", adapter.display_name if adapter else run.source_system),
         ("Mode", _MODE_LABELS[CIFMode(run.mode)]),
         ("Cutover date", decisions.get("cutover_date") or "--"),
+        ("Lock date", run.source_lock_date.isoformat() if run.source_lock_date else "--"),
         ("Source hash", run.source_artifact_sha256),
         ("Prepared by", csv_safe(run.prepared_by) if run.prepared_by else "--"),
         ("Generated at", report["generated_at"]),

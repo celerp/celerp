@@ -3324,6 +3324,8 @@
   "migration.file": "Berkas",
   "migration.base_currency": "Mata uang dasar",
   "migration.period": "Periode",
+  "migration.lock_date": "Tanggal kunci",
+  "migration.lock_date_notice": "File Anda mengunci pembukuan hingga {date}. Saat selesai, kunci periode yang sama dipasang di sini, sehingga tidak ada transaksi bertanggal {date} atau sebelumnya yang dapat dicatat atau diubah setelahnya.",
   "migration.currencies": "Mata uang",
   "migration.no_records": "Tidak ada catatan yang ditemukan.",
   "migration.record_type": "Jenis catatan",

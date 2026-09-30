@@ -461,6 +461,7 @@ def _summary(scan: dict) -> FT:
         (t("label.company_name"), scan.get("company_name") or "--"),
         (t("migration.base_currency"), scan.get("base_currency") or "--"),
         (t("migration.period"), period),
+        (t("migration.lock_date"), scan.get("lock_date") or "--"),
         (t("migration.currencies"), ", ".join(scan.get("currencies") or []) or "--"),
     ]
     return Table(Tbody(*[Tr(Td(k), Td(v)) for k, v in rows]), cls="data-table")
@@ -997,12 +998,14 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None):
     token = get_token(request)
     try:
         recon = await api.migration_reconciliation(token, run_id)
+        run = await api.get_migration_run(token, run_id)
     except APIError as e:
         if e.status != 409:
             return _run_error_page(request, str(e.detail))
         return _page(request, _steps(6), auth_header(t("migration.verify_title")), flash(error) if error else "",
                      P(str(e.detail), cls="form-hint"), _back(f"/migrations/{run_id}"))
     rows = recon.get("rows") or []
+    lock_date = run.get("lock_date")
     return _page(
         request,
         _steps(6),
@@ -1026,6 +1029,7 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None):
             ]),
             cls="data-table",
         ) if rows else P(t("migration.no_checks"), cls="form-hint"),
+        P(t("migration.lock_date_notice", date=lock_date), cls="form-hint") if lock_date else "",
         Form(Button(t("migration.finish"), type="submit", cls="btn btn--primary btn--full"),
              method="post", action=f"/migrations/{run_id}/finalize", cls="auth-form mt-md"),
         P(A(t("migration.download_pack"), href=f"/migrations/{run_id}/pack", cls="auth-link")),

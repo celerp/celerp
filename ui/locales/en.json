@@ -3324,6 +3324,8 @@
   "migration.file": "File",
   "migration.base_currency": "Base currency",
   "migration.period": "Period",
+  "migration.lock_date": "Lock date",
+  "migration.lock_date_notice": "Your file locks its books through {date}. Finishing sets the same period lock here, so nothing dated on or before {date} can be posted or changed afterwards.",
   "migration.currencies": "Currencies",
   "migration.no_records": "No records found.",
   "migration.record_type": "Record type",

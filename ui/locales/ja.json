@@ -3324,6 +3324,8 @@
   "migration.file": "ファイル",
   "migration.base_currency": "基軸通貨",
   "migration.period": "期間",
+  "migration.lock_date": "ロック日",
+  "migration.lock_date_notice": "このファイルでは {date} までの帳簿がロックされています。完了すると同じ期間ロックがここにも設定され、以後 {date} 以前の日付の記帳や変更はできなくなります。",
   "migration.currencies": "通貨",
   "migration.no_records": "レコードが見つかりません。",
   "migration.record_type": "レコード種別",

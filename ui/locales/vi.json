@@ -3324,6 +3324,8 @@
   "migration.file": "Tệp",
   "migration.base_currency": "Tiền tệ cơ sở",
   "migration.period": "Kỳ",
+  "migration.lock_date": "Ngày khóa sổ",
+  "migration.lock_date_notice": "Tệp của bạn khóa sổ đến hết ngày {date}. Khi hoàn tất, khóa kỳ tương tự sẽ được đặt tại đây, nên sau đó không thể ghi sổ hoặc sửa bất kỳ mục nào có ngày từ {date} trở về trước.",
   "migration.currencies": "Các loại tiền tệ",
   "migration.no_records": "Không tìm thấy bản ghi nào.",
   "migration.record_type": "Loại bản ghi",

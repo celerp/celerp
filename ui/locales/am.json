@@ -3324,6 +3324,8 @@
   "migration.file": "ፋይል",
   "migration.base_currency": "መሰረታዊ ገንዘብ",
   "migration.period": "ጊዜ ገደብ",
+  "migration.lock_date": "የመቆለፊያ ቀን",
+  "migration.lock_date_notice": "ፋይልዎ መዝገቦቹን እስከ {date} ድረስ ይቆልፋል። ሲጨርሱ ያው የጊዜ መቆለፊያ እዚህ ይዘጋጃል፣ ስለዚህ ከዚያ በኋላ በ{date} ወይም ከዚያ በፊት የተቀመጠ ምንም ነገር መመዝገብ ወይም መቀየር አይቻልም።",
   "migration.currencies": "ገንዘቦች",
   "migration.no_records": "ምንም መዝገቦች አልተገኙም።",
   "migration.record_type": "የመዝገብ አይነት",

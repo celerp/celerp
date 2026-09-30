@@ -12,7 +12,7 @@ entity map makes every batch safe to re-run.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import sqlalchemy as sa
 from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint
@@ -89,6 +89,9 @@ class MigrationRun(Base):
     prepared_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
     source_artifact_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     source_schema_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The source's accounting lock date, read when the run is created. A resume must read the
+    # same date from the source; finishing installs it as the company's period lock.
+    source_lock_date: Mapped[date | None] = mapped_column(sa.Date, nullable=True)
     adapter_version: Mapped[str] = mapped_column(String(64), nullable=False)
     cif_version: Mapped[str] = mapped_column(String(16), nullable=False)
     mode: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -133,15 +136,21 @@ class MigrationEntityMap(Base):
 
 
 class MigrationCleanupTask(Base):
-    """Files of a discarded staged company still to delete: its run sources and its
-    attachment files. Written in the discard transaction and deleted once the files are
-    gone, so a storage failure is retried at startup. No foreign keys: the company and
-    runs it names no longer exist, and paths are derived from the ids, never stored."""
+    """Files still to delete, retried at startup until they are gone.
+
+    A discard task names a discarded staged company: its run sources and all its
+    attachment files, written in the discard transaction. An attachment task names one
+    file a migration batch is about to store: committed before the file is written and
+    deleted in the batch transaction that links it, so a task that outlives its batch
+    marks a file no committed record links. No foreign keys: the company and runs a task
+    names may no longer exist, and paths are derived from the ids, never stored."""
     __tablename__ = "migration_cleanup_tasks"
 
     id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), nullable=False)
     run_ids: Mapped[list] = mapped_column(sa.JSON, nullable=False, default=list)
+    # An attachment task's file: {"file_id", "mime", "idempotency_key"}; None on a discard task.
+    attachment: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )

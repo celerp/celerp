@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai.files import XLSX_CONTENT_TYPE, load_file
 from celerp.db import get_session
-from celerp.events.engine import emit_event
+from celerp.events.engine import emit_event, write_period_lock
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting import import_service
@@ -210,24 +210,24 @@ async def seed_chart_of_accounts_hook(*, session: AsyncSession, company_id: uuid
 async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     """Lifecycle hook called via on_modules_ready slot.
 
-    Seeds the chart of accounts for any active company that has none yet.
-    This handles the case where accounting is enabled after the company was
-    already created (e.g. first-run with no modules, then preset applied).
-    A company staged for a migration is inactive: its chart comes from the
-    imported books, so it is left alone.
+    Seeds the chart of accounts for every company, active or deactivated, that has none
+    yet. This handles the case where accounting is enabled after the company was already
+    created (e.g. first-run with no modules, then preset applied), and a deactivated
+    company then works when it is reactivated. A company staged for a migration is left
+    alone: its chart comes from the imported books.
     """
     from celerp.models.company import Company
+    from celerp.services import migrations
     from sqlalchemy import select as _select
 
-    companies = (await session.execute(_select(Company).where(Company.is_active.is_(True)))).scalars().all()
-    for company in companies:
-        has_accounts = (await session.execute(
-            _select(Account.id).where(Account.company_id == company.id).limit(1)
-        )).scalar_one_or_none()
-        if has_accounts:
+    company_ids = (await session.execute(
+        _select(Company.id).where(~_select(Account.id).where(Account.company_id == Company.id).exists())
+    )).scalars().all()
+    for company_id in company_ids:
+        if await migrations.is_company_migration_staged(session, company_id):
             continue
-        await seed_chart_of_accounts(session, company.id)
-        await _seed_default_bank_account(session, company.id)
+        await seed_chart_of_accounts(session, company_id)
+        await _seed_default_bank_account(session, company_id)
 
 
 def _account_to_dict(acc: Account) -> dict:
@@ -3900,17 +3900,10 @@ async def set_period_lock(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await locked_company(session, company_id)
-    settings = dict(company.settings or {})
     if payload.lock_date:
         _require_iso_date(payload.lock_date, "lock")
-        settings["lock_date"] = payload.lock_date
-        settings["lock_date_set_by"] = str(user.id)
-        settings["lock_date_set_at"] = datetime.now(timezone.utc).isoformat()
-    else:
-        settings.pop("lock_date", None)
-        settings.pop("lock_date_set_by", None)
-        settings.pop("lock_date_set_at", None)
-    company.settings = settings
+    write_period_lock(company, payload.lock_date, user.id)
+    settings = company.settings
     await session.commit()
     return {
         "lock_date": settings.get("lock_date"),
@@ -4020,12 +4013,7 @@ async def close_fiscal_year(
         metadata_={"trigger": "fiscal.close", "year_end": year_end},
     )
 
-    # Set period lock to the year-end date
-    settings = dict(company.settings or {})
-    settings["lock_date"] = year_end
-    settings["lock_date_set_by"] = str(user.id)
-    settings["lock_date_set_at"] = datetime.now(timezone.utc).isoformat()
-    company.settings = settings
+    write_period_lock(company, year_end, user.id)
 
     await session.commit()
 

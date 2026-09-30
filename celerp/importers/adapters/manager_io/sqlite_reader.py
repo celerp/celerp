@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from celerp.importers.adapters.base import ScanError
+from celerp.importers.adapters.base import ScanError, SourceRevisionError
 from celerp.importers.adapters.manager_io.protobuf import DEFAULT_LIMITS, DecodeError, decode
 
 log = logging.getLogger(__name__)
@@ -35,6 +35,28 @@ LEGACY_FORMAT = (
     "of Manager, save it, and upload the saved file."
 )
 DAMAGED = "This Manager business file is damaged and cannot be read. Open it in Manager to check it, then upload it again."
+
+# The file format revisions this reader decodes. Manager stamps its format revision in the
+# schema object and changes object layouts between revisions without notice, so a file is
+# read only at a revision the adapter was built and tested against: the synthetic fixtures
+# and the reference books are all written at 419. A revision below the range is refused with
+# the upgrade Manager itself performs on open; one above it, or one that cannot be read, is
+# refused rather than decoded on the chance its layouts did not change.
+SUPPORTED_SCHEMA_MIN = 419
+SUPPORTED_SCHEMA_MAX = 419
+
+OLDER_REVISION = (
+    "This Manager business file was saved by an older version of Manager (file format {version}). "
+    "Open it in the latest version of Manager, which updates the file, then save it and upload the saved file."
+)
+NEWER_REVISION = (
+    "This Manager business file was saved by a newer version of Manager (file format {version}) than Celerp "
+    "can read yet. Celerp reads file format {supported}. Nothing was imported."
+)
+UNKNOWN_REVISION = (
+    "Celerp cannot read the file format version of this Manager business file. Open it in the latest "
+    "version of Manager, save it, and upload the saved file."
+)
 
 
 @dataclass(frozen=True)
@@ -146,9 +168,15 @@ class ManagerReader:
         try:
             version = decode(bytes(row[0] or b"")).int(1, 0)
         except DecodeError as exc:
-            raise ScanError(NOT_MANAGER) from exc
+            raise SourceRevisionError(UNKNOWN_REVISION) from exc
         if not version:
-            raise ScanError(NOT_MANAGER)
+            raise SourceRevisionError(UNKNOWN_REVISION)
+        if version < SUPPORTED_SCHEMA_MIN:
+            raise SourceRevisionError(OLDER_REVISION.format(version=version))
+        if version > SUPPORTED_SCHEMA_MAX:
+            supported = (str(SUPPORTED_SCHEMA_MIN) if SUPPORTED_SCHEMA_MIN == SUPPORTED_SCHEMA_MAX
+                         else f"{SUPPORTED_SCHEMA_MIN} to {SUPPORTED_SCHEMA_MAX}")
+            raise SourceRevisionError(NEWER_REVISION.format(version=version, supported=supported))
         return version
 
     def has_table(self, name: str) -> bool:

@@ -3324,6 +3324,8 @@
   "migration.file": "الملف",
   "migration.base_currency": "العملة الأساسية",
   "migration.period": "الفترة",
+  "migration.lock_date": "تاريخ القفل",
+  "migration.lock_date_notice": "ملفك يقفل دفاتره حتى {date}. عند الإنهاء يُضبط قفل الفترة نفسه هنا، فلا يمكن بعد ذلك ترحيل أو تعديل أي شيء بتاريخ {date} أو قبله.",
   "migration.currencies": "العملات",
   "migration.no_records": "لم يتم العثور على أي سجلات.",
   "migration.record_type": "نوع السجل",

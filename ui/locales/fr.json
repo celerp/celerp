@@ -3324,6 +3324,8 @@
   "migration.file": "Fichier",
   "migration.base_currency": "Devise de base",
   "migration.period": "Période",
+  "migration.lock_date": "Date de verrouillage",
+  "migration.lock_date_notice": "Votre fichier verrouille ses comptes jusqu'au {date}. La finalisation applique ici le même verrouillage de période : rien daté du {date} ou avant ne pourra ensuite être comptabilisé ni modifié.",
   "migration.currencies": "Devises",
   "migration.no_records": "Aucune donnée trouvée.",
   "migration.record_type": "Type de donnée",
