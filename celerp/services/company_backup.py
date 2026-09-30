@@ -47,8 +47,9 @@ from celerp.models.company import Company, User
 from celerp.modules.importer import installed_table_prefixes
 from celerp.modules.loader import module_search_path, read_manifest, resolve_module_path
 from celerp.modules.registry import get_enabled, set_enabled
-from celerp.services import attachments, bootstrap
+from celerp.services import attachments, bootstrap, company_lifecycle
 from celerp.services.auth import verify_password
+from celerp.services.company_lock import locked_company
 from celerp.services.migrations import COMPANY_NAME_MAX
 from celerp.services.provisioning import create_install_owner, provision_restored_company
 
@@ -115,6 +116,11 @@ FOREIGN = "This company backup refers to records of another company." + _NOT_RES
 ALREADY_SET_UP = "This Celerp is already set up." + _NOT_RESTORED
 NOT_A_MEMBER = ("This backup was already restored here as a company you are not a member of."
                 + _NOT_RESTORED)
+DEACTIVATED = ("This backup was already restored here as a company that is now deactivated. Reactivate it instead."
+               + _NOT_RESTORED)
+STALE_PREVIEW = ("Something changed since this preview. Check the updated preview before continuing."
+                 + _NOT_RESTORED)
+ATTACHMENT_MISSING = "This company backup refers to an attachment file it does not carry." + _NOT_RESTORED
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _TABLE_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}")
@@ -129,6 +135,14 @@ class BackupError(Exception):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+
+
+class StalePreview(BackupError):
+    """The restore confirmed a preview that no longer holds; ``plan`` is the current one."""
+
+    def __init__(self, plan: RestorePlan) -> None:
+        super().__init__(409, STALE_PREVIEW)
+        self.plan = plan
 
 
 # ── Schema ───────────────────────────────────────────────────────────────────
@@ -314,6 +328,18 @@ def _uuids(value, found: set[str]) -> None:
     elif isinstance(value, list):
         for v in value:
             _uuids(v, found)
+
+
+def _strings(value):
+    """Every string in a parsed JSON value, dict keys excepted."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from _strings(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _strings(v)
 
 
 def _refuse_constant(name: str):
@@ -701,13 +727,21 @@ def _lines(zf: zipfile.ZipFile, name: str):
 def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[str], dict[str, int], set[str]]:
     """Check every row before anything is written: its shape, its keys, and that every
     reference points at the backup's own company, at a row the backup carries, or nowhere.
+    Every attachment file of the backup's company it refers to must be one it carries.
     Returns the ids to replace, each table's row digest, and every other id-shaped value
     the backup holds, in its rows or its company settings."""
     m = backup.manifest
     source = m["company"]["id"]
     carried = set(order)
+    files = {f["url"] for f in m["attachments"]}
+
+    def check_files(value) -> None:
+        if any(attachments.company_file_name(source, s) is not None and s not in files for s in _strings(value)):
+            raise BackupError(422, ATTACHMENT_MISSING)
+
     ids: set[str] = set()
     seen: set[str] = set()
+    check_files(m["company"]["settings"])
     _uuids(m["company"]["settings"], seen)
     digests: dict[str, int] = {}
     refs: dict[tuple[str, tuple[str, ...]], set[tuple]] = {}
@@ -739,6 +773,7 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
                     if _is_uuid(value):
                         ids.add(value)
                 _uuids(row, seen)
+                check_files(row)
                 for tcols, bucket in own_keys:
                     bucket.add(tuple(row[c] for c in tcols))
                 for cols, target, tcols in fks:
@@ -832,44 +867,139 @@ async def _is_member(session: AsyncSession, user_id, company_id) -> bool:
         UserCompany.is_active.is_(True)).limit(1)) is not None
 
 
-async def _existing(session: AsyncSession, backup_id: str, mode: str, user_id,
-                    owner_account: dict | None) -> tuple[Company, User] | None:
-    """The company this backup was already restored as, with the caller, when the caller
-    may have it; refused when it exists but belongs to someone else."""
-    company = await session.scalar(select(Company).where(
-        Company.is_active.is_(True),
-        text("companies.settings -> 'restored_backup' ->> 'backup_id' = :b").bindparams(b=backup_id)).limit(1))
+def _restored_as(backup_id: str):
+    """Companies this backup was restored as, active or deactivated, active first."""
+    return (select(Company)
+            .where(text("companies.settings -> 'restored_backup' ->> 'backup_id' = :b").bindparams(b=backup_id))
+            .order_by(Company.is_active.desc(), Company.created_at, Company.id).limit(1))
+
+
+async def _bootstrap_existing(session: AsyncSession, backup_id: str,
+                              owner_account: dict) -> tuple[Company, User] | None:
+    """The company a bootstrap restore of this backup already created, with its owner, when
+    the same account repeats it; refused for anyone else or when that company is deactivated."""
+    company = await session.scalar(_restored_as(backup_id))
     if company is None:
         return None
-    if mode == "bootstrap":
-        user = await session.scalar(select(User).where(User.email == owner_account["email"]).limit(1))
-        if (user is None or not user.auth_hash or not verify_password(owner_account["password"], user.auth_hash)
-                or not await _is_member(session, user.id, company.id)):
-            raise BackupError(409, ALREADY_SET_UP)
-        return company, user
-    user = await session.get(User, uuid.UUID(str(user_id)))
-    if user is None or not await _is_member(session, user.id, company.id):
-        raise BackupError(409, NOT_A_MEMBER)
+    user = await session.scalar(select(User).where(User.email == owner_account["email"]).limit(1))
+    if (not company.is_active or user is None or not user.auth_hash
+            or not verify_password(owner_account["password"], user.auth_hash)
+            or not await _is_member(session, user.id, company.id)):
+        raise BackupError(409, ALREADY_SET_UP)
     return company, user
 
 
-# The current company's other active members, who get the same access (and the same
-# role permissions) to a company restored from its own backup through Settings.
-_TEAM = "FROM user_companies WHERE company_id = :src AND is_active AND user_id <> :me"
+CREATE = "create"
+RETURN_EXISTING = "return_existing"
+ADD_TEAM = "return_existing_and_add_team"
+OFFER_REACTIVATE = "offer_reactivate"
+REFUSE = "refuse"
 
 
-def _same_lineage(mode: str, current_company_id, source: str) -> bool:
-    return mode == "settings" and current_company_id is not None and source == str(current_company_id)
+@dataclass(frozen=True)
+class RestorePlan:
+    """What restoring a backup does for one caller: the action, the company it lands in
+    (named only to a caller entitled to it), the team members it gives access and whose
+    role permissions they work under. ``fingerprint`` identifies these facts, so a restore
+    can tell whether the preview it confirms still holds."""
+    action: str
+    destination_id: str | None
+    destination_name: str | None
+    team_to_add: tuple[tuple[str, str], ...]
+    team_blocked: int
+    carry_role_grants: bool
+    destination_policy: str
+    fingerprint: str
+
+    def public(self) -> dict:
+        return {"action": self.action, "destination_id": self.destination_id,
+                "destination_name": self.destination_name, "team_members": len(self.team_to_add),
+                "team_blocked": self.team_blocked, "carry_role_grants": self.carry_role_grants,
+                "destination_policy": self.destination_policy, "plan_fingerprint": self.fingerprint}
 
 
-async def team_members(session: AsyncSession, backup: BackupFile, *, current_company_id, user_id) -> int:
-    """How many of the current company's other active members a Settings restore of this
-    backup gives access to the restored company: none unless the backup is of the current company."""
-    source = backup.manifest["company"]["id"]
-    if not _same_lineage("settings", current_company_id, source):
-        return 0
-    return await session.scalar(text(f"SELECT count(*) {_TEAM}"),
-                                {"src": uuid.UUID(source), "me": uuid.UUID(str(user_id))})
+def _planned(backup_id: str, mode: str, action: str, destination: Company | None = None, *,
+             team: tuple[tuple[str, str], ...] = (), blocked: int = 0, carry: bool = False) -> RestorePlan:
+    facts = {"backup_id": backup_id, "mode": mode, "action": action,
+             "destination_id": str(destination.id) if destination is not None else None,
+             "team": [list(m) for m in team], "blocked": blocked, "carry": carry,
+             "policy": "source" if carry else "destination"}
+    digest = hashlib.sha256(json.dumps(facts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return RestorePlan(action=action, destination_id=facts["destination_id"],
+                       destination_name=destination.name if destination is not None else None,
+                       team_to_add=team, team_blocked=blocked, carry_role_grants=carry,
+                       destination_policy=facts["policy"], fingerprint=digest)
+
+
+async def _missing_team(session: AsyncSession, source: str, user_id: uuid.UUID,
+                        destination_id: uuid.UUID | None) -> tuple[tuple[str, str], ...]:
+    """The source company's other active members, with their roles, who have no membership
+    of the destination at all (an inactive one counts: removed access stays removed)."""
+    rows = await session.execute(text(
+        "SELECT CAST(s.user_id AS text), s.role FROM user_companies s "
+        "WHERE s.company_id = CAST(:src AS uuid) AND s.is_active AND s.user_id <> :me "
+        "AND NOT EXISTS (SELECT 1 FROM user_companies d WHERE d.user_id = s.user_id "
+        "AND d.company_id = CAST(:dest AS uuid)) ORDER BY s.user_id"),
+        {"src": source, "me": user_id, "dest": str(destination_id) if destination_id else None})
+    return tuple((uid, role) for uid, role in rows.all())
+
+
+async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, current_company_id, *,
+                lock: bool) -> tuple[RestorePlan, Company | None]:
+    """The plan and the destination company. With ``lock`` the destination row and the
+    caller's membership of it are locked, so the plan holds until the transaction ends."""
+    m = backup.manifest
+    backup_id, source = m["backup_id"], m["company"]["id"]
+    me = uuid.UUID(str(user_id))
+    same_lineage = mode == "settings" and current_company_id is not None and str(current_company_id) == source
+    found = await session.scalar(_restored_as(backup_id))
+    if found is None:
+        team = await _missing_team(session, source, me, None) if same_lineage else ()
+        return _planned(backup_id, mode, CREATE, team=team, carry=same_lineage), None
+    destination = await locked_company(session, found.id) if lock else found
+    membership = select(UserCompany.role, UserCompany.is_active).where(
+        UserCompany.user_id == me, UserCompany.company_id == destination.id)
+    row = (await session.execute(membership.with_for_update(read=True) if lock else membership)).first()
+    role = row.role if row is not None and row.is_active else None
+    if not destination.is_active:
+        if role == "owner":
+            return _planned(backup_id, mode, OFFER_REACTIVATE, destination), destination
+        return _planned(backup_id, mode, REFUSE), None
+    if role is None:
+        return _planned(backup_id, mode, REFUSE), None
+    missing = await _missing_team(session, source, me, destination.id) if same_lineage else ()
+    if not missing:
+        return _planned(backup_id, mode, RETURN_EXISTING, destination), destination
+    if role != "owner":
+        return _planned(backup_id, mode, RETURN_EXISTING, destination, blocked=len(missing)), destination
+    settings = destination.settings or {}
+    carry = not (settings.get("restored_backup") or {}).get("team_policy_carried") and not settings.get("role_grants")
+    return _planned(backup_id, mode, ADD_TEAM, destination, team=missing, carry=carry), destination
+
+
+async def plan_existing_restore(session: AsyncSession, backup: BackupFile, mode: str, user_id,
+                                current_company_id) -> RestorePlan:
+    """What restoring this backup would do for the caller, read without writing or locking.
+    ``settings`` restores from the caller's current company; only a backup of that same
+    company gives its team access."""
+    return (await _plan(session, backup, mode, user_id, current_company_id, lock=False))[0]
+
+
+async def _add_team(session: AsyncSession, company_id, team: tuple[tuple[str, str], ...]) -> int:
+    """Give each (user id, role) access to the company unless they already have a membership
+    of it, active or not, which is left as it is. Returns how many were added."""
+    rows = await session.execute(text(
+        "INSERT INTO user_companies (id, user_id, company_id, role, is_active) "
+        "SELECT gen_random_uuid(), t.u, CAST(:c AS uuid), t.r, true "
+        "FROM unnest(CAST(:u AS uuid[]), CAST(:r AS text[])) AS t(u, r) "
+        "ON CONFLICT (user_id, company_id) DO NOTHING RETURNING id"),
+        {"c": str(company_id), "u": [u for u, _ in team], "r": [r for _, r in team]})
+    return len(rows.all())
+
+
+async def _source_grants(session: AsyncSession, source: str):
+    current = await session.get(Company, uuid.UUID(source))
+    return ((current.settings or {}) if current is not None else {}).get("role_grants")
 
 
 def _next_rows(it, limit: int) -> list:
@@ -909,14 +1039,31 @@ async def _verify(session: AsyncSession, checked: _Checked, manifest: dict, comp
             raise BackupError(422, MISMATCH.format(table=name))
 
 
+async def _apply_existing(session: AsyncSession, plan: RestorePlan, destination: Company, source: str) -> int:
+    """Give the missing team access to the company the backup was already restored as.
+    The first time a team is carried into it, the source's role permissions come along
+    unless it has its own; after that restoring never writes them again."""
+    if plan.action != ADD_TEAM:
+        return 0
+    added = await _add_team(session, destination.id, plan.team_to_add)
+    settings = dict(destination.settings or {})
+    if plan.carry_role_grants and (grants := await _source_grants(session, source)):
+        settings["role_grants"] = grants
+    settings["restored_backup"] = {**(settings.get("restored_backup") or {}), "team_policy_carried": True}
+    destination.settings = settings
+    return added
+
+
 async def restore_company(path: Path, *, mode: str, user_id=None, current_company_id=None,
-                          owner_account: dict | None = None) -> RestoreResult:
+                          owner_account: dict | None = None, plan_fingerprint: str | None = None) -> RestoreResult:
     """Restore a backup file as a new company and commit it.
 
-    ``settings`` and ``new_company`` restore it for the signed-in ``user_id``;
-    ``bootstrap`` creates the installation's first owner from ``owner_account``
-    ({name, email, password}) in the same transaction. Restoring a backup that was
-    already restored here returns that company (``created`` False) to its members."""
+    ``settings`` and ``new_company`` restore it for the signed-in ``user_id`` as the
+    preview identified by ``plan_fingerprint`` showed it; a preview that no longer holds
+    raises StalePreview. ``bootstrap`` creates the installation's first owner from
+    ``owner_account`` ({name, email, password}) in the same transaction. Restoring a
+    backup that was already restored here returns that company (``created`` False) to its
+    members, never reactivating it when it is deactivated."""
     if mode not in MODES:
         raise ValueError(f"Unknown restore mode: {mode}")
     if mode == "bootstrap" and not (isinstance(owner_account, dict)
@@ -932,13 +1079,33 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
             checked = await check_backup(session, backup)
             await _lock(session, backup_id, bootstrapping=mode == "bootstrap")
-            found = await _existing(session, backup_id, mode, user_id, owner_account)
-            if found is not None:
-                company, user = found
-                result = RestoreResult(company_id=str(company.id), company_name=company.name, created=False,
-                                       backup_created_at=m["created_at"], user_id=str(user.id), team_members=0)
-                await session.rollback()
-                return result
+            if mode == "bootstrap":
+                plan = _planned(backup_id, mode, CREATE)
+                found = await _bootstrap_existing(session, backup_id, owner_account)
+                if found is not None:
+                    company, user = found
+                    result = RestoreResult(company_id=str(company.id), company_name=company.name, created=False,
+                                           backup_created_at=m["created_at"], user_id=str(user.id), team_members=0)
+                    await session.rollback()
+                    return result
+            else:
+                plan, destination = await _plan(session, backup, mode, user_id, current_company_id, lock=True)
+                if plan.action == REFUSE:
+                    raise BackupError(409, NOT_A_MEMBER)
+                if plan.action == OFFER_REACTIVATE:
+                    raise BackupError(409, DEACTIVATED)
+                # Opening the existing company with nothing to add is what any preview of it
+                # led to, so it needs no matching preview.
+                settled = plan.action == RETURN_EXISTING and not plan.team_blocked
+                if not settled and plan.fingerprint != plan_fingerprint:
+                    raise StalePreview(plan)
+                if destination is not None:
+                    team = await _apply_existing(session, plan, destination, source)
+                    result = RestoreResult(company_id=str(destination.id), company_name=destination.name,
+                                           created=False, backup_created_at=m["created_at"], user_id=str(user_id),
+                                           team_members=team)
+                    await session.commit()
+                    return result
             if mode == "bootstrap":
                 if await session.scalar(select(User.id).limit(1)) is not None:
                     raise BackupError(409, ALREADY_SET_UP)
@@ -966,12 +1133,11 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     "source_company_name": m["company"]["name"],
                     "restored_at": datetime.now(timezone.utc).isoformat(),
                     **({"provenance": m["provenance"]} if m.get("provenance") else {}),
+                    "team_policy_carried": plan.carry_role_grants,
                 }
-                if _same_lineage(mode, current_company_id, source):
-                    # The carried team keeps what its roles may do in the current company.
-                    current = await session.get(Company, uuid.UUID(source))
-                    if (current.settings or {}).get("role_grants"):
-                        settings["role_grants"] = current.settings["role_grants"]
+                # The carried team keeps what its roles may do in the current company.
+                if plan.carry_role_grants and (grants := await _source_grants(session, source)):
+                    settings["role_grants"] = grants
                 company = await provision_restored_company(session, owner=user, company_name=m["company"]["name"],
                                                            company_id=new_id, settings=settings)
                 try:
@@ -980,12 +1146,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 except DBAPIError:
                     raise BackupError(422, UNSAVABLE) from None
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
-            team = 0
-            if _same_lineage(mode, current_company_id, source):
-                team = (await session.execute(text(
-                    "INSERT INTO user_companies (id, user_id, company_id, role, is_active) "
-                    f"SELECT gen_random_uuid(), user_id, CAST(:new AS uuid), role, true {_TEAM}"),
-                    {"new": new_id, "src": uuid.UUID(source), "me": user.id})).rowcount
+            team = await _add_team(session, new_id, plan.team_to_add) if plan.team_to_add else 0
             await session.commit()
         except BaseException:
             await session.rollback()
@@ -997,3 +1158,29 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             raise
     return RestoreResult(company_id=str(company.id), company_name=company.name, created=True,
                          backup_created_at=m["created_at"], user_id=str(user.id), team_members=team)
+
+
+async def reactivate_restored(path: Path, *, mode: str, user_id, current_company_id,
+                              plan_fingerprint: str | None) -> company_lifecycle.Reactivated:
+    """Reactivate the deactivated company this backup was already restored as, for one of
+    its owners, as the preview identified by ``plan_fingerprint`` offered it; commits.
+
+    Repeating it once the company is active again returns that company unchanged to its
+    members. Anyone else gets the same refusal as for any company they may not open."""
+    backup = await asyncio.to_thread(read_backup, path)
+    async with AsyncSession(bind=celerp.db.engine, expire_on_commit=False) as session:
+        await _lock(session, backup.manifest["backup_id"], bootstrapping=False)
+        plan, destination = await _plan(session, backup, mode, user_id, current_company_id, lock=True)
+        if plan.action == REFUSE:
+            raise BackupError(409, NOT_A_MEMBER)
+        if plan.action != OFFER_REACTIVATE:
+            done = company_lifecycle.Reactivated(company_id=destination.id, company_name=destination.name,
+                                                 reactivated=False, connectors_to_reconnect=[])
+            await session.rollback()
+            return done
+        if plan.fingerprint != plan_fingerprint:
+            raise StalePreview(plan)
+        try:
+            return await company_lifecycle.reactivate_company(session, destination.id, user_id)
+        except company_lifecycle.NotAnOwner:
+            raise BackupError(409, NOT_A_MEMBER) from None

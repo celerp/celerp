@@ -16,8 +16,11 @@ Restoring is one wizard on three entry points:
 - Fresh installation (`/setup/restore-backup`): no user exists yet; the restore creates
   the first owner.
 
-Steps: upload, preview (nothing written yet), restore, then the restored company. The
-upload token lives only in an HttpOnly cookie scoped to the entry point's base path.
+Steps: upload, preview (nothing written yet), restore, then the restored company. A
+backup already restored here opens that company instead, giving its missing team
+access where the preview said so; one restored as a company since deactivated is
+reactivated instead of copied. A preview that no longer holds is shown again, updated.
+The upload token lives only in an HttpOnly cookie scoped to the entry point's base path.
 """
 
 from __future__ import annotations
@@ -58,7 +61,8 @@ BOOTSTRAP = WizardMode("bootstrap", "/setup/restore-backup", "/setup", _TITLE, _
 
 UPLOAD_COOKIE = "celerp_company_backup_upload"
 UPLOAD_TTL_SECONDS = 24 * 3600
-_PREVIEW_FIELDS = ("company_name", "created_at", "records", "attachments", "prepared_by", "team_members")
+_PREVIEW_FIELDS = ("company_name", "created_at", "records", "attachments", "prepared_by", "team_members",
+                   "action", "destination_name", "team_blocked", "destination_policy", "plan_fingerprint")
 
 
 def _html(page, status_code: int = 200) -> HTMLResponse:
@@ -149,10 +153,42 @@ def _upload_again(request: Request, mode: WizardMode, message: str):
     return resp
 
 
-async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, values: dict | None = None,
-                        error: str | None = None):
-    values = values or {}
+_CREATE, _RETURN, _ADD_TEAM, _REACTIVATE = "create", "return_existing", "return_existing_and_add_team", "offer_reactivate"
+_BUTTONS = {_CREATE: "company_backup.restore", _RETURN: "company_backup.open_existing",
+            _ADD_TEAM: "company_backup.add_team_button", _REACTIVATE: "company_backup.reactivate_button"}
+
+
+def _plan_lines(mode: WizardMode, preview: dict) -> list:
+    """What restoring does, as the preview states it: a new company, or the company the
+    backup was already restored as, the team members it gives access, and whose role
+    permissions they work under."""
+    action = preview.get("action") or _CREATE
+    name = preview.get("destination_name") or preview.get("company_name") or ""
     team = _count(preview.get("team_members")) if mode is SETTINGS else 0
+    blocked = _count(preview.get("team_blocked"))
+    policy = ("company_backup.source_policy" if preview.get("destination_policy") == "source"
+              else "company_backup.destination_policy")
+    if action == _REACTIVATE:
+        return [P(t("company_backup.deactivated_exists", name=name), cls="flash flash--warning")]
+    if action == _CREATE:
+        lines = [P(t("company_backup.separate_company"), cls="form-hint")] if mode is SETTINGS else []
+        if team:
+            lines += [P(t("company_backup.team_keeps_access", count=team), cls="flash flash--warning"),
+                      P(t(policy, name=name), cls="form-hint")]
+        return lines
+    lines = [P(t("company_backup.already_restored", name=name), cls="form-hint")]
+    if action == _ADD_TEAM and team:
+        lines += [P(t("company_backup.team_to_add", name=name, count=team), cls="flash flash--warning"),
+                  P(t(policy, name=name), cls="form-hint")]
+    if blocked:
+        lines.append(P(t("company_backup.team_blocked", name=name, count=blocked), cls="flash flash--warning"))
+    return lines
+
+
+async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, values: dict | None = None,
+                        error: str | None = None, status_code: int = 200):
+    values = values or {}
+    action = preview.get("action") or _CREATE
     rows = [
         (t("company_backup.backup_date"), format_value(preview.get("created_at"), "date")),
         (t("company_backup.records"), str(preview.get("records") or "--")),
@@ -160,22 +196,23 @@ async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, va
     ]
     if preview.get("prepared_by"):
         rows.append((t("migration.prepared_by"), preview["prepared_by"]))
+    target = "reactivate" if action == _REACTIVATE else "restore"
     return wizard_page(
         request,
         auth_header(preview.get("company_name", ""), t("company_backup.preview_subtitle")),
         flash(error) if error else "",
         Table(Tbody(*[Tr(Td(k), Td(v)) for k, v in rows]), cls="data-table"),
-        P(t("company_backup.separate_company"), cls="form-hint") if mode is SETTINGS else "",
-        P(t("company_backup.team_keeps_access", count=team), cls="flash flash--warning") if team else "",
+        *_plan_lines(mode, preview),
         P(t("company_backup.nothing_written"), cls="form-hint"),
         Form(
             *[Input(type="hidden", name=f"preview_{k}", value=str(preview.get(k) or "")) for k in _PREVIEW_FIELDS],
             *(account_fields(values) if mode.bootstrap else []),
             setup_code_field() if await setup_code_required(mode) else "",
-            Button(t("company_backup.restore"), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/restore", cls="auth-form",
+            Button(t(_BUTTONS.get(action, _BUTTONS[_CREATE])), type="submit", cls="btn btn--primary btn--full"),
+            method="post", action=f"{mode.base}/{target}", cls="auth-form",
         ),
         P(A(t("company_backup.choose_other"), href=mode.base, cls="auth-link"), cls="auth-alt-action"),
+        status_code=status_code,
         title=_TITLE,
     )
 
@@ -196,12 +233,56 @@ async def _read(request: Request, mode: WizardMode):
     setup_code = str(form.get("setup_code", "")).strip() or None
     try:
         summary = await api.company_backup_read(api_token(request, mode), upload.filename, upload.file,
-                                                setup_code=setup_code)
+                                                setup_code=setup_code, mode=None if mode.bootstrap else mode.key)
     except APIError as e:
         return await _upload_page(request, mode, _message(e), status_code=_status(e))
     preview = {**summary, "prepared_by": (summary.get("provenance") or {}).get("prepared_by")}
     resp = _html(await _preview_page(request, mode, preview))
     _set_upload_cookie(resp, summary["upload_token"], mode, request)
+    return resp
+
+
+def _stale_plan(e: APIError) -> dict | None:
+    """The updated plan an API refusal carries when the preview no longer holds."""
+    data = e.data if isinstance(e.data, dict) else {}
+    plan = data.get("plan")
+    return plan if data.get("code") == "stale_preview" and isinstance(plan, dict) else None
+
+
+async def _refused(request: Request, mode: WizardMode, preview: dict, e: APIError, values: dict | None = None):
+    """A preview that no longer holds is shown again, updated, with the upload kept. A
+    refused backup or a gone upload starts over; account and setup code problems are
+    corrected on the preview."""
+    if (plan := _stale_plan(e)) is not None:
+        return await _preview_page(request, mode, {**preview, **plan}, values=values, error=_message(e),
+                                   status_code=409)
+    if e.status in (409, 422) and not isinstance(e.detail, dict):
+        return _upload_again(request, mode, _message(e))
+    return await _preview_page(request, mode, preview, values=values, error=_message(e))
+
+
+def _preview_form(form) -> dict:
+    return {k: str(form.get(f"preview_{k}", "")) for k in _PREVIEW_FIELDS}
+
+
+async def _reactivate(request: Request, mode: WizardMode):
+    """Reactivate the deactivated company the backup was already restored as, then open it."""
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    upload_token = request.cookies.get(UPLOAD_COOKIE)
+    if not upload_token:
+        return _upload_again(request, mode, t("company_backup.upload_expired"))
+    preview = _preview_form(await request.form())
+    try:
+        done = await api.company_backup_reactivate(get_token(request), upload_token, mode.key,
+                                                   preview["plan_fingerprint"])
+    except APIError as e:
+        return await _refused(request, mode, preview, e)
+    reconnect = len(done.get("connectors_to_reconnect") or [])
+    resp = RedirectResponse(f"{mode.base}/done?reactivated=1" + (f"&reconnect={reconnect}" if reconnect else ""),
+                            status_code=303)
+    set_session_cookies(resp, done["access_token"], done["refresh_token"], request)
+    _clear_upload_cookie(resp, mode, request)
     return resp
 
 
@@ -212,7 +293,7 @@ async def _restore(request: Request, mode: WizardMode):
     if not upload_token:
         return _upload_again(request, mode, t("company_backup.upload_expired"))
     form = await request.form()
-    preview = {k: str(form.get(f"preview_{k}", "")) for k in _PREVIEW_FIELDS}
+    preview = _preview_form(form)
     values = {k: str(form.get(k, "")).strip() for k in ("name", "email")}
     values["password"] = str(form.get("password", ""))
     values["confirm_password"] = str(form.get("confirm_password", ""))
@@ -227,13 +308,10 @@ async def _restore(request: Request, mode: WizardMode):
             restored = await api.company_backup_bootstrap_restore(upload_token, values["name"], values["email"],
                                                                   values["password"], setup_code=setup_code)
         else:
-            restored = await api.company_backup_restore(get_token(request), upload_token, mode.key)
+            restored = await api.company_backup_restore(get_token(request), upload_token, mode.key,
+                                                        preview["plan_fingerprint"])
     except APIError as e:
-        # A refused backup or a gone upload starts over; account and setup code problems
-        # are corrected on the preview.
-        if e.status in (409, 422) and not isinstance(e.detail, dict):
-            return _upload_again(request, mode, _message(e))
-        return await _preview_page(request, mode, preview, values=values, error=_message(e))
+        return await _refused(request, mode, preview, e, values)
     # The session moves to the restored company; the next page says so, and how many of the
     # team were given access to it.
     team = _count(restored.get("team_members"))
@@ -252,6 +330,18 @@ async def _done(request: Request, mode: WizardMode):
         company = await api.get_company(token)
     except APIError:
         company = {}
+    name = company.get("name", "")
+    if request.query_params.get("reactivated"):
+        reconnect = _count(request.query_params.get("reconnect"))
+        return wizard_page(
+            request,
+            auth_header(t("company_backup.reactivated_title"), name),
+            P(t("company_backup.reactivated_notice", name=name), cls="flash flash--success"),
+            P(t("company_backup.reconnect_connectors", count=reconnect), cls="flash flash--warning")
+            if reconnect else "",
+            A(t("migration.open_company"), href="/", cls="btn btn--primary btn--full"),
+            title=_TITLE,
+        )
     restored = (company.get("settings") or {}).get("restored_backup") or {}
     team = _count(request.query_params.get("team_members")) if mode is SETTINGS else 0
     return wizard_page(
@@ -275,3 +365,5 @@ def company_backup_routes(app) -> None:
         for method, suffix, handler in (("get", "", _start), ("post", "/read", _read),
                                         ("post", "/restore", _restore), ("get", "/done", _done)):
             getattr(app, method)(f"{mode.base}{suffix}")(bind(handler, mode, "company_backup"))
+        if not mode.bootstrap:
+            app.post(f"{mode.base}/reactivate")(bind(_reactivate, mode, "company_backup"))

@@ -41,6 +41,7 @@ from celerp.services.permissions import (
 )
 from celerp.schemas.numbers import FiniteFloat
 from celerp.tax_regimes import get_regime, TAX_REGIMES
+from celerp.services import company_lifecycle
 from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
@@ -2344,27 +2345,22 @@ async def deactivate_company(
 @router.post("/me/reactivate", dependencies=[require_permission("manage_company_lifecycle")])
 async def reactivate_company(
     company_id=Depends(get_current_company_id),
+    user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Reactivate a previously deactivated company. Admin only.
+    """Reactivate the session's company, if it was deactivated. Owner only.
 
     Connectors disconnected by the deactivation stay disconnected; their names
     are returned so the caller can prompt for an explicit reconnect."""
-    import re as _re2
-    from celerp.connectors.ownership import connectors_awaiting_reconnect
-    company = await session.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-    company.is_active = True
-    # Restore slug to its original form (strip deactivated suffix).
-    company.slug = _re2.sub(r"-deactivated-\d+$", "", company.slug)
-    reconnect = await connectors_awaiting_reconnect(session, company_id)
-    await session.commit()
+    try:
+        done = await company_lifecycle.reactivate_company(session, company_id, user.id)
+    except company_lifecycle.NotAnOwner as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
     return {
         "ok": True,
-        "company_id": str(company_id),
+        "company_id": str(done.company_id),
         "is_active": True,
-        "connectors_to_reconnect": reconnect,
+        "connectors_to_reconnect": done.connectors_to_reconnect,
     }
 
 

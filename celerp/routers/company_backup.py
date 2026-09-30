@@ -3,8 +3,10 @@
 """Company backup routes.
 
 An owner downloads a backup of the company their session is on. Restoring is two
-steps: read (upload, check, preview) and restore (create the new company). A signed-in
-owner restores a backup as an additional company and is switched to it; a fresh
+steps: read (upload, check, preview what restoring does) and restore (do what the
+preview showed). A signed-in owner restores a backup as an additional company, or opens
+the company it was already restored as, and is switched to it; when that company was
+deactivated, its owner reactivates it instead of restoring a copy. A fresh
 installation with no user yet restores one through the bootstrap routes, which create
 the first owner, are gated by the setup code where one is configured, and close once
 any user exists.
@@ -20,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import BinaryIO, Literal
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -67,6 +69,9 @@ def _purge(folder: Path) -> None:
 
 
 def _error(exc: cb.BackupError) -> JSONResponse:
+    if isinstance(exc, cb.StalePreview):
+        return JSONResponse(status_code=exc.status_code,
+                            content={"detail": exc.detail, "code": "stale_preview", "plan": exc.plan.public()})
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
@@ -122,9 +127,11 @@ def _save(source: BinaryIO, dest: Path) -> None:
             out.write(chunk)
 
 
-async def _read(file: UploadFile, owner: str, session: AsyncSession, ctx: AuthContext | None = None) -> dict:
-    """Stage an uploaded backup, check it, and return its preview with the upload token and,
-    for a signed-in owner, how many of the current company's team a Settings restore gives access."""
+async def _read(file: UploadFile, owner: str, session: AsyncSession, ctx: AuthContext | None = None,
+                mode: str = _BOOTSTRAP) -> dict:
+    """Stage an uploaded backup, check it, and return its preview with the upload token and
+    what restoring it does: for a signed-in owner the plan for restoring it in ``mode``,
+    refused when it was already restored as a company they may not open."""
     _purge(_root() / "uploads")
     token = secrets.token_hex(16)
     path = _staged(owner, token)
@@ -133,35 +140,49 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession, ctx: AuthCo
         await asyncio.to_thread(_save, file.file, path)
         backup = await asyncio.to_thread(cb.read_backup, path)
         await cb.check_backup(session, backup)
-        team = 0 if ctx is None else await cb.team_members(session, backup, current_company_id=ctx.company_id,
-                                                            user_id=ctx.user.id)
+        if ctx is None:
+            plan = {"action": cb.CREATE, "team_members": 0}
+        else:
+            planned = await cb.plan_existing_restore(session, backup, mode, ctx.user.id, ctx.company_id)
+            if planned.action == cb.REFUSE:
+                raise cb.BackupError(409, cb.NOT_A_MEMBER)
+            plan = planned.public()
     except BaseException:
         path.unlink(missing_ok=True)
         raise
-    return {"upload_token": token, **backup.summary(), "team_members": team}
+    return {"upload_token": token, **backup.summary(), **plan}
+
+
+async def _tokens(session: AsyncSession, user_id, company_id) -> dict:
+    """A session for the user on the company, with their active role there."""
+    user = await session.get(User, uuid.UUID(str(user_id)))
+    company = await session.get(Company, uuid.UUID(str(company_id)))
+    role = await session.scalar(select(UserCompany.role).where(
+        UserCompany.user_id == user.id, UserCompany.company_id == company.id, UserCompany.is_active.is_(True)))
+    return await issue_token_pair(session, user=user, company=company, role=role)
 
 
 async def _signed_in(session: AsyncSession, result: cb.RestoreResult) -> dict:
     """The restore response, with a session for the restored company."""
-    user = await session.get(User, uuid.UUID(result.user_id))
-    company = await session.get(Company, uuid.UUID(result.company_id))
-    role = await session.scalar(select(UserCompany.role).where(
-        UserCompany.user_id == user.id, UserCompany.company_id == company.id, UserCompany.is_active.is_(True)))
-    tokens = await issue_token_pair(session, user=user, company=company, role=role)
+    tokens = await _tokens(session, result.user_id, result.company_id)
     return {"company_id": result.company_id, "company_name": result.company_name, "created": result.created,
             "backup_created_at": result.backup_created_at, "team_members": result.team_members, **tokens}
 
 
+RestoreMode = Literal["settings", "new_company"]
+
+
 class RestoreIn(BaseModel):
     upload_token: str
-    mode: Literal["settings", "new_company"]
+    mode: RestoreMode
+    plan_fingerprint: str
 
 
 @router.post("/read")
-async def read_backup(file: UploadFile = File(...), ctx: AuthContext = Depends(user_owner),
-                      session: AsyncSession = Depends(get_session)):
+async def read_backup(file: UploadFile = File(...), mode: RestoreMode = Form("settings"),
+                      ctx: AuthContext = Depends(user_owner), session: AsyncSession = Depends(get_session)):
     try:
-        return await _read(file, str(ctx.user.id), session, ctx)
+        return await _read(file, str(ctx.user.id), session, ctx, mode)
     except cb.BackupError as exc:
         return _error(exc)
 
@@ -169,14 +190,32 @@ async def read_backup(file: UploadFile = File(...), ctx: AuthContext = Depends(u
 @router.post("/restore")
 async def restore_backup(payload: RestoreIn, ctx: AuthContext = Depends(user_owner),
                          session: AsyncSession = Depends(get_session)):
-    """Restore a staged backup as a new company for the caller and switch them to it."""
+    """Restore a staged backup as the preview showed it and switch the caller to the company:
+    a new one, or the one it was already restored as."""
     path = _uploaded(str(ctx.user.id), payload.upload_token)
     try:
         result = await cb.restore_company(path, mode=payload.mode, user_id=ctx.user.id,
-                                          current_company_id=ctx.company_id)
+                                          current_company_id=ctx.company_id, plan_fingerprint=payload.plan_fingerprint)
     except cb.BackupError as exc:
         return _error(exc)
     return JSONResponse(status_code=201 if result.created else 200, content=await _signed_in(session, result))
+
+
+@router.post("/reactivate")
+async def reactivate_restored(payload: RestoreIn, ctx: AuthContext = Depends(user_owner),
+                              session: AsyncSession = Depends(get_session)):
+    """Reactivate the deactivated company a staged backup was already restored as, instead
+    of restoring a copy, and switch the caller to it. Connectors its deactivation
+    disconnected are named, not reconnected."""
+    path = _uploaded(str(ctx.user.id), payload.upload_token)
+    try:
+        done = await cb.reactivate_restored(path, mode=payload.mode, user_id=ctx.user.id,
+                                            current_company_id=ctx.company_id, plan_fingerprint=payload.plan_fingerprint)
+    except cb.BackupError as exc:
+        return _error(exc)
+    tokens = await _tokens(session, ctx.user.id, done.company_id)
+    return {"company_id": str(done.company_id), "company_name": done.company_name, "reactivated": done.reactivated,
+            "connectors_to_reconnect": done.connectors_to_reconnect, **tokens}
 
 
 @router.post("/bootstrap/read")

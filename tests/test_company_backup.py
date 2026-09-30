@@ -29,6 +29,7 @@ from sqlalchemy import text
 from company_backup_support import (
     FakeCloud,
     company,
+    confirm,
     download,
     manifest,
     member,
@@ -1862,7 +1863,7 @@ async def test_retry_after_success_returns_same_company(real_engine, real_client
     data = await download(real_client, tok)
     r = await read(real_client, tok, data)
     assert r.status_code == 200, r.text
-    upload = {"upload_token": r.json()["upload_token"], "mode": "settings"}
+    upload = confirm(r)
     first = _r_created(await real_client.post("/company-backups/restore", json=upload, headers=auth(tok)))
     companies = await count(real_engine, "companies")
 
@@ -1904,14 +1905,13 @@ async def test_concurrent_restore_creates_one_company(real_engine, real_client, 
     _r_env(tmp_path, monkeypatch)
     _, _, tok = await _r_source(real_engine)
     data = await download(real_client, tok)
-    tokens = []
+    previews = []
     for _ in range(2):
         r = await read(real_client, tok, data)
         assert r.status_code == 200, r.text
-        tokens.append(r.json()["upload_token"])
+        previews.append(confirm(r))
     results = await asyncio.gather(*(
-        real_client.post("/company-backups/restore", json={"upload_token": t, "mode": "settings"}, headers=auth(tok))
-        for t in tokens))
+        real_client.post("/company-backups/restore", json=p, headers=auth(tok)) for p in previews))
     assert sorted(r.status_code for r in results) == [200, 201], [r.text for r in results]
     assert len({r.json()["company_id"] for r in results}) == 1
     assert await count(real_engine, "companies") == 2
@@ -2399,15 +2399,24 @@ async def test_restored_backup_record_not_writable_through_settings(real_engine,
 
 
 async def test_deactivated_restored_company_not_reused(real_engine, real_client, tmp_path, monkeypatch):
-    """Restoring a backup whose restored company was deactivated creates a new company."""
+    """A deactivated company still counts as the restoration of its backup: restoring the
+    backup again creates no copy and offers the owner its reactivation instead."""
     _r_env(tmp_path, monkeypatch)
     _, _, tok = await _r_source(real_engine)
     data = await download(real_client, tok)
     first = _r_created(await restore(real_client, tok, data, "new_company"))
     await _bk_sql(real_engine, "UPDATE companies SET is_active = false WHERE id = CAST(:c AS uuid)",
                   c=first["company_id"])
-    again = _r_created(await restore(real_client, tok, data, "new_company"))
-    assert again["company_id"] != first["company_id"]
+    companies = await count(real_engine, "companies")
+    r = await read(real_client, tok, data, mode="new_company")
+    assert r.status_code == 200, r.text
+    assert r.json()["action"] == "offer_reactivate"
+    assert r.json()["destination_id"] == first["company_id"]
+    again = await real_client.post("/company-backups/restore", json=confirm(r, "new_company"), headers=auth(tok))
+    assert again.status_code == 409, again.text
+    assert await count(real_engine, "companies") == companies
+    assert await _r_scalar(real_engine, "SELECT is_active FROM companies WHERE id = CAST(:c AS uuid)",
+                           c=first["company_id"]) is False
 
 
 def _bk_with_attachment(data: bytes, name: str, url: str, body: bytes) -> bytes:
@@ -2511,3 +2520,687 @@ async def test_enabled_but_uninstalled_module_not_a_backup_requirement(real_engi
     data = await download(real_client, tok)
     assert manifest(data)["modules"]["enabled"] == ["celerp-labels"]
     await _bk_restore_new(real_client, tok, data)
+
+
+# ── Restore lineage: team carry, deactivated destinations and reactivation ───
+
+_LN_SLUG_SUFFIX = re.compile(r"-deactivated-\d+$")
+
+
+async def _ln_team(engine, cid, *roles: str, active: bool = True) -> list:
+    """One new user per role, each a member of the company with that role; returns their ids."""
+    users = []
+    for role in roles:
+        uid = await owner(engine, f"team-{uuid.uuid4().hex[:8]}@example.com", "Team Member")
+        await member(engine, uid, cid, role, active=active)
+        users.append(uid)
+    return users
+
+
+async def _ln_add_company(client, tok: str, data: bytes) -> str:
+    """Restore the backup through Add Company; returns the destination company id."""
+    return _r_created(await restore(client, tok, data, "new_company"))["company_id"]
+
+
+async def _ln_preview(client, tok: str, data: bytes, mode: str = "settings"):
+    r = await read(client, tok, data, mode=mode)
+    assert r.status_code == 200, r.text
+    return r
+
+
+async def _ln_commit(client, tok: str, preview, mode: str = "settings"):
+    return await client.post("/company-backups/restore", json=confirm(preview, mode), headers=auth(tok))
+
+
+async def _ln_reactivate(client, tok: str, preview, mode: str = "new_company"):
+    return await client.post("/company-backups/reactivate", json=confirm(preview, mode), headers=auth(tok))
+
+
+async def _ln_deactivate(engine, client, user, company_id) -> None:
+    r = await client.delete("/companies/me", headers=auth(await token(engine, user, company_id)))
+    assert r.status_code == 200, r.text
+
+
+async def _ln_company(engine, company_id) -> dict:
+    """The company's active flag, slug and settings."""
+    async with engine.connect() as conn:
+        row = (await conn.execute(text(
+            "SELECT is_active, slug, settings::text FROM companies WHERE id = CAST(:c AS uuid)"),
+            {"c": str(company_id)})).one()
+    return {"is_active": row[0], "slug": row[1], "settings": json.loads(row[2] or "{}")}
+
+
+async def _ln_grants(engine, company_id):
+    return (await _ln_company(engine, company_id))["settings"].get("role_grants")
+
+
+async def _ln_set_grant(client, tok: str, perm: str, role: str, granted: bool) -> None:
+    r = await client.patch("/companies/me/role-permissions",
+                           json={"perm_key": perm, "role_key": role, "granted": granted}, headers=auth(tok))
+    assert r.status_code == 200, r.text
+
+
+async def _ln_stage(tmp_path, user_id, data: bytes) -> str:
+    """Stage an upload for the user as the read step would; returns its upload token."""
+    tok = uuid.uuid4().hex
+    folder = tmp_path / "company_backups" / "uploads"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{user_id}-{tok}.celerp-company").write_bytes(data)
+    return tok
+
+
+async def _ln_inactive_destination(engine, client, tmp_path, monkeypatch):
+    """A source company, its backup restored through Add Company, and that company deactivated."""
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(engine)
+    data = await download(client, tok)
+    dest = await _ln_add_company(client, tok, data)
+    await _ln_deactivate(engine, client, user, dest)
+    return user, cid, tok, data, dest
+
+
+async def test_plan_existing_restore_resolves_every_action(real_engine, real_client, tmp_path, monkeypatch):
+    """The planner resolves one action for every destination state and caller, reads without
+    writing, and names the destination only to a caller entitled to it."""
+    cb = _bk_cb()
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(real_engine)
+    [clerk] = await _ln_team(real_engine, cid, "viewer")
+    data = await download(real_client, tok)
+    backup = cb.read_backup(_bk_file(tmp_path, data))
+
+    async def plan(mode, who, current):
+        async with maker(real_engine)() as s:
+            return await cb.plan_existing_restore(s, backup, mode, who, current)
+
+    before = await snapshot(real_engine)
+    first = await plan("settings", user, cid)
+    assert (first.action, first.destination_id, first.destination_name) == ("create", None, None)
+    assert list(first.team_to_add) == [(str(clerk), "viewer")]
+    assert first.fingerprint == (await plan("settings", user, cid)).fingerprint
+    added = await plan("new_company", user, cid)
+    assert (added.action, list(added.team_to_add)) == ("create", [])
+    assert await snapshot(real_engine) == before
+
+    dest = await _ln_add_company(real_client, tok, data)
+    second = await owner(real_engine, "second@example.com", "Second")
+    await member(real_engine, second, cid, "owner")
+    await member(real_engine, second, dest, "manager")
+    stranger = await owner(real_engine, "stranger@example.com", "Stranger")
+    theirs = await company(real_engine, stranger, "Gamma Trading", "gamma-marker")
+
+    carry = await plan("settings", user, cid)
+    assert (carry.action, carry.destination_id, carry.destination_name) == (
+        "return_existing_and_add_team", dest, "Alpha Trading")
+    assert list(carry.team_to_add) == [(str(clerk), "viewer")] and carry.team_blocked == 0
+    existing = await plan("new_company", user, cid)
+    assert (existing.action, existing.destination_id, list(existing.team_to_add)) == ("return_existing", dest, [])
+    blocked = await plan("settings", second, cid)
+    assert (blocked.action, blocked.destination_id, list(blocked.team_to_add), blocked.team_blocked) == (
+        "return_existing", dest, [], 1)
+    refused = await plan("settings", stranger, theirs)
+    assert (refused.action, refused.destination_id, refused.destination_name) == ("refuse", None, None)
+
+    await _ln_deactivate(real_engine, real_client, user, dest)
+    offer = await plan("new_company", user, cid)
+    assert (offer.action, offer.destination_id, offer.destination_name) == ("offer_reactivate", dest, "Alpha Trading")
+    for who, current in ((second, cid), (stranger, theirs)):
+        denied = await plan("settings", who, current)
+        assert (denied.action, denied.destination_id, denied.destination_name) == ("refuse", None, None)
+    assert len({p.fingerprint for p in (first, added, carry, existing, blocked, refused, offer)}) == 7
+
+
+async def test_restore_commit_refuses_stale_preview(real_engine, real_client, tmp_path, monkeypatch):
+    """A restore confirming a plan that no longer holds writes nothing and returns the fresh plan;
+    confirming the fresh plan applies it, and a restore confirming no plan is refused."""
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(real_engine)
+    await _ln_team(real_engine, cid, "viewer")
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+    preview = await _ln_preview(real_client, tok, data)
+    assert (preview.json()["action"], preview.json()["team_members"]) == ("return_existing_and_add_team", 1)
+    await _ln_team(real_engine, cid, "manager")
+
+    before = await snapshot(real_engine)
+    stale = await _ln_commit(real_client, tok, preview)
+    assert stale.status_code == 409, stale.text
+    body = stale.json()
+    assert body["code"] == "stale_preview" and body["detail"]
+    assert (body["plan"]["action"], body["plan"]["team_members"]) == ("return_existing_and_add_team", 2)
+    assert body["plan"]["plan_fingerprint"] != preview.json()["plan_fingerprint"]
+    assert await snapshot(real_engine) == before
+
+    unconfirmed = await real_client.post("/company-backups/restore", headers=auth(tok),
+                                         json={"upload_token": preview.json()["upload_token"], "mode": "settings"})
+    assert unconfirmed.status_code == 422, unconfirmed.text
+    assert await snapshot(real_engine) == before
+
+    fresh = {**confirm(preview), "plan_fingerprint": body["plan"]["plan_fingerprint"]}
+    done = await real_client.post("/company-backups/restore", json=fresh, headers=auth(tok))
+    assert done.status_code == 200, done.text
+    assert (done.json()["company_id"], done.json()["team_members"]) == (dest, 2)
+    assert len(await _r_memberships(real_engine, dest)) == 3
+
+
+async def test_add_company_then_settings_restore_adds_missing_team(real_engine, real_client, tmp_path, monkeypatch):
+    """A backup first restored through Add Company, then restored again from the source company's
+    Settings, gives the missing team access to the existing company with their source roles."""
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(real_engine)
+    viewer, manager = await _ln_team(real_engine, cid, "viewer", "manager")
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+    assert await _r_memberships(real_engine, dest) == {(str(user), "owner", True)}
+    companies = await count(real_engine, "companies")
+
+    preview = await _ln_preview(real_client, tok, data)
+    assert preview.json()["action"] == "return_existing_and_add_team"
+    assert (preview.json()["destination_id"], preview.json()["team_members"]) == (dest, 2)
+    r = await _ln_commit(real_client, tok, preview)
+    assert r.status_code == 200, r.text
+    assert (r.json()["company_id"], r.json()["created"], r.json()["team_members"]) == (dest, False, 2)
+    assert await _r_memberships(real_engine, dest) == {
+        (str(user), "owner", True), (str(viewer), "viewer", True), (str(manager), "manager", True)}
+    assert await count(real_engine, "companies") == companies
+
+
+async def test_team_carry_retry_adds_no_members(real_engine, real_client, tmp_path, monkeypatch):
+    """Once the team is carried, repeating the restore, with the same or a new preview, adds nobody."""
+    _r_env(tmp_path, monkeypatch)
+    _, cid, tok = await _r_source(real_engine)
+    await _ln_team(real_engine, cid, "viewer", "manager")
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+    preview = await _ln_preview(real_client, tok, data)
+    first = await _ln_commit(real_client, tok, preview)
+    assert first.status_code == 200 and first.json()["team_members"] == 2, first.text
+    after = await _r_memberships(real_engine, dest)
+
+    again = await _ln_commit(real_client, tok, preview)
+    assert again.status_code == 200, again.text
+    assert (again.json()["company_id"], again.json()["team_members"]) == (dest, 0)
+    later = await _ln_preview(real_client, tok, data)
+    assert (later.json()["action"], later.json()["team_members"]) == ("return_existing", 0)
+    r = await _ln_commit(real_client, tok, later)
+    assert r.status_code == 200 and r.json()["team_members"] == 0, r.text
+    assert await _r_memberships(real_engine, dest) == after
+
+
+async def test_team_carry_keeps_existing_member_role(real_engine, real_client, tmp_path, monkeypatch):
+    """A team member who already has a role in the existing company keeps that role."""
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(real_engine)
+    clerk, buyer = await _ln_team(real_engine, cid, "viewer", "manager")
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+    await member(real_engine, clerk, dest, "admin")
+    preview = await _ln_preview(real_client, tok, data)
+    assert preview.json()["team_members"] == 1
+    r = await _ln_commit(real_client, tok, preview)
+    assert r.status_code == 200 and r.json()["team_members"] == 1, r.text
+    assert await _r_memberships(real_engine, dest) == {
+        (str(user), "owner", True), (str(clerk), "admin", True), (str(buyer), "manager", True)}
+
+
+async def test_team_carry_keeps_inactive_member_inactive(real_engine, real_client, tmp_path, monkeypatch):
+    """A team member whose access to the existing company was removed stays without access."""
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(real_engine)
+    clerk, buyer = await _ln_team(real_engine, cid, "viewer", "manager")
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+    await member(real_engine, clerk, dest, "operator", active=False)
+    preview = await _ln_preview(real_client, tok, data)
+    assert preview.json()["team_members"] == 1
+    r = await _ln_commit(real_client, tok, preview)
+    assert r.status_code == 200 and r.json()["team_members"] == 1, r.text
+    assert await _r_memberships(real_engine, dest) == {
+        (str(user), "owner", True), (str(clerk), "operator", False), (str(buyer), "manager", True)}
+
+
+async def test_team_carry_refused_for_destination_non_owner(real_engine, real_client, tmp_path, monkeypatch):
+    """A restoring owner who is not an owner of the existing company opens it but adds nobody,
+    and the preview says how many were not added."""
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(real_engine)
+    await _ln_team(real_engine, cid, "viewer")
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+    second = await owner(real_engine, "second@example.com", "Second")
+    await member(real_engine, second, cid, "owner")
+    await member(real_engine, second, dest, "manager")
+    second_tok = await token(real_engine, second, cid)
+    before = await _r_memberships(real_engine, dest)
+
+    preview = await _ln_preview(real_client, second_tok, data)
+    body = preview.json()
+    assert (body["action"], body["destination_id"], body["team_members"], body["team_blocked"]) == (
+        "return_existing", dest, 0, 1)
+    r = await _ln_commit(real_client, second_tok, preview)
+    assert r.status_code == 200, r.text
+    assert (r.json()["company_id"], r.json()["team_members"]) == (dest, 0)
+    assert await _r_memberships(real_engine, dest) == before
+
+
+async def test_team_carry_returns_actual_count(real_engine, real_client, tmp_path, monkeypatch):
+    """The restore reports exactly how many memberships it added, skipping members who
+    already have a membership row in the existing company, active or not."""
+    _r_env(tmp_path, monkeypatch)
+    _, cid, tok = await _r_source(real_engine)
+    present, removed, _ = await _ln_team(real_engine, cid, "viewer", "manager", "admin")
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+    await member(real_engine, present, dest, "viewer")
+    await member(real_engine, removed, dest, "manager", active=False)
+    rows = await count(real_engine, "user_companies", "company_id = CAST(:c AS uuid)", c=dest)
+    r = await _ln_commit(real_client, tok, await _ln_preview(real_client, tok, data))
+    assert r.status_code == 200, r.text
+    added = await count(real_engine, "user_companies", "company_id = CAST(:c AS uuid)", c=dest) - rows
+    assert r.json()["team_members"] == added == 1
+
+
+async def test_team_carry_preview_count_equals_commit_count(real_engine, real_client, tmp_path, monkeypatch):
+    """The preview's team count is the count the restore adds, for a new and for an existing company."""
+    _r_env(tmp_path, monkeypatch)
+    _, cid, tok = await _r_source(real_engine)
+    await _ln_team(real_engine, cid, "viewer", "manager")
+
+    data = await download(real_client, tok)
+    preview = await _ln_preview(real_client, tok, data)
+    assert preview.json()["action"] == "create"
+    created = _r_created(await _ln_commit(real_client, tok, preview))
+    assert preview.json()["team_members"] == created["team_members"] == 2
+    assert len(await _r_memberships(real_engine, created["company_id"])) == 3
+
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+    preview = await _ln_preview(real_client, tok, data)
+    r = await _ln_commit(real_client, tok, preview)
+    assert r.status_code == 200, r.text
+    assert preview.json()["team_members"] == r.json()["team_members"] == 2
+    assert len(await _r_memberships(real_engine, dest)) == 3
+
+
+async def test_team_carry_copies_source_role_grants_once(real_engine, real_client, tmp_path, monkeypatch):
+    """The first team carry into a company restored through Add Company brings the source's role
+    permissions; a later carry never writes them again."""
+    _r_env(tmp_path, monkeypatch)
+    _, cid, tok = await _r_source(real_engine)
+    await _ln_team(real_engine, cid, "admin")
+    await _ln_set_grant(real_client, tok, "manage_users", "admin", False)
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+    assert await _ln_grants(real_engine, dest) is None
+    assert (await _ln_company(real_engine, dest))["settings"]["restored_backup"]["team_policy_carried"] is False
+
+    preview = await _ln_preview(real_client, tok, data)
+    assert (preview.json()["carry_role_grants"], preview.json()["destination_policy"]) == (True, "source")
+    r = await _ln_commit(real_client, tok, preview)
+    assert r.status_code == 200, r.text
+    carried = await _ln_grants(real_engine, dest)
+    assert carried == await _ln_grants(real_engine, cid) and carried
+    assert (await _ln_company(real_engine, dest))["settings"]["restored_backup"]["team_policy_carried"] is True
+
+    await _ln_set_grant(real_client, tok, "manage_integrations", "admin", False)
+    await _ln_team(real_engine, cid, "viewer")
+    preview = await _ln_preview(real_client, tok, data)
+    assert preview.json()["action"] == "return_existing_and_add_team"
+    assert (preview.json()["carry_role_grants"], preview.json()["destination_policy"]) == (False, "destination")
+    r = await _ln_commit(real_client, tok, preview)
+    assert r.status_code == 200 and r.json()["team_members"] == 1, r.text
+    assert await _ln_grants(real_engine, dest) == carried != await _ln_grants(real_engine, cid)
+
+
+async def test_team_carry_never_overwrites_destination_role_grants(real_engine, real_client, tmp_path, monkeypatch):
+    """Role permissions the existing company set for itself are never replaced by the source's."""
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(real_engine)
+    await _ln_team(real_engine, cid, "admin")
+    await _ln_set_grant(real_client, tok, "manage_users", "admin", False)
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+    await _ln_set_grant(real_client, await token(real_engine, user, dest), "manage_integrations", "admin", False)
+    own = await _ln_grants(real_engine, dest)
+    assert own and own != await _ln_grants(real_engine, cid)
+
+    preview = await _ln_preview(real_client, tok, data)
+    assert (preview.json()["carry_role_grants"], preview.json()["destination_policy"]) == (False, "destination")
+    r = await _ln_commit(real_client, tok, preview)
+    assert r.status_code == 200 and r.json()["team_members"] == 1, r.text
+    assert await _ln_grants(real_engine, dest) == own
+
+
+@pytest.mark.parametrize("mode, carried", [("settings", True), ("new_company", False)])
+async def test_same_lineage_new_destination_records_policy_carried(real_engine, real_client, tmp_path, monkeypatch,
+                                                                   mode, carried):
+    """A company created from its own company's Settings records that the team and its role
+    permissions were carried; one created through Add Company records that they were not."""
+    _r_env(tmp_path, monkeypatch)
+    _, cid, tok = await _r_source(real_engine)
+    await _ln_team(real_engine, cid, "admin")
+    await _ln_set_grant(real_client, tok, "manage_users", "admin", False)
+    data = await download(real_client, tok)
+    body = _r_created(await restore(real_client, tok, data, mode))
+    restored = (await _ln_company(real_engine, body["company_id"]))["settings"]
+    assert restored["restored_backup"]["team_policy_carried"] is carried
+    assert (restored.get("role_grants") == await _ln_grants(real_engine, cid)) is carried
+
+
+async def test_team_carry_preview_states_destination_permission_policy(real_engine, real_client, tmp_path, monkeypatch):
+    """The preview says whose role permissions the added team works under: the source's when
+    they will be carried, the existing company's when it has its own."""
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(real_engine)
+    await _ln_team(real_engine, cid, "admin")
+    await _ln_set_grant(real_client, tok, "manage_users", "admin", False)
+
+    data = await download(real_client, tok)
+    await _ln_add_company(real_client, tok, data)
+    body = (await _ln_preview(real_client, tok, data)).json()
+    assert (body["action"], body["destination_policy"], body["carry_role_grants"]) == (
+        "return_existing_and_add_team", "source", True)
+
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+    await _ln_set_grant(real_client, await token(real_engine, user, dest), "manage_integrations", "admin", False)
+    body = (await _ln_preview(real_client, tok, data)).json()
+    assert (body["action"], body["destination_policy"], body["carry_role_grants"]) == (
+        "return_existing_and_add_team", "destination", False)
+
+
+async def test_team_carry_concurrent_membership_change_revalidated(real_engine, real_client, tmp_path, monkeypatch):
+    """The restore rechecks the caller's ownership when it commits: a demotion after the
+    preview refuses the stale plan and adds nobody, and a demotion racing the commit waits for it."""
+    from test_company_settings_race_pg import _hold_first_call, _until_blocked_or_done
+    cb = _bk_cb()
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(real_engine)
+    [clerk] = await _ln_team(real_engine, cid, "viewer")
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+    demote = ("UPDATE user_companies SET role = :r WHERE user_id = :u AND company_id = CAST(:c AS uuid)")
+
+    preview = await _ln_preview(real_client, tok, data)
+    await _bk_sql(real_engine, demote, r="manager", u=user, c=dest)
+    stale = await _ln_commit(real_client, tok, preview)
+    assert stale.status_code == 409, stale.text
+    plan = stale.json()["plan"]
+    assert (plan["action"], plan["team_members"], plan["team_blocked"]) == ("return_existing", 0, 1)
+    assert await _r_memberships(real_engine, dest) == {(str(user), "manager", True)}
+
+    await _bk_sql(real_engine, demote, r="owner", u=user, c=dest)
+    preview = await _ln_preview(real_client, tok, data)
+    paused, release = _hold_first_call(monkeypatch, cb, "_add_team")
+    committing = asyncio.create_task(_ln_commit(real_client, tok, preview))
+    await asyncio.wait_for(paused.wait(), timeout=10)
+    demoting = asyncio.create_task(_bk_sql(real_engine, demote, r="manager", u=user, c=dest))
+    await _until_blocked_or_done(real_engine, demoting)
+    assert not demoting.done()
+    release.set()
+    r = await committing
+    await demoting
+    assert r.status_code == 200 and r.json()["team_members"] == 1, r.text
+    assert await _r_memberships(real_engine, dest) == {(str(user), "manager", True), (str(clerk), "viewer", True)}
+
+
+async def test_concurrent_same_backup_restore_with_existing_destination(real_engine, real_client, tmp_path,
+                                                                        monkeypatch):
+    """Two simultaneous Settings restores onto an existing company add the missing team once."""
+    _r_env(tmp_path, monkeypatch)
+    _, cid, tok = await _r_source(real_engine)
+    await _ln_team(real_engine, cid, "viewer", "manager")
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+    companies = await count(real_engine, "companies")
+    previews = [await _ln_preview(real_client, tok, data) for _ in range(2)]
+    results = await asyncio.gather(*(_ln_commit(real_client, tok, p) for p in previews))
+    assert [r.status_code for r in results] == [200, 200], [r.text for r in results]
+    assert {r.json()["company_id"] for r in results} == {dest}
+    assert sorted(r.json()["team_members"] for r in results) == [0, 2]
+    assert len(await _r_memberships(real_engine, dest)) == 3
+    assert await count(real_engine, "companies") == companies
+
+
+async def test_inactive_prior_restore_detected(real_engine, real_client, tmp_path, monkeypatch):
+    """A backup already restored as a company that was later deactivated is recognised as
+    restored, from Settings and from Add Company."""
+    user, cid, tok, data, dest = await _ln_inactive_destination(real_engine, real_client, tmp_path, monkeypatch)
+    for mode in ("new_company", "settings"):
+        body = (await _ln_preview(real_client, tok, data, mode)).json()
+        assert (body["action"], body["destination_id"], body["destination_name"]) == (
+            "offer_reactivate", dest, "Alpha Trading"), mode
+
+
+async def test_inactive_prior_restore_creates_no_duplicate(real_engine, real_client, tmp_path, monkeypatch):
+    """Confirming a restore of a backup whose company is deactivated creates no second company."""
+    cb = _bk_cb()
+    user, cid, tok, data, dest = await _ln_inactive_destination(real_engine, real_client, tmp_path, monkeypatch)
+    companies = await count(real_engine, "companies")
+    for mode in ("new_company", "settings"):
+        preview = await _ln_preview(real_client, tok, data, mode)
+        r = await _ln_commit(real_client, tok, preview, mode)
+        assert r.status_code == 409, r.text
+        with pytest.raises(cb.BackupError) as err:
+            await cb.restore_company(_bk_file(tmp_path, data), mode=mode, user_id=user, current_company_id=cid,
+                                     plan_fingerprint=preview.json()["plan_fingerprint"])
+        assert err.value.status_code == 409
+    assert await count(real_engine, "companies") == companies
+
+
+async def test_inactive_prior_restore_offers_owner_reactivation(real_engine, real_client, tmp_path, monkeypatch):
+    """The owner of the deactivated company is offered its reactivation, and taking it brings
+    that company back instead of a copy."""
+    user, cid, tok, data, dest = await _ln_inactive_destination(real_engine, real_client, tmp_path, monkeypatch)
+    companies = await count(real_engine, "companies")
+    preview = await _ln_preview(real_client, tok, data, "new_company")
+    assert preview.json()["action"] == "offer_reactivate"
+    r = await _ln_reactivate(real_client, tok, preview)
+    assert r.status_code == 200, r.text
+    assert (r.json()["company_id"], r.json()["reactivated"]) == (dest, True)
+    assert (await _ln_company(real_engine, dest))["is_active"] is True
+    assert await count(real_engine, "companies") == companies
+
+
+async def test_inactive_prior_restore_refuses_member_and_non_member(real_engine, real_client, tmp_path, monkeypatch):
+    """A member who is not its owner and a stranger get the same refusal as for any company they
+    may not open, from preview, restore and reactivation alike, and nothing changes."""
+    cb = _bk_cb()
+    user, cid, tok, data, dest = await _ln_inactive_destination(real_engine, real_client, tmp_path, monkeypatch)
+    manager = await owner(real_engine, "manager@example.com", "Manager")
+    await member(real_engine, manager, dest, "manager")
+    stranger = await owner(real_engine, "stranger@example.com", "Stranger")
+    callers = []
+    for who, name in ((manager, "Manager Co"), (stranger, "Stranger Co")):
+        own = await company(real_engine, who, name, f"{name.lower().replace(' ', '-')}-marker")
+        callers.append((who, await token(real_engine, who, own), await _ln_stage(tmp_path, who, data)))
+
+    before = await snapshot(real_engine)
+    refusals = []
+    for who, who_tok, upload in callers:
+        refusals.append(await read(real_client, who_tok, data, mode="new_company"))
+        for route in ("restore", "reactivate"):
+            refusals.append(await real_client.post(f"/company-backups/{route}", headers=auth(who_tok), json={
+                "upload_token": upload, "mode": "new_company", "plan_fingerprint": "0" * 64}))
+    assert [r.status_code for r in refusals] == [409] * 6, [r.text for r in refusals]
+    assert refusals[0].json() == {"detail": cb.NOT_A_MEMBER}
+    assert len({r.content for r in refusals}) == 1
+    assert await snapshot(real_engine) == before
+
+    r = await _ln_reactivate(real_client, tok, await _ln_preview(real_client, tok, data, "new_company"))
+    assert r.status_code == 200, r.text
+    active = await read(real_client, callers[1][1], data, mode="new_company")
+    assert (active.status_code, active.content) == (409, refusals[0].content), active.text
+
+
+async def test_restore_never_reactivates_company(real_engine, real_client, tmp_path, monkeypatch):
+    """Confirming a restore, even as the owner and with a current preview, leaves a deactivated
+    company deactivated; only the explicit reactivation brings it back."""
+    cb = _bk_cb()
+    user, cid, tok, data, dest = await _ln_inactive_destination(real_engine, real_client, tmp_path, monkeypatch)
+    slug = (await _ln_company(real_engine, dest))["slug"]
+    for mode in ("new_company", "settings"):
+        preview = await _ln_preview(real_client, tok, data, mode)
+        assert (await _ln_commit(real_client, tok, preview, mode)).status_code == 409
+        with pytest.raises(cb.BackupError):
+            await cb.restore_company(_bk_file(tmp_path, data), mode=mode, user_id=user, current_company_id=cid,
+                                     plan_fingerprint=preview.json()["plan_fingerprint"])
+    assert (await _ln_company(real_engine, dest))["is_active"] is False
+    assert (await _ln_company(real_engine, dest))["slug"] == slug
+
+
+async def test_me_reactivate_uses_canonical_reactivation(real_engine, real_client, tmp_path, monkeypatch):
+    """Reactivating the session's company and reactivating a restored company both go through the
+    one reactivation operation."""
+    import celerp.routers.companies as companies_router
+    from celerp.services import company_lifecycle
+    calls = []
+    real = company_lifecycle.reactivate_company
+
+    async def spy(session, company_id, user_id):
+        calls.append((str(company_id), str(user_id)))
+        return await real(session, company_id, user_id)
+
+    monkeypatch.setattr(company_lifecycle, "reactivate_company", spy)
+    user, cid, tok, data, dest = await _ln_inactive_destination(real_engine, real_client, tmp_path, monkeypatch)
+    await _ln_deactivate(real_engine, real_client, user, cid)
+    r = await real_client.post("/companies/me/reactivate", headers=auth(tok))
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "company_id": str(cid), "is_active": True, "connectors_to_reconnect": []}
+    r = await _ln_reactivate(real_client, tok, await _ln_preview(real_client, tok, data, "new_company"))
+    assert r.status_code == 200, r.text
+    assert calls == [(str(cid), str(user)), (dest, str(user))]
+    assert "is_active = True" not in inspect.getsource(companies_router.reactivate_company)
+
+
+async def test_reactivate_existing_company_switches_session(real_engine, real_client, tmp_path, monkeypatch):
+    """Reactivating a restored company signs the owner into it; the old session stays where it was."""
+    user, cid, tok, data, dest = await _ln_inactive_destination(real_engine, real_client, tmp_path, monkeypatch)
+    r = await _ln_reactivate(real_client, tok, await _ln_preview(real_client, tok, data, "new_company"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    me = await _r_me(real_client, body["access_token"])
+    assert (me["id"], me["current_role"]) == (dest, "owner")
+    refreshed = await real_client.post("/auth/token/refresh", json={"refresh_token": body["refresh_token"]})
+    assert refreshed.status_code == 200, refreshed.text
+    assert (await _r_me(real_client, refreshed.json()["access_token"]))["id"] == dest
+    assert (await _r_me(real_client, tok))["id"] == str(cid)
+
+
+async def test_reactivate_existing_company_with_reused_slug(real_engine, real_client, tmp_path, monkeypatch):
+    """A company whose web address was taken while it was deactivated comes back under a free one,
+    through both reactivation routes."""
+    user, cid, tok, data, dest = await _ln_inactive_destination(real_engine, real_client, tmp_path, monkeypatch)
+    base = _LN_SLUG_SUFFIX.sub("", (await _ln_company(real_engine, dest))["slug"])
+    taker = await company(real_engine, user, "Beta Trading", "beta-marker")
+    await _bk_sql(real_engine, "UPDATE companies SET slug = :s WHERE id = :c", s=base, c=taker)
+    r = await _ln_reactivate(real_client, tok, await _ln_preview(real_client, tok, data, "new_company"))
+    assert r.status_code == 200, r.text
+    slug = (await _ln_company(real_engine, dest))["slug"]
+    assert slug != base and slug.startswith(base) and not _LN_SLUG_SUFFIX.search(slug)
+
+    await _ln_deactivate(real_engine, real_client, user, dest)
+    other = await company(real_engine, user, "Delta Trading", "delta-marker")
+    await _bk_sql(real_engine, "UPDATE companies SET slug = :s WHERE id = :c", s=slug, c=other)
+    r = await real_client.post("/companies/me/reactivate", headers=auth(await token(real_engine, user, dest)))
+    assert r.status_code == 200, r.text
+    again = await _ln_company(real_engine, dest)
+    assert again["is_active"] is True and again["slug"] not in (base, slug)
+    assert not _LN_SLUG_SUFFIX.search(again["slug"])
+
+
+async def test_reactivate_existing_company_retry_is_idempotent(real_engine, real_client, tmp_path, monkeypatch):
+    """Repeating a reactivation returns the same company, already active, and changes nothing."""
+    user, cid, tok, data, dest = await _ln_inactive_destination(real_engine, real_client, tmp_path, monkeypatch)
+    preview = await _ln_preview(real_client, tok, data, "new_company")
+    first = await _ln_reactivate(real_client, tok, preview)
+    assert first.status_code == 200 and first.json()["reactivated"] is True, first.text
+    state = await _ln_company(real_engine, dest)
+    companies = await count(real_engine, "companies")
+    for again in (await _ln_reactivate(real_client, tok, preview),
+                  await _ln_reactivate(real_client, tok, await _ln_preview(real_client, tok, data, "new_company"))):
+        assert again.status_code == 200, again.text
+        assert (again.json()["company_id"], again.json()["reactivated"]) == (dest, False)
+    assert await _ln_company(real_engine, dest) == state
+    assert await count(real_engine, "companies") == companies
+
+
+async def test_reactivate_existing_company_connectors_await_reconnect(real_engine, real_client, tmp_path, monkeypatch):
+    """Reactivating a restored company names the connectors its deactivation disconnected and
+    reconnects none of them."""
+    from unittest.mock import AsyncMock, patch
+
+    from celerp.connectors.ownership import connectors_awaiting_reconnect
+    from celerp.models.connector_config import ConnectorConfig
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(real_engine)
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+    async with maker(real_engine)() as s:
+        s.add(ConnectorConfig(company_id=dest, connector="woocommerce"))
+        await s.commit()
+    with patch("celerp.connectors.remote_state.revoke_connector_remote_state", AsyncMock()):
+        await _ln_deactivate(real_engine, real_client, user, dest)
+
+    r = await _ln_reactivate(real_client, tok, await _ln_preview(real_client, tok, data, "new_company"))
+    assert r.status_code == 200, r.text
+    assert r.json()["connectors_to_reconnect"] == ["woocommerce"]
+    assert await count(real_engine, "connector_configs", "company_id = :c", c=dest) == 0
+    async with maker(real_engine)() as s:
+        assert await connectors_awaiting_reconnect(s, uuid.UUID(dest)) == ["woocommerce"]
+
+
+async def test_concurrent_reactivation_reactivates_once(real_engine, real_client, tmp_path, monkeypatch):
+    """Two simultaneous reactivations of the same restored company reactivate it once and both
+    return it."""
+    from test_company_settings_race_pg import _hold_first_call, _until_blocked_or_done
+
+    from celerp.connectors import ownership
+    user, cid, tok, data, dest = await _ln_inactive_destination(real_engine, real_client, tmp_path, monkeypatch)
+    previews = [await _ln_preview(real_client, tok, data, "new_company") for _ in range(2)]
+    paused, release = _hold_first_call(monkeypatch, ownership, "connectors_awaiting_reconnect")
+    first = asyncio.create_task(_ln_reactivate(real_client, tok, previews[0]))
+    await asyncio.wait_for(paused.wait(), timeout=10)
+    second = asyncio.create_task(_ln_reactivate(real_client, tok, previews[1]))
+    await _until_blocked_or_done(real_engine, second)
+    release.set()
+    results = [await first, await second]
+    assert [r.status_code for r in results] == [200, 200], [r.text for r in results]
+    assert [r.json()["reactivated"] for r in results] == [True, False]
+    assert {r.json()["company_id"] for r in results} == {dest}
+
+
+async def test_reactivation_failure_issues_no_session(real_engine, real_client, tmp_path, monkeypatch):
+    """A reactivation that fails leaves the company deactivated and signs nobody in."""
+    from celerp.connectors import ownership
+    user, cid, tok, data, dest = await _ln_inactive_destination(real_engine, real_client, tmp_path, monkeypatch)
+    preview = await _ln_preview(real_client, tok, data, "new_company")
+    state = await _ln_company(real_engine, dest)
+    sessions = await count(real_engine, "session_registry")
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("connector state unavailable")
+
+    monkeypatch.setattr(ownership, "connectors_awaiting_reconnect", broken)
+    try:
+        status = (await _ln_reactivate(real_client, tok, preview)).status_code
+    except RuntimeError:
+        status = 500
+    assert status == 500
+    assert await _ln_company(real_engine, dest) == state
+    assert await count(real_engine, "session_registry") == sessions
+
+
+async def test_restore_refuses_attachment_missing_from_archive(real_engine, real_client, tmp_path, monkeypatch):
+    """A backup whose records point at an attachment file of its company that it does not
+    carry is refused before anything is written."""
+    _bk_local(monkeypatch, tmp_path)
+    user, cid, tok = await _bk_setup(real_engine)
+    await _bk_point_at(real_engine, cid, _bk_local_file(tmp_path, cid, "photo.png", b"alpha-photo"))
+    parts = members(await download(real_client, tok))
+    m = json.loads(parts.pop("manifest.json"))
+    [entry] = m["attachments"]
+    del parts[f"attachments/{entry['name']}"]
+    m["attachments"] = []
+    data = rezip({**parts, "manifest.json": json.dumps(m).encode()})
+    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "does not carry")

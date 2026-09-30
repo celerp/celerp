@@ -31,7 +31,8 @@ DEFAULT_LOCATION_TYPE = "office"
 DEFAULT_FISCAL_YEAR_START = "01-01"
 
 
-async def _unique_slug(session: AsyncSession, name: str) -> str:
+async def unique_slug(session: AsyncSession, name: str) -> str:
+    """A company web address made from ``name`` that no other company uses."""
     base = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-") or uuid.uuid4().hex[:12]
     taken = set((await session.execute(
         select(Company.slug).where((Company.slug == base) | Company.slug.like(f"{base}-%"))
@@ -47,7 +48,7 @@ async def _create_company(
     company_id: uuid.UUID | None = None,
 ) -> Company:
     company = Company(
-        id=company_id or uuid.uuid4(), name=company_name, slug=await _unique_slug(session, company_name),
+        id=company_id or uuid.uuid4(), name=company_name, slug=await unique_slug(session, company_name),
         settings=settings, is_active=not staged, is_migration_staged=staged,
     )
     session.add(company)

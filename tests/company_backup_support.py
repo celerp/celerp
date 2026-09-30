@@ -78,17 +78,24 @@ async def download(client, tok: str, **params) -> bytes:
     return r.content
 
 
-async def read(client, tok: str, data: bytes, name: str = "books.celerp-company"):
-    return await client.post("/company-backups/read", files={"file": (name, data)}, headers=auth(tok))
+async def read(client, tok: str, data: bytes, name: str = "books.celerp-company", mode: str = "settings"):
+    """Upload a backup for the preview of restoring it in ``mode``."""
+    return await client.post("/company-backups/read", files={"file": (name, data)}, data={"mode": mode},
+                             headers=auth(tok))
+
+
+def confirm(preview, mode: str = "settings") -> dict:
+    """The restore request confirming a preview response as shown."""
+    body = preview.json()
+    return {"upload_token": body["upload_token"], "mode": mode, "plan_fingerprint": body.get("plan_fingerprint")}
 
 
 async def restore(client, tok: str, data: bytes, mode: str = "settings"):
-    """Upload and restore a backup; returns the restore response (or the refused read response)."""
-    r = await read(client, tok, data)
+    """Upload and restore a backup as previewed; returns the restore response (or the refused read response)."""
+    r = await read(client, tok, data, mode=mode)
     if r.status_code != 200:
         return r
-    return await client.post("/company-backups/restore", json={"upload_token": r.json()["upload_token"], "mode": mode},
-                             headers=auth(tok))
+    return await client.post("/company-backups/restore", json=confirm(r, mode), headers=auth(tok))
 
 
 def members(data: bytes) -> dict[str, bytes]:
