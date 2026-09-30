@@ -51,6 +51,39 @@ _MAX_SEQ_DIGITS = 9
 _SEQ_WIDTH = 6
 
 
+# Fields that must NOT be inherited from parent in split/transform (child gets fresh values).
+# Everything else in parent.state is inherited automatically (copy-all-then-override).
+_CHILD_RESET_FIELDS: frozenset[str] = frozenset({
+    # Identity - always overridden explicitly
+    "sku",
+    "barcode",      # recalculated: new entity needs a new unique barcode
+    "rfid_epc",     # physical RFID/EPC tag: bound to one physical unit, never inherited by a new one
+    "idempotency_key", # connector identity belongs to the catalog/product anchor
+    "external_links",  # external channel identity must never be cloned onto a physical child
+    "_catalog_sku_aliases",  # internal catalog-anchor SKU history never belongs on a lot
+    # Quantity / cost - set by split math or pricing events
+    "quantity",
+    "weight",
+    "pieces",
+    "cost_total",
+    "cost_price",
+    # Status - children start as available regardless of parent's terminal status
+    "status",
+    # Timestamps - set fresh
+    "created_at",
+    "updated_at",
+    # Relationship - set by split/transform logic
+    "parent_id",
+    "parent_sku",
+})
+
+
+def lot_fields(parent_state: dict) -> dict:
+    """The fields a new lot of an item inherits from it: everything but identity, quantity,
+    cost, status, timestamps and lineage, which each new lot sets for itself."""
+    return {k: v for k, v in parent_state.items() if k not in _CHILD_RESET_FIELDS}
+
+
 async def _next_seq(session: AsyncSession, company_id) -> int:
     """Return the next integer in the shared SKU/barcode sequence for a company.
 

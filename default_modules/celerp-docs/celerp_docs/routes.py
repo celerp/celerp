@@ -3994,8 +3994,7 @@ async def record_historical_delivery(session: AsyncSession, company_id, entity_i
     carried separately, so the item's own quantity is not changed and no journal entry posts.
     Returns the doc.fulfilled or doc.partially_fulfilled entry, or the earlier one when
     ``idempotency_key`` was already used for this delivery."""
-    from celerp_inventory.routes import lot_fields
-    from celerp_inventory.services import allocate_internal_codes
+    from celerp_inventory.services import allocate_internal_codes, lot_fields
 
     row, replay = await _historical_doc(session, company_id, entity_id, doc_type="invoice",
                                         event_types=("doc.fulfilled", "doc.partially_fulfilled"),
