@@ -46,7 +46,7 @@ from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
 from celerp.services.business_time import business_timezone
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import lock_company, locked_company
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -695,6 +695,7 @@ async def create_user(
     if payload.role not in ROLE_LEVELS:
         raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))}")
     _assert_role_assignable(caller_role, payload.role)
+    await lock_company(session, company_id)
 
     # Check if user with this email already exists globally; if so, just link them.
     existing_user = (await session.execute(select(User).where(User.email == payload.email))).scalar_one_or_none()
@@ -757,6 +758,7 @@ async def patch_user(
     from celerp.models.accounting import UserCompany
     from sqlalchemy import func as _func
 
+    await lock_company(session, company_id)
     user = (await session.execute(
         select(User).where(User.id == user_id).with_for_update()
     )).scalar_one_or_none()

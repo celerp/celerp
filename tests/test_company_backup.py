@@ -3339,3 +3339,57 @@ async def test_reactivate_without_prior_restore_is_stale_preview(real_engine, re
     assert r.status_code == 409, r.text
     assert r.json()["code"] == "stale_preview" and r.json()["plan"]["action"] == "create"
     assert await snapshot(real_engine) == before
+
+
+@pytest.mark.parametrize("existing", [False, True])
+async def test_team_carry_source_permissions_changed_after_preview_is_stale(real_engine, real_client, tmp_path,
+                                                                            monkeypatch, existing):
+    """The role permissions a team carry copies are the ones its preview showed: a change to
+    the source company's permissions after the preview refuses the stale plan and writes nothing."""
+    _r_env(tmp_path, monkeypatch)
+    _, cid, tok = await _r_source(real_engine)
+    await _ln_team(real_engine, cid, "admin")
+    await _ln_set_grant(real_client, tok, "manage_users", "admin", False)
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data) if existing else None
+    companies = await count(real_engine, "companies")
+
+    preview = await _ln_preview(real_client, tok, data)
+    assert preview.json()["carry_role_grants"] is True
+    await _ln_set_grant(real_client, tok, "manage_integrations", "admin", False)
+    stale = await _ln_commit(real_client, tok, preview)
+    assert stale.status_code == 409 and stale.json()["code"] == "stale_preview", stale.text
+    assert await count(real_engine, "companies") == companies
+    if existing:
+        assert await _ln_grants(real_engine, dest) is None
+
+    r = await _ln_commit(real_client, tok, await _ln_preview(real_client, tok, data))
+    assert r.status_code in (200, 201), r.text
+    assert await _ln_grants(real_engine, r.json()["company_id"]) == await _ln_grants(real_engine, cid)
+
+
+async def test_source_membership_change_waits_for_team_carry(real_engine, real_client, tmp_path, monkeypatch):
+    """A role change on the source company waits for a team carry in progress, so the carry
+    copies the team as its preview showed it and the change lands after."""
+    from test_company_settings_race_pg import _hold_first_call, _until_blocked_or_done
+    cb = _bk_cb()
+    _r_env(tmp_path, monkeypatch)
+    _, cid, tok = await _r_source(real_engine)
+    [clerk] = await _ln_team(real_engine, cid, "viewer")
+    data = await download(real_client, tok)
+    dest = await _ln_add_company(real_client, tok, data)
+
+    preview = await _ln_preview(real_client, tok, data)
+    paused, release = _hold_first_call(monkeypatch, cb, "_add_team")
+    committing = asyncio.create_task(_ln_commit(real_client, tok, preview))
+    await asyncio.wait_for(paused.wait(), timeout=10)
+    promoting = asyncio.create_task(real_client.patch(f"/companies/me/users/{clerk}", json={"role": "manager"},
+                                                      headers=auth(tok)))
+    await _until_blocked_or_done(real_engine, promoting)
+    assert not promoting.done()
+    release.set()
+    r = await committing
+    assert r.status_code == 200 and r.json()["team_members"] == 1, r.text
+    assert (await promoting).status_code == 200
+    assert (str(clerk), "viewer", True) in await _r_memberships(real_engine, dest)
+    assert (str(clerk), "manager", True) in await _r_memberships(real_engine, cid)

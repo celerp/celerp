@@ -49,7 +49,7 @@ from celerp.modules.loader import is_running, module_search_path, read_manifest,
 from celerp.modules.registry import get_enabled, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
 from celerp.services.auth import verify_password
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.migrations import COMPANY_NAME_MAX
 from celerp.services.provisioning import create_install_owner, provision_restored_company
 
@@ -941,8 +941,9 @@ REFUSE = "refuse"
 class RestorePlan:
     """What restoring a backup does for one caller: the action, the company it lands in
     (named only to a caller entitled to it), the team members it gives access and whose
-    role permissions they work under. ``fingerprint`` identifies these facts, so a restore
-    can tell whether the preview it confirms still holds."""
+    role permissions they work under, with the source's role permissions carried.
+    ``fingerprint`` identifies these facts, so a restore can tell whether the preview it
+    confirms still holds."""
     action: str
     destination_id: str | None
     destination_name: str | None
@@ -951,6 +952,7 @@ class RestorePlan:
     carry_role_grants: bool
     destination_policy: str
     fingerprint: str
+    role_grants: dict | None = None
 
     def public(self) -> dict:
         return {"action": self.action, "destination_id": self.destination_id,
@@ -960,16 +962,17 @@ class RestorePlan:
 
 
 def _planned(backup_id: str, mode: str, action: str, destination: Company | None = None, *,
-             team: tuple[tuple[str, str], ...] = (), blocked: int = 0, carry: bool = False) -> RestorePlan:
+             team: tuple[tuple[str, str], ...] = (), blocked: int = 0, carry: bool = False,
+             grants: dict | None = None) -> RestorePlan:
     facts = {"backup_id": backup_id, "mode": mode, "action": action,
              "destination_id": str(destination.id) if destination is not None else None,
              "team": [list(m) for m in team], "blocked": blocked, "carry": carry,
-             "policy": "source" if carry else "destination"}
+             "policy": "source" if carry else "destination", "grants": grants if carry else None}
     digest = hashlib.sha256(json.dumps(facts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return RestorePlan(action=action, destination_id=facts["destination_id"],
                        destination_name=destination.name if destination is not None else None,
                        team_to_add=team, team_blocked=blocked, carry_role_grants=carry,
-                       destination_policy=facts["policy"], fingerprint=digest)
+                       destination_policy=facts["policy"], fingerprint=digest, role_grants=facts["grants"])
 
 
 async def _missing_team(session: AsyncSession, source: str, user_id: uuid.UUID,
@@ -987,16 +990,22 @@ async def _missing_team(session: AsyncSession, source: str, user_id: uuid.UUID,
 
 async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, current_company_id, *,
                 lock: bool) -> tuple[RestorePlan, Company | None]:
-    """The plan and the destination company. With ``lock`` the destination row and the
-    caller's membership of it are locked, so the plan holds until the transaction ends."""
+    """The plan and the destination company. With ``lock`` the source and destination
+    companies (in id order) and the caller's membership of the destination are locked, so
+    the plan, including the source team and role permissions it carries, holds until the
+    transaction ends."""
     m = backup.manifest
     backup_id, source = m["backup_id"], m["company"]["id"]
     me = uuid.UUID(str(user_id))
     same_lineage = mode == "settings" and current_company_id is not None and str(current_company_id) == source
     found = await session.scalar(_restored_as(backup_id))
+    if lock:
+        for cid in sorted({*([source] if same_lineage else []), *([str(found.id)] if found is not None else [])}):
+            await lock_company(session, uuid.UUID(cid))
     if found is None:
         team = await _missing_team(session, source, me, None) if same_lineage else ()
-        return _planned(backup_id, mode, CREATE, team=team, carry=same_lineage), None
+        grants = await _source_grants(session, source) if same_lineage else None
+        return _planned(backup_id, mode, CREATE, team=team, carry=same_lineage, grants=grants), None
     destination = await locked_company(session, found.id) if lock else found
     membership = select(UserCompany.role, UserCompany.is_active).where(
         UserCompany.user_id == me, UserCompany.company_id == destination.id)
@@ -1015,7 +1024,8 @@ async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, c
         return _planned(backup_id, mode, RETURN_EXISTING, destination, blocked=len(missing)), destination
     settings = destination.settings or {}
     carry = not (settings.get("restored_backup") or {}).get("team_policy_carried") and not settings.get("role_grants")
-    return _planned(backup_id, mode, ADD_TEAM, destination, team=missing, carry=carry), destination
+    grants = await _source_grants(session, source) if carry else None
+    return _planned(backup_id, mode, ADD_TEAM, destination, team=missing, carry=carry, grants=grants), destination
 
 
 async def plan_existing_restore(session: AsyncSession, backup: BackupFile, mode: str, user_id,
@@ -1039,7 +1049,7 @@ async def _add_team(session: AsyncSession, company_id, team: tuple[tuple[str, st
 
 
 async def _source_grants(session: AsyncSession, source: str):
-    current = await session.get(Company, uuid.UUID(source))
+    current = await session.get(Company, uuid.UUID(source), populate_existing=True)
     return ((current.settings or {}) if current is not None else {}).get("role_grants")
 
 
@@ -1088,8 +1098,8 @@ async def _apply_existing(session: AsyncSession, plan: RestorePlan, destination:
         return 0
     added = await _add_team(session, destination.id, plan.team_to_add)
     settings = dict(destination.settings or {})
-    if plan.carry_role_grants and (grants := await _source_grants(session, source)):
-        settings["role_grants"] = grants
+    if plan.role_grants:
+        settings["role_grants"] = plan.role_grants
     settings["restored_backup"] = {**(settings.get("restored_backup") or {}), "team_policy_carried": True}
     destination.settings = settings
     return added
@@ -1196,8 +1206,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     "team_policy_carried": plan.carry_role_grants,
                 }
                 # The carried team keeps what its roles may do in the current company.
-                if plan.carry_role_grants and (grants := await _source_grants(session, source)):
-                    settings["role_grants"] = grants
+                if plan.role_grants:
+                    settings["role_grants"] = plan.role_grants
                 company = await provision_restored_company(session, owner=user, company_name=m["company"]["name"],
                                                            company_id=new_id, settings=settings)
                 try:
