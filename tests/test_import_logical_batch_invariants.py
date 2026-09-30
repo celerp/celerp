@@ -28,14 +28,21 @@ from httpx import ASGITransport, AsyncClient
 from celerp.events.types import EventType
 from test_helpers import grant_permission, perm_setup
 
-# The bounded writer chunk used by the shared semantic importer.
-_CHUNK = 500
+# The shared semantic importer's writer chunk, made small here so a few rows
+# cross the same chunk boundaries a large import does.
+_CHUNK = 5
 _TRANSPORTS = ["browser", "rows", "file"]
 
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _small_chunks(monkeypatch):
+    import celerp_inventory.services as svc
+    monkeypatch.setattr(svc, "IMPORT_CHUNK", _CHUNK)
 
 
 @pytest.fixture
@@ -252,17 +259,14 @@ async def _snapshot(session, company_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# A 1001-row semantic import is one history operation
+# A three-chunk semantic import is one history operation
 # ---------------------------------------------------------------------------
 
 
-# Each test writes 1001 rows through three chunks; on a shared CI runner that is
-# close to the suite-wide 30s guard, so these carry their own limit.
-@pytest.mark.timeout(120)
 class TestLogicalImportHistory:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("transport", _TRANSPORTS)
-    async def test_1001_row_semantic_import_creates_one_history_batch(self, client, session, ctx, transport):
+    async def test_three_chunk_semantic_import_creates_one_history_batch(self, client, session, ctx, transport):
         rows = 2 * _CHUNK + 1
         body = await _run_ok(_Operation(client, ctx, transport, _distinct_csv(rows)))
         assert body["created"] == rows
@@ -273,7 +277,7 @@ class TestLogicalImportHistory:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("transport", _TRANSPORTS)
-    async def test_1001_row_history_row_count_matches_all_created_rows(self, client, session, ctx, transport):
+    async def test_three_chunk_history_row_count_matches_all_created_rows(self, client, session, ctx, transport):
         rows = 2 * _CHUNK + 1
         before = await _item_ids(session, ctx["company_id"])
         body = await _run_ok(_Operation(client, ctx, transport, _distinct_csv(rows)))
@@ -289,7 +293,7 @@ class TestLogicalImportHistory:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("transport", _TRANSPORTS)
-    async def test_1001_row_undo_removes_all_created_rows(self, client, session, ctx, transport):
+    async def test_three_chunk_undo_removes_all_created_rows(self, client, session, ctx, transport):
         rows = 2 * _CHUNK + 1
         before = await _item_ids(session, ctx["company_id"])
         body = await _run_ok(_Operation(client, ctx, transport, _distinct_csv(rows)))
@@ -372,8 +376,9 @@ class TestLogicalImportRetry:
         self, client, session, ctx, monkeypatch,
     ):
         import celerp_inventory.services as svc
-        # Rows 1 and 501 are two new lots sharing a SKU. After an attempt that
-        # failed past the first chunk, the retry must still plan row 501 as its
+        # The first row and the first row of the second chunk are two new lots sharing
+        # a SKU. After an attempt that failed past the first chunk, the retry must
+        # still plan the second-chunk row as its
         # own new lot, as the uninterrupted import does, not as an update of row 1's lot.
         rows = [{"name": f"Lot {i:04d}", "sku": f"LOT-{i:04d}", "sell_by": "piece", "quantity": "1"}
                 for i in range(_CHUNK + 2)]
