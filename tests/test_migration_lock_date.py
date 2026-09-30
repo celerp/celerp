@@ -22,7 +22,9 @@ from fixtures.manager_io import specs
 from fixtures.manager_io.encoder import Obj, write_manager_file
 from fixtures.manager_io.support import BASIC, artifact
 from migration_support import (
+    OWNER_EMAIL,
     auth,
+    count,
     creator_run,
     load_run,
     maker,
@@ -48,6 +50,39 @@ async def _migrate(engine, path, monkeypatch, tmp_path):
     from test_migration_e2e import migrate
 
     return await migrate(engine, path.read_bytes(), path.name, {"mode": "full_history"}, monkeypatch, tmp_path / "data")
+
+
+async def _staged_migration(engine, path, entry: str, monkeypatch, tmp_path):
+    """Scan, decide and run *path* into a staged company, started either by an owner adding a
+    company alongside the one they already run, or by the first owner of a fresh install."""
+    from celerp.config import settings
+    from celerp.models.company import User
+    from celerp.services import migration_scan_store as store
+    from celerp.services import migrations, provisioning
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path / "data")
+    async with maker(engine)() as s:
+        if entry == "bootstrap":
+            user = await provisioning.create_install_owner(s, name="Owner", email=OWNER_EMAIL, password="validpass1")
+            owner = ("bootstrap", None)
+        else:
+            user = User(email=OWNER_EMAIL, name="Owner", is_install_owner=True)
+            s.add(user)
+            await s.flush()
+            await provisioning.provision_additional_company(s, user=user, company_name="Existing Co")
+            owner = ("user", user.id)
+        scan = await store.create_scan(upload_parts((path.name, path.read_bytes())), owner=owner)
+        chosen = migrations.validate_decisions(scan, {"mode": "full_history"})
+        scan = store.save_decisions(scan.token, owner=owner, decisions=chosen)
+        company = await provisioning.provision_migration_company(s, owner=user, company_name=scan.scan.company_name)
+        run = await migrations.create_run(s, company=company, user=user, scan=scan, decisions=chosen)
+        run_id = run.id
+        await s.commit()
+        await migrations.claim_source(s, run_id, token=scan.token, start=True)
+    await migrations.run_migration(run_id)
+    run = await load_run(engine, run_id)
+    assert bool(run.source_summary.get("bootstrap")) is (entry == "bootstrap")
+    return run
 
 
 async def _company(engine, company_id):
@@ -315,3 +350,110 @@ async def test_post_finalize_posting_after_lock_allowed(real_client, real_engine
     _assert_locked_and_normal(await _company(real_engine, run.company_id), run)
     r = await _post(real_client, headers, real_engine, run.company_id, "2026-03-01")
     assert r.status_code == 200, r.text
+
+
+ENTRIES = pytest.mark.parametrize("entry", ["additional", "bootstrap"])
+
+
+@ENTRIES
+async def test_finalize_failure_between_activation_and_lock_install_leaves_company_staged(
+        entry, real_client, real_engine, monkeypatch, tmp_path):
+    """A finish that fails while installing the lock date leaves the company staged, inactive
+    and unlocked, never normal without its lock; retrying it installs the lock and activates."""
+    from celerp.services import migrations
+
+    run = await _staged_migration(real_engine, _locked_book(tmp_path / "locked.manager"), entry, monkeypatch, tmp_path)
+    assert run.status == "ready_to_finalize", run.error_summary
+    real_install = migrations.write_period_lock
+
+    def failing_install(company, lock_date, user_id):
+        raise RuntimeError("the lock date could not be written")
+
+    monkeypatch.setattr(migrations, "write_period_lock", failing_install)
+    r = await _finalize(real_client, real_engine, run)
+    assert r.status_code == 500, r.text
+    assert (await load_run(real_engine, run.id)).status == "ready_to_finalize"
+    _assert_unlocked_and_staged(await _company(real_engine, run.company_id))
+
+    monkeypatch.setattr(migrations, "write_period_lock", real_install)
+    r = await _finalize(real_client, real_engine, run)
+    assert r.status_code == 200, r.text
+    run = await load_run(real_engine, run.id)
+    assert run.status == "completed"
+    _assert_locked_and_normal(await _company(real_engine, run.company_id), run)
+
+
+@ENTRIES
+async def test_finalize_installs_lock_date_via_canonical_settings_operation(
+        entry, real_client, real_engine, monkeypatch, tmp_path):
+    """Finishing installs the lock through the same operation the Settings period-lock route
+    uses, and leaves exactly what that route leaves for the same date and user."""
+    from celerp.events import engine as events
+    from celerp.services import migrations
+    from celerp_accounting import routes as accounting
+
+    installs = []
+
+    def spy(company, lock_date, user_id):
+        installs.append((company.id, lock_date, str(user_id)))
+        return events.write_period_lock(company, lock_date, user_id)
+
+    monkeypatch.setattr(migrations, "write_period_lock", spy)
+    monkeypatch.setattr(accounting, "write_period_lock", spy)
+
+    run = await _staged_migration(real_engine, _locked_book(tmp_path / "locked.manager"), entry, monkeypatch, tmp_path)
+    assert run.status == "ready_to_finalize", run.error_summary
+    assert installs == []
+    r = await _finalize(real_client, real_engine, run)
+    assert r.status_code == 200, r.text
+    run = await load_run(real_engine, run.id)
+    expected = (run.company_id, LOCKED_THROUGH.isoformat(), str(run.created_by_user_id))
+    assert installs == [expected]
+    _assert_locked_and_normal(await _company(real_engine, run.company_id), run)
+    headers = await _owner_headers(real_engine, run)
+    finished = (await real_client.get("/accounting/period-lock", headers=headers)).json()
+
+    # The Settings route, given the same date by the same user, records the same fields and
+    # writes nothing to the ledger, so the finish has no other effect to reproduce.
+    ledger = await count(real_engine, "ledger", "company_id = :c", c=str(run.company_id))
+    r = await real_client.post("/accounting/period-lock", headers=headers,
+                               json={"lock_date": LOCKED_THROUGH.isoformat()})
+    assert r.status_code == 200, r.text
+    assert installs == [expected, expected]
+    assert await count(real_engine, "ledger", "company_id = :c", c=str(run.company_id)) == ledger
+    by_route = (await real_client.get("/accounting/period-lock", headers=headers)).json()
+    assert set(finished) == set(by_route)
+    assert {k: v for k, v in finished.items() if k != "lock_date_set_at"} == \
+        {k: v for k, v in by_route.items() if k != "lock_date_set_at"}
+    assert finished["lock_date_set_at"] and by_route["lock_date_set_at"]
+
+
+@ENTRIES
+async def test_reconciliation_failure_installs_no_lock_date(entry, real_client, real_engine, monkeypatch, tmp_path):
+    """A run whose reconciliation does not match the source stops with the company staged and
+    unlocked, and cannot be finished; once a resumed run reconciles, finishing installs the lock."""
+    from celerp.services import migrations
+
+    real_verification = migrations._verification
+
+    async def mismatch(session, run_):
+        report = await real_verification(session, run_)
+        return {**report, "blockers": 1}
+
+    monkeypatch.setattr(migrations, "_verification", mismatch)
+    run = await _staged_migration(real_engine, _locked_book(tmp_path / "locked.manager"), entry, monkeypatch, tmp_path)
+    assert run.status == "failed" and run.error_summary["phase"] == "reconciliation", run.error_summary
+    assert run.source_lock_date == LOCKED_THROUGH
+    _assert_unlocked_and_staged(await _company(real_engine, run.company_id))
+    r = await _finalize(real_client, real_engine, run)
+    assert r.status_code == 409, r.text
+    _assert_unlocked_and_staged(await _company(real_engine, run.company_id))
+
+    monkeypatch.setattr(migrations, "_verification", real_verification)
+    await resume_run(real_engine, run.id)
+    run = await load_run(real_engine, run.id)
+    assert run.status == "ready_to_finalize", run.error_summary
+    _assert_unlocked_and_staged(await _company(real_engine, run.company_id))
+    r = await _finalize(real_client, real_engine, run)
+    assert r.status_code == 200, r.text
+    _assert_locked_and_normal(await _company(real_engine, run.company_id), await load_run(real_engine, run.id))
