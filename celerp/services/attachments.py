@@ -595,6 +595,35 @@ def _backend_holding(url: str) -> StorageBackend:
     return get_backend() if url.startswith(("http://", "https://")) else LocalBackend()
 
 
+def company_file_name(company_id, url) -> str | None:
+    """The stored file name when ``url`` is a file stored for this company by any backend,
+    otherwise None."""
+    if not isinstance(url, str) or not url.startswith(("/", "http://", "https://")):
+        return None
+    marker = f"attachments/{company_id}/"
+    at = url.find(marker)
+    if at < 0 or (at and url[at - 1] != "/"):
+        return None
+    name = url[at + len(marker):]
+    return name if is_plain_name(name) else None
+
+
+async def read_company_file(company_id, url: str, max_bytes: int) -> bytes | None:
+    """Content of a file stored for this company, read through the backend holding it;
+    None when it is missing or larger than ``max_bytes``."""
+    return await _backend_holding(url).read(str(company_id), url, max_bytes)
+
+
+async def store_company_file(company_id, name: str, content: bytes) -> str:
+    """Store ``content`` for this company under the stored file name ``name`` through the
+    configured backend; returns the new URL."""
+    stem, dot, ext = name.rpartition(".")
+    mime = next((m for m, e in _MIME_EXTENSIONS.items() if dot and e == f".{ext}"), None)
+    if mime is None or not stem:
+        stem, mime = name, "application/octet-stream"
+    return await get_backend().store(str(company_id), stem, content, mime)
+
+
 async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | None:
     """Return the list thumbnail bytes of a stored image attachment, or None.
 
