@@ -267,6 +267,27 @@ async def test_import_csv_auto_detect(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("csv_bytes", [
+    b"Date,Description,Amount,Amount\n2026-01-01,x,-5000,123\n",
+    b"Date,Description,Amount,\n2026-01-01,x,-5000,123\n",
+], ids=["duplicate_header", "blank_header"])
+async def test_import_csv_refuses_a_header_that_would_lose_values(client, csv_bytes):
+    """Two columns under one header, or a filled column with none, are refused
+    naming the column; no line is stored from a collapsed row."""
+    h = await _auth(client)
+    bank = await _create_bank(client, h)
+    recon = await _create_recon(client, h, bank["id"])
+    r = await client.post(
+        f"/accounting/reconciliation/{recon['id']}/import-csv",
+        files={"file": ("dup.csv", csv_bytes, "text/csv")}, headers=h,
+    )
+    assert r.status_code == 422, r.text
+    assert " D " in r.json()["detail"] or " D has" in r.json()["detail"]
+    lines = (await client.get(f"/accounting/reconciliation/{recon['id']}/statement-lines", headers=h)).json()
+    assert lines["items"] == []
+
+
+@pytest.mark.asyncio
 async def test_get_statement_lines(client):
     h = await _auth(client)
     bank = await _create_bank(client, h)

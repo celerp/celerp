@@ -18977,6 +18977,26 @@ class TestReconciliationImportResponse:
         imp.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_confirm_import_duplicate_header_refused(self, ui_client):
+        import base64 as _b64
+        imp = AsyncMock(return_value={})
+        with patch("ui.api_client.import_recon_csv", new=imp):
+            r = await ui_client.post(
+                "/accounting/reconcile/sess1/confirm-import",
+                cookies=_authed(),
+                data={
+                    "map_Date": "date",
+                    "map_Description": "description",
+                    "map_Amount": "amount",
+                    "csv_b64": _b64.b64encode(b"Date,Description,Amount,Amount\n2026-01-01,x,-5000,123\n").decode(),
+                    "csv_filename": "statement.csv",
+                },
+            )
+        assert r.status_code == 204
+        assert "same%20header" in r.headers.get("hx-redirect", "") or "same+header" in r.headers.get("hx-redirect", "")
+        imp.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_confirm_import_header_mismatch_rejected(self, ui_client):
         import base64 as _b64
         imp = AsyncMock(return_value={})
