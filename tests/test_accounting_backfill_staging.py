@@ -276,12 +276,12 @@ def _declared_lifecycle_backfills() -> set[str]:
 
 async def _company_rows(engine, company_id) -> dict:
     """A fingerprint of every row the company owns, across every company-scoped table."""
-    from celerp.services.migrations import _company_tables
+    from celerp.services.migrations import company_tables
 
     async with maker(engine)() as s:
         rows = {"companies": await s.scalar(text("SELECT c::text FROM companies c WHERE id = :c"),
                                             {"c": str(company_id)})}
-        for table in await _company_tables(s):
+        for table in await company_tables(s):
             rows[table] = await s.scalar(text(
                 f'SELECT md5(coalesce(string_agg(t::text, \'|\' ORDER BY t::text), \'\')) '
                 f'FROM "{table}" t WHERE company_id::text = :c'), {"c": str(company_id)})

@@ -215,7 +215,7 @@ class LocalBackend:
 
     async def delete(self, company_id: str, stored_id: str, mime: str) -> None:
         name = stored_id + _stored_extension(mime)
-        if not (_is_plain_name(str(company_id)) and _is_plain_name(name)):
+        if not (is_plain_name(str(company_id)) and is_plain_name(name)):
             raise ValueError(f"Invalid attachment id: {stored_id!r}")
         await asyncio.to_thread((self._root / str(company_id) / name).unlink, missing_ok=True)
 
@@ -362,7 +362,7 @@ class S3Backend:
 
     async def delete(self, company_id: str, stored_id: str, mime: str) -> None:
         name = stored_id + _stored_extension(mime)
-        if not _is_plain_name(name):
+        if not is_plain_name(name):
             raise ValueError(f"Invalid attachment id: {stored_id!r}")
         async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
             await client.delete_object(Bucket=self._bucket, Key=f"attachments/{company_id}/{name}")
