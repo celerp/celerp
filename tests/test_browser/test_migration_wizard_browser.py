@@ -201,10 +201,10 @@ def _verify_and_finish(page, run_id: str, company_name: str) -> None:
 def test_migration_wizard_browser_first_run(first_run_page):
     page = first_run_page
     page.goto("/setup")
-    for label in ("Start a new company", "Move a company", "Try a sample migration",
-                  "Restore a Celerp backup"):
+    for label in ("Start a new company", "Move from another system", "Restore a company backup",
+                  "Try sample company"):
         assert page.locator(f"text={label}").count() >= 1, label
-    page.click('a:has-text("Move a company")')
+    page.click('a:has-text("Move from another system")')
     page.wait_for_url(re.compile(r"/setup/migrate$"))
     assert "Don't see your system? Tell us what you use" in page.content()
     _upload(page, "Example Bookkeeping")
@@ -230,7 +230,7 @@ def test_migration_wizard_browser_first_run(first_run_page):
 def test_migration_wizard_browser_existing_owner(page, fresh_company):
     before = fresh_company.get("/companies/me").json()
     page.goto("/setup/new-company")
-    page.click('a:has-text("Move a company")')
+    page.click('a:has-text("Move from another system")')
     page.wait_for_url(re.compile(r"/setup/new-company/migrate$"))
     _upload(page, "Example Bookkeeping")
     _through_review(page, "Moved Goods Ltd")
@@ -303,7 +303,7 @@ def test_migration_ui_mapping_uses_shared_searchable_select(page, fake_migration
 
 def test_escape_leaves_wizard_fields(page):
     """Escape exits a text field on the wizard pages, which carry the shared client script."""
-    page.goto("/company-copy")
+    page.goto("/setup/new-company/migrate")
     field = page.locator("#prepared_by")
     field.click()
     assert page.evaluate("document.activeElement.id") == "prepared_by"
