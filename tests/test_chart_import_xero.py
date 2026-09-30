@@ -218,6 +218,16 @@ async def test_chart_file_invalid_parents_and_cycles_are_shown_and_stage_kept(cl
 
 
 @pytest.mark.asyncio
+async def test_chart_file_of_more_than_500_accounts_imports_in_one_go(client, owner):
+    content = "*Code,*Name,*Type,Parent Code\n" + "".join(
+        f"X{i:04d},Account {i},Expense,{'X0000' if i else ''}\n" for i in range(600))
+    _, result, _ = await _import_file(owner, content.encode())
+    assert _cards(result).get("Created") == 600, result[:2000]
+    chart = await _chart(client, owner)
+    assert chart["X0599"]["parent_code"] == "X0000"
+
+
+@pytest.mark.asyncio
 async def test_chart_import_page_shows_add_only_copy(client, owner):
     async with _browser() as ui:
         r = await ui.get("/accounting/import/chart", cookies={"celerp_token": owner["token"]})

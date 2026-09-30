@@ -191,6 +191,66 @@ async def test_create_account_applies_the_same_code_and_name_rules(client, paylo
     assert message in r.json()["detail"]
 
 
+@pytest.mark.asyncio
+async def test_account_parent_code_is_trimmed_and_length_checked(client):
+    h = await _reg(client)
+    r = await client.post("/accounting/accounts", headers=h, json={
+        "code": "8610", "name": "Long Parent", "account_type": "asset", "parent_code": "8" * 40})
+    assert r.status_code == 422, r.text
+    assert "Parent code must be 32 characters" in r.json()["detail"]
+    r = await client.post("/accounting/accounts", headers=h, json={
+        "code": "8611", "name": "Blank Parent", "account_type": "asset", "parent_code": "  "})
+    assert r.status_code == 200, r.text
+    assert r.json()["parent_code"] is None
+    r = await client.patch("/accounting/accounts/8611", headers=h, json={"parent_code": "8" * 40})
+    assert r.status_code == 422, r.text
+    assert "Parent code must be 32 characters" in r.json()["detail"]
+    r = await client.patch("/accounting/accounts/8611", headers=h, json={"parent_code": " 1000 "})
+    assert r.status_code == 200, r.text
+    assert (await _chart(client, h))["8611"]["parent_code"] == "1000"
+
+
+@pytest.mark.asyncio
+async def test_bank_account_code_follows_the_account_code_rules(client):
+    """A bank account adds a chart account, so its code is checked the same way and a
+    chart import of the same code later finds it instead of adding a near copy."""
+    h = await _reg(client)
+    bank = {"bank_name": "Code Bank", "account_number": "4321", "bank_type": "checking",
+            "currency": "USD", "opening_balance": 0}
+    r = await client.post("/accounting/bank-accounts", headers=h, json={**bank, "account_code": "Q" * 33})
+    assert r.status_code == 422, r.text
+    assert "32 characters" in r.json()["detail"]
+    r = await client.post("/accounting/bank-accounts", headers=h, json={**bank, "account_code": " 8620 "})
+    assert r.status_code == 200, r.text
+    assert "8620" in await _chart(client, h)
+    r = await _import(client, h, [_row("8620", "Bank Again")])
+    assert (r.json()["created"], r.json()["skipped_codes"]) == (0, ["8620"])
+
+
+# ---------------------------------------------------------------------------
+# File size
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chart_import_takes_a_file_of_more_than_500_accounts(client):
+    h = await _reg(client)
+    rows = [_row(f"A{i:04d}", f"Account {i}") for i in range(1200)]
+    r = await _import(client, h, rows)
+    assert r.status_code == 200, r.text
+    assert (r.json()["created"], r.json()["errors"]) == (1200, [])
+
+
+@pytest.mark.asyncio
+async def test_chart_import_over_the_limit_says_so_plainly(client):
+    h = await _reg(client)
+    rows = [_row(f"A{i:04d}", f"Account {i}") for i in range(2001)]
+    r = await _import(client, h, rows)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == "A chart file can hold up to 2000 accounts; this one has 2001."
+    assert "A0000" not in await _chart(client, h)
+
+
 # ---------------------------------------------------------------------------
 # Parents
 # ---------------------------------------------------------------------------

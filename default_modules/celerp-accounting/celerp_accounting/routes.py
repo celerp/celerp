@@ -149,7 +149,9 @@ class ChartImportRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    records: list[Any] = Field(..., max_length=500)
+    # Sized in the handler: parents resolve across the whole file, so a chart
+    # is imported in one request rather than split into batches.
+    records: list[Any]
     # Accepted only so a client can state it; the import never updates.
     upsert: bool = False
 
@@ -289,6 +291,7 @@ def _checked_cash_flow_category(value: str | None) -> str | None:
 
 
 _ACCOUNT_CODE_MAX = 32  # Account.code column width
+_CHART_IMPORT_MAX = 2000  # accounts in one chart file
 
 
 def _checked_account_code(value: Any) -> str:
@@ -304,6 +307,20 @@ def _checked_account_code(value: Any) -> str:
             status_code=422, detail=f"Account code must be {_ACCOUNT_CODE_MAX} characters or fewer.",
         )
     return code
+
+
+def _checked_parent_code(value: Any) -> str | None:
+    """The parent account code, trimmed; missing or blank means no parent."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail="Parent code must be text.")
+    parent = value.strip()
+    if len(parent) > _ACCOUNT_CODE_MAX:
+        raise HTTPException(
+            status_code=422, detail=f"Parent code must be {_ACCOUNT_CODE_MAX} characters or fewer.",
+        )
+    return parent or None
 
 
 def _checked_account_name(value: Any) -> str:
@@ -369,14 +386,11 @@ def plan_chart_import(records: list[Any], existing: dict[str, str | None]) -> Ch
         shown = raw_code.strip() if isinstance(raw_code, str) else None
         try:
             code = _checked_account_code(raw_code)
-            parent = rec.get("parent_code")
-            if parent is not None and not isinstance(parent, str):
-                raise HTTPException(status_code=422, detail="Parent code must be text.")
             row = {
                 "code": code,
                 "name": _checked_account_name(rec.get("name")),
                 "account_type": _checked_account_type(rec.get("account_type")),
-                "parent_code": (parent or "").strip() or None,
+                "parent_code": _checked_parent_code(rec.get("parent_code")),
                 "is_active": _parsed_is_active(rec.get("is_active")),
             }
         except HTTPException as exc:
@@ -500,7 +514,7 @@ async def create_account(
         code=_checked_account_code(payload.code),
         name=_checked_account_name(payload.name),
         account_type=_checked_account_type(payload.account_type),
-        parent_code=payload.parent_code,
+        parent_code=_checked_parent_code(payload.parent_code),
         cash_flow_category=_checked_cash_flow_category(payload.cash_flow_category),
     )
     await session.commit()
@@ -527,7 +541,7 @@ async def patch_account(
     if payload.account_type is not None:
         acc.account_type = _checked_account_type(payload.account_type)
     if payload.parent_code is not None:
-        acc.parent_code = payload.parent_code
+        acc.parent_code = _checked_parent_code(payload.parent_code)
     if payload.is_active is not None:
         acc.is_active = payload.is_active
     if payload.cash_flow_category is not None:
@@ -551,6 +565,11 @@ async def import_chart_accounts(
         raise HTTPException(
             status_code=422,
             detail="The chart import only adds accounts. Existing codes are kept; edit them in the chart.",
+        )
+    if len(body.records) > _CHART_IMPORT_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=f"A chart file can hold up to {_CHART_IMPORT_MAX} accounts; this one has {len(body.records)}.",
         )
     # Hold the company lock so two imports of one file cannot both see a code as new.
     await lock_company(session, company_id)
@@ -2424,7 +2443,10 @@ async def create_bank_account(
         raise HTTPException(status_code=422, detail=f"Invalid currency '{payload.currency}'. Must be a valid ISO 4217 code.")
 
     # Resolve or auto-assign chart account code
-    code = payload.account_code or await import_service.next_bank_account_code(session, company_id)
+    code = (
+        _checked_account_code(payload.account_code) if (payload.account_code or "").strip()
+        else await import_service.next_bank_account_code(session, company_id)
+    )
 
     bank = await import_service.add_bank_account(
         session, company_id,
