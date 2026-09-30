@@ -110,10 +110,13 @@ MAX_TOTAL_BYTES = 8 * 1024 ** 3
 # Members read whole: the manifest, one table row, one attachment (the ordinary attachment limit).
 MAX_MANIFEST_BYTES = 64 * 1024 ** 2
 # One row as JSON. Item and document state is a few kilobytes; the largest real rows are
-# documents with thousands of lines and company settings, well under 1 MB. Parsed JSON
-# can take about fifty times its text in memory (a row of empty objects), so the row and
-# batch limits are kept at 1 MB to hold one restore batch to tens of megabytes.
-MAX_ROW_BYTES = 1024 ** 2
+# documents with thousands of lines and company settings, a few megabytes at most.
+MAX_ROW_BYTES = 8 * 1024 ** 2
+# One row's values (objects, arrays, keys and scalars). Parsed JSON takes about a hundred
+# bytes per value whatever its text (a row of empty objects is fifty times its text), so
+# this, not the byte limit, bounds a row's memory: about 25 MB. A document line is about
+# a dozen values, so a row holds a document of some 20,000 lines.
+MAX_ROW_NODES = 250_000
 # Rows are read and written in batches that end at BATCH_ROWS rows or BATCH_BYTES of
 # JSON, whichever comes first, so wide rows cannot make one batch large.
 BATCH_ROWS = 1000
@@ -129,6 +132,7 @@ NEWER = ("This company backup was made by a newer version of Celerp. Update Cele
 TOO_LARGE = "This company backup is too large to restore here." + _NOT_RESTORED
 TOO_LARGE_UPLOAD = "This file is too large for a company backup upload." + _NOT_RESTORED
 TOO_LARGE_TO_BACK_UP = "This company holds more data than a company backup can restore." + _NOT_BACKED_UP
+ROW_TOO_LARGE_TO_BACK_UP = "One record in {table} is too large for a company backup to restore." + _NOT_BACKED_UP
 UNSAVABLE = "This company backup has records this Celerp cannot save." + _NOT_RESTORED
 ATTACHMENT_FAILED = "Celerp could not save an attachment file from this backup." + _NOT_RESTORED
 ATTACHMENT_TYPE = "This company backup has an attachment file of a type Celerp does not store: {name}." + _NOT_RESTORED
@@ -146,6 +150,7 @@ ATTACHMENT_MISSING = "This company backup refers to an attachment file it does n
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _TABLE_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 _RAW_NUL = re.compile(rb"(?<!\\)(?:\\\\)*\\u0000")
+_JSON_STRING = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"')
 _NUMBER = re.compile(r'"\\u0000([^"\\]*)\\u0000"')
 _KEY_TYPES = frozenset({"uuid", "text", "varchar"})
 _CHUNK = 1024 * 1024
@@ -391,9 +396,19 @@ def _refuse_constant(name: str):
     raise ValueError(name)
 
 
+def _row_nodes(line: bytes) -> int:
+    """At most how many values a row of JSON parses to: every value past the first
+    follows a comma, colon or opening bracket outside a string."""
+    bare = _JSON_STRING.sub(b"", line)
+    return 1 + sum(bare.count(c) for c in (b",", b":", b"[", b"{"))
+
+
 def _parse_row(line: bytes | str):
     """One row, with every non-integer number kept as its exact text so it is written
-    back digit for digit."""
+    back digit for digit. A row that would parse to more than MAX_ROW_NODES values is
+    refused before it is parsed."""
+    if _row_nodes(line.encode() if isinstance(line, str) else line) > MAX_ROW_NODES:
+        raise BackupError(422, TOO_LARGE)
     return json.loads(line, parse_float=lambda s: "\x00" + s + "\x00", parse_constant=_refuse_constant)
 
 
@@ -571,8 +586,8 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
                         for line in batch:
                             _collect_urls(json.loads(line), company_id, found, types)
                             body = line.encode()
-                            if len(body) > MAX_ROW_BYTES:
-                                raise BackupError(409, TOO_LARGE_TO_BACK_UP)
+                            if len(body) > MAX_ROW_BYTES or _row_nodes(body) > MAX_ROW_NODES:
+                                raise BackupError(409, ROW_TOO_LARGE_TO_BACK_UP.format(table=name))
                             body += b"\n"
                             digest.update(body)
                             fh.write(body)
@@ -1159,7 +1174,7 @@ async def _source_grants(session: AsyncSession, source: str):
 def _row_batches(lines, limit: int):
     """Parsed rows in batches of up to ``limit`` rows and BATCH_BYTES of JSON. The budget
     is checked before a row is parsed, so a batch never holds more than BATCH_BYTES of
-    rows (or one row, which MAX_ROW_BYTES bounds)."""
+    rows (or one row, which MAX_ROW_NODES bounds)."""
     rows, size = [], 0
     for line in lines:
         if rows and (len(rows) >= limit or size + len(line) > BATCH_BYTES):

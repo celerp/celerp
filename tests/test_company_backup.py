@@ -1049,34 +1049,49 @@ def test_restore_batch_memory_stays_bounded_for_a_large_member(tmp_path, monkeyp
 
 
 def test_restore_memory_bounded_for_rows_of_empty_containers(tmp_path):
-    """A row at MAX_ROW_BYTES made of empty objects parses to about fifty times its text.
-    The real rows a company holds are well under 1 MB (the largest are documents with
-    thousands of lines and company settings), so the row and batch limits sit at 1 MB and
-    the restore row path (read, remap, write) for three such rows stays under 64 MB."""
+    """Parsed JSON can take about fifty times its text (a row of empty objects), so a row is
+    bounded by its parsed nodes as well as its bytes. A row at MAX_ROW_BYTES of empty
+    objects is refused before it is parsed, and the restore row path stays under 32 MB."""
     import tracemalloc
     import zipfile
     cb = _bk_cb()
-    assert cb.MAX_ROW_BYTES == cb.BATCH_BYTES == 1024 ** 2
+    assert cb.MAX_ROW_BYTES == 8 * 1024 ** 2
     head, tail = b'{"id":1,"state":[', b"{}]}\n"
     row = head + b"{}," * ((cb.MAX_ROW_BYTES - len(head) - len(tail)) // 3) + tail
     assert len(row) <= cb.MAX_ROW_BYTES
     path = tmp_path / "amplified.zip"
     with zipfile.ZipFile(path, "w") as zf, zf.open("tables/ledger.jsonl", "w") as fh:
-        for _ in range(3):
-            fh.write(row)
+        fh.write(row)
     with zipfile.ZipFile(path) as zf:
         tracemalloc.start()
         try:
-            sizes = []
-            for batch in cb._row_batches(cb._lines(zf, "tables/ledger.jsonl"), cb.BATCH_ROWS):
-                sizes.append(len(batch))
-                cb._dump_rows(cb.remap(batch, {}))
-                del batch
+            with pytest.raises(cb.BackupError) as err:
+                for batch in cb._row_batches(cb._lines(zf, "tables/ledger.jsonl"), cb.BATCH_ROWS):
+                    cb._dump_rows(cb.remap(batch, {}))
             _, peak = tracemalloc.get_traced_memory()
         finally:
             tracemalloc.stop()
-    assert sizes == [1, 1, 1]
-    assert peak < 64 * 1024 ** 2, peak
+    assert err.value.detail == cb.TOO_LARGE
+    assert peak < 32 * 1024 ** 2, peak
+
+
+async def test_company_with_a_large_document_backs_up_and_restores(real_engine, real_client, tmp_path, monkeypatch):
+    """An ordinary invoice of 5,500 lines (over 1 MB as a row) is backed up and restored whole."""
+    _bk_local(monkeypatch, tmp_path)
+    _, _, tok = await _bk_setup(real_engine)
+    lines = [{"sku": f"GEM-{i:05d}", "name": "Blue sapphire oval cut 1.02ct",
+              "description": "Natural blue sapphire, oval, heated, 6.8x5.1x3.4 mm",
+              "quantity": 1, "unit_price": 1250, "line_total": 1250} for i in range(5500)]
+    r = await real_client.post("/docs", headers=auth(tok), json={"doc_type": "invoice", "line_items": lines,
+                                                                 "total": 1250 * 5500})
+    assert r.status_code == 200, r.text
+    data = await download(real_client, tok)
+    assert max(len(line) for n, body in members(data).items() if n.startswith("tables/")
+               for line in body.splitlines()) > 1024 ** 2
+    new = await _bk_restore_new(real_client, tok, data)
+    restored = await _bk_scalar(real_engine, "SELECT json_array_length(state->'line_items') FROM projections "
+                                "WHERE company_id = :c AND state->>'doc_type' = 'invoice'", c=new)
+    assert restored == 5500
 
 
 async def test_attachments_processed_one_at_a_time(real_engine, real_client, tmp_path, monkeypatch):
@@ -1358,7 +1373,19 @@ async def test_record_too_large_to_restore_is_not_backed_up(real_engine, real_cl
     monkeypatch.setattr(cb, "MAX_ROW_BYTES", max(len(line) for line in rows) - 1)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == cb.TOO_LARGE_TO_BACK_UP
+    assert r.json()["detail"].startswith("One record in ")
+
+
+async def test_record_with_too_many_values_is_not_backed_up(real_engine, real_client, tmp_path, monkeypatch):
+    """Export applies the restore's parsed-size limit too, and the refusal names the table."""
+    cb = _bk_cb()
+    _bk_local(monkeypatch, tmp_path)
+    _, _, tok = await _bk_setup(real_engine)
+    monkeypatch.setattr(cb, "MAX_ROW_NODES", 3)
+    r = await real_client.get("/company-backups/download", headers=auth(tok))
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"].startswith("One record in ")
+    assert "too large for a company backup" in r.json()["detail"]
 
 
 @pytest.mark.parametrize("limit", ["MAX_MEMBERS", "MAX_MEMBER_BYTES", "MAX_TOTAL_BYTES", "MAX_UPLOAD_BYTES"])
