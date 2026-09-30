@@ -736,9 +736,8 @@ async def test_export_refuses_unclassified_table(real_engine, real_client, tmp_p
         assert err.value.status_code == 409 and "bk_unknown_things" in err.value.detail
         out = tmp_path / "bk-out" / "books.celerp-company"
         out.parent.mkdir()
-        async with maker(real_engine)() as s:
-            with pytest.raises(cb.BackupError):
-                await cb.export_company(s, cid, out)
+        with pytest.raises(cb.BackupError):
+            await cb.export_company_snapshot(cid, out)
         assert list(out.parent.iterdir()) == []
     finally:
         await _bk_drop(real_engine, "bk_unknown_things")
@@ -838,9 +837,8 @@ async def test_unsupported_module_refusal_names_module_and_table_before_archive(
     out_dir = tmp_path / "bk-out"
     out_dir.mkdir()
     try:
-        async with maker(real_engine)() as s:
-            with pytest.raises(cb.BackupError) as err:
-                await cb.export_company(s, cid, out_dir / "books.celerp-company")
+        with pytest.raises(cb.BackupError) as err:
+            await cb.export_company_snapshot(cid, out_dir / "books.celerp-company")
         assert err.value.status_code == 409
         assert _BK_MODULE in err.value.detail and "zz_widgets" in err.value.detail
         assert err.value.detail.endswith("Nothing was backed up.")

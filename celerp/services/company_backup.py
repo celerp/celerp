@@ -425,16 +425,28 @@ def _module_versions(names: set[str]) -> dict[str, str]:
     return versions
 
 
-async def export_company(session: AsyncSession, company_id, out: Path, *,
-                         provenance: dict | None = None) -> dict:
+async def export_company_snapshot(company_id, out: Path, *, provenance: dict | None = None) -> dict:
     """Write a backup of one company to ``out``; returns its manifest.
 
+    Everything the backup holds is read through its own session in one read-only
+    repeatable-read transaction, so the company, its settings, every table and every
+    attachment reference come from the same moment: a write committed meanwhile is either
+    wholly in the backup or wholly absent from it. Writers are never blocked. SQLite has one
+    writer at a time, so there one plain transaction reads the same moment.
+
     Refused, with nothing written, when the company holds data Celerp cannot back up."""
+    async with AsyncSession(bind=celerp.db.engine, expire_on_commit=False) as session, session.begin():
+        if session.get_bind().dialect.name != "sqlite":
+            await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+            await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
+        return await _export_company(session, company_id, out, provenance=provenance)
+
+
+async def _export_company(session: AsyncSession, company_id, out: Path, *, provenance: dict | None) -> dict:
     company = await session.get(Company, company_id)
     if company is None:
         raise BackupError(404, "Company not found.")
     plan = await _classify(session, strict=True)
-    await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
     tables = []
     for name in plan.order:
         if name in plan.owners and not await session.scalar(text(
@@ -486,7 +498,11 @@ async def export_company(session: AsyncSession, company_id, out: Path, *,
                                       + _NOT_BACKED_UP)
             for backup_name, name in sorted(names.items()):
                 url = found[name]
-                body = await attachments.read_company_file(company_id, url, MAX_MEMBER_BYTES)
+                try:
+                    body = await attachments.read_company_file(company_id, url, MAX_MEMBER_BYTES)
+                except OSError:
+                    logger.warning("Reading an attachment for a company backup failed", exc_info=True)
+                    body = None
                 if body is None:
                     raise BackupError(409, f"This company has an attachment file Celerp cannot read: {url}."
                                       + _NOT_BACKED_UP)

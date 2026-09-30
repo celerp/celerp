@@ -90,7 +90,7 @@ async def download_backup(run_id: uuid.UUID | None = None, ctx: AuthContext = De
     _purge(_root())
     dest = _root() / str(ctx.company_id) / f"{uuid.uuid4().hex}{cb.EXTENSION}"
     try:
-        await cb.export_company(session, ctx.company_id, dest, provenance=provenance)
+        await cb.export_company_snapshot(ctx.company_id, dest, provenance=provenance)
     except cb.BackupError as exc:
         return _error(exc)
     return FileResponse(dest, media_type="application/octet-stream", filename=f"{ctx.company.slug}{cb.EXTENSION}")
