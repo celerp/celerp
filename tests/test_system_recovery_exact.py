@@ -24,6 +24,8 @@ import pytest
 from company_backup_support import company, owner, token
 from migration_support import auth, code_config, real_client, real_engine  # noqa: F401
 
+from celerp.services.backup_import import _revoke_current_connector_state as _real_revoke
+
 pytestmark = pytest.mark.asyncio
 
 SAFETY_WARNING = "A safety backup could not be made before restoring."
@@ -920,6 +922,46 @@ async def test_failed_recovery_puts_installation_back(rec, tmp_path, monkeypatch
     assert backup_import.recovery_incomplete() is False
     assert rec.staging() == []
     assert not (rec.data / "restore-notice.json").exists()
+
+
+async def test_partial_connector_revoke_is_a_started_recovery(rec, tmp_path, monkeypatch, real_engine):
+    """Connector revocation is the first step that cannot be undone. The recovery marker
+    is written before it; a failure after one connector was revoked is a started recovery
+    that is put back from the safety archive, never "did not start", and the revoked
+    connector's local config is gone."""
+    from sqlalchemy import text
+
+    from celerp.connectors import remote_state
+    from celerp.services import backup_import
+    user = await owner(real_engine)
+    cid = await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-inventory"]})
+    async with real_engine.begin() as conn:
+        for connector in ("shopify", "woocommerce"):
+            await conn.execute(text(
+                "INSERT INTO connector_configs (company_id, connector, direction, sync_frequency, daily_sync_hour) "
+                "VALUES (:c, :n, 'both', 'realtime', 2)"), {"c": str(cid), "n": connector})
+    rec.seed()
+    marked: list[bool] = []
+
+    async def _revoke(company_id, connector, **kw):
+        marked.append(backup_import.recovery_incomplete())
+        if connector == "woocommerce":
+            raise remote_state.ConnectorRemoteCleanupError("Connector cleanup could not be confirmed.")
+
+    monkeypatch.setattr(remote_state, "revoke_connector_remote_state", _revoke)
+    monkeypatch.setattr(backup_import, "_revoke_current_connector_state", _real_revoke)
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert marked == [True, True]
+    assert result.ok is False
+    assert "did not start" not in result.error
+    assert "could not be confirmed" in result.error and "put back" in result.error
+    assert rec.restored[-1] == SAFETY_DUMP
+    assert backup_import.recovery_incomplete() is False
+    async with real_engine.connect() as conn:
+        left = (await conn.execute(text(
+            "SELECT connector FROM connector_configs WHERE company_id = :c ORDER BY connector"),
+            {"c": str(cid)})).scalars().all()
+    assert left == ["woocommerce"]
 
 
 async def test_recovery_that_cannot_be_undone_keeps_installation_closed(rec, tmp_path, monkeypatch,

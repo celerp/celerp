@@ -701,7 +701,7 @@ async def _revoke_current_connector_state() -> None:
                 list(config.webhook_ids or []),
             )
             for config in (await session.scalars(
-                sa.select(ConnectorConfig)
+                sa.select(ConnectorConfig).order_by(ConnectorConfig.id)
             )).all()
         ]
 
@@ -711,6 +711,23 @@ async def _revoke_current_connector_state() -> None:
             connector,
             webhook_ids=webhook_ids,
         )
+        # A revoked connector's local config would point at remote state that is gone.
+        async with get_session_ctx() as session:
+            await _clear_connector(session, company_id, connector)
+            await session.commit()
+
+
+async def _clear_connector(session, company_id, connector: str) -> None:
+    """Remove one company's connector config and queued work, fenced until reconnected."""
+    import sqlalchemy as sa
+
+    from celerp.connectors.ownership import record_connector_reset
+    from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+
+    record_connector_reset(session, company_id, connector)
+    for model in (OutboundQueue, ConnectorConfig):
+        await session.execute(sa.delete(model).where(
+            model.company_id == str(company_id), model.connector == connector))
 
 
 async def _clear_restored_connector_state(session) -> None:
@@ -867,9 +884,9 @@ async def finish_incomplete_recovery() -> None:
 async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | None):
     """The one destructive recovery engine; the caller holds the recovery locks.
 
-    Revokes the current connectors' remote state, then replaces the installation
-    (`_replace_installation`) under a durable recovery marker. When the replacement
-    fails, the installation is put back from the safety archive; with no safety
+    Under a durable recovery marker, revokes the current connectors' remote state, then
+    replaces the installation (`_replace_installation`). When either fails, the
+    installation is put back from the safety archive; with no safety
     archive, or when putting it back fails too, the marker stays and the
     installation serves nothing until a start finishes the recovery. The staging
     directory is removed either way.
@@ -879,13 +896,11 @@ async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | Non
 
     safety = str(safety_archive) if safety_archive else None
     try:
-        try:
-            await _revoke_current_connector_state()
-        except Exception as exc:
-            log.exception("System Recovery failed before the installation was changed")
-            return _failed(f"System Recovery did not start: {str(exc) or repr(exc)}")
+        # Marked before the first remote revoke: a revoke cannot be undone, so from here a
+        # failure is a started recovery, finished or put back like any other.
         _mark_recovery_started(safety_archive or await asyncio.to_thread(_keep_for_retry, prepared))
         try:
+            await _revoke_current_connector_state()
             modules, restart_scheduled = await _replace_installation(prepared)
         except Exception as exc:
             log.exception("System Recovery failed")
