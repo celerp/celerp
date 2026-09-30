@@ -31,6 +31,7 @@ import asyncio
 import io
 import logging
 import mimetypes
+import os
 import shutil
 import time
 import uuid
@@ -225,6 +226,39 @@ class LocalBackend:
         path = self._root / str(company_id)
         if path.exists():
             await asyncio.to_thread(shutil.rmtree, path)
+
+
+def _landing_dir() -> Path:
+    from celerp.config import settings
+    return settings.data_dir / "attachments_landing"
+
+
+def mark_landing(company_id: str) -> None:
+    """Durably record that files are about to be stored for a company whose records are not
+    committed yet, so they can be found and removed if it never is."""
+    if not is_plain_name(company_id):
+        raise ValueError(f"Invalid company id: {company_id!r}")
+    folder = _landing_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(folder / company_id, "wb") as fh:
+        os.fsync(fh.fileno())
+    if hasattr(os, "O_DIRECTORY"):
+        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def landing_companies() -> list[str]:
+    """The companies files were marked as landing for and not yet cleared."""
+    folder = _landing_dir()
+    return sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []
+
+
+def clear_landing(company_id: str) -> None:
+    if is_plain_name(company_id):
+        (_landing_dir() / company_id).unlink(missing_ok=True)
 
 
 def _read_local(path: Path | None, max_bytes: int) -> bytes | None:

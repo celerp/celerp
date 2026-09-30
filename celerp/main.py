@@ -303,6 +303,15 @@ async def lifespan(_app: FastAPI):
             "stale until rebuilt via doctor or /ledger/rebuild"
         )
 
+    # Attachment files of a company restore that stopped before it committed are removed,
+    # so stored files and restored companies agree after a crash. Non-fatal: a later boot
+    # or the next restore retries.
+    try:
+        from celerp.services.company_backup import reconcile_landings
+        await reconcile_landings()
+    except Exception:
+        logging.getLogger(__name__).exception("Reconciling unfinished company restores failed (non-fatal)")
+
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links
     # to its document. Marker-gated (runs once); non-fatal like the guard above.

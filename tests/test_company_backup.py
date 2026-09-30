@@ -3427,3 +3427,46 @@ async def test_module_tables_travel_only_as_their_manifest_declares(real_engine,
         await _bk_refused(real_engine, real_client, tok, user, tmp_path, data)
     finally:
         await _bk_drop(real_engine, "zz_tokens", "zz_widgets")
+
+
+async def test_attachments_of_a_restore_that_stopped_are_reconciled(real_engine, real_client, tmp_path, monkeypatch):
+    """Attachment files stored by a restore that stopped before it committed, with no chance to
+    clean up, are removed when restores are reconciled; the files of a restore still in
+    progress, and of one that committed, stay."""
+    from test_company_settings_race_pg import _hold_first_call
+    cb = _bk_cb()
+    _bk_local(monkeypatch, tmp_path)
+    _, cid, tok = await _bk_setup(real_engine)
+    await _bk_point_at(real_engine, cid, _bk_local_file(tmp_path, cid, "photo.png", b"alpha-photo"))
+    data = await download(real_client, tok)
+    stored = tmp_path / "static" / "attachments"
+
+    async def cleanup_never_runs(company_id):
+        raise OSError("stopped before cleaning up")
+
+    async def stops(*args, **kwargs):
+        raise cb.BackupError(422, "stopped")
+    real_delete, real_verify = cb.attachments.delete_company_files, cb._verify
+    monkeypatch.setattr(cb.attachments, "delete_company_files", cleanup_never_runs)
+    monkeypatch.setattr(cb, "_verify", stops)
+    assert (await restore(real_client, tok, data, "new_company")).status_code == 422
+    monkeypatch.setattr(cb.attachments, "delete_company_files", real_delete)
+    monkeypatch.setattr(cb, "_verify", real_verify)
+    [orphan] = [p.name for p in stored.iterdir() if p.name != str(cid)]
+    assert await count(real_engine, "companies") == 1
+
+    paused, release = _hold_first_call(monkeypatch, cb, "_insert")
+    committing = asyncio.create_task(restore(real_client, tok, data, "new_company"))
+    await asyncio.wait_for(paused.wait(), timeout=10)
+    await cb.reconcile_landings()
+    [landing] = [p.name for p in stored.iterdir() if p.name not in (str(cid), orphan)] or [None]
+    assert not (stored / orphan).exists()
+    assert landing is not None and (stored / landing / "photo.png").is_file()
+    release.set()
+    new = _r_created(await committing)["company_id"]
+    assert new == landing and (stored / new / "photo.png").read_bytes() == b"alpha-photo"
+
+    cb.attachments.mark_landing(new)
+    await cb.reconcile_landings()
+    assert (stored / new / "photo.png").is_file() and cb.attachments.landing_companies() == []
+    assert (stored / str(cid) / "photo.png").read_bytes() == b"alpha-photo"

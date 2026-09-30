@@ -22,7 +22,10 @@ Tables are written and restored in foreign-key order, a batch at a time.
 Restoring creates a new company with fresh ids for the company and every backed-up
 row, remaps every value that exactly equals an old id or attachment URL, inserts the
 rows, reads them back and checks every table against the backup before committing.
-Any failure rolls everything back, including attachment files already stored.
+Any failure rolls everything back, including attachment files already stored. A restore
+that never finishes, because the process or host stopped, leaves a landing marker for its
+new company; ``reconcile_landings`` removes the attachment files of every such company that
+was never committed.
 """
 
 from __future__ import annotations
@@ -912,6 +915,39 @@ def _lock_key(backup_id: str) -> int:
     return int.from_bytes(hashlib.sha256(backup_id.encode()).digest()[:8], "big", signed=True)
 
 
+def _landing_key(company_id) -> int:
+    return _lock_key(f"landing:{company_id}")
+
+
+async def _land(session: AsyncSession, company_id) -> None:
+    """Mark the new company's attachment files as landing, held by this transaction: the
+    mark outlives a crash, and the lock ends with the transaction, whether it commits,
+    rolls back or its connection is lost."""
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _landing_key(company_id)})
+    await asyncio.to_thread(attachments.mark_landing, str(company_id))
+
+
+async def reconcile_landings() -> None:
+    """Remove the attachment files of every company restore that stopped before it committed,
+    then its landing mark. A restore still in progress is left alone."""
+    for name in await asyncio.to_thread(attachments.landing_companies):
+        try:
+            company_id = uuid.UUID(name)
+        except ValueError:
+            continue
+        async with AsyncSession(bind=celerp.db.engine) as session:
+            if not await session.scalar(text("SELECT pg_try_advisory_xact_lock(:k)"),
+                                        {"k": _landing_key(company_id)}):
+                continue
+            try:
+                if await session.get(Company, company_id) is None:
+                    await attachments.delete_company_files(name)
+                await asyncio.to_thread(attachments.clear_landing, name)
+            except Exception:
+                logger.warning("Removing the files of an unfinished company restore failed", exc_info=True)
+            await session.rollback()
+
+
 async def _lock(session: AsyncSession, backup_id: str, *, bootstrapping: bool) -> None:
     """Wait for any other restore of the same backup (and, when bootstrapping, any other
     first-owner setup) to finish."""
@@ -1166,6 +1202,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
     backup_id, source = m["backup_id"], m["company"]["id"]
     new_id = uuid.uuid4()
     stored = False
+    await reconcile_landings()
     async with AsyncSession(bind=celerp.db.engine, expire_on_commit=False) as session:
         try:
             await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
@@ -1209,6 +1246,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     raise ValueError("The restoring user does not exist.")
             url_map: dict[str, str] = {}
             with zipfile.ZipFile(path) as zf:
+                await _land(session, new_id)
                 stored = True
                 for f in m["attachments"]:
                     content = await asyncio.to_thread(_read_member, zf, f"attachments/{f['name']}")
@@ -1246,9 +1284,12 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             if stored:
                 try:
                     await attachments.delete_company_files(str(new_id))
+                    await asyncio.to_thread(attachments.clear_landing, str(new_id))
                 except Exception:
                     logger.warning("Removing attachment files of a failed company restore failed", exc_info=True)
             raise
+    if stored:
+        await asyncio.to_thread(attachments.clear_landing, str(new_id))
     return RestoreResult(company_id=str(company.id), company_name=company.name, created=True,
                          backup_created_at=m["created_at"], user_id=str(user.id), team_members=team)
 
