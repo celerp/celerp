@@ -10,6 +10,7 @@ Gateway client is mocked so no WS connections are made.
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,6 +22,15 @@ from celerp.gateway.state import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+@contextmanager
+def _relay_settings():
+    """The real settings object with its gateway token restored on exit, so the app's
+    other settings (the data directory the request middleware reads) stay real."""
+    from celerp.config import settings
+    with patch.object(settings, "gateway_token", settings.gateway_token):
+        yield settings
+
 
 async def _register(client, suffix: str = "") -> str:
     addr = f"cloud-{suffix or uuid.uuid4().hex[:8]}@test.local"
@@ -979,9 +989,8 @@ async def test_connectors_catalog_not_connected_returns_error(client):
     """Returns error dict (not 5xx) when no gateway_token is configured."""
     token = await _register(client, "conn-notoken")
 
-    with patch("celerp.config.settings") as mock_settings:
+    with _relay_settings() as mock_settings:
         mock_settings.gateway_token = ""
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
         r = await client.get("/settings/connectors-catalog", headers=_h(token))
 
     assert r.status_code == 200
@@ -1008,13 +1017,12 @@ async def test_connectors_catalog_success(client):
     cat_resp.status_code = 200
     cat_resp.json.return_value = {"connectors": fake_catalog}
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid-abc"), \
          patch("celerp.connectors.ownership.connector_owned_by_company",
                new=AsyncMock(return_value=True)), \
          patch("httpx.AsyncClient") as mock_httpx:
         mock_settings.gateway_token = "my-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
 
         call_count = {"n": 0}
         async def fake_request(url, **kwargs):
@@ -1051,13 +1059,12 @@ async def test_connectors_catalog_masks_instance_connection_for_non_owner(client
         ]
     }
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid-abc"), \
          patch("celerp.connectors.ownership.connector_owned_by_company",
                new=AsyncMock(return_value=False)), \
          patch("httpx.AsyncClient") as mock_httpx:
         mock_settings.gateway_token = "api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
             return_value=tok_resp
         )
@@ -1082,11 +1089,10 @@ async def test_connectors_catalog_relay_token_exchange_failure(client):
     bad_tok_resp.status_code = 401
     bad_tok_resp.json.return_value = {"detail": "Invalid API key"}
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid-abc"), \
          patch("httpx.AsyncClient") as mock_httpx:
         mock_settings.gateway_token = "bad-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
 
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=bad_tok_resp)
         mock_httpx.return_value.__aenter__.return_value.get = AsyncMock()
@@ -1105,11 +1111,10 @@ async def test_connectors_catalog_relay_unreachable(client):
     import httpx as _httpx
     token = await _register(client, "conn-unreachable")
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid-abc"), \
          patch("httpx.AsyncClient") as mock_httpx:
         mock_settings.gateway_token = "some-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
 
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
             side_effect=_httpx.ConnectError("Connection refused")
@@ -1147,13 +1152,12 @@ async def test_connectors_catalog_shows_this_companys_connection_state(client):
     async def _claim(session, company_id, name):
         return claims[name]
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid-own"), \
          patch("celerp.connectors.ownership.connector_ownership_state", _state), \
          patch("celerp.connectors.ownership.company_has_connector_claim", _claim), \
          patch("celerp.gateway.state.with_relay_client", AsyncMock(return_value=cat_resp)):
         mock_settings.gateway_token = "my-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
         r = await client.get("/settings/connectors-catalog", headers=_h(token))
 
     assert r.status_code == 200
@@ -1183,14 +1187,13 @@ async def test_connectors_catalog_offers_reset_only_to_the_installation_owner(cl
     async def _state(session, company_id, name):
         return states[name]
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid-reset"), \
          patch("celerp.connectors.ownership.connector_ownership_state", _state), \
          patch("celerp.connectors.ownership.company_has_connector_claim", AsyncMock(return_value=False)), \
          patch("celerp.routers.health.is_install_owner", AsyncMock(return_value=install_owner)), \
          patch("celerp.gateway.state.with_relay_client", AsyncMock(return_value=cat_resp)):
         mock_settings.gateway_token = "my-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
         r = await client.get("/settings/connectors-catalog", headers=_h(token))
 
     by_id = {c["id"]: c for c in r.json()["connectors"]}
@@ -1223,13 +1226,12 @@ async def test_connector_authorize_url_success(client):
     cancelled = MagicMock()
     cancelled.status_code = 404
     relay = AsyncMock(side_effect=[cancelled, url_resp])
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
          patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
          patch("celerp.connectors.ownership.lock_connector_operation", lock), \
          patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
 
         response = await client.get(
             "/settings/connectors/quickbooks/authorize-url", headers=_h(token)
@@ -1255,13 +1257,12 @@ async def test_connector_authorize_url_requires_disconnect_before_reconnect(clie
     lock = AsyncMock()
     relay = AsyncMock()
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
          patch("celerp.connectors.ownership.lock_connector_operation", lock), \
          patch("celerp.routers.health._relay_reports_connected", AsyncMock(return_value=True)), \
          patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
         response = await client.get(
             "/settings/connectors/quickbooks/authorize-url", headers=_h(token)
         )
@@ -1286,14 +1287,13 @@ async def test_connector_authorize_url_replaces_an_unfinished_authorization(clie
     lock = AsyncMock(return_value=object())
     relay = AsyncMock(side_effect=[cancelled, url_resp])
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
          patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
          patch("celerp.connectors.ownership.lock_connector_operation", lock), \
          patch("celerp.routers.health._relay_reports_connected", AsyncMock(return_value=False)), \
          patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
         response = await client.get(
             "/settings/connectors/quickbooks/authorize-url", headers=_h(token)
         )
@@ -1314,13 +1314,12 @@ async def test_connector_authorize_url_waits_when_connection_state_is_unknown(cl
     lock = AsyncMock()
     relay = AsyncMock()
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
          patch("celerp.connectors.ownership.lock_connector_operation", lock), \
          patch("celerp.routers.health._relay_reports_connected", AsyncMock(return_value=None)), \
          patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
         response = await client.get(
             "/settings/connectors/quickbooks/authorize-url", headers=_h(token)
         )
@@ -1336,9 +1335,8 @@ async def test_connector_authorize_url_not_connected(client):
     """Returns error when no gateway_token configured."""
     token = await _register(client, "auth-url-notoken")
 
-    with patch("celerp.config.settings") as mock_settings:
+    with _relay_settings() as mock_settings:
         mock_settings.gateway_token = ""
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
         r = await client.get("/settings/connectors/shopify/authorize-url", headers=_h(token))
 
     assert r.status_code == 200
@@ -1364,11 +1362,10 @@ async def test_connector_authorize_url_shopify_passes_shop(client):
         captured_params.update(kwargs.get("params", {}))
         return url_resp
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
          patch("httpx.AsyncClient") as mock_httpx:
         mock_settings.gateway_token = "api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
 
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=tok_resp)
         mock_httpx.return_value.__aenter__.return_value.delete = AsyncMock(
@@ -1418,11 +1415,10 @@ async def test_connectors_catalog_402_reports_needs_plan(client):
     gated_resp.status_code = 402
     gated_resp.json.return_value = {"detail": "Connectors need an active plan."}
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid-abc"), \
          patch("httpx.AsyncClient") as mock_httpx:
         mock_settings.gateway_token = "my-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
 
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=tok_resp)
         mock_httpx.return_value.__aenter__.return_value.get = AsyncMock(return_value=gated_resp)
@@ -1696,14 +1692,13 @@ async def test_connector_authorize_failure_releases_new_claim_after_cancel(clien
     release = AsyncMock()
     relay = AsyncMock(side_effect=[failed, cancelled])
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
          patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
          patch("celerp.connectors.ownership.lock_connector_operation", lock), \
          patch("celerp.connectors.ownership.release_connector_ownership", release), \
          patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
         response = await client.get(
             "/settings/connectors/quickbooks/authorize-url",
             headers=_h(token),
@@ -1728,14 +1723,13 @@ async def test_connector_authorize_ambiguous_cleanup_keeps_new_claim(client):
         _httpx.ConnectError("cleanup unavailable"),
     ])
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
          patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
          patch("celerp.connectors.ownership.lock_connector_operation", lock), \
          patch("celerp.connectors.ownership.release_connector_ownership", release), \
          patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
         response = await client.get(
             "/settings/connectors/quickbooks/authorize-url",
             headers=_h(token),
@@ -1768,7 +1762,7 @@ async def test_connector_authorize_persists_owner_before_ambiguous_remote_write(
             raise _httpx.TimeoutException("authorize timed out")
         raise _httpx.ConnectError("cleanup unavailable")
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
          patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
          patch("celerp.connectors.ownership.lock_connector_operation", lock), \
@@ -1798,14 +1792,13 @@ async def test_connector_reauthorize_requires_disconnect_without_releasing_owner
     release = AsyncMock()
     relay = AsyncMock()
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
          patch("celerp.connectors.ownership.lock_connector_operation", lock), \
          patch("celerp.connectors.ownership.release_connector_ownership", release), \
          patch("celerp.routers.health._relay_reports_connected", AsyncMock(return_value=True)), \
          patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
         response = await client.get(
             "/settings/connectors/quickbooks/authorize-url",
             headers=_h(token),
@@ -1827,12 +1820,11 @@ async def test_connector_authorize_lock_failure_keeps_durable_claim(client):
     lock = AsyncMock(side_effect=ConnectorOwnershipError("ownership changed"))
     release = AsyncMock()
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
          patch("celerp.connectors.ownership.lock_connector_operation", lock), \
          patch("celerp.connectors.ownership.release_connector_ownership", release):
         mock_settings.gateway_token = "my-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
         response = await client.get(
             "/settings/connectors/quickbooks/authorize-url",
             headers=_h(token),
@@ -1875,12 +1867,11 @@ async def test_connector_authorize_url_does_not_hold_up_a_running_sync(client, s
     cancelled = MagicMock()
     cancelled.status_code = 404
 
-    with patch("celerp.config.settings") as mock_settings, \
+    with _relay_settings() as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
          patch("celerp.routers.health._relay_reports_connected", _probe), \
          patch("celerp.gateway.state.with_relay_client", AsyncMock(side_effect=[cancelled, url_resp])):
         mock_settings.gateway_token = "my-api-key"
-        mock_settings.celerp_relay_url = "https://relay.celerp.com"
         response = await client.get(
             "/settings/connectors/quickbooks/authorize-url", headers=_h(token)
         )

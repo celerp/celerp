@@ -1079,7 +1079,7 @@ async def test_physical_code_conflicts_detects_shared_codes_report_only(client, 
 async def test_upgrade_report_written_on_fix_with_from_version(client, session, tmp_path, monkeypatch):
     """When fix=true and from_version provided, upgrade report JSON is written to disk."""
     import importlib, celerp.config as cfg_mod
-    monkeypatch.setattr(cfg_mod.settings, "data_dir", str(tmp_path), raising=False)
+    monkeypatch.setattr(cfg_mod.settings, "data_dir", tmp_path)
 
     token = await _register(client)
     h = _h(token)
