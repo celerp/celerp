@@ -37,7 +37,7 @@ from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
 from celerp.services.document_lines import line_item_id
-from celerp.services.attachments import store_upload
+from celerp.services.attachments import attach_file, store_upload
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
@@ -3169,21 +3169,33 @@ class ApplyToInvoiceBody(BaseModel):
     _real_date = field_validator("date")(_calendar_date)
 
 
-@router.post("/{entity_id}/apply-to-invoice")
-async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: str, amount: float, *,
+                            payment_date: str | None, actor_id, source: str, idempotency_key: str,
+                            request: str | None = None):
+    """Apply an issued credit note to an invoice of the same contact: a paired
+    doc.payment.received on each side and the AR-to-AR entry. Shared by the apply
+    route and the migration sink; the caller commits.
+
+    A replayed idempotency key returns the recorded application, marked was_deduped,
+    without writing anything; with ``request`` the replay must also carry the same
+    request digest. The invoice-side event is keyed as a step of the same key."""
     # Lock both docs FOR UPDATE in one ordered batch: the doc-row lock is the single
     # serializer, so two concurrent applications sharing docs acquire them in the same
     # order (no deadlock) and each re-reads the other's committed state before allocating
     # an index. A stale list would allocate a colliding index.
-    locked = await _get_docs_for_update(session, company_id, {entity_id, payload.target_doc_id})
+    locked = await _get_docs_for_update(session, company_id, {entity_id, target_doc_id})
     cn_row = locked.get(entity_id)
-    inv_row = locked.get(payload.target_doc_id)
+    inv_row = locked.get(target_doc_id)
     if cn_row is None or inv_row is None:
         raise HTTPException(status_code=404, detail="Document not found")
-    key, digest = _operation("apply-credit-note", entity_id, payload)
-    if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.received",
-                                   entity_id=entity_id, digest=digest)) is not None:
-        return done
+    replay = await find_event_by_idempotency(session, company_id, idempotency_key)
+    if replay is not None:
+        if request is not None:
+            _check_replay(replay, event_type="doc.payment.received", digest=request, entity_id=entity_id)
+        elif replay.event_type != "doc.payment.received" or replay.entity_id != entity_id:
+            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        replay.was_deduped = True
+        return replay
     cn = cn_row.state
     if cn.get("doc_type") != "credit_note":
         raise HTTPException(status_code=409, detail="Only credit notes can be applied to invoices")
@@ -3209,7 +3221,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
             status_code=422,
             detail="Credit note and invoice must use the same currency",
         )
-    amount_d = round_money(payload.amount, cn_currency)
+    amount_d = round_money(amount, cn_currency)
     if amount_d <= 0:
         raise HTTPException(status_code=422, detail="Application amount must be positive")
     cn_outstanding = _payable_balance(cn)
@@ -3220,7 +3232,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
         raise HTTPException(status_code=409, detail="Amount exceeds invoice outstanding")
     amount = to_stored_float(amount_d)
 
-    payment_date = payload.date or datetime.now(timezone.utc).date().isoformat()
+    payment_date = payment_date or datetime.now(timezone.utc).date().isoformat()
     _cn_company = await session.get(Company, company_id)
     _cn_base_currency = (_cn_company.settings.get("currency", "USD") if _cn_company else "USD")
     _cn_rate = float(_require_doc_rate_http(cn, _cn_base_currency))
@@ -3231,11 +3243,11 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
     inv_pay_index = await _alloc_payment_index(session, company_id, inv.get("payments", []))
     payment_idx = await _alloc_payment_index(
         session, company_id, cn_row.state.get("payments", []),
-        key_doc_id=payload.target_doc_id, key_type=f"cn.applied:cn_apply_{entity_id}")
+        key_doc_id=target_doc_id, key_type=f"cn.applied:cn_apply_{entity_id}")
 
     # Emit paired events: payment on invoice (credit_note method), payment on CN (applied method)
     await emit_event(
-        session, company_id=company_id, entity_id=payload.target_doc_id, entity_type="doc",
+        session, company_id=company_id, entity_id=target_doc_id, entity_type="doc",
         event_type="doc.payment.received",
         data={
             "amount": amount, "method": "credit_note",
@@ -3247,28 +3259,38 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
             # note is applied to the same invoice more than once.
             "paired_index": payment_idx,
         },
-        actor_id=user.id, location_id=None, source="api",
-        idempotency_key=_step_key(key, "invoice"), metadata_={},
+        actor_id=actor_id, location_id=None, source=source,
+        idempotency_key=_step_key(idempotency_key, "invoice"), metadata_={},
     )
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.received",
         data={
             "amount": amount, "method": "applied",
-            "target_doc_id": payload.target_doc_id, "payment_date": payment_date,
+            "target_doc_id": target_doc_id, "payment_date": payment_date,
             "currency": cn.get("currency", "USD"),
             "index": payment_idx,
             "paired_index": inv_pay_index,
         },
-        actor_id=user.id, location_id=None, source="api",
-        idempotency_key=key, metadata_={"request": digest},
+        actor_id=actor_id, location_id=None, source=source,
+        idempotency_key=idempotency_key, metadata_={"request": request} if request is not None else {},
     )
     await auto_je.create_for_cn_application(
-        session, company_id=company_id, user_id=user.id,
-        doc_id=payload.target_doc_id, cn_id=entity_id, amount=amount,
+        session, company_id=company_id, user_id=actor_id,
+        doc_id=target_doc_id, cn_id=entity_id, amount=amount,
         payment_index=payment_idx, payment_date=payment_date,
         base_currency=_cn_base_currency,
         conversion_rate=_cn_rate,
+    )
+    return entry
+
+
+@router.post("/{entity_id}/apply-to-invoice")
+async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    key, digest = _operation("apply-credit-note", entity_id, payload)
+    entry = await apply_credit_note(
+        session, company_id, entity_id, payload.target_doc_id, payload.amount,
+        payment_date=payload.date, actor_id=user.id, source="api", idempotency_key=key, request=digest,
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -3899,6 +3921,139 @@ def _line_quantities_received(doc: dict) -> dict[int, float]:
         if line_index is not None:
             received[line_index] = received.get(line_index, 0.0) + float(x.get("quantity_received") or 0)
     return received
+
+
+async def _historical_doc(session: AsyncSession, company_id, entity_id: str, *, doc_type: str,
+                          event_types: tuple[str, ...], idempotency_key: str):
+    """(locked doc row, earlier entry) for a historical receipt or delivery: the earlier entry
+    when ``idempotency_key`` was already used for it, else None once the doc is checked to be
+    an issued ``doc_type``."""
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    replay = await find_event_by_idempotency(session, company_id, idempotency_key)
+    if replay is not None:
+        if replay.event_type not in event_types or replay.entity_id != entity_id:
+            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        replay.was_deduped = True
+        return row, replay
+    if row.state.get("doc_type") != doc_type or row.state.get("status") in ("draft", "void"):
+        raise HTTPException(status_code=409, detail=f"Only an issued {doc_type} can record goods moved before it came to Celerp")
+    return row, None
+
+
+def _historical_line(doc: dict, moved: dict, already: float) -> dict:
+    """The doc line a historical movement names, checked to hold its item and to have room
+    for its quantity beside the ``already`` moved on it."""
+    lines = doc.get("line_items") or []
+    index = moved["line"]
+    line = lines[index] if 0 <= index < len(lines) else None
+    if line is None or line.get("item_id") != moved["item_id"]:
+        raise HTTPException(status_code=422, detail=f"Line {index + 1} does not hold item {moved['item_id']}")
+    still_open = float(line.get("quantity") or 0) - already
+    if float(moved["quantity"]) > still_open + 1e-9:
+        raise HTTPException(status_code=422, detail=f"Line {index + 1}: at most {still_open:g} can be moved")
+    return line
+
+
+async def record_historical_receipt(session: AsyncSession, company_id, entity_id: str, *, lines: list[dict],
+                                    received_on: str, actor_id, source: str, idempotency_key: str):
+    """Record goods an issued bill received before its books came to Celerp, as receiving
+    onto a lot already on hand records them: each of ``lines`` ({line, item_id, quantity,
+    cost}) names the bill line, the lot, and the stock quantity and cost it added to that
+    lot. The stock itself is carried separately, so this moves no stock and posts no
+    journal entry. Returns the doc.received entry, or the earlier one when
+    ``idempotency_key`` was already used for this receipt."""
+    row, replay = await _historical_doc(session, company_id, entity_id, doc_type="bill",
+                                        event_types=("doc.received",), idempotency_key=idempotency_key)
+    if replay is not None:
+        return replay
+    held = _line_quantities_received(row.state)
+    received_items = []
+    for moved in lines:
+        line = _historical_line(row.state, moved, held.get(moved["line"], 0.0))
+        quantity = float(moved["quantity"])
+        held[moved["line"]] = held.get(moved["line"], 0.0) + quantity
+        received_items.append({
+            "po_line_index": moved["line"], "item_id": moved["item_id"], "quantity_received": quantity,
+            "receive_as": "stock", **{k: line[k] for k in ("sku", "name") if line.get(k)},
+            "lot_quantity_added": quantity, "lot_cost_added": float(moved["cost"]),
+        })
+    return await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.received",
+        data={"received_items": received_items, "location_id": "",
+              "received_by": str(actor_id), "created_item_ids": [], "ts": received_on},
+        actor_id=actor_id, location_id=None, source=source, idempotency_key=idempotency_key,
+    )
+
+
+async def record_historical_delivery(session: AsyncSession, company_id, entity_id: str, *, lines: list[dict],
+                                     actor_id, source: str, idempotency_key: str):
+    """Record goods an issued invoice delivered before its books came to Celerp, as fulfilling
+    it records them: each of ``lines`` ({line, item_id, quantity, cost, lot_id, date}) becomes
+    a sold lot ``lot_id`` of that quantity and cost, taken from the line's item and fulfilled
+    on the invoice at that line on ``date``. A line delivered more than once has one lot per
+    delivery: the line names the first, and the others belong to it as the lots a fulfilment
+    draws beside the line's own do. The stock that left is carried separately, so the item's
+    own quantity is not changed and no journal entry posts. Returns the doc.fulfilled or
+    doc.partially_fulfilled entry, or the earlier one when ``idempotency_key`` was already
+    used for these deliveries."""
+    from celerp_inventory.services import allocate_internal_codes, lot_fields
+
+    row, replay = await _historical_doc(session, company_id, entity_id, doc_type="invoice",
+                                        event_types=("doc.fulfilled", "doc.partially_fulfilled"),
+                                        idempotency_key=idempotency_key)
+    if replay is not None:
+        return replay
+    state = row.state
+    new_lines = [dict(li) for li in state.get("line_items") or []]
+    barcodes = await allocate_internal_codes(session, company_id, len(lines))
+    doc_number = state.get("doc_number") or state.get("ref_id") or ""
+    delivered: dict[int, float] = {}
+    for moved, barcode in zip(lines, barcodes):
+        index = moved["line"]
+        line = _historical_line(state, moved, delivered.get(index, 0.0))
+        item = await session.get(Projection, {"company_id": company_id, "entity_id": moved["item_id"]})
+        if item is None:
+            raise HTTPException(status_code=422, detail=f"Item {moved['item_id']} does not exist")
+        quantity, lot_id = float(moved["quantity"]), moved["lot_id"]
+        await emit_event(
+            session, company_id=company_id, entity_id=lot_id, entity_type="item", event_type="item.created",
+            data={**lot_fields(item.state), "sku": item.state.get("sku", ""), "name": item.state.get("name", ""),
+                  "quantity": quantity, "status": "available", "barcode": barcode,
+                  "allow_splitting": splitting_allowed(item.state), "cost_total": float(moved["cost"])},
+            actor_id=actor_id, location_id=None, source=source,
+            idempotency_key=f"{idempotency_key}:lot:{lot_id}", metadata_={"parent_id": moved["item_id"]},
+        )
+        await emit_event(
+            session, company_id=company_id, entity_id=lot_id, entity_type="item", event_type="item.fulfilled",
+            data={"source_doc_id": entity_id, "doc_number": doc_number, "quantity_fulfilled": quantity,
+                  "fulfilled_by": str(actor_id), "doc_type": "invoice", "ts": moved["date"]},
+            actor_id=actor_id, location_id=None, source=source,
+            idempotency_key=f"{idempotency_key}:fulfilled:{lot_id}", metadata_={"doc_id": entity_id, "line_index": index},
+        )
+        if index not in delivered:
+            new_lines[index] = {**line, "entity_id": lot_id, "item_id": lot_id}
+        delivered[index] = delivered.get(index, 0.0) + quantity
+    full = {i for i, quantity in delivered.items()
+            if abs(quantity - float(new_lines[i].get("quantity") or 0)) <= 1e-9}
+    await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
+        data={"fields_changed": {"line_items": {"old": state.get("line_items"), "new": new_lines}}},
+        actor_id=actor_id, location_id=None, source=source, idempotency_key=f"{idempotency_key}:lines",
+    )
+    stock_lines = [i for i, li in enumerate(new_lines) if li.get("entity_id") or li.get("item_id")]
+    data = {"fulfilled_items": _line_item_brief(new_lines, [new_lines[i]["entity_id"] for i in sorted(delivered)]),
+            "fulfilled_by": str(actor_id), "fulfilled_at": max(m["date"] for m in lines),
+            "strategy": "per_line", "ts": max(m["date"] for m in lines)}
+    if all(i in full for i in stock_lines):
+        event_type, data = "doc.fulfilled", {**data, "total_cogs": sum(float(m["cost"]) for m in lines)}
+    else:
+        event_type = "doc.partially_fulfilled"
+        data["unfulfilled_items"] = _line_item_brief(
+            new_lines, [new_lines[i].get("entity_id") or new_lines[i].get("item_id") for i in stock_lines if i not in full])
+    return await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type=event_type,
+        data=data, actor_id=actor_id, location_id=None, source=source, idempotency_key=idempotency_key,
+    )
 
 
 async def _returnable_quantities(session: AsyncSession, company_id, doc: dict) -> dict[str, float]:
@@ -4658,127 +4813,13 @@ async def batch_import_docs(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    from sqlalchemy import select as _select
+    from celerp_docs import import_service
 
-    from celerp.models.ledger import LedgerEntry
-
-    keys = [r.idempotency_key for r in body.records]
-    existing_keys = set((await session.execute(
-        _select(LedgerEntry.idempotency_key).where(
-            LedgerEntry.company_id == company_id,
-            LedgerEntry.idempotency_key.in_(keys),
-        )
-    )).scalars().all())
-
-    # Pre-check existing entity_ids for doc.created events (entity guard)
-    create_entity_ids = [r.entity_id for r in body.records if r.event_type == "doc.created"]
-    existing_entities: set[str] = set()
-    if create_entity_ids:
-        existing_entities = set((await session.execute(
-            _select(Projection.entity_id).where(
-                Projection.company_id == company_id,
-                Projection.entity_id.in_(create_entity_ids),
-            )
-        )).scalars().all())
-
-    created = skipped = updated = 0
-    skipped_existing = 0
-    errors: list[str] = []
-    _batch_company = await session.get(Company, company_id)
-    _batch_base_currency = (_batch_company.settings.get("currency", "USD") if _batch_company else "USD")
-    # Fail authorization before the first row writes, so a mixed-status import cannot
-    # partially apply before discovering that the caller lacks a lifecycle permission.
-    for rec in body.records:
-        if rec.event_type == "doc.created":
-            _assert_doc_import_permissions(settings, role, rec.data)
-    for rec in body.records:
-        if rec.event_type != "doc.created":
-            if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
-            skipped += 1
-            continue
-
-        # A row names an existing document either by the key an earlier import gave it or,
-        # for one made in the app, by its id; with upsert on, either is updated.
-        if rec.idempotency_key in existing_keys:
-            replay = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
-            if replay is None or replay.event_type != "doc.created" or replay.entity_id != rec.entity_id:
-                if len(errors) < 10:
-                    errors.append(f"{rec.entity_id}: idempotency key belongs to another operation")
-                skipped += 1
-                continue
-            if not body.upsert:
-                skipped += 1
-                continue
-        elif rec.entity_id in existing_entities:
-            if not body.upsert:
-                skipped_existing += 1
-                continue
-        if rec.idempotency_key in existing_keys or rec.entity_id in existing_entities:
-            try:
-                row = await _get_doc(session, company_id, rec.entity_id)
-                fields_changed = _doc_import_fields_changed(row.state, rec.data)
-                if not fields_changed:
-                    skipped += 1
-                    continue
-                canonical_patch = json.dumps(fields_changed, sort_keys=True, separators=(",", ":"), default=str)
-                upsert_idem = (
-                    f"{rec.idempotency_key}:upsert:"
-                    f"{hashlib.sha256(canonical_patch.encode()).hexdigest()}"
-                )
-                result = await patch_doc(
-                    rec.entity_id,
-                    DocPatch(fields_changed=fields_changed, idempotency_key=upsert_idem),
-                    company_id=company_id,
-                    _=None,
-                    role=role,
-                    settings=settings,
-                    user=user,
-                    session=session,
-                )
-                if result.get("event_id") is None:
-                    skipped += 1
-                else:
-                    updated += 1
-            except Exception as exc:
-                if len(errors) < 10:
-                    errors.append(f"{rec.entity_id}: {exc}")
-            continue
-
-        try:
-            await _lock_imported_contact(session, company_id, "doc", rec.data)
-            await _assert_import_number_free(session, company_id, "doc", rec.data)
-            if auto_je.import_auto_je_kind(rec.data) is not None:
-                _require_doc_rate_http(rec.data, _batch_base_currency)
-            entry = await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=rec.entity_id,
-                entity_type="doc",
-                event_type="doc.created",
-                data=rec.data,
-                actor_id=user.id,
-                location_id=None,
-                source=rec.source,
-                idempotency_key=rec.idempotency_key,
-                metadata_=_import_metadata(rec.source_ts),
-            )
-            existing_keys.add(rec.idempotency_key)
-            existing_entities.add(entry.entity_id)
-            if not getattr(entry, "was_deduped", False):
-                await _import_auto_je(
-                    session, company_id, user.id, entry.entity_id, rec.data,
-                    base_currency=_batch_base_currency,
-                )
-                created += 1
-            else:
-                skipped += 1
-        except Exception as exc:
-            if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {exc}")
-
+    outcome = await import_service.import_doc_records(
+        session, company_id, user, role, settings, body.records, upsert=body.upsert,
+    )
     await session.commit()
-    return BatchImportResult(created=created, skipped=skipped + skipped_existing, updated=updated, errors=errors)
+    return BatchImportResult(**outcome.route_counts())
 
 
 # ---------------------------------------------------------------------------
@@ -7849,30 +7890,7 @@ async def upload_doc_file(
     except ValueError as exc:
         raise HTTPException(status_code=413, detail=str(exc))
 
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="doc",
-        event_type="doc.file_attached",
-        data={
-            "entity_id": entity_id,
-            "entity_type": "doc",
-            "file_id": meta["id"],
-            "filename": meta["filename"],
-            "mime": meta["mime"],
-            "size": meta["size"],
-            "url": meta["url"],
-            "document_tag": None,
-            "description": None,
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
-        },
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
-    )
+    entry = await attach_file(session, company_id, "doc", entity_id, meta, user.id)
     await session.commit()
     return {"event_id": entry.id, **meta}
 

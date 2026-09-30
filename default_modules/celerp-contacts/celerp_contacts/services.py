@@ -1,9 +1,70 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
 
+from collections.abc import Sequence
 
+from pydantic import BaseModel
+from sqlalchemy import select
 
 from celerp.events.engine import emit_event
+from celerp.importers.results import ImportOutcome
+from celerp.models.ledger import LedgerEntry
+
+CONTACT_CREATED = "crm.contact.created"
+
+
+class CRMImportRecord(BaseModel):
+    entity_id: str
+    event_type: str
+    data: dict
+    source: str
+    idempotency_key: str
+    source_ts: str | None = None
+
+
+async def import_contact_records(
+    session,
+    company_id,
+    actor_id,
+    records: Sequence[CRMImportRecord],
+    entity_type: str = "contact",
+) -> ImportOutcome:
+    """Create imported contacts once per per-company idempotency key. The caller commits."""
+    keys = [r.idempotency_key for r in records]
+    existing = set(
+        (await session.execute(
+            select(LedgerEntry.idempotency_key).where(
+                LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key.in_(keys)
+            )
+        )).scalars().all()
+    )
+    outcome = ImportOutcome()
+    for rec in records:
+        if rec.event_type != CONTACT_CREATED:
+            outcome.add(rec.entity_id, "rejected", f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
+            continue
+        if rec.idempotency_key in existing:
+            outcome.add(rec.entity_id, "skipped")
+            continue
+        try:
+            await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=rec.entity_id,
+                entity_type=entity_type,
+                event_type=rec.event_type,
+                data=rec.data,
+                actor_id=actor_id,
+                location_id=None,
+                source=rec.source,
+                idempotency_key=rec.idempotency_key,
+                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
+            )
+            existing.add(rec.idempotency_key)
+            outcome.add(rec.entity_id, "created")
+        except Exception as exc:
+            outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {exc}")
+    return outcome
 
 
 async def create_crm_entity(session, company_id: str, entity_type: str, data: dict):

@@ -21,13 +21,17 @@ from starlette.responses import FileResponse
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.projections import Projection
-from celerp.services.attachments import local_attachment_url_path, remove_attachment, store_upload
+from celerp.services.attachments import attach_file, local_attachment_url_path, remove_attachment, store_upload
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.currencies import require_currency_code
 from celerp.services.permissions import require_permission
 
+from celerp.importers.sinks import register_sink
+from celerp_contacts import services
+from celerp_contacts.migration_sink import SINK
 from celerp_contacts.references import lock_contacts, lock_referencing_records
 from celerp_contacts.search import search_contacts
+from celerp_contacts.services import CRMImportRecord
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -106,15 +110,6 @@ class ContactAddressUpdate(BaseModel):
     country: str | None = None
     attn: str | None = None
     is_default: bool | None = None
-
-
-class CRMImportRecord(BaseModel):
-    entity_id: str
-    event_type: str
-    data: dict
-    source: str
-    idempotency_key: str
-    source_ts: str | None = None
 
 
 class BatchImportResult(BaseModel):
@@ -268,30 +263,7 @@ async def upload_contact_file(
     except ValueError as exc:
         raise HTTPException(status_code=413, detail=str(exc))
 
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=contact_id,
-        entity_type="contact",
-        event_type="crm.contact.file_attached",
-        data={
-            "entity_id": contact_id,
-            "entity_type": "contact",
-            "file_id": meta["id"],
-            "filename": meta["filename"],
-            "mime": meta["mime"],
-            "size": meta["size"],
-            "url": meta["url"],
-            "document_tag": None,
-            "description": None,
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
-        },
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
-    )
+    entry = await attach_file(session, company_id, "contact", contact_id, meta, user.id)
     await session.commit()
     return {"event_id": entry.id, **meta}
 
@@ -1092,66 +1064,10 @@ async def merge_contacts(
 
 def setup_api_routes(app) -> None:
     app.include_router(router, prefix="/crm", tags=["crm"])
+    register_sink(SINK)
 
 
 # ── Batch import endpoints (CIF) ─────────────────────────────────────────────
-
-async def _batch_import(
-    records: list[CRMImportRecord],
-    entity_type: str,
-    company_id,
-    user,
-    session: AsyncSession,
-) -> BatchImportResult:
-    """Shared batch logic: pre-check existing keys, emit only new records."""
-    from sqlalchemy import select as _select
-
-    from celerp.models.ledger import LedgerEntry
-
-    keys = [r.idempotency_key for r in records]
-    existing = set(
-        (await session.execute(
-            _select(LedgerEntry.idempotency_key).where(
-                LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key.in_(keys)
-            )
-        )).scalars().all()
-    )
-
-    created = skipped = 0
-    errors: list[str] = []
-
-    for rec in records:
-        if rec.event_type != "crm.contact.created":
-            if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
-            skipped += 1
-            continue
-        if rec.idempotency_key in existing:
-            skipped += 1
-            continue
-        try:
-            await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=rec.entity_id,
-                entity_type=entity_type,
-                event_type=rec.event_type,
-                data=rec.data,
-                actor_id=user.id,
-                location_id=None,
-                source=rec.source,
-                idempotency_key=rec.idempotency_key,
-                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
-            )
-            existing.add(rec.idempotency_key)
-            created += 1
-        except Exception as exc:
-            if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {exc}")
-
-    await session.commit()
-    return BatchImportResult(created=created, skipped=skipped, errors=errors)
-
 
 @router.post("/contacts/import/batch", response_model=BatchImportResult)
 async def batch_import_contacts(
@@ -1163,4 +1079,6 @@ async def batch_import_contacts(
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
     """Batch-import CIF contact records. Idempotent on idempotency_key. Max 500 per call."""
-    return await _batch_import(body.records, "contact", company_id, user, session)
+    outcome = await services.import_contact_records(session, company_id, user.id, body.records)
+    await session.commit()
+    return BatchImportResult(**outcome.route_counts())

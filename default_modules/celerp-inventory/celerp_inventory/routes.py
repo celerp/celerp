@@ -30,11 +30,13 @@ from celerp.models.projections import Projection
 from .services import (
     BatchImportRequest,
     BatchImportResult,
+    adjust_item_quantity,
     allocate_internal_codes,
     build_import_records,
     build_item_import_spec,
     commit_import_batch,
     import_items,
+    lot_fields,
 )
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
@@ -139,33 +141,6 @@ def _parse_uuid(value: str | None) -> uuid.UUID | None:
         return uuid.UUID(str(value))
     except (ValueError, AttributeError):
         return None
-
-
-# Fields that must NOT be inherited from parent in split/transform (child gets fresh values).
-# Everything else in parent.state is inherited automatically (copy-all-then-override).
-_CHILD_RESET_FIELDS: frozenset[str] = frozenset({
-    # Identity — always overridden explicitly
-    "sku",
-    "barcode",      # recalculated: new entity needs a new unique barcode
-    "rfid_epc",     # physical RFID/EPC tag: bound to one physical unit, never inherited by a new one
-    "idempotency_key", # connector identity belongs to the catalog/product anchor
-    "external_links",  # external channel identity must never be cloned onto a physical child
-    "_catalog_sku_aliases",  # internal catalog-anchor SKU history never belongs on a lot
-    # Quantity / cost — set by split math or pricing events
-    "quantity",
-    "weight",
-    "pieces",
-    "cost_total",
-    "cost_price",
-    # Status — children start as available regardless of parent's terminal status
-    "status",
-    # Timestamps — set fresh; P2 will move these to Projection columns
-    "created_at",
-    "updated_at",
-    # Relationship — set by split/transform logic
-    "parent_id",
-    "parent_sku",
-})
 
 
 def _recipe_standard_unit_cost(state: dict) -> float | None:
@@ -2954,9 +2929,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         child_eids.append(child_eid)
         child_qty_list.append(child.quantity)
         # Copy-all-then-override: inherit every parent field; reset only identity/qty/cost/status.
-        child_data: dict = {
-            k: v for k, v in parent.state.items() if k not in _CHILD_RESET_FIELDS
-        }
+        child_data: dict = lot_fields(parent.state)
         # Pieces are never inherited from the mother: an explicit per-child count
         # (already merged into child.attributes) or, for a piece-unit item, the
         # child's own quantity. Otherwise the child carries no pieces.
@@ -3322,7 +3295,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     child_attrs = dict(parent_attrs)
     if ch_pieces is not None:
         child_attrs["pieces"] = ch_pieces
-    child_data = {k: v for k, v in parent.state.items() if k not in _CHILD_RESET_FIELDS}
+    child_data = lot_fields(parent.state)
     from celerp_inventory.services import (
         normalize_sku as _normalize_family_sku,
         resolve_catalog_anchor_for_item as _resolve_family_anchor,
@@ -3476,10 +3449,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
 
     # Copy-all-then-override: inherit every parent field; reset only identity/qty/cost/status.
     # Also override sell_by and category — the purpose of a transform is to change these.
-    child_data: dict = {
-        k: v for k, v in parent.state.items()
-        if k not in _CHILD_RESET_FIELDS and k not in parent_price_keys
-    }
+    child_data: dict = {k: v for k, v in lot_fields(parent.state).items() if k not in parent_price_keys}
     child_data.update({
         "sku": payload.child_sku,
         "name": (payload.child_name or "").strip() or parent.state.get("name", payload.child_sku),
@@ -4085,26 +4055,9 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
 @router.post("/{entity_id}/adjust")
 async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    # Validate new_qty against item's sell_by unit decimals
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row:
-        current_sell_by = row.state.get("sell_by")
-        units = await _get_company_units(session, company_id)
-        unit_map = {u["name"]: u for u in units}
-        if current_sell_by and current_sell_by in unit_map:
-            validate_quantity(payload.new_qty, unit_map[current_sell_by]["decimals"])
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.quantity.adjusted",
-        data=payload.model_dump(exclude_none=True),
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
+    entry = await adjust_item_quantity(
+        session, company_id, user.id, entity_id, payload.model_dump(exclude_none=True),
+        source="api", idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -4490,4 +4443,7 @@ def setup_api_routes(app) -> None:
     # be registered before the catch-all /{entity_id} route in the main router.
     app.include_router(attachments_router, prefix="/items", tags=["attachments"])
     app.include_router(router, prefix="/items", tags=["items"])
+    from celerp.importers.sinks import register_sink
+    from celerp_inventory.migration_sink import SINK
+    register_sink(SINK)
 

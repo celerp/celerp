@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -274,7 +274,14 @@ async def validate_access_token(session: AsyncSession, token: str) -> AuthContex
     )
 
 
+STAGED_COMPANY = "This company is still being moved into Celerp. Finish or discard the migration first."
+# The only routes a staged company's own token reaches. Token refresh, logout and health
+# do not authenticate through this dependency, so they stay available as well.
+STAGED_ALLOWED_PREFIX = "/migrations/"
+
+
 async def get_auth_context(
+    request: Request,
     token: str = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_session),
 ) -> AuthContext:
@@ -282,8 +289,15 @@ async def get_auth_context(
 
     FastAPI dependency caching resolves this once per request even when a route
     asks for user, company_id and role separately.
+
+    A token scoped to a migration-staged company is isolated here, centrally: it
+    reaches the migration routes only. The same user's tokens for other companies
+    are unaffected.
     """
-    return await validate_access_token(session, token)
+    ctx = await validate_access_token(session, token)
+    if ctx.company.is_migration_staged and not request.url.path.startswith(STAGED_ALLOWED_PREFIX):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=STAGED_COMPANY)
+    return ctx
 
 
 async def get_current_user(ctx: AuthContext = Depends(get_auth_context)) -> User:

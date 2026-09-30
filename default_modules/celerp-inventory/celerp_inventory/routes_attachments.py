@@ -37,8 +37,10 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.attachments import (
     AttachmentType,
+    attach_file,
     check_file_size,
     get_or_create_thumbnail,
+    item_file_role,
     local_attachment_url_path,
     merge_attachments,
     remove_attachment,
@@ -408,41 +410,11 @@ async def upload_item_file(
     except ValueError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
 
-    existing_files: list[dict] = row.state.get("files", [])
-    has_hero = any(f.get("is_hero") for f in existing_files)
-    _is_image = meta.get("mime", "").startswith("image/")
-    is_hero = _is_image and (as_hero or not has_hero)
-    # The upload area implies the type: an image attached to an inventory item is a product image, so
-    # tag it as such by default (untagged-image uploads otherwise show up untagged everywhere).
-    if document_tag is None and _is_image:
-        document_tag = "product_images"
-
-    from datetime import datetime, timezone
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.file.attached",
-        data={
-            "entity_id": entity_id,
-            "entity_type": "item",
-            "file_id": meta["id"],
-            "filename": meta["filename"],
-            "mime": meta["mime"],
-            "size": meta["size"],
-            "url": meta.get("url", ""),
-            "document_tag": document_tag,
-            "description": None,
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
-            "is_hero": is_hero,
-        },
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
+    is_hero, document_tag = item_file_role(
+        row.state.get("files", []), meta.get("mime", ""), as_hero=as_hero, document_tag=document_tag,
     )
+    await attach_file(session, company_id, "item", entity_id, meta, user.id,
+                      document_tag=document_tag, is_hero=is_hero)
     await session.commit()
     return {"file_id": meta["id"], **meta, "is_hero": is_hero}
 

@@ -13,6 +13,8 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event, find_event_by_idempotency
+from celerp.importers.results import ImportOutcome
+from celerp.importers.schema import IMPORT_ITEM_STATUSES
 from celerp.inventory_codes import (
     PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
     validate_barcode,
@@ -39,6 +41,7 @@ from celerp.services.units import (
     get_company_units,
     is_pieces_unit,
     is_weight_unit,
+    validate_quantity,
 )
 
 # Internally assigned SKUs/barcodes are short zero-padded sequences; imported
@@ -46,6 +49,39 @@ from celerp.services.units import (
 # they are never re-used as the next internal code.
 _MAX_SEQ_DIGITS = 9
 _SEQ_WIDTH = 6
+
+
+# Fields that must NOT be inherited from parent in split/transform (child gets fresh values).
+# Everything else in parent.state is inherited automatically (copy-all-then-override).
+_CHILD_RESET_FIELDS: frozenset[str] = frozenset({
+    # Identity - always overridden explicitly
+    "sku",
+    "barcode",      # recalculated: new entity needs a new unique barcode
+    "rfid_epc",     # physical RFID/EPC tag: bound to one physical unit, never inherited by a new one
+    "idempotency_key", # connector identity belongs to the catalog/product anchor
+    "external_links",  # external channel identity must never be cloned onto a physical child
+    "_catalog_sku_aliases",  # internal catalog-anchor SKU history never belongs on a lot
+    # Quantity / cost - set by split math or pricing events
+    "quantity",
+    "weight",
+    "pieces",
+    "cost_total",
+    "cost_price",
+    # Status - children start as available regardless of parent's terminal status
+    "status",
+    # Timestamps - set fresh
+    "created_at",
+    "updated_at",
+    # Relationship - set by split/transform logic
+    "parent_id",
+    "parent_sku",
+})
+
+
+def lot_fields(parent_state: dict) -> dict:
+    """The fields a new lot of an item inherits from it: everything but identity, quantity,
+    cost, status, timestamps and lineage, which each new lot sets for itself."""
+    return {k: v for k, v in parent_state.items() if k not in _CHILD_RESET_FIELDS}
 
 
 async def _next_seq(session: AsyncSession, company_id) -> int:
@@ -2231,15 +2267,51 @@ async def _merge_category_schemas(session: AsyncSession, company_id, incoming: d
         company.settings = settings
 
 
-async def commit_import_batch(
+async def adjust_item_quantity(
+    session: AsyncSession,
+    company_id,
+    actor_id,
+    entity_id: str,
+    data: dict,
+    *,
+    source: str,
+    idempotency_key: str,
+):
+    """Set an item's quantity on hand, checked against its selling unit's decimals. The caller commits."""
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if row:
+        current_sell_by = row.state.get("sell_by")
+        unit_map = {u["name"]: u for u in await get_company_units(session, company_id)}
+        if current_sell_by and current_sell_by in unit_map:
+            validate_quantity(data["new_qty"], unit_map[current_sell_by]["decimals"])
+    return await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.quantity.adjusted",
+        data=data,
+        actor_id=actor_id,
+        location_id=None,
+        source=source,
+        idempotency_key=idempotency_key,
+        metadata_={},
+    )
+
+
+async def write_import_batch(
     session: AsyncSession,
     company_id,
     user,
     role: str,
     settings: dict,
     body: BatchImportRequest,
-) -> BatchImportResult:
-    """Commit item import records through one bounded, company-scoped writer.
+) -> tuple[ImportOutcome, str | None]:
+    """Write item import records through one bounded, company-scoped writer.
+
+    Reports one outcome per record and the import batch id, and leaves the
+    commit to the caller: `commit_import_batch` for the HTTP and agent
+    transports, the migration runner for the migration sink.
 
     Exact retries resolve through the ledger before any allocation or uniqueness
     check. With ``body.upsert`` a record whose key created an item updates that
@@ -2264,8 +2336,7 @@ async def commit_import_batch(
     valid_units: frozenset[str] = frozenset(u["name"] for u in units)
     derived_keys = derived_price_keys((await get_price_config(session, company_id))[0])
 
-    created = skipped = updated = 0
-    errors: list[str] = []
+    outcome = ImportOutcome()
     created_entity_ids: list[str] = []
     created_keys: list[str] = []
 
@@ -2278,7 +2349,7 @@ async def commit_import_batch(
 
     for rec in body.records:
         data = dict(rec.data)
-        data.pop("status", None)
+        status = str(data.pop("status", None) or "").strip().lower()
         data.pop("created_at", None)
         data.pop("updated_at", None)
         data.pop("idempotency_key", None)
@@ -2296,29 +2367,26 @@ async def commit_import_batch(
 
         managed = sorted(SYSTEM_ITEM_KEYS & set(data))
         if managed:
-            errors.append(
+            outcome.add(entity_id, "rejected",
                 f"Row (SKU={data.get('sku', '?')}): {managed} cannot be imported; "
                 "remove these columns and import again"
             )
-            skipped += 1
             continue
 
         if event_type == "item.patched":
             if primary is not None:
                 if primary.event_type == "item.patched" and primary.entity_id == entity_id:
-                    skipped += 1
+                    outcome.add(entity_id, "skipped")
                 else:
-                    errors.append(f"{entity_id}: idempotency key was already used for another operation")
-                    skipped += 1
+                    outcome.add(entity_id, "rejected", f"{entity_id}: idempotency key was already used for another operation")
                 continue
         elif event_type == "item.created":
             if primary is not None:
                 if primary.event_type != "item.created" or primary.entity_id != entity_id:
-                    errors.append(f"{entity_id}: idempotency key was already used for another operation")
-                    skipped += 1
+                    outcome.add(entity_id, "rejected", f"{entity_id}: idempotency key was already used for another operation")
                     continue
                 if not body.upsert:
-                    skipped += 1
+                    outcome.add(primary.entity_id, "skipped")
                     continue
                 event_type = "item.patched"
                 canonical_patch = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
@@ -2329,23 +2397,30 @@ async def commit_import_batch(
                 replay = await find_event_by_idempotency(session, company_id, idem_key)
                 if replay is not None:
                     if replay.event_type == "item.patched" and replay.entity_id == entity_id:
-                        skipped += 1
+                        outcome.add(entity_id, "skipped")
                     else:
-                        errors.append(f"{entity_id}: idempotency key was already used for another operation")
-                        skipped += 1
+                        outcome.add(entity_id, "rejected", f"{entity_id}: idempotency key was already used for another operation")
                     continue
         elif event_type == "item.snapshot":
             if primary is not None:
                 if primary.event_type == "item.snapshot" and primary.entity_id == entity_id:
-                    skipped += 1
+                    outcome.add(entity_id, "skipped")
                 else:
-                    errors.append(f"{entity_id}: idempotency key was already used for another operation")
-                    skipped += 1
+                    outcome.add(entity_id, "rejected", f"{entity_id}: idempotency key was already used for another operation")
                 continue
         else:
-            errors.append(f"{entity_id}: event type {event_type!r} is not import-safe")
-            skipped += 1
+            outcome.add(entity_id, "rejected", f"{entity_id}: event type {event_type!r} is not import-safe")
             continue
+
+        # A status changes through the status action, never through an upsert patch.
+        if status and event_type != "item.patched":
+            if status not in IMPORT_ITEM_STATUSES:
+                outcome.add(entity_id, "rejected",
+                    f"Row (SKU={data.get('sku', '?')}): an imported item cannot start as {status}; "
+                    f"use {', '.join(IMPORT_ITEM_STATUSES[:-1])} or {IMPORT_ITEM_STATUSES[-1]}"
+                )
+                continue
+            data["status"] = status
 
         stored_proj: Projection | None = None
         if event_type == "item.patched":
@@ -2353,16 +2428,14 @@ async def commit_import_batch(
                 Projection, {"company_id": company_id, "entity_id": entity_id}
             )
             if stored_proj is None or stored_proj.entity_type != "item":
-                errors.append(f"{entity_id}: upsert target was not found")
-                skipped += 1
+                outcome.add(entity_id, "rejected", f"{entity_id}: upsert target was not found")
                 continue
         else:
             existing_projection = await session.get(
                 Projection, {"company_id": company_id, "entity_id": entity_id}
             )
             if existing_projection is not None:
-                errors.append(f"{entity_id}: entity already exists")
-                skipped += 1
+                outcome.add(entity_id, "rejected", f"{entity_id}: entity already exists")
                 continue
 
         # Imported price values modify the same protected business data as the
@@ -2373,23 +2446,20 @@ async def commit_import_batch(
             if value is not None and (key.endswith("_price") or key == "cost_total")
         }
         if price_keys and not role_has_permission(settings, role, "set_inventory_prices"):
-            errors.append(
+            outcome.add(entity_id, "rejected",
                 f"Row (SKU={data.get('sku', '?')}): editing {sorted(price_keys)} "
                 "requires the set_inventory_prices permission"
             )
-            skipped += 1
             continue
 
         sell_by = str(data.get("sell_by") or "").strip()
         if event_type != "item.patched" and not sell_by:
-            errors.append(f"Row (SKU={data.get('sku', '?')}): sell_by is required")
-            skipped += 1
+            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): sell_by is required")
             continue
         if sell_by and valid_units and sell_by not in valid_units:
-            errors.append(
+            outcome.add(entity_id, "rejected",
                 f"Row (SKU={data.get('sku', '?')}): sell_by '{sell_by}' is not a valid unit"
             )
-            skipped += 1
             continue
 
         if event_type == "item.patched" and stored_proj is not None:
@@ -2399,11 +2469,10 @@ async def commit_import_batch(
                 if sell_by and sell_by != stored_sell_by:
                     gated.add("sell_by")
                 if gated:
-                    errors.append(
+                    outcome.add(entity_id, "rejected",
                         f"Row (SKU={data.get('sku', '?')}): editing {sorted(gated)} "
                         "requires the edit_inventory_amounts permission"
                     )
-                    skipped += 1
                     continue
 
         negative_amount = None
@@ -2418,10 +2487,9 @@ async def commit_import_batch(
             except (TypeError, ValueError):
                 pass
         if negative_amount is not None:
-            errors.append(
+            outcome.add(entity_id, "rejected",
                 f"Row (SKU={data.get('sku', '?')}): {negative_amount} cannot be negative"
             )
-            skipped += 1
             continue
 
         # Creation follows the ordinary internal-code primitive, after replay
@@ -2443,8 +2511,7 @@ async def commit_import_batch(
             validate_barcode(data.get("barcode"))
             validate_rfid_epc(data.get("rfid_epc"))
         except ValueError as exc:
-            errors.append(f"Row (SKU={data.get('sku', '?')}): {exc}")
-            skipped += 1
+            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {exc}")
             continue
 
         if event_type != "item.patched":
@@ -2456,8 +2523,7 @@ async def commit_import_batch(
             try:
                 loc_id = uuid.UUID(str(raw_loc))
             except ValueError:
-                errors.append(f"Row (SKU={data.get('sku', '?')}): invalid location_id")
-                skipped += 1
+                outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): invalid location_id")
                 continue
 
         # A patched goods cost is restated like an edit on the item page (merge and
@@ -2472,8 +2538,7 @@ async def commit_import_batch(
                 try:
                     cost_change = {field: {"new": float(value)}}
                 except (TypeError, ValueError):
-                    errors.append(f"Row (SKU={data.get('sku', '?')}): cost must be a number")
-                    skipped += 1
+                    outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): cost must be a number")
                     continue
 
         try:
@@ -2499,27 +2564,26 @@ async def commit_import_batch(
                         actor_id=user.id, source=rec.source, idempotency_key=f"{idem_key}:cost",
                     )
         except CostRestatementConflict as exc:
-            errors.append(f"Row (SKU={data.get('sku', '?')}): {exc}")
-            skipped += 1
+            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {exc}")
             continue
         except Exception as exc:
-            if len(errors) < 10:
-                errors.append(f"{entity_id}: {exc}")
+            outcome.add(entity_id, "failed", f"{entity_id}: {exc}")
             continue
 
         existing[idem_key] = entry
         if getattr(entry, "was_deduped", False):
-            skipped += 1
+            outcome.add(entity_id, "skipped")
             continue
 
         if event_type == "item.patched":
-            updated += 1
+            outcome.add(entity_id, "updated")
         else:
             created_entity_ids.append(entity_id)
             created_keys.append(idem_key)
-            created += 1
+            outcome.add(entity_id, "created")
 
     batch_id: str | None = None
+    created = len(created_entity_ids)
     if created > 0:
         new_batch_id = uuid.uuid4()
         batch = ImportBatch(
@@ -2538,7 +2602,18 @@ async def commit_import_batch(
         # The first real import clears the demo items the user never edited or used.
         await delete_untouched_demo_items(session, company_id)
 
+    return outcome, batch_id
+
+
+async def commit_import_batch(
+    session: AsyncSession,
+    company_id,
+    user,
+    role: str,
+    settings: dict,
+    body: BatchImportRequest,
+) -> BatchImportResult:
+    """Write an item import batch and commit it; the route and agent transports call this."""
+    outcome, batch_id = await write_import_batch(session, company_id, user, role, settings, body)
     await session.commit()
-    return BatchImportResult(
-        created=created, skipped=skipped, updated=updated, errors=errors, batch_id=batch_id
-    )
+    return BatchImportResult(**outcome.route_counts(cap_rejections=False), batch_id=batch_id)

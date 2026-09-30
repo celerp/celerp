@@ -292,14 +292,10 @@ async def import_backup_bootstrap(
     """Restore a backup into an unbootstrapped installation."""
     from sqlalchemy import select
     from celerp.models.company import User
-    from celerp.routers.auth import (
-        _bootstrap_restore_lock,
-        _clear_setup_code,
-        _verify_setup_code,
-    )
+    from celerp.services import bootstrap
     from celerp.services.backup_import import run_import, validate_archive
 
-    setup_code_configured = _verify_setup_code(setup_code)
+    setup_code_configured = bootstrap.verify_setup_code(setup_code)
     existing = (await session.execute(select(User.id).limit(1))).scalar_one_or_none()
     if existing is not None:
         raise HTTPException(
@@ -314,7 +310,7 @@ async def import_backup_bootstrap(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        async with _bootstrap_restore_lock():
+        async with bootstrap.bootstrap_restore_lock():
             existing = (
                 await session.execute(select(User.id).limit(1))
             ).scalar_one_or_none()
@@ -330,7 +326,7 @@ async def import_backup_bootstrap(
                     status_code=422, detail=result.error or "Import failed"
                 )
             if setup_code_configured:
-                await asyncio.to_thread(_clear_setup_code)
+                await asyncio.to_thread(bootstrap.clear_setup_code)
 
         return {
             "ok": True,

@@ -9,13 +9,13 @@ were removed and replaced with universal ones:
   - cost_per_ct → cost_per_unit (generic cost per unit of weight)
 
 These tests verify:
-1. Old _ct fields are gone from CIFItem and CIFLineItem schemas
+1. Old _ct fields are gone from CIFBundleItem and CIFBundleLineItem schemas
 2. New universal fields work correctly across all weight unit types
 3. weight_unit is independent of weight (can be None when weight is None)
 4. cost_per_unit is independent of weight_unit
 5. Importer serialises weight/weight_unit/cost_per_unit correctly into HTTP payloads
 6. ItemCreate router model carries weight_unit and sell_by
-7. Round-trip: CIFItem → manifest JSON → re-parse preserves all fields
+7. Round-trip: CIFBundleItem → manifest JSON → re-parse preserves all fields
 """
 
 from __future__ import annotations
@@ -43,10 +43,10 @@ def _run_coroutine(coro):
 
 from celerp.importers.schema import (
     CIF_VERSION,
-    CIFImportBundle,
-    CIFImportManifest,
-    CIFItem,
-    CIFLineItem,
+    CIFBundle,
+    CIFBundleItem,
+    CIFBundleLineItem,
+    CIFBundleManifest,
 )
 from celerp.importers.importer import BundleImporter
 
@@ -59,19 +59,19 @@ class TestRemovedFields:
     """Verify that gemstone-specific _ct fields no longer exist on the schema."""
 
     def test_cif_item_no_weight_ct(self) -> None:
-        assert not hasattr(CIFItem.model_fields.get("weight_ct", None), "default"), \
-            "weight_ct should not be a field on CIFItem"
-        assert "weight_ct" not in CIFItem.model_fields
+        assert not hasattr(CIFBundleItem.model_fields.get("weight_ct", None), "default"), \
+            "weight_ct should not be a field on CIFBundleItem"
+        assert "weight_ct" not in CIFBundleItem.model_fields
 
     def test_cif_item_no_cost_per_ct(self) -> None:
-        assert "cost_per_ct" not in CIFItem.model_fields
+        assert "cost_per_ct" not in CIFBundleItem.model_fields
 
     def test_cif_line_item_no_weight_ct(self) -> None:
-        assert "weight_ct" not in CIFLineItem.model_fields
+        assert "weight_ct" not in CIFBundleLineItem.model_fields
 
     def test_cif_item_old_weight_ct_kwarg_is_silently_dropped(self) -> None:
         """Pydantic default config ignores extra kwargs — old weight_ct is dropped, not stored."""
-        item = CIFItem(
+        item = CIFBundleItem(
             external_id="i:1",
             name="Stone",
             status="available",
@@ -82,7 +82,7 @@ class TestRemovedFields:
         assert item.weight is None  # weight was NOT populated from weight_ct
 
     def test_cif_line_item_old_weight_ct_kwarg_is_silently_dropped(self) -> None:
-        li = CIFLineItem(
+        li = CIFBundleLineItem(
             item_external_id="i:1",
             quantity=Decimal("1"),
             unit_price=Decimal("100"),
@@ -102,7 +102,7 @@ class TestWeightUnitField:
 
     @pytest.mark.parametrize("unit", ["ct", "kg", "g", "oz", "lb", "t", "tola", "baht"])
     def test_cif_item_accepts_any_weight_unit(self, unit: str) -> None:
-        item = CIFItem(
+        item = CIFBundleItem(
             external_id="i:1",
             name="Widget",
             status="available",
@@ -112,13 +112,13 @@ class TestWeightUnitField:
         assert item.weight_unit == unit
 
     def test_cif_item_weight_unit_none_when_no_weight(self) -> None:
-        item = CIFItem(external_id="i:1", name="Stone", status="available")
+        item = CIFBundleItem(external_id="i:1", name="Stone", status="available")
         assert item.weight is None
         assert item.weight_unit is None
 
     def test_cif_item_weight_without_unit_is_valid(self) -> None:
         """weight can be set without weight_unit — some sources don't record unit."""
-        item = CIFItem(
+        item = CIFBundleItem(
             external_id="i:1",
             name="Stone",
             status="available",
@@ -129,7 +129,7 @@ class TestWeightUnitField:
 
     def test_cif_item_unit_without_weight_is_valid(self) -> None:
         """weight_unit can theoretically be set without weight (edge case, not rejected)."""
-        item = CIFItem(
+        item = CIFBundleItem(
             external_id="i:1",
             name="Stone",
             status="available",
@@ -140,7 +140,7 @@ class TestWeightUnitField:
 
     @pytest.mark.parametrize("unit", ["ct", "kg", "g", "oz"])
     def test_cif_line_item_weight_unit(self, unit: str) -> None:
-        li = CIFLineItem(
+        li = CIFBundleLineItem(
             item_external_id="i:1",
             quantity=Decimal("1"),
             unit_price=Decimal("100"),
@@ -151,7 +151,7 @@ class TestWeightUnitField:
         assert li.weight_unit == unit
 
     def test_cif_line_item_no_weight_defaults_none(self) -> None:
-        li = CIFLineItem(
+        li = CIFBundleLineItem(
             item_external_id="i:1",
             quantity=Decimal("1"),
             unit_price=Decimal("50"),
@@ -169,7 +169,7 @@ class TestCostPerUnit:
     """cost_per_unit is generic — not tied to carats or any specific unit."""
 
     def test_cif_item_cost_per_unit_ct(self) -> None:
-        item = CIFItem(
+        item = CIFBundleItem(
             external_id="i:1",
             name="Ruby",
             status="available",
@@ -180,7 +180,7 @@ class TestCostPerUnit:
         assert item.cost_per_unit == Decimal("200.00")
 
     def test_cif_item_cost_per_unit_kg(self) -> None:
-        item = CIFItem(
+        item = CIFBundleItem(
             external_id="i:1",
             name="Gold bar",
             status="available",
@@ -191,12 +191,12 @@ class TestCostPerUnit:
         assert item.cost_per_unit == Decimal("50000.00")
 
     def test_cif_item_cost_per_unit_none_by_default(self) -> None:
-        item = CIFItem(external_id="i:1", name="Stone", status="available")
+        item = CIFBundleItem(external_id="i:1", name="Stone", status="available")
         assert item.cost_per_unit is None
 
     def test_cif_item_cost_per_unit_without_weight(self) -> None:
         """cost_per_unit is independent — no validation coupling to weight."""
-        item = CIFItem(
+        item = CIFBundleItem(
             external_id="i:1",
             name="Thing",
             status="available",
@@ -207,7 +207,7 @@ class TestCostPerUnit:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. sell_by field on CIFItem
+# 4. sell_by field on CIFBundleItem
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestSellBy:
@@ -215,7 +215,7 @@ class TestSellBy:
 
     @pytest.mark.parametrize("sell_by", ["piece", "weight"])
     def test_cif_item_sell_by_valid_values(self, sell_by: str) -> None:
-        item = CIFItem(
+        item = CIFBundleItem(
             external_id="i:1",
             name="Stone",
             status="available",
@@ -224,12 +224,12 @@ class TestSellBy:
         assert item.sell_by == sell_by
 
     def test_cif_item_sell_by_none_by_default(self) -> None:
-        item = CIFItem(external_id="i:1", name="Stone", status="available")
+        item = CIFBundleItem(external_id="i:1", name="Stone", status="available")
         assert item.sell_by is None
 
     def test_cif_item_sell_by_weight_requires_no_weight(self) -> None:
         """sell_by='weight' does NOT require weight to be set (it's just metadata)."""
-        item = CIFItem(
+        item = CIFBundleItem(
             external_id="i:1",
             name="Bulk lot",
             status="available",
@@ -246,7 +246,7 @@ class TestSellBy:
 class TestImporterPayloadSerialisation:
     """Verify the BundleImporter builds correct HTTP payloads for items and line items."""
 
-    def _run_import(self, manifest: CIFImportManifest) -> list[dict]:
+    def _run_import(self, manifest: CIFBundleManifest) -> list[dict]:
         """Run importer with patched _post_batch; return all calls' payloads."""
         from unittest.mock import AsyncMock, patch
         captured: list[dict] = []
@@ -260,11 +260,11 @@ class TestImporterPayloadSerialisation:
             _run_coroutine(importer.run(manifest))
         return captured
 
-    def _make_manifest(self, items=None, documents=None) -> CIFImportManifest:
-        return CIFImportManifest(
+    def _make_manifest(self, items=None, documents=None) -> CIFBundleManifest:
+        return CIFBundleManifest(
             source="test",
             exported_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-            bundle=CIFImportBundle(
+            bundle=CIFBundle(
                 items=items or [],
                 documents=documents or [],
             ),
@@ -272,7 +272,7 @@ class TestImporterPayloadSerialisation:
 
     def test_item_payload_includes_weight_and_unit(self) -> None:
         manifest = self._make_manifest(items=[
-            CIFItem(
+            CIFBundleItem(
                 external_id="i:1",
                 name="Sapphire",
                 status="available",
@@ -287,7 +287,7 @@ class TestImporterPayloadSerialisation:
 
     def test_item_payload_includes_cost_per_unit(self) -> None:
         manifest = self._make_manifest(items=[
-            CIFItem(
+            CIFBundleItem(
                 external_id="i:1",
                 name="Diamond",
                 status="available",
@@ -302,7 +302,7 @@ class TestImporterPayloadSerialisation:
 
     def test_item_payload_weight_none_serialised_as_none(self) -> None:
         manifest = self._make_manifest(items=[
-            CIFItem(external_id="i:1", name="Stone", status="available")
+            CIFBundleItem(external_id="i:1", name="Stone", status="available")
         ])
         payloads = self._run_import(manifest)
         item_payload = next(p for p in payloads if p.get("event_type") == "item.snapshot")
@@ -312,7 +312,7 @@ class TestImporterPayloadSerialisation:
 
     def test_item_payload_sell_by_included(self) -> None:
         manifest = self._make_manifest(items=[
-            CIFItem(
+            CIFBundleItem(
                 external_id="i:1",
                 name="Stone",
                 status="available",
@@ -326,7 +326,7 @@ class TestImporterPayloadSerialisation:
     def test_item_payload_no_legacy_ct_fields(self) -> None:
         """HTTP payload must NOT contain weight_ct or cost_per_ct."""
         manifest = self._make_manifest(items=[
-            CIFItem(
+            CIFBundleItem(
                 external_id="i:1",
                 name="Stone",
                 status="available",
@@ -341,8 +341,8 @@ class TestImporterPayloadSerialisation:
         assert "cost_per_ct" not in item_payload["data"]
 
     def test_line_item_payload_weight_unit(self) -> None:
-        from celerp.importers.schema import CIFDocument, CIFLineItem
-        li = CIFLineItem(
+        from celerp.importers.schema import CIFBundleDocument, CIFBundleLineItem
+        li = CIFBundleLineItem(
             item_external_id="i:1",
             quantity=Decimal("1"),
             weight=Decimal("1.80"),
@@ -351,7 +351,7 @@ class TestImporterPayloadSerialisation:
             total_price=Decimal("4000"),
             cost_basis=Decimal("1200"),
         )
-        doc = CIFDocument(
+        doc = CIFBundleDocument(
             external_id="d:1",
             doc_type="invoice",
             status="paid",
@@ -369,14 +369,14 @@ class TestImporterPayloadSerialisation:
         assert li_data["cost_basis"] == "1200"
 
     def test_line_item_payload_no_weight_ct_field(self) -> None:
-        from celerp.importers.schema import CIFDocument, CIFLineItem
-        li = CIFLineItem(
+        from celerp.importers.schema import CIFBundleDocument, CIFBundleLineItem
+        li = CIFBundleLineItem(
             item_external_id="i:1",
             quantity=Decimal("1"),
             unit_price=Decimal("100"),
             total_price=Decimal("100"),
         )
-        doc = CIFDocument(
+        doc = CIFBundleDocument(
             external_id="d:1",
             doc_type="invoice",
             status="paid",
@@ -396,7 +396,7 @@ class TestImporterPayloadSerialisation:
     def test_item_payload_kg_weight_unit(self) -> None:
         """weight_unit is passed through verbatim — not restricted to 'ct'."""
         manifest = self._make_manifest(items=[
-            CIFItem(
+            CIFBundleItem(
                 external_id="i:1",
                 name="Grain lot",
                 status="available",
@@ -412,19 +412,19 @@ class TestImporterPayloadSerialisation:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. Round-trip: CIFItem → JSON → re-parse
+# 6. Round-trip: CIFBundleItem → JSON → re-parse
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestRoundTrip:
     """Full round-trip through manifest serialisation and re-parsing."""
 
     def test_weight_and_unit_survive_json_roundtrip(self) -> None:
-        manifest = CIFImportManifest(
+        manifest = CIFBundleManifest(
             source="roundtrip",
             exported_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-            bundle=CIFImportBundle(
+            bundle=CIFBundle(
                 items=[
-                    CIFItem(
+                    CIFBundleItem(
                         external_id="i:1",
                         name="Emerald",
                         status="available",
@@ -437,7 +437,7 @@ class TestRoundTrip:
             ),
         )
         raw = json.loads(manifest.model_dump_json())
-        restored = CIFImportManifest.model_validate(raw)
+        restored = CIFBundleManifest.model_validate(raw)
         item = restored.bundle.items[0]
         assert item.weight == Decimal("3.14")
         assert item.weight_unit == "ct"
@@ -445,8 +445,8 @@ class TestRoundTrip:
         assert item.sell_by == "piece"
 
     def test_line_item_weight_unit_survives_roundtrip(self) -> None:
-        from celerp.importers.schema import CIFDocument, CIFLineItem
-        li = CIFLineItem(
+        from celerp.importers.schema import CIFBundleDocument, CIFBundleLineItem
+        li = CIFBundleLineItem(
             item_external_id="i:1",
             quantity=Decimal("2"),
             weight=Decimal("4.20"),
@@ -454,7 +454,7 @@ class TestRoundTrip:
             unit_price=Decimal("200"),
             total_price=Decimal("400"),
         )
-        doc = CIFDocument(
+        doc = CIFBundleDocument(
             external_id="d:1",
             doc_type="invoice",
             status="paid",
@@ -463,21 +463,21 @@ class TestRoundTrip:
             amount_outstanding=Decimal("0"),
             line_items=[li],
         )
-        manifest = CIFImportManifest(
+        manifest = CIFBundleManifest(
             source="rt",
             exported_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-            bundle=CIFImportBundle(documents=[doc]),
+            bundle=CIFBundle(documents=[doc]),
         )
         raw = json.loads(manifest.model_dump_json())
-        restored = CIFImportManifest.model_validate(raw)
+        restored = CIFBundleManifest.model_validate(raw)
         rli = restored.bundle.documents[0].line_items[0]
         assert rli.weight == Decimal("4.20")
         assert rli.weight_unit == "g"
 
     def test_null_weight_unit_survives_roundtrip(self) -> None:
-        item = CIFItem(external_id="i:1", name="Thing", status="available")
+        item = CIFBundleItem(external_id="i:1", name="Thing", status="available")
         raw = json.loads(item.model_dump_json())
-        restored = CIFItem.model_validate(raw)
+        restored = CIFBundleItem.model_validate(raw)
         assert restored.weight is None
         assert restored.weight_unit is None
         assert restored.cost_per_unit is None
@@ -550,19 +550,19 @@ class TestItemCreateModel:
 class TestTimestampFields:
     """created_at/updated_at are system-managed Projection columns, not CIF fields.
 
-    CIFItem and CIFDocument intentionally omit these fields — Celerp stamps
+    CIFBundleItem and CIFBundleDocument intentionally omit these fields; Celerp stamps
     created_at on INSERT via ProjectionEngine; external provenance timestamps
     are discarded.
     """
 
     def test_cif_item_has_no_created_at_field(self) -> None:
-        assert "created_at" not in CIFItem.model_fields
+        assert "created_at" not in CIFBundleItem.model_fields
 
     def test_cif_item_has_no_updated_at_field(self) -> None:
-        assert "updated_at" not in CIFItem.model_fields
+        assert "updated_at" not in CIFBundleItem.model_fields
 
     def test_cif_item_constructs_without_timestamps(self) -> None:
-        item = CIFItem(external_id="i:1", name="Stone", status="available")
+        item = CIFBundleItem(external_id="i:1", name="Stone", status="available")
         assert not hasattr(item, "created_at")
         assert not hasattr(item, "updated_at")
 
@@ -577,11 +577,11 @@ class TestTimestampFields:
         from unittest.mock import AsyncMock, patch
         from datetime import datetime, timezone
 
-        manifest = CIFImportManifest(
+        manifest = CIFBundleManifest(
             source="test",
             exported_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-            bundle=CIFImportBundle(items=[
-                CIFItem(external_id="i:1", name="Stone", status="available")
+            bundle=CIFBundle(items=[
+                CIFBundleItem(external_id="i:1", name="Stone", status="available")
             ]),
         )
         captured: list[dict] = []

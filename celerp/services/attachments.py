@@ -31,12 +31,17 @@ import asyncio
 import io
 import logging
 import mimetypes
+import shutil
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Protocol
 
 from fastapi import UploadFile
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from celerp.events.engine import emit_event
 
 # ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -87,6 +92,11 @@ def _stored_extension(mime: str) -> str:
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
 
 
+def accepts_mime(mime: str) -> bool:
+    """Whether Celerp stores files of this content type."""
+    return mime in _ALLOWED_MIMES
+
+
 def check_file_size(size: int) -> None:
     """ValueError when a file of *size* bytes is over the attachment limit."""
     if size > MAX_FILE_BYTES:
@@ -132,6 +142,15 @@ class StorageBackend(Protocol):
         """Content this backend stored for ``company_id`` under ``stored_id``, or None."""
         ...
 
+    async def delete(self, company_id: str, stored_id: str, mime: str) -> None:
+        """Delete the file stored for ``company_id`` under ``stored_id``; one already gone
+        counts as deleted. Raises when it cannot delete."""
+        ...
+
+    async def delete_company(self, company_id: str) -> None:
+        """Delete every file this backend stored for ``company_id``; raises when it cannot."""
+        ...
+
 
 # ── LocalBackend ──────────────────────────────────────────────────────────────
 
@@ -172,6 +191,19 @@ class LocalBackend:
     async def read_stored(self, company_id: str, stored_id: str, mime: str, max_bytes: int) -> bytes | None:
         """Read back the file stored under ``stored_id``, or None when there is none."""
         return _read_local(local_attachment_path(company_id, stored_id + _stored_extension(mime)), max_bytes)
+
+    async def delete(self, company_id: str, stored_id: str, mime: str) -> None:
+        name = stored_id + _stored_extension(mime)
+        if not (_is_plain_name(str(company_id)) and _is_plain_name(name)):
+            raise ValueError(f"Invalid attachment id: {stored_id!r}")
+        await asyncio.to_thread((self._root / str(company_id) / name).unlink, missing_ok=True)
+
+    async def delete_company(self, company_id: str) -> None:
+        if not _is_plain_name(str(company_id)):
+            raise ValueError(f"Invalid company id: {company_id!r}")
+        path = self._root / str(company_id)
+        if path.exists():
+            await asyncio.to_thread(shutil.rmtree, path)
 
 
 def _read_local(path: Path | None, max_bytes: int) -> bytes | None:
@@ -301,6 +333,30 @@ class S3Backend:
                 data = await stream.read(max_bytes + 1)
         return data if len(data) <= max_bytes else None
 
+    async def delete(self, company_id: str, stored_id: str, mime: str) -> None:
+        name = stored_id + _stored_extension(mime)
+        if not _is_plain_name(name):
+            raise ValueError(f"Invalid attachment id: {stored_id!r}")
+        async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
+            await client.delete_object(Bucket=self._bucket, Key=f"attachments/{company_id}/{name}")
+
+    async def delete_company(self, company_id: str) -> None:
+        if not _is_plain_name(str(company_id)):
+            raise ValueError(f"Invalid company id: {company_id!r}")
+        prefix = f"attachments/{company_id}/"
+        async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
+            listing = {"Bucket": self._bucket, "Prefix": prefix}
+            while True:
+                page = await client.list_objects_v2(**listing)
+                keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+                if keys:
+                    resp = await client.delete_objects(Bucket=self._bucket, Delete={"Objects": keys, "Quiet": True})
+                    if resp.get("Errors"):
+                        raise OSError(f"{len(resp['Errors'])} stored files could not be deleted")
+                if not page.get("IsTruncated"):
+                    return
+                listing["ContinuationToken"] = page["NextContinuationToken"]
+
 
 # ── Backend factory ───────────────────────────────────────────────────────────
 
@@ -327,6 +383,26 @@ def get_backend() -> StorageBackend:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+async def delete_company_files(company_id: str) -> None:
+    """Delete every attachment file stored for a company, wherever it was stored:
+    the configured backend and, when that is a cloud backend, the local attachment
+    folder that holds files stored before it was configured. Raises when any
+    backend cannot delete."""
+    backends = [get_backend()]
+    if not isinstance(backends[0], LocalBackend):
+        backends.append(LocalBackend())
+    for backend in backends:
+        await backend.delete_company(company_id)
+
+
+async def delete_stored_file(company_id: str, stored_id: str, mime: str) -> None:
+    """Delete one stored file and its list thumbnail from the configured backend; files
+    already gone count as deleted. Raises when the backend cannot delete."""
+    backend = get_backend()
+    await backend.delete(company_id, stored_id, mime)
+    await backend.delete(company_id, thumbnail_id(stored_id), _THUMB_MIME)
+
+
 async def store_upload(
     company_id: str,
     file: UploadFile,
@@ -338,17 +414,34 @@ async def store_upload(
     Callers pass attachment_type="view_360" for 360 images uploaded as image/jpeg.
     """
     content = await file.read()
-    check_file_size(len(content))
-
     mime = file.content_type or (
         mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
     )
-    if mime not in _ALLOWED_MIMES:
+    return await store_file(company_id, content, file.filename, mime, attachment_type)
+
+
+async def store_file(
+    company_id: str,
+    content: bytes,
+    filename: str | None,
+    mime: str,
+    attachment_type: AttachmentType | None = None,
+    *,
+    att_id: str | None = None,
+) -> dict:
+    """Save file content of an allowed type and size; return attachment metadata dict.
+
+    The file is stored under ``att_id`` when the caller derives one, so storing the same
+    file again overwrites it rather than adding a copy; otherwise under a new random id.
+    Raises ValueError for a file over the size limit or of a type outside the allowlist.
+    """
+    check_file_size(len(content))
+    if not accepts_mime(mime):
         raise ValueError(f"Unsupported file type: {mime}")
 
     att_type: AttachmentType = attachment_type or infer_attachment_type(mime)
-    att_id = str(uuid.uuid4())
-    filename = file.filename or f"file_{att_id}"
+    att_id = att_id or str(uuid.uuid4())
+    filename = filename or f"file_{att_id}"
 
     url = await get_backend().store(company_id, att_id, content, mime)
 
@@ -369,6 +462,73 @@ async def store_upload(
         except Exception:
             logger.warning("thumbnail store failed for attachment %s", att_id)
     return meta
+
+
+# Entity type -> the event that attaches a stored file to one entity of that type.
+FILE_ATTACHED_EVENTS = {
+    "contact": "crm.contact.file_attached",
+    "doc": "doc.file_attached",
+    "item": "item.file.attached",
+}
+
+
+def item_file_role(
+    existing_files: list[dict], mime: str, *, as_hero: bool = False, document_tag: str | None = None
+) -> tuple[bool, str | None]:
+    """Whether a file attached to an item becomes its hero, and the tag it carries.
+
+    An image becomes the hero when the item has none yet, or when ``as_hero`` asks for it
+    to replace the current one. An untagged image is tagged as a product image."""
+    is_image = mime.startswith("image/")
+    has_hero = any(f.get("is_hero") for f in existing_files)
+    if document_tag is None and is_image:
+        document_tag = "product_images"
+    return is_image and (as_hero or not has_hero), document_tag
+
+
+async def attach_file(
+    session: AsyncSession,
+    company_id,
+    entity_type: str,
+    entity_id: str,
+    meta: dict,
+    actor_id,
+    *,
+    source: str = "api",
+    idempotency_key: str | None = None,
+    document_tag: str | None = None,
+    is_hero: bool | None = None,
+):
+    """Attach a stored file (``meta`` from store_file) to one contact, document or item.
+
+    Returns the ledger entry of the file-attached event."""
+    data = {
+        "entity_id": entity_id,
+        "entity_type": entity_type,
+        "file_id": meta["id"],
+        "filename": meta["filename"],
+        "mime": meta["mime"],
+        "size": meta["size"],
+        "url": meta.get("url", ""),
+        "document_tag": document_tag,
+        "description": None,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if is_hero is not None:
+        data["is_hero"] = is_hero
+    return await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type=entity_type,
+        event_type=FILE_ATTACHED_EVENTS[entity_type],
+        data=data,
+        actor_id=actor_id,
+        location_id=None,
+        source=source,
+        idempotency_key=idempotency_key or str(uuid.uuid4()),
+        metadata_={},
+    )
 
 
 def thumbnail_id(att_id: str) -> str:

@@ -38,6 +38,20 @@ async def find_event_by_idempotency(session, company_id, idempotency_key: str | 
     )).scalars().first()
 
 
+def write_period_lock(company, lock_date: str | None, user_id) -> None:
+    """Lock *company*'s books through the ISO *lock_date*, recorded as set by *user_id*,
+    or unlock them when *lock_date* is None. The caller holds the company row and commits."""
+    settings = dict(company.settings or {})
+    if lock_date:
+        settings["lock_date"] = lock_date
+        settings["lock_date_set_by"] = str(user_id)
+        settings["lock_date_set_at"] = datetime.now(timezone.utc).isoformat()
+    else:
+        for key in ("lock_date", "lock_date_set_by", "lock_date_set_at"):
+            settings.pop(key, None)
+    company.settings = settings
+
+
 async def _check_period_lock(session, company_id, data: dict) -> None:
     """Reject events whose effective date falls within a locked period."""
     from celerp.models.company import Company

@@ -21,6 +21,10 @@ class Company(Base):
     slug: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     settings: Mapped[dict] = mapped_column(sa.JSON, default=dict, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Set only by migration provisioning and cleared by finalize: a staged company's own
+    # tokens reach the migration routes and nothing else (celerp.services.auth).
+    is_migration_staged: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=sa.false(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 

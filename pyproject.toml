@@ -132,6 +132,7 @@ include = ["celerp", "celerp.*", "ui", "ui.*", "default_modules"]
     "migrations/versions/*.py",
     "migrations/README.md",
     "py.typed",
+    "importers/sample/*.manager",
 ]
 "ui" = [
     "static/*",

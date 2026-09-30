@@ -339,3 +339,44 @@ def test_resolve_preview_falls_back_on_removal():
 def test_resolve_preview_none_when_no_images():
     atts = [{"id": "c", "type": "certificate"}]
     assert resolve_preview_image_id("a", atts) is None
+
+
+@pytest.mark.asyncio
+async def test_local_backend_delete_company_removes_only_that_company(tmp_path, monkeypatch):
+    backend = LocalBackend()
+    monkeypatch.setattr(type(backend), "_root", property(lambda self: tmp_path))
+    await backend.store("co-a", "id1", b"a", "image/png")
+    await backend.store("co-b", "id1", b"b", "image/png")
+    await backend.delete_company("co-a")
+    await backend.delete_company("co-a")  # nothing left to delete is not an error
+    assert not (tmp_path / "co-a").exists() and (tmp_path / "co-b").is_dir()
+    with pytest.raises(ValueError):
+        await backend.delete_company("..")
+
+
+@pytest.mark.asyncio
+async def test_s3_backend_delete_company_deletes_every_page_and_reports_errors(monkeypatch):
+    from celerp.services import attachments
+
+    mock_client = AsyncMock()
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=mock_client)
+    context.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(attachments, "_s3_client", lambda *args: context)
+    mock_client.list_objects_v2 = AsyncMock(side_effect=[
+        {"Contents": [{"Key": "attachments/co/a.png"}], "IsTruncated": True, "NextContinuationToken": "t1"},
+        {"Contents": [{"Key": "attachments/co/b.png"}], "IsTruncated": False},
+    ])
+    mock_client.delete_objects = AsyncMock(return_value={})
+    backend = S3Backend(endpoint="", bucket="bucket", access_key="k", secret_key="s")
+    await backend.delete_company("co")
+    listed = [c.kwargs for c in mock_client.list_objects_v2.call_args_list]
+    assert listed == [{"Bucket": "bucket", "Prefix": "attachments/co/"},
+                      {"Bucket": "bucket", "Prefix": "attachments/co/", "ContinuationToken": "t1"}]
+    deleted = [k["Key"] for c in mock_client.delete_objects.call_args_list for k in c.kwargs["Delete"]["Objects"]]
+    assert deleted == ["attachments/co/a.png", "attachments/co/b.png"]
+
+    mock_client.list_objects_v2 = AsyncMock(return_value={"Contents": [{"Key": "attachments/co/a.png"}]})
+    mock_client.delete_objects = AsyncMock(return_value={"Errors": [{"Key": "attachments/co/a.png"}]})
+    with pytest.raises(OSError):
+        await backend.delete_company("co")

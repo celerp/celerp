@@ -1,0 +1,529 @@
+{
+  "_comment": "Hand-worked source figures for the synthetic fixtures. A label names an object built by specs.k(label); a label starting with @ names a built-in account by its content type. Amounts are base currency, debit positive, unless a currency is given. The trial balance lists every account in the chart, including the six built-in accounts Celerp maps, with zero balances.",
+  "basic": {
+    "full_history": {
+      "debits_equal_credits": "0.00",
+      "trial_balance": {
+        "OPB": "565.00",
+        "PC": "37.00",
+        "EQ": "-500.00",
+        "@BalanceSheetAccountsReceivableAccount": "224.00",
+        "S1": "-340.00",
+        "S2": "-20.00",
+        "@BalanceSheetTaxPayableAccount": "-12.40",
+        "@BalanceSheetInventoryOnHandAccount": "60.00",
+        "@BalanceSheetAccountsPayableAccount": "-39.60",
+        "OFF": "26.00",
+        "@BalanceSheetRetainedEarningsAccount": "0.00",
+        "@ProfitAndLossStatementAccountCurrencyGainsLosses": "0.00"
+      },
+      "ar_control": {
+        "@BalanceSheetAccountsReceivableAccount": "224.00"
+      },
+      "ap_control": {
+        "@BalanceSheetAccountsPayableAccount": "-39.60"
+      },
+      "ar_by_customer": {
+        "CA": "224.00"
+      },
+      "ap_by_supplier": {
+        "SA": "-39.60"
+      },
+      "bank_cash": {
+        "OPB": [
+          "USD",
+          "565.00"
+        ],
+        "PC": [
+          "USD",
+          "37.00"
+        ]
+      },
+      "inventory_quantity": {
+        "WID": "15"
+      },
+      "inventory_value": {
+        "WID": "60.00"
+      },
+      "tax_control": {
+        "@BalanceSheetTaxPayableAccount": "-12.40"
+      },
+      "document_count": {
+        "invoice": [
+          "USD",
+          3
+        ],
+        "credit_note": [
+          "USD",
+          1
+        ],
+        "bill": [
+          "USD",
+          2
+        ]
+      },
+      "document_total": {
+        "invoice": [
+          "USD",
+          "365.00"
+        ],
+        "credit_note": [
+          "USD",
+          "11.00"
+        ],
+        "bill": [
+          "USD",
+          "94.00"
+        ]
+      },
+      "document_status": {
+        "invoice:paid": 1,
+        "invoice:awaiting_payment": 2,
+        "credit_note:paid": 1,
+        "bill:paid": 1,
+        "bill:awaiting_payment": 1
+      },
+      "settlement_allocation": {
+        "receipt": [
+          "USD",
+          "130.00"
+        ],
+        "payment": [
+          "USD",
+          "50.00"
+        ]
+      },
+      "documents": {
+        "INV1": {
+          "status": "paid",
+          "total": "110.00",
+          "tax_total": "10.00",
+          "amount_paid": "110.00",
+          "amount_outstanding": "0.00"
+        },
+        "INV2": {
+          "status": "awaiting_payment",
+          "total": "55.00",
+          "tax_total": "5.00",
+          "amount_paid": "31.00",
+          "amount_outstanding": "24.00"
+        },
+        "INV3": {
+          "status": "awaiting_payment",
+          "total": "200.00",
+          "tax_total": "0.00",
+          "amount_paid": "0.00",
+          "amount_outstanding": "200.00"
+        },
+        "CN1": {
+          "status": "paid",
+          "total": "11.00",
+          "tax_total": "1.00",
+          "amount_paid": "11.00",
+          "amount_outstanding": "0.00"
+        },
+        "BILL1": {
+          "status": "awaiting_payment",
+          "total": "44.00",
+          "tax_total": "4.00",
+          "amount_paid": "4.40",
+          "amount_outstanding": "39.60"
+        },
+        "BILL2": {
+          "status": "paid",
+          "total": "50.00",
+          "tax_total": "0.00",
+          "amount_paid": "50.00",
+          "amount_outstanding": "0.00"
+        },
+        "DN1": {
+          "status": "paid",
+          "total": "4.40",
+          "tax_total": "0.40",
+          "amount_paid": "4.40",
+          "amount_outstanding": "0.00"
+        }
+      }
+    },
+    "cutover": {
+      "cutover_date": "2026-02-28",
+      "debits_equal_credits": "0.00",
+      "trial_balance": {
+        "OPB": "565.00",
+        "PC": "37.00",
+        "EQ": "-500.00",
+        "@BalanceSheetAccountsReceivableAccount": "224.00",
+        "S1": "-340.00",
+        "S2": "-20.00",
+        "@BalanceSheetTaxPayableAccount": "-12.40",
+        "@BalanceSheetInventoryOnHandAccount": "60.00",
+        "@BalanceSheetAccountsPayableAccount": "-39.60",
+        "OFF": "26.00",
+        "@BalanceSheetRetainedEarningsAccount": "0.00",
+        "@ProfitAndLossStatementAccountCurrencyGainsLosses": "0.00"
+      },
+      "ar_control": {
+        "@BalanceSheetAccountsReceivableAccount": "224.00"
+      },
+      "ap_control": {
+        "@BalanceSheetAccountsPayableAccount": "-39.60"
+      },
+      "ar_by_customer": {
+        "CA": "224.00"
+      },
+      "ap_by_supplier": {
+        "SA": "-39.60"
+      },
+      "bank_cash": {
+        "OPB": [
+          "USD",
+          "565.00"
+        ],
+        "PC": [
+          "USD",
+          "37.00"
+        ]
+      },
+      "inventory_quantity": {
+        "WID": "15"
+      },
+      "inventory_value": {
+        "WID": "60.00"
+      },
+      "tax_control": {
+        "@BalanceSheetTaxPayableAccount": "-12.40"
+      },
+      "document_count": {
+        "invoice": [
+          "USD",
+          2
+        ],
+        "credit_note": [
+          "USD",
+          1
+        ],
+        "bill": [
+          "USD",
+          1
+        ]
+      },
+      "document_total": {
+        "invoice": [
+          "USD",
+          "255.00"
+        ],
+        "credit_note": [
+          "USD",
+          "11.00"
+        ],
+        "bill": [
+          "USD",
+          "44.00"
+        ]
+      },
+      "document_status": {
+        "invoice:awaiting_payment": 2,
+        "credit_note:paid": 1,
+        "bill:awaiting_payment": 1
+      },
+      "settlement_allocation": {
+        "receipt": [
+          "USD",
+          "20.00"
+        ]
+      },
+      "opening_journal": {
+        "OPB": "545.00",
+        "PC": "37.00",
+        "EQ": "-500.00",
+        "S1": "-100.00",
+        "S2": "-20.00",
+        "@BalanceSheetTaxPayableAccount": "-12.00",
+        "@BalanceSheetInventoryOnHandAccount": "20.00",
+        "OFF": "30.00"
+      },
+      "opening_inventory": {
+        "WID": [
+          "5",
+          "20.00"
+        ]
+      }
+    },
+    "company": {
+      "name": "Example Trading",
+      "base_currency": "USD",
+      "money_precision": 2
+    },
+    "attachments": {
+      "accepted": [
+        "ATT1"
+      ],
+      "rejected": []
+    }
+  },
+  "cutover_fixture": {
+    "cutover_date": "2026-01-31",
+    "debits_equal_credits": "0.00",
+    "trial_balance": {
+      "OPB": "640.00",
+      "PC": "25.00",
+      "EQ": "-500.00",
+      "@BalanceSheetAccountsReceivableAccount": "0.00",
+      "S1": "-200.00",
+      "S2": "0.00",
+      "@BalanceSheetTaxPayableAccount": "-20.00",
+      "@BalanceSheetInventoryOnHandAccount": "60.00",
+      "@BalanceSheetAccountsPayableAccount": "-20.00",
+      "OFF": "15.00",
+      "@BalanceSheetRetainedEarningsAccount": "0.00",
+      "@ProfitAndLossStatementAccountCurrencyGainsLosses": "0.00"
+    },
+    "ar_control": {
+      "@BalanceSheetAccountsReceivableAccount": "0.00"
+    },
+    "ap_control": {
+      "@BalanceSheetAccountsPayableAccount": "-20.00"
+    },
+    "ar_by_customer": {
+      "CA": "0.00"
+    },
+    "ap_by_supplier": {
+      "SA": "-20.00"
+    },
+    "bank_cash": {
+      "OPB": [
+        "USD",
+        "640.00"
+      ],
+      "PC": [
+        "USD",
+        "25.00"
+      ]
+    },
+    "inventory_quantity": {
+      "WID": "15"
+    },
+    "inventory_value": {
+      "WID": "60.00"
+    },
+    "tax_control": {
+      "@BalanceSheetTaxPayableAccount": "-20.00"
+    },
+    "document_count": {
+      "invoice": [
+        "USD",
+        1
+      ],
+      "bill": [
+        "USD",
+        1
+      ]
+    },
+    "document_total": {
+      "invoice": [
+        "USD",
+        "110.00"
+      ],
+      "bill": [
+        "USD",
+        "20.00"
+      ]
+    },
+    "document_status": {
+      "invoice:paid": 1,
+      "bill:awaiting_payment": 1
+    },
+    "settlement_allocation": {
+      "receipt": [
+        "USD",
+        "110.00"
+      ]
+    },
+    "opening_journal": {
+      "OPB": "570.00",
+      "EQ": "-500.00",
+      "S1": "-100.00",
+      "@BalanceSheetTaxPayableAccount": "-10.00",
+      "@BalanceSheetInventoryOnHandAccount": "40.00"
+    },
+    "opening_inventory": {
+      "WID": [
+        "10",
+        "40.00"
+      ]
+    },
+    "native": [
+      "INVB",
+      "RB",
+      "BILLB",
+      "IATB",
+      "JEB"
+    ]
+  },
+  "fx": {
+    "blocked": {
+      "SalesInvoice (foreign currency)": 1,
+      "PurchaseInvoice (foreign currency)": 1,
+      "Receipt (foreign currency)": 1
+    },
+    "lock_date": "2026-01-31"
+  },
+  "inventory": {
+    "_comment": "specs.inventory_lifecycle_objects, worked by hand in its docstring. Moves are (source type, movement, date, quantity, value) in the order stock moved; links are each document's physical records as (movement, date, line, quantity, value).",
+    "full_history": {
+      "moves": [
+        ["PurchaseInvoice", "BILLF", "2026-01-06", "5", "30.00"],
+        ["GoodsReceipt", "GR1", "2026-01-08", "6", "24.00"],
+        ["GoodsReceipt", "GR3", "2026-01-10", "5", "25.00"],
+        ["GoodsReceipt", "GR2", "2026-01-12", "4", "16.00"],
+        ["DeliveryNote", "DN2", "2026-01-16", "-2", "-10.00"],
+        ["DeliveryNote", "DN3", "2026-01-19", "-3", "-15.00"],
+        ["DeliveryNote", "DN1", "2026-01-20", "-4", "-20.00"],
+        ["SalesInvoice", "INVX", "2026-01-23", "-1", "-5.00"]
+      ],
+      "links": {
+        "BILLG": [["GR1", "2026-01-08", 0, "6", "24.00"], ["GR2", "2026-01-12", 0, "4", "16.00"]],
+        "BILLF": [["BILLF", "2026-01-06", 0, "5", "30.00"]],
+        "BILLP": [["GR3", "2026-01-10", 0, "5", "25.00"]],
+        "INVE": [["DN2", "2026-01-16", 0, "2", "10.00"]],
+        "INVP": [["DN3", "2026-01-19", 0, "3", "15.00"]],
+        "INVD": [["DN1", "2026-01-20", 0, "4", "20.00"]],
+        "INVX": [["INVX", "2026-01-23", 0, "1", "5.00"]]
+      },
+      "inventory_quantity": {"WID": "10"},
+      "inventory_value": {"WID": "45.00"},
+      "balances": {
+        "@BalanceSheetInventoryOnHandAccount": "57.00",
+        "@ProfitAndLossStatementAccountInventoryPurchases": "65.00",
+        "@ProfitAndLossStatementAccountInventorySales": "-162.50",
+        "@BalanceSheetAccountsPayableAccount": "-122.00",
+        "@BalanceSheetAccountsReceivableAccount": "112.50"
+      }
+    },
+    "cutover": {
+      "cutover_date": "2026-01-17",
+      "opening_quantity": {"WID": "18"},
+      "opening_value": {"WID": "85.00"}
+    }
+  },
+  "type_checkpoints": {
+    "BusinessDetails": [
+      "basic.company"
+    ],
+    "BaseCurrency": [
+      "basic.company"
+    ],
+    "ForeignCurrency": [
+      "fx.blocked"
+    ],
+    "LockDate": [
+      "fx.lock_date"
+    ],
+    "BalanceSheetAccount": [
+      "basic.full_history.trial_balance"
+    ],
+    "ProfitAndLossStatementAccount": [
+      "basic.full_history.trial_balance"
+    ],
+    "BalanceSheetGroup": [
+      "basic.full_history.trial_balance"
+    ],
+    "ProfitAndLossStatementGroup": [
+      "basic.full_history.trial_balance"
+    ],
+    "Assets": [
+      "basic.full_history.trial_balance"
+    ],
+    "Liabilities": [
+      "basic.full_history.trial_balance"
+    ],
+    "Equity": [
+      "basic.full_history.trial_balance"
+    ],
+    "BalanceSheetAccountsReceivableAccount": [
+      "basic.full_history.ar_control"
+    ],
+    "BalanceSheetAccountsPayableAccount": [
+      "basic.full_history.ap_control"
+    ],
+    "BalanceSheetTaxPayableAccount": [
+      "basic.full_history.tax_control"
+    ],
+    "BalanceSheetRetainedEarningsAccount": [
+      "basic.full_history.trial_balance"
+    ],
+    "BalanceSheetInventoryOnHandAccount": [
+      "basic.full_history.inventory_value"
+    ],
+    "ProfitAndLossStatementAccountCurrencyGainsLosses": [
+      "basic.full_history.trial_balance"
+    ],
+    "BankOrCashAccount": [
+      "basic.full_history.bank_cash"
+    ],
+    "TaxCode": [
+      "basic.full_history.tax_control"
+    ],
+    "Customer": [
+      "basic.full_history.ar_by_customer"
+    ],
+    "Supplier": [
+      "basic.full_history.ap_by_supplier"
+    ],
+    "InventoryItem": [
+      "basic.full_history.inventory_quantity",
+      "basic.full_history.inventory_value"
+    ],
+    "SalesInvoice": [
+      "basic.full_history.documents",
+      "fx.blocked"
+    ],
+    "PurchaseInvoice": [
+      "basic.full_history.documents",
+      "fx.blocked"
+    ],
+    "CreditNote": [
+      "basic.full_history.documents"
+    ],
+    "DebitNote": [
+      "basic.full_history.documents"
+    ],
+    "Receipt": [
+      "basic.full_history.settlement_allocation",
+      "fx.blocked"
+    ],
+    "Payment": [
+      "basic.full_history.settlement_allocation"
+    ],
+    "InterAccountTransfer": [
+      "basic.full_history.bank_cash"
+    ],
+    "JournalEntry": [
+      "basic.full_history.trial_balance"
+    ],
+    "Attachment": [
+      "basic.attachments"
+    ],
+    "GoodsReceipt": [
+      "inventory.full_history.moves",
+      "inventory.full_history.links"
+    ],
+    "DeliveryNote": [
+      "inventory.full_history.moves",
+      "inventory.full_history.links",
+      "inventory.cutover.opening_quantity"
+    ],
+    "DefaultInventoryLocation": [
+      "inventory.full_history.inventory_quantity"
+    ],
+    "InventoryUnitCost": [
+      "inventory.full_history.balances"
+    ],
+    "ProfitAndLossStatementAccountInventorySales": [
+      "inventory.full_history.balances"
+    ],
+    "ProfitAndLossStatementAccountInventoryPurchases": [
+      "inventory.full_history.balances"
+    ]
+  }
+}

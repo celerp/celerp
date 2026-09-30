@@ -32,7 +32,7 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
-from celerp.importers.schema import CIFImportManifest
+from celerp.importers.schema import CIFBundleManifest
 
 MAX_BATCH_SIZE = 500
 
@@ -174,7 +174,7 @@ class BundleImporter:
         print(f"\r  {label}: {total}/{total} ✓  ({per_sec:.0f}/sec)          ", flush=True)
         return EntityStats(label=label, count=total, elapsed=elapsed)
 
-    async def run(self, manifest: CIFImportManifest) -> ImportResult:
+    async def run(self, manifest: CIFBundleManifest) -> ImportResult:
         result = ImportResult()
         bundle = manifest.bundle
         source = manifest.source
@@ -275,7 +275,7 @@ class BundleImporter:
 
         return result
 
-    def _dry_run_report(self, manifest: CIFImportManifest) -> None:
+    def _dry_run_report(self, manifest: CIFBundleManifest) -> None:
         bundle = manifest.bundle
         stats = manifest.stats
         bs = self.batch_size
@@ -302,10 +302,10 @@ class BundleImporter:
 
 
 # ── CLI entry point ─────────────────────────────────────────────────────────────
-def load_manifest(path: Path) -> CIFImportManifest:
+def load_manifest(path: Path) -> CIFBundleManifest:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-        return CIFImportManifest.model_validate(raw)
+        return CIFBundleManifest.model_validate(raw)
     except (json.JSONDecodeError, ValidationError) as exc:
         print(f"[ERROR] Invalid manifest: {exc}", file=sys.stderr)
         raise SystemExit(1)

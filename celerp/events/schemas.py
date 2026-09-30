@@ -173,9 +173,10 @@ class ItemQuantityAdjusted(BaseModel):
     # hand, "in" while a partial balance remains. Omitted by ordinary stock adjustments,
     # which must leave the item's consignment status untouched.
     consignment_flag: str | None = None
-    # Set only when returning goods to a supplier: the lot's goods cost rescaled to the
-    # quantity still on hand, since the returned units take their share of the cost with
-    # them. Omitted by ordinary stock adjustments, which leave the lot's cost alone.
+    # The lot's goods cost after the adjustment, set only when the adjustment moves cost:
+    # a return to a supplier rescales it to the quantity still on hand, and a migrated
+    # stock position carries the source's value. Omitted by ordinary stock adjustments,
+    # which leave the lot's cost alone.
     cost_base: float | None = None
 
 

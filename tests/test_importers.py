@@ -19,13 +19,13 @@ import pytest
 from celerp.importers.schema import (
     CIF_VERSION,
     CIFBatch,
-    CIFContact,
-    CIFDocument,
+    CIFBundle,
+    CIFBundleContact,
+    CIFBundleDocument,
+    CIFBundleItem,
+    CIFBundleLineItem,
+    CIFBundleManifest,
     CIFEntityType,
-    CIFImportBundle,
-    CIFImportManifest,
-    CIFItem,
-    CIFLineItem,
 )
 from celerp.importers.importer import (
     MAX_BATCH_SIZE,
@@ -53,20 +53,20 @@ def _minimal_manifest() -> dict:
     }
 
 
-def _make_item() -> CIFItem:
-    return CIFItem(
+def _make_item() -> CIFBundleItem:
+    return CIFBundleItem(
         external_id="item:001",
         name="Test Stone",
         status="available",
     )
 
 
-def _make_contact() -> CIFContact:
-    return CIFContact(external_id="c:001", name="Alice")
+def _make_contact() -> CIFBundleContact:
+    return CIFBundleContact(external_id="c:001", name="Alice")
 
 
-def _make_line_item() -> CIFLineItem:
-    return CIFLineItem(
+def _make_line_item() -> CIFBundleLineItem:
+    return CIFBundleLineItem(
         item_external_id="item:001",
         quantity=Decimal("1"),
         unit_price=Decimal("100.00"),
@@ -74,8 +74,8 @@ def _make_line_item() -> CIFLineItem:
     )
 
 
-def _make_document() -> CIFDocument:
-    return CIFDocument(
+def _make_document() -> CIFBundleDocument:
+    return CIFBundleDocument(
         external_id="doc:001",
         doc_type="invoice",
         status="paid",
@@ -138,7 +138,7 @@ def test_entity_type_values() -> None:
     assert CIFEntityType.INVOICE == "invoice"
 
 
-# ── CIFItem ───────────────────────────────────────────────────────────────────
+# ── CIFBundleItem ───────────────────────────────────────────────────────────────────
 
 
 def test_cif_item_minimal() -> None:
@@ -150,7 +150,7 @@ def test_cif_item_minimal() -> None:
 
 
 def test_cif_item_full() -> None:
-    item = CIFItem(
+    item = CIFBundleItem(
         external_id="item:002",
         sku="SKU-001",
         name="Ruby",
@@ -182,7 +182,7 @@ def test_cif_item_full() -> None:
     assert item.metadata == {"extra": "data"}
 
 
-# ── CIFContact ───────────────────────────────────────────────────────────────
+# ── CIFBundleContact ───────────────────────────────────────────────────────────────
 
 
 def test_cif_contact_minimal() -> None:
@@ -193,7 +193,7 @@ def test_cif_contact_minimal() -> None:
 
 
 def test_cif_contact_full() -> None:
-    c = CIFContact(
+    c = CIFBundleContact(
         external_id="c:002",
         name="Bob",
         email="bob@example.com",
@@ -205,11 +205,11 @@ def test_cif_contact_full() -> None:
     assert c.metadata == {"vip": True}
 
 
-# ── CIFLineItem ───────────────────────────────────────────────────────────────
+# ── CIFBundleLineItem ───────────────────────────────────────────────────────────────
 
 
 def test_cif_line_item_with_optional_fields() -> None:
-    li = CIFLineItem(
+    li = CIFBundleLineItem(
         item_external_id="item:001",
         quantity=Decimal("2"),
         weight=Decimal("3.0"),
@@ -223,7 +223,7 @@ def test_cif_line_item_with_optional_fields() -> None:
     assert li.cost_basis == Decimal("40.00")
 
 
-# ── CIFDocument ───────────────────────────────────────────────────────────────
+# ── CIFBundleDocument ───────────────────────────────────────────────────────────────
 
 
 def test_cif_document_minimal() -> None:
@@ -235,7 +235,7 @@ def test_cif_document_minimal() -> None:
 
 def test_cif_document_with_dates() -> None:
     from datetime import date
-    doc = CIFDocument(
+    doc = CIFBundleDocument(
         external_id="doc:002",
         doc_type="purchase_order",
         status="draft",
@@ -261,18 +261,18 @@ def test_cif_batch_defaults() -> None:
     assert batch.notes is None
 
 
-# ── CIFImportBundle ───────────────────────────────────────────────────────────
+# ── CIFBundle ───────────────────────────────────────────────────────────
 
 
 def test_cif_import_bundle_empty() -> None:
-    bundle = CIFImportBundle()
+    bundle = CIFBundle()
     assert bundle.items == []
     assert bundle.contacts == []
     assert bundle.documents == []
 
 
 def test_cif_import_bundle_populated() -> None:
-    bundle = CIFImportBundle(
+    bundle = CIFBundle(
         items=[_make_item()],
         contacts=[_make_contact()],
         documents=[_make_document()],
@@ -282,14 +282,14 @@ def test_cif_import_bundle_populated() -> None:
     assert len(bundle.documents) == 1
 
 
-# ── CIFImportManifest ─────────────────────────────────────────────────────────
+# ── CIFBundleManifest ─────────────────────────────────────────────────────────
 
 
 def test_manifest_from_dict() -> None:
-    manifest = CIFImportManifest.model_validate(_minimal_manifest())
+    manifest = CIFBundleManifest.model_validate(_minimal_manifest())
     assert manifest.cif_version == CIF_VERSION
     assert manifest.source == "test"
-    assert isinstance(manifest.bundle, CIFImportBundle)
+    assert isinstance(manifest.bundle, CIFBundle)
 
 
 def test_manifest_with_bundle() -> None:
@@ -301,7 +301,7 @@ def test_manifest_with_bundle() -> None:
             "status": "available",
         }
     ]
-    manifest = CIFImportManifest.model_validate(data)
+    manifest = CIFBundleManifest.model_validate(data)
     assert len(manifest.bundle.items) == 1
     assert manifest.bundle.items[0].name == "Stone"
 
@@ -393,7 +393,7 @@ def test_bundle_importer_strips_trailing_slash() -> None:
 
 def test_dry_run_returns_empty_result(capsys) -> None:
     importer = BundleImporter(api_base="http://localhost:8000", token="tok", dry_run=True)
-    manifest = CIFImportManifest.model_validate({
+    manifest = CIFBundleManifest.model_validate({
         **_minimal_manifest(),
         "bundle": {
             "items": [{"external_id": "i:1", "name": "Stone", "status": "available"}],
@@ -439,7 +439,7 @@ def test_load_manifest_invalid_schema(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_run_calls_batch_endpoints() -> None:
-    manifest = CIFImportManifest.model_validate({
+    manifest = CIFBundleManifest.model_validate({
         **_minimal_manifest(),
         "bundle": {
             "items": [{"external_id": "i:1", "name": "Stone", "status": "available"}],
@@ -463,7 +463,7 @@ async def test_run_calls_batch_endpoints() -> None:
 
 @pytest.mark.asyncio
 async def test_run_handles_batch_error() -> None:
-    manifest = CIFImportManifest.model_validate({
+    manifest = CIFBundleManifest.model_validate({
         **_minimal_manifest(),
         "bundle": {
             "items": [{"external_id": "i:1", "name": "Stone", "status": "available"}],

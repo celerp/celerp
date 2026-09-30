@@ -1,0 +1,126 @@
+{
+  "posted": [
+    {
+      "endpoint": "/crm/contacts/import/batch",
+      "records": [
+        {
+          "entity_id": "contact:c:1",
+          "event_type": "crm.contact.created",
+          "data": {
+            "name": "Harbour Traders",
+            "email": "orders@example.com",
+            "phone": "+10000000001",
+            "tier": "wholesale"
+          },
+          "source": "legacy_shop_2026",
+          "idempotency_key": "cif:contact:c:1"
+        },
+        {
+          "entity_id": "contact:c:2",
+          "event_type": "crm.contact.created",
+          "data": {
+            "name": "Walk-in customer",
+            "email": null,
+            "phone": null
+          },
+          "source": "legacy_shop_2026",
+          "idempotency_key": "cif:contact:c:2"
+        }
+      ]
+    },
+    {
+      "endpoint": "/items/import/batch",
+      "records": [
+        {
+          "entity_id": "item:gc:1001",
+          "event_type": "item.snapshot",
+          "data": {
+            "external_id": "gc:1001",
+            "sku": "RB-1001",
+            "name": "Ruby oval",
+            "description": "Heated ruby",
+            "weight": "1.52",
+            "weight_unit": "ct",
+            "sell_by": "weight",
+            "cost_per_unit": "850.00",
+            "total_cost": "1292.00",
+            "wholesale_price": "1800.00",
+            "retail_price": "2400.00",
+            "status": "available",
+            "attributes": {
+              "origin": "Mozambique"
+            },
+            "category": "Ruby",
+            "parent_external_id": null,
+            "barcode": "4000001",
+            "source_ref": "R-77",
+            "lot": "A"
+          },
+          "source": "legacy_shop_2026",
+          "idempotency_key": "cif:item:gc:1001"
+        },
+        {
+          "entity_id": "item:gc:1002",
+          "event_type": "item.snapshot",
+          "data": {
+            "external_id": "gc:1002",
+            "sku": null,
+            "name": "Silver chain",
+            "description": null,
+            "weight": "12.5",
+            "weight_unit": "g",
+            "sell_by": "piece",
+            "cost_per_unit": null,
+            "total_cost": null,
+            "wholesale_price": null,
+            "retail_price": null,
+            "status": "memo_out",
+            "attributes": {},
+            "category": null,
+            "parent_external_id": "gc:1000",
+            "barcode": null,
+            "source_ref": null
+          },
+          "source": "legacy_shop_2026",
+          "idempotency_key": "cif:item:gc:1002"
+        }
+      ]
+    },
+    {
+      "endpoint": "/docs/import/batch",
+      "records": [
+        {
+          "entity_id": "doc:inv:501",
+          "event_type": "doc.created",
+          "data": {
+            "external_id": "inv:501",
+            "doc_type": "invoice",
+            "status": "awaiting_payment",
+            "contact_external_id": "c:1",
+            "ref": "INV-501",
+            "total": "2400.00",
+            "amount_paid": "400.00",
+            "amount_outstanding": "2000.00",
+            "payment_due_date": "2026-04-13",
+            "line_items": [
+              {
+                "item_external_id": "gc:1001",
+                "quantity": "1",
+                "weight": "1.52",
+                "weight_unit": "ct",
+                "unit_price": "2400.00",
+                "total_price": "2400.00",
+                "cost_basis": "1292.00"
+              }
+            ],
+            "channel": "shop"
+          },
+          "source": "legacy_shop_2026",
+          "idempotency_key": "cif:doc:inv:501"
+        }
+      ]
+    }
+  ],
+  "created": 5,
+  "failed": 0
+}

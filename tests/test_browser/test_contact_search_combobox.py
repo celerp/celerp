@@ -86,9 +86,9 @@ def test_contact_search_shows_results(page, contact_search_page):
     inp.press_sequentially("Alpha", delay=20)  # real input events trigger the HTMX search reliably
     page.wait_for_selector(".combobox-list.open .combobox-option:not(.combobox-option--empty)", timeout=10000)
 
-    opts = page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty)")
-    assert opts.count() >= 1, "Expected at least one search result for 'Alpha'"
-    texts = [opts.nth(i).inner_text() for i in range(opts.count())]
+    # One read of the list: typing refines the search, so a wider result can be swapped out mid-loop.
+    texts = page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty)").all_inner_texts()
+    assert texts, "Expected at least one search result for 'Alpha'"
     assert any("Alpha" in t or "alpha" in t.lower() for t in texts), f"'Alpha' not in results: {texts}"
 
 

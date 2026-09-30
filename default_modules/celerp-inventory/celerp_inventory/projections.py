@@ -253,7 +253,8 @@ def _apply_goods_cost(current: dict, field: str, value) -> None:
 def _set_quantity(current: dict, new_qty, cost_base=None) -> None:
     """Move a lot to new_qty with its goods cost following the units (perpetual costing).
 
-    An explicit cost_base (a receipt adding the received goods' cost) is the new basis.
+    An explicit cost_base (a receipt adding the received goods' cost, or a migrated stock
+    position carrying the source's value) is the new basis.
     Otherwise the basis scales by new/old quantity, so unit cost stays put: units that leave
     take their share, units that come back bring it. At zero quantity the unit cost is kept
     as cost_price, so stock that returns later is costed at it. Landed cost is per-unit and

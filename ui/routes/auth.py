@@ -25,12 +25,23 @@ from ui.api_client import APIError, bootstrap_status
 from ui.api_client import login as api_login, login_force as api_login_force, logout as api_logout, register as api_register
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
+from ui.api_client import migration_staged_run as api_migration_staged_run
 from ui.components.shell import auth_shell, flash, page_title, star_supporter_card, toast_header
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies
 from ui.i18n import t, get_lang
 from ui.security import is_app_local_path
 from celerp.config import settings as _settings
 from celerp.services.auth import MIN_PASSWORD_LENGTH
+
+
+def auth_header(title: str, subtitle: str = "") -> FT:
+    """The logo, title and optional subtitle that open every sign-in and setup card."""
+    return Div(
+        Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
+        H1(title, cls="auth-title"),
+        P(subtitle, cls="auth-subtitle") if subtitle else "",
+        cls="auth-header",
+    )
 
 
 def _consume_restore_notice() -> dict | None:
@@ -93,6 +104,8 @@ def setup_routes(app):
                 elif e.status == 404:
                     # Valid token but no company - redirect to setup
                     return RedirectResponse("/setup", status_code=302)
+                elif e.status == 403 and (staged := await _staged_run_redirect(token)):
+                    return staged
                 else:
                     pass  # Any other error: show login page with cookie intact
         try:
@@ -187,14 +200,15 @@ def setup_routes(app):
 
     @app.get("/setup")
     async def setup_page(request: Request):
-        if request.cookies.get(COOKIE_NAME):
-            return RedirectResponse("/", status_code=302)
-        try:
-            bootstrapped = await bootstrap_status()
-        except APIError as e:
-            return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
-        if bootstrapped:
-            return RedirectResponse("/login", status_code=302)
+        if (gate := await _unbootstrapped_gate(request)) is not None:
+            return gate
+        from ui.api_client import setup_code_required as _code_req
+        return auth_shell(_setup_chooser(code_required=await _code_req()), title=t("page.setup"))
+
+    @app.get("/setup/fresh")
+    async def setup_fresh_page(request: Request):
+        if (gate := await _unbootstrapped_gate(request)) is not None:
+            return gate
         from ui.api_client import setup_code_required as _code_req
         return auth_shell(_setup_form(setup_code_required=await _code_req()), title=t("page.setup"))
 
@@ -384,6 +398,8 @@ def setup_routes(app):
                 return resp
             elif e.status == 404:
                 return RedirectResponse("/setup", status_code=302)
+            elif e.status == 403 and (staged := await _staged_run_redirect(token)):
+                return staged
             # Any other API error: let them through to dashboard (transient failure)
             return RedirectResponse("/dashboard", status_code=302)
 
@@ -564,11 +580,7 @@ def setup_routes(app):
 def _login_form(email: str = "", error: str | None = None, notice: str = "", next_url: str = "/") -> FT:
     lang = "en"
     return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("page.sign_in_to_celerp"), cls="auth-title"),
-            cls="auth-header",
-        ),
+        auth_header(t("page.sign_in_to_celerp")),
         notice,
         Form(
             flash(error) if error else "",
@@ -592,6 +604,50 @@ def _login_form(email: str = "", error: str | None = None, notice: str = "", nex
     )
 
 
+async def _staged_run_redirect(token: str) -> RedirectResponse | None:
+    """A session on a company still being moved in lands on that company's migration run."""
+    try:
+        run = await api_migration_staged_run(token)
+    except APIError:
+        return None
+    return RedirectResponse(f"/migrations/{run['id']}", status_code=302)
+
+
+async def _unbootstrapped_gate(request: Request):
+    """The response for a request that may not use first-run setup, else None."""
+    if request.cookies.get(COOKIE_NAME):
+        return RedirectResponse("/", status_code=302)
+    try:
+        bootstrapped = await bootstrap_status()
+    except APIError as e:
+        return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
+    if bootstrapped:
+        return RedirectResponse("/login", status_code=302)
+    return None
+
+
+def _setup_chooser(code_required: bool) -> FT:
+    """First-run landing: every way to start, one card each."""
+    from ui.routes.migrations import BOOTSTRAP, chooser, choice_card
+    # The sample run needs the setup code when one is configured; the migration
+    # source page asks for it next to its sample button.
+    sample = (
+        choice_card(t("setup.card_sample"), t("setup.card_sample_desc"), href=BOOTSTRAP.base)
+        if code_required else
+        choice_card(t("setup.card_sample"), t("setup.card_sample_desc"), post_to=f"{BOOTSTRAP.base}/sample")
+    )
+    return chooser(
+        t("page.set_up_your_workspace"),
+        t("msg.you_are_first_admin"),
+        [
+            choice_card(t("setup.card_new"), t("setup.card_new_desc"), href="/setup/fresh"),
+            choice_card(t("setup.card_move"), t("setup.card_move_desc"), href=BOOTSTRAP.base),
+            sample,
+            choice_card(t("setup.card_restore"), t("setup.card_restore_desc"), href="/setup/import-backup"),
+        ],
+    )
+
+
 def _setup_form(
     company_name: str = "", name: str = "", email: str = "", error: str | None = None,
     setup_code_required: bool = False,
@@ -608,12 +664,7 @@ def _setup_form(
             cls="form-group",
         )
     return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("page.set_up_your_workspace"), cls="auth-title"),
-            P(t("msg.you_are_first_admin", lang), cls="auth-subtitle"),
-            cls="auth-header",
-        ),
+        auth_header(t("page.set_up_your_workspace"), t("msg.you_are_first_admin", lang)),
         Form(
             flash(error) if error else "",
             Div(Label(t("label.company_name", lang), For="company_name", cls="form-label"),
@@ -640,12 +691,7 @@ def _setup_form(
             Button(t("btn.create_workspace", lang), type="submit", cls="btn btn--primary btn--full"),
             method="post", action="/setup", cls="auth-form",
         ),
-        P(
-            t("auth.already_have_data"),
-            A(t("auth.restore_from_celerp_backup"), href="/setup/import-backup", cls="auth-link"),
-            ".",
-            cls="auth-alt-action",
-        ),
+        P(A(t("auth.back_to_setup"), href="/setup", cls="auth-link"), cls="auth-alt-action"),
         cls="auth-card",
     )
 
@@ -661,12 +707,7 @@ def _setup_import_form(
     # restrict the UI; warn-and-continue is the rule).
     if warning:
         return Div(
-            Div(
-                Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-                H1(t("auth.restore_complete"), cls="auth-title"),
-                P(warning, cls="auth-subtitle"),
-                cls="auth-header",
-            ),
+            auth_header(t("auth.restore_complete"), warning),
             Div(
                 A(
                     t("auth.continue_to_login"),
@@ -683,12 +724,7 @@ def _setup_import_form(
             cls="auth-card",
         )
     return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("page.restore_from_backup"), cls="auth-title"),
-            P(t("auth.upload_backup_desc"), cls="auth-subtitle"),
-            cls="auth-header",
-        ),
+        auth_header(t("page.restore_from_backup"), t("auth.upload_backup_desc")),
         Form(
             flash(error) if error else "",
             Div(
@@ -732,12 +768,7 @@ def _onboarding_view() -> FT:
         ("/onboarding/upload/cif", t("auth.import_from_cif"), t("auth.cif_bundle_desc"), "cif"),
     ]
     return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("page.welcome_lets_load_your_data"), cls="auth-title"),
-            P(t("msg.onboarding_subtitle"), cls="auth-subtitle"),
-            cls="auth-header",
-        ),
+        auth_header(t("page.welcome_lets_load_your_data"), t("msg.onboarding_subtitle")),
         Div(
             # Featured first: link the cloud account. For an App-Store-acquired Shopify
             # merchant this claims the subscription + binds the store (then it auto-syncs);
@@ -874,12 +905,7 @@ def _company_picker_panel(companies: list[dict]) -> FT:
 
 def _forgot_password_form(error: str | None = None) -> FT:
     return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("auth.forgot_password"), cls="auth-title"),
-            P(t("auth.enter_your_email_and_well_send_a_reset_link"), cls="auth-subtitle"),
-            cls="auth-header",
-        ),
+        auth_header(t("auth.forgot_password"), t("auth.enter_your_email_and_well_send_a_reset_link")),
         Form(
             flash(error) if error else "",
             Div(Label(t("th.email"), For="email", cls="form-label"),
@@ -896,12 +922,7 @@ def _forgot_password_form(error: str | None = None) -> FT:
 
 def _forgot_password_sent() -> FT:
     return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("page.check_your_email"), cls="auth-title"),
-            P(t("auth.if_that_email_exists_youll_receive_a_reset_link_sh"), cls="auth-subtitle"),
-            cls="auth-header",
-        ),
+        auth_header(t("page.check_your_email"), t("auth.if_that_email_exists_youll_receive_a_reset_link_sh")),
         Div(
             A(t("auth.back_to_login"), href="/login", cls="btn btn--primary"),
             cls="text-center mt-md",
@@ -912,12 +933,7 @@ def _forgot_password_sent() -> FT:
 
 def _reset_password_form(token: str = "", error: str | None = None) -> FT:
     return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("page.reset_your_password"), cls="auth-title"),
-            P(t("auth.enter_your_new_password_below"), cls="auth-subtitle"),
-            cls="auth-header",
-        ),
+        auth_header(t("page.reset_your_password"), t("auth.enter_your_new_password_below")),
         Form(
             flash(error) if error else "",
             Input(type="hidden", name="token", value=token),

@@ -23,6 +23,7 @@ from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services import migrations
 from celerp.services.company_lock import locked_company
 
 _log = logging.getLogger(__name__)
@@ -175,6 +176,8 @@ async def migrate_all_self_contacts(session: AsyncSession, actor_id=None) -> lis
     for company_id, settings in companies:
         if (settings or {}).get("self_contact_id"):
             continue  # already seeded under the new model, or already migrated - nothing to do
+        if await migrations.is_company_migration_staged(session, company_id):
+            continue
         try:
             res = await migrate_self_contacts(session, company_id, actor_id)
             await session.commit()
@@ -192,6 +195,8 @@ async def backfill_self_contacts_hook(*, session: AsyncSession) -> None:
     each company's default-Location address onto its self-contact if missing. Idempotent throughout."""
     await migrate_all_self_contacts(session)
     for cid in (await session.execute(select(Company.id))).scalars().all():
+        if await migrations.is_company_migration_staged(session, cid):
+            continue
         try:
             if await backfill_self_contact_identity(session, cid):
                 await session.commit()
