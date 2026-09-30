@@ -1545,13 +1545,11 @@ def _preview_stale() -> HTTPException:
 
 
 async def _write_import(session, company_id, user_id, role: str, settings: dict, rows: list[dict], **kwargs) -> BatchImportResult:
-    """Run import_items, answering its refusals as 422 validation_failed and 409 preview_stale."""
+    """Run import_items, answering its row rejections as 422 validation_failed."""
     try:
         return await import_items(session, company_id, user_id, role, settings, rows, **kwargs)
     except ImportRejected as exc:
         raise _validation_failed(exc.errors)
-    except ImportPreviewStale:
-        raise _preview_stale()
 
 
 class InventoryImportRows(BaseModel):
@@ -1633,26 +1631,26 @@ async def import_rows(
     idempotency, and the category-schema follow-up. Unmarked: this is the browser
     transport, not an agent capability (the agent commits through /import/commit).
 
-    Every commit runs the semantic preflight, and any row error is refused with
-    422 before anything is written. With ``preview_hash`` the commit is also
-    bound to /import/rows/preview: the preview is recomputed, and a changed hash,
-    including rows that now mean something else, is refused with 409.
+    Every commit runs the semantic preflight once, and any row error is refused
+    with 422 before anything is written. With ``preview_hash`` the commit is also
+    bound to /import/rows/preview: the preview is recomputed, a changed hash,
+    including rows that now mean something else, is refused with 409, and the
+    rows are written from that recomputed plan.
     """
-    expected_fingerprint = None
+    plan = None
     if body.preview_hash is not None:
         plan = await preview_import_rows(
             session, company_id, role, settings, body.rows,
             upsert=body.upsert, idempotency_key=body.idempotency_key,
         )
-        expected_fingerprint = plan.semantic_fingerprint
-        if _rows_preview_hash(body.rows, body.upsert, body.idempotency_key, expected_fingerprint) != body.preview_hash:
+        if _rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan.semantic_fingerprint) != body.preview_hash:
             raise _preview_stale()
         if plan.errors:
             raise _validation_failed(plan.errors)
     return await _write_import(
         session, company_id, user.id, role, settings, body.rows,
         upsert=body.upsert, filename=body.filename, idempotency_key=body.idempotency_key,
-        expected_fingerprint=expected_fingerprint,
+        plan=plan,
     )
 
 
@@ -1746,8 +1744,7 @@ async def _build_item_preview(
     semantics = source_header_semantics(mapping, settings.get("currency") or "USD")
     # Rows are only previewed under a mapping that can be applied.
     mapped_rows: list[dict] = []
-    locations_to_create: list[str] = []
-    semantic_fingerprint: str | None = None
+    plan = None
     errors = resolved.errors + semantics.errors
     if resolved.applicable:
         _new_cols, mapped_rows = remap_rows(cols, rows, mapping)
@@ -1757,8 +1754,6 @@ async def _build_item_preview(
             upsert=upsert, idempotency_key=idempotency_key,
         )
         errors += plan.errors
-        locations_to_create = plan.locations_to_create
-        semantic_fingerprint = plan.semantic_fingerprint
     errors = errors[:50]
 
     unmapped_required = sorted(r for r in spec.required if r not in set(mapping.values()))
@@ -1770,7 +1765,7 @@ async def _build_item_preview(
         "mapping": mapping,
         "row_count": row_count,
         "file_sha256": hashlib.sha256(data).hexdigest(),
-        "semantic_fingerprint": semantic_fingerprint,
+        "semantic_fingerprint": plan.semantic_fingerprint if plan else None,
     })
 
     return {
@@ -1778,13 +1773,13 @@ async def _build_item_preview(
             file_id=file_id, sheet=sheet, upsert=upsert, columns=cols,
             mapping=mapping, unmapped_required=unmapped_required, row_count=row_count,
             sample=mapped_rows[:5], errors=errors,
-            locations_to_create=locations_to_create, preview_hash=preview_hash,
+            locations_to_create=plan.locations_to_create if plan else [], preview_hash=preview_hash,
         ),
         "errors": errors,
         "mapped_rows": mapped_rows,
         "filename": filename,
         "preview_hash": preview_hash,
-        "semantic_fingerprint": semantic_fingerprint,
+        "plan": plan,
     }
 
 
@@ -1857,8 +1852,8 @@ async def import_commit(
     Recomputes the preview from the stored bytes; a hash mismatch means the file,
     its mapping, or what its rows would write changed since the preview, refused
     with 409 rather than imported under stale assumptions. Any row validation
-    error is refused with 422 and the error list; otherwise the rows go through
-    the shared committer.
+    error is refused with 422 and the error list; otherwise the shared committer
+    writes the rows from that recomputed plan.
     """
     operation_key = f"preview:{body.preview_hash}"
     result = await _build_item_preview(
@@ -1873,7 +1868,7 @@ async def import_commit(
     return await _write_import(
         session, company_id, user.id, role, settings, result["mapped_rows"],
         upsert=body.upsert, filename=result["filename"], idempotency_key=operation_key,
-        expected_fingerprint=result["semantic_fingerprint"],
+        plan=result["plan"],
     )
 
 

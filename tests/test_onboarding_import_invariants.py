@@ -1081,16 +1081,50 @@ class TestPreviewCommitInvariant:
         assert r.status_code == 200, r.text
         body = r.json()
         assert (body["created"], body["updated"], body["errors"]) == (1001, 0, [])
-        # The bound preview's recheck and the writer's own preflight each build the
-        # whole import once, and both run before any chunk is written.
-        assert events == [
-            ("build", 1001), ("build", 1001),
-            ("write", 500), ("write", 500), ("write", 1),
-        ]
+        assert events == [("build", 1001), ("write", 500), ("write", 500), ("write", 1)]
         states = await _item_states(session, perm["company_id"])
         assert len([s for s in states if s["name"].startswith(("Item ", "Shared "))]) == 1001
         shared = sorted((s["name"], float(s["quantity"])) for s in states if s.get("sku") == "INV02-SHARED")
         assert shared == [("Shared first", 1.0), ("Shared last", 2.0)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bound", [True, False])
+    async def test_inv_import_02_import_creating_a_location_is_built_once(self, client, session, perm, monkeypatch, bound):
+        from sqlalchemy import select
+
+        import celerp_inventory.services as svc
+        from celerp.models.company import Location
+        events: list[tuple] = []
+        real_build, real_commit = svc.build_import_records, svc.commit_import_batch
+
+        async def build_spy(*a, **k):
+            events.append(("build", len(a[2])))
+            return await real_build(*a, **k)
+
+        async def commit_spy(session, company_id, user, role, settings, body):
+            events.append(("write", len(body.records)))
+            return await real_commit(session, company_id, user, role, settings, body)
+
+        rows = [
+            {"name": "Annexed one", "sell_by": "piece", "quantity": "1", "location_name": "Annex"},
+            {"name": "Annexed two", "sell_by": "piece", "quantity": "1", "location_name": "Annex"},
+        ]
+        preview = await _rows_preview(client, perm["admin_h"], rows, key="annex")
+        assert (preview["errors"], preview["locations_to_create"]) == ([], ["Annex"])
+        monkeypatch.setattr(svc, "build_import_records", build_spy)
+        monkeypatch.setattr(svc, "commit_import_batch", commit_spy)
+        r = await _rows_commit(
+            client, perm["admin_h"], rows, key="annex",
+            preview_hash=preview["preview_hash"] if bound else None,
+        )
+        assert r.status_code == 200, r.text
+        assert (r.json()["created"], r.json()["errors"]) == (2, [])
+        assert events == [("build", 2), ("write", 2)]
+        [annex_id] = (await session.execute(
+            select(Location.id).where(Location.company_id == uuid.UUID(perm["company_id"]), Location.name == "Annex")
+        )).scalars().all()
+        states = await _item_states(session, perm["company_id"])
+        assert sorted(s["location_id"] for s in states if s["name"].startswith("Annexed")) == [str(annex_id)] * 2
 
     # INV-IMPORT-01: an exact retry changes no business state ----------------
 

@@ -2561,7 +2561,10 @@ async def build_import_records(
             if (key.endswith("_price") or key == "cost_total") and value is not None:
                 patch[key] = value
 
-        canonical_patch = json.dumps(patch, sort_keys=True, separators=(",", ":"), default=str)
+        # A named location is keyed by its name, so the key is the same before
+        # and after the import creates that location.
+        keyed_patch = {**patch, "location_id": {"name": loc_name}} if loc_name else patch
+        canonical_patch = json.dumps(keyed_patch, sort_keys=True, separators=(",", ":"), default=str)
         idem = f"csv:item:{target.entity_id}:patch:{hashlib.sha256(canonical_patch.encode()).hexdigest()}"
         records.append({
             "entity_id": target.entity_id,
@@ -2600,6 +2603,7 @@ class SemanticImportPlan:
     """What an item import writes, decided before anything is written."""
     rows: list[dict]                 # the rows as the importer resolved them
     records: list[dict]              # ImportRecord-shaped dicts for the committer
+    record_rows: list[int]           # the 1-based input row of each record
     errors: list[dict]               # {"row", "field", "code", "message"}; the writer's rejections
     locations_to_create: list[str]
     semantic_fingerprint: str        # changes whenever what the rows would write changes
@@ -2611,10 +2615,6 @@ class ImportRejected(Exception):
     def __init__(self, errors: list[dict]):
         super().__init__(f"{len(errors)} import row errors")
         self.errors = errors
-
-
-class ImportPreviewStale(Exception):
-    """The rows now mean something other than what was previewed; nothing was written."""
 
 
 def import_operation_key(idempotency_key: str | None, rows: list[dict], upsert: bool) -> str:
@@ -2722,7 +2722,7 @@ async def preflight_import_rows(
         )
     errors.sort(key=lambda e: e["row"])
     return SemanticImportPlan(
-        rows=build.rows, records=build.records, errors=errors,
+        rows=build.rows, records=build.records, record_rows=build.record_rows, errors=errors,
         locations_to_create=build.locations_to_create,
         semantic_fingerprint=_semantic_fingerprint(build, errors),
     )
@@ -2745,20 +2745,25 @@ async def preview_import_rows(
     )
 
 
-async def _create_missing_locations(session: AsyncSession, company_id, names: list[str]) -> None:
-    """Create the named locations the company does not have yet.
+async def _create_missing_locations(session: AsyncSession, company_id, names: list[str]) -> dict[str, str]:
+    """Create the named locations the company does not have yet; return name -> id.
 
     Runs under the company lock and re-reads the names after taking it, so two
-    imports naming the same new location create it once.
+    imports naming the same new location create it once and both get its id.
     """
     await lock_company(session, company_id)
-    existing = set((await session.execute(
-        select(Location.name).where(Location.company_id == company_id)
-    )).scalars().all())
+    ids = {
+        loc.name: str(loc.id) for loc in (await session.execute(
+            select(Location).where(Location.company_id == company_id, Location.name.in_(names))
+        )).scalars().all()
+    }
     for name in names:
-        if name not in existing:
-            session.add(Location(id=uuid.uuid4(), company_id=company_id, name=name, type="warehouse"))
+        if name not in ids:
+            location = Location(id=uuid.uuid4(), company_id=company_id, name=name, type="warehouse")
+            session.add(location)
+            ids[name] = str(location.id)
     await session.flush()
+    return ids
 
 
 async def import_items(
@@ -2772,18 +2777,18 @@ async def import_items(
     upsert: bool,
     filename: str | None,
     idempotency_key: str | None,
-    expected_fingerprint: str | None = None,
+    plan: SemanticImportPlan | None = None,
 ) -> BatchImportResult:
     """Import mapped business rows through the canonical committer.
 
-    Always runs the semantic preflight first. Any row error raises
-    ImportRejected, and a plan whose fingerprint differs from
-    ``expected_fingerprint`` (the one a bound preview showed) raises
-    ImportPreviewStale; either way nothing is written. A clean import then
-    creates any missing named locations, commits the records in chunks of 500,
-    and auto-merges newly discovered attribute columns into the company's
-    category schemas (best-effort, gated on manage_company_settings). Every
-    item import transport ends here.
+    Writes from exactly one semantic plan of the rows: ``plan`` when a bound
+    commit has already made and checked it against its preview, otherwise the
+    preflight run here. Any row error raises ImportRejected and nothing is
+    written. A clean import then creates any missing named locations under the
+    company lock and fills their ids into the planned records, commits the
+    records in chunks of 500, and auto-merges newly discovered attribute
+    columns into the company's category schemas (best-effort, gated on
+    manage_company_settings). Every item import transport ends here.
 
     Creates use ``import-attempt + row ordinal`` identity, so equal SKUs and rows
     without SKUs remain distinct lots while an exact retry of the same attempt is a
@@ -2791,21 +2796,19 @@ async def import_items(
     resulting patch, so the same patch dedupes but a later changed patch still applies.
     """
     batch_key = import_operation_key(idempotency_key, rows, upsert)
-
-    async def _clean_plan() -> SemanticImportPlan:
+    if plan is None:
         plan = await preflight_import_rows(
             session, company_id, role, settings, rows, upsert=upsert, operation_key=batch_key,
         )
-        if expected_fingerprint is not None and plan.semantic_fingerprint != expected_fingerprint:
-            raise ImportPreviewStale()
-        if plan.errors:
-            raise ImportRejected(plan.errors)
-        return plan
+    if plan.errors:
+        raise ImportRejected(plan.errors)
 
-    plan = await _clean_plan()
     if plan.locations_to_create:
-        await _create_missing_locations(session, company_id, plan.locations_to_create)
-        plan = await _clean_plan()
+        location_ids = await _create_missing_locations(session, company_id, plan.locations_to_create)
+        for rec, row_no in zip(plan.records, plan.record_rows):
+            name = str(plan.rows[row_no - 1].get("location_name") or "").strip()
+            if name in location_ids:
+                rec["data"]["location_id"] = location_ids[name]
 
     for rec in plan.records:
         if rec["event_type"] == "item.created":
