@@ -994,6 +994,53 @@ async def test_import_inserts_rows_in_batches(real_engine, real_client, tmp_path
     assert await count(real_engine, "ledger", "company_id = :c", c=uuid.UUID(new)) == 6
 
 
+async def test_export_and_restore_batches_end_at_the_byte_budget(real_engine, real_client, tmp_path, monkeypatch):
+    """A batch ends at BATCH_BYTES of JSON as well as at BATCH_ROWS rows: with a budget
+    smaller than one row, every export fetch and restore insert carries one row."""
+    cb = _bk_cb()
+    _bk_local(monkeypatch, tmp_path)
+    _, cid, tok = await _bk_setup(real_engine)
+    await _bk_extra_ledger(real_engine, cid, 5, "wide")
+    monkeypatch.setattr(cb, "BATCH_BYTES", 1, raising=False)
+    with _BkSqlSpy("ledger") as spy:
+        data = await download(real_client, tok)
+    assert manifest(data)["tables"]["ledger"]["rows"] == 6
+    assert spy.fetches and max(spy.fetches) == 1, spy.fetches
+    assert sum(spy.fetches) == 6, spy.fetches
+    with _BkSqlSpy("ledger") as spy:
+        new = await _bk_restore_new(real_client, tok, data)
+    assert spy.inserts and max(spy.inserts) == 1, spy.inserts
+    assert await count(real_engine, "ledger", "company_id = :c", c=uuid.UUID(new)) == 6
+
+
+def test_restore_batch_memory_stays_bounded_for_a_large_member(tmp_path, monkeypatch):
+    """Reading a 16 MB table member of wide rows holds about one byte budget at a time,
+    not a full BATCH_ROWS of rows."""
+    import tracemalloc
+    import zipfile
+    cb = _bk_cb()
+    budget = 1024 * 1024
+    monkeypatch.setattr(cb, "BATCH_BYTES", budget, raising=False)
+    path = tmp_path / "wide.zip"
+    row = (json.dumps({"id": "x", "pad": "p" * (64 * 1024)}) + "\n").encode()
+    with zipfile.ZipFile(path, "w") as zf, zf.open("tables/ledger.jsonl", "w") as fh:
+        for _ in range(256):
+            fh.write(row)
+    with zipfile.ZipFile(path) as zf:
+        it = cb._lines(zf, "tables/ledger.jsonl")
+        tracemalloc.start()
+        try:
+            rows = 0
+            while batch := cb._next_rows(it, cb.BATCH_ROWS):
+                rows += len(batch)
+                del batch
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+    assert rows == 256
+    assert peak < 4 * budget, peak
+
+
 async def test_attachments_processed_one_at_a_time(real_engine, real_client, tmp_path, monkeypatch):
     """Export writes each attachment before reading the next, and restore stores them one at a time."""
     from celerp.services import attachments

@@ -101,12 +101,20 @@ MODES = frozenset({"settings", "new_company", "bootstrap"})
 
 MAX_UPLOAD_BYTES = 2 * 1024 ** 3
 MAX_MEMBERS = 200_000
-MAX_MEMBER_BYTES = 1024 ** 3
+# One table's rows as JSON lines, streamed. 512 MB holds about a million ledger events
+# at their usual half a kilobyte each, well past the largest company a copy is made of.
+MAX_MEMBER_BYTES = 512 * 1024 ** 2
 MAX_TOTAL_BYTES = 8 * 1024 ** 3
 # Members read whole: the manifest, one table row, one attachment (the ordinary attachment limit).
 MAX_MANIFEST_BYTES = 64 * 1024 ** 2
-MAX_ROW_BYTES = 64 * 1024 ** 2
+# One row as JSON. Item and document state is a few kilobytes; the largest real rows are
+# documents with thousands of lines and company settings, well under 1 MB. 8 MB leaves
+# ample headroom while keeping one row, and so one batch, small.
+MAX_ROW_BYTES = 8 * 1024 ** 2
+# Rows are read and written in batches that end at BATCH_ROWS rows or BATCH_BYTES of
+# JSON, whichever comes first, so wide rows cannot make one batch large.
 BATCH_ROWS = 1000
+BATCH_BYTES = 8 * 1024 ** 2
 
 _NOT_RESTORED = " Nothing was restored."
 _NOT_BACKED_UP = " Nothing was backed up."
@@ -410,26 +418,40 @@ def _kept_settings(settings: dict | None) -> dict:
 
 
 async def _batches(session: AsyncSession, table: _Table, company_id, expr: str):
-    """The company's rows of one table as JSON text, in primary-key order, BATCH_ROWS at a time."""
+    """The company's rows of one table as JSON text, in primary-key order, in batches of at
+    most BATCH_ROWS rows and BATCH_BYTES of JSON (a batch always holds at least one row).
+
+    The byte cut is made in the database, so rows past it are never sent. After a cut the
+    next fetch asks for twice as many rows as fitted, growing back to BATCH_ROWS."""
     q = _ident(table.name)
     udt = {c: table.columns[c].udt for c in table.pk}
-    keys = ", ".join(f"t.{_ident(c)}::text" for c in table.pk)
+    keys = ", ".join(f"t.{_ident(c)}::text AS k{i}" for i, c in enumerate(table.pk))
+    natives = ", ".join(f"t.{_ident(c)} AS o{i}" for i, c in enumerate(table.pk))
+    picked = ", ".join(f"k{i}" for i in range(len(table.pk)))
+    ordered = ", ".join(f"o{i}" for i in range(len(table.pk)))
     order = ", ".join(f"t.{_ident(c)}" for c in table.pk)
     company = f"CAST(CAST(:c AS text) AS {_ident(table.columns['company_id'].udt)})"
     after = (f" AND ({order}) > ("
              + ", ".join(f"CAST(CAST(:k{i} AS text) AS {_ident(udt[c])})" for i, c in enumerate(table.pk)) + ")")
-    params: dict = {"c": str(company_id), "n": BATCH_ROWS}
+    params: dict = {"c": str(company_id), "n": BATCH_ROWS, "b": BATCH_BYTES}
     first = True
     while True:
         rows = (await session.execute(text(
-            f"SELECT {keys}, ({expr})::text FROM {q} t WHERE t.company_id = {company}"
-            f"{'' if first else after} ORDER BY {order} LIMIT :n"), params)).all()
-        if rows:
-            yield [r[-1] for r in rows]
-        if len(rows) < params["n"]:
+            f"SELECT {picked}, j, fetched FROM (SELECT s.*, count(*) OVER () AS fetched, "
+            f"sum(octet_length(s.j)) OVER (ORDER BY {ordered} ROWS UNBOUNDED PRECEDING) "
+            f"- octet_length(s.j) AS before FROM ("
+            f"SELECT {keys}, {natives}, ({expr})::text AS j FROM {q} t WHERE t.company_id = {company}"
+            f"{'' if first else after} ORDER BY {order} LIMIT :n) s) w "
+            f"WHERE w.before < :b ORDER BY {ordered}"), params)).all()
+        if not rows:
             return
+        yield [r[-2] for r in rows]
+        fetched, asked = rows[0][-1], params["n"]
+        if fetched < asked and len(rows) == fetched:
+            return
+        params["n"] = min(BATCH_ROWS, 2 * (asked if len(rows) == fetched else len(rows)))
         first = False
-        params.update({f"k{i}": v for i, v in enumerate(rows[-1][:-1])})
+        params.update({f"k{i}": v for i, v in enumerate(rows[-1][:-2])})
 
 
 def _without(columns: list[str]) -> str:
@@ -1112,10 +1134,12 @@ async def _source_grants(session: AsyncSession, source: str):
 
 
 def _next_rows(it, limit: int) -> list:
-    rows = []
+    """The next batch: up to ``limit`` rows, ending early once BATCH_BYTES are read."""
+    rows, size = [], 0
     for line in it:
         rows.append(_parse_row(line))
-        if len(rows) >= limit:
+        size += len(line)
+        if len(rows) >= limit or size >= BATCH_BYTES:
             break
     return rows
 
