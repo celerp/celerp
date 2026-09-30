@@ -371,8 +371,11 @@ async def import_rows(
 
     Rows are raw column-to-value dicts; the server owns location resolution and
     creation, unit and quantity derivation, monetary conversion, command
-    idempotency, and the category-schema follow-up. With ``preview_hash`` the
-    server refuses the commit unless it still matches its own preview. Rides the
+    idempotency, and the category-schema follow-up. Rows the server would reject
+    raise APIError 422 whose detail is ``{"code": "validation_failed", "errors":
+    [{"row", "field", "code", "message"}]}``, and nothing is written. With
+    ``preview_hash`` the server also refuses, with 409 ``preview_stale``, a
+    commit that no longer matches its own preview. Rides the
     bulk pool for the same reason batch_import does: a large import holds its
     write connection.
     """

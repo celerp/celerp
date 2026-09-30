@@ -709,7 +709,7 @@ class TestItemSellByResolution:
     async def test_no_sell_by_with_category_default_is_accepted(self, session):
         from celerp_inventory.services import build_import_records
         cid = await _seed_company(session)
-        build = await build_import_records(session, cid, [{"name": "Stone", "category": "diamond"}], upsert=False, dry_run=True)
+        build = await build_import_records(session, cid, [{"name": "Stone", "category": "diamond"}], upsert=False)
         assert build.errors == []
         assert build.records[0]["data"]["sell_by"] == "gram"
 
@@ -717,7 +717,7 @@ class TestItemSellByResolution:
     async def test_no_sell_by_and_no_default_is_rejected_on_the_row(self, session):
         from celerp_inventory.services import build_import_records
         cid = await _seed_company(session)
-        build = await build_import_records(session, cid, [{"name": "Widget", "pieces": "1"}], upsert=False, dry_run=True)
+        build = await build_import_records(session, cid, [{"name": "Widget", "pieces": "1"}], upsert=False)
         assert build.records == []
         assert [(e["row"], e["field"], e["code"]) for e in build.errors] == [(1, "sell_by", "sell_by_unresolved")]
 
@@ -725,14 +725,14 @@ class TestItemSellByResolution:
     async def test_unknown_sell_by_is_rejected_on_the_row(self, session):
         from celerp_inventory.services import build_import_records
         cid = await _seed_company(session)
-        build = await build_import_records(session, cid, [{"name": "Widget", "sell_by": "furlong", "pieces": "1"}], upsert=False, dry_run=True)
+        build = await build_import_records(session, cid, [{"name": "Widget", "sell_by": "furlong", "pieces": "1"}], upsert=False)
         assert [(e["field"], e["code"]) for e in build.errors] == [("sell_by", "sell_by_invalid")]
 
     @pytest.mark.asyncio
     async def test_explicit_valid_sell_by_succeeds(self, session):
         from celerp_inventory.services import build_import_records
         cid = await _seed_company(session)
-        build = await build_import_records(session, cid, [{"name": "Widget", "sell_by": "Piece", "pieces": "1"}], upsert=False, dry_run=True)
+        build = await build_import_records(session, cid, [{"name": "Widget", "sell_by": "Piece", "pieces": "1"}], upsert=False)
         assert build.errors == []
         assert build.records[0]["data"]["sell_by"] == "piece"
 
@@ -1002,19 +1002,23 @@ class TestPreviewCommitInvariant:
 
     def test_preview_hash_changes_when_row_changes(self):
         from celerp_inventory.routes import _rows_preview_hash
-        assert _rows_preview_hash([{"name": "A"}], False, "k") != _rows_preview_hash([{"name": "B"}], False, "k")
+        assert _rows_preview_hash([{"name": "A"}], False, "k", "f") != _rows_preview_hash([{"name": "B"}], False, "k", "f")
 
     def test_preview_hash_changes_when_upsert_changes(self):
         from celerp_inventory.routes import _rows_preview_hash
-        assert _rows_preview_hash([{"name": "A"}], False, "k") != _rows_preview_hash([{"name": "A"}], True, "k")
+        assert _rows_preview_hash([{"name": "A"}], False, "k", "f") != _rows_preview_hash([{"name": "A"}], True, "k", "f")
 
     def test_preview_hash_changes_when_operation_key_changes(self):
         from celerp_inventory.routes import _rows_preview_hash
-        assert _rows_preview_hash([{"name": "A"}], False, "k1") != _rows_preview_hash([{"name": "A"}], False, "k2")
+        assert _rows_preview_hash([{"name": "A"}], False, "k1", "f") != _rows_preview_hash([{"name": "A"}], False, "k2", "f")
 
     def test_preview_hash_is_stable_for_equivalent_dict_key_order(self):
         from celerp_inventory.routes import _rows_preview_hash
-        assert _rows_preview_hash([{"name": "A", "sku": "1"}], False, "k") == _rows_preview_hash([{"sku": "1", "name": "A"}], False, "k")
+        assert _rows_preview_hash([{"name": "A", "sku": "1"}], False, "k", "f") == _rows_preview_hash([{"sku": "1", "name": "A"}], False, "k", "f")
+
+    def test_preview_hash_changes_when_semantic_fingerprint_changes(self):
+        from celerp_inventory.routes import _rows_preview_hash
+        assert _rows_preview_hash([{"name": "A"}], False, "k", "f1") != _rows_preview_hash([{"name": "A"}], False, "k", "f2")
 
     @pytest.mark.asyncio
     async def test_file_preview_hash_changes_when_file_bytes_change(self, client, perm, write_upload):
@@ -1054,7 +1058,7 @@ class TestPreviewCommitInvariant:
         real_build, real_commit = svc.build_import_records, svc.commit_import_batch
 
         async def build_spy(*a, **k):
-            events.append(("build", len(a[2]), k["dry_run"]))
+            events.append(("build", len(a[2])))
             return await real_build(*a, **k)
 
         async def commit_spy(session, company_id, user, role, settings, body):
@@ -1077,13 +1081,12 @@ class TestPreviewCommitInvariant:
         assert r.status_code == 200, r.text
         body = r.json()
         assert (body["created"], body["updated"], body["errors"]) == (1001, 0, [])
-        # One writer build over the whole import, preceded only by the bound preview's
-        # dry-run recheck of the same rows; both run before any chunk is written.
+        # The bound preview's recheck and the writer's own preflight each build the
+        # whole import once, and both run before any chunk is written.
         assert events == [
-            ("build", 1001, True), ("build", 1001, False),
+            ("build", 1001), ("build", 1001),
             ("write", 500), ("write", 500), ("write", 1),
         ]
-        assert [e for e in events if e[0] == "build" and e[2] is False] == [("build", 1001, False)]
         states = await _item_states(session, perm["company_id"])
         assert len([s for s in states if s["name"].startswith(("Item ", "Shared "))]) == 1001
         shared = sorted((s["name"], float(s["quantity"])) for s in states if s.get("sku") == "INV02-SHARED")
@@ -1263,7 +1266,7 @@ class TestCategoryInvariant:
         build = await build_import_records(session, cid, [
             {"name": "A", "category": "Ruby", "quantity": "1"},
             {"name": "B", "category": "ruby", "quantity": "1"},
-        ], upsert=False, dry_run=True)
+        ], upsert=False)
         assert build.errors == []
         assert [(r["data"]["category"], r["data"]["sell_by"]) for r in build.records] == [("ruby", "gram"), ("ruby", "gram")]
 
@@ -1272,7 +1275,7 @@ class TestCategoryInvariant:
         from celerp_inventory.services import build_import_records
         cid = await _seed_company(session)
         await _set_company_settings(session, cid, category_schemas=_GEM_CATEGORIES, category_display_names=_GEM_NAMES)
-        build = await build_import_records(session, cid, [{"name": "A", "category": "Opal", "sell_by": "piece"}], upsert=False, dry_run=True)
+        build = await build_import_records(session, cid, [{"name": "A", "category": "Opal", "sell_by": "piece"}], upsert=False)
         assert build.records[0]["data"]["category"] == "Opal"
 
     @pytest.mark.asyncio
@@ -1338,16 +1341,21 @@ class TestUnitAndPriceInvariant:
         ("weight_kg", "kg"), ("Kilograms", "kg"),
         ("weight_oz", "oz"), ("ounces", "oz"),
         ("weight_lb", "lb"), ("Pounds", "lb"),
-        ("weight", None), ("Gross weight g", None), ("mass", None), ("weight_stone", None),
+        ("weight", None), ("mass", None), ("weight_stone", None),
     ])
     def test_weight_header_table(self, header, unit):
         from celerp_inventory.services import weight_unit_from_header
-        assert weight_unit_from_header(header) == unit
+        assert weight_unit_from_header(header, "weight") == unit
+
+    def test_gross_weight_header_carries_its_own_unit(self):
+        from celerp_inventory.services import weight_unit_from_header
+        assert weight_unit_from_header("Gross weight g", "gross_weight") == "gram"
+        assert weight_unit_from_header("Gross weight g", "weight") is None
 
     def test_mapped_weight_unit_column_wins_over_the_header(self):
         from celerp_inventory.services import source_header_semantics
-        assert source_header_semantics({"weight_ct": "weight", "unit": "weight_unit"}, "USD").weight_unit is None
-        assert source_header_semantics({"weight_ct": "weight"}, "USD").weight_unit == "carat"
+        assert source_header_semantics({"weight_ct": "weight", "unit": "weight_unit"}, "USD").weight_units == {}
+        assert source_header_semantics({"weight_ct": "weight"}, "USD").weight_units == {"weight": "carat"}
 
     @pytest.mark.asyncio
     async def test_weight_header_means_the_same_in_browser_and_file_preview(self, client, perm, write_upload):
@@ -1379,7 +1387,7 @@ class TestUnitAndPriceInvariant:
         ("Price (USD)", "retail_price", "THB", "price_currency_mismatch"),
         ("Price [usd]", "retail_price", "THB", "price_currency_mismatch"),
         ("Price USD", "retail_price", "THB", "price_currency_mismatch"),
-        ("Price $", "retail_price", "THB", None),
+        ("Price $", "retail_price", "THB", "price_currency_ambiguous"),
         ("Top price", "retail_price", "THB", None),
         ("Price/ct", "retail_price_total", "THB", "price_basis_unsupported"),
         ("Price per dozen", "retail_price", "THB", "price_basis_unsupported"),

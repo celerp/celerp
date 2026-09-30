@@ -6,7 +6,7 @@
 These cover the transform and commit logic that used to live in the browser
 confirm handler and now lives in celerp_inventory.services: location resolution
 and creation, category default sell-by, unit-rate derivation, upsert accounting,
-dry-run safety, and the single committer shared by /import/rows and /import/batch.
+building without writing, and the single committer shared by /import/rows and /import/batch.
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ async def test_single_location_default(session):
     build = await build_import_records(
         session, company_id,
         [{"name": "Widget", "sell_by": "piece", "pieces": "5"}],
-        upsert=False, dry_run=True,
+        upsert=False,
     )
     assert build.errors == []
     assert len(build.records) == 1
@@ -96,7 +96,7 @@ async def test_multi_location_without_name_errors(session):
     build = await build_import_records(
         session, company_id,
         [{"name": "Widget", "sell_by": "piece", "pieces": "1"}],
-        upsert=False, dry_run=True,
+        upsert=False,
     )
     assert build.records == []
     assert len(build.errors) == 1
@@ -105,19 +105,20 @@ async def test_multi_location_without_name_errors(session):
 
 @pytest.mark.asyncio
 async def test_unknown_location_created(session):
-    """A row naming a location that does not exist creates it (dry_run=False) and resolves there."""
-    company_id, _, _ = await _seed(session, locations=[{"name": "Main"}])
-    build = await build_import_records(
-        session, company_id,
+    """A clean import naming a location that does not exist creates it and puts the item there."""
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    result = await import_items(
+        session, company_id, user_id, "admin", {},
         [{"name": "Widget", "sell_by": "piece", "pieces": "1", "location_name": "Annex"}],
-        upsert=False, dry_run=False, create_missing_locations=True,
+        upsert=False, filename=None, idempotency_key=None,
     )
-    assert build.errors == []
+    assert (result.created, result.errors) == (1, [])
     annex = (await session.execute(
         select(Location).where(Location.company_id == company_id, Location.name == "Annex")
     )).scalars().first()
     assert annex is not None, "the unknown location must be created"
-    assert build.records[0]["data"]["location_id"] == str(annex.id)
+    [item] = await _item_projections(session, company_id)
+    assert item.location_id == annex.id
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +133,7 @@ async def test_category_default_sell_by(session):
     build = await build_import_records(
         session, company_id,
         [{"name": "Stone", "category": "diamond", "weight": "1.5", "weight_unit": "gram"}],
-        upsert=False, dry_run=True,
+        upsert=False,
     )
     assert build.errors == []
     assert build.records[0]["data"]["sell_by"] == "gram"
@@ -149,24 +150,24 @@ async def test_unit_rate_derivation(session):
     build = await build_import_records(
         session, company_id,
         [{"name": "Widget", "sell_by": "piece", "pieces": "4", "retail_price_total": "100"}],
-        upsert=False, dry_run=True,
+        upsert=False,
     )
     assert build.errors == []
     assert build.records[0]["data"]["retail_price"] == 25.0
 
 
 # ---------------------------------------------------------------------------
-# Dry run creates nothing
+# Building records creates nothing
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_dry_run_creates_nothing(session):
-    """dry_run=True lists locations it would create but writes none, and leaves the row unresolved."""
+async def test_build_creates_no_location(session):
+    """Building records lists locations an import would create but writes none, and leaves the row unresolved."""
     company_id, _, _ = await _seed(session, locations=[{"name": "Main"}])
     build = await build_import_records(
         session, company_id,
         [{"name": "Widget", "sell_by": "piece", "pieces": "1", "location_name": "Ghost"}],
-        upsert=False, dry_run=True,
+        upsert=False,
     )
     assert build.locations_to_create == ["Ghost"]
     assert build.records == []
@@ -174,7 +175,7 @@ async def test_dry_run_creates_nothing(session):
     remaining = (await session.execute(
         select(Location).where(Location.company_id == company_id)
     )).scalars().all()
-    assert {loc.name for loc in remaining} == {"Main"}, "dry run must not create the referenced location"
+    assert {loc.name for loc in remaining} == {"Main"}, "building records must not create the referenced location"
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +272,7 @@ async def test_upsert_repeated_sku_requires_barcode_to_choose_lot(session):
     build = await build_import_records(
         session, company_id,
         [{"name": "Which lot?", "sku": "AMB", "sell_by": "piece", "pieces": "2"}],
-        upsert=True, dry_run=True,
+        upsert=True,
     )
     assert build.records == []
     assert "matches multiple lots" in build.errors[0]["message"]
@@ -329,7 +330,7 @@ async def test_upsert_on_shared_barcode_never_picks_arbitrarily(session):
         session, company_id,
         [{"name": "Renamed", "barcode": "7508", "sell_by": "piece"},
          {"name": "Renamed", "sku": "OTHER", "barcode": "7508", "sell_by": "piece"}],
-        upsert=True, dry_run=True,
+        upsert=True,
     )
     assert ambiguous.records == []
     assert [(e["row"], e["field"]) for e in ambiguous.errors] == [(1, "barcode"), (2, "barcode")]
@@ -434,7 +435,7 @@ async def test_raw_upsert_updates_only_the_item_its_key_created(session):
     seed_rows = [{"name": "Raw One", "sku": "RAW-UP", "sell_by": "piece", "pieces": "1"}]
 
     first_build = await build_import_records(
-        session, company_id, seed_rows, upsert=False, dry_run=False,
+        session, company_id, seed_rows, upsert=False,
     )
     original = first_build.records[0]
     first = await commit_import_batch(
@@ -445,7 +446,7 @@ async def test_raw_upsert_updates_only_the_item_its_key_created(session):
 
     changed_rows = [{"name": "Raw Two", "sku": "RAW-UP", "sell_by": "piece", "pieces": "2"}]
     replay_build = await build_import_records(
-        session, company_id, changed_rows, upsert=False, dry_run=False,
+        session, company_id, changed_rows, upsert=False,
     )
     changed = replay_build.records[0]
     elsewhere = await commit_import_batch(
@@ -473,7 +474,7 @@ async def test_authorized_preview_can_plan_missing_location_without_writing(sess
     build = await build_import_records(
         session, company_id,
         [{"name": "Widget", "sell_by": "piece", "pieces": "1", "location_name": "Annex"}],
-        upsert=False, dry_run=True, create_missing_locations=True,
+        upsert=False, create_missing_locations=True,
     )
     assert build.errors == []
     assert build.locations_to_create == ["Annex"]
@@ -513,7 +514,7 @@ async def test_import_rows_and_import_batch_share_committer(client, session, mon
 
     # /import/batch path: the same committer lands an identical record hand-built as a raw batch.
     company_b, user_b, _ = await _seed(session, locations=[{"name": "Main"}])
-    build = await build_import_records(session, company_b, rows, upsert=False, dry_run=False)
+    build = await build_import_records(session, company_b, rows, upsert=False)
     body = BatchImportRequest(records=[ImportRecord(**r) for r in build.records], upsert=False)
     rb = await commit_import_batch(session, company_b, SimpleNamespace(id=user_b), "admin", {}, body)
     assert rb.created == 1
@@ -537,7 +538,7 @@ async def test_quantity_derivation(session):
             {"name": "C", "sell_by": "carat", "weight": "2.5", "weight_unit": "carat"},  # same weight unit -> weight
             {"name": "D", "sell_by": "piece"},                                 # no source -> 0
         ],
-        upsert=False, dry_run=True,
+        upsert=False,
     )
     assert build.errors == []
     assert [rec["data"]["quantity"] for rec in build.records] == [7.0, 99.0, 2.5, 0.0]
@@ -556,7 +557,7 @@ async def test_weight_unit_canonicalized(session):
             {"name": "A", "sell_by": "carat", "quantity": "1", "weight": "100", "weight_unit": "Gram"},
             {"name": "B", "sell_by": "carat", "quantity": "1", "weight": "100"},
         ],
-        upsert=False, dry_run=True,
+        upsert=False,
     )
     assert build.errors == []
     assert build.records[0]["data"]["weight_unit"] == "gram"

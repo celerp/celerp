@@ -3,7 +3,9 @@
 
 import hashlib
 import json
+import math
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,6 +24,7 @@ from celerp.inventory_codes import (
     validate_barcode,
     validate_gtin,
     validate_rfid_epc,
+    validate_sku,
 )
 from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
@@ -40,7 +43,9 @@ from celerp.services.permissions import role_has_permission
 from celerp.services.vertical_presets import category_item_defaults
 from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, price_key
 from celerp.services.units import (
+    SERVICE_SELL_BY,
     build_unit_map,
+    exceeds_precision,
     get_company_units,
     is_pieces_unit,
     is_weight_unit,
@@ -1776,57 +1781,101 @@ _BASIS_UNIT_WORDS: dict[str, str] = {
     **_WEIGHT_UNIT_WORDS,
     "pc": "piece", "pcs": "piece", "piece": "piece", "pieces": "piece", "each": "piece", "ea": "piece",
 }
-_PRICE_WORDS = frozenset({"price", "cost"})
 # Row key carrying the unit a mapped source price is quoted per, e.g.
 # ``retail_price_basis``; the importer accepts the price only for items sold by it.
 PRICE_BASIS_SUFFIX = "_basis"
 
 
-def weight_unit_from_header(header: str) -> str | None:
-    """The canonical weight unit a source header names (``weight_ct``, ``Grams``), or None."""
-    words = [w for w in re.findall(r"[a-z]+", header.lower()) if w not in ("weight", "wt")]
+def weight_unit_from_header(header: str, target: str) -> str | None:
+    """The canonical weight unit a source header names for a weight ``target``.
+
+    ``weight_ct`` and ``Grams`` name units for ``weight``; ``Gross weight g`` names
+    one for ``gross_weight``. A header with any other word names no unit.
+    """
+    skip = {"weight", "wt"} | ({"gross"} if target == "gross_weight" else set())
+    words = [w for w in re.findall(r"[a-z]+", header.lower()) if w not in skip]
     return _WEIGHT_UNIT_WORDS.get(words[0]) if len(words) == 1 else None
 
 
-def _header_currency(header: str) -> str | None:
-    """An ISO currency the header states explicitly: ``(USD)``, ``[usd]``, ``USD``, ``price usd``.
+# ISO codes that are also ordinary English words. In a header they mean a
+# currency only when written as a code: in brackets, joined by an underscore, or
+# right after price/cost. "Top price" names no currency.
+_PLAIN_WORD_CURRENCIES = frozenset({
+    "all", "bob", "cop", "cup", "gel", "mad", "mop", "pen", "rub", "sos", "top", "try",
+})
+# Currency symbols that name exactly one currency. Any other currency symbol
+# ($, ¥, £, ...) is shared by several currencies and must be stated as a code.
+_CURRENCY_SYMBOLS: dict[str, str] = {
+    "€": "EUR", "฿": "THB", "₹": "INR", "₩": "KRW", "₫": "VND", "₱": "PHP",
+    "₺": "TRY", "₽": "RUB", "₪": "ILS", "₦": "NGN", "₴": "UAH",
+}
+_PRICE_WORDS = frozenset({"price", "cost"})
 
-    A symbol such as ``$`` is not read as a currency, and a lowercase word counts
-    only in brackets or right after price/cost, so ordinary words are not mistaken
-    for currency codes.
-    """
+
+def _header_currencies(header: str) -> list[str]:
+    """Every ISO currency code a header states, in any case and anywhere in it."""
     words = re.findall(r"[A-Za-z]+", header)
+    codes: list[str] = []
     for i, word in enumerate(words):
         code = word.upper()
         if len(word) != 3 or code not in ISO_4217_CURRENCIES:
             continue
-        bracketed = re.search(rf"[(\[]\s*{word}\s*[)\]]", header) is not None
-        after_price = i > 0 and words[i - 1].lower() in _PRICE_WORDS
-        if word.isupper() or bracketed or after_price:
-            return code
+        if word.lower() in _PLAIN_WORD_CURRENCIES and not (
+            re.search(rf"[(\[]\s*{word}\s*[)\]]", header)
+            or re.search(rf"(?<=_){word}(?![A-Za-z])|(?<![A-Za-z]){word}(?=_)", header)
+            or (i > 0 and words[i - 1].lower() in _PRICE_WORDS)
+        ):
+            continue
+        codes.append(code)
+    return codes
+
+
+def _header_currency_error(header: str, currency: str) -> tuple[str, str] | None:
+    """``(code, message)`` when a price header states a currency the import cannot honour.
+
+    An ISO code other than the company currency is a mismatch. Without a code, a
+    symbol naming one currency is read as that currency, and a symbol several
+    currencies share is ambiguous. The importer never converts a price.
+    """
+    codes = _header_currencies(header)
+    if not codes:
+        symbols = [ch for ch in header if unicodedata.category(ch) == "Sc"]
+        shared = [ch for ch in symbols if ch not in _CURRENCY_SYMBOLS]
+        if shared:
+            return "price_currency_ambiguous", (
+                f"Column '{header}' uses the symbol {shared[0]}, which several currencies share; "
+                f"state the currency code in the header, for example ({currency})"
+            )
+        codes = [_CURRENCY_SYMBOLS[ch] for ch in symbols]
+    foreign = next((code for code in codes if code != currency), None)
+    if foreign:
+        return "price_currency_mismatch", (
+            f"Column '{header}' is priced in {foreign} but the company currency is {currency}"
+        )
     return None
 
 
 def _header_basis(header: str) -> str | None:
-    """The unit a price header is quoted per (``Price/ct``, ``price per gram``).
+    """The unit a price header is quoted per, written as ``/basis`` or ``per basis``.
 
-    Returns the canonical unit, the raw word for a basis Celerp has no unit for,
-    or None when the header states no basis (``per unit`` is the normal meaning).
+    Returns the canonical unit, the raw word for a basis Celerp has no unit for
+    (``box``, ``dozen``, ``100g``), or None when the header states no basis
+    (``per unit`` is the normal meaning).
     """
     lower = header.lower()
-    slash = re.search(r"/\s*([a-z]+)", lower)
-    if slash and slash.group(1) in _BASIS_UNIT_WORDS:
-        return _BASIS_UNIT_WORDS[slash.group(1)]
-    per = re.search(r"\bper\s+([a-z]+)", lower)
-    if per and per.group(1) != "unit":
-        return _BASIS_UNIT_WORDS.get(per.group(1), per.group(1))
-    return None
+    match = re.search(r"/\s*([a-z0-9.]+)", lower) or re.search(r"\bper\s+([a-z0-9.]+)", lower)
+    if not match or match.group(1) == "unit":
+        return None
+    return _BASIS_UNIT_WORDS.get(match.group(1), match.group(1))
+
+
+_WEIGHT_TARGETS = ("weight", "gross_weight")
 
 
 @dataclass
 class SourceSemantics:
     errors: list[dict]              # {"row": 0, "field": source column, "code", "message"}
-    weight_unit: str | None         # unit the weight column's header names, when none is mapped
+    weight_units: dict[str, str]    # weight target -> unit its header names, when no unit column is mapped
     price_basis: dict[str, str]     # price target -> unit its source column is quoted per
 
 
@@ -1834,9 +1883,10 @@ def source_header_semantics(mapping: dict[str, str], currency: str) -> SourceSem
     """Read what source headers say that their values alone do not.
 
     Shared by the browser mapping step and the file preview so a header means the
-    same thing on every transport. A foreign currency, a total mapped as a unit
-    price, or a basis Celerp cannot check is an error: the importer never strips
-    the annotation and imports the bare number. ``mapping`` is ``{column: target}``.
+    same thing on every transport. A foreign or ambiguous currency, a total mapped
+    as a unit price, or a basis Celerp cannot check is an error: the importer
+    never strips the annotation and imports the bare number. ``mapping`` is
+    ``{column: target}``.
     """
     errors: list[dict] = []
     price_basis: dict[str, str] = {}
@@ -1849,10 +1899,9 @@ def source_header_semantics(mapping: dict[str, str], currency: str) -> SourceSem
         is_total = target.endswith("_price_total")
         if not (is_total or target.endswith("_price")):
             continue
-        code = _header_currency(col)
-        if code and code != currency:
-            _error(col, "price_currency_mismatch",
-                   f"Column '{col}' is priced in {code} but the company currency is {currency}")
+        currency_error = _header_currency_error(col, currency)
+        if currency_error:
+            _error(col, *currency_error)
             continue
         basis = _header_basis(col)
         if basis and (is_total or basis not in _BASIS_UNIT_WORDS.values()):
@@ -1864,20 +1913,23 @@ def source_header_semantics(mapping: dict[str, str], currency: str) -> SourceSem
             _error(col, "price_total_as_unit",
                    f"Column '{col}' is a total; map it to {target}_total instead of {target}")
 
-    weight_sources = [col for col, target in mapping.items() if target == "weight"]
-    weight_unit = None
-    if len(weight_sources) == 1 and "weight_unit" not in targets:
-        weight_unit = weight_unit_from_header(weight_sources[0])
-    return SourceSemantics(errors=errors, weight_unit=weight_unit, price_basis=price_basis)
+    weight_units: dict[str, str] = {}
+    for target in _WEIGHT_TARGETS:
+        sources = [col for col, mapped in mapping.items() if mapped == target]
+        unit = weight_unit_from_header(sources[0], target) if len(sources) == 1 else None
+        if unit and f"{target}_unit" not in targets:
+            weight_units[target] = unit
+    return SourceSemantics(errors=errors, weight_units=weight_units, price_basis=price_basis)
 
 
 def apply_source_semantics(rows: list[dict], semantics: SourceSemantics) -> list[dict]:
-    """Carry header meaning onto mapped rows: the weight unit and each price basis."""
+    """Carry header meaning onto mapped rows: each weight unit and each price basis."""
     out: list[dict] = []
     for row in rows:
         row = dict(row)
-        if semantics.weight_unit and str(row.get("weight") or "").strip():
-            row["weight_unit"] = semantics.weight_unit
+        for target, unit in semantics.weight_units.items():
+            if str(row.get(target) or "").strip():
+                row[f"{target}_unit"] = unit
         for target, basis in semantics.price_basis.items():
             row[target + PRICE_BASIS_SUFFIX] = basis
         out.append(row)
@@ -1942,6 +1994,33 @@ def _derive_import_qty(
             }
         return weight, None
     return 0.0, None
+
+
+# Row columns an item's amount is read from, in the order _derive_import_qty reads them.
+_AMOUNT_SOURCE_KEYS = ("quantity", "qty", "pieces", "weight", "weight_ct")
+
+
+def _amount_errors(row: dict, qty: float | None, sell_by: str, unit_map: dict[str, dict]) -> list[dict]:
+    """The amount rules the writer enforces, as row errors: no negative amount,
+    and a written quantity (``qty``) no finer than its selling unit allows."""
+    errors = [
+        {"field": key, "code": "negative_value", "message": f"{key} cannot be negative"}
+        for key in (*_AMOUNT_SOURCE_KEYS, "gross_weight")
+        if (value := _to_float(row.get(key))) is not None and value < 0
+    ]
+    if (
+        errors or qty is None or not math.isfinite(qty)
+        or sell_by in SERVICE_SELL_BY or sell_by not in unit_map
+    ):
+        return errors
+    decimals = unit_map[sell_by]["decimals"]
+    if exceeds_precision(qty, decimals):
+        field = next((k for k in _AMOUNT_SOURCE_KEYS if _to_float(row.get(k)) is not None), "quantity")
+        errors.append({
+            "field": field, "code": "quantity_precision",
+            "message": f"{field} {qty:g} allows {decimals} decimal places for {sell_by}",
+        })
+    return errors
 
 
 def _collect_category_attributes(rows: list[dict]) -> dict[str, dict[str, list[str]]]:
@@ -2019,17 +2098,25 @@ def _unsupported_item_field(row: dict) -> str | None:
     ), None)
 
 
+_ITEM_CODE_CHECKS = (
+    ("sku", validate_sku, "invalid_sku"),
+    ("barcode", validate_barcode, "invalid_barcode"),
+    ("gtin", validate_gtin, "invalid_value"),
+    ("rfid_epc", validate_rfid_epc, "invalid_value"),
+)
+
+
 def _item_code_error(row: dict) -> dict | None:
     """The first invalid inventory type or identifier code on the row, as a row error."""
     inventory_type = str(row.get("inventory_type") or "").strip()
     if inventory_type and inventory_type not in VALID_INVENTORY_TYPES:
         return {"field": "inventory_type", "code": "invalid_value",
                 "message": f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}"}
-    for field, validate in (("gtin", validate_gtin), ("rfid_epc", validate_rfid_epc)):
+    for field, validate, code in _ITEM_CODE_CHECKS:
         try:
             validate(str(row.get(field) or "").strip())
         except ValueError as exc:
-            return {"field": field, "code": "invalid_value", "message": str(exc)}
+            return {"field": field, "code": code, "message": str(exc)}
     return None
 
 
@@ -2063,6 +2150,7 @@ def item_price_mutex_groups(price_lists: list[dict]) -> list[list[str]]:
 @dataclass
 class ImportBuild:
     records: list[dict]              # ImportRecord-shaped dicts ready for the committer
+    record_rows: list[int]           # the 1-based input row of each record
     errors: list[dict]              # {"row", "field", "code", "message"}
     locations_to_create: list[str]
     rows: list[dict]                # input rows with each category resolved to its canonical key
@@ -2079,20 +2167,20 @@ async def build_import_records(
     rows: list[dict],
     *,
     upsert: bool,
-    dry_run: bool,
     create_missing_locations: bool = False,
     create_key: str | None = None,
 ) -> ImportBuild:
     """Transform mapped business rows into semantic item import records.
 
-    Retry identity and item identity are deliberately separate. Create rows get a
-    per-import row key; upserts first resolve one existing item by physical barcode
-    or an unambiguous SKU, then key the patch by its target and canonical content.
+    Nothing is written. Retry identity and item identity are deliberately
+    separate. Create rows get a per-import row key; upserts first resolve one
+    existing item by physical barcode or an unambiguous SKU, then key the patch
+    by its target and canonical content.
 
-    ``dry_run`` never creates locations. Missing named locations are reported in
-    ``locations_to_create`` and are accepted only when the caller is authorised to
-    create company locations; commit then creates those locations before resolving
-    the rows. An upsert that omits ``location_name`` preserves the target location.
+    Missing named locations are reported in ``locations_to_create`` and are
+    accepted only when the caller is authorised to create company locations; a
+    row naming one keeps ``location_id`` empty until import_items creates it.
+    An upsert that omits ``location_name`` preserves the target location.
 
     ``create_key`` is the commit's batch key. An upsert row whose resolved target is
     the item this same batch created at that row stays a create, so an exact retry
@@ -2117,14 +2205,6 @@ async def build_import_records(
         name = str(row.get("location_name", "") or "").strip()
         if name and name not in location_map and name not in loc_names_needed:
             loc_names_needed.append(name)
-
-    locations_to_create = list(loc_names_needed)
-    if not dry_run and create_missing_locations:
-        for name in loc_names_needed:
-            loc = Location(id=uuid.uuid4(), company_id=company_id, name=name, type="warehouse")
-            session.add(loc)
-            await session.flush()
-            location_map[name] = str(loc.id)
 
     company = await session.get(Company, company_id)
     company_settings = (company.settings or {}) if company else {}
@@ -2173,6 +2253,7 @@ async def build_import_records(
         return key in row and str(row.get(key) or "").strip() != ""
 
     records: list[dict] = []
+    record_rows: list[int] = []
     errors: list[dict] = []
     resolved_rows: list[dict] = []
     for i, row in enumerate(rows):
@@ -2332,7 +2413,11 @@ async def build_import_records(
         if basis_error:
             errors.append(basis_error)
             continue
-        amount_source = any(_has_value(row, k) for k in ("quantity", "qty", "pieces", "weight", "weight_ct"))
+        amount_source = any(_has_value(row, k) for k in _AMOUNT_SOURCE_KEYS)
+        amount_errors = _amount_errors(row, qty if amount_source else None, item_sell_by, unit_map)
+        if amount_errors:
+            errors.extend({"row": i + 1, **e} for e in amount_errors)
+            continue
 
         def _flt(key: str, _row: dict = row) -> float | None:
             raw = str(_row.get(key, "") or "").strip()
@@ -2391,29 +2476,37 @@ async def build_import_records(
             ("rfid_epc", validate_rfid_epc(_text("rfid_epc"))),
         ) if value is not None})
 
-        # Use the target quantity for total->unit conversion on an upsert that does
-        # not itself change quantity. Otherwise a price-only upsert would divide by 1.
+        # A total is divided by the quantity it covers: the row's own quantity, or
+        # the target's on an upsert that does not change quantity. A total with no
+        # positive quantity, or next to its own unit price, has no one meaning.
         price_qty = qty
         if target is not None and not amount_source:
-            try:
-                price_qty = float((target.state or {}).get("quantity") or 0)
-            except (TypeError, ValueError):
-                price_qty = 0
+            price_qty = _to_float((target.state or {}).get("quantity")) or 0.0
 
+        price_errors: list[dict] = []
         for col_key in row:
-            if col_key.endswith("_price_total"):
+            if col_key.endswith("_price") and _flt(col_key) is not None:
+                data[col_key] = _flt(col_key)
+            elif col_key.endswith("_price_total") and _flt(col_key) is not None:
                 unit_key = col_key[: -len("_total")]
                 total_val = _flt(col_key)
-                if total_val is None or _flt(unit_key) is not None:
-                    continue
-                if unit_key == "cost_price":
+                if _flt(unit_key) is not None:
+                    price_errors.append({
+                        "row": i + 1, "field": col_key, "code": "price_unit_total_conflict",
+                        "message": f"{unit_key} and {col_key} are both given; keep one of them",
+                    })
+                elif not price_qty > 0:
+                    price_errors.append({
+                        "row": i + 1, "field": col_key, "code": "price_total_needs_quantity",
+                        "message": f"{col_key} needs a quantity above zero to divide by",
+                    })
+                elif unit_key == "cost_price":
                     data["cost_total"] = total_val
-                    continue
-                data[unit_key] = to_stored_float(
-                    unit_price_from_total(total_val, price_qty or 1, currency)
-                )
-            elif col_key.endswith("_price") and _flt(col_key) is not None:
-                data[col_key] = _flt(col_key)
+                else:
+                    data[unit_key] = to_stored_float(unit_price_from_total(total_val, price_qty, currency))
+        if price_errors:
+            errors.extend(price_errors)
+            continue
 
         if target is None:
             idem = f"row:{i + 1}"
@@ -2425,6 +2518,7 @@ async def build_import_records(
                 "source": "csv_import",
                 "idempotency_key": idem,
             })
+            record_rows.append(i + 1)
             continue
 
         current = target.state or {}
@@ -2476,8 +2570,12 @@ async def build_import_records(
             "source": "csv_import",
             "idempotency_key": idem,
         })
+        record_rows.append(i + 1)
 
-    return ImportBuild(records=records, errors=errors, locations_to_create=locations_to_create, rows=resolved_rows)
+    return ImportBuild(
+        records=records, record_rows=record_rows, errors=errors,
+        locations_to_create=loc_names_needed, rows=resolved_rows,
+    )
 
 
 def import_preview_hash(inputs: dict) -> str:
@@ -2498,12 +2596,91 @@ _CELL_ERROR_MESSAGES = {
 
 
 @dataclass
-class ImportRowsPreview:
-    errors: list[dict]              # {"row", "field", "code", "message"}
+class SemanticImportPlan:
+    """What an item import writes, decided before anything is written."""
+    rows: list[dict]                 # the rows as the importer resolved them
+    records: list[dict]              # ImportRecord-shaped dicts for the committer
+    errors: list[dict]               # {"row", "field", "code", "message"}; the writer's rejections
     locations_to_create: list[str]
+    semantic_fingerprint: str        # changes whenever what the rows would write changes
 
 
-async def preview_import_rows(
+class ImportRejected(Exception):
+    """The preflight rejected rows; nothing was written."""
+
+    def __init__(self, errors: list[dict]):
+        super().__init__(f"{len(errors)} import row errors")
+        self.errors = errors
+
+
+class ImportPreviewStale(Exception):
+    """The rows now mean something other than what was previewed; nothing was written."""
+
+
+def import_operation_key(idempotency_key: str | None, rows: list[dict], upsert: bool) -> str:
+    """The retry identity of one import: the caller's key, or else the content.
+
+    Creation retry identity belongs to the import content and row ordinal, not
+    SKU or barcode, so same-SKU and no-SKU rows stay distinct lots while an exact
+    re-submit of the same mapped rows is a no-op.
+    """
+    if idempotency_key:
+        return idempotency_key
+    canonical = json.dumps({"upsert": upsert, "rows": rows}, sort_keys=True, separators=(",", ":"), default=str)
+    return f"csv:{hashlib.sha256(canonical.encode()).hexdigest()}"
+
+
+def _source_field(row: dict, key: str) -> str:
+    """The row column a record field was read from."""
+    if key in row:
+        return key
+    if key == "cost_total":
+        return "cost_price_total"
+    if key.endswith("_price"):
+        return f"{key}_total"
+    return next((k for k in _AMOUNT_SOURCE_KEYS if _to_float(row.get(k)) is not None), key)
+
+
+def _permission_errors(record: dict, row: dict, *, can_set_prices: bool, can_edit_amounts: bool) -> list[dict]:
+    """The permission rules the writer enforces on a record, as row errors."""
+    data = record["data"]
+    gated: list[tuple[str, str]] = []
+    if not can_set_prices:
+        gated += [
+            (_source_field(row, key), "set_inventory_prices") for key, value in data.items()
+            if value is not None and (key.endswith("_price") or key == "cost_total")
+        ]
+    if record["event_type"] == "item.patched" and not can_edit_amounts:
+        gated += [(_source_field(row, key), "edit_inventory_amounts") for key in sorted(AMOUNT_ITEM_KEYS & set(data))]
+    return [
+        {"field": field, "code": "permission_denied", "message": f"Setting {field} requires the {permission} permission"}
+        for field, permission in dict(gated).items()
+    ]
+
+
+def _semantic_fingerprint(build: ImportBuild, errors: list[dict]) -> str:
+    """Hash of what the rows would write: each record's target and data, and the errors.
+
+    Per-attempt identity (idempotency keys, generated ids of new items) is left
+    out. A location the import will create is identified by its name, so the
+    fingerprint is the same before and after the import creates it.
+    """
+    canonical = []
+    for rec, row_no in zip(build.records, build.record_rows):
+        data = {k: v for k, v in rec["data"].items() if k != "idempotency_key"}
+        location_name = str(build.rows[row_no - 1].get("location_name") or "").strip()
+        if location_name:
+            data["location_id"] = {"name": location_name}
+        canonical.append({
+            "row": row_no,
+            "event_type": rec["event_type"],
+            "entity_id": rec["entity_id"] if rec["event_type"] == "item.patched" else None,
+            "data": data,
+        })
+    return import_preview_hash({"records": canonical, "errors": errors})
+
+
+async def preflight_import_rows(
     session: AsyncSession,
     company_id,
     role: str,
@@ -2511,12 +2688,15 @@ async def preview_import_rows(
     rows: list[dict],
     *,
     upsert: bool,
-) -> ImportRowsPreview:
-    """The one semantic preview of mapped item rows, with nothing written.
+    operation_key: str,
+) -> SemanticImportPlan:
+    """The one semantic check of mapped item rows, with nothing written.
 
-    Checks each mapped cell against the item spec, then dry-runs the importer.
-    The file preview, the browser row preview, and the commit that binds to
-    either all call this, so they cannot disagree about a row.
+    Checks each mapped cell against the item spec, builds the records, and
+    applies the writer's own rules (amounts, codes, permissions) to them, so a
+    row the writer would refuse is reported here with its field and code. Every
+    preview and every commit runs this over the same rows, so they cannot
+    disagree about a row.
     """
     price_lists, _default_list, _currency = await get_price_config(session, company_id)
     spec = build_item_import_spec(price_lists)
@@ -2527,11 +2707,58 @@ async def preview_import_rows(
             if code:
                 errors.append({"row": i + 1, "field": col, "code": code, "message": _CELL_ERROR_MESSAGES[code].format(col=col)})
     build = await build_import_records(
-        session, company_id, rows, upsert=upsert, dry_run=True,
+        session, company_id, rows, upsert=upsert,
         create_missing_locations=role_has_permission(settings, role, "manage_company_settings"),
+        create_key=operation_key,
     )
     errors.extend(build.errors)
-    return ImportRowsPreview(errors=errors, locations_to_create=build.locations_to_create)
+    can_set_prices = role_has_permission(settings, role, "set_inventory_prices")
+    can_edit_amounts = role_has_permission(settings, role, "edit_inventory_amounts")
+    for rec, row_no in zip(build.records, build.record_rows):
+        errors.extend(
+            {"row": row_no, **e} for e in _permission_errors(
+                rec, rows[row_no - 1], can_set_prices=can_set_prices, can_edit_amounts=can_edit_amounts,
+            )
+        )
+    errors.sort(key=lambda e: e["row"])
+    return SemanticImportPlan(
+        rows=build.rows, records=build.records, errors=errors,
+        locations_to_create=build.locations_to_create,
+        semantic_fingerprint=_semantic_fingerprint(build, errors),
+    )
+
+
+async def preview_import_rows(
+    session: AsyncSession,
+    company_id,
+    role: str,
+    settings: dict,
+    rows: list[dict],
+    *,
+    upsert: bool,
+    idempotency_key: str | None,
+) -> SemanticImportPlan:
+    """Preview mapped item rows under the operation key their commit will use."""
+    return await preflight_import_rows(
+        session, company_id, role, settings, rows,
+        upsert=upsert, operation_key=import_operation_key(idempotency_key, rows, upsert),
+    )
+
+
+async def _create_missing_locations(session: AsyncSession, company_id, names: list[str]) -> None:
+    """Create the named locations the company does not have yet.
+
+    Runs under the company lock and re-reads the names after taking it, so two
+    imports naming the same new location create it once.
+    """
+    await lock_company(session, company_id)
+    existing = set((await session.execute(
+        select(Location.name).where(Location.company_id == company_id)
+    )).scalars().all())
+    for name in names:
+        if name not in existing:
+            session.add(Location(id=uuid.uuid4(), company_id=company_id, name=name, type="warehouse"))
+    await session.flush()
 
 
 async def import_items(
@@ -2545,38 +2772,42 @@ async def import_items(
     upsert: bool,
     filename: str | None,
     idempotency_key: str | None,
+    expected_fingerprint: str | None = None,
 ) -> BatchImportResult:
     """Import mapped business rows through the canonical committer.
 
-    Builds records server-side (creating any missing locations), commits them in
-    chunks of 500, then auto-merges any newly discovered attribute columns into
-    the company's category schemas (best-effort, gated on manage_company_settings).
-    Shared by the browser importer and the agent commit path.
+    Always runs the semantic preflight first. Any row error raises
+    ImportRejected, and a plan whose fingerprint differs from
+    ``expected_fingerprint`` (the one a bound preview showed) raises
+    ImportPreviewStale; either way nothing is written. A clean import then
+    creates any missing named locations, commits the records in chunks of 500,
+    and auto-merges newly discovered attribute columns into the company's
+    category schemas (best-effort, gated on manage_company_settings). Every
+    item import transport ends here.
 
     Creates use ``import-attempt + row ordinal`` identity, so equal SKUs and rows
     without SKUs remain distinct lots while an exact retry of the same attempt is a
     no-op. Upserts resolve a concrete existing entity first and use a hash of the
     resulting patch, so the same patch dedupes but a later changed patch still applies.
     """
-    can_create_locations = role_has_permission(settings, role, "manage_company_settings")
+    batch_key = import_operation_key(idempotency_key, rows, upsert)
 
-    # Creation retry identity belongs to the import content + row ordinal, not
-    # SKU/barcode. This keeps same-SKU/no-SKU rows distinct inside one file while
-    # making an exact re-submit of the same mapped rows a no-op. A caller-supplied
-    # key (e.g. the agent preview hash) may pin the same identity explicitly.
-    if idempotency_key:
-        batch_key = idempotency_key
-    else:
-        canonical_batch = json.dumps(
-            {"upsert": upsert, "rows": rows},
-            sort_keys=True, separators=(",", ":"), default=str,
+    async def _clean_plan() -> SemanticImportPlan:
+        plan = await preflight_import_rows(
+            session, company_id, role, settings, rows, upsert=upsert, operation_key=batch_key,
         )
-        batch_key = f"csv:{hashlib.sha256(canonical_batch.encode()).hexdigest()}"
-    build = await build_import_records(
-        session, company_id, rows, upsert=upsert, dry_run=False,
-        create_missing_locations=can_create_locations, create_key=batch_key,
-    )
-    for rec in build.records:
+        if expected_fingerprint is not None and plan.semantic_fingerprint != expected_fingerprint:
+            raise ImportPreviewStale()
+        if plan.errors:
+            raise ImportRejected(plan.errors)
+        return plan
+
+    plan = await _clean_plan()
+    if plan.locations_to_create:
+        await _create_missing_locations(session, company_id, plan.locations_to_create)
+        plan = await _clean_plan()
+
+    for rec in plan.records:
         if rec["event_type"] == "item.created":
             key = f"{batch_key}:{rec['idempotency_key']}"
             rec["idempotency_key"] = rec["data"]["idempotency_key"] = key
@@ -2585,11 +2816,11 @@ async def import_items(
     user = SimpleNamespace(id=actor_id)
 
     created = skipped = updated = 0
-    errors: list[str] = [f"Row {e['row']}: {e['message']}" for e in build.errors]
+    errors: list[str] = []
     batch_id: str | None = None
 
     _CHUNK = 500
-    all_records = build.records
+    all_records = plan.records
     for i in range(0, max(len(all_records), 1), _CHUNK):
         chunk = all_records[i : i + _CHUNK]
         if not chunk:
@@ -2611,8 +2842,8 @@ async def import_items(
     # mutating category schemas is a settings change, so the caller's role must
     # carry manage_company_settings; without it the merge is skipped and the
     # import still succeeds.
-    if build.records and role_has_permission(settings, role, "manage_company_settings"):
-        inferred = _infer_category_schemas(_collect_category_attributes(build.rows))
+    if plan.records and role_has_permission(settings, role, "manage_company_settings"):
+        inferred = _infer_category_schemas(_collect_category_attributes(plan.rows))
         if inferred:
             await _merge_category_schemas(session, company_id, inferred)
             await session.commit()

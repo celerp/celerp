@@ -34,6 +34,8 @@ from .services import (
     BatchImportRequest,
     BatchImportResult,
     adjust_item_quantity,
+    ImportPreviewStale,
+    ImportRejected,
     allocate_internal_codes,
     apply_source_semantics,
     build_item_import_spec,
@@ -1525,8 +1527,31 @@ def _bounded_rows(rows: list[dict]) -> list[dict]:
     return rows
 
 
-def _rows_preview_hash(rows: list[dict], upsert: bool, idempotency_key: str | None) -> str:
-    return import_preview_hash({"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key})
+def _rows_preview_hash(rows: list[dict], upsert: bool, idempotency_key: str | None, semantic_fingerprint: str) -> str:
+    """Binds the rows, the update-existing choice, the operation key, and what
+    the rows meant when previewed."""
+    return import_preview_hash({
+        "rows": rows, "upsert": upsert, "idempotency_key": idempotency_key,
+        "semantic_fingerprint": semantic_fingerprint,
+    })
+
+
+def _validation_failed(errors: list[dict]) -> HTTPException:
+    return HTTPException(status_code=422, detail={"code": "validation_failed", "errors": errors})
+
+
+def _preview_stale() -> HTTPException:
+    return HTTPException(status_code=409, detail={"code": "preview_stale"})
+
+
+async def _write_import(session, company_id, user_id, role: str, settings: dict, rows: list[dict], **kwargs) -> BatchImportResult:
+    """Run import_items, answering its refusals as 422 validation_failed and 409 preview_stale."""
+    try:
+        return await import_items(session, company_id, user_id, role, settings, rows, **kwargs)
+    except ImportRejected as exc:
+        raise _validation_failed(exc.errors)
+    except ImportPreviewStale:
+        raise _preview_stale()
 
 
 class InventoryImportRows(BaseModel):
@@ -1574,14 +1599,18 @@ async def import_rows_preview(
 ) -> InventoryImportRowsPreview:
     """Semantic preview of mapped browser rows; nothing is written.
 
-    The returned hash binds the rows, the update-existing choice, and the
-    operation key, and /import/rows refuses a commit whose hash no longer matches.
+    The returned hash binds the rows, the update-existing choice, the operation
+    key, and what the rows mean now, and /import/rows refuses a commit whose
+    hash no longer matches.
     """
-    preview = await preview_import_rows(session, company_id, role, settings, body.rows, upsert=body.upsert)
+    plan = await preview_import_rows(
+        session, company_id, role, settings, body.rows,
+        upsert=body.upsert, idempotency_key=body.idempotency_key,
+    )
     return InventoryImportRowsPreview(
-        errors=preview.errors,
-        locations_to_create=preview.locations_to_create,
-        preview_hash=_rows_preview_hash(body.rows, body.upsert, body.idempotency_key),
+        errors=plan.errors,
+        locations_to_create=plan.locations_to_create,
+        preview_hash=_rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan.semantic_fingerprint),
     )
 
 
@@ -1604,19 +1633,26 @@ async def import_rows(
     idempotency, and the category-schema follow-up. Unmarked: this is the browser
     transport, not an agent capability (the agent commits through /import/commit).
 
-    With ``preview_hash`` the commit is bound to /import/rows/preview: the preview
-    is recomputed, a changed hash is refused with 409 and any row error with 422,
-    before anything is written.
+    Every commit runs the semantic preflight, and any row error is refused with
+    422 before anything is written. With ``preview_hash`` the commit is also
+    bound to /import/rows/preview: the preview is recomputed, and a changed hash,
+    including rows that now mean something else, is refused with 409.
     """
+    expected_fingerprint = None
     if body.preview_hash is not None:
-        if _rows_preview_hash(body.rows, body.upsert, body.idempotency_key) != body.preview_hash:
-            raise HTTPException(status_code=409, detail={"code": "preview_stale"})
-        preview = await preview_import_rows(session, company_id, role, settings, body.rows, upsert=body.upsert)
-        if preview.errors:
-            raise HTTPException(status_code=422, detail={"code": "validation_failed", "errors": preview.errors})
-    return await import_items(
+        plan = await preview_import_rows(
+            session, company_id, role, settings, body.rows,
+            upsert=body.upsert, idempotency_key=body.idempotency_key,
+        )
+        expected_fingerprint = plan.semantic_fingerprint
+        if _rows_preview_hash(body.rows, body.upsert, body.idempotency_key, expected_fingerprint) != body.preview_hash:
+            raise _preview_stale()
+        if plan.errors:
+            raise _validation_failed(plan.errors)
+    return await _write_import(
         session, company_id, user.id, role, settings, body.rows,
         upsert=body.upsert, filename=body.filename, idempotency_key=body.idempotency_key,
+        expected_fingerprint=expected_fingerprint,
     )
 
 
@@ -1652,12 +1688,15 @@ class InventoryImportPreviewRequest(BaseModel):
 async def _build_item_preview(
     session, company_id, user_id, role: str, settings: dict, *,
     file_id: str, sheet: str | None, upsert: bool, mapping: dict[str, str] | None = None,
+    idempotency_key: str | None = None,
 ) -> dict:
-    """Load an uploaded file, map and validate it, and dry-run the importer.
+    """Load an uploaded file, map and validate it, and run the import preflight.
 
     Returns the preview payload plus the mapped rows, the flat error list, the
-    original filename, and the preview hash. Recomputed identically by preview
-    and commit so the hash pins the exact bytes, sheet, mapping, and row count.
+    original filename, the preview hash, and the semantic fingerprint.
+    Recomputed identically by preview and commit so the hash pins the exact
+    bytes, sheet, mapping, row count, and what the rows would write.
+    ``idempotency_key`` is the commit's operation key (None when previewing).
 
     Raises 404 when the file id is malformed, missing, or owned by another
     company; 422 when the bytes cannot be read as a table.
@@ -1708,13 +1747,18 @@ async def _build_item_preview(
     # Rows are only previewed under a mapping that can be applied.
     mapped_rows: list[dict] = []
     locations_to_create: list[str] = []
+    semantic_fingerprint: str | None = None
     errors = resolved.errors + semantics.errors
-    if not resolved.errors:
+    if resolved.applicable:
         _new_cols, mapped_rows = remap_rows(cols, rows, mapping)
         mapped_rows = apply_source_semantics(mapped_rows, semantics)
-        preview = await preview_import_rows(session, company_id, role, settings, mapped_rows, upsert=upsert)
-        errors += preview.errors
-        locations_to_create = preview.locations_to_create
+        plan = await preview_import_rows(
+            session, company_id, role, settings, mapped_rows,
+            upsert=upsert, idempotency_key=idempotency_key,
+        )
+        errors += plan.errors
+        locations_to_create = plan.locations_to_create
+        semantic_fingerprint = plan.semantic_fingerprint
     errors = errors[:50]
 
     unmapped_required = sorted(r for r in spec.required if r not in set(mapping.values()))
@@ -1726,6 +1770,7 @@ async def _build_item_preview(
         "mapping": mapping,
         "row_count": row_count,
         "file_sha256": hashlib.sha256(data).hexdigest(),
+        "semantic_fingerprint": semantic_fingerprint,
     })
 
     return {
@@ -1739,6 +1784,7 @@ async def _build_item_preview(
         "mapped_rows": mapped_rows,
         "filename": filename,
         "preview_hash": preview_hash,
+        "semantic_fingerprint": semantic_fingerprint,
     }
 
 
@@ -1808,23 +1854,26 @@ async def import_commit(
 ) -> BatchImportResult:
     """Commit an item import previewed via /import/preview.
 
-    Recomputes the preview from the stored bytes; a hash mismatch means the file
-    or its mapping changed since the preview, refused with 409 rather than
-    imported under stale assumptions. Any row validation error is refused with
-    422 and the error list; otherwise the rows go through the shared committer.
+    Recomputes the preview from the stored bytes; a hash mismatch means the file,
+    its mapping, or what its rows would write changed since the preview, refused
+    with 409 rather than imported under stale assumptions. Any row validation
+    error is refused with 422 and the error list; otherwise the rows go through
+    the shared committer.
     """
+    operation_key = f"preview:{body.preview_hash}"
     result = await _build_item_preview(
         session, company_id, user.id, role, settings, file_id=body.file_id,
         sheet=body.sheet, upsert=body.upsert, mapping=body.mapping,
+        idempotency_key=operation_key,
     )
     if result["preview_hash"] != body.preview_hash:
-        raise HTTPException(status_code=409, detail={"code": "preview_stale"})
+        raise _preview_stale()
     if result["errors"]:
-        raise HTTPException(status_code=422, detail={"code": "validation_failed", "errors": result["errors"]})
-    return await import_items(
+        raise _validation_failed(result["errors"])
+    return await _write_import(
         session, company_id, user.id, role, settings, result["mapped_rows"],
-        upsert=body.upsert, filename=result["filename"],
-        idempotency_key=f"preview:{body.preview_hash}",
+        upsert=body.upsert, filename=result["filename"], idempotency_key=operation_key,
+        expected_fingerprint=result["semantic_fingerprint"],
     )
 
 

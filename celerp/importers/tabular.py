@@ -264,6 +264,13 @@ class MappingResult:
     mapping: dict[str, str]
     errors: list[dict]
 
+    @property
+    def applicable(self) -> bool:
+        """True when rows can still be read under the mapping, so they can be
+        checked row by row. A unit price and a total mapped for one list only
+        make the mapping unimportable; every column still has one target."""
+        return all(e["code"] == "price_target_conflict" for e in self.errors)
+
 
 def _target_label(target: str) -> str:
     return target.replace("_", " ").title()
