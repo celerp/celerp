@@ -2060,3 +2060,74 @@ async def test_batch_import_upsert_price_denied_without_permission(client, sessi
     assert r.json()["updated"] == 0 and r.json()["errors"]
     item = (await client.get(f"/items/{eid}", headers=ctx["admin_h"])).json()
     assert item.get("retail_price") is None
+
+
+# A price written inside ``attributes`` becomes the item's price (the read model lifts
+# attributes to the top level), so every writer gates nested price keys the same way.
+
+async def test_item_create_nested_price_denied_without_permission(client, session):
+    ctx = await perm_setup(client, session)
+    r = await client.post("/items", headers=ctx["operator_h"], json={
+        "sku": "NEST-C", "name": "Nest C", "quantity": 1, "sell_by": "piece",
+        "location_id": ctx["location_id"], "attributes": {"retail_price": 999, "Wholesale": 555},
+    })
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == _PRICE_DENIED
+
+
+async def test_item_patch_nested_price_denied_without_permission(client, session):
+    ctx = await perm_setup(client, session)
+    r = await client.patch(f"/items/{ctx['item_id']}", headers=ctx["operator_h"], json={
+        "fields_changed": {"attributes": {"old": {}, "new": {"retail_price": 777}}},
+    })
+    assert r.status_code == 403, r.text
+    item = (await client.get(f"/items/{ctx['item_id']}", headers=ctx["admin_h"])).json()
+    assert item.get("retail_price") is None
+
+
+async def test_item_patch_other_attributes_allowed_without_price_permission(client, session):
+    """Editing a non-price attribute stays open to the operator."""
+    ctx = await perm_setup(client, session)
+    r = await client.patch(f"/items/{ctx['item_id']}", headers=ctx["operator_h"], json={
+        "fields_changed": {"attributes": {"old": {}, "new": {"color": "red"}}},
+    })
+    assert r.status_code == 200, r.text
+
+
+async def test_split_child_nested_price_denied_without_permission(client, session):
+    ctx = await perm_setup(client, session)
+    item_id = await _splittable_item(client, ctx["admin_h"], ctx["location_id"], sku="SPL-NP")
+    r = await client.post(f"/items/{item_id}/split", headers=ctx["operator_h"], json={
+        "children": [{"sku": "SPL-NP.1", "quantity": 3, "attributes": {"retail_price": 4321}}],
+    })
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == _PRICE_DENIED
+
+
+async def test_merge_resolved_price_denied_without_permission(client, session):
+    ctx = await perm_setup(client, session)
+    ids = []
+    for sku, price in (("MRG-NP-A", 10), ("MRG-NP-B", 20)):
+        r = await client.post("/items", headers=ctx["admin_h"], json={
+            "sku": sku, "name": sku, "quantity": 1, "category": "Raw", "status": "available",
+            "location_id": ctx["location_id"], "sell_by": "piece", "attributes": {"vip_price": price},
+        })
+        assert r.status_code == 200, r.text
+        ids.append(r.json()["id"])
+    r = await client.post("/items/merge", headers=ctx["operator_h"], json={
+        "source_entity_ids": ids, "target_sku_from": ids[0], "resolved_attributes": {"vip_price": "999"},
+    })
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == _PRICE_DENIED
+
+
+async def test_batch_import_nested_price_denied_without_permission(client, session):
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "import_export_data", "operator")
+    eid = "item:bi-nested-price"
+    r = await client.post("/items/import/batch", json={"records": [_import_record(
+        eid, {"sku": "BI-NP", "name": "BI NP", "sell_by": "piece", "quantity": 1,
+              "attributes": {"retail_price": 888}}, "bi-nested-price",
+    )]}, headers=ctx["operator_h"])
+    assert r.status_code == 200, r.text
+    assert r.json()["created"] == 0 and r.json()["errors"], r.text

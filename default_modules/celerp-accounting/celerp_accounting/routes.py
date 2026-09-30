@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.ai.files import XLSX_CONTENT_TYPE, load_file
 from celerp.db import get_session
 from celerp.events.engine import emit_event, write_period_lock
-from celerp.importers.tabular import TabularError, _rows_to_csv, read_table
+from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting import import_service
 from celerp_accounting.import_service import AccImportRecord
@@ -3080,7 +3080,10 @@ async def _import_statement_lines(
 
     if recon.status == "completed":
         raise HTTPException(status_code=409, detail="Session already completed")
-    parsed = parse_bank_csv(content, col_map)
+    try:
+        parsed = parse_bank_csv(content, col_map)
+    except TabularError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
     if parsed["needs_mapping"]:
         return {
@@ -3202,7 +3205,10 @@ async def import_recon_csv(
     import json as _json
 
     recon = await _get_recon(db, session_id, company_id, for_update=True)
-    content = await file.read()
+    try:
+        content = await read_upload_bytes(file)
+    except TabularError as e:
+        raise HTTPException(status_code=413, detail=str(e))
     col_map = _json.loads(column_map) if column_map else None
     return await _import_statement_lines(db, recon, company_id, content, file.filename or "statement.csv", col_map)
 

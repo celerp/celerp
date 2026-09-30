@@ -56,12 +56,12 @@ class SecurityHeadersMiddleware:
 
 
 class MaxBodySizeMiddleware:
-    """Pure ASGI middleware - rejects requests whose Content-Length exceeds the limit.
+    """Pure ASGI middleware - rejects request bodies larger than the limit.
 
-    Only checks the Content-Length header - does not buffer the body, which
-    avoids conflicts with streaming responses (CSV exports, SSE, etc.).
-    Clients that omit Content-Length on large uploads are not covered here;
-    that is acceptable for the current use case (JSON API).
+    A declared Content-Length over the limit is refused before the app runs. A
+    body sent without one (chunked) is counted as it streams: once it passes the
+    limit the app sees the client as gone and the response is a 413. Nothing is
+    buffered here, so streaming responses (CSV exports, SSE) are unaffected.
     """
 
     def __init__(self, app: ASGIApp, max_body_size_bytes: int) -> None:
@@ -101,7 +101,38 @@ class MaxBodySizeMiddleware:
                 await response(scope, receive, send)
                 return
 
-        await self.app(scope, receive, send)
+        limit = self.max_body_size_bytes
+        received = 0
+        too_large = False
+        started = False
+
+        async def counted_receive() -> dict:
+            nonlocal received, too_large
+            if too_large:
+                return {"type": "http.disconnect"}
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    too_large = True
+                    return {"type": "http.disconnect"}
+            return message
+
+        async def guarded_send(message: dict) -> None:
+            nonlocal started
+            if too_large and not started:
+                return  # the 413 below replaces whatever the app answered
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counted_receive, guarded_send)
+        except Exception:
+            if not too_large:
+                raise
+        if too_large and not started:
+            await JSONResponse(status_code=413, content={"detail": "Request too large"})(scope, receive, send)
 
 
 class SlidingTokenRefreshMiddleware:

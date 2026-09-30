@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import csv
-import io
 import json
 from datetime import date as _date
 from urllib.parse import quote
@@ -728,7 +726,10 @@ def setup_routes(app):
             return _workspace_redirect(session_id, t("recon.err_csv_corrupted"))
         if len(content) > _MAX_CSV_BYTES:
             return _workspace_redirect(session_id, t("recon.err_csv_too_large"))
-        fieldnames = list(csv.DictReader(io.StringIO(content.decode("utf-8-sig", errors="replace"))).fieldnames or [])
+        try:
+            fieldnames, _ = tabular.read_csv(content.decode("utf-8-sig", errors="replace"))
+        except tabular.TabularError as e:
+            return _workspace_redirect(session_id, str(e))
         selections = {k[4:]: str(v) for k, v in form.items() if k.startswith("map_")}
         column_map = {
             canonical: header

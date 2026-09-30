@@ -67,6 +67,15 @@ def is_price_item_key(key: str, price_lists: list[dict] = ()) -> bool:
     )
 
 
+def price_keys_in(values: dict, price_lists: list[dict] = ()) -> set[str]:
+    """The price keys a write sets with a value: its own keys and those nested in
+    ``attributes``, which the item read model lifts to the top level (so a price
+    written inside ``attributes`` is a price). Every item writer gates this set."""
+    nested = values.get("attributes")
+    items = list(values.items()) + (list(nested.items()) if isinstance(nested, dict) else [])
+    return {k for k, v in items if v is not None and is_price_item_key(k, price_lists)}
+
+
 def is_cost_list_name(name: str) -> bool:
     return name.lower() in COST_PRICE_LIST_NAMES
 
