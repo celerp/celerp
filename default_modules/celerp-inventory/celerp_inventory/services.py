@@ -3087,7 +3087,7 @@ async def write_import_batch(
                 )
                 if current is not None and all((current.state or {}).get(k) == v for k, v in data.items()):
                     # An exact retry: the item already holds this content.
-                    skipped += 1
+                    outcome.add(entity_id, "skipped")
                     continue
                 event_type = "item.patched"
                 canonical_patch = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)

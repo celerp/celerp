@@ -33,7 +33,6 @@ from .services import (
     BatchImportRequest,
     BatchImportResult,
     adjust_item_quantity,
-    ImportPreviewStale,
     ImportRejected,
     allocate_internal_codes,
     apply_source_semantics,
