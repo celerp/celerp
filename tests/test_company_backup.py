@@ -2011,6 +2011,40 @@ async def test_cross_company_reference_refused(real_engine, real_client, tmp_pat
     assert await snapshot(real_engine) == before
 
 
+def _r_with_settings(data: bytes, key: str, value) -> bytes:
+    parts = members(data)
+    meta = json.loads(parts["manifest.json"])
+    meta["company"]["settings"][key] = value
+    parts["manifest.json"] = json.dumps(meta).encode()
+    return rezip(parts)
+
+
+@pytest.mark.parametrize("place", ["state", "event", "settings"])
+@pytest.mark.parametrize("target", ["record", "company"])
+async def test_id_of_another_company_outside_foreign_keys_refused(real_engine, real_client, tmp_path, monkeypatch,
+                                                                  place, target):
+    """Another company's id, or the id of one of its records, held in JSON or in company
+    settings is refused before any company is created."""
+    _r_env(tmp_path, monkeypatch)
+    user, _, tok = await _r_source(real_engine)
+    other = await company(real_engine, user, "Beta Trading", "beta-marker")
+    foreign = await _r_location(real_engine, other) if target == "record" else str(other)
+    data = await download(real_client, tok)
+    if place == "state":
+        changed = _r_with_rows(data, "projections", lambda row: {**row, "state": {**row["state"], "bin": foreign}})
+    elif place == "event":
+        changed = _r_with_rows(data, "ledger", lambda row: {**row, "data": {**row["data"], "lines": [foreign]}})
+    else:
+        changed = _r_with_settings(data, "default_bin", foreign)
+    before = await snapshot(real_engine)
+    async with _r_company_insert_probe(real_engine) as reached:
+        r = await restore(real_client, tok, changed)
+        _r_refused(r)
+        assert "another company" in r.json()["detail"], r.text
+        assert not await reached()
+    assert await snapshot(real_engine) == before
+
+
 async def test_unresolved_reference_refused_before_writes(real_engine, real_client, tmp_path, monkeypatch):
     """A foreign key naming a row that exists nowhere is refused before any company is created."""
     _r_env(tmp_path, monkeypatch)

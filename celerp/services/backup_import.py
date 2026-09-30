@@ -228,14 +228,14 @@ def validate_archive(path: Path) -> ImportMeta:
 
 
 async def _safety_backup(label: str):
-    """Run a pre-import safety backup if the encryption key is configured.
+    """Run a pre-import safety backup; without an encryption key none can be made.
 
     Module-level helper so tests can stub it cleanly.
     """
     from celerp.config import settings
     from celerp.services.backup import BackupResult
     if not settings.backup_encryption_key:
-        return BackupResult(ok=True, size_bytes=0)
+        return BackupResult(ok=False, size_bytes=0, error="No backup encryption key is set.")
     from celerp.services.backup_repo import run_snapshot
     return await run_snapshot(label=label)
 

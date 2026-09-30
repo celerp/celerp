@@ -111,6 +111,7 @@ UNSAVABLE = "This company backup has records this Celerp cannot save." + _NOT_RE
 ATTACHMENT_FAILED = "Celerp could not save an attachment file from this backup." + _NOT_RESTORED
 ATTACHMENT_TYPE = "This company backup has an attachment file of a type Celerp does not store: {name}." + _NOT_RESTORED
 MISMATCH = "The restored company did not match the backup ({table})." + _NOT_RESTORED
+FOREIGN = "This company backup refers to records of another company." + _NOT_RESTORED
 ALREADY_SET_UP = "This Celerp is already set up." + _NOT_RESTORED
 NOT_A_MEMBER = ("This backup was already restored here as a company you are not a member of."
                 + _NOT_RESTORED)
@@ -300,6 +301,19 @@ def remap(value, id_map: dict[str, str]):
     if isinstance(value, list):
         return [remap(v, id_map) for v in value]
     return value
+
+
+def _uuids(value, found: set[str]) -> None:
+    """Add every string in a parsed JSON value that remap() would treat as an id."""
+    if isinstance(value, str):
+        if _UUID.fullmatch(value):
+            found.add(value)
+    elif isinstance(value, dict):
+        for v in value.values():
+            _uuids(v, found)
+    elif isinstance(value, list):
+        for v in value:
+            _uuids(v, found)
 
 
 def _refuse_constant(name: str):
@@ -668,14 +682,17 @@ def _lines(zf: zipfile.ZipFile, name: str):
                 yield line
 
 
-def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[str], dict[str, int]]:
+def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[str], dict[str, int], set[str]]:
     """Check every row before anything is written: its shape, its keys, and that every
     reference points at the backup's own company, at a row the backup carries, or nowhere.
-    Returns the ids to replace and each table's row digest."""
+    Returns the ids to replace, each table's row digest, and every other id-shaped value
+    the backup holds, in its rows or its company settings."""
     m = backup.manifest
     source = m["company"]["id"]
     carried = set(order)
     ids: set[str] = set()
+    seen: set[str] = set()
+    _uuids(m["company"]["settings"], seen)
     digests: dict[str, int] = {}
     refs: dict[tuple[str, tuple[str, ...]], set[tuple]] = {}
     keys: dict[tuple[str, tuple[str, ...]], set[tuple]] = {}
@@ -705,6 +722,7 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
                         raise BackupError(422, DAMAGED)
                     if _is_uuid(value):
                         ids.add(value)
+                _uuids(row, seen)
                 for tcols, bucket in own_keys:
                     bucket.add(tuple(row[c] for c in tcols))
                 for cols, target, tcols in fks:
@@ -723,7 +741,30 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
     for key, values in refs.items():
         if not values <= keys.get(key, set()):
             raise BackupError(422, DAMAGED)
-    return ids, digests
+    return ids, digests, seen - ids - {source}
+
+
+async def _check_foreign(session: AsyncSession, plan: _Plan, source: str, values: set[str]) -> None:
+    """Refuse a backup holding the id of another company here, or of a record another
+    company owns. The source company's own ids in tables that stay with the installation
+    name nothing the restored company can reach, so they are left as they are."""
+    if not values:
+        return
+    wanted = sorted(values)
+    if await session.scalar(text("SELECT 1 FROM companies WHERE id = ANY(CAST(:v AS uuid[])) "
+                                 "AND id <> CAST(:s AS uuid) LIMIT 1"), {"v": wanted, "s": source}):
+        raise BackupError(422, FOREIGN)
+    for name, table in plan.schema.items():
+        if len(table.pk) != 1 or "company_id" not in table.columns:
+            continue
+        key = table.columns[table.pk[0]].udt
+        if key not in _KEY_TYPES:
+            continue
+        kept = "CAST(company_id AS text) IS DISTINCT FROM :s" if name in EXCLUDED_TABLES else "true"
+        if await session.scalar(text(
+                f"SELECT 1 FROM {_ident(name)} WHERE {_ident(table.pk[0])} = ANY(CAST(:v AS {key}[])) "
+                f"AND {kept} LIMIT 1"), {"v": wanted, "s": source}):
+            raise BackupError(422, FOREIGN)
 
 
 async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
@@ -736,7 +777,8 @@ async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
         if name not in plan.order or not set(meta["columns"]) <= set(plan.schema[name].insertable):
             raise BackupError(422, NEWER)
     order = [t for t in plan.order if t in tables]
-    ids, digests = await asyncio.to_thread(_scan_rows, backup, order, plan)
+    ids, digests, others = await asyncio.to_thread(_scan_rows, backup, order, plan)
+    await _check_foreign(session, plan, backup.manifest["company"]["id"], others)
     return _Checked(plan=plan, order=order, ids=ids, digests=digests)
 
 

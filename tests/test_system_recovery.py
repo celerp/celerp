@@ -451,6 +451,20 @@ async def test_system_recovery_warns_when_safety_point_fails(real_engine, tmp_pa
     assert any(SAFETY_WARNING in w for w in result.warnings)
 
 
+async def test_system_recovery_warns_when_no_safety_point_can_be_made(real_engine, tmp_path, monkeypatch):
+    """With no backup encryption key set no safety backup can be made; the restore runs and says so."""
+    from celerp.config import settings
+    from celerp.services import backup_import
+    safety_backup = backup_import._safety_backup
+    calls = _import_internals(monkeypatch, tmp_path)
+    monkeypatch.setattr(backup_import, "_safety_backup", safety_backup)
+    monkeypatch.setattr(settings, "backup_encryption_key", None)
+    result = await backup_import.run_import(_archive(tmp_path / "whole.celerp-backup", dump=b"PGDUMP-DATA"))
+    assert result.ok is True, result.error
+    assert calls["restore"] == [b"PGDUMP-DATA"]
+    assert any(SAFETY_WARNING in w for w in result.warnings)
+
+
 async def test_system_recovery_continues_when_safety_point_fails(real_client, real_engine, tmp_path, monkeypatch):
     """A whole-installation import whose safety backup fails still restores and says the safety backup was not made."""
     calls = _import_internals(monkeypatch, tmp_path, safety=_result(ok=False, error="relay unavailable"))
