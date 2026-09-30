@@ -795,8 +795,8 @@ async def _existing(session: AsyncSession, backup_id: str, mode: str, user_id,
     return company, user
 
 
-# The current company's other active members, who get the same access to a company
-# restored from its own backup through Settings.
+# The current company's other active members, who get the same access (and the same
+# role permissions) to a company restored from its own backup through Settings.
 _TEAM = "FROM user_companies WHERE company_id = :src AND is_active AND user_id <> :me"
 
 
@@ -909,6 +909,11 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     "restored_at": datetime.now(timezone.utc).isoformat(),
                     **({"provenance": m["provenance"]} if m.get("provenance") else {}),
                 }
+                if _same_lineage(mode, current_company_id, source):
+                    # The carried team keeps what its roles may do in the current company.
+                    current = await session.get(Company, uuid.UUID(source))
+                    if (current.settings or {}).get("role_grants"):
+                        settings["role_grants"] = current.settings["role_grants"]
                 company = await provision_restored_company(session, owner=user, company_name=m["company"]["name"],
                                                            company_id=new_id, settings=settings)
                 try:

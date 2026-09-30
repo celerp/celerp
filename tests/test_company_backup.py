@@ -1810,6 +1810,26 @@ async def test_same_lineage_carries_active_memberships_and_roles_only(real_engin
         (str(user), "owner", True), (str(manager), "manager", True), (str(operator), "operator", True)}
 
 
+async def test_same_lineage_carries_current_role_permissions(real_engine, real_client, tmp_path, monkeypatch):
+    """The carried team keeps what its roles may do in the current company, not the defaults."""
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(real_engine)
+    admin = await owner(real_engine, "admin@example.com", "Admin")
+    await member(real_engine, admin, cid, "admin")
+    data = await download(real_client, tok)
+    r = await real_client.patch("/companies/me/role-permissions",
+                                json={"perm_key": "manage_users", "role_key": "admin", "granted": False}, headers=auth(tok))
+    assert r.status_code == 200, r.text
+    body = _r_created(await restore(real_client, tok, data, "settings"))
+    grants = "SELECT settings::jsonb -> 'role_grants' FROM companies WHERE id = :c"
+    assert await _r_scalar(real_engine, grants, c=uuid.UUID(body["company_id"])) == \
+        await _r_scalar(real_engine, grants, c=cid)
+    new = {"email": "new@example.com", "name": "New", "password": "password1234", "role": "viewer"}
+    r = await real_client.post("/companies/me/users", json=new,
+                               headers=auth(await token(real_engine, admin, body["company_id"], "admin")))
+    assert r.status_code == 403, r.text
+
+
 async def test_external_restore_carries_no_memberships(real_engine, real_client, tmp_path, monkeypatch):
     """A Settings restore of another company's backup gives membership only to the initiating owner."""
     _r_env(tmp_path, monkeypatch)
