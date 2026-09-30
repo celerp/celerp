@@ -208,26 +208,15 @@ async def invalidate_sessions(
     _nonce_cache_bust(user_id)  # bust cache so next get_nonce reads fresh nonce
 
 
-async def invalidate_all_sessions(
-    session: AsyncSession,
-    evicting_user_id: str,
-    evicting_ip: str | None = None,
-) -> None:
-    """Wipe ALL JTIs globally and rotate nonces for every affected user.
+async def _rotate_every_nonce(session: AsyncSession) -> list[UserAuthState]:
+    """Wipe ALL JTIs and rotate the nonce on every auth-state row; returns the rows.
 
-    Called by login-force when a user takes over the session slot.
-    - Every existing auth-state nonce is rotated, not merely users with a live
-      access JTI: a user whose access JTI has expired but whose refresh token is
-      still valid (a dormant session) must be rotated too (F4).
-    - The force-logging user's nonce is rotated (invalidates their own old tokens).
-    - Every OTHER user gets the evicting_ip stored so they see the eviction
-      message on their next 401.
-    - After this call, the global active_user_ids() set is empty.
+    Every existing auth-state nonce is rotated, not merely users with a live
+    access JTI: a user whose access JTI has expired but whose refresh token is
+    still valid (a dormant session) must be rotated too. The caller commits.
     """
-    evicting_uid = _uuid_mod.UUID(evicting_user_id)
-
     # Lock every auth-state row in a deterministic order (by user_id) so
-    # concurrent force-logins acquire the rows in the same sequence and cannot
+    # concurrent callers acquire the rows in the same sequence and cannot
     # deadlock. This is the durable list of every v2 session (dormant included),
     # so no refresh-token registry is needed to find users to rotate.
     rows = (
@@ -239,12 +228,30 @@ async def invalidate_all_sessions(
         )
     ).scalars().all()
 
-    # Wipe all JTIs.
     await session.execute(delete(SessionRegistry))
+    for row in rows:
+        row.nonce = str(_uuid_mod.uuid4())
+    return list(rows)
+
+
+async def invalidate_all_sessions(
+    session: AsyncSession,
+    evicting_user_id: str,
+    evicting_ip: str | None = None,
+) -> None:
+    """Wipe ALL JTIs globally and rotate nonces for every affected user.
+
+    Called by login-force when a user takes over the session slot.
+    - The force-logging user's nonce is rotated (invalidates their own old tokens).
+    - Every OTHER user gets the evicting_ip stored so they see the eviction
+      message on their next 401.
+    - After this call, the global active_user_ids() set is empty.
+    """
+    evicting_uid = _uuid_mod.UUID(evicting_user_id)
+    rows = await _rotate_every_nonce(session)
 
     seen: set[_uuid_mod.UUID] = set()
     for row in rows:
-        row.nonce = str(_uuid_mod.uuid4())
         # Only store evicting IP for OTHER users (not the one taking over).
         row.evicted_by_ip = evicting_ip if row.user_id != evicting_uid else None
         seen.add(row.user_id)
@@ -255,6 +262,19 @@ async def invalidate_all_sessions(
 
     await session.commit()
     # Every nonce moved: drop the whole in-process cache.
+    _nonce_cache_bust_all()
+
+
+async def end_all_sessions(session: AsyncSession) -> None:
+    """Sign out every user: no access or refresh token issued before this call stays valid.
+
+    Used after the whole database is replaced, when no session from before the
+    replacement may continue. A user with no auth-state row already fails the
+    nonce check, because the first lookup creates a fresh nonce.
+    """
+    for row in await _rotate_every_nonce(session):
+        row.evicted_by_ip = None
+    await session.commit()
     _nonce_cache_bust_all()
 
 

@@ -362,7 +362,8 @@ async def test_import_bootstrap_blocked_when_users_exist(auth_client):
         files={"file": ("test.celerp-backup", buf.read(), "application/octet-stream")},
     )
     assert r.status_code == 403
-    assert "already bootstrapped" in r.json()["detail"].lower()
+    assert "already set up" in r.json()["detail"].lower()
+    assert "System Recovery" in r.json()["detail"]
 
 
 @pytest.mark.asyncio

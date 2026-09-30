@@ -242,9 +242,8 @@ async def restore_snapshot(snapshot_id: str) -> BackupResult:
         from celerp.services.backup_import import run_import
         path = await reassemble_snapshot(snapshot_id)
         try:
-            await run_import(path)
+            return await run_import(path)
         finally:
             path.unlink(missing_ok=True)
-        return BackupResult(ok=True, size_bytes=0)
     except Exception as exc:
         return BackupResult(ok=False, size_bytes=0, error=str(exc))

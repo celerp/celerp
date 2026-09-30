@@ -25,25 +25,33 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _isolate_restored_connector_cleanup(monkeypatch):
+def _isolate_database_side_effects(monkeypatch):
+    """run_import tests stub the database restore, so the steps that query the
+    real database around it are stubbed too; each is exercised directly by its
+    own test below, through the original returned here, and end to end in
+    test_system_recovery.py."""
     from celerp.services import backup_import
 
-    original = backup_import._clear_restored_connector_state
+    originals = {
+        name: getattr(backup_import, name)
+        for name in ("_revoke_current_connector_state", "_clear_restored_connector_state")
+    }
 
     async def _noop(*_args, **_kwargs) -> None:
         return None
 
+    for name in originals:
+        monkeypatch.setattr(backup_import, name, _noop)
     monkeypatch.setattr(
-        backup_import,
-        "_clear_restored_connector_state",
-        _noop,
-        raising=False,
+        "celerp.services.session_tracker.end_all_sessions", _noop
     )
-    return original
+    return originals
 
 
 @pytest.mark.asyncio
-async def test_current_connector_state_is_revoked_before_restore(session, monkeypatch):
+async def test_current_connector_state_is_revoked_before_restore(
+    session, monkeypatch, _isolate_database_side_effects
+):
     import uuid
     from contextlib import asynccontextmanager
     from unittest.mock import AsyncMock
@@ -79,7 +87,7 @@ async def test_current_connector_state_is_revoked_before_restore(session, monkey
         "celerp.db.get_session_ctx",
         _shared_session_ctx,
     )
-    await backup_import._revoke_current_connector_state()
+    await _isolate_database_side_effects["_revoke_current_connector_state"]()
 
     revoke.assert_awaited_once_with(
         str(company_id), "woocommerce", webhook_ids=["11"]
@@ -116,7 +124,7 @@ async def test_connector_maintenance_guard_uses_session_advisory_lock(monkeypatc
 
 @pytest.mark.asyncio
 async def test_restored_connector_cleanup_fences_stale_context(
-    session, _isolate_restored_connector_cleanup
+    session, _isolate_database_side_effects
 ):
     import uuid
 
@@ -146,7 +154,7 @@ async def test_restored_connector_cleanup_fences_stale_context(
     ))
     await session.flush()
 
-    await _isolate_restored_connector_cleanup(session)
+    await _isolate_database_side_effects["_clear_restored_connector_state"](session)
     await session.flush()
 
     assert await session.scalar(select(ConnectorConfig).where(
@@ -416,8 +424,8 @@ class TestRunImportMissingModuleWarnings:
             # Run the real run_import
             result = await backup_import.run_import(path)
             assert result.ok
-            assert "celerp-fictional" in result.warnings
-            assert "celerp-inventory" not in result.warnings
+            assert any("celerp-fictional" in w for w in result.warnings)
+            assert not any("celerp-inventory" in w for w in result.warnings)
         finally:
             path.unlink(missing_ok=True)
 
@@ -749,8 +757,9 @@ class TestRestoreNotice:
 
 
 class TestRestoreFlashContinuation:
-    """A restore flash must always let the user continue: either the restart is
-    already happening (status + auto-reload) or there is a Restart Now button."""
+    """A restore flash must always let the user continue: every session has ended,
+    so either the restart is already happening (status + auto-reload to sign-in)
+    or there is a Sign in link."""
 
     def _result(self, **kw):
         from celerp.services.backup import BackupResult
@@ -758,19 +767,24 @@ class TestRestoreFlashContinuation:
         defaults.update(kw)
         return BackupResult(**defaults)
 
-    def test_manual_restart_offers_button(self):
+    def test_no_restart_offers_sign_in(self):
+        from celerp.services.backup_import import SESSION_ENDED_HEADER
         from celerp_backup.routes import _restore_flash
 
-        body = _restore_flash(self._result(), "Restored.").body.decode()
-        assert "/backup/restart-app" in body
-        assert "Restart Now" in body
+        resp = _restore_flash(self._result(), "Restored.")
+        body = resp.body.decode()
+        assert 'href="/login"' in body
+        assert "Sign in" in body and "signed out" in body
+        assert "restart" not in body.lower()
+        assert resp.headers.get(SESSION_ENDED_HEADER) == "1"
 
     def test_scheduled_restart_shows_status_and_reload(self):
         from celerp_backup.routes import _restore_flash
 
-        body = _restore_flash(self._result(restart_scheduled=True), "Restored.").body.decode()
-        assert "/backup/restart-app" not in body     # no button: restart already happening
+        resp = _restore_flash(self._result(restart_scheduled=True), "Restored.")
+        body = resp.body.decode()
         assert "Restarting automatically" in body
+        assert resp.headers.get("X-Session-Ended") == "1"
         assert "setInterval" in body                 # page recovers on its own
 
     def test_warnings_render_as_warning_flash(self):
@@ -835,7 +849,7 @@ class TestRunImportPropagation:
         assert result.ok
         assert result.schema_warning and "schema" in result.schema_warning
         assert result.restart_scheduled is True
-        assert "celerp-fictional" in result.warnings
+        assert any("celerp-fictional" in w for w in result.warnings)
 
         notice = json.loads((tmp_path / backup_import.RESTORE_NOTICE_FILE).read_text())
         assert notice["company_name"] == "Acme"

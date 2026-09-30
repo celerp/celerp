@@ -441,14 +441,18 @@ async def _activate_modules(modules: list[str]) -> bool:
 RESTORE_NOTICE_FILE = "restore-notice.json"
 
 
-def missing_modules_sentence(warnings: list[str]) -> str:
-    """The one user-facing sentence for modules the source had but this install lacks.
+SAFETY_WARNING = "A safety backup could not be made before restoring."
 
-    Every surface that reports a restore (settings flash, bootstrap warning page,
-    post-restart login notice) uses this same wording."""
-    names = ", ".join(str(w) for w in warnings)
+# Response header on a successful whole-installation restore: every session
+# ended with it, so the UI drops the browser's session cookies.
+SESSION_ENDED_HEADER = "X-Session-Ended"
+
+
+def missing_modules_sentence(missing: list[str]) -> str:
+    """The one user-facing sentence for modules the source had but this install lacks."""
+    names = ", ".join(str(m) for m in missing)
     return (
-        f"{len(warnings)} module(s) enabled on the source are not installed on this "
+        f"{len(missing)} module(s) enabled on the source are not installed on this "
         f"server: {names}. Those features stay unavailable until the module packages "
         f"are installed."
     )
@@ -525,11 +529,12 @@ async def _clear_restored_connector_state(session) -> None:
 
 
 async def run_import(path: Path):
-    """Import from .celerp-backup: safety backup + pg_restore + extract files.
+    """Import from .celerp-backup: validate, safety backup, pg_restore, extract files.
 
-    Returns BackupResult with a `warnings` field listing modules the source
-    had enabled that aren't installed on the destination (read-only diff,
-    doesn't fail the import).
+    Replaces the whole installation and signs every user out. Returns a
+    BackupResult whose `warnings` are user-facing sentences that do not fail
+    the import: a safety backup that could not be made, and modules the
+    source had enabled that are not installed on this server.
     """
     from celerp.services.backup import BackupResult
     from celerp.config import settings
@@ -539,20 +544,30 @@ async def run_import(path: Path):
         log.info("Importing backup from %s (company=%s, version=%s)",
                  path, meta.company_name, meta.celerp_version)
 
-        # Safety backup first (if encryption key is available)
-        safety = await _safety_backup("pre-import-safety")
-        if not safety.ok:
-            log.warning("Safety backup failed before import: %s", safety.error)
-
+        # Read everything the restore needs before touching anything, so an
+        # unreadable archive is refused without a safety point or a restore.
         with tarfile.open(str(path), "r:gz") as tar:
             dump_file = tar.extractfile("database.dump")
             if dump_file is None:
                 return BackupResult(ok=False, size_bytes=0, error="Cannot read database.dump")
             dump_bytes = dump_file.read()
 
+        warnings: list[str] = []
+        # Safety backup (if encryption key is available). A failure does not
+        # stop the restore, but the user is told it was not made.
+        try:
+            safety = await _safety_backup("pre-import-safety")
+            safety_error = None if safety.ok else safety.error
+        except Exception as safety_exc:
+            safety_error = str(safety_exc) or repr(safety_exc)
+        if safety_error is not None:
+            log.warning("Safety backup failed before import: %s", safety_error)
+            warnings.append(SAFETY_WARNING)
+
         from celerp.connectors.ownership import connector_maintenance_guard
         from celerp.db import get_session_ctx
         from celerp.services.backup_state import writes_paused
+        from celerp.services.session_tracker import end_all_sessions
 
         async with connector_maintenance_guard():
             await _revoke_current_connector_state()
@@ -562,7 +577,9 @@ async def run_import(path: Path):
                 schema_warning = await _reconcile_schema()
                 async with get_session_ctx() as restored_session:
                     await _clear_restored_connector_state(restored_session)
-                    await restored_session.commit()
+                    # No session from before the replacement stays valid;
+                    # this also commits the connector cleanup.
+                    await end_all_sessions(restored_session)
 
         # Extract files outside the tar context (already read dump above)
         await _extract_files(path)
@@ -581,17 +598,17 @@ async def run_import(path: Path):
         # have no on-disk package on the destination. Read-only — the import
         # succeeds; the user just gets warned so the dashboard 404 is no
         # longer a surprise.
-        warnings: list[str] = []
         if effective_modules:
             try:
                 from celerp.modules.audit import audit_missing_modules
-                warnings = audit_missing_modules(effective_modules)
-                if warnings:
+                missing = audit_missing_modules(effective_modules)
+                if missing:
                     log.warning(
                         "Imported backup enabled %d modules that are not "
                         "installed on this server: %s",
-                        len(warnings), warnings,
+                        len(missing), missing,
                     )
+                    warnings.append(missing_modules_sentence(missing))
             except Exception as audit_exc:
                 log.warning("Module audit failed (non-fatal): %s", audit_exc)
 

@@ -81,37 +81,37 @@ def _flash(msg: str, kind: str = "success") -> Response:
 def _restore_flash(result, base_msg: str) -> Response:
     """Post-restore flash that always lets the user continue the journey.
 
-    A restart finishes applying a restore. When the import already scheduled one
-    (the module set changed), say so and reload the page once the server is back;
-    otherwise offer a Restart now button - the user is never told to restart
-    without a way to do it from where they stand.
+    The restore replaced every user and signed everyone out, so the response
+    carries SESSION_ENDED_HEADER for the UI to drop its session cookies. When
+    the import scheduled a restart (the module set changed), say so and reload
+    once the server is back, which lands on sign-in; otherwise offer the
+    sign-in link directly.
     """
-    from fasthtml.common import Button, Div, Script, to_xml
+    from fasthtml.common import A, Div, Script, to_xml
     from ui.components.shell import RESTART_POLL_JS
 
-    from celerp.services.backup_import import missing_modules_sentence
+    from celerp.services.backup_import import SESSION_ENDED_HEADER
 
-    msg = base_msg
-    if result.warnings:
-        msg += " " + missing_modules_sentence(result.warnings)
+    parts = [base_msg, *result.warnings]
     if result.schema_warning:
-        msg += f" Warning: {result.schema_warning}"
+        parts.append(f"Warning: {result.schema_warning}")
     kind = "warning" if (result.warnings or result.schema_warning) else "success"
     if result.restart_scheduled:
+        parts.append(t("settings.restarting_automatically"))
         body = Div(
-            Div(f"{msg} {t('settings.restarting_automatically')}", cls=f"flash flash--{kind}"),
+            Div(" ".join(parts), cls=f"flash flash--{kind}"),
             Script(RESTART_POLL_JS),
             id="backup-flash",
         )
     else:
+        parts.append(t("system_recovery.signed_out"))
         body = Div(
-            Div(msg, cls=f"flash flash--{kind}"),
-            Button(t("btn.restart_now"), cls="btn btn--primary mt-sm",
-                   hx_post="/backup/restart-app",
-                   hx_target="#backup-flash", hx_swap="outerHTML"),
+            Div(" ".join(parts), cls=f"flash flash--{kind}"),
+            A(t("system_recovery.sign_in"), href="/login", cls="btn btn--primary mt-sm"),
             id="backup-flash",
         )
-    return Response(content=to_xml(body), media_type="text/html")
+    return Response(content=to_xml(body), media_type="text/html",
+                    headers={SESSION_ENDED_HEADER: "1"})
 
 
 def _backup_table(items: list[dict]):
@@ -220,7 +220,7 @@ async def restore_backup(backup_id: str):
     result = await backup_repo.restore_snapshot(backup_id)
     if not result.ok:
         return _flash(f"Restore failed: {result.error or 'Unknown error'}", "error")
-    return _restore_flash(result, t("settings.database_restored_restart_the_application_to_apply"))
+    return _restore_flash(result, t("system_recovery.restored"))
 
 
 @router.get("/export")
@@ -270,9 +270,7 @@ async def import_backup(
         if not result.ok:
             return _flash(f"Import failed: {result.error or 'Unknown error'}", "error")
         return _restore_flash(
-            result,
-            f"Imported backup from {meta.company_name or 'unknown'}. "
-            f"Restart the application to apply changes.",
+            result, t("system_recovery.imported", company=meta.company_name or "unknown"),
         )
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -281,6 +279,11 @@ async def import_backup(
 # ── Bootstrap import (public — no auth, only works before first user exists) ──
 
 public_router = APIRouter()
+
+_ALREADY_SET_UP = (
+    "This installation is already set up. Sign in as the installation owner and "
+    "use System Recovery, which replaces the whole installation."
+)
 
 
 @public_router.post("/import-bootstrap")
@@ -300,7 +303,7 @@ async def import_backup_bootstrap(
     if existing is not None:
         raise HTTPException(
             status_code=403,
-            detail="System already bootstrapped. Log in and use Settings > Backup to restore.",
+            detail=_ALREADY_SET_UP,
         )
 
     tmp_path = await _spool_upload(file)
@@ -317,7 +320,7 @@ async def import_backup_bootstrap(
             if existing is not None:
                 raise HTTPException(
                     status_code=403,
-                    detail="System already bootstrapped. Log in and use Settings > Backup to restore.",
+                    detail=_ALREADY_SET_UP,
                 )
             await session.close()
             result = await run_import(tmp_path)

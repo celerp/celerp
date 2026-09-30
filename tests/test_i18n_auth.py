@@ -28,7 +28,7 @@ from ui.routes.auth import (
 
 # Sentinel catalog: one unmistakable value per auth key under test.
 _XX = {
-    "page.restore_from_backup": "XX_RESTORE_TITLE",
+    "system_recovery.title": "XX_RESTORE_TITLE",
     "auth.upload_backup_desc": "XX_UPLOAD_BACKUP_DESC",
     "auth.backup_file_label": "XX_BACKUP_FILE_LABEL",
     "auth.restore_backup_btn": "XX_RESTORE_BTN",

@@ -64,14 +64,11 @@ def _consume_restore_notice() -> dict | None:
 
 def _restore_notice_message(notice: dict) -> str:
     """One readable sentence block for the post-restore login banner."""
-    from celerp.services.backup_import import missing_modules_sentence
     company = notice.get("company_name") or "backup"
     parts = [t("auth.restore_notice_message", company=company)]
     if notice.get("schema_warning"):
         parts.append(str(notice["schema_warning"]))
-    warnings = list(notice.get("warnings") or [])
-    if warnings:
-        parts.append(missing_modules_sentence(warnings))
+    parts.extend(str(w) for w in notice.get("warnings") or [])
     return " ".join(parts)
 
 
@@ -225,7 +222,7 @@ def setup_routes(app):
         from ui.api_client import setup_code_required as _code_req
         return auth_shell(
             _setup_import_form(setup_code_required=await _code_req()),
-            title=page_title("page.restore_from_backup"),
+            title=page_title("system_recovery.title"),
         )
 
     @app.post("/setup/import-backup")
@@ -241,7 +238,7 @@ def setup_routes(app):
         file = form.get("backup_file")
         setup_code = str(form.get("setup_code", "")).strip()
         if not file or not hasattr(file, "read"):
-            return auth_shell(_setup_import_form(error=t("auth.select_backup_file")), title=page_title("page.restore_from_backup"))
+            return auth_shell(_setup_import_form(error=t("auth.select_backup_file")), title=page_title("system_recovery.title"))
         code_required = await api.setup_code_required()
         if code_required and not setup_code:
             return auth_shell(
@@ -249,7 +246,7 @@ def setup_routes(app):
                     error=t("auth.setup_code_required"),
                     setup_code_required=True,
                 ),
-                title=page_title("page.restore_from_backup"),
+                title=page_title("system_recovery.title"),
             )
         if getattr(file, "size", None) == 0:
             return auth_shell(
@@ -257,7 +254,7 @@ def setup_routes(app):
                     error=t("auth.file_empty"),
                     setup_code_required=code_required,
                 ),
-                title=page_title("page.restore_from_backup"),
+                title=page_title("system_recovery.title"),
             )
         try:
             await file.seek(0)
@@ -286,7 +283,7 @@ def setup_routes(app):
                     _setup_import_form(
                         error=detail, setup_code_required=code_required
                     ),
-                    title=page_title("page.restore_from_backup"),
+                    title=page_title("system_recovery.title"),
                 )
             # Success - surface missing-module / schema warnings (if any) on the form
             warnings: list[str] = []
@@ -304,9 +301,7 @@ def setup_routes(app):
                 parts: list[str] = []
                 if schema_warning:
                     parts.append(schema_warning)
-                if warnings:
-                    from celerp.services.backup_import import missing_modules_sentence
-                    parts.append(missing_modules_sentence(warnings))
+                parts.extend(str(w) for w in warnings)
                 if restart_scheduled:
                     parts.append(t("auth.restore_restart_note"))
                 warn_msg = t("auth.restore_complete_but") + " ".join(parts)
@@ -315,7 +310,7 @@ def setup_routes(app):
                         warning=warn_msg,
                         continue_to="/login?imported=1",
                     ),
-                    title=page_title("page.restore_from_backup"),
+                    title=page_title("system_recovery.title"),
                 )
         except httpx.TimeoutException:
             return auth_shell(
@@ -323,7 +318,7 @@ def setup_routes(app):
                     error=t("auth.import_timed_out"),
                     setup_code_required=code_required,
                 ),
-                title=page_title("page.restore_from_backup"),
+                title=page_title("system_recovery.title"),
             )
         except Exception as exc:
             return auth_shell(
@@ -331,7 +326,7 @@ def setup_routes(app):
                     error=t("auth.connection_error", exc=repr(exc)),
                     setup_code_required=code_required,
                 ),
-                title=page_title("page.restore_from_backup"),
+                title=page_title("system_recovery.title"),
             )
         return RedirectResponse("/login?imported=1", status_code=302)
 
@@ -725,9 +720,10 @@ def _setup_import_form(
             cls="auth-card",
         )
     return Div(
-        auth_header(t("page.restore_from_backup"), t("auth.upload_backup_desc")),
+        auth_header(t("system_recovery.title"), t("auth.upload_backup_desc")),
         Form(
             flash(error) if error else "",
+            P(t("system_recovery.scope"), cls="flash flash--warning"),
             Div(
                 Label(t("auth.backup_file_label"), For="backup_file", cls="form-label"),
                 Input(type="file", id="backup_file", name="backup_file",
