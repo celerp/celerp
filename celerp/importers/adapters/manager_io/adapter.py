@@ -19,6 +19,7 @@ from celerp.importers.adapters.base import (
 from celerp.importers.adapters.manager_io import attachments
 from celerp.importers.adapters.manager_io.book import Book, read_book
 from celerp.importers.adapters.manager_io.ledger import Ledger, Posting, build_ledger
+from celerp.importers.adapters.manager_io.lock_date import read_lock_date
 from celerp.importers.adapters.manager_io.mappings import SOURCE_SYSTEM, build_bundle, carried
 from celerp.importers.adapters.manager_io.reconcile import expectations_from
 from celerp.importers.adapters.manager_io.sqlite_reader import ManagerReader
@@ -34,7 +35,7 @@ MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 MAPPED = (CoverageClass.MAPPED, CoverageClass.MAPPED_WITH_LOSS)
 # Records carried only through others: the default location holds all stock, and unit
 # costs price the cost of sales on each invoice.
-NOT_CARRIED = frozenset({"DefaultInventoryLocation", "InventoryUnitCost"})
+NOT_CARRIED = frozenset({"DefaultInventoryLocation", "InventoryUnitCost", "LockDate"})
 
 
 def _single(artifacts: ArtifactSet) -> Artifact:
@@ -106,6 +107,7 @@ class ManagerIOAdapter:
         with ManagerReader(_single(artifacts).path) as reader:
             book = read_book(reader)
             attachments.screen(book, reader)
+            lock_date = read_lock_date(reader)
         dated = book.dated_records()
         features = [name for name, present in (
             ("foreign_currency", any(book.is_foreign(c) for c in book.currencies)),
@@ -119,6 +121,7 @@ class ManagerIOAdapter:
             period_start=dated[0][0] if dated else None, period_end=dated[-1][0] if dated else None,
             currencies=tuple(sorted({book.base_code or "", *(c.code for c in book.currencies.values())} - {""})),
             object_counts=dict(book.object_counts), features=tuple(features), coverage=tuple(book.coverage()),
+            lock_date=lock_date,
         )
 
     def build_manifest(self, artifacts: ArtifactSet, decisions: MigrationDecisions) -> CIFImportManifest:
@@ -126,6 +129,7 @@ class ManagerIOAdapter:
         with ManagerReader(artifact.path) as reader:
             book = read_book(reader)
             screened = attachments.screen(book, reader)
+            lock_date = read_lock_date(reader)
         _refuse_blockers(book)
         ledger = build_ledger(book, decisions)
         attachments.drop_uncarried(book, screened, carried(book, ledger))
@@ -151,6 +155,7 @@ class ManagerIOAdapter:
             coverage=book.coverage(),
             source_summary=summary,
             reconciliation_expectations=expectations_from(book, ledger),
+            lock_date=lock_date,
         )
 
     def source_expectations(self, artifacts: ArtifactSet, decisions: MigrationDecisions) -> ReconciliationExpectations:

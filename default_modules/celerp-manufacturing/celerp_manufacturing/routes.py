@@ -29,7 +29,7 @@ from celerp.events.schemas import (
 from celerp.models.company import Company, User, WorkCenter
 from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
-from celerp.services import auto_je
+from celerp.services import auto_je, migrations
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_basis
 from celerp.services.auth import get_current_company_id, get_current_user
@@ -1109,9 +1109,12 @@ async def provision_default_work_center_hook(*, session: AsyncSession, company_i
 
 async def backfill_default_work_center_hook(*, session: AsyncSession) -> None:
     """on_modules_ready: cover companies that enabled manufacturing after the
-    migration ran, so they get a default center too."""
+    migration ran, so they get a default center too. A company staged for a data
+    migration is left alone until the migration finishes."""
     company_ids = (await session.execute(select(Company.id))).scalars().all()
     for company_id in company_ids:
+        if await migrations.is_company_migration_staged(session, company_id):
+            continue
         await seed_default_work_center(session, company_id)
 
 
