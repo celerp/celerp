@@ -483,6 +483,9 @@ def _source(run: MigrationRun) -> tuple[SourceAdapter, list[Artifact], Migration
                  for a in run.source_summary.get("artifacts", [])]
     if not artifacts or not all(a.path.is_file() for a in artifacts):
         raise ScanError("The source file for this migration has been deleted.")
+    # Every read of the run's source is bound to the file that was scanned: size first, then the hash.
+    if any(a.path.stat().st_size != a.size_bytes or store.file_sha256(a.path) != a.sha256 for a in artifacts):
+        raise ScanError("The source file for this migration has changed since it was scanned.")
     return _adapter(run.source_system), artifacts, store.decisions_from_json(run.mapping_decisions)
 
 
@@ -891,6 +894,9 @@ async def finalize(session: AsyncSession, run: MigrationRun) -> MigrationRun:
         await session.commit()
     except MigrationError:
         raise
+    except ScanError as exc:  # the source is gone, changed, or no longer reads: nothing to finish against
+        await session.rollback()
+        raise MigrationError(409, str(exc)) from None
     except Exception:
         await session.rollback()
         logger.exception("Migration %s could not be finalized", run_id)

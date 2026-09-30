@@ -156,7 +156,8 @@ async def test_manager_missing_or_unknown_revision_refused(client, migration_env
 
 async def test_manager_revision_enforced_on_every_adapter_entry(real_client, real_engine, monkeypatch, tmp_path):
     """Every entry refuses an unsupported revision: the adapter entries, both scan routes,
-    and a runner resuming a stopped run whose stored source is at such a revision."""
+    and a runner resuming a stopped run whose unchanged source is at a revision this Celerp
+    no longer supports."""
     from celerp.importers.adapters.manager_io import sqlite_reader
     from celerp.services import migration_core_sink, migrations
     from celerp.services import migration_scan_store as store
@@ -167,7 +168,7 @@ async def test_manager_revision_enforced_on_every_adapter_entry(real_client, rea
         message = _refused_everywhere(path)[0]
         assert await _scan_refusals(real_client, path) == {message}
 
-    # Stop a real Manager run at its attachments, then resume it from a source at a newer revision.
+    # Stop a real Manager run at its attachments, then resume it after the supported revisions move on.
     real_import = migration_core_sink._import_attachment
     failures = [RuntimeError("storage unavailable")]
 
@@ -181,9 +182,9 @@ async def test_manager_revision_enforced_on_every_adapter_entry(real_client, rea
                            monkeypatch, tmp_path / "data")
     assert run.status == "failed" and run.error_summary["phase"] == "attachments", run.error_summary
     stored = store.run_dir(run.id) / run.source_summary["artifacts"][0]["name"]
-    newer = _book(tmp_path / "resaved.manager", sqlite_reader.SUPPORTED_SCHEMA_MAX + 1)
-    shutil.copyfile(newer, stored)
-    message = _refused_everywhere(newer)[0]
+    monkeypatch.setattr(sqlite_reader, "SUPPORTED_SCHEMA_MIN", TESTED_REVISION + 1)
+    monkeypatch.setattr(sqlite_reader, "SUPPORTED_SCHEMA_MAX", TESTED_REVISION + 1)
+    message = _refused_everywhere(stored)[0]
 
     await resume_run(real_engine, run.id)
     resumed = await load_run(real_engine, run.id)
