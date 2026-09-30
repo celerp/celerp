@@ -180,6 +180,40 @@ def cost_columns(price_lists: list[dict]) -> list[dict]:
     return [f for f in _inject_price_columns([], price_lists) if f.get("key") in COST_SCHEMA_KEYS]
 
 
+def all_category_schemas(company_settings: dict) -> dict:
+    """Every category's attribute schema, keyed by category name.
+
+    Module-contributed defaults (the ``category_schema`` slot) merged with the
+    company's own ``category_schemas``, which win.
+    """
+    from celerp.modules.slots import get as get_slot
+
+    merged: dict = {}
+    for contrib in get_slot("category_schema"):
+        cat = contrib.get("category")
+        if cat and cat not in merged:
+            merged[cat] = contrib.get("fields") or []
+    merged.update(company_settings.get("category_schemas") or {})
+    return merged
+
+
+def union_category_attr_keys(cat_schemas: dict) -> list[str]:
+    """The deduplicated union of attribute keys across all category schemas.
+
+    Stable-ordered (first appearance), so the import mapper offers and suggests
+    the same category attributes on every transport.
+    """
+    seen: dict[str, None] = {}
+    for fields in cat_schemas.values():
+        if not isinstance(fields, list):
+            continue
+        for field in fields:
+            key = field.get("key") or ""
+            if key and key not in seen:
+                seen[key] = None
+    return list(seen)
+
+
 # The schema field types whose stored values are numeric, so a field of one of these
 # types is range/exact scope-searchable and classified numeric on merge. Single source
 # for that classification, consumed by the inventory search and merge paths.

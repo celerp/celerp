@@ -29,6 +29,7 @@ from celerp.inventory_codes import (
 )
 from celerp.models.projections import Projection
 from .services import (
+    _CORE_ITEM_COLS,
     BatchImportRequest,
     BatchImportResult,
     adjust_item_quantity,
@@ -39,6 +40,7 @@ from .services import (
     import_items,
     lot_fields,
     import_preview_hash,
+    item_price_mutex_groups,
     preview_import_rows,
     source_header_semantics,
 )
@@ -1664,10 +1666,12 @@ async def _build_item_preview(
     from celerp.ai.files import load_file
     from celerp.importers.tabular import (
         TabularError,
+        normalize_and_validate_mapping,
         read_table,
         remap_rows,
         suggest_mapping,
     )
+    from celerp.services.field_schema import all_category_schemas, union_category_attr_keys
 
     if not _AI_FILE_ID_RE.match(file_id):
         raise HTTPException(status_code=404, detail="File not found")
@@ -1687,18 +1691,32 @@ async def _build_item_preview(
 
     price_lists, _default_list, _currency = await get_price_config(session, company_id)
     spec = build_item_import_spec(price_lists)
-    mapping = dict(mapping) if mapping is not None else suggest_mapping(cols, spec.cols)
-    # Ignore mapping keys for columns the file does not contain; reject duplicate
-    # target claims below through the existing required-field validation.
-    mapping = {col: mapping.get(col, "__attr__") for col in cols}
-    new_cols, mapped_rows = remap_rows(cols, rows, mapping)
+    # The same suggestion the browser mapper renders; the caller's mapping
+    # overrides it column by column.
+    category_attrs = union_category_attr_keys(all_category_schemas(settings))
+    resolved = normalize_and_validate_mapping(
+        cols, suggest_mapping(cols, spec.cols, category_attrs), mapping,
+        allowed_targets=spec.cols,
+        required_targets=spec.required,
+        allowed_category_attrs=category_attrs,
+        reserved_item_fields=_CORE_ITEM_COLS,
+        mutex_groups=item_price_mutex_groups(price_lists),
+    )
+    mapping = resolved.mapping
     semantics = source_header_semantics(mapping, settings.get("currency") or "USD")
-    mapped_rows = apply_source_semantics(mapped_rows, semantics)
+    # Rows are only previewed under a mapping that can be applied.
+    mapped_rows: list[dict] = []
+    locations_to_create: list[str] = []
+    errors = resolved.errors + semantics.errors
+    if not resolved.errors:
+        _new_cols, mapped_rows = remap_rows(cols, rows, mapping)
+        mapped_rows = apply_source_semantics(mapped_rows, semantics)
+        preview = await preview_import_rows(session, company_id, role, settings, mapped_rows, upsert=upsert)
+        errors += preview.errors
+        locations_to_create = preview.locations_to_create
+    errors = errors[:50]
 
-    preview = await preview_import_rows(session, company_id, role, settings, mapped_rows, upsert=upsert)
-    errors = (semantics.errors + preview.errors)[:50]
-
-    unmapped_required = sorted(r for r in spec.required if r not in set(new_cols))
+    unmapped_required = sorted(r for r in spec.required if r not in set(mapping.values()))
     row_count = len(rows)
     preview_hash = import_preview_hash({
         "file_id": file_id,
@@ -1714,7 +1732,7 @@ async def _build_item_preview(
             file_id=file_id, sheet=sheet, upsert=upsert, columns=cols,
             mapping=mapping, unmapped_required=unmapped_required, row_count=row_count,
             sample=mapped_rows[:5], errors=errors,
-            locations_to_create=preview.locations_to_create, preview_hash=preview_hash,
+            locations_to_create=locations_to_create, preview_hash=preview_hash,
         ),
         "errors": errors,
         "mapped_rows": mapped_rows,

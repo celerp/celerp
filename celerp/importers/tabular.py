@@ -18,7 +18,7 @@ import io
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Collection
 
 import openpyxl
 from openpyxl.utils.exceptions import InvalidFileException
@@ -233,77 +233,143 @@ def suggest_mapping(
     return mapping
 
 
-def validate_column_mapping(
-    form: dict,
-    csv_cols: list[str],
-    *,
-    core_fields: set[str],
-    required_targets: set[str],
-) -> list[str]:
-    """Validate the user's column mapping choices. Returns list of error messages (empty = valid).
+@dataclass(frozen=True)
+class MappingResult:
+    """The effective ``{source column: target}`` mapping and its mapping errors.
 
-    Checks:
-    1. Every required target has a column mapped to it.
-    2. Two CSV columns mapped to the same target field (duplicate targets).
-    3. Attribute names that collide with core/built-in field names.
-    4. Two attribute columns with the same custom name.
+    Each error is ``{"row": None, "field", "code", "message"}``: a mapping error
+    belongs to the file as a whole, never to one row.
+    """
+    mapping: dict[str, str]
+    errors: list[dict]
+
+
+def _target_label(target: str) -> str:
+    return target.replace("_", " ").title()
+
+
+def _quoted_cols(cols: list[str]) -> str:
+    return " and ".join(f'"{c}"' for c in cols)
+
+
+def normalize_and_validate_mapping(
+    source_cols: list[str],
+    suggested: dict[str, str],
+    overrides: dict[str, str] | None,
+    *,
+    allowed_targets: Collection[str],
+    required_targets: Collection[str],
+    allowed_category_attrs: Collection[str] | None,
+    reserved_item_fields: Collection[str],
+    mutex_groups: Collection[Collection[str]],
+    attr_names: dict[str, str] | None = None,
+) -> MappingResult:
+    """Resolve the effective column mapping and every reason it cannot be applied.
+
+    The one mapping check for every import transport. The caller's ``overrides``
+    are applied on top of ``suggested``, so a column the caller does not mention
+    keeps its suggestion. The mapping is refused when:
+
+    - an override names a column the file does not have;
+    - a target is neither a sentinel nor one of ``allowed_targets``;
+    - a category attribute key is empty or not in ``allowed_category_attrs``
+      (``None`` when the importer has no category schema to check against);
+    - a custom or category attribute is named like an allowed target or one of
+      ``reserved_item_fields`` (case-insensitive);
+    - two columns resolve to the same destination after the sentinels are
+      normalized (``attr_names`` holds the custom attribute names chosen for
+      ``MAPPING_ATTRIBUTE`` columns);
+    - a required target has no column;
+    - more than one target of a ``mutex_groups`` group is mapped.
 
     ``required_targets`` is keyword-only and has no default so every importer
     states which targets it cannot work without (an empty set when none).
     """
-    errors: list[str] = []
-    core = core_fields
+    attr_names = attr_names or {}
+    overrides = overrides or {}
+    errors: list[dict] = []
 
-    # Collect all mappings
-    target_sources: dict[str, list[str]] = {}  # target -> [csv_col, ...]
-    attr_names: dict[str, list[str]] = {}  # attr_name -> [csv_col, ...]
+    def _error(field: str, code: str, message: str) -> None:
+        errors.append({"row": None, "field": field, "code": code, "message": message})
 
-    for col in csv_cols:
-        target = str(form.get(f"map__{col}", MAPPING_ATTRIBUTE) or MAPPING_ATTRIBUTE)
-        if target == MAPPING_SKIP:
+    for key in overrides:
+        if key not in source_cols:
+            _error(key, "unknown_source_column", t("import.err_unknown_source_column", col=key))
+
+    mapping = {col: str(overrides.get(col, suggested.get(col, MAPPING_ATTRIBUTE))) for col in source_cols}
+    allowed = set(allowed_targets)
+    reserved = {f.casefold() for f in (*allowed, *reserved_item_fields)}
+
+    core_sources: dict[str, list[str]] = {}
+    attr_sources: dict[str, list[str]] = {}
+    for col, target in mapping.items():
+        dest = mapped_field_name(col, target, attr_names.get(col))
+        if dest is None:
             continue
-
-        if target == MAPPING_ATTRIBUTE:
-            # Custom field name (from text input) or original col name
-            attr_name = str(form.get(f"attr_name__{col}", "") or "").strip() or col
-            attr_names.setdefault(attr_name, []).append(col)
-            # Check collision with core field names
-            if attr_name.lower() in {c.lower() for c in core}:
-                errors.append(
-                    t("import.err_custom_name_conflict", name=attr_name, col=col)
-                )
-        elif target.startswith(MAPPING_ATTR_PREFIX):
-            # Category attribute - use the attr key as the attribute name
-            attr_key = target[len(MAPPING_ATTR_PREFIX):]
-            attr_names.setdefault(attr_key, []).append(col)
+        if target == MAPPING_ATTRIBUTE or target.startswith(MAPPING_ATTR_PREFIX):
+            if target.startswith(MAPPING_ATTR_PREFIX) and (
+                not dest or (allowed_category_attrs is not None and dest not in allowed_category_attrs)
+            ):
+                _error(col, "invalid_category_attribute",
+                       t("import.err_invalid_category_attribute", col=col, name=dest))
+                continue
+            if dest.casefold() in reserved:
+                _error(col, "reserved_field_conflict", t("import.err_custom_name_conflict", name=dest, col=col))
+                continue
+            attr_sources.setdefault(dest, []).append(col)
         else:
-            target_sources.setdefault(target, []).append(col)
+            if target not in allowed:
+                _error(col, "unknown_target", t("import.err_unknown_target", col=col, target=target))
+            core_sources.setdefault(target, []).append(col)
 
     for target in sorted(required_targets):
-        if target not in target_sources:
-            errors.append(t("import.err_required_target", target=target.replace("_", " ").title()))
+        if target not in core_sources:
+            _error(target, "required_target_missing", t("import.err_required_target", target=_target_label(target)))
 
-    # Check duplicate target fields
-    for target, sources in target_sources.items():
+    for target, sources in core_sources.items():
         if len(sources) > 1:
-            names = " and ".join(f'"{s}"' for s in sources)
-            errors.append(
-                t(
-                    "import.err_duplicate_target",
-                    cols=names,
-                    target=target.replace("_", " ").title(),
-                )
-            )
-
-    # Check duplicate attribute names
-    for attr_name, sources in attr_names.items():
+            _error(target, "duplicate_target",
+                   t("import.err_duplicate_target", cols=_quoted_cols(sources), target=_target_label(target)))
+    for name, sources in attr_sources.items():
         if len(sources) > 1:
-            names = " and ".join(f'"{s}"' for s in sources)
-            errors.append(
-                t("import.err_duplicate_attr", cols=names, name=attr_name)
-            )
+            _error(name, "duplicate_target", t("import.err_duplicate_attr", cols=_quoted_cols(sources), name=name))
 
-    return errors
+    for group in mutex_groups:
+        mapped = [target for target in group if target in core_sources]
+        if len(mapped) > 1:
+            sources = [col for target in mapped for col in core_sources[target]]
+            _error(mapped[0], "price_target_conflict",
+                   t("import.err_price_target_conflict", cols=_quoted_cols(sources)))
+
+    return MappingResult(mapping=mapping, errors=errors)
+
+
+def validate_column_mapping(
+    form: dict,
+    csv_cols: list[str],
+    *,
+    core_fields: Collection[str],
+    required_targets: Collection[str],
+    reserved_item_fields: Collection[str] = frozenset(),
+    allowed_category_attrs: Collection[str] | None = None,
+    mutex_groups: Collection[Collection[str]] = (),
+) -> list[str]:
+    """Check a browser mapping form. Returns the error messages (empty = valid).
+
+    Adapts the submitted form into :func:`normalize_and_validate_mapping`, the
+    same check the file import runs: ``core_fields`` are the targets the form
+    offers, and every column is submitted, so the form is the whole mapping.
+    """
+    result = normalize_and_validate_mapping(
+        csv_cols, form_mapping(form, csv_cols), None,
+        allowed_targets=core_fields,
+        required_targets=required_targets,
+        allowed_category_attrs=allowed_category_attrs,
+        reserved_item_fields=reserved_item_fields,
+        mutex_groups=mutex_groups,
+        attr_names=form_attr_names(form, csv_cols),
+    )
+    return [e["message"] for e in result.errors]
 
 
 def mapped_field_name(col: str, target: str, attr_name: str | None = None) -> str | None:
@@ -335,6 +401,9 @@ def remap_rows(
 
     Preserves the original column order, drops ``MAPPING_SKIP`` columns, and
     renames the rest via :func:`mapped_field_name`. Returns ``(new_cols, rows)``.
+
+    Raises ``ValueError`` when two columns resolve to the same destination, so
+    one column's values can never silently overwrite another's.
     """
     attr_names = attr_names or {}
     new_cols: list[str] = []
@@ -343,6 +412,9 @@ def remap_rows(
         dest = mapped_field_name(col, mapping.get(col, MAPPING_ATTRIBUTE), attr_names.get(col))
         if dest is None:
             continue
+        if dest in new_cols:
+            raise ValueError(f"Columns {_quoted_cols([c for c in rename if rename[c] == dest] + [col])} "
+                             f"are all mapped to '{dest}'")
         new_cols.append(dest)
         rename[col] = dest
     remapped = [{rename[c]: row.get(c, "") for c in rename} for row in rows]
@@ -352,6 +424,12 @@ def remap_rows(
 def form_mapping(form: dict, cols: list[str]) -> dict[str, str]:
     """The ``{column: target}`` mapping a mapping form submitted for ``cols``."""
     return {col: str(form.get(f"map__{col}", MAPPING_ATTRIBUTE) or MAPPING_ATTRIBUTE) for col in cols}
+
+
+def form_attr_names(form: dict, cols: list[str]) -> dict[str, str]:
+    """The custom attribute names a mapping form chose, for the columns that have one."""
+    names = {col: str(form.get(f"attr_name__{col}", "") or "").strip() for col in cols}
+    return {col: name for col, name in names.items() if name}
 
 
 def apply_column_mapping(form: dict, csv_text: str) -> tuple[str, list[str]]:
@@ -366,33 +444,14 @@ def apply_column_mapping(form: dict, csv_text: str) -> tuple[str, list[str]]:
     """
     reader = csv.DictReader(io.StringIO(csv_text))
     original_cols = list(reader.fieldnames or [])
-    rows = list(reader)
-
-    mapping = form_mapping(form, original_cols)
-
-    # Build new column list and rename map
-    new_cols: list[str] = []
-    rename: dict[str, str] = {}  # original -> new name
-    for col in original_cols:
-        attr_name = str(form.get(f"attr_name__{col}", "") or "").strip() or None
-        dest = mapped_field_name(col, mapping[col], attr_name)
-        if dest is None:
-            continue
-        new_cols.append(dest)
-        rename[col] = dest
-
-    # Write remapped CSV
+    new_cols, rows = remap_rows(
+        original_cols, list(reader),
+        form_mapping(form, original_cols), form_attr_names(form, original_cols),
+    )
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=new_cols, extrasaction="ignore")
     writer.writeheader()
-    for row in rows:
-        new_row = {}
-        for col in original_cols:
-            if col not in rename:
-                continue
-            new_row[rename[col]] = row.get(col, "")
-        writer.writerow(new_row)
-
+    writer.writerows(rows)
     return output.getvalue(), new_cols
 
 

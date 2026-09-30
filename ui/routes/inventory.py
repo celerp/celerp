@@ -27,6 +27,7 @@ from ui.components.table import data_table, search_bar, pagination, EMPTY, bread
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, cost_columns
+from celerp.services.field_schema import union_category_attr_keys as _union_category_attr_keys
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, price_key, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
@@ -40,6 +41,7 @@ from celerp_inventory.services import (
     apply_source_semantics,
     build_item_import_spec,
     importable_price_lists,
+    item_price_mutex_groups,
     source_header_semantics,
 )
 
@@ -1492,7 +1494,7 @@ def setup_routes(app):
                 required_targets=spec.required,
                 category_attrs=cat_attrs,
                 col_labels=_import_price_col_labels(price_lists),
-                mutex_groups=_import_price_mutex_groups(price_lists),
+                mutex_groups=item_price_mutex_groups(price_lists),
             ),
             title=page_title("page.import_inventory"),
             nav_active="inventory",
@@ -1531,8 +1533,11 @@ def setup_routes(app):
         original_cols = list(csv.DictReader(io.StringIO(csv_text)).fieldnames or [])
 
         # Validate mapping before applying
+        cat_attrs = _union_category_attr_keys(await api.get_all_category_schemas(token))
         mapping_errors = validate_column_mapping(
-            form, original_cols, core_fields=_CORE_ITEM_COLS, required_targets=spec.required,
+            form, original_cols, core_fields=spec.cols, required_targets=spec.required,
+            reserved_item_fields=_CORE_ITEM_COLS, allowed_category_attrs=cat_attrs,
+            mutex_groups=item_price_mutex_groups(price_lists),
         )
         company = await api.get_company(token)
         semantics = source_header_semantics(form_mapping(form, original_cols), company.get("currency") or "USD")
@@ -1541,8 +1546,6 @@ def setup_routes(app):
             # Re-render the mapping form with errors and preserved form values
             csv_ref = await stash_import_csv(token, csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
-            cat_schemas = await api.get_all_category_schemas(token)
-            cat_attrs = _union_category_attr_keys(cat_schemas)
             return await base_shell(
                 page_header(t("page.import_inventory", lang)),
                 column_mapping_form(
@@ -1557,7 +1560,7 @@ def setup_routes(app):
                     errors=mapping_errors,
                     form_values=dict(form),
                     col_labels=_import_price_col_labels(price_lists),
-                    mutex_groups=_import_price_mutex_groups(price_lists),
+                    mutex_groups=item_price_mutex_groups(price_lists),
                 ),
                 title=page_title("page.import_inventory"),
                 nav_active="inventory",
@@ -7517,22 +7520,6 @@ async def _item_import_check(token: str, csv_ref: str, rows: list[dict], cols: l
     return await _item_import_review(token, csv_ref, rows, cols, upsert=False)
 
 
-def _union_category_attr_keys(cat_schemas: dict) -> list[str]:
-    """Extract the deduplicated union of all attribute keys across all category schemas.
-
-    Returns a stable-ordered list (insertion order, no duplicates).
-    """
-    seen: dict[str, None] = {}
-    for fields in cat_schemas.values():
-        if not isinstance(fields, list):
-            continue
-        for field in fields:
-            key = field.get("key") or ""
-            if key and key not in seen:
-                seen[key] = None
-    return list(seen)
-
-
 # The dynamic item import spec (with the company's price columns) is built by
 # celerp_inventory.services.build_item_import_spec, the single source shared with
 # the agent preview/commit routes. This default spec (the three built-in price
@@ -7559,15 +7546,6 @@ def _import_price_col_labels(price_lists: list[dict]) -> dict[str, str]:
         labels[key] = t("inventory.import_col_unit_price", name=name)
         labels[f"{key}_total"] = t("inventory.import_col_total", name=name)
     return labels
-
-
-def _import_price_mutex_groups(price_lists: list[dict]) -> list[list[str]]:
-    """Mutex groups: mapping unit price and total for the same price list is mutually exclusive."""
-    groups = []
-    for pl in importable_price_lists(price_lists):
-        key = price_key(pl["name"])
-        groups.append([key, f"{key}_total"])
-    return groups
 
 
 def _import_upload_form(error: str | None = None) -> FT:

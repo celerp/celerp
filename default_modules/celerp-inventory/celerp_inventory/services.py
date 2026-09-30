@@ -2020,6 +2020,12 @@ def build_item_import_spec(price_lists: list[dict]) -> CsvImportSpec:
     )
 
 
+def item_price_mutex_groups(price_lists: list[dict]) -> list[list[str]]:
+    """Target groups a mapping may use at most one of: a price list's unit price
+    and its total, which would otherwise both claim the same stored price."""
+    return [[key, f"{key}_total"] for key in (price_key(pl["name"]) for pl in importable_price_lists(price_lists))]
+
+
 @dataclass
 class ImportBuild:
     records: list[dict]              # ImportRecord-shaped dicts ready for the committer
