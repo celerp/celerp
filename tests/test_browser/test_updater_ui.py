@@ -437,6 +437,19 @@ def test_update_found_without_version_lights_bell(page, ui_server):
     assert seen["check"] is False
 
 
+@pytest.mark.parametrize("events, state", [
+    (["update-available"], "Downloading update..."),
+    (["update-available", "update-downloaded"], "Update ready to install"),
+])
+def test_update_without_version_reads_plainly(page, ui_server, events, state):
+    """An update with no version number is named plainly, never as "vupdate"."""
+    _fake_electron(page)
+    _open(page, f"{ui_server}/")
+    for event in events:
+        page.evaluate(f"() => window.__updaterEmit('{event}', {{}})")
+    assert page.evaluate(_VISIBLE_STATE_JS)["state"] == state
+
+
 def test_back_to_cached_page_shows_current_state(page, ui_server):
     """Going Back to a page htmx restores from its history cache shows the
     updater as it is now, and the card keeps following later events."""

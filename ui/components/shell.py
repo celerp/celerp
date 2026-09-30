@@ -1085,14 +1085,14 @@ document.addEventListener('DOMContentLoaded', function() {
       // downloading, downloaded, or a download that then failed.
       function renderUpdateState(s) {
         var i18n = window.__shellI18n;
-        var v = s.version || i18n.updateWord;
         if (s.status === 'downloading') {
           setState(s.percent > 0 ? i18n.downloadingPct.replace('{pct}', Math.round(s.percent))
-                                 : i18n.downloadingVersion.replace('{version}', v), false);
+                   : s.version ? i18n.downloadingVersion.replace('{version}', s.version)
+                   : i18n.downloadingUpdate, false);
           setCheckBtn(false);
           setProgress(s.percent);
         } else if (s.status === 'downloaded') {
-          setState(i18n.versionReady.replace('{version}', v), true);
+          setState(s.version ? i18n.versionReady.replace('{version}', s.version) : i18n.updateReady, true);
           setCheckBtn(false);
           setProgress(100);
         } else if (s.status === 'error') {
@@ -1654,9 +1654,10 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "noNotifications": t("shell.no_notifications", lang),
         "upToDate": t("shell.up_to_date", lang),
         "downloadingVersion": t("shell.js_downloading_version", lang),
-        "updateWord": t("shell.js_update_word", lang),
+        "downloadingUpdate": t("shell.js_downloading_update", lang),
         "downloadingPct": t("shell.js_downloading_pct", lang),
         "versionReady": t("shell.js_version_ready", lang),
+        "updateReady": t("shell.js_update_ready", lang),
         "updateCheckFailed": t("shell.update_check_failed", lang),
         "checking": t("shell.checking", lang),
         "restarting": t("shell.restarting", lang),
