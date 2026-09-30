@@ -83,3 +83,31 @@ async def test_finalize_refuses_a_changed_source(real_client, real_engine, monke
     after = await load_run(real_engine, run.id)
     assert after.status != "completed"
     assert after.source_artifact_sha256 == run.source_artifact_sha256
+
+
+async def test_source_is_hashed_off_the_event_loop(real_client, real_engine, monkeypatch, tmp_path):
+    """RED before the change: the run and its finalization hashed the source, up to the
+    upload limit in size, on the event loop, stalling every other request meanwhile."""
+    import asyncio
+
+    from celerp.services import migration_scan_store as store
+    from test_migration_e2e import migrate
+    from test_migration_lock_date import _finalize
+
+    real_hash = store.file_sha256
+    on_loop: list[bool] = []
+
+    def recording(path):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return real_hash(path)
+
+    monkeypatch.setattr(store, "file_sha256", recording)
+    run, rejected = await migrate(real_engine, BASIC.read_bytes(), "basic.manager", {"mode": "full_history"},
+                                  monkeypatch, tmp_path / "data")
+    assert rejected == [] and run.status == "ready_to_finalize", run.error_summary
+    assert (await _finalize(real_client, real_engine, run)).status_code == 200
+    assert on_loop and not any(on_loop), on_loop

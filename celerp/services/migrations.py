@@ -480,13 +480,14 @@ def schedule_run(run_id: uuid.UUID) -> None:
 
 
 def _source(run: MigrationRun) -> tuple[SourceAdapter, list[Artifact], MigrationDecisions]:
+    """Blocking, since it hashes the source: callers run it in a worker thread."""
     directory = store.run_dir(run.id)
     artifacts = [Artifact(directory / a["name"], a["original_name"], a["size_bytes"], a["sha256"])
                  for a in run.source_summary.get("artifacts", [])]
     if not artifacts or not all(a.path.is_file() for a in artifacts):
         raise ScanError("The source file for this migration has been deleted.")
     # Every read of the run's source is bound to the file that was scanned: size first, then the hash.
-    if any(a.path.stat().st_size != a.size_bytes or store.file_sha256(a.path) != a.sha256 for a in artifacts):
+    if any(store.artifact_changed(a) for a in artifacts):
         raise ScanError("The source file for this migration has changed since it was scanned.")
     return _adapter(run.source_system), artifacts, store.decisions_from_json(run.mapping_decisions)
 
@@ -656,7 +657,7 @@ async def _run_locked(run_id: uuid.UUID) -> None:
         first_pending = next((p for p in IMPORT_PHASES if _phase_entry(state, p)["status"] != "done"), None)
         stopped_at = first_pending or _P.RECONCILIATION
         try:
-            adapter, artifacts, decisions = _source(run)
+            adapter, artifacts, decisions = await asyncio.to_thread(_source, run)
             _require_same_importer(run, adapter)
             manifest = await asyncio.to_thread(adapter.build_manifest, artifacts, decisions)
             _require_same_lock_date(run, manifest)
@@ -772,7 +773,7 @@ def _row(expectation: ReconciliationExpectation, actual: Decimal | None) -> dict
 
 async def _verification(session: AsyncSession, run: MigrationRun) -> dict:
     """Compare the source's own figures with what Celerp now holds. Raises on a provider failure."""
-    adapter, artifacts, decisions = _source(run)
+    adapter, artifacts, decisions = await asyncio.to_thread(_source, run)
     expectations = await asyncio.to_thread(adapter.source_expectations, artifacts, decisions)
     context = SinkContext(session=session, company_id=run.company_id, user_id=run.created_by_user_id, run_id=run.id,
                           read_attachment=partial(adapter.read_attachment, artifacts))

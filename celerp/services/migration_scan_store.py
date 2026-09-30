@@ -459,6 +459,12 @@ def find_scan_token(claim: str) -> str | None:
     return next((d.name for d in root.iterdir() if scan_claim(d.name) == claim), None)
 
 
+def artifact_changed(artifact: Artifact) -> bool:
+    """Whether a stored file is no longer the one scanned: the size first, then the hash.
+    Blocking; async callers run it in a worker thread."""
+    return artifact.path.stat().st_size != artifact.size_bytes or file_sha256(artifact.path) != artifact.sha256
+
+
 def verify_unchanged(token: str, *, owner: ScanOwner) -> ScanSession:
     """The scan, after checking its files are the ones that were scanned; a changed file
     discards the scan. A size change is caught before any hashing."""
@@ -467,8 +473,7 @@ def verify_unchanged(token: str, *, owner: ScanOwner) -> ScanSession:
         session = _read(token, directory, owner)
         for artifact in session.artifacts:
             try:
-                changed = (artifact.path.stat().st_size != artifact.size_bytes
-                           or file_sha256(artifact.path) != artifact.sha256)
+                changed = artifact_changed(artifact)
             except OSError as exc:
                 raise ScanStoreError(500, STORE_FAILED) from exc
             if changed:
