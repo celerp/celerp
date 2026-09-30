@@ -14,6 +14,9 @@ table (one row per line, as Postgres renders it with ``to_jsonb``) and
 Which tables are backed up is read from the database itself: every table with a
 ``company_id`` column, and every table named with an installed module's table prefix,
 is either backed up or listed in ``EXCLUDED_TABLES``; anything else stops the export.
+A module says in its manifest's ``company_backup`` which of its tables belong to the
+company (``"include"``) and which to this installation (``"exclude"``, such as
+credentials or caches); a module table it does not name stops the export.
 Tables are written and restored in foreign-key order, a batch at a time.
 
 Restoring creates a new company with fresh ids for the company and every backed-up
@@ -242,6 +245,16 @@ def _module_shape_ok(table: _Table) -> bool:
     return False
 
 
+INCLUDE, EXCLUDE = "include", "exclude"
+
+
+def _declared(module: str) -> dict:
+    """How the module's manifest says each of its tables travels with a company backup."""
+    path = _installed(module)
+    declared = (read_manifest(path) if path is not None else {}).get("company_backup")
+    return declared if isinstance(declared, dict) else {}
+
+
 def _refusal(table: str, owners: dict[str, str]) -> BackupError:
     if table in owners:
         return BackupError(409, f"The {owners[table]} module keeps data in {table} in a form Celerp "
@@ -254,6 +267,7 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
     table it cannot carry; otherwise (restore) such tables are simply not carried."""
     schema = await _schema(session)
     prefixes = installed_table_prefixes("")
+    declarations = {module: _declared(module) for module in prefixes}
     owners: dict[str, str] = {}
     carried: list[str] = []
     for name in sorted(schema):
@@ -262,7 +276,15 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
         if name in EXCLUDED_TABLES or (owner is None and "company_id" not in table.columns):
             continue
         if owner is not None and name not in PORTABLE_TABLES:
+            how = declarations[owner].get(name)
+            if how == EXCLUDE:
+                continue
             owners[name] = owner
+            if how != INCLUDE:
+                if strict:
+                    raise BackupError(409, f"The {owner} module has not said whether {name} belongs in a company "
+                                           f"backup." + _NOT_BACKED_UP)
+                continue
             ok = _module_shape_ok(table)
         else:
             ok = name in PORTABLE_TABLES and bool(table.pk)

@@ -96,8 +96,12 @@ def _bk_cloud(monkeypatch, tmp_path) -> FakeCloud:
     return fake
 
 
-def _bk_fake_module(tmp_path, monkeypatch, *, version: str = "2.0.0") -> Path:
-    """Install a third-party module owning the zz_ table prefix in a MODULE_DIR entry."""
+_BK_DECLARED = {"zz_widgets": "include", "zz_gadgets": "include"}
+
+
+def _bk_fake_module(tmp_path, monkeypatch, *, version: str = "2.0.0", backup: dict = _BK_DECLARED) -> Path:
+    """Install a third-party module owning the zz_ table prefix in a MODULE_DIR entry,
+    declaring how its tables travel with a company backup."""
     root = tmp_path / "bk-modules"
     pkg = root / _BK_MODULE
     pkg.mkdir(parents=True, exist_ok=True)
@@ -107,6 +111,7 @@ def _bk_fake_module(tmp_path, monkeypatch, *, version: str = "2.0.0") -> Path:
         f'    "version": "{version}",\n'
         '    "display_name": "Widgets",\n'
         f'    "table_prefix": "{_BK_PREFIX}",\n'
+        f'    "company_backup": {backup!r},\n'
         "}\n\n\n"
         "def widget_code():\n"
         f'    return "{_BK_CODE_MARKER}"\n')
@@ -3393,3 +3398,32 @@ async def test_source_membership_change_waits_for_team_carry(real_engine, real_c
     assert (await promoting).status_code == 200
     assert (str(clerk), "viewer", True) in await _r_memberships(real_engine, dest)
     assert (str(clerk), "manager", True) in await _r_memberships(real_engine, cid)
+
+
+async def test_module_tables_travel_only_as_their_manifest_declares(real_engine, real_client, tmp_path, monkeypatch):
+    """A module table travels with a company backup only when the module's manifest includes
+    it: an excluded table (installation state such as credentials) is never carried, and a
+    table the manifest does not name stops the export and is not restored."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch, backup={"zz_widgets": "include", "zz_tokens": "exclude"})
+    user, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    await _bk_sql(real_engine, "CREATE TABLE zz_widgets (id uuid primary key, "
+                               "company_id uuid not null references companies(id) on delete cascade)")
+    await _bk_sql(real_engine, "CREATE TABLE zz_tokens (id uuid primary key, "
+                               "company_id uuid not null references companies(id) on delete cascade, secret text)")
+    try:
+        await _bk_sql(real_engine, "INSERT INTO zz_widgets (id, company_id) VALUES (:i, :c)", i=uuid.uuid4(), c=cid)
+        await _bk_sql(real_engine, "INSERT INTO zz_tokens (id, company_id, secret) VALUES (:i, :c, 'tok-marker')",
+                      i=uuid.uuid4(), c=cid)
+        data = await download(real_client, tok)
+        assert "zz_widgets" in manifest(data)["tables"] and "zz_tokens" not in manifest(data)["tables"]
+        assert not any(b"tok-marker" in body for body in members(data).values())
+
+        _bk_fake_module(tmp_path, monkeypatch, backup={"zz_tokens": "exclude"})
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert _BK_MODULE in detail and "zz_widgets" in detail and detail.endswith("Nothing was backed up.")
+        await _bk_refused(real_engine, real_client, tok, user, tmp_path, data)
+    finally:
+        await _bk_drop(real_engine, "zz_tokens", "zz_widgets")
