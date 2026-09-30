@@ -16,8 +16,9 @@ position per item carry the rest of the pre-cutover history.
 
 Stock moves on the physical record: a goods receipt or delivery note on its own date
 and quantity, or an invoice or bill flagged to move its own stock. An invoice or bill
-with neither moves no stock. An inventory item sold posts its cost of sales at the
-unit cost set for it on the invoice date.
+with neither moves no stock. An inventory item sold posts the cost of sales Manager
+books from what it owns on the invoice date, bills counted whether or not their goods
+have arrived; the goods delivered for it leave stock at that same cost.
 """
 
 from __future__ import annotations

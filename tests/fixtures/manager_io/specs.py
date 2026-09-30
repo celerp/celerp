@@ -390,15 +390,15 @@ def inventory_lifecycle_objects() -> list[Obj]:
       BILLU 3 @ 4: no physical record, moves nothing
       BILLP 8 @ 5: GR3 01-10 5 / 25.00, the other 3 never arrive
     Running position: 01-06 5 / 30.00, 01-08 11 / 54.00, 01-10 16 / 79.00, 01-12 20 / 95.00.
-    Deliveries at the moving average cost of 4.75:
-      INVE 2 (01-22): DN2 01-16, delivered before the invoice, 9.50, leaves 18 / 85.50
-      INVP 5 (01-18): DN3 01-19 delivers 3 only, 14.25, leaves 15 / 71.25
-      INVD 4 (01-15): DN1 01-20, delivered after the invoice, 19.00, leaves 11 / 52.25
+    Deliveries at the cost of sales each invoice books, the 5.00 unit cost from 01-14:
+      INVE 2 (01-22): DN2 01-16, delivered before the invoice, 10.00, leaves 18 / 85.00
+      INVP 5 (01-18): DN3 01-19 delivers 3 only, 15.00, leaves 15 / 70.00
+      INVD 4 (01-15): DN1 01-20, delivered after the invoice, 20.00, leaves 11 / 50.00
       INVN 1 (01-21): no physical record, moves nothing
-      INVX 1 (01-23), flagged: moves its own stock, 4.75, leaves 10 / 47.50
+      INVX 1 (01-23), flagged: moves its own stock, 5.00, leaves 10 / 45.00
     Books: bills 122.00 to payables, invoices 13 @ 12.50 = 162.50 to receivables, cost of
     sales 13 x 5.00 (the unit cost from 01-14) = 65.00, so inventory on hand is 57.00. R1
-    pays INVD in full on 01-25. At the 01-17 cutover the opening stock is 18 / 85.50.
+    pays INVD in full on 01-25. At the 01-17 cutover the opening stock is 18 / 85.00.
     These figures are recorded in checkpoints.json under "inventory"."""
     return [
         *_stocked_masters(),
@@ -433,21 +433,28 @@ ORACLE_CUTOVER = date(2026, 2, 6)
 
 def inventory_oracle_objects() -> list[Obj]:
     """Two items, each bought and sold across physical records that straddle the 02-06
-    cutover in both directions. Hand-worked figures, receipts before deliveries on a day:
+    cutover in both directions. Hand-worked figures, receipts before deliveries on a day.
+
+    Cost of sales, from what Manager owns on the invoice date, bills before invoices on a day:
+      02-02 BO1 WID 10 / 30.00, GAD 4 / 28.00; 02-05 BO2 WID 6 / 21.00: WID 16 / 51.00
+      02-05 SO1 WID 7: 51.00 x 7 / 16 = 22.31, owns 9 / 28.69; GAD 2: 28.00 x 2 / 4 = 14.00
+      02-08 BO4 WID 2 / 8.00: 11 / 36.69; SO2 WID 3: 36.69 x 3 / 11 = 10.01, owns 8 / 26.68
+      02-09 SO3 WID 1: 26.68 / 8 = 3.34
+
+    Stock, each delivery leaving at its share of the cost its invoice line booked:
 
       02-03 GRO1 receives BO1's WID 10 of 10 @ 3.00 = 30.00 and GAD 3 of 4 @ 7.00 = 21.00
       02-04 GRA receives BO4's WID 2 @ 4.00 = 8.00, before BO4 is billed on 02-08
       02-05 BO2, flagged, brings in its own WID 6 @ 3.50 = 21.00: WID 18 / 59.00
-      02-05 DNA delivers SO3's WID 1, before SO3 is invoiced on 02-09: 59.00 / 18 = 3.28,
-            WID 17 / 55.72
-      Opening at the 02-06 cutover: WID 17 / 55.72, GAD 3 / 21.00
+      02-05 DNA delivers SO3's WID 1, before SO3 is invoiced on 02-09: 3.34, WID 17 / 55.66
+      Opening at the 02-06 cutover: WID 17 / 55.66, GAD 3 / 21.00
       02-07 GRO2 receives BO1's last GAD 1, BO1 billed before the cutover: 28.00 - 21.00 = 7.00,
             GAD 4 / 28.00
       02-07 DNO1 delivers SO1's WID 5 of 7 and GAD 2 of 2, SO1 invoiced before the cutover:
-            WID 55.72 x 5 / 17 = 16.39, 12 / 39.33; GAD 28.00 x 2 / 4 = 14.00, 2 / 14.00
-      02-08 SO2, flagged, takes out its own WID 3: 39.33 x 3 / 12 = 9.83, WID 9 / 29.50
+            WID 22.31 x 5 / 7 = 15.94, 12 / 39.72; GAD 14.00, 2 / 14.00
+      02-08 SO2, flagged, takes out its own WID 3: 10.01, WID 9 / 29.71
       02-09 BO3 bills GAD 5 @ 8.00 with no goods receipt: moves nothing
-    On hand: WID 9 / 29.50, GAD 2 / 14.00, all at the default location."""
+    On hand: WID 9 / 29.71, GAD 2 / 14.00, all at the default location."""
     return [
         *_stocked_masters(),
         obj("InventoryItem", "GAD", {1: "GAD-1", 11: "Gadget", 13: "each", 32: True, 3: SALE_PRICES["GAD"], 31: True}),

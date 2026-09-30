@@ -713,20 +713,46 @@ def _resolve_document(book: Book, doc: Document) -> None:
     if doc.applies_to:
         target = book.documents.get(doc.applies_to)
         _check(target is not None and target.source_type == NOTE_OF[doc.source_type], "the invoice it settles")
+    _price_lines(book, doc.currency, doc.lines, doc.include_tax)
     if doc.moves_stock and doc.location not in (None, DEFAULT_LOCATION):
         raise Blocked("multiple locations", LOCATION_NOTE)
-    _price_lines(book, doc.currency, doc.lines, doc.include_tax)
-    if doc.source_type == "SalesInvoice":
-        code = book.currency_code(doc.currency)
-        for line in doc.lines:
-            if line.item:
-                line.cost = round_money(line.quantity * _unit_cost(book, line.item, doc.date), code)
 
 
-def _unit_cost(book: Book, item: str, day: date) -> Decimal:
-    """The item's latest unit cost on or before the day, or zero when none is set."""
+def _unit_cost(book: Book, item: str, day: date) -> Decimal | None:
+    """The item's latest unit cost on or before the day, or None when none is set."""
     costs = [cost for on, cost in sorted(book.unit_costs.get(item, [])) if on <= day]
-    return costs[-1] if costs else Decimal(0)
+    return costs[-1] if costs else None
+
+
+def _cost_sales(book: Book) -> None:
+    """Work out each sales invoice's cost of sales as Manager books it, from what it owns.
+
+    Manager's books own an item from the bill that buys it, not from its goods receipt, and
+    an invoice relieves them on its own date, not when the goods leave. Each item line of a
+    sales invoice costs the item's unit cost on the invoice date when one is set, and
+    otherwise the average of what is owned then: every bill bought on or before that day,
+    less every earlier sale. Documents Celerp cannot carry still count, since Manager's
+    books hold them. An invoice selling an item when none is owned and no unit cost is set
+    is blocked, since nothing says what Manager booked for it."""
+    code = book.base_code or ""
+    trading = sorted((doc for doc in book.documents.values() if doc.source_type in ("PurchaseInvoice", "SalesInvoice")),
+                     key=lambda d: (d.date, d.source_type != "PurchaseInvoice", d.key))
+    owned: dict[str, tuple[Decimal, Decimal]] = {}
+    for doc in trading:
+        for line in (ln for ln in doc.lines if ln.item):
+            qty, value = owned.get(line.item, (Decimal(0), Decimal(0)))
+            if doc.source_type == "PurchaseInvoice":
+                owned[line.item] = (qty + line.quantity, value + line.net)
+                continue
+            unit = _unit_cost(book, line.item, doc.date)
+            if unit is not None:
+                line.cost = round_money(line.quantity * unit, code)
+            elif qty:
+                line.cost = round_money(value * line.quantity / qty, code)
+            elif line.quantity and not book.is_blocked(doc.key):
+                book.block(doc.source_type, doc.key, "no unit cost", "Sold when none of the item was owned and no "
+                           "unit cost was set, so the cost of sales Manager booked cannot be worked out.")
+            owned[line.item] = (qty - line.quantity, value - line.cost)
 
 
 def _resolve_settlement(book: Book, s: Settlement) -> None:
@@ -818,6 +844,7 @@ def _resolve(book: Book) -> None:
             _foreign_check(book, key)
         except Blocked as blocked:
             book.block("InterAccountTransfer", key, blocked.reason, blocked.note)
+    _cost_sales(book)
     for key, movement in book.movements.items():
         try:
             _link(book, movement)
@@ -876,9 +903,9 @@ def _own_movement(doc: Document) -> Movement:
 def _value_stock(book: Book) -> None:
     """Value every movement in the order stock moved, receipts first on a day.
 
-    Goods received carry their share of the bill line's net, the last receipt of a line
-    taking what is left of it; goods delivered leave at the moving average cost of what is
-    held. A movement that takes more than its document lists, moves a line of zero or
+    Goods received carry their share of the bill line's net and goods delivered their share
+    of the cost of sales the invoice line booked, the last movement of a line taking what is
+    left of it. A movement that takes more than its document lists, moves a line of zero or
     negative quantity, or takes more stock than is held, is blocked and moves nothing."""
     code = book.base_code or ""
     movements = [m for k, m in book.movements.items() if not book.is_blocked(k)]
@@ -898,12 +925,11 @@ def _value_stock(book: Book) -> None:
                 if source.quantity <= 0:
                     raise Blocked("unsupported feature", "A zero or negative quantity.")
                 on_hand, worth = now_held.get(line.item, (Decimal(0), Decimal(0)))
-                if line.quantity > 0:
-                    line.value = round_money(source.net * (qty + line.quantity) / source.quantity, code) - value
-                else:
-                    if on_hand + line.quantity < 0:
-                        raise Blocked("negative stock", "Moves more stock out than is on hand at the time.")
-                    line.value = -round_money(worth * -line.quantity / on_hand, code)
+                if on_hand + line.quantity < 0:
+                    raise Blocked("negative stock", "Moves more stock out than is on hand at the time.")
+                booked = source.net if line.quantity > 0 else -source.cost
+                share = round_money(booked * (qty + abs(line.quantity)) / source.quantity, code)
+                line.value = share - (value if line.quantity > 0 else -value)
                 now_taken[(doc.key, line.line)] = (qty + abs(line.quantity), value + abs(line.value))
                 now_held[line.item] = (on_hand + line.quantity, worth + line.value)
         except Blocked as blocked:

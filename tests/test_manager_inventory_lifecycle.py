@@ -84,7 +84,7 @@ def _inventory_rows(manifest) -> set:
 def test_manager_stock_matches_independent_source_oracle(lifecycle):
     """RED before the change: stock moves on the bills at their own dates and quantities,
     the goods receipts, delivery notes and unit costs are ignored, and sales never take
-    stock out, so the item holds the 26 bought at 122.00 rather than 10 at 47.50."""
+    stock out, so the item holds the 26 bought at 122.00 rather than 10 at 45.00."""
     full = _manifest(lifecycle)
     assert _moves(full) == _expected_moves()
     assert _held(full) == {WID: HELD}
@@ -117,7 +117,7 @@ def test_manager_delivery_after_invoice_moves_stock_at_delivery(lifecycle):
     invoice = _documents(manifest)[ref("INVD")]
     assert invoice.issue_date == date(2026, 1, 15)
     assert [m for m in _moves(manifest) if m[1].startswith(ref("DN1"))] == _expected_moves({"DN1"})
-    assert _links(invoice) == [(ref("DN1"), "2026-01-20", 0, D("4"), D("19.00"))]
+    assert _links(invoice) == [(ref("DN1"), "2026-01-20", 0, D("4"), D("20.00"))]
 
 
 def test_manager_goods_receipt_full_and_partial(lifecycle):
@@ -143,7 +143,7 @@ def test_manager_delivery_before_invoice_moves_stock_at_delivery(lifecycle):
     # position and is not moved again, while the invoice still names it.
     cut = _manifest(lifecycle, CUTOVER)
     assert not [m for m in _moves(cut) if m[1].startswith(ref("DN2"))]
-    assert _links(_documents(cut)[ref("INVE")]) == [(ref("DN2"), "2026-01-16", 0, D("2"), D("9.50"))]
+    assert _links(_documents(cut)[ref("INVE")]) == [(ref("DN2"), "2026-01-16", 0, D("2"), D("10.00"))]
 
 
 def test_manager_physical_movement_with_separate_financial_timing(lifecycle):
@@ -151,7 +151,7 @@ def test_manager_physical_movement_with_separate_financial_timing(lifecycle):
     dates and cost of sales is never posted, so inventory on hand holds all 122.00 bought.
 
     The books follow the invoices: 122.00 bought less 13 sold at the 5.00 unit cost is
-    57.00 on hand. The stock follows the physical records: 10 widgets worth 47.50."""
+    57.00 on hand. The stock follows the physical records: 10 widgets worth 45.00."""
     from celerp.importers.adapters.manager_io.book import read_book
     from celerp.importers.adapters.manager_io.ledger import build_ledger
     from celerp.importers.adapters.manager_io.sqlite_reader import ManagerReader
@@ -172,7 +172,7 @@ def test_manager_partial_delivery_stays_partial(lifecycle):
     manifest = _manifest(lifecycle)
     invoice = _documents(manifest)[ref("INVP")]
     assert invoice.line_items[0].quantity == D("5")
-    assert _links(invoice) == [(ref("DN3"), "2026-01-19", 0, D("3"), D("14.25"))]
+    assert _links(invoice) == [(ref("DN3"), "2026-01-19", 0, D("3"), D("15.00"))]
     assert [m for m in _moves(manifest) if m[1].startswith(ref("DN3"))] == _expected_moves({"DN3"})
 
 
@@ -204,7 +204,7 @@ async def test_manager_single_default_location_imports_with_exact_item_location_
     real_engine, monkeypatch, tmp_path, decisions,
 ):
     """RED before the change: the goods receipts and delivery notes are not carried, so the
-    item holds the 26 widgets bought instead of the 10 on hand, worth 47.50."""
+    item holds the 26 widgets bought instead of the 10 on hand, worth 45.00."""
     from sqlalchemy import select
 
     from celerp.models.company import Location
@@ -238,8 +238,8 @@ async def test_manager_single_default_location_imports_with_exact_item_location_
 # Worked out by hand in the spec's docstring, never read back from the adapter.
 
 GAD = ref("GAD")
-ORACLE = {WID: (D("9"), D("29.50")), GAD: (D("2"), D("14.00"))}
-ORACLE_OPENING = {WID: (D("17"), D("55.72")), GAD: (D("3"), D("21.00"))}
+ORACLE = {WID: (D("9"), D("29.71")), GAD: (D("2"), D("14.00"))}
+ORACLE_OPENING = {WID: (D("17"), D("55.66")), GAD: (D("3"), D("21.00"))}
 ORACLE_MODES = [
     (FULL, {"mode": "full_history"}),
     (MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=specs.ORACLE_CUTOVER),
@@ -346,7 +346,7 @@ async def test_manager_source_oracle_independent_of_manifest_decode(real_engine,
     passes the wrong stock.
 
     Each step is broken to mis-carry DN-1's 4 widgets. The oracle still states the 10
-    widgets worth 47.50 the source lines give, and the run is refused at reconciliation."""
+    widgets worth 45.00 the source lines give, and the run is refused at reconciliation."""
     from celerp.importers.adapters.manager_io import book as book_module
     from celerp.importers.adapters.manager_io import mappings
     from test_migration_e2e import migrate
@@ -396,7 +396,7 @@ def test_manager_physical_quantity_differs_from_financial_document(oracle):
         so1, bo1, bo3 = documents[ref("SO1")], documents[ref("BO1")], documents[ref("BO3")]
         assert [(ln.item_external_id, ln.quantity) for ln in so1.line_items] == [(WID, D("7")), (GAD, D("2"))]
         assert so1.total == D("127.50")
-        assert [(q, v) for _, _, _, q, v in _links(so1)] == [(D("5"), D("16.39"))]
+        assert [(q, v) for _, _, _, q, v in _links(so1)] == [(D("5"), D("15.94"))]
         assert [(q, v) for _, _, _, q, v in _links(so1, GAD)] == [(D("2"), D("14.00"))]
         assert [(ln.item_external_id, ln.quantity) for ln in bo1.line_items] == [(WID, D("10")), (GAD, D("4"))]
         assert [(m, q) for m, _, _, q, _ in _links(bo1, GAD)] == [(ref("GRO1"), D("3")), (ref("GRO2"), D("1"))]
@@ -428,7 +428,7 @@ async def test_manager_no_double_count_invoice_and_delivery(real_engine, monkeyp
     move its own stock: never on both, and never on an invoice a delivery note fulfils."""
     manifest = _manifest(oracle)
     assert _sources(manifest) == _adjustment_sources(["GRO1", "GRA", "BO2", "DNA", "GRO2", "DNO1", "SO2"])
-    assert _adjusted(manifest, -1) == {WID: (D("-9"), D("-29.50")), GAD: (D("-2"), D("-14.00"))}
+    assert _adjusted(manifest, -1) == {WID: (D("-9"), D("-29.29")), GAD: (D("-2"), D("-14.00"))}
 
     run, maps, items = await _migrated_stock(real_engine, monkeypatch, tmp_path, oracle, {"mode": "full_history"})
     assert _sold(maps, items) == {("SO1", "WID-1"): D("5"), ("SO1", "GAD-1"): D("2"), ("SO2", "WID-1"): D("3"),
@@ -472,14 +472,14 @@ def test_manager_cutover_delivery_receipt_straddling_cutover(oracle):
         specs.ORACLE_CUTOVER}
     assert _moves(manifest) == [
         ("GoodsReceipt", f"{ref('GRO2')}:stock:1", date(2026, 2, 7), GAD, D("1"), D("7.00")),
-        ("DeliveryNote", f"{ref('DNO1')}:stock:1", date(2026, 2, 7), WID, D("-5"), D("-16.39")),
+        ("DeliveryNote", f"{ref('DNO1')}:stock:1", date(2026, 2, 7), WID, D("-5"), D("-15.94")),
         ("DeliveryNote", f"{ref('DNO1')}:stock:2", date(2026, 2, 7), GAD, D("-2"), D("-14.00")),
-        ("SalesInvoice", f"{ref('SO2')}:stock:1", date(2026, 2, 8), WID, D("-3"), D("-9.83")),
+        ("SalesInvoice", f"{ref('SO2')}:stock:1", date(2026, 2, 8), WID, D("-3"), D("-10.01")),
     ]
     documents = _documents(manifest)
     assert _links(documents[ref("BO1")], GAD) == [(ref("GRO1"), "2026-02-03", 1, D("3"), D("21.00")),
                                                   (ref("GRO2"), "2026-02-07", 1, D("1"), D("7.00"))]
     assert _links(documents[ref("BO4")]) == [(ref("GRA"), "2026-02-04", 0, D("2"), D("8.00"))]
-    assert _links(documents[ref("SO1")]) == [(ref("DNO1"), "2026-02-07", 0, D("5"), D("16.39"))]
-    assert _links(documents[ref("SO3")]) == [(ref("DNA"), "2026-02-05", 0, D("1"), D("3.28"))]
+    assert _links(documents[ref("SO1")]) == [(ref("DNO1"), "2026-02-07", 0, D("5"), D("15.94"))]
+    assert _links(documents[ref("SO3")]) == [(ref("DNA"), "2026-02-05", 0, D("1"), D("3.34"))]
     assert _held(manifest) == ORACLE

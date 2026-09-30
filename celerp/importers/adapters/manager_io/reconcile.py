@@ -33,7 +33,7 @@ CONTROL_MEASURES = {"receivable": M.AR_CONTROL, "payable": M.AP_CONTROL, "tax": 
 def _stock_from_source(book: Book) -> dict[str, tuple[Decimal, Decimal]]:
     """Quantity and base value held per item after every stock movement in the book, in the
     order stock moved, receipts first on a day: goods received carry their share of the bill
-    line's net, goods delivered leave at the moving average cost of what is held."""
+    line's net, goods delivered their share of the cost of sales the invoice line booked."""
     code = book.base_code or ""
     events: list[tuple] = []
     for key, movement in book.movements.items():
@@ -57,14 +57,12 @@ def _stock_from_source(book: Book) -> dict[str, tuple[Decimal, Decimal]]:
     for _, _, _, doc, lines in sorted(events, key=lambda e: e[:3]):
         for item, quantity, index in lines:
             on_hand, worth = held.get(item, (ZERO, ZERO))
-            if quantity > 0:
-                source = doc.lines[index]
-                before = taken[(doc.key, index)]
-                value = (round_money(source.net * (before + quantity) / source.quantity, code)
-                         - round_money(source.net * before / source.quantity, code))
-                taken[(doc.key, index)] = before + quantity
-            else:
-                value = -round_money(worth * -quantity / on_hand, code)
+            source = doc.lines[index]
+            booked = source.net if quantity > 0 else -source.cost
+            before = taken[(doc.key, index)]
+            value = (round_money(booked * (before + abs(quantity)) / source.quantity, code)
+                     - round_money(booked * before / source.quantity, code))
+            taken[(doc.key, index)] = before + abs(quantity)
             held[item] = (on_hand + quantity, worth + value)
     return held
 

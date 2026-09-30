@@ -6,9 +6,10 @@ return goods to the supplier, undo a receipt, revert a fulfilment, void, credit 
 back a sale, refund and void a payment. After every action the stock on hand, its value,
 the inventory books and the open balances still agree.
 
-Starting position (specs.inventory_lifecycle_objects): 10 widgets on hand worth 47.50.
+Starting position (specs.inventory_lifecycle_objects): 10 widgets on hand worth 45.00.
 BILL-G received 10 at 4.00, BILL-F 5 at 6.00, BILL-P 5 of 8 at 5.00, BILL-U nothing.
-INV-E delivered 2 at 4.75, INV-D delivered 4 at 4.75 and paid 50.00."""
+INV-E delivered 2 at 5.00, INV-D delivered 4 at 5.00 and paid 50.00, each at the cost of
+sales Manager booked."""
 
 from __future__ import annotations
 
@@ -175,7 +176,7 @@ async def test_post_migration_lifecycle_keeps_quantity_valuation_and_journal_inv
     books = await _migrated(real_engine, monkeypatch, tmp_path, decisions)
     wid = books.id("InventoryItem", "WID")
     start = await _position(books)
-    assert start["stock"] == (D("10"), D("47.50"))
+    assert start["stock"] == (D("10"), D("45.00"))
 
     # Four of BILL-G's widgets go back at the 4.00 they came in at.
     r = await _return(real_client, books, "BILLG", wid, 4)
@@ -183,13 +184,13 @@ async def test_post_migration_lifecycle_keeps_quantity_valuation_and_journal_inv
     after_return = await _position(books)
     assert _moved(start, after_return) == ((D("-4"), D("-16.00")), D("-16.00"))
 
-    # INV-E's delivery is reverted: its 2 widgets come back at 4.75, then the invoice is voided.
+    # INV-E's delivery is reverted: its 2 widgets come back at 5.00, then the invoice is voided.
     lot = await _sold_lot(books, "INVE")
     r = await real_client.post(f"/docs/{books.id('SalesInvoice', 'INVE')}/revert-lines", headers=books.headers,
                                json={"line_entity_ids": [lot]})
     assert r.status_code == 200, r.text
     after_revert = await _position(books)
-    assert _moved(after_return, after_revert)[0] == (D("2"), D("9.50"))
+    assert _moved(after_return, after_revert)[0] == (D("2"), D("10.00"))
     r = await real_client.post(f"/docs/{books.id('SalesInvoice', 'INVE')}/void", headers=books.headers, json={})
     assert r.status_code == 200, r.text
     after_void = await _position(books)
@@ -204,11 +205,11 @@ async def test_post_migration_lifecycle_keeps_quantity_valuation_and_journal_inv
     after_receive = await _position(books)
     assert _moved(after_void, after_receive) == ((D("3"), D("12.00")), D("0.00"))
 
-    # One of INV-D's delivered widgets is credited and taken back at its 4.75 cost.
+    # One of INV-D's delivered widgets is credited and taken back at its 5.00 cost.
     await _credit_and_take_back(real_client, books, "INVD", 1)
     end = await _position(books)
-    assert _moved(after_receive, end) == ((D("1"), D("4.75")), D("4.75"))
-    assert end["stock"] == (D("12"), D("57.75"))
+    assert _moved(after_receive, end) == ((D("1"), D("5.00")), D("5.00"))
+    assert end["stock"] == (D("12"), D("56.00"))
 
 
 async def test_imported_po_receipt_can_be_returned(real_engine, real_client, monkeypatch, tmp_path):
@@ -247,7 +248,7 @@ async def test_imported_invoice_fulfilment_can_be_reverted_and_voided(real_engin
                                json={"line_entity_ids": [lot]})
     assert r.status_code == 200, r.text
     assert "fulfillment_status" not in await _doc(books, "INVE")
-    assert _moved(start, await _position(books))[0] == (D("2"), D("9.50"))
+    assert _moved(start, await _position(books))[0] == (D("2"), D("10.00"))
 
     r = await real_client.post(f"/docs/{invoice}/void", headers=books.headers, json={})
     assert r.status_code == 200, r.text
@@ -261,7 +262,7 @@ async def test_imported_fulfilled_sale_credit_and_return(real_engine, real_clien
     books = await _migrated(real_engine, monkeypatch, tmp_path)
     start = await _position(books)
     await _credit_and_take_back(real_client, books, "INVD", 2)
-    assert _moved(start, await _position(books)) == ((D("2"), D("9.50")), D("9.50"))
+    assert _moved(start, await _position(books)) == ((D("2"), D("10.00")), D("10.00"))
 
 
 async def test_imported_bill_reopen_keeps_receipt_provenance(real_engine, real_client, monkeypatch, tmp_path):
@@ -376,19 +377,19 @@ async def test_cutover_imported_documents_support_return_void_revert(
     deliveries made on either side of it. At 01-09, BILL-G's first receipt and BILL-P's
     bill date fall inside the opening; at 01-17, INV-E's delivery does, before its invoice.
     Each document action moves stock and books by exactly what the source recorded:
-    10 / 47.50, less 4 returned at 4.00, plus INV-E's 2 and INV-D's 4 back at 4.75, less
-    BILL-P's 5 at 5.00, is 7 / 35.00."""
+    10 / 45.00, less 4 returned at 4.00, plus INV-E's 2 and INV-D's 4 back at 5.00, less
+    BILL-P's 5 at 5.00, is 7 / 34.00."""
     books = await _migrated(real_engine, monkeypatch, tmp_path, {"mode": "cutover", "cutover_date": cutover})
     wid = books.id("InventoryItem", "WID")
     start = await _position(books)
-    assert start["stock"] == (D("10"), D("47.50"))
+    assert start["stock"] == (D("10"), D("45.00"))
 
     r = await _return(real_client, books, "BILLG", wid, 4)
     assert r.status_code == 200, r.text
     returned = await _position(books)
     assert _moved(start, returned) == ((D("-4"), D("-16.00")), D("-16.00"))
 
-    for invoice, back in (("INVE", (D("2"), D("9.50"))), ("INVD", (D("4"), D("19.00")))):
+    for invoice, back in (("INVE", (D("2"), D("10.00"))), ("INVD", (D("4"), D("20.00")))):
         before = await _position(books)
         r = await real_client.post(f"/docs/{books.id('SalesInvoice', invoice)}/revert-lines", headers=books.headers,
                                    json={"line_entity_ids": [await _sold_lot(books, invoice)]})
@@ -408,7 +409,7 @@ async def test_cutover_imported_documents_support_return_void_revert(
     r = await real_client.post(f"/docs/{bill}/revert-to-draft", headers=books.headers, json={})
     assert r.status_code == 200, r.text
     assert (await _doc(books, "BILLP"))["status"] == "draft"
-    assert (await _position(books))["stock"] == (D("7"), D("35.00"))
+    assert (await _position(books))["stock"] == (D("7"), D("34.00"))
 
 
 async def _recognized(books: Books, label: str):
@@ -449,17 +450,16 @@ async def test_imported_invoice_recognizes_the_cost_of_sales_its_source_booked(
 
 
 async def test_imported_invoice_cogs_corrected_like_a_native_invoice(real_engine, real_client, monkeypatch, tmp_path):
-    """RED before the change: with no recognized cost of sales on record, sending INV-E's
-    goods again and correcting the cost of INV-P's sold lot posted no COGS correction, and
-    the lot correction failed outright.
+    """RED before the change: with no recognized cost of sales on record, correcting the
+    cost of INV-P's sold lot failed outright.
 
-    A Celerp invoice that recognized 10.00 for 2 widgets and ships a lot costing 9.50 books
-    a 0.50 correction back into inventory. INV-E is that invoice: its delivery is reverted
-    (the goods come back at 9.50 and nothing is corrected, since 10.00 is recognized for
-    goods not shipped), then shipped again, which puts 0.50 back on inventory.
+    INV-E recognized 10.00 for 2 widgets, the cost of the lot its delivery became: its
+    delivery is reverted (the goods come back at 10.00 and nothing is corrected, since
+    10.00 is recognized for goods not shipped), then shipped again from the same lot, and
+    still nothing is corrected.
 
     INV-P recognized 25.00 for 5 widgets, 15.00 of it for the 3 delivered from a lot
-    costing 14.25. Correcting that lot to 15.25 leaves 15.25 for what was shipped and the
+    costing 15.00. Correcting that lot to 15.25 leaves 15.25 for what was shipped and the
     10.00 recognized for the 2 never delivered, 25.25 in all: 0.25 more cost of sales,
     taken off inventory. Stock on hand is untouched."""
     books = await _migrated(real_engine, monkeypatch, tmp_path)
@@ -468,11 +468,11 @@ async def test_imported_invoice_cogs_corrected_like_a_native_invoice(real_engine
     r = await real_client.post(f"/docs/{invoice}/revert-lines", headers=books.headers, json={"line_entity_ids": [lot]})
     assert r.status_code == 200, r.text
     reverted = await _position(books)
-    assert _moved(start, reverted) == ((D("2"), D("9.50")), D("0.00"))
+    assert _moved(start, reverted) == ((D("2"), D("10.00")), D("0.00"))
     r = await real_client.post(f"/docs/{invoice}/fulfill-lines", headers=books.headers, json={"line_entity_ids": [lot]})
     assert r.status_code == 200, r.text
     shipped = await _position(books)
-    assert _moved(reverted, shipped) == ((D("-2"), D("-9.50")), D("0.50"))
+    assert _moved(reverted, shipped) == ((D("-2"), D("-10.00")), D("0.00"))
 
     partial = await _sold_lot(books, "INVP")
     r = await real_client.patch(f"/items/{partial}", headers=books.headers,

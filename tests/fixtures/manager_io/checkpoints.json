@@ -376,22 +376,22 @@
         ["GoodsReceipt", "GR1", "2026-01-08", "6", "24.00"],
         ["GoodsReceipt", "GR3", "2026-01-10", "5", "25.00"],
         ["GoodsReceipt", "GR2", "2026-01-12", "4", "16.00"],
-        ["DeliveryNote", "DN2", "2026-01-16", "-2", "-9.50"],
-        ["DeliveryNote", "DN3", "2026-01-19", "-3", "-14.25"],
-        ["DeliveryNote", "DN1", "2026-01-20", "-4", "-19.00"],
-        ["SalesInvoice", "INVX", "2026-01-23", "-1", "-4.75"]
+        ["DeliveryNote", "DN2", "2026-01-16", "-2", "-10.00"],
+        ["DeliveryNote", "DN3", "2026-01-19", "-3", "-15.00"],
+        ["DeliveryNote", "DN1", "2026-01-20", "-4", "-20.00"],
+        ["SalesInvoice", "INVX", "2026-01-23", "-1", "-5.00"]
       ],
       "links": {
         "BILLG": [["GR1", "2026-01-08", 0, "6", "24.00"], ["GR2", "2026-01-12", 0, "4", "16.00"]],
         "BILLF": [["BILLF", "2026-01-06", 0, "5", "30.00"]],
         "BILLP": [["GR3", "2026-01-10", 0, "5", "25.00"]],
-        "INVE": [["DN2", "2026-01-16", 0, "2", "9.50"]],
-        "INVP": [["DN3", "2026-01-19", 0, "3", "14.25"]],
-        "INVD": [["DN1", "2026-01-20", 0, "4", "19.00"]],
-        "INVX": [["INVX", "2026-01-23", 0, "1", "4.75"]]
+        "INVE": [["DN2", "2026-01-16", 0, "2", "10.00"]],
+        "INVP": [["DN3", "2026-01-19", 0, "3", "15.00"]],
+        "INVD": [["DN1", "2026-01-20", 0, "4", "20.00"]],
+        "INVX": [["INVX", "2026-01-23", 0, "1", "5.00"]]
       },
       "inventory_quantity": {"WID": "10"},
-      "inventory_value": {"WID": "47.50"},
+      "inventory_value": {"WID": "45.00"},
       "balances": {
         "@BalanceSheetInventoryOnHandAccount": "57.00",
         "@ProfitAndLossStatementAccountInventoryPurchases": "65.00",
@@ -403,7 +403,7 @@
     "cutover": {
       "cutover_date": "2026-01-17",
       "opening_quantity": {"WID": "18"},
-      "opening_value": {"WID": "85.50"}
+      "opening_value": {"WID": "85.00"}
     }
   },
   "type_checkpoints": {
