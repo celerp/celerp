@@ -1035,11 +1035,10 @@ def test_restore_batch_memory_stays_bounded_for_a_large_member(tmp_path, monkeyp
         for _ in range(256):
             fh.write(row)
     with zipfile.ZipFile(path) as zf:
-        it = cb._lines(zf, "tables/ledger.jsonl")
         tracemalloc.start()
         try:
             rows = 0
-            while batch := cb._next_rows(it, cb.BATCH_ROWS):
+            for batch in cb._row_batches(cb._lines(zf, "tables/ledger.jsonl"), cb.BATCH_ROWS):
                 rows += len(batch)
                 del batch
             _, peak = tracemalloc.get_traced_memory()
@@ -1047,6 +1046,37 @@ def test_restore_batch_memory_stays_bounded_for_a_large_member(tmp_path, monkeyp
             tracemalloc.stop()
     assert rows == 256
     assert peak < 4 * budget, peak
+
+
+def test_restore_memory_bounded_for_rows_of_empty_containers(tmp_path):
+    """A row at MAX_ROW_BYTES made of empty objects parses to about fifty times its text.
+    The real rows a company holds are well under 1 MB (the largest are documents with
+    thousands of lines and company settings), so the row and batch limits sit at 1 MB and
+    the restore row path (read, remap, write) for three such rows stays under 64 MB."""
+    import tracemalloc
+    import zipfile
+    cb = _bk_cb()
+    assert cb.MAX_ROW_BYTES == cb.BATCH_BYTES == 1024 ** 2
+    head, tail = b'{"id":1,"state":[', b"{}]}\n"
+    row = head + b"{}," * ((cb.MAX_ROW_BYTES - len(head) - len(tail)) // 3) + tail
+    assert len(row) <= cb.MAX_ROW_BYTES
+    path = tmp_path / "amplified.zip"
+    with zipfile.ZipFile(path, "w") as zf, zf.open("tables/ledger.jsonl", "w") as fh:
+        for _ in range(3):
+            fh.write(row)
+    with zipfile.ZipFile(path) as zf:
+        tracemalloc.start()
+        try:
+            sizes = []
+            for batch in cb._row_batches(cb._lines(zf, "tables/ledger.jsonl"), cb.BATCH_ROWS):
+                sizes.append(len(batch))
+                cb._dump_rows(cb.remap(batch, {}))
+                del batch
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+    assert sizes == [1, 1, 1]
+    assert peak < 64 * 1024 ** 2, peak
 
 
 async def test_attachments_processed_one_at_a_time(real_engine, real_client, tmp_path, monkeypatch):

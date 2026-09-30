@@ -110,13 +110,14 @@ MAX_TOTAL_BYTES = 8 * 1024 ** 3
 # Members read whole: the manifest, one table row, one attachment (the ordinary attachment limit).
 MAX_MANIFEST_BYTES = 64 * 1024 ** 2
 # One row as JSON. Item and document state is a few kilobytes; the largest real rows are
-# documents with thousands of lines and company settings, well under 1 MB. 8 MB leaves
-# ample headroom while keeping one row, and so one batch, small.
-MAX_ROW_BYTES = 8 * 1024 ** 2
+# documents with thousands of lines and company settings, well under 1 MB. Parsed JSON
+# can take about fifty times its text in memory (a row of empty objects), so the row and
+# batch limits are kept at 1 MB to hold one restore batch to tens of megabytes.
+MAX_ROW_BYTES = 1024 ** 2
 # Rows are read and written in batches that end at BATCH_ROWS rows or BATCH_BYTES of
 # JSON, whichever comes first, so wide rows cannot make one batch large.
 BATCH_ROWS = 1000
-BATCH_BYTES = 8 * 1024 ** 2
+BATCH_BYTES = 1024 ** 2
 
 _NOT_RESTORED = " Nothing was restored."
 _NOT_BACKED_UP = " Nothing was backed up."
@@ -1141,15 +1142,19 @@ async def _source_grants(session: AsyncSession, source: str):
     return ((current.settings or {}) if current is not None else {}).get("role_grants")
 
 
-def _next_rows(it, limit: int) -> list:
-    """The next batch: up to ``limit`` rows, ending early once BATCH_BYTES are read."""
+def _row_batches(lines, limit: int):
+    """Parsed rows in batches of up to ``limit`` rows and BATCH_BYTES of JSON. The budget
+    is checked before a row is parsed, so a batch never holds more than BATCH_BYTES of
+    rows (or one row, which MAX_ROW_BYTES bounds)."""
     rows, size = [], 0
-    for line in it:
+    for line in lines:
+        if rows and (len(rows) >= limit or size + len(line) > BATCH_BYTES):
+            yield rows
+            rows, size = [], 0
         rows.append(_parse_row(line))
         size += len(line)
-        if len(rows) >= limit or size >= BATCH_BYTES:
-            break
-    return rows
+    if rows:
+        yield rows
 
 
 async def _insert(session: AsyncSession, zf: zipfile.ZipFile, table: str, columns: list[str],
@@ -1160,8 +1165,8 @@ async def _insert(session: AsyncSession, zf: zipfile.ZipFile, table: str, column
         f"INSERT INTO {_ident(table)} ({cols}) SELECT {picked} "
         f"FROM jsonb_array_elements(CAST(:rows AS jsonb)) WITH ORDINALITY AS e(v, n), "
         f"jsonb_populate_record(NULL::{_ident(table)}, e.v) AS r ORDER BY e.n")
-    it = _lines(zf, f"tables/{table}.jsonl")
-    while rows := await asyncio.to_thread(_next_rows, it, BATCH_ROWS):
+    batches = _row_batches(_lines(zf, f"tables/{table}.jsonl"), BATCH_ROWS)
+    while rows := await asyncio.to_thread(next, batches, None):
         await session.execute(statement, {"rows": _dump_rows(remap(rows, id_map))})
 
 
