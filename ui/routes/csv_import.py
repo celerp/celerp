@@ -920,9 +920,13 @@ async def read_tabular_upload(form: Any) -> tuple[list[dict], str | None]:
         if exc.sheets:
             return [], UploadError(t("import.err_choose_sheet"), sheets=exc.sheets)
         return [], t("import.err_read_file", detail=str(exc))
-    if not fieldnames or any(f is None or str(f).strip() == "" for f in fieldnames):
+    names = [str(f or "").strip() for f in fieldnames]
+    while names and not names[-1]:
+        names.pop()
+    if not names or "" in names:
         return [], t("import.err_no_header")
-    if rows and any(None in row for row in rows):
+    if len(names) < len(fieldnames):
+        # Cells past the last header name: some row is wider than the header.
         return [], t("import.err_extra_columns")
     if not rows:
         return [], t("import.err_empty")

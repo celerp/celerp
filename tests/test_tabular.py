@@ -97,7 +97,11 @@ def test_zip_bomb_rejected_before_parse():
      [["Title", "sell_by", "quantity", "Notes"], ["Ruby", "piece", 1]]),
     ("Title,sell_by,quantity\nRuby,piece,1,EXTRA\n",
      [["Title", "sell_by", "quantity"], ["Ruby", "piece", 1, "EXTRA"]]),
-], ids=["short_row", "long_row"])
+    ("Title,sell_by,quantity\nRuby,piece,1\n\nOpal,piece,2\n",
+     [["Title", "sell_by", "quantity"], ["Ruby", "piece", 1], [None, None, None], ["Opal", "piece", 2]]),
+    ("Title,sell_by,quantity\nRuby,piece,1\n,,\nOpal,piece,2\n",
+     [["Title", "sell_by", "quantity"], ["Ruby", "piece", 1], [None, None, None], ["Opal", "piece", 2]]),
+], ids=["short_row", "long_row", "blank_row", "empty_cells_row"])
 def test_ragged_rows_normalize_the_same_for_csv_and_xlsx(csv_text, cells):
     from_csv = tabular.read_table(csv_text.encode(), "items.csv")
     from_xlsx = tabular.read_table(_xlsx_bytes({"Sheet": cells}), "items.xlsx")

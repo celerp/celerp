@@ -1562,6 +1562,15 @@ class TestTabularParityInvariant:
         assert csv_rows[0] == {"sku": "007", "name": "Ruby, oval", "quantity": "2", "weight": "1.25", "retail_price": "1500", "note": ""}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("fmt", ["csv", "xlsx"])
+    async def test_row_longer_than_the_header_says_so_in_both_formats(self, fmt):
+        from ui.i18n import t
+        data = ("sku,name\nA1,Ruby,EXTRA\n".encode() if fmt == "csv"
+                else _xlsx({"Items": [["sku", "name"], ["A1", "Ruby", "EXTRA"]]}))
+        rows, err = await _read(data, f"items.{fmt}")
+        assert rows == [] and err == t("import.err_extra_columns")
+
+    @pytest.mark.asyncio
     async def test_bom_csv_still_reads_its_first_header(self):
         rows, err = await _read(("﻿" + _PARITY_CSV).encode(), "items.csv")
         assert err is None and list(rows[0])[0] == "sku"

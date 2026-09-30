@@ -567,23 +567,30 @@ def _enforce_bounds(n_cols: int, n_rows: int) -> None:
 def read_csv(text: str) -> tuple[list[str], list[dict]]:
     """Parse CSV text into (header, rows), BOM stripped and row/cell bounds enforced.
 
-    Rows are read as a grid as wide as the widest line, exactly as a workbook
-    sheet is read: a missing cell is empty, and a cell past the header sits
-    under an empty column name. The first line is the header, even when blank;
-    blank lines after it are skipped.
+    Rows form the same grid a workbook sheet does (``_grid``). The first line is
+    the header, even when blank; lines after it with no filled cell are skipped,
+    as empty sheet rows are.
     """
     if text.startswith("﻿"):
         text = text[1:]
     reader = csv.reader(io.StringIO(text))
     header = next(reader, [])
-    lines = [line for line in reader if line]
-    width = max([len(header), *(len(line) for line in lines)])
-    _enforce_bounds(width, len(lines))
-    cols = header + [""] * (width - len(header))
-    rows = [
-        {cols[i]: (line[i] if i < len(line) else "") for i in range(width)}
-        for line in lines
-    ]
+    lines = [line for line in reader if any(line)]
+    _enforce_bounds(max(len(line) for line in [header, *lines]), len(lines))
+    return _grid(header, lines)
+
+
+def _grid(header: list[str], lines: list[list[str]]) -> tuple[list[str], list[dict]]:
+    """(columns, rows) for a header and its data lines, shared by CSV and XLSX.
+
+    The grid ends at the last column holding any value, so trailing columns that
+    are empty everywhere (a workbook's formatted but unused cells) are dropped.
+    A missing cell is empty; a filled cell past the header sits under an empty
+    column name.
+    """
+    width = max((i + 1 for line in [header, *lines] for i, v in enumerate(line) if v), default=0)
+    cols = header[:width] + [""] * (width - len(header))
+    rows = [{cols[i]: (line[i] if i < len(line) else "") for i in range(width)} for line in lines]
     return cols, rows
 
 
@@ -655,8 +662,7 @@ def read_xlsx(data: bytes, *, sheet: str | None) -> tuple[list[str], list[dict]]
             worksheet = workbook[non_empty[0]]
 
         header: list[str] = []
-        rows: list[dict] = []
-        n_cols = 0
+        lines: list[list[str]] = []
         for cells in worksheet.iter_rows():
             values: list[str] = []
             for cell in cells:
@@ -672,15 +678,15 @@ def read_xlsx(data: bytes, *, sheet: str | None) -> tuple[list[str], list[dict]]
                 values.append(_stringify(value))
             if not header:
                 header = values
-                n_cols = len(header)
                 continue
-            if len(rows) >= MAX_ROWS:
+            if not any(values):
+                continue
+            if len(lines) >= MAX_ROWS:
                 raise TabularError(f"Too many rows: exceeds the {MAX_ROWS} limit.")
-            if (len(rows) + 1) * max(n_cols, 1) > MAX_CELLS:
+            if (len(lines) + 1) * max(len(header), 1) > MAX_CELLS:
                 raise TabularError(f"Too many cells: exceeds the {MAX_CELLS} limit.")
-            row = {header[i]: (values[i] if i < len(values) else "") for i in range(n_cols)}
-            rows.append(row)
-        return header, rows
+            lines.append(values)
+        return _grid(header, lines)
     finally:
         workbook.close()
 
