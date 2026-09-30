@@ -6,6 +6,10 @@ Source identity is the Manager object key throughout: two records with the
 same display name stay two records. Every financial record is in the base
 currency; journal amounts are taken from the same postings the source
 expectations are computed from.
+
+Stock moves as inventory adjustments, one per item a physical record moves. Each
+invoice or bill names the records that moved its goods, line by line, so the
+document keeps its delivery or receipt history.
 """
 
 from __future__ import annotations
@@ -14,7 +18,9 @@ from collections import defaultdict
 from decimal import Decimal
 
 from celerp.importers.adapters.manager_io.attachments import Screened
-from celerp.importers.adapters.manager_io.book import INVENTORY, Book, Document, Line
+from celerp.importers.adapters.manager_io.book import (
+    INVENTORY, INVENTORY_PURCHASES, Book, Document, Line, line_account,
+)
 from celerp.importers.adapters.manager_io.ledger import Ledger, Posting, holding_stock
 from celerp.importers.adapters.manager_io.types import GUIDS
 from celerp.importers.schema import (
@@ -93,25 +99,43 @@ def _items(book: Book) -> list[CIFItem]:
 
 
 def _line(book: Book, doc: Document, line: Line) -> CIFLineItem:
-    """One line, tax exclusive: an item line posts to inventory, and a tax-inclusive
-    source price is carried as the tax-exclusive price its net implies."""
+    """One line, tax exclusive: an item bought posts to inventory, one sold to inventory
+    sales carrying its cost of sales, and a tax-inclusive source price is carried as the
+    tax-exclusive price its net implies."""
     unit_price, discount_percent = line.unit_price, line.discount_percent
     if doc.include_tax:
         unit_price = round_money(line.net / line.quantity, book.currency_code(doc.currency)) if line.quantity else line.net
         discount_percent = None
     return CIFLineItem(item_external_id=line.item, description=line.description,
-                       account_external_id=INVENTORY if line.item else line.account,
+                       account_external_id=line_account(doc, line),
                        tax_code_external_id=line.tax_code,
                        tax_account_external_id=book.tax_codes[line.tax_code].account if line.tax_code else None,
                        quantity=line.quantity, unit_price=unit_price, discount_percent=discount_percent,
-                       tax_amount=line.tax, total_price=line.net)
+                       tax_amount=line.tax, total_price=line.net, cost_basis=line.cost or None)
 
 
-def _document(book: Book, ledger: Ledger, doc: Document) -> CIFDocument:
+def _movements(book: Book) -> dict[str, list[dict]]:
+    """The physical records that moved each document's goods, in the order stock moved.
+    A document flagged to move its own stock names itself."""
+    out: dict[str, list[dict]] = defaultdict(list)
+    for movement in book.moves:
+        out[movement.document].append({
+            "source": movement.key, "date": movement.date.isoformat(),
+            "lines": [{"line": ln.line, "item": ln.item, "quantity": str(abs(ln.quantity)), "value": str(abs(ln.value))}
+                      for ln in movement.lines],
+        })
+    return out
+
+
+def _document(book: Book, ledger: Ledger, doc: Document, movements: dict[str, list[dict]]) -> CIFDocument:
     state = ledger.states[doc.key]
     metadata: dict = {"amounts_include_tax": doc.include_tax}
     if doc.applies_to:
         metadata["applies_to"] = doc.applies_to
+    if movements.get(doc.key):
+        metadata["receipts" if doc.source_type == "PurchaseInvoice" else "deliveries"] = movements[doc.key]
+    if any(ln.cost for ln in doc.lines):
+        metadata["cost_of_sales"] = {"cost_account": INVENTORY_PURCHASES, "inventory_account": INVENTORY}
     return CIFDocument(**_src(doc.source_type, doc.key, doc.ref), doc_type=doc.doc_type, status=state.status,
                        contact_external_id=doc.contact, ref=doc.ref, issue_date=doc.date, payment_due_date=doc.due,
                        currency=book.currency_code(doc.currency),
@@ -172,23 +196,17 @@ def _transfers(book: Book, ledger: Ledger) -> list[CIFBankTransfer]:
 
 
 def _stock(book: Book, ledger: Ledger) -> list[CIFInventoryAdjustment]:
-    """The opening position per item, then the stock each imported document moves.
+    """The opening position per item, then the stock each imported physical record moves.
 
     Each carries its value; none posts, since the opening journal and the documents
     carry the value on the ledger."""
     opening = [CIFInventoryAdjustment(**_src("OpeningBalances", f"{ledger.opening_key}:{item}"), kind="opening",
                                       adjustment_date=ledger.cutover, item_external_id=item, quantity=qty, value=value)
                for item, (qty, value) in ledger.opening_stock.items()]
-    lines: dict[str, int] = defaultdict(int)
-    moved = []
-    for p in ledger.imported_postings():
-        if p.part != "document" or not p.item:
-            continue
-        lines[p.record] += 1
-        doc = book.documents[p.record]
-        moved.append(CIFInventoryAdjustment(**_src(doc.source_type, f"{p.record}:stock:{lines[p.record]}", doc.ref),
-                                            kind="adjustment", adjustment_date=p.date, item_external_id=p.item,
-                                            quantity=p.quantity, value=p.amount))
+    moved = [CIFInventoryAdjustment(**_src(m.source_type, f"{m.key}:stock:{n}", m.ref), kind="adjustment",
+                                    adjustment_date=m.date, item_external_id=ln.item, quantity=ln.quantity,
+                                    value=ln.value)
+             for m in ledger.moves for n, ln in enumerate(m.lines, 1)]
     return [*opening, *moved]
 
 
@@ -207,6 +225,7 @@ def carried(book: Book, ledger: Ledger) -> set[str]:
 
 def build_bundle(book: Book, ledger: Ledger, screened: Screened) -> CIFImportBundle:
     """The CIF bundle for one migration. Accepted attachments must already target imported records."""
+    movements = _movements(book)
     return CIFImportBundle(
         company=_company(book),
         currencies=_currencies(book),
@@ -214,7 +233,7 @@ def build_bundle(book: Book, ledger: Ledger, screened: Screened) -> CIFImportBun
         tax_codes=_tax_codes(book),
         contacts=_contacts(book),
         items=_items(book),
-        documents=[_document(book, ledger, book.documents[k]) for k in ledger.documents],
+        documents=[_document(book, ledger, book.documents[k], movements) for k in ledger.documents],
         settlements=_settlements(book, ledger),
         bank_transfers=_transfers(book, ledger),
         journals=_journals(book, ledger),

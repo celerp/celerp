@@ -367,6 +367,44 @@
       "Receipt (foreign currency)": 1
     }
   },
+  "inventory": {
+    "_comment": "specs.inventory_lifecycle_objects, worked by hand in its docstring. Moves are (source type, movement, date, quantity, value) in the order stock moved; links are each document's physical records as (movement, date, line, quantity, value).",
+    "full_history": {
+      "moves": [
+        ["PurchaseInvoice", "BILLF", "2026-01-06", "5", "30.00"],
+        ["GoodsReceipt", "GR1", "2026-01-08", "6", "24.00"],
+        ["GoodsReceipt", "GR3", "2026-01-10", "5", "25.00"],
+        ["GoodsReceipt", "GR2", "2026-01-12", "4", "16.00"],
+        ["DeliveryNote", "DN2", "2026-01-16", "-2", "-9.50"],
+        ["DeliveryNote", "DN3", "2026-01-19", "-3", "-14.25"],
+        ["DeliveryNote", "DN1", "2026-01-20", "-4", "-19.00"],
+        ["SalesInvoice", "INVX", "2026-01-23", "-1", "-4.75"]
+      ],
+      "links": {
+        "BILLG": [["GR1", "2026-01-08", 0, "6", "24.00"], ["GR2", "2026-01-12", 0, "4", "16.00"]],
+        "BILLF": [["BILLF", "2026-01-06", 0, "5", "30.00"]],
+        "BILLP": [["GR3", "2026-01-10", 0, "5", "25.00"]],
+        "INVE": [["DN2", "2026-01-16", 0, "2", "9.50"]],
+        "INVP": [["DN3", "2026-01-19", 0, "3", "14.25"]],
+        "INVD": [["DN1", "2026-01-20", 0, "4", "19.00"]],
+        "INVX": [["INVX", "2026-01-23", 0, "1", "4.75"]]
+      },
+      "inventory_quantity": {"WID": "10"},
+      "inventory_value": {"WID": "47.50"},
+      "balances": {
+        "@BalanceSheetInventoryOnHandAccount": "57.00",
+        "@ProfitAndLossStatementAccountInventoryPurchases": "65.00",
+        "@ProfitAndLossStatementAccountInventorySales": "-162.50",
+        "@BalanceSheetAccountsPayableAccount": "-122.00",
+        "@BalanceSheetAccountsReceivableAccount": "112.50"
+      }
+    },
+    "cutover": {
+      "cutover_date": "2026-01-17",
+      "opening_quantity": {"WID": "18"},
+      "opening_value": {"WID": "85.50"}
+    }
+  },
   "type_checkpoints": {
     "BusinessDetails": [
       "basic.company"
@@ -461,6 +499,27 @@
     ],
     "Attachment": [
       "basic.attachments"
+    ],
+    "GoodsReceipt": [
+      "inventory.full_history.moves",
+      "inventory.full_history.links"
+    ],
+    "DeliveryNote": [
+      "inventory.full_history.moves",
+      "inventory.full_history.links",
+      "inventory.cutover.opening_quantity"
+    ],
+    "DefaultInventoryLocation": [
+      "inventory.full_history.inventory_quantity"
+    ],
+    "InventoryUnitCost": [
+      "inventory.full_history.balances"
+    ],
+    "ProfitAndLossStatementAccountInventorySales": [
+      "inventory.full_history.balances"
+    ],
+    "ProfitAndLossStatementAccountInventoryPurchases": [
+      "inventory.full_history.balances"
     ]
   }
 }

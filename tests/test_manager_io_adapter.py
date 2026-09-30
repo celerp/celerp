@@ -17,7 +17,7 @@ from celerp.importers.adapters.base import MigrationDecisions, ScanError
 from celerp.importers.schema import CIFMode, CoverageClass
 from fixtures.manager_io import specs
 from fixtures.manager_io.encoder import Blob, Obj, write_manager_file
-from fixtures.manager_io.support import BASIC, CHECKPOINTS, FX, actual_rows, adapter, artifact, ref
+from fixtures.manager_io.support import BASIC, CHECKPOINTS, FX, INVENTORY, actual_rows, adapter, artifact, ref
 
 FULL = MigrationDecisions(mode=CIFMode.FULL_HISTORY)
 
@@ -327,6 +327,7 @@ def test_check_manager_content_types_all_classified(tmp_path):
     fresh = {
         BASIC: specs.build_basic(tmp_path / "basic.manager"),
         FX: specs.build_fx(tmp_path / "fx.manager"),
+        INVENTORY: specs.build_inventory_lifecycle(tmp_path / "inventory.manager"),
         SAMPLE_ARTIFACT: specs.build_basic(tmp_path / "sample.manager", company=SAMPLE_COMPANY_NAME),
     }
     for committed, rebuilt in fresh.items():
@@ -351,7 +352,8 @@ def _sale(label: str, day: date, qty: str = "1", price: str = "100") -> Obj:
 
 
 def _bill(label: str, day: date, qty: str) -> Obj:
-    return specs.obj("PurchaseInvoice", label, {1: day, 2: label, 3: specs.k("SA"), 23: [
+    """A bill for widgets flagged to move its own stock, on its own date."""
+    return specs.obj("PurchaseInvoice", label, {1: day, 2: label, 3: specs.k("SA"), 64: True, 23: [
         {1: specs.k("WID"), 17: "Widgets", 18: Decimal(qty), 19: Decimal("4")}]})
 
 
@@ -407,7 +409,7 @@ def _cutover_case(tmp_path, *records: Obj):
     for adj in manifest.bundle.inventory_adjustments:
         qty, value = carried_stock.get(adj.item_external_id, (Decimal(0), Decimal(0)))
         carried_stock[adj.item_external_id] = (qty + adj.quantity, value + adj.value)
-    assert carried_stock == {item: held for item, held in stock(full.postings).items() if any(held)}
+    assert carried_stock == {item: held for item, held in stock(book.moves).items() if any(held)}
     return manifest, ledger
 
 
@@ -709,23 +711,34 @@ def test_document_line_forms_carry_their_exact_fields_and_report_the_rest(tmp_pa
 ])
 def test_every_item_line_of_an_imported_bill_has_its_stock_carried_by_an_adjustment(tmp_path, build, decisions,
                                                                                      expected):
-    # The docs sink records an imported bill's goods as already received, with no stock
-    # movement of its own. That is honest only when the manifest carries every item line's
-    # stock as an inventory adjustment of that bill: in full history, and in cutover for a
-    # post-cutover bill and a pre-cutover bill carried because it is still open.
+    # The docs sink records each receipt a bill carries with no stock movement of its own.
+    # That is honest only when the manifest carries every receipt's stock: as an inventory
+    # adjustment of the movement in full history or after the cutover, and inside the opening
+    # position before it. Every bill here is flagged to move its own stock, so its receipts
+    # take every item line in full.
     from celerp.importers.schema import DocumentType
 
     bundle = adapter().build_manifest([artifact(build(tmp_path / "books.manager"))], decisions).bundle
     bills = [d for d in bundle.documents
              if d.doc_type == DocumentType.BILL and any(li.item_external_id for li in d.line_items)]
     assert {d.source_external_id for d in bills} == {ref(label) for label in expected}
+    opening = {a.item_external_id for a in bundle.inventory_adjustments if a.kind == "opening"}
     for bill in bills:
         lines: dict[str, Decimal] = {}
         for li in bill.line_items:
             if li.item_external_id:
                 lines[li.item_external_id] = lines.get(li.item_external_id, Decimal(0)) + li.quantity
-        carried: dict[str, Decimal] = {}
-        for adj in bundle.inventory_adjustments:
-            if adj.kind == "adjustment" and adj.source_external_id.startswith(f"{bill.source_external_id}:stock:"):
-                carried[adj.item_external_id] = carried.get(adj.item_external_id, Decimal(0)) + adj.quantity
-        assert carried == lines, bill.source_external_id
+        received: dict[str, Decimal] = {}
+        for receipt in bill.metadata["receipts"]:
+            moved = {line["item"]: Decimal(line["quantity"]) for line in receipt["lines"]}
+            for item, qty in moved.items():
+                received[item] = received.get(item, Decimal(0)) + qty
+            carried: dict[str, Decimal] = {}
+            for adj in bundle.inventory_adjustments:
+                if adj.kind == "adjustment" and adj.source_external_id.startswith(f"{receipt['source']}:stock:"):
+                    carried[adj.item_external_id] = carried.get(adj.item_external_id, Decimal(0)) + adj.quantity
+            if decisions.mode == CIFMode.CUTOVER and date.fromisoformat(receipt["date"]) <= decisions.cutover_date:
+                assert carried == {} and set(moved) <= opening, bill.source_external_id
+            else:
+                assert carried == moved, bill.source_external_id
+        assert received == lines, bill.source_external_id

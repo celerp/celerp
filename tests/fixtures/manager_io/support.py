@@ -14,6 +14,7 @@ from . import specs
 HERE = Path(__file__).resolve().parent
 BASIC = HERE / "basic.manager"
 FX = HERE / "fx.manager"
+INVENTORY = HERE / "inventory.manager"
 CHECKPOINTS = json.loads((HERE / "checkpoints.json").read_text())
 
 # Measures whose checkpoint values carry a currency: [currency, amount].

@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: MIT
 """A bill's receipt state is held once, on the bill, and every receipt reads it.
 
-Goods already brought into stock before the books came to Celerp are recorded as
-received without moving stock or posting anything. A live receipt takes at most
-what each line still has to receive, and a retried receipt is the same receipt.
+Goods a bill received, or an invoice delivered, before the books came to Celerp are
+recorded as Celerp's own receipt and fulfilment record them, naming the lots they
+moved, without moving stock or posting anything. A live receipt takes at most what
+each line still has to receive, and a retried receipt is the same receipt.
 """
 from __future__ import annotations
 
@@ -26,6 +27,10 @@ async def _register(client) -> tuple[str, uuid.UUID]:
     assert r.status_code == 200, r.text
     token = r.json()["access_token"]
     return token, uuid.UUID(json.loads(base64.b64decode(token.split(".")[1] + "=="))["company_id"])
+
+
+def _user(token: str) -> str:
+    return json.loads(base64.b64decode(token.split(".")[1] + "=="))["sub"]
 
 
 def _h(token: str) -> dict:
@@ -80,101 +85,160 @@ async def _events(session, company_id, event_type: str, entity_id: str | None = 
     return await session.scalar(q)
 
 
-# ── Historical receipt state ──────────────────────────────────────────────────
+
+# ── Historical receipts and deliveries ────────────────────────────────────────
+
+async def _invoice(client, token: str, item: str, qty: float = 5) -> str:
+    r = await client.post("/docs", headers=_h(token), json={"doc_type": "invoice", "line_items": [
+        {"item_id": item, "sku": "WID", "name": "Widget", "quantity": qty, "unit_price": 10,
+         "line_total": qty * 10}], "total": qty * 10})
+    assert r.status_code == 200, r.text
+    invoice = r.json()["id"]
+    r = await client.post(f"/docs/{invoice}/finalize", headers=_h(token))
+    assert r.status_code == 200, r.text
+    return invoice
+
+
+def _receipt(item: str, qty: float = 6, cost: float = 24) -> list[dict]:
+    return [{"line": 0, "item_id": item, "quantity": qty, "cost": cost}]
+
+
+def _delivery(item: str, qty: float = 5, cost: float = 20) -> list[dict]:
+    return [{"line": 0, "item_id": item, "quantity": qty, "cost": cost,
+             "lot_id": f"item:{uuid.uuid4()}", "date": "2025-02-03"}]
+
 
 @pytest.mark.asyncio
-async def test_historical_bill_gets_canonical_received_state_without_new_stock_or_entries(client, session):
-    """RED before the change: the docs module has no way to record a receipt that moves no stock."""
+async def test_historical_receipt_records_what_it_added_to_the_lot_without_new_stock_or_entries(client, session):
+    """RED before the change: a historical receipt marked the whole bill received and named
+    no lot, so its goods could never be returned or the receipt undone."""
     from celerp_docs.routes import record_historical_receipt
 
     token, company_id = await _register(client)
-    bill, _item, loc = await _bill(client, token)
+    bill, item, loc = await _bill(client, token)
     before = await _stock_and_books(session, company_id)
     created = await _events(session, company_id, "item.created")
 
-    entry = await record_historical_receipt(session, company_id, bill, actor_id=None, source="migration",
-                                            idempotency_key=f"migration:test:{bill}:received")
+    entry = await record_historical_receipt(session, company_id, bill, lines=_receipt(item), received_on="2025-01-02",
+                                            actor_id=_user(token), source="migration", idempotency_key=f"m:{bill}:received")
     await session.commit()
 
-    assert entry is not None and entry.event_type == "doc.received"
+    assert entry.event_type == "doc.received"
     state = await _state(session, company_id, bill)
-    assert state["status"] == "received"
-    assert [li["quantity_received"] for li in state["line_items"]] == [10]
+    assert [li["quantity_received"] for li in state["line_items"]] == [6]
+    (received,) = state["received_items"]
+    assert (received["item_id"], received["lot_quantity_added"], received["lot_cost_added"]) == (item, 6, 24)
     assert state.get("received_item_ids") == []
     assert await _stock_and_books(session, company_id) == before
     assert await _events(session, company_id, "item.created") == created
 
-    # The bill now reads as fully received, so the live receipt refuses more goods.
-    r = await _receive(client, token, bill, loc, 1)
+    # The live receipt takes only the four still to come.
+    r = await _receive(client, token, bill, loc, 5)
     assert r.status_code == 422, r.text
-    assert await _stock_and_books(session, company_id) == before
+    assert "at most 4 more can be received" in r.json()["detail"]
+    assert (await _receive(client, token, bill, loc, 4)).status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_historical_receipt_replay_is_idempotent(client, session):
-    """RED before the change: the helper does not exist."""
+    """RED before the change: the helper took no lines, so it could not say what was received."""
     from celerp_docs.routes import record_historical_receipt
 
     token, company_id = await _register(client)
-    bill, _item, _loc = await _bill(client, token)
-    key = f"migration:test:{bill}:received"
+    bill, item, _loc = await _bill(client, token)
+    key = f"m:{bill}:received"
 
-    first = await record_historical_receipt(session, company_id, bill, actor_id=None, source="migration",
-                                            idempotency_key=key)
+    first = await record_historical_receipt(session, company_id, bill, lines=_receipt(item), received_on="2025-01-02",
+                                            actor_id=_user(token), source="migration", idempotency_key=key)
     await session.commit()
-    again = await record_historical_receipt(session, company_id, bill, actor_id=None, source="migration",
-                                            idempotency_key=key)
+    again = await record_historical_receipt(session, company_id, bill, lines=_receipt(item), received_on="2025-01-02",
+                                            actor_id=_user(token), source="migration", idempotency_key=key)
     await session.commit()
 
     assert again.id == first.id
     assert await _events(session, company_id, "doc.received", bill) == 1
-    state = await _state(session, company_id, bill)
-    assert [li["quantity_received"] for li in state["line_items"]] == [10]
-    assert len(state["received_items"]) == 1
+    assert len((await _state(session, company_id, bill))["received_items"]) == 1
 
 
 @pytest.mark.asyncio
-async def test_historical_receipt_records_only_what_is_still_to_receive(client, session):
-    """RED before the change: the helper does not exist. A bill part received live
-    is recorded as received for the rest; a bill with nothing left records nothing."""
-    from celerp_docs.routes import record_historical_receipt
-
-    token, company_id = await _register(client)
-    bill, _item, loc = await _bill(client, token)
-    assert (await _receive(client, token, bill, loc, 4)).status_code == 200
-
-    await record_historical_receipt(session, company_id, bill, actor_id=None, source="migration",
-                                    idempotency_key=f"migration:test:{bill}:received")
-    await session.commit()
-    state = await _state(session, company_id, bill)
-    assert [li["quantity_received"] for li in state["line_items"]] == [10]
-    assert state["received_items"][-1]["quantity_received"] == 6
-
-    nothing = await record_historical_receipt(session, company_id, bill, actor_id=None, source="migration",
-                                              idempotency_key=f"migration:test:{bill}:received-again")
-    assert nothing is None
-    assert await _events(session, company_id, "doc.received", bill) == 2
-
-
-@pytest.mark.asyncio
-async def test_historical_receipt_refuses_a_draft_bill(client, session):
-    """RED before the change: the helper does not exist. A draft bill is not an issued
-    purchase, so nothing about it was received."""
+async def test_historical_receipt_refuses_a_draft_bill_a_wrong_item_and_too_much(client, session):
+    """RED before the change: the helper took no lines, so none of these could be checked."""
     from fastapi import HTTPException
 
     from celerp_docs.routes import record_historical_receipt
 
     token, company_id = await _register(client)
-    item = (await client.post("/items", headers=_h(token), json={
-        "status": "available", "sku": "WID", "name": "Widget", "quantity": 0, "sell_by": "piece"})).json()["id"]
+    bill, item, _loc = await _bill(client, token)
     draft = (await client.post("/docs", headers=_h(token), json={"doc_type": "bill", "line_items": [
         {"item_id": item, "sku": "WID", "name": "Widget", "quantity": 2, "unit_price": 4}]})).json()["id"]
 
+    for doc, lines, status, detail in (
+        (draft, _receipt(item, 2, 8), 409, "Only an issued bill"),
+        (bill, _receipt("item:other"), 422, "does not hold item"),
+        (bill, _receipt(item, 11, 44), 422, "at most 10 can be moved"),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await record_historical_receipt(session, company_id, doc, lines=lines, received_on="2025-01-02",
+                                            actor_id=_user(token), source="migration", idempotency_key=f"m:{uuid.uuid4()}")
+        assert (exc.value.status_code, detail in exc.value.detail) == (status, True), exc.value.detail
+    assert await _events(session, company_id, "doc.received") == 0
+
+
+@pytest.mark.asyncio
+async def test_historical_delivery_fulfils_the_line_from_a_sold_lot_without_new_entries(client, session):
+    """RED before the change: the docs module had no way to record goods an invoice
+    delivered before its books came to Celerp."""
+    from celerp_docs.routes import record_historical_delivery
+
+    token, company_id = await _register(client)
+    _bill_id, item, _loc = await _bill(client, token)
+    invoice = await _invoice(client, token, item)
+    before_journals = (await _stock_and_books(session, company_id))[1]
+    parent = await _state(session, company_id, item)
+    lines = _delivery(item)
+
+    entry = await record_historical_delivery(session, company_id, invoice, lines=lines, actor_id=_user(token),
+                                             source="migration", idempotency_key=f"m:{invoice}:delivered")
+    await session.commit()
+
+    assert entry.event_type == "doc.fulfilled"
+    state = await _state(session, company_id, invoice)
+    assert state["fulfillment_status"] == "fulfilled"
+    assert state["line_items"][0]["entity_id"] == state["line_items"][0]["item_id"] == lines[0]["lot_id"]
+    lot = await _state(session, company_id, lines[0]["lot_id"])
+    assert (lot["status"], lot["quantity"], lot["cost_total"], lot["sku"]) == ("sold", 5, 20, "WID")
+    assert await _state(session, company_id, item) == parent
+    assert (await _stock_and_books(session, company_id))[1] == before_journals
+
+    # The same delivery again is the same delivery.
+    again = await record_historical_delivery(session, company_id, invoice, lines=lines, actor_id=_user(token),
+                                             source="migration", idempotency_key=f"m:{invoice}:delivered")
+    assert again.id == entry.id
+    assert await _events(session, company_id, "item.fulfilled") == 1
+
+
+@pytest.mark.asyncio
+async def test_historical_delivery_of_part_of_a_line_leaves_the_invoice_partly_fulfilled(client, session):
+    """RED before the change: the helper did not exist."""
+    from fastapi import HTTPException
+
+    from celerp_docs.routes import record_historical_delivery
+
+    token, company_id = await _register(client)
+    _bill_id, item, _loc = await _bill(client, token)
+    invoice = await _invoice(client, token, item)
+
     with pytest.raises(HTTPException) as exc:
-        await record_historical_receipt(session, company_id, draft, actor_id=None, source="migration",
-                                        idempotency_key=f"migration:test:{draft}:received")
-    assert exc.value.status_code == 409
-    assert await _events(session, company_id, "doc.received", draft) == 0
+        await record_historical_delivery(session, company_id, invoice, lines=_delivery(item) + _delivery(item, 0, 0),
+                                         actor_id=_user(token), source="migration", idempotency_key=f"m:{uuid.uuid4()}")
+    assert exc.value.status_code == 422 and "delivered twice" in exc.value.detail
+    await session.rollback()
+
+    entry = await record_historical_delivery(session, company_id, invoice, lines=_delivery(item, 2, 8), actor_id=_user(token),
+                                             source="migration", idempotency_key=f"m:{invoice}:delivered")
+    await session.commit()
+    assert entry.event_type == "doc.partially_fulfilled"
+    assert (await _state(session, company_id, invoice))["fulfillment_status"] == "partial"
 
 
 # ── Live receipts read the bill's receipt state ───────────────────────────────

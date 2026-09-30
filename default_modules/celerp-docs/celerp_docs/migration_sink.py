@@ -8,9 +8,14 @@ document posts the entry its source books carry, on the accounts its lines name,
 in place of Celerp's default posting. An issued document arrives unpaid; its paid
 state comes from the settlements imported after it and from the credit and debit
 notes applied to it. A debit note has no Celerp document: its entry posts on the
-bill it notes as a journal fallback, applied to the bill as a payment. A migration's
-stock arrives only as inventory positions, so an issued bill's goods are recorded as
-already received, moving no stock, and cannot be received a second time.
+bill it notes as a journal fallback, applied to the bill as a payment. A sold line
+that carries its cost of sales posts it too, from inventory.
+
+A migration's stock arrives as inventory positions and adjustments, never through a
+document. A bill records each receipt of its goods as a receipt onto the item's lot, and
+an invoice each delivery as a sold lot fulfilled on its line, so the document actions
+that return, undo or reverse goods work on them as on any other. A document with no
+receipt or delivery moved no goods and can still receive or fulfil them.
 """
 
 from __future__ import annotations
@@ -44,7 +49,13 @@ from celerp.services.migration_core_sink import (
 from celerp.services.money import round_money, to_stored_float
 from celerp_docs import import_service
 from celerp_docs.import_service import DOC_CREATED
-from celerp_docs.routes import DocImportRecord, apply_credit_note, apply_doc_payment, record_historical_receipt
+from celerp_docs.routes import (
+    DocImportRecord,
+    apply_credit_note,
+    apply_doc_payment,
+    record_historical_delivery,
+    record_historical_receipt,
+)
 
 DOC = "doc"
 JOURNAL = "journal_entry"
@@ -156,16 +167,24 @@ async def _import_documents(context: SinkContext, records: Sequence[CIFSourceRec
     contacts = await mapped_targets(context, CONTACT, [d.contact_external_id for d in docs])
     items = await mapped_targets(context, ITEM, [li.item_external_id for d in docs for li in d.line_items])
     accounts = await mapped_targets(context, ACCOUNT, [
-        a for d in docs for li in d.line_items for a in (li.account_external_id, li.tax_account_external_id)
+        *(a for d in docs for li in d.line_items for a in (li.account_external_id, li.tax_account_external_id)),
+        *(a for d in docs for a in (d.metadata.get("cost_of_sales") or {}).values()),
     ])
     taxes = await _tax_rates(context, docs)
     names = {}
     for contact_id in contacts.values():
         row = await context.session.get(Projection, (context.company_id, contact_id))
         names[contact_id] = (row.state or {}).get("name") if row else None
+    # A line names its item's SKU and name as a line raised in Celerp does: receiving and
+    # returning goods find the lot by them.
+    identities = {}
+    for item_id in items.values():
+        row = await context.session.get(Projection, (context.company_id, item_id))
+        state = (row.state or {}) if row else {}
+        identities[item_id] = {k: state[k] for k in ("sku", "name") if state.get(k)}
     prepared = [
         "" if isinstance(r, CIFDocument) and r.doc_type == DocumentType.DEBIT_NOTE
-        else _doc_record(context, r, base, contacts, items, accounts, taxes, names)
+        else _doc_record(context, r, base, contacts, items, identities, accounts, taxes, names)
         for r in records
     ]
 
@@ -186,7 +205,7 @@ async def _import_documents(context: SinkContext, records: Sequence[CIFSourceRec
         if outcome is None:
             outcome = await _import_debit_note(context, record, base, contacts, accounts, imported)
         elif outcome.status in ("created", "skipped"):
-            outcome = await _post_document(context, record, base, contacts, accounts, imported, outcome)
+            outcome = await _post_document(context, record, base, contacts, accounts, items, imported, outcome)
         result.append(outcome)
     return result
 
@@ -197,6 +216,7 @@ def _doc_record(
     base: str,
     contacts: dict[str, str],
     items: dict[str, str],
+    identities: dict[str, dict],
     accounts: dict[str, str],
     taxes: dict[str, tuple[str, float]],
     names: dict[str, str | None],
@@ -231,6 +251,7 @@ def _doc_record(
             code, rate = taxes[line.tax_code_external_id]
             line_taxes = [{"code": code, "rate": rate, "amount": _money(line.tax_amount or Decimal(0), base)}]
         lines.append({k: v for k, v in {
+            **identities.get(item_id, {}),
             "item_id": item_id,
             "description": line.description,
             "account_code": accounts.get(line.account_external_id) if line.account_external_id else None,
@@ -276,10 +297,20 @@ def _posting_problem(record: CIFDocument, contacts: dict[str, str], accounts: di
     if not _posts(record):
         return None
     for line in record.line_items:
-        for account, amount in ((line.account_external_id, line.total_price), (line.tax_account_external_id, line.tax_amount)):
+        for account, amount in _postings(record, line):
             if amount and account not in accounts:
                 return f"account {account} was not imported."
     return None
+
+
+def _postings(record: CIFDocument, line) -> list[tuple[str | None, Decimal | None]]:
+    """(source account, amount) a line posts, before its sign: its net and tax, then any
+    cost of sales, to the cost account and back out of inventory."""
+    out = [(line.account_external_id, line.total_price), (line.tax_account_external_id, line.tax_amount)]
+    if line.cost_basis:
+        cost = record.metadata.get("cost_of_sales") or {}
+        out += [(cost.get("cost_account"), -line.cost_basis), (cost.get("inventory_account"), line.cost_basis)]
+    return out
 
 
 def _entries(record: CIFDocument, base: str, accounts: dict[str, str]) -> list[dict]:
@@ -287,7 +318,7 @@ def _entries(record: CIFDocument, base: str, accounts: dict[str, str]) -> list[d
     sign = _LINE_SIGN[record.doc_type]
     entries = []
     for line in record.line_items:
-        for account, amount in ((line.account_external_id, line.total_price), (line.tax_account_external_id, line.tax_amount)):
+        for account, amount in _postings(record, line):
             value = _money(sign * (amount or Decimal(0)), base)
             if value:
                 entries.append({"account": accounts[account], "debit": max(value, 0.0), "credit": max(-value, 0.0)})
@@ -296,10 +327,10 @@ def _entries(record: CIFDocument, base: str, accounts: dict[str, str]) -> list[d
 
 async def _post_document(
     context: SinkContext, record: CIFDocument, base: str, contacts: dict[str, str], accounts: dict[str, str],
-    imported: dict[str, str], outcome: RecordOutcome,
+    items: dict[str, str], imported: dict[str, str], outcome: RecordOutcome,
 ) -> RecordOutcome:
-    """Post an issued document's entry, record an issued bill's goods as received, and
-    apply a credit note to its invoice."""
+    """Post an issued document's entry, record the receipts and deliveries that moved its
+    goods, and apply a credit note to its invoice."""
     if not _posts(record):
         return outcome
     label = f"Document {record.ref or record.source_external_id}"
@@ -312,11 +343,7 @@ async def _post_document(
                 contact_id=contacts.get(record.contact_external_id or ""),
                 entries=_entries(record, base, accounts), ts=_date(record),
             )
-            if record.doc_type == DocumentType.BILL and any(li.item_external_id for li in record.line_items):
-                await record_historical_receipt(
-                    context.session, context.company_id, outcome.entity_id, actor_id=context.user_id,
-                    source="migration", idempotency_key=context.idempotency_key(record, "received"),
-                )
+            await _record_movements(context, record, items, outcome.entity_id)
             if record.doc_type == DocumentType.CREDIT_NOTE and applies_to:
                 if applies_to not in imported:
                     raise ValueError(f"invoice {applies_to} was not imported.")
@@ -364,6 +391,44 @@ async def _import_debit_note(
         return RecordOutcome("", "failed", f"{label}: {getattr(exc, 'detail', exc)}")
     status = "skipped" if getattr(entry, "was_deduped", False) else "created"
     return RecordOutcome(f"je:auto:{bill_id}:{suffix}", status, entity_type=JOURNAL)
+
+
+async def _record_movements(context: SinkContext, record: CIFDocument, items: dict[str, str], doc_id: str) -> None:
+    """Record each receipt of a bill's goods, and an invoice's deliveries, line by line.
+
+    A delivery is recorded per line: the line's deliveries become one sold lot of their
+    total quantity and cost, fulfilled on the date of the last of them."""
+    def moved(line: dict) -> dict:
+        if line["item"] not in items:
+            raise ValueError(f"item {line['item']} was not imported.")
+        return {"line": line["line"], "item_id": items[line["item"]], "quantity": Decimal(line["quantity"]),
+                "cost": Decimal(line["value"])}
+
+    if record.doc_type == DocumentType.BILL:
+        for receipt in record.metadata.get("receipts") or []:
+            await record_historical_receipt(
+                context.session, context.company_id, doc_id, lines=[moved(ln) for ln in receipt["lines"]],
+                received_on=receipt["date"], actor_id=context.user_id, source="migration",
+                idempotency_key=context.idempotency_key(record, f"received:{receipt['source']}"),
+            )
+    if record.doc_type != DocumentType.INVOICE:
+        return
+    per_line: dict[int, dict] = {}
+    for delivery in record.metadata.get("deliveries") or []:
+        for ln in delivery["lines"]:
+            line = moved(ln)
+            if ln["line"] in per_line:
+                line["quantity"] += per_line[ln["line"]]["quantity"]
+                line["cost"] += per_line[ln["line"]]["cost"]
+            per_line[ln["line"]] = {**line, "date": delivery["date"], "lot_id": "item:" + str(deterministic_id(
+                context, record.source_type, f"{record.source_external_id}:line:{ln['line']}"))}
+    if per_line:
+        await record_historical_delivery(
+            context.session, context.company_id, doc_id, lines=[
+                {**line, "quantity": float(line["quantity"]), "cost": float(line["cost"])}
+                for _, line in sorted(per_line.items())],
+            actor_id=context.user_id, source="migration", idempotency_key=context.idempotency_key(record, "delivered"),
+        )
 
 
 def _date(record: CIFDocument) -> str | None:

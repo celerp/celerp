@@ -3923,39 +3923,138 @@ def _line_quantities_received(doc: dict) -> dict[int, float]:
     return received
 
 
-async def record_historical_receipt(session: AsyncSession, company_id, entity_id: str, *, actor_id,
-                                   source: str, idempotency_key: str):
-    """Record an issued bill's goods as received when they are already in stock, brought in
-    before the books came to Celerp: what each line still has to receive is marked received,
-    with no parcel, no stock movement and no journal entry. Returns the doc.received entry,
-    the earlier one when ``idempotency_key`` was already used for this receipt, or None when
-    nothing was left to receive."""
+async def _historical_doc(session: AsyncSession, company_id, entity_id: str, *, doc_type: str,
+                          event_types: tuple[str, ...], idempotency_key: str):
+    """(locked doc row, earlier entry) for a historical receipt or delivery: the earlier entry
+    when ``idempotency_key`` was already used for it, else None once the doc is checked to be
+    an issued ``doc_type``."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:
-        if replay.event_type != "doc.received" or replay.entity_id != entity_id:
+        if replay.event_type not in event_types or replay.entity_id != entity_id:
             raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
         replay.was_deduped = True
+        return row, replay
+    if row.state.get("doc_type") != doc_type or row.state.get("status") in ("draft", "void"):
+        raise HTTPException(status_code=409, detail=f"Only an issued {doc_type} can record goods moved before it came to Celerp")
+    return row, None
+
+
+def _historical_line(doc: dict, moved: dict, already: float) -> dict:
+    """The doc line a historical movement names, checked to hold its item and to have room
+    for its quantity beside the ``already`` moved on it."""
+    lines = doc.get("line_items") or []
+    index = moved["line"]
+    line = lines[index] if 0 <= index < len(lines) else None
+    if line is None or line.get("item_id") != moved["item_id"]:
+        raise HTTPException(status_code=422, detail=f"Line {index + 1} does not hold item {moved['item_id']}")
+    still_open = float(line.get("quantity") or 0) - already
+    if float(moved["quantity"]) > still_open + 1e-9:
+        raise HTTPException(status_code=422, detail=f"Line {index + 1}: at most {still_open:g} can be moved")
+    return line
+
+
+async def record_historical_receipt(session: AsyncSession, company_id, entity_id: str, *, lines: list[dict],
+                                    received_on: str, actor_id, source: str, idempotency_key: str):
+    """Record goods an issued bill received before its books came to Celerp, as receiving
+    onto a lot already on hand records them: each of ``lines`` ({line, item_id, quantity,
+    cost}) names the bill line, the lot, and the stock quantity and cost it added to that
+    lot. The stock itself is carried separately, so this moves no stock and posts no
+    journal entry. Returns the doc.received entry, or the earlier one when
+    ``idempotency_key`` was already used for this receipt."""
+    row, replay = await _historical_doc(session, company_id, entity_id, doc_type="bill",
+                                        event_types=("doc.received",), idempotency_key=idempotency_key)
+    if replay is not None:
         return replay
-    if row.state.get("doc_type") != "bill" or row.state.get("status") in ("draft", "void"):
-        raise HTTPException(status_code=409, detail="Only an issued bill can be recorded as already received")
     held = _line_quantities_received(row.state)
     received_items = []
-    for index, line in enumerate(row.state.get("line_items") or []):
-        remaining = float(line.get("quantity") or 0) - held.get(index, 0.0)
-        if remaining > 1e-9:
-            received_items.append({
-                "po_line_index": index, "quantity_received": remaining,
-                "receive_as": auto_je.bill_line_kind(line),
-                **{k: line[k] for k in ("sku", "name") if line.get(k)},
-            })
-    if not received_items:
-        return None
+    for moved in lines:
+        line = _historical_line(row.state, moved, held.get(moved["line"], 0.0))
+        quantity = float(moved["quantity"])
+        held[moved["line"]] = held.get(moved["line"], 0.0) + quantity
+        received_items.append({
+            "po_line_index": moved["line"], "item_id": moved["item_id"], "quantity_received": quantity,
+            "receive_as": "stock", **{k: line[k] for k in ("sku", "name") if line.get(k)},
+            "lot_quantity_added": quantity, "lot_cost_added": float(moved["cost"]),
+        })
     return await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.received",
         data={"received_items": received_items, "location_id": "",
-              "received_by": str(actor_id) if actor_id else None, "created_item_ids": []},
+              "received_by": str(actor_id), "created_item_ids": [], "ts": received_on},
         actor_id=actor_id, location_id=None, source=source, idempotency_key=idempotency_key,
+    )
+
+
+async def record_historical_delivery(session: AsyncSession, company_id, entity_id: str, *, lines: list[dict],
+                                     actor_id, source: str, idempotency_key: str):
+    """Record goods an issued invoice delivered before its books came to Celerp, as fulfilling
+    it records them: each of ``lines`` ({line, item_id, quantity, cost, lot_id, date}) becomes
+    a sold lot ``lot_id`` of that quantity and cost, taken from the line's item, fulfilled on
+    the invoice at that line on ``date``, and the line names the lot. The stock that left is
+    carried separately, so the item's own quantity is not changed and no journal entry posts.
+    Returns the doc.fulfilled or doc.partially_fulfilled entry, or the earlier one when
+    ``idempotency_key`` was already used for this delivery."""
+    from celerp_inventory.routes import lot_fields
+    from celerp_inventory.services import allocate_internal_codes
+
+    row, replay = await _historical_doc(session, company_id, entity_id, doc_type="invoice",
+                                        event_types=("doc.fulfilled", "doc.partially_fulfilled"),
+                                        idempotency_key=idempotency_key)
+    if replay is not None:
+        return replay
+    state = row.state
+    new_lines = [dict(li) for li in state.get("line_items") or []]
+    barcodes = await allocate_internal_codes(session, company_id, len(lines))
+    doc_number = state.get("doc_number") or state.get("ref_id") or ""
+    full: set[int] = set()
+    seen: set[int] = set()
+    for moved, barcode in zip(lines, barcodes):
+        index = moved["line"]
+        if index in seen:
+            raise HTTPException(status_code=422, detail=f"Line {index + 1} is delivered twice")
+        seen.add(index)
+        line = _historical_line(state, moved, 0.0)
+        item = await session.get(Projection, {"company_id": company_id, "entity_id": moved["item_id"]})
+        if item is None:
+            raise HTTPException(status_code=422, detail=f"Item {moved['item_id']} does not exist")
+        quantity, lot_id = float(moved["quantity"]), moved["lot_id"]
+        await emit_event(
+            session, company_id=company_id, entity_id=lot_id, entity_type="item", event_type="item.created",
+            data={**lot_fields(item.state), "sku": item.state.get("sku", ""), "name": item.state.get("name", ""),
+                  "quantity": quantity, "status": "available", "barcode": barcode,
+                  "allow_splitting": splitting_allowed(item.state), "cost_total": float(moved["cost"])},
+            actor_id=actor_id, location_id=None, source=source,
+            idempotency_key=f"{idempotency_key}:lot:{index}", metadata_={"parent_id": moved["item_id"]},
+        )
+        await emit_event(
+            session, company_id=company_id, entity_id=lot_id, entity_type="item", event_type="item.fulfilled",
+            data={"source_doc_id": entity_id, "doc_number": doc_number, "quantity_fulfilled": quantity,
+                  "fulfilled_by": str(actor_id), "doc_type": "invoice", "ts": moved["date"]},
+            actor_id=actor_id, location_id=None, source=source,
+            idempotency_key=f"{idempotency_key}:fulfilled:{index}", metadata_={"doc_id": entity_id, "line_index": index},
+        )
+        new_lines[index] = {**line, "entity_id": lot_id, "item_id": lot_id}
+        if abs(quantity - float(line.get("quantity") or 0)) <= 1e-9:
+            full.add(index)
+    await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
+        data={"fields_changed": {"line_items": {"old": state.get("line_items"), "new": new_lines}}},
+        actor_id=actor_id, location_id=None, source=source, idempotency_key=f"{idempotency_key}:lines",
+    )
+    lots = [moved["lot_id"] for moved in lines]
+    stock_lines = [i for i, li in enumerate(new_lines) if li.get("entity_id") or li.get("item_id")]
+    data = {"fulfilled_items": _line_item_brief(new_lines, lots),
+            "fulfilled_by": str(actor_id), "fulfilled_at": max(m["date"] for m in lines),
+            "strategy": "per_line", "ts": max(m["date"] for m in lines)}
+    if all(i in full for i in stock_lines):
+        event_type, data = "doc.fulfilled", {**data, "total_cogs": sum(float(m["cost"]) for m in lines)}
+    else:
+        event_type = "doc.partially_fulfilled"
+        data["unfulfilled_items"] = _line_item_brief(
+            new_lines, [new_lines[i].get("entity_id") or new_lines[i].get("item_id") for i in stock_lines if i not in full])
+    return await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type=event_type,
+        data=data, actor_id=actor_id, location_id=None, source=source, idempotency_key=idempotency_key,
     )
 
 

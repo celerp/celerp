@@ -16,12 +16,14 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 BASIC = HERE / "basic.manager"
 FX = HERE / "fx.manager"
+INVENTORY = HERE / "inventory.manager"
 
 
 def build_all() -> list[Path]:
     return [
         specs.build_basic(BASIC),
         specs.build_fx(FX),
+        specs.build_inventory_lifecycle(INVENTORY),
         specs.build_basic(SAMPLE_ARTIFACT, company=SAMPLE_COMPANY_NAME),
     ]
 

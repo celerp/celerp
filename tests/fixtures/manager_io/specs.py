@@ -54,6 +54,14 @@ T = {name: uuid.UUID(guid) for name, guid in {
     "Attachment": "2e541a82-94d7-42fc-a388-26bdc0803455",
     "SalesQuote": "ba89de75-cb87-4bde-b20f-314f01b31037",
     "TrialBalance": "e5dc98ef-4662-4a68-8a9d-b3e2d12b55d6",
+    "DeliveryNote": "a0f6a539-f6a4-4a38-a69a-546a608a1f6d",
+    "GoodsReceipt": "866217a4-f841-47de-a4e6-87152405c88d",
+    "InventoryTransfer": "7eaafddc-54c9-4235-98d2-e8a1ee438150",
+    "CustomInventoryLocation": "fae8151d-252e-45e3-b1f4-e048075b8983",
+    "DefaultInventoryLocation": "d63413bc-622e-4e39-86bc-15e95eb4e81c",
+    "InventoryUnitCost": "d5d7bad5-0abd-4501-af7f-cb6289cabc30",
+    "ProfitAndLossStatementAccountInventorySales": "ea44f579-9548-4954-baf0-48538aceff1e",
+    "ProfitAndLossStatementAccountInventoryPurchases": "aa80b662-3642-4c08-b328-2fccf132ceb1",
 }.items()}
 
 INCOME = uuid.UUID("95713fac-30d3-42e4-b536-dd7bc4f7a80e")
@@ -140,10 +148,10 @@ def basic_objects(company: str = "Example Trading") -> list[Obj]:
             {2: AR, 3: ca, 4: k("INV1"), 18: D("110")},
             {2: AR, 3: ca, 4: k("INV2"), 18: D("20")},
         ]}),
-        obj("PurchaseInvoice", "BILL1", {1: date(2026, 2, 1), 2: "BILL-1", 3: sa, 23: [
+        obj("PurchaseInvoice", "BILL1", {1: date(2026, 2, 1), 2: "BILL-1", 3: sa, 64: True, 23: [
             {1: wid, 17: "Widgets", 18: D("10"), 19: D("4"), 21: vat},
         ]}),
-        obj("PurchaseInvoice", "BILL2", {1: date(2026, 2, 5), 2: "BILL-2", 3: sa, 23: [
+        obj("PurchaseInvoice", "BILL2", {1: date(2026, 2, 5), 2: "BILL-2", 3: sa, 64: True, 23: [
             {2: off, 17: "Stationery", 18: D("1"), 19: D("30")},
             {1: wid, 17: "Widgets", 18: D("5"), 19: D("4")},
         ]}),
@@ -225,7 +233,7 @@ def cutover_objects() -> list[Obj]:
         obj("SalesInvoice", "INVA", {1: date(2026, 1, 10), 2: "INV-A", 3: ca, 49: [
             {2: s1, 17: "Consulting", 18: D("1"), 19: D("100"), 21: vat},
         ]}),
-        obj("PurchaseInvoice", "BILLA", {1: date(2026, 1, 15), 2: "BILL-A", 3: sa, 23: [
+        obj("PurchaseInvoice", "BILLA", {1: date(2026, 1, 15), 2: "BILL-A", 3: sa, 64: True, 23: [
             {1: wid, 17: "Widgets", 18: D("10"), 19: D("4")},
         ]}),
         obj("Payment", "PA", {1: date(2026, 1, 18), 2: "P-A", 3: PAID_BY_SUPPLIER, 5: sa, 7: opb, 11: [
@@ -240,7 +248,7 @@ def cutover_objects() -> list[Obj]:
         obj("Receipt", "RB", {1: date(2026, 2, 5), 2: "R-B", 3: PAID_BY_CUSTOMER, 4: ca, 7: opb, 11: [
             {2: AR, 3: ca, 4: k("INVB"), 18: D("110")},
         ]}),
-        obj("PurchaseInvoice", "BILLB", {1: date(2026, 2, 8), 2: "BILL-B", 3: sa, 23: [
+        obj("PurchaseInvoice", "BILLB", {1: date(2026, 2, 8), 2: "BILL-B", 3: sa, 64: True, 23: [
             {1: wid, 17: "Widgets", 18: D("5"), 19: D("4")},
         ]}),
         obj("InterAccountTransfer", "IATB", {1: date(2026, 2, 10), 6: "T-B", 2: opb, 8: D("25"), 3: pc, 9: D("25")}),
@@ -318,3 +326,102 @@ def line_variant_objects() -> list[Obj]:
 
 def build_line_variants(path: Path) -> Path:
     return write_manager_file(path, line_variant_objects())
+
+
+# ── Physical stock movements ──────────────────────────────────────────────────
+# Manager moves stock on the goods receipt or delivery note, or on the invoice itself when
+# the invoice is flagged to move its own stock (field 64 on a bill, 69 on a sales invoice).
+
+LIFECYCLE_CUTOVER = date(2026, 1, 17)
+
+
+def goods_receipt(label: str, day: date, bill: str, qty: D, location: uuid.UUID | None = None) -> Obj:
+    fields = {1: label, 3: day, 4: k("SA"), 15: [{1: k("WID"), 2: "Widgets", 3: qty}], 17: k(bill)}
+    return obj("GoodsReceipt", label, fields | ({11: location} if location else {}))
+
+
+def delivery_note(label: str, day: date, invoice: str, qty: D, item: str = "WID") -> Obj:
+    return obj("DeliveryNote", label, {1: label, 3: day, 4: k("CA"), 15: [{1: k(item), 2: "Widgets", 3: qty}],
+                                       19: k(invoice)})
+
+
+def _bill(label: str, day: date, qty: D, price: D, header: dict | None = None) -> Obj:
+    return obj("PurchaseInvoice", label, {1: day, 2: label, 3: k("SA"), **(header or {}), 23: [
+        {1: k("WID"), 17: "Widgets", 18: qty, 19: price}]})
+
+
+def _sale(label: str, day: date, qty: D, header: dict | None = None) -> Obj:
+    return obj("SalesInvoice", label, {1: day, 2: label, 3: k("CA"), **(header or {}), 49: [
+        {1: k("WID"), 17: "Widgets", 18: qty, 19: D("12.50")}]})
+
+
+def inventory_lifecycle_objects() -> list[Obj]:
+    """One item bought and sold every way Manager moves stock. Hand-worked figures:
+
+    Receipts (bill, physical record, quantity, value):
+      BILLF 5 @ 6, flagged: moves its own stock on 01-06, 5 / 30.00
+      BILLG 10 @ 4: GR1 01-08 6 / 24.00 at the default location, GR2 01-12 4 / 16.00
+      BILLU 3 @ 4: no physical record, moves nothing
+      BILLP 8 @ 5: GR3 01-10 5 / 25.00, the other 3 never arrive
+    Running position: 01-06 5 / 30.00, 01-08 11 / 54.00, 01-10 16 / 79.00, 01-12 20 / 95.00.
+    Deliveries at the moving average cost of 4.75:
+      INVE 2 (01-22): DN2 01-16, delivered before the invoice, 9.50, leaves 18 / 85.50
+      INVP 5 (01-18): DN3 01-19 delivers 3 only, 14.25, leaves 15 / 71.25
+      INVD 4 (01-15): DN1 01-20, delivered after the invoice, 19.00, leaves 11 / 52.25
+      INVN 1 (01-21): no physical record, moves nothing
+      INVX 1 (01-23), flagged: moves its own stock, 4.75, leaves 10 / 47.50
+    Books: bills 122.00 to payables, invoices 13 @ 12.50 = 162.50 to receivables, cost of
+    sales 13 x 5.00 (the unit cost from 01-14) = 65.00, so inventory on hand is 57.00. R1
+    pays INVD in full on 01-25. At the 01-17 cutover the opening stock is 18 / 85.50.
+    These figures are recorded in checkpoints.json under "inventory"."""
+    return [
+        *masters(),
+        obj("ProfitAndLossStatementAccountInventorySales", None, {1: "Inventory - sales"}),
+        obj("ProfitAndLossStatementAccountInventoryPurchases", None, {1: "Inventory - cost"}),
+        obj("DefaultInventoryLocation", None, {1: "Main warehouse"}),
+        obj("InventoryUnitCost", "UC1", {1: date(2026, 1, 14), 2: k("WID"), 3: D("5")}),
+        _bill("BILLG", date(2026, 1, 5), D("10"), D("4")),
+        _bill("BILLF", date(2026, 1, 6), D("5"), D("6"), {64: True}),
+        _bill("BILLU", date(2026, 1, 7), D("3"), D("4")),
+        _bill("BILLP", date(2026, 1, 9), D("8"), D("5")),
+        goods_receipt("GR1", date(2026, 1, 8), "BILLG", D("6"), T["DefaultInventoryLocation"]),
+        goods_receipt("GR3", date(2026, 1, 10), "BILLP", D("5")),
+        goods_receipt("GR2", date(2026, 1, 12), "BILLG", D("4")),
+        _sale("INVD", date(2026, 1, 15), D("4")),
+        _sale("INVE", date(2026, 1, 22), D("2")),
+        _sale("INVP", date(2026, 1, 18), D("5")),
+        _sale("INVN", date(2026, 1, 21), D("1")),
+        _sale("INVX", date(2026, 1, 23), D("1"), {69: True}),
+        delivery_note("DN2", date(2026, 1, 16), "INVE", D("2")),
+        delivery_note("DN3", date(2026, 1, 19), "INVP", D("3")),
+        delivery_note("DN1", date(2026, 1, 20), "INVD", D("4")),
+        obj("Receipt", "R1", {1: date(2026, 1, 25), 2: "R-1", 3: PAID_BY_CUSTOMER, 4: k("CA"), 7: k("OPB"), 11: [
+            {2: AR, 3: k("CA"), 4: k("INVD"), 18: D("50")},
+        ]}),
+    ]
+
+
+def build_inventory_lifecycle(path: Path) -> Path:
+    return write_manager_file(path, inventory_lifecycle_objects())
+
+
+def inventory_safety_objects(locations: int = 0, transfers: int = 0, negative: bool = False) -> list[Obj]:
+    """A flagged bill bringing in 5 widgets, plus what Celerp cannot carry yet: `locations`
+    extra inventory locations (the bill stocks the first), `transfers` stock transfers, and
+    a delivery of 9 widgets against the 5 held, which takes stock below zero."""
+    objects = [
+        *masters(),
+        _bill("BILLS", date(2026, 1, 5), D("5"), D("4"), {64: True, **({13: k("LOC2")} if locations else {})}),
+        *(obj("CustomInventoryLocation", f"LOC{n}", {1: f"Store {n}", 3: f"LOC{n}"})
+          for n in range(2, locations + 2)),
+        *(obj("InventoryTransfer", f"TRF{n}", {1: f"T-{n}", 2: date(2026, 1, 10), 6: [{1: k("WID"), 3: D("2")}]})
+          for n in range(1, transfers + 1)),
+    ]
+    if negative:
+        objects += [_sale("INVNEG", date(2026, 1, 12), D("9")),
+                    delivery_note("DNNEG", date(2026, 1, 15), "INVNEG", D("9"))]
+    return objects
+
+
+def build_inventory_safety(path: Path, **kinds) -> Path:
+    return write_manager_file(path, inventory_safety_objects(**kinds))
