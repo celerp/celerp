@@ -11,8 +11,11 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai.files import XLSX_CONTENT_TYPE, load_file
@@ -25,7 +28,7 @@ from celerp_accounting.import_service import AccImportRecord
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
 from celerp.services.line_measures import line_label
@@ -138,6 +141,24 @@ class BatchImportResult(BaseModel):
     skipped: int
     updated: int = 0
     errors: list[str]
+
+
+class ChartImportRequest(BaseModel):
+    """Rows of a chart of accounts file. Each row is checked on its own, so one
+    malformed row is reported instead of refusing the whole file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    records: list[Any] = Field(..., max_length=500)
+    # Accepted only so a client can state it; the import never updates.
+    upsert: bool = False
+
+
+class ChartImportResult(BaseModel):
+    created: int
+    skipped: int
+    errors: list[str]
+    skipped_codes: list[str]
 
 
 async def seed_chart_of_accounts(session: AsyncSession, company_id: uuid.UUID) -> None:
@@ -267,6 +288,155 @@ def _checked_cash_flow_category(value: str | None) -> str | None:
     return value
 
 
+_ACCOUNT_CODE_MAX = 32  # Account.code column width
+
+
+def _checked_account_code(value: Any) -> str:
+    """The account code, trimmed. Postings and parents refer to accounts by code,
+    so a blank or over-long one is refused rather than stored or cut short."""
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail="Account code must be text.")
+    code = value.strip()
+    if not code:
+        raise HTTPException(status_code=422, detail="Account code is required.")
+    if len(code) > _ACCOUNT_CODE_MAX:
+        raise HTTPException(
+            status_code=422, detail=f"Account code must be {_ACCOUNT_CODE_MAX} characters or fewer.",
+        )
+    return code
+
+
+def _checked_account_name(value: Any) -> str:
+    """The account name, trimmed. Every report labels the account with it."""
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail="Account name must be text.")
+    name = value.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Account name is required.")
+    return name
+
+
+_ACTIVE_WORDS = {"true": True, "1": True, "yes": True, "false": False, "0": False, "no": False}
+
+
+def _parsed_is_active(value: Any) -> bool:
+    """A row's is_active. Missing or blank means active, as for a new account;
+    anything that is not clearly yes or no is refused instead of guessed."""
+    if value is None or isinstance(value, bool):
+        return value is not False
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if not word:
+            return True
+        if word in _ACTIVE_WORDS:
+            return _ACTIVE_WORDS[word]
+    raise HTTPException(
+        status_code=422, detail="is_active must be one of: true, false, yes, no, 1, 0, or blank.",
+    )
+
+
+@dataclass
+class ChartImportPlan:
+    """What a chart import will do: accounts to add, codes kept, rows refused."""
+
+    to_create: list[dict]
+    skipped_codes: list[str]
+    errors: list[str]
+
+
+def plan_chart_import(records: list[Any], existing: dict[str, str | None]) -> ChartImportPlan:
+    """Decide every row of a chart import against the chart it will produce.
+
+    ``existing`` maps each code already in the chart to its parent code. A row
+    whose code is already there is kept as it is and listed. A new row is added
+    only if its fields are valid and its parent is in the chart or is another row
+    being added, so the order of rows in the file never matters. A parent that
+    is nowhere, or that could not be added itself, makes the row invalid, and so
+    does a chain of parents that leads back to the row.
+    """
+    row_errors: dict[int, str] = {}
+    skipped_codes: list[str] = []
+    valid: dict[int, dict] = {}
+
+    def label(i: int, code: str | None = None) -> str:
+        return f"Row {i + 1} ({code})" if code else f"Row {i + 1}"
+
+    for i, rec in enumerate(records):
+        if not isinstance(rec, dict):
+            row_errors[i] = f"{label(i)}: each row must be an object with code, name and account_type."
+            continue
+        raw_code = rec.get("code")
+        shown = raw_code.strip() if isinstance(raw_code, str) else None
+        try:
+            code = _checked_account_code(raw_code)
+            parent = rec.get("parent_code")
+            if parent is not None and not isinstance(parent, str):
+                raise HTTPException(status_code=422, detail="Parent code must be text.")
+            row = {
+                "code": code,
+                "name": _checked_account_name(rec.get("name")),
+                "account_type": _checked_account_type(rec.get("account_type")),
+                "parent_code": (parent or "").strip() or None,
+                "is_active": _parsed_is_active(rec.get("is_active")),
+            }
+        except HTTPException as exc:
+            row_errors[i] = f"{label(i, shown)}: {exc.detail}"
+            continue
+        if code in existing:
+            skipped_codes.append(code)
+        else:
+            valid[i] = row
+
+    in_file: dict[str, list[int]] = {}
+    for i, rec in enumerate(records):
+        if isinstance(rec, dict) and isinstance(rec.get("code"), str) and rec["code"].strip():
+            in_file.setdefault(rec["code"].strip(), []).append(i)
+    for code, rows in in_file.items():
+        # Two new rows with one code would leave the file to decide which one wins.
+        if len(rows) > 1 and code not in existing:
+            for i in rows:
+                valid.pop(i, None)
+                row_errors.setdefault(i, f"{label(i, code)}: this code appears more than once in the file.")
+
+    # Drop rows whose parent cannot exist, then rows caught in a loop of parents,
+    # until every remaining row hangs off the chart it will produce.
+    while True:
+        adding = {row["code"]: i for i, row in valid.items()}
+        bad: dict[int, str] = {}
+        for i, row in valid.items():
+            parent = row["parent_code"]
+            if parent is None or parent in existing or parent in adding:
+                continue
+            if parent in in_file:
+                bad[i] = f"{label(i, row['code'])}: its parent {parent} in this file could not be added."
+            else:
+                bad[i] = f"{label(i, row['code'])}: its parent {parent} is not in the chart or in this file."
+        if not bad:
+            parents = {**existing, **{row["code"]: row["parent_code"] for row in valid.values()}}
+            for i, row in valid.items():
+                chain = [row["code"]]
+                seen = {row["code"]}
+                node = row["parent_code"]
+                while node is not None and node not in seen:
+                    chain.append(node)
+                    seen.add(node)
+                    node = parents.get(node)
+                if node == row["code"]:
+                    bad[i] = (f"{label(i, row['code'])}: its parent accounts form a loop "
+                              f"({' > '.join([*chain, row['code']])}).")
+        if not bad:
+            break
+        for i, message in bad.items():
+            del valid[i]
+            row_errors[i] = message
+
+    return ChartImportPlan(
+        to_create=[valid[i] for i in sorted(valid)],
+        skipped_codes=skipped_codes,
+        errors=[row_errors[i] for i in sorted(row_errors)],
+    )
+
+
 @router.get("/chart")
 async def get_chart(
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -327,8 +497,8 @@ async def create_account(
 ) -> dict:
     acc = await import_service.create_chart_account(
         session, company_id,
-        code=payload.code,
-        name=payload.name,
+        code=_checked_account_code(payload.code),
+        name=_checked_account_name(payload.name),
         account_type=_checked_account_type(payload.account_type),
         parent_code=payload.parent_code,
         cash_flow_category=_checked_cash_flow_category(payload.cash_flow_category),
@@ -353,7 +523,7 @@ async def patch_account(
         raise HTTPException(status_code=404, detail="Account not found")
 
     if payload.name is not None:
-        acc.name = payload.name
+        acc.name = _checked_account_name(payload.name)
     if payload.account_type is not None:
         acc.account_type = _checked_account_type(payload.account_type)
     if payload.parent_code is not None:
@@ -365,6 +535,42 @@ async def patch_account(
 
     await session.commit()
     return _account_to_dict(acc)
+
+
+@router.post("/accounts/import/batch", response_model=ChartImportResult)
+async def import_chart_accounts(
+    body: ChartImportRequest,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    __: None = require_permission("import_export_data"),
+    session: AsyncSession = Depends(get_session),
+) -> ChartImportResult:
+    """Add accounts from a chart file. Existing codes are kept exactly as they are
+    and listed, so running the same file again adds nothing."""
+    if body.upsert:
+        raise HTTPException(
+            status_code=422,
+            detail="The chart import only adds accounts. Existing codes are kept; edit them in the chart.",
+        )
+    # Hold the company lock so two imports of one file cannot both see a code as new.
+    await lock_company(session, company_id)
+    existing = dict((await session.execute(
+        select(Account.code, Account.parent_code).where(Account.company_id == company_id)
+    )).all())
+    plan = plan_chart_import(body.records, existing)
+    for row in plan.to_create:
+        session.add(Account(id=uuid.uuid4(), company_id=company_id, **row))
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="The chart changed during the import. Nothing was added; try again.",
+        )
+    return ChartImportResult(
+        created=len(plan.to_create), skipped=len(plan.skipped_codes),
+        errors=plan.errors, skipped_codes=plan.skipped_codes,
+    )
 
 
 @router.get("/import/template", response_class=PlainTextResponse, include_in_schema=False)
