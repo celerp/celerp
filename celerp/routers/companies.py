@@ -329,6 +329,13 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
                 status_code=422,
                 detail="Business type is set through POST /companies/me/business-type, not company settings",
             )
+        # The record of which company backup a company was restored from is written only by
+        # the restore itself; a restore of that backup finds its company by it.
+        if "restored_backup" in payload.settings:
+            raise HTTPException(
+                status_code=422,
+                detail="The restored backup record is set only by restoring a company backup, not company settings",
+            )
         merged = {**(company.settings or {}), **payload.settings}
         if "timezone" in payload.settings:
             try:

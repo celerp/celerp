@@ -2329,3 +2329,30 @@ async def test_bootstrap_upload_limits_refused(real_engine, real_client, tmp_pat
     assert r.status_code == (413 if limit == "MAX_UPLOAD_BYTES" else 422), r.text
     assert "too large" in r.json()["detail"]
     assert await snapshot(real_engine) == before
+
+
+async def test_restored_backup_record_not_writable_through_settings(real_engine, real_client, tmp_path, monkeypatch):
+    """Company settings cannot claim a backup was restored as this company, so restoring it
+    still creates a new company."""
+    _r_env(tmp_path, monkeypatch)
+    _, cid, tok = await _r_source(real_engine)
+    data = await download(real_client, tok)
+    claim = {"settings": {"restored_backup": {"backup_id": manifest(data)["backup_id"]}}}
+    r = await real_client.patch("/companies/me", json=claim, headers=auth(tok))
+    assert r.status_code == 422, r.text
+    assert "restoring a company backup" in r.json()["detail"]
+    assert "restored_backup" not in await _bk_settings(real_engine, cid)
+    body = _r_created(await restore(real_client, tok, data, "new_company"))
+    assert body["company_id"] != str(cid)
+
+
+async def test_deactivated_restored_company_not_reused(real_engine, real_client, tmp_path, monkeypatch):
+    """Restoring a backup whose restored company was deactivated creates a new company."""
+    _r_env(tmp_path, monkeypatch)
+    _, _, tok = await _r_source(real_engine)
+    data = await download(real_client, tok)
+    first = _r_created(await restore(real_client, tok, data, "new_company"))
+    await _bk_sql(real_engine, "UPDATE companies SET is_active = false WHERE id = CAST(:c AS uuid)",
+                  c=first["company_id"])
+    again = _r_created(await restore(real_client, tok, data, "new_company"))
+    assert again["company_id"] != first["company_id"]

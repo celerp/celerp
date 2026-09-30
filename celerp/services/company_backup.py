@@ -739,6 +739,7 @@ async def _existing(session: AsyncSession, backup_id: str, mode: str, user_id,
     """The company this backup was already restored as, with the caller, when the caller
     may have it; refused when it exists but belongs to someone else."""
     company = await session.scalar(select(Company).where(
+        Company.is_active.is_(True),
         text("companies.settings -> 'restored_backup' ->> 'backup_id' = :b").bindparams(b=backup_id)).limit(1))
     if company is None:
         return None
