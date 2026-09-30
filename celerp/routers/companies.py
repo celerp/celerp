@@ -45,7 +45,7 @@ from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
 from celerp.services.business_time import business_timezone
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import lock_company, locked_company
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -550,6 +550,9 @@ async def patch_location(
         loc_uuid = uuid.UUID(location_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid location id")
+    # Company first, then the location: the order an import commit takes them in (and the
+    # tax re-seed below needs the company lock), so the two wait instead of deadlocking.
+    await lock_company(session, company_id)
     loc = await session.get(Location, loc_uuid)
     if loc is None or loc.company_id != company_id:
         raise HTTPException(status_code=404, detail="Location not found")
