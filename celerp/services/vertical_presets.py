@@ -80,6 +80,26 @@ def load_category(name: str) -> dict | None:
     return next((c for c in list_categories() if c["name"] == name), None)
 
 
+# Item field filled by each library category default.
+_ITEM_DEFAULT_FIELDS = {
+    "sell_by": "default_sell_by",
+    "purchase_unit": "default_purchase_unit",
+    "weight_unit": "default_weight_unit",
+    "inventory_type": "default_inventory_type",
+}
+
+
+def category_item_defaults(category: str | None) -> dict[str, str]:
+    """The item field values a library category supplies when the item leaves them out.
+
+    Only fields the category declares are returned; an empty, unknown, or company-only
+    category supplies nothing. Item creation and every import apply this one mapping."""
+    cat = load_category(category) if category else None
+    if cat is None:
+        return {}
+    return {field: cat[key] for field, key in _ITEM_DEFAULT_FIELDS.items() if cat.get(key)}
+
+
 def installed_preset_modules(preset: dict) -> list[str]:
     """The preset's modules that are installed. A name with no installed copy is
     logged and skipped so it never lands in company settings or the config file."""

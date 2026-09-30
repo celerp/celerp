@@ -46,6 +46,7 @@ class _FormReq:
     def __init__(self, form: dict):
         self._form = form
         self.cookies: dict = {}
+        self.query_params: dict = {}
 
     async def form(self):
         return self._form
@@ -114,7 +115,8 @@ def test_parse_share_link_rejects_other_links(link):
 
 @pytest.mark.asyncio
 async def test_import_page_offers_shared_import(ui_routes):
-    html = to_xml(await ui_routes[("GET", "/docs/import")](_FormReq({})))
+    page, _cookie = await ui_routes[("GET", "/docs/import")](_FormReq({}))
+    html = to_xml(page)
     assert 'action="/docs/import/shared"' in html
     assert 'action="/docs/import/shared-file"' in html
     assert 'name="link"' in html
@@ -127,7 +129,8 @@ async def test_import_page_fills_the_link_it_was_handed(ui_routes, monkeypatch):
         raise AssertionError("Opening the page must not import anything")
 
     monkeypatch.setattr(di.api, "import_shared_doc", _never)
-    html = to_xml(await ui_routes[("GET", "/docs/import")](_FormReq({}), link="https://shop.example.com/share/abc123"))
+    page, _cookie = await ui_routes[("GET", "/docs/import")](_FormReq({}), link="https://shop.example.com/share/abc123")
+    html = to_xml(page)
     assert 'value="https://shop.example.com/share/abc123"' in html
 
 

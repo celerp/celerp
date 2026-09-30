@@ -694,11 +694,7 @@ def setup_routes(app):
             return RedirectResponse("/ai", status_code=302)
         if tab in {"company", "users", "modules", "backup"}:
             return RedirectResponse(f"/settings/general?tab={tab}", status_code=302)
-        setup_done = request.query_params.get("setup") == "done"
-        dest = "/settings/general"
-        if setup_done:
-            dest += "?setup=done"
-        return RedirectResponse(dest, status_code=302)
+        return RedirectResponse("/settings/general", status_code=302)
 
     # ── Preference endpoints ─────────────────────────────────────────
     @app.get("/settings/preferences/{key}/edit")

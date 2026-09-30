@@ -16,6 +16,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
+from celerp.importers import tabular
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
@@ -695,8 +696,9 @@ def setup_routes(app):
         csv_file = form.get("csv_file")
         if not csv_file or not hasattr(csv_file, "read"):
             return _workspace_redirect(session_id, t("recon.err_choose_csv"))
-        content = await csv_file.read()
-        if len(content) > _MAX_CSV_BYTES:
+        try:
+            content = await tabular.read_upload_bytes(csv_file, limit=_MAX_CSV_BYTES)
+        except tabular.TabularError:
             return _workspace_redirect(session_id, t("recon.err_csv_too_large"))
         filename = csv_file.filename or "upload.csv"
         try:

@@ -267,9 +267,20 @@ async def _close_ui_api_client() -> None:
     await close_shared_client()
 
 
+def _cleanup_import_stages() -> None:
+    """Remove expired staged import files at startup, so they do not linger on
+    an installation where nobody imports again."""
+    from ui.routes.csv_import import cleanup_expired_import_refs
+    try:
+        cleanup_expired_import_refs()
+    except OSError:
+        logging.getLogger(__name__).exception("Could not clean up staged import files at startup")
+
+
 app = FastHTML(
     before=Beforeware(_auth_guard, skip=[r"/login", r"/login-force", r"/setup.*", r"/logout", r"/static/.*", r"/health"]),
     secret_key=os.environ.get("JWT_SECRET", "dev-secret"),
+    on_startup=[_cleanup_import_stages],
     on_shutdown=[_close_ui_api_client],
 )
 

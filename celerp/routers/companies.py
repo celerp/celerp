@@ -946,24 +946,12 @@ async def get_category_display_names(company_id=Depends(get_current_company_id),
 
 @router.get("/me/category-schemas")
 async def get_all_category_schemas(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    """Return all category schemas keyed by category name.
-
-    Merges module-contributed defaults (category_schema slot) with company overrides.
-    Company overrides take precedence.
-    """
-    from celerp.modules.slots import get as get_slot
+    """Return all category schemas keyed by category name (module defaults plus company overrides)."""
+    from celerp.services.field_schema import all_category_schemas
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
-    # Start with module defaults
-    merged: dict = {}
-    for contrib in get_slot("category_schema"):
-        cat = contrib.get("category")
-        if cat and cat not in merged:
-            merged[cat] = contrib.get("fields") or []
-    # Company overrides win
-    merged.update(company.settings.get("category_schemas") or {})
-    return merged
+    return all_category_schemas(company.settings)
 
 
 # ---------------------------------------------------------------------------

@@ -1979,3 +1979,84 @@ async def test_owner_can_still_create_owner(client, session):
         headers=ctx["admin_h"],
     )
     assert r.status_code == 200, r.text
+
+
+# ── Price writes (set_inventory_prices) on every item writer ────────────────
+
+_PRICE_DENIED = "Setting inventory prices requires the 'set_inventory_prices' permission"
+
+
+@pytest.mark.parametrize("key", ["retail_price", "wholesale_price", "Retail", "retail_price_total"])
+async def test_item_patch_price_denied_without_permission(client, session, key):
+    """An operator without set_inventory_prices cannot change a sell price from the
+    item page PATCH, in any key form that stores a price; the request is refused
+    whole and the stored price is unchanged."""
+    ctx = await perm_setup(client, session)
+    r = await client.patch(f"/items/{ctx['item_id']}", headers=ctx["operator_h"], json={
+        "fields_changed": {key: {"old": None, "new": 250}, "name": {"old": "Perm Item", "new": "Renamed"}},
+    })
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == _PRICE_DENIED
+    item = (await client.get(f"/items/{ctx['item_id']}", headers=ctx["admin_h"])).json()
+    assert item.get(key) is None and item["name"] == "Perm Item"
+
+
+async def test_item_patch_price_allowed_with_permission(client, session):
+    """Granting set_inventory_prices to the operator lets the same edit through."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "set_inventory_prices", "operator")
+    r = await client.patch(f"/items/{ctx['item_id']}", headers=ctx["operator_h"],
+                           json={"fields_changed": {"retail_price": {"old": None, "new": 250}}})
+    assert r.status_code == 200, r.text
+    item = (await client.get(f"/items/{ctx['item_id']}", headers=ctx["admin_h"])).json()
+    assert item["retail_price"] == 250
+
+
+async def test_item_patch_draft_keeps_cost_and_gates_sell_price(client, session):
+    """On a draft the operator still authors the cost, but a sell price stays gated."""
+    ctx = await perm_setup(client, session)
+    r = await client.post("/items", headers=ctx["operator_h"], json={
+        "sku": "DRAFT-P", "name": "Draft P", "quantity": 1, "sell_by": "piece",
+        "location_id": ctx["location_id"], "status": "draft",
+    })
+    assert r.status_code == 200, r.text
+    eid = r.json()["id"]
+    r = await client.patch(f"/items/{eid}", headers=ctx["operator_h"],
+                           json={"fields_changed": {"cost_total": {"old": None, "new": 40}}})
+    assert r.status_code == 200, r.text
+    r = await client.patch(f"/items/{eid}", headers=ctx["operator_h"],
+                           json={"fields_changed": {"wholesale_price": {"old": None, "new": 60}}})
+    assert r.status_code == 403, r.text
+
+
+async def test_item_create_price_denied_without_permission(client, session):
+    """Creating an item with a sell price is a price write: refused for an operator
+    without set_inventory_prices, and no item is created."""
+    ctx = await perm_setup(client, session)
+    r = await client.post("/items", headers=ctx["operator_h"], json={
+        "sku": "NEW-P", "name": "New P", "quantity": 1, "sell_by": "piece",
+        "location_id": ctx["location_id"], "retail_price": 99,
+    })
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == _PRICE_DENIED
+    listed = (await client.get("/items", params={"q": "NEW-P"}, headers=ctx["admin_h"])).json()
+    assert not [i for i in listed.get("items", []) if i.get("sku") == "NEW-P"]
+
+
+async def test_batch_import_upsert_price_denied_without_permission(client, session):
+    """An import upsert carrying a sell price is rejected for that row without
+    set_inventory_prices; the stored price is unchanged."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "import_export_data", "operator")
+    eid = "item:bi-price"
+    r = await client.post("/items/import/batch", json={"records": [
+        _import_record(eid, {"sku": "BI-P", "name": "BI P", "sell_by": "piece", "quantity": 1}, "bi-price")
+    ]}, headers=ctx["operator_h"])
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    r = await client.post("/items/import/batch", json={"upsert": True, "records": [
+        _import_record(eid, {"sku": "BI-P", "sell_by": "piece", "retail_price": 75}, "bi-price")
+    ]}, headers=ctx["operator_h"])
+    assert r.status_code == 200, r.text
+    assert r.json()["updated"] == 0 and r.json()["errors"]
+    item = (await client.get(f"/items/{eid}", headers=ctx["admin_h"])).json()
+    assert item.get("retail_price") is None

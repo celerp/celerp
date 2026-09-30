@@ -33,8 +33,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from ui.routes.csv_import import _load_csv, MAPPING_ATTRIBUTE, MAPPING_SKIP
-from ui.routes.inventory import _IMPORT_SPEC, _CORE_ITEM_COLS
+from ui.routes.csv_import import _read_stage, _write_stage, MAPPING_ATTRIBUTE, MAPPING_SKIP
+from ui.routes.inventory import _IMPORT_SPEC
 from test_helpers import make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
 
@@ -90,7 +90,7 @@ async def _inventory_import_with_mapping(ui_client, csv_bytes: bytes):
     m = re.search(r'name="csv_ref"\s+value="([^"]+)"', html)
     assert m, "csv_ref hidden field not found"
     csv_ref = m.group(1)
-    csv_text = _load_csv(csv_ref)
+    csv_text = _read_stage(_TEST_COMPANY_ID, csv_ref)
     assert csv_text, "stashed CSV missing"
 
     # Build mapping: map known core columns to themselves, others as attributes
@@ -104,11 +104,17 @@ async def _inventory_import_with_mapping(ui_client, csv_bytes: bytes):
         else:
             form_data[f"map__{col}"] = MAPPING_ATTRIBUTE
 
-    return await ui_client.post(
-        "/inventory/import/mapped",
-        cookies=_authed(),
-        data=form_data,
-    )
+    with patch("ui.api_client.preview_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)):
+        return await ui_client.post(
+            "/inventory/import/mapped",
+            cookies=_authed(),
+            data=form_data,
+        )
+
+
+# A clean server review of mapped inventory rows, and the hash its import echoes.
+_PREVIEW_HASH = "c" * 64
+_CLEAN_ROWS_PREVIEW = {"errors": [], "locations_to_create": [], "preview_hash": _PREVIEW_HASH}
 
 
 async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url: str, mapped_url: str, spec_cols: list):
@@ -126,7 +132,7 @@ async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url:
     m = re.search(r'name="csv_ref"\s+value="([^"]+)"', html)
     assert m, f"csv_ref hidden field not found in {preview_url} response"
     csv_ref = m.group(1)
-    csv_text = _load_csv(csv_ref)
+    csv_text = _read_stage(_TEST_COMPANY_ID, csv_ref)
     assert csv_text, "stashed CSV missing"
 
     import csv as _csv, io as _io
@@ -144,6 +150,14 @@ async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url:
         cookies=_authed(),
         data=form_data,
     )
+
+
+_TEST_COMPANY_ID = "00000000-0000-0000-0000-00000000c0de"
+
+
+def _stage_csv(csv_text: str) -> str:
+    """Stage CSV text under this file's test company and return its csv_ref."""
+    return _write_stage(_TEST_COMPANY_ID, csv_text)
 
 
 def _role_from_token(token: str | None) -> str:
@@ -172,7 +186,7 @@ def _company_stub(base: dict):
 @pytest.fixture(autouse=True)
 def _mock_get_company():
     """Default get_company mock for all UI tests."""
-    _default = {"name": "Test Corp", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01"}
+    _default = {"id": _TEST_COMPANY_ID, "name": "Test Corp", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01"}
     with patch("ui.api_client.get_company", new=AsyncMock(side_effect=_company_stub(_default))), \
          patch("ui.routes.auth.api_get_company", new=AsyncMock(side_effect=_company_stub(_default))):
         yield
@@ -620,6 +634,66 @@ class TestClickToEdit:
             )
         assert r.status_code == 200
         assert b"<input" not in r.content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["retail_price", "wholesale_price", "retail_price_total"])
+    async def test_price_cell_readonly_without_permission(self, ui_client, field):
+        """GET edit for a price field, as an operator without set_inventory_prices,
+        returns a non-editable display cell (no <input>), so the item page cannot
+        change a price the Pricing tab refuses."""
+        schema = [{"key": field, "label": field, "type": "money", "editable": True}]
+        item = {"entity_id": "gc:123", "status": "available", field: 5}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+        ):
+            r = await ui_client.get(f"/api/items/gc:123/field/{field}/edit", cookies=_authed(role="operator"))
+            granted = await ui_client.get(f"/api/items/gc:123/field/{field}/edit", cookies=_authed(role="manager"))
+        assert r.status_code == 200
+        assert b"<input" not in r.content
+        assert b"<input" in granted.content
+
+    @pytest.mark.asyncio
+    async def test_item_detail_prices_readonly_without_permission(self, ui_client):
+        """The item page renders Retail and Wholesale without the click-to-edit entry
+        for an operator lacking set_inventory_prices; other fields stay editable."""
+        schema = [
+            {"key": "name", "label": "Name", "type": "text", "editable": True},
+            {"key": "retail_price", "label": "Retail", "type": "money", "editable": True},
+            {"key": "wholesale_price", "label": "Wholesale", "type": "money", "editable": True},
+        ]
+        item = {**_ITEM, "status": "available", "retail_price": 10, "wholesale_price": 8}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
+        ):
+            operator = (await ui_client.get("/inventory/gc:123", cookies=_authed(role="operator"))).content
+            manager = (await ui_client.get("/inventory/gc:123", cookies=_authed(role="manager"))).content
+        for key in (b"retail_price", b"wholesale_price"):
+            assert b"/field/" + key + b"/edit" in manager
+            assert b"/field/" + key + b"/edit" not in operator
+        assert b"/field/name/edit" in operator
+
+    def test_duplicate_leaves_out_sell_prices_without_permission(self):
+        """A copy made without set_inventory_prices carries the cost but no sell price."""
+        from ui.routes.inventory import _duplicate_payload
+        source = {"sku": "A", "name": "A", "retail_price": 10, "wholesale_price": 8, "cost_price": 5}
+        denied = _duplicate_payload(source, "A-copy", can_set_prices=False)
+        assert "retail_price" not in denied and "wholesale_price" not in denied
+        assert denied["cost_price"] == 5
+        granted = _duplicate_payload(source, "A-copy", can_set_prices=True)
+        assert granted["retail_price"] == 10 and granted["wholesale_price"] == 8
 
     @pytest.mark.asyncio
     async def test_sell_by_cell_readonly_without_permission(self, ui_client):
@@ -7172,7 +7246,7 @@ class TestSprint5NoPopups:
 #       after first HTMX swap; class attr changes no longer trigger observer
 #   B2: Error counter not updating → MutationObserver infinite loop on
 #       attribute changes (disabled button toggle re-fires observer)
-#   B3: Cell edits silently ignored on confirm (csv_data was a static snapshot)
+#   B3: Cell edits silently ignored on confirm (the hidden CSV field was a static snapshot)
 # =============================================================================
 
 import io as _io
@@ -7199,13 +7273,13 @@ class TestColumnMappingValidation:
     def test_valid_mapping_no_errors(self):
         from ui.routes.csv_import import validate_column_mapping
         form = {"map__sku": "sku", "map__name": "name", "map__extra": MAPPING_ATTRIBUTE}
-        errors = validate_column_mapping(form, ["sku", "name", "extra"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["sku", "name", "extra"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert errors == []
 
     def test_duplicate_target_detected(self):
         from ui.routes.csv_import import validate_column_mapping
         form = {"map__col_a": "category", "map__col_b": "category"}
-        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert len(errors) == 1
         assert "col_a" in errors[0]
         assert "col_b" in errors[0]
@@ -7215,7 +7289,7 @@ class TestColumnMappingValidation:
         from ui.routes.csv_import import validate_column_mapping
         # "category" column mapped as attribute, no rename -> collides with core field "category"
         form = {"map__category": MAPPING_ATTRIBUTE}
-        errors = validate_column_mapping(form, ["category"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["category"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert len(errors) == 1
         assert "category" in errors[0].lower()
         assert "built-in" in errors[0].lower()
@@ -7224,7 +7298,7 @@ class TestColumnMappingValidation:
         from ui.routes.csv_import import validate_column_mapping
         # User renames attribute to "sku" which is a core field
         form = {"map__my_col": MAPPING_ATTRIBUTE, "attr_name__my_col": "sku"}
-        errors = validate_column_mapping(form, ["my_col"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["my_col"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert len(errors) == 1
         assert "sku" in errors[0]
 
@@ -7232,7 +7306,7 @@ class TestColumnMappingValidation:
         from ui.routes.csv_import import validate_column_mapping
         # "category" column renamed to "lot_type" -> no collision
         form = {"map__category": MAPPING_ATTRIBUTE, "attr_name__category": "lot_type"}
-        errors = validate_column_mapping(form, ["category"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["category"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert errors == []
 
     def test_duplicate_attribute_names_detected(self):
@@ -7242,7 +7316,7 @@ class TestColumnMappingValidation:
             "map__col_a": MAPPING_ATTRIBUTE, "attr_name__col_a": "grade",
             "map__col_b": MAPPING_ATTRIBUTE, "attr_name__col_b": "grade",
         }
-        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert len(errors) == 1
         assert "grade" in errors[0]
         assert "col_a" in errors[0]
@@ -7251,7 +7325,7 @@ class TestColumnMappingValidation:
     def test_skip_columns_ignored(self):
         from ui.routes.csv_import import validate_column_mapping
         form = {"map__col_a": MAPPING_SKIP, "map__col_b": MAPPING_SKIP}
-        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert errors == []
 
     def test_multiple_errors_reported(self):
@@ -7261,7 +7335,7 @@ class TestColumnMappingValidation:
             "map__a": "sku", "map__b": "sku",  # duplicate target
             "map__category": MAPPING_ATTRIBUTE,  # collides with core
         }
-        errors = validate_column_mapping(form, ["a", "b", "category"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["a", "b", "category"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert len(errors) == 2
 
     # ── apply_column_mapping with attribute rename ───────────────────────────
@@ -7598,6 +7672,7 @@ class TestCsvImportHelpers:
         spec = CsvImportSpec(cols=["sku", "name"], required={"sku", "name"}, type_map={})
         rows = [{"sku": "S1", "name": "Widget"}]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=["sku", "name"],
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
@@ -7614,6 +7689,7 @@ class TestCsvImportHelpers:
         spec = CsvImportSpec(cols=["sku", "name"], required={"sku", "name"}, type_map={})
         rows = [{"sku": "", "name": "Widget"}]  # sku missing → error
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=["sku", "name"],
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
@@ -7625,13 +7701,14 @@ class TestCsvImportHelpers:
         # Import All must NOT be present when there are errors
         assert "Import All" not in html
 
-    def test_validation_result_errors_includes_csv_data_for_download(self):
+    def test_validation_result_errors_includes_csv_ref_for_download(self):
         """Error panel must embed csv_ref so the download form can POST it."""
         from fasthtml.common import to_xml
         from ui.routes.csv_import import CsvImportSpec, validate_cell, validation_result
         spec = CsvImportSpec(cols=["sku"], required={"sku"}, type_map={})
         rows = [{"sku": ""}]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=["sku"],
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
@@ -7640,26 +7717,21 @@ class TestCsvImportHelpers:
         ))
         assert 'name="csv_ref"' in html
 
-    def test_validation_result_clean_includes_csv_data_for_confirm(self):
-        """Clean confirm panel must embed csv_ref so confirm POST can read rows."""
+    def test_validation_result_clean_includes_csv_ref_for_confirm(self):
+        """Clean confirm panel must embed the caller's stage ref so confirm POST can read rows."""
         from fasthtml.common import to_xml
-        from ui.routes.csv_import import CsvImportSpec, validate_cell, validation_result, _load_csv
+        from ui.routes.csv_import import CsvImportSpec, validate_cell, validation_result
         spec = CsvImportSpec(cols=["sku"], required={"sku"}, type_map={})
-        rows = [{"sku": "SKU-1"}]
+        ref = "imp_" + "ab" * 16
         html = to_xml(validation_result(
-            rows=rows, cols=["sku"],
+            csv_ref=ref,
+            rows=[{"sku": "SKU-1"}], cols=["sku"],
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
             error_report_action="/x/errors",
             back_href="/x",
         ))
-        assert 'name="csv_ref"' in html
-        # The stashed CSV must contain the row data
-        import re
-        m = re.search(r'name="csv_ref"\s+value="([^"]+)"', html)
-        assert m, "csv_ref hidden field not found"
-        stashed = _load_csv(m.group(1))
-        assert stashed and "SKU-1" in stashed
+        assert f'name="csv_ref" value="{ref}"' in html
 
     def test_error_report_csv_adds_errors_column(self):
         """error_report_csv must append _errors column listing bad fields."""
@@ -7733,11 +7805,11 @@ class TestInventoryImportFlow:
     async def test_import_errors_download(self, ui_client):
         """POST /inventory/import/errors must return a CSV file with _errors column."""
         import csv as _csv, io as _io
-        csv_data = "sku,name,location_name\nS1,,Main Office\n"
+        csv_ref = _stage_csv("sku,name,location_name\nS1,,Main Office\n")
         r = await ui_client.post(
             "/inventory/import/errors",
             cookies=_authed(),
-            data={"csv_data": csv_data},
+            data={"csv_ref": csv_ref},
         )
         assert r.status_code == 200
         assert "csv" in r.headers.get("content-type", "").lower() or "attachment" in r.headers.get("content-disposition", "")
@@ -7755,12 +7827,12 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_import_confirm_all_valid_imports(self, ui_client):
         """Confirm forwards mapped rows to the server importer and renders the outcome."""
-        csv_data = "sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\nS2,Ring,Main Office,piece\n"
+        csv_ref = _stage_csv("sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\nS2,Ring,Main Office,piece\n")
         with patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 2, "skipped": 0, "updated": 0, "errors": []})):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data},
+                data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"import-card--success" in r.content
@@ -7769,12 +7841,12 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_import_confirm_unknown_location_auto_created(self, ui_client):
         """An unknown location_name is resolved server-side; the browser just renders the result."""
-        csv_data = "sku,name,location_name,sell_by\nS1,Widget,New Warehouse,piece\n"
+        csv_ref = _stage_csv("sku,name,location_name,sell_by\nS1,Widget,New Warehouse,piece\n")
         with patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data},
+                data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"import-card--success" in r.content
@@ -7782,12 +7854,12 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_import_confirm_no_location_column_uses_default(self, ui_client):
         """A CSV with no location_name column relies on the server's default-location resolution."""
-        csv_data = "sku,name,sell_by\nS1,Widget,piece\n"
+        csv_ref = _stage_csv("sku,name,sell_by\nS1,Widget,piece\n")
         with patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data},
+                data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"import-card--success" in r.content
@@ -7795,7 +7867,7 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_import_confirm_unresolved_location_reported_per_row(self, ui_client):
         """When the server cannot resolve a row's location it returns a per-row error, rendered in the result."""
-        csv_data = "sku,name,sell_by\nS1,Widget,piece\n"
+        csv_ref = _stage_csv("sku,name,sell_by\nS1,Widget,piece\n")
         server_result = {
             "created": 0, "skipped": 0, "updated": 0,
             "errors": ["Row 1: No location resolved: add a location_name column or set a default location"],
@@ -7804,49 +7876,44 @@ class TestInventoryImportFlow:
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data},
+                data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"import-card--error" in r.content
         assert b"location" in r.content.lower()
 
     @pytest.mark.asyncio
-    async def test_import_confirm_chunks_large_csv(self, ui_client):
-        """A 600-row CSV must call import_rows twice (500-row chunk + 100-row chunk).
-
-        The server caps a single import call at 500 rows, so the browser transport
-        chunks the mapped rows before forwarding them.
-        """
+    async def test_import_confirm_sends_whole_import_once(self, ui_client):
+        """A 600-row CSV is one import call carrying one operation key and the
+        reviewed hash; the server batches its own writes."""
         rows = "\n".join(f"SKU{i:04d},Item {i},Main Office,piece" for i in range(600))
-        csv_data = f"sku,name,location_name,sell_by\n{rows}\n"
+        csv_ref = _stage_csv(f"sku,name,location_name,sell_by\n{rows}\n")
 
-        import_rows_mock = AsyncMock(return_value={"created": 0, "skipped": 0, "updated": 0, "errors": []})
+        import_rows_mock = AsyncMock(return_value={"created": 600, "skipped": 0, "updated": 0, "errors": []})
         with patch("ui.api_client.import_rows", new=import_rows_mock):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data},
+                data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
-        assert import_rows_mock.call_count == 2, (
-            f"Expected 2 import_rows calls for 600 rows, got {import_rows_mock.call_count}"
-        )
-        # First call: 500 rows, second call: 100 rows (positional arg 1 is the row chunk)
-        first_rows = import_rows_mock.call_args_list[0].args[1]
-        second_rows = import_rows_mock.call_args_list[1].args[1]
-        assert len(first_rows) == 500
-        assert len(second_rows) == 100
+        assert import_rows_mock.await_count == 1
+        call = import_rows_mock.await_args
+        assert len(call.args[1]) == 600
+        assert call.kwargs["preview_hash"] == _PREVIEW_HASH
+        assert call.kwargs["idempotency_key"].startswith("ui-import:")
+        assert ":chunk:" not in call.kwargs["idempotency_key"]
 
     @pytest.mark.asyncio
     async def test_import_confirm_timeout_shows_friendly_error(self, ui_client):
         """A 504 APIError (timeout) from the server importer renders an informative error message."""
         from ui.api_client import APIError
-        csv_data = "sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\n"
+        csv_ref = _stage_csv("sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\n")
         with patch("ui.api_client.import_rows", new=AsyncMock(side_effect=APIError(504, "Request timed out"))):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data},
+                data={"csv_ref": csv_ref, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"timed out" in r.content.lower() or b"504" in r.content or b"failed" in r.content.lower()
@@ -7855,7 +7922,7 @@ class TestInventoryImportFlow:
     async def test_import_weight_unit_invalid_fails_validation(self, ui_client):
         """weight_unit value not in company units fails preview validation and renders the fix path."""
         from celerp.services.units import DEFAULT_UNITS
-        csv_data = "sku,name,sell_by,weight,weight_unit\nS1,Ring,carat,100,badunit\n"
+        csv_bytes = b"sku,name,sell_by,weight,weight_unit\nS1,Ring,carat,100,badunit\n"
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -7864,7 +7931,7 @@ class TestInventoryImportFlow:
             r = await ui_client.post(
                 "/inventory/import/preview",
                 cookies=_authed(),
-                data={"csv_data": csv_data},
+                files={"csv_file": ("items.csv", csv_bytes, "text/csv")},
             )
         assert r.status_code == 200
         # "badunit" is not a valid unit → fix table shown (error path)
@@ -7899,11 +7966,11 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_locations_errors_download(self, ui_client):
         import csv as _csv, io as _io
-        csv_data = "name,type\n,store\n"
+        csv_ref = _stage_csv("name,type\n,store\n")
         r = await ui_client.post(
             "/settings/import/locations/errors",
             cookies=_authed(),
-            data={"csv_data": csv_data},
+            data={"csv_ref": csv_ref},
         )
         assert r.status_code == 200
         reader = list(_csv.DictReader(_io.StringIO(r.text)))
@@ -7924,11 +7991,11 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_taxes_errors_download(self, ui_client):
         import csv as _csv, io as _io
-        csv_data = "name,rate,tax_type,is_default,description\n,notanumber,both,true,\n"
+        csv_ref = _stage_csv("name,rate,tax_type,is_default,description\n,notanumber,both,true,\n")
         r = await ui_client.post(
             "/settings/import/taxes/errors",
             cookies=_authed(),
-            data={"csv_data": csv_data},
+            data={"csv_ref": csv_ref},
         )
         assert r.status_code == 200
         reader = list(_csv.DictReader(_io.StringIO(r.text)))
@@ -7949,11 +8016,11 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_terms_errors_download(self, ui_client):
         import csv as _csv, io as _io
-        csv_data = "name,days,description\nNet 30,notanumber,\n"
+        csv_ref = _stage_csv("name,days,description\nNet 30,notanumber,\n")
         r = await ui_client.post(
             "/settings/import/payment-terms/errors",
             cookies=_authed(),
-            data={"csv_data": csv_data},
+            data={"csv_ref": csv_ref},
         )
         assert r.status_code == 200
         reader = list(_csv.DictReader(_io.StringIO(r.text)))
@@ -7976,7 +8043,7 @@ class TestInventoryImportFlow:
 #       (MutationObserver watching `disabled` attribute it sets itself)
 #
 #   P3: Static snapshots used as ground truth while live DOM diverges
-#       (csv_data hidden field not updated when user edits cells)
+#       (hidden CSV field not updated when user edits cells)
 #
 #   P4: Currency/context threading gaps — page fetches company but forgets to
 #       pass currency/timezone into sub-renderers
@@ -8454,7 +8521,7 @@ class TestUnauthenticatedAccess:
 # Bug patterns mapped to test classes below:
 #   P1 - HTMX partial responses missing data-* attrs or hx-* re-wire hooks
 #   P2 - JS feedback loops (MutationObserver watching its own writes)
-#   P3 - Hidden csv_data field not reflecting latest state
+#   P3 - Hidden csv_ref field not reflecting latest state
 #   P4 - Currency/timezone/fiscal_year not threaded into sub-renderers
 #   P5 - Multi-tenant isolation (queries not filtered by company_id)
 #   P6 - Unauthenticated access to state-changing endpoints
@@ -8488,6 +8555,7 @@ class TestCsvImportUxErrorTable:
         from ui.routes.csv_import import validate_cell, validation_result
         spec = self._spec()
         return to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows,
             cols=spec.cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
@@ -8515,7 +8583,7 @@ class TestCsvImportUxErrorTable:
         assert "1 error" in html.lower() or "error" in html.lower()
 
     def test_error_table_shows_only_error_rows(self):
-        """Clean rows must not appear in the error table body (may appear in csv_data)."""
+        """Clean rows must not appear in the error table body."""
         rows = [
             {"sku": "S1", "name": "Widget", "quantity": "5", "cost_price": "10"},   # clean
             {"sku": "", "name": "Broken", "quantity": "5", "cost_price": "10"},     # error
@@ -8523,7 +8591,6 @@ class TestCsvImportUxErrorTable:
         html = self._html(rows)
         # The error table Tbody must only contain the error row
         # "Widget" is only in the clean row - must not appear in the table body cells
-        # (it may appear in the hidden csv_data field which is acceptable)
         # We check that data-row="0" (clean row index) is NOT present in table cells
         assert 'data-row="0"' not in html or "data-row" not in html
         # The error row "Broken" must be visible
@@ -8853,6 +8920,7 @@ class TestCsvImportIdentifierColumnContract:
         from ui.routes.csv_import import CsvImportSpec, validate_cell, validation_result
         spec = CsvImportSpec(cols=cols, required=required or set(), type_map={})
         return to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/c", error_report_action="/e", back_href="/b",
@@ -8885,8 +8953,7 @@ class TestCsvImportIdentifierColumnContract:
         rows = [{"sku": "", "notes": "all good", "price": "10"}]  # only sku fails
         html = self._result_html(cols, rows, required={"sku"})
         # sku (identifier+error) and notes (clean, NOT identifier) — notes header should be absent
-        # We can't perfectly enforce header vs cell since notes might leak via csv_data hidden field
-        # but the table headers should not show it
+        # The table headers should not show it
         # At minimum: sku must be present
         assert "sku" in html
 
@@ -12926,7 +12993,7 @@ class TestCsvImportUxOverhaul:
             preview_action="/x/preview",
         ))
         assert "import-dropzone" in html
-        assert "Drag your CSV" in html
+        assert "Drag your file" in html
 
     def test_upload_form_has_step_indicator(self):
         from fasthtml.common import to_xml
@@ -12966,6 +13033,7 @@ class TestCsvImportUxOverhaul:
         spec = self._spec()
         rows = [{"sku": "", "name": "Widget", "quantity": "5", "cost_price": "10"}]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=spec.cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
@@ -12983,6 +13051,7 @@ class TestCsvImportUxOverhaul:
             {"sku": "", "name": "B", "quantity": "5", "cost_price": "10"},
         ]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=spec.cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
@@ -12999,6 +13068,7 @@ class TestCsvImportUxOverhaul:
             {"sku": "", "name": "Bad", "quantity": "5", "cost_price": "10"},
         ]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=spec.cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
@@ -13013,6 +13083,7 @@ class TestCsvImportUxOverhaul:
         spec = self._spec()
         rows = [{"sku": "S1", "name": "Widget", "quantity": "5", "cost_price": "10"}]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=spec.cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
@@ -13030,6 +13101,7 @@ class TestCsvImportUxOverhaul:
             {"sku": "S2", "name": "B", "quantity": "2", "cost_price": "2"},
         ]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=spec.cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
@@ -13080,6 +13152,7 @@ class TestCsvImportUxOverhaul:
         spec = self._spec()
         rows = [{"sku": "", "name": "Widget", "quantity": "5", "cost_price": "10"}]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=spec.cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
@@ -13299,7 +13372,9 @@ class TestCsvImportSellByValidation:
         p_units = patch("ui.api_client.get_units", new=AsyncMock(return_value=units))
         p_vert = patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[]))
 
-        with p_price, p_schema, p_units, p_vert:
+        p_review = patch("ui.api_client.preview_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW))
+
+        with p_price, p_schema, p_units, p_vert, p_review:
             # Step 1: upload CSV
             r = await ui_client.post(
                 "/inventory/import/preview",
@@ -16756,19 +16831,20 @@ class TestUnknownUnitRendererInFixTable:
     async def test_revalidate_with_valid_unit_clears_error(self, ui_client):
         """After user picks a valid unit in the fix table, revalidate must succeed."""
         import json as _json
-        from ui.routes.csv_import import _stash_csv, _rows_to_csv
+        from ui.routes.csv_import import _write_stage, _rows_to_csv
 
         units = self._UNITS
         csv_rows = [{"sku": "X1", "name": "Ring", "sell_by": "grams", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _stash_csv(csv_text)
+        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
 
         # User fixes "grams" → "gram" (valid unit)
         fixes = {"0__sell_by": "gram"}
 
         with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)), \
-             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])), \
+             patch("ui.api_client.preview_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)):
             resp = await ui_client.post(
                 "/inventory/import/revalidate",
                 data={"csv_ref": csv_ref, "fixes_json": _json.dumps(fixes)},
@@ -16779,6 +16855,7 @@ class TestUnknownUnitRendererInFixTable:
         html = resp.text
         # Should reach confirm step, not show fix-errors panel
         assert "csv-fix-panel" not in html, "Fix panel must not show after valid unit is selected"
+        assert _PREVIEW_HASH in html, "Clean rows must reach the reviewed import button"
 
     @pytest.mark.asyncio
     async def test_revalidate_after_catalog_unit_added_clears_error(self, ui_client):
@@ -16788,18 +16865,19 @@ class TestUnknownUnitRendererInFixTable:
         catalog and clicking Fix & Import (without changing the cell) must clear the error.
         """
         import json as _json
-        from ui.routes.csv_import import _stash_csv, _rows_to_csv
+        from ui.routes.csv_import import _write_stage, _rows_to_csv
 
         csv_rows = [{"sku": "X2", "name": "Stone", "sell_by": "carat", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _stash_csv(csv_text)
+        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
 
         # "carat" is now in the catalog (user added it while fix table was open)
         units_now = self._UNITS + [{"name": "carat", "label": "Carat", "decimals": 2}]
 
         with patch("ui.api_client.get_units", new=AsyncMock(return_value=units_now)), \
-             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])), \
+             patch("ui.api_client.preview_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)):
             resp = await ui_client.post(
                 "/inventory/import/revalidate",
                 data={"csv_ref": csv_ref, "fixes_json": "{}"},
@@ -16809,17 +16887,18 @@ class TestUnknownUnitRendererInFixTable:
         assert resp.status_code == 200
         html = resp.text
         assert "csv-fix-panel" not in html, "Error must clear when unit now exists in catalog"
+        assert _PREVIEW_HASH in html, "Clean rows must reach the reviewed import button"
 
     @pytest.mark.asyncio
     async def test_revalidate_still_unknown_unit_keeps_error(self, ui_client):
         """If unit is still not in catalog after revalidate, error persists and value is preserved."""
         import json as _json
-        from ui.routes.csv_import import _stash_csv, _rows_to_csv
+        from ui.routes.csv_import import _write_stage, _rows_to_csv
 
         csv_rows = [{"sku": "X3", "name": "Rock", "sell_by": "fathom", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _stash_csv(csv_text)
+        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
 
         with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)), \
              patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
@@ -16842,12 +16921,12 @@ class TestUnknownUnitRendererInFixTable:
     async def test_add_new_option_not_saved_as_unit_value(self, ui_client):
         """If __add_new__ somehow reaches revalidate, it must not be stored as a sell_by value."""
         import json as _json
-        from ui.routes.csv_import import _stash_csv, _rows_to_csv
+        from ui.routes.csv_import import _write_stage, _rows_to_csv
 
         csv_rows = [{"sku": "X4", "name": "Bead", "sell_by": "piece", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _stash_csv(csv_text)
+        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
 
         # Simulate user somehow submitting __add_new__ as the fix value
         fixes = {"0__sell_by": "__add_new__"}

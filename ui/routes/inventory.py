@@ -26,19 +26,22 @@ from ui.components.shell import base_shell, minimal_shell, page_header, search_h
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
+from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, cost_columns
-from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, price_key, resolve_price
+from celerp.services.field_schema import union_category_attr_keys as _union_category_attr_keys
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, is_price_item_key, price_key, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
 from ui.i18n import t, get_lang, is_rtl, field_label
 from celerp.services.units import is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import splitting_allowed
 from celerp_inventory.services import (
-    _CORE_ITEM_COLS,
-    ITEM_IMPORT_BASE_COLS,
-    ITEM_IMPORT_TAIL_COLS,
+    apply_source_semantics,
     build_item_import_spec,
+    is_item_field_key,
     importable_price_lists,
+    item_price_mutex_groups,
+    source_header_semantics,
 )
 
 _DEFAULT_PER_PAGE = 50
@@ -1061,7 +1064,11 @@ async def _inventory_content(
         else f
         for f in eff_schema
     ]
-    eff_schema = _apply_amount_edit_permission(eff_schema, role, company.get("settings") or {})
+    _cs = company.get("settings") or {}
+    _draft_unlocked = sorted(
+        _locked_edit_keys(eff_schema, role, _cs) - _locked_edit_keys(eff_schema, role, _cs, is_draft=True)
+    )
+    eff_schema = _apply_edit_permission(eff_schema, role, _cs)
     if catalog_channels and any(f.get("key") == "name" for f in eff_schema):
         eff_schema = eff_schema + [{
             "key": "_channels", "label": "Channels", "type": "text",
@@ -1069,16 +1076,14 @@ async def _inventory_content(
             "visible_to_roles": [], "position": 2.5, "show_in_table": True,
             "virtual": True, "paired_with": "name", "sortable": False,
         }]
-    # Draft rows stay authorable: when the transform above locked the amount fields
-    # for this role, mark each DRAFT row so the table renders those cells
+    # Draft rows stay authorable: when the transform above locked the amount or cost
+    # fields for this role, mark each DRAFT row so the table renders those cells
     # click-to-edit anyway - the edit endpoints re-check status + permission
     # server-side, so this is presentation only.
-    _cs = company.get("settings") or {}
-    if (role_has_permission(_cs, role, "edit_inventory")
-            and not role_has_permission(_cs, role, "edit_inventory_amounts")):
+    if _draft_unlocked:
         for _it in items:
-            if str(_it.get("status") or "").lower() == "draft":
-                _it["_row_editable_keys"] = sorted(AMOUNT_EDIT_GATED_KEYS)
+            if _is_draft(_it):
+                _it["_row_editable_keys"] = _draft_unlocked
     # Derived read-only money columns, appended to the schema when their values exist:
     # - Under a contact holdings scope the meaningful per-row value is the scope value the
     #   total is summed from (quoted memo price / consignment cost), not the catalog
@@ -1168,13 +1173,15 @@ async def _import_export_allowed(request: Request, token: str) -> bool:
     return role_has_permission(settings, _get_role(request), "import_export_data")
 
 
-def _duplicate_payload(source: dict, new_sku: str) -> dict:
+def _duplicate_payload(source: dict, new_sku: str, *, can_set_prices: bool) -> dict:
     """Build a create payload from an existing item, carrying every field except
     id, status, location_name, created_at, updated_at (status is reset by the create
     path) and barcode. Barcode is globally unique, so a copy never inherits the
     source's: auto_barcode tells the create path to mint a fresh unique one from the
     shared sequence (the same reset a split child gets). Core columns and any *_price
-    stay top-level; everything else goes into attributes. Shared by the single-item
+    stay top-level; everything else goes into attributes. Without set_inventory_prices
+    the copy leaves the sell prices out (the create path refuses them); the cost is kept,
+    because the copy is a draft its creator may still cost. Shared by the single-item
     and bulk duplicate paths."""
     _SKIP = {"id", "status", "location_name", "created_at", "updated_at", "barcode",
              "idempotency_key", "external_links", "_channel_state"}
@@ -1184,6 +1191,8 @@ def _duplicate_payload(source: dict, new_sku: str) -> dict:
     attrs: dict = {}
     for k, v in source.items():
         if k in _SKIP or k == "sku" or v is None:
+            continue
+        if not can_set_prices and is_price_item_key(k) and k not in COST_ITEM_KEYS:
             continue
         if k in _CORE or k.endswith("_price"):
             payload[k] = v
@@ -1403,7 +1412,7 @@ def setup_routes(app):
             nav_active="inventory",
             lang=lang,
             request=request,
-        )
+        ), onboarding_entry_cookie(request)
 
     @app.get("/inventory/import/template")
     async def inventory_import_template(request: Request):
@@ -1443,7 +1452,7 @@ def setup_routes(app):
             return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
         form = await request.form()
-        rows, err = await read_csv_upload(form)
+        rows, csv_ref, err = await stage_tabular_upload(token, form)
         if err:
             return await base_shell(
                 page_header(t("page.import_inventory", lang)),
@@ -1464,10 +1473,6 @@ def setup_routes(app):
                 lang=lang,
                 request=request,
             )
-
-        # Stash the raw CSV and show column mapping UI
-        csv_text = _rows_to_csv(rows, cols)
-        csv_ref = _stash_csv(csv_text)
 
         # Fetch price lists + category attribute keys
         try:
@@ -1490,7 +1495,7 @@ def setup_routes(app):
                 required_targets=spec.required,
                 category_attrs=cat_attrs,
                 col_labels=_import_price_col_labels(price_lists),
-                mutex_groups=_import_price_mutex_groups(price_lists),
+                mutex_groups=item_price_mutex_groups(price_lists),
             ),
             title=page_title("page.import_inventory"),
             nav_active="inventory",
@@ -1508,7 +1513,7 @@ def setup_routes(app):
             return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
         form = await request.form()
-        csv_text = _resolve_csv_text(form)
+        csv_text = await resolve_import_csv(token, form)
         if not csv_text:
             return await base_shell(
                 page_header(t("page.import_inventory", lang)),
@@ -1529,15 +1534,19 @@ def setup_routes(app):
         original_cols = list(csv.DictReader(io.StringIO(csv_text)).fieldnames or [])
 
         # Validate mapping before applying
+        cat_attrs = _union_category_attr_keys(await api.get_all_category_schemas(token))
         mapping_errors = validate_column_mapping(
-            form, original_cols, core_fields=_CORE_ITEM_COLS,
+            form, original_cols, core_fields=spec.cols, required_targets=spec.required,
+            is_reserved_field=is_item_field_key, allowed_category_attrs=cat_attrs,
+            mutex_groups=item_price_mutex_groups(price_lists),
         )
+        company = await api.get_company(token)
+        semantics = source_header_semantics(form_mapping(form, original_cols), company.get("currency") or "USD")
+        mapping_errors += [t(f"import.err_{e['code']}", col=e["field"]) for e in semantics.errors]
         if mapping_errors:
             # Re-render the mapping form with errors and preserved form values
-            csv_ref = _stash_csv(csv_text)
+            csv_ref = await stash_import_csv(token, csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
-            cat_schemas = await api.get_all_category_schemas(token)
-            cat_attrs = _union_category_attr_keys(cat_schemas)
             return await base_shell(
                 page_header(t("page.import_inventory", lang)),
                 column_mapping_form(
@@ -1552,7 +1561,7 @@ def setup_routes(app):
                     errors=mapping_errors,
                     form_values=dict(form),
                     col_labels=_import_price_col_labels(price_lists),
-                    mutex_groups=_import_price_mutex_groups(price_lists),
+                    mutex_groups=item_price_mutex_groups(price_lists),
                 ),
                 title=page_title("page.import_inventory"),
                 nav_active="inventory",
@@ -1561,28 +1570,15 @@ def setup_routes(app):
             )
 
         remapped_csv, remapped_cols = apply_column_mapping(form, csv_text)
+        rows = apply_source_semantics(list(csv.DictReader(io.StringIO(remapped_csv))), semantics)
+        cols = list(dict.fromkeys([*(remapped_cols or spec.cols), *(k for row in rows for k in row)]))
 
-        # Re-stash the remapped CSV for downstream steps
-        csv_ref = _stash_csv(remapped_csv)
-
-        rows = list(csv.DictReader(io.StringIO(remapped_csv)))
-        cols = remapped_cols or (list(rows[0].keys()) if rows else spec.cols)
-        validate, cell_renderers = await _build_item_validator(token)
+        # Re-stash the remapped rows for downstream steps
+        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols))
 
         return await base_shell(
             page_header(t("page.import_inventory", lang)),
-            _csv_validation_result(
-                rows=rows,
-                cols=cols,
-                validate=validate,
-                confirm_action="/inventory/import/confirm",
-                error_report_action="/inventory/import/errors",
-                back_href="/inventory/import",
-                revalidate_action="/inventory/import/revalidate",
-                has_mapping=True,
-                upsert_label=t("inventory.upsert_sku_barcode"),
-                cell_renderers=cell_renderers,
-            ),
+            await _item_import_check(token, csv_ref, rows, cols),
             title=page_title("page.import_inventory"),
             nav_active="inventory",
             lang=lang,
@@ -1598,27 +1594,32 @@ def setup_routes(app):
         if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         if not csv_data:
             return _import_upload_form(error=t("inventory.csv_expired"))
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
         rows = _apply_fixes(form, rows, cols)
         # Re-stash the patched CSV so downstream confirm/errors can read it
-        csv_ref = _stash_csv(_rows_to_csv(rows, cols))
-        validate, cell_renderers = await _build_item_validator(token)
-        return _csv_validation_result(
-            rows=rows,
-            cols=cols,
-            validate=validate,
-            confirm_action="/inventory/import/confirm",
-            error_report_action="/inventory/import/errors",
-            back_href="/inventory/import",
-            revalidate_action="/inventory/import/revalidate",
-            has_mapping=True,
-            upsert_label=t("inventory.upsert_sku_barcode"),
-            cell_renderers=cell_renderers,
-        )
+        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols))
+        return await _item_import_check(token, csv_ref, rows, cols)
+
+    @app.post("/inventory/import/review")
+    async def inventory_import_review(request: Request):
+        """Re-run the final review, e.g. after 'Update existing records' changes."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if not await _import_export_allowed(request, token):
+            return RedirectResponse("/inventory", status_code=302)
+        form = await request.form()
+        csv_data = await resolve_import_csv(token, form)
+        if not csv_data:
+            return _import_upload_form(error=t("inventory.csv_expired"))
+        rows = list(csv.DictReader(io.StringIO(csv_data)))
+        cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
+        csv_ref = str(form.get("csv_ref") or "") or await stash_import_csv(token, csv_data)
+        return await _item_import_review(token, csv_ref, rows, cols, upsert=form.get("upsert") == "1")
 
     @app.post("/inventory/import/errors")
     async def inventory_import_errors(request: Request):
@@ -1628,7 +1629,7 @@ def setup_routes(app):
         if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
         validate, _ = await _build_item_validator(token)
@@ -1644,58 +1645,44 @@ def setup_routes(app):
 
         form = await request.form()
         upsert = form.get("upsert") == "1"
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
+        if not csv_data:
+            return _import_upload_form(error=t("inventory.csv_expired"))
         rows = list(csv.DictReader(io.StringIO(csv_data)))
+        cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
+        csv_ref = str(form.get("csv_ref") or "") or await stash_import_csv(token, csv_data)
+        preview_hash = str(form.get("preview_hash") or "")
+        if not preview_hash:
+            return await _item_import_review(token, csv_ref, rows, cols, upsert=upsert)
 
-        # Rows arrive mapped and validated by the revalidate cycle. The server owns
+        # The server recomputes its preview of exactly these rows and this choice
+        # and refuses the import if it no longer matches what was reviewed. It owns
         # location resolution and creation, unit and quantity derivation, monetary
-        # conversion, command idempotency, and the category-schema follow-up (one
-        # committer for the browser, the agent, and the raw batch). The browser
-        # transport only chunks to the per-call cap and renders the outcome.
-        _CHUNK = 500
-        merged: dict = {"created": 0, "skipped": 0, "updated": 0, "errors": [], "batch_id": None}
+        # conversion, idempotency, and the category-schema follow-up.
         try:
-            import_fingerprint = hashlib.sha256(
-                json.dumps({"upsert": upsert, "rows": rows}, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()
-            import_key = f"ui-import:{import_fingerprint}"
-            for i in range(0, max(len(rows), 1), _CHUNK):
-                chunk = rows[i : i + _CHUNK]
-                if not chunk:
-                    break
-                r = await api.import_rows(
-                    token, chunk, upsert=upsert, idempotency_key=f"{import_key}:chunk:{i // _CHUNK}"
-                )
-                merged["created"] += r.get("created", 0)
-                merged["skipped"] += r.get("skipped", 0)
-                merged["updated"] += r.get("updated", 0)
-                merged["errors"].extend(r.get("errors") or [])
-                if r.get("batch_id"):
-                    merged["batch_id"] = r["batch_id"]
-        except APIError as e:
-            if e.status == 401:
-                return import_abort_panel(
-                    message=t("error.session_expired"),
-                    import_more_href="/login",
-                    back_href="/inventory",
-                    has_mapping=True,
-                )
-            return import_abort_panel(
-                message=t("inventory.import_failed", detail=e.detail),
-                import_more_href="/inventory/import",
-                back_href="/inventory",
-                has_mapping=True,
+            result = await api.import_rows(
+                token, rows, upsert=upsert,
+                idempotency_key=_import_operation_key(rows, upsert), preview_hash=preview_hash,
             )
+        except APIError as e:
+            if e.status in (409, 422):
+                return await _item_import_review(
+                    token, csv_ref, rows, cols, upsert=upsert,
+                    notice=t("inventory.import_review_changed") if e.status == 409 else "",
+                )
+            return _item_import_api_error(e)
 
+        await discard_import_csv(token, form, result)
         return import_result_panel(
-            created=int(merged.get("created", 0) or 0),
-            skipped=int(merged.get("skipped", 0) or 0),
-            updated=int(merged.get("updated", 0) or 0),
-            errors=list(merged.get("errors", []) or []),
+            created=int(result.get("created", 0) or 0),
+            skipped=int(result.get("skipped", 0) or 0),
+            updated=int(result.get("updated", 0) or 0),
+            errors=list(result.get("errors", []) or []),
             entity_label="inventory",
             back_href="/inventory",
             import_more_href="/inventory/import",
             has_mapping=True,
+            from_onboarding=entered_from_onboarding(request),
         )
 
     # ── Blank-create: /inventory/create-blank ──────────────────────────────────
@@ -1780,10 +1767,7 @@ def setup_routes(app):
             else f
             for f in schema
         ]
-        schema = _apply_amount_edit_permission(schema, _get_role(request), company.get("settings") or {})
-        if (str(item.get("status") or "").lower() == "draft"
-                and role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory")):
-            schema = [{**f, "editable": True} if f.get("key") in AMOUNT_EDIT_GATED_KEYS else f for f in schema]
+        schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item))
         # Merge category-specific fields for this item's category
         item_cat = item.get("category", "")
         if item_cat and item_cat in cat_schemas:
@@ -2291,14 +2275,12 @@ function celerpPrintLabel(entityId, templateId) {
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                                 cell_type=_f.get("type", "text"), editable=False)
-        if (field in AMOUNT_EDIT_GATED_KEYS
-                and str(item.get("status") or "").lower() != "draft"
-                and not role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory_amounts")):
-            # Amount fields (quantity/weight/pieces/gross_weight) and sell_by are gated
-            # by edit_inventory_amounts: this GET is the single edit-entry chokepoint, so
+        if field in _locked_edit_keys(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item)):
+            # Amount fields and sell_by (edit_inventory_amounts) and prices
+            # (set_inventory_prices): this GET is the single edit-entry chokepoint, so
             # no gated cell can enter edit state without the permission, however it rendered.
-            # Draft items are exempt - the lock attaches when the item is committed to
-            # available, so its creator can finish authoring it (status re-read per edit).
+            # Draft items keep amounts and cost authorable - the lock attaches when the
+            # item is committed to available (status re-read per edit).
             from ui.components.table import display_cell
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
@@ -2400,9 +2382,9 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return P(t("inventory.error_detail", detail=e.detail), cls="cell-error")
         locations = locs.get("items", [])
-        # ESC restore inherits the same amount read-only state as the static cell, so a
-        # restored amount cell never re-offers click-to-edit without the permission.
-        schema = _apply_amount_edit_permission(schema, _get_role(request), company.get("settings") or {})
+        # ESC restore inherits the same read-only state as the static cell, so a
+        # restored gated cell never re-offers click-to-edit without the permission.
+        schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item))
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
         from ui.components.table import display_cell
         label_map: dict | None = None
@@ -2685,7 +2667,7 @@ function celerpPrintLabel(entityId, templateId) {
             _fp_company = await api.get_company(token)
         except Exception:
             _fp_company = {}
-        schema = _apply_amount_edit_permission(schema, _get_role(request), _fp_company.get("settings") or {})
+        schema = _apply_edit_permission(schema, _get_role(request), _fp_company.get("settings") or {}, is_draft=_is_draft(item))
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
         # Category change: context-aware response
         if field == "category":
@@ -2990,7 +2972,7 @@ function celerpPrintLabel(entityId, templateId) {
             company, currency = {}, None
         active_cat = item.get("category", "")
         eff_schema = _effective_schema(schema, cat_schemas, active_cat)
-        eff_schema = _apply_amount_edit_permission(eff_schema, _get_role(request), company.get("settings") or {})
+        eff_schema = _apply_edit_permission(eff_schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item))
         col_prefs: dict = {}
         try:
             col_prefs = await api.get_column_prefs(token)
@@ -3065,7 +3047,7 @@ function celerpPrintLabel(entityId, templateId) {
             api.get_item_schema(token), api.get_item(token, entity_id),
             api.get_all_category_schemas(token), api.get_locations(token),
         )
-        schema = _apply_amount_edit_permission(schema, role, settings or {})
+        schema = _apply_edit_permission(schema, role, settings or {}, is_draft=_is_draft(item))
         # Purchase triple: purchase_unit + purchase_conversion_factor + sell_by (read-only)
         if field in ("purchase_unit", "purchase_conversion_factor"):
             from ui.components.table import purchase_display_cell
@@ -3417,7 +3399,10 @@ function celerpPrintLabel(entityId, templateId) {
             try:
                 source = await api.get_item(token, eid)
                 new_sku = await _gen_copy_sku(token, str(source.get("sku", "") or ""), reserved=reserved)
-                await api.create_item(token, _duplicate_payload(source, new_sku))
+                await api.create_item(token, _duplicate_payload(
+                    source, new_sku,
+                    can_set_prices=role_has_permission(settings, _get_role(request), "set_inventory_prices"),
+                ))
                 ok += 1
             except APIError:
                 failed += 1
@@ -4581,7 +4566,14 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         if not new_sku:
             new_sku = await _gen_copy_sku(token, str(source.get("sku", "") or ""))
-        payload = _duplicate_payload(source, new_sku)
+        try:
+            _dup_settings = (await api.get_company(token)).get("settings") or {}
+        except APIError as e:
+            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+        payload = _duplicate_payload(
+            source, new_sku,
+            can_set_prices=role_has_permission(_dup_settings, _get_role(request), "set_inventory_prices"),
+        )
         try:
             result = await api.create_item(token, payload)
         except APIError as e:
@@ -6079,17 +6071,33 @@ def _apply_unit_field_override(
     return cell_type, options, allow_custom
 
 
-def _apply_amount_edit_permission(schema: list[dict], role: str, settings: dict) -> list[dict]:
-    """Return *schema* with amount fields and the sell unit marked read-only when
-    *role* lacks the edit_inventory_amounts permission. One transform at the schema
-    source, mirroring apply_field_visibility for costs (celerp.services.cost_visibility):
-    every cell that reads a field's 'editable' flag - the data_table default cells
-    and the weight/pieces renderers alike - inherits the restriction, so no gated
-    cell renders as click-to-edit without the permission. The backend edit
-    endpoints enforce the same gate regardless of what the UI drew."""
-    if role_has_permission(settings, role, "edit_inventory_amounts"):
-        return schema
-    return [{**f, "editable": False} if f.get("key") in AMOUNT_EDIT_GATED_KEYS else f for f in schema]
+def _locked_edit_keys(schema: list[dict], role: str, settings: dict, *, is_draft: bool = False) -> set[str]:
+    """Schema keys *role* may not hand-edit: the amount fields and sell unit without
+    edit_inventory_amounts, every price without set_inventory_prices. On a draft the
+    creator (edit_inventory) still authors the amounts and the cost; sell prices stay
+    locked. Mirrors the backend item write gates, which enforce the same rules."""
+    locked: set[str] = set()
+    if not role_has_permission(settings, role, "edit_inventory_amounts"):
+        locked |= AMOUNT_EDIT_GATED_KEYS
+    if not role_has_permission(settings, role, "set_inventory_prices"):
+        locked |= {f["key"] for f in schema if f.get("key") and is_price_item_key(f["key"])}
+    if is_draft and role_has_permission(settings, role, "edit_inventory"):
+        locked -= AMOUNT_EDIT_GATED_KEYS | COST_SCHEMA_KEYS
+    return locked
+
+
+def _apply_edit_permission(schema: list[dict], role: str, settings: dict, *, is_draft: bool = False) -> list[dict]:
+    """Return *schema* with the fields *role* may not edit (_locked_edit_keys) marked
+    read-only. One transform at the schema source, mirroring apply_field_visibility for
+    costs (celerp.services.cost_visibility): every cell that reads a field's 'editable'
+    flag - the data_table default cells and the weight/pieces renderers alike - inherits
+    the restriction, so no gated cell renders as click-to-edit without the permission."""
+    locked = _locked_edit_keys(schema, role, settings, is_draft=is_draft)
+    return [{**f, "editable": False} if f.get("key") in locked else f for f in schema]
+
+
+def _is_draft(item: dict) -> bool:
+    return str(item.get("status") or "").lower() == "draft"
 
 
 def _resolve_field_def(
@@ -7439,48 +7447,102 @@ def _ledger_table(ledger: list[dict], entity_id: str | None = None, currency: st
 from ui.routes.csv_import import (
     CsvImportSpec,
     ValidateFn,
-    _resolve_csv_text,
+    discard_import_csv,
+    resolve_import_csv,
     _rows_to_csv,
-    _stash_csv,
+    stash_import_csv,
     apply_column_mapping,
+    form_mapping,
     apply_fixes_to_rows as _apply_fixes,
     column_mapping_form,
     error_report_response,
     import_abort_panel,
     import_result_panel,
-    read_csv_upload,
+    entered_from_onboarding,
+    onboarding_entry_cookie,
+    stage_tabular_upload,
+    rows_have_errors,
+    semantic_review_panel,
     upload_form as _csv_upload_form,
     validate_cell as _csv_validate_cell,
     validate_column_mapping,
     validation_result as _csv_validation_result,
 )
 
-def _union_category_attr_keys(cat_schemas: dict) -> list[str]:
-    """Extract the deduplicated union of all attribute keys across all category schemas.
+def _import_operation_key(rows: list[dict], upsert: bool) -> str:
+    """One idempotency key for a whole browser import: same rows and choice, same key."""
+    fingerprint = hashlib.sha256(
+        json.dumps({"upsert": upsert, "rows": rows}, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return f"ui-import:{fingerprint}"
 
-    Returns a stable-ordered list (insertion order, no duplicates).
-    """
-    seen: dict[str, None] = {}
-    for fields in cat_schemas.values():
-        if not isinstance(fields, list):
-            continue
-        for field in fields:
-            key = field.get("key") or ""
-            if key and key not in seen:
-                seen[key] = None
-    return list(seen)
+
+def _item_import_api_error(e: APIError):
+    if e.status == 401:
+        return import_abort_panel(
+            message=t("error.session_expired"),
+            import_more_href="/login",
+            back_href="/inventory",
+            has_mapping=True,
+        )
+    return import_abort_panel(
+        message=t("inventory.import_failed", detail=e.detail),
+        import_more_href="/inventory/import",
+        back_href="/inventory",
+        has_mapping=True,
+    )
+
+
+async def _item_import_review(token: str, csv_ref: str, rows: list[dict], cols: list[str], *,
+                              upsert: bool, notice: str = ""):
+    """The server's semantic preview of the mapped rows, rendered as the final review."""
+    try:
+        preview = await api.preview_import_rows(
+            token, rows, upsert=upsert, idempotency_key=_import_operation_key(rows, upsert),
+        )
+    except APIError as e:
+        return _item_import_api_error(e)
+    return semantic_review_panel(
+        rows=rows,
+        cols=cols,
+        csv_ref=csv_ref,
+        upsert=upsert,
+        upsert_label=t("inventory.upsert_sku_barcode"),
+        errors=list(preview.get("errors") or []),
+        locations_to_create=list(preview.get("locations_to_create") or []),
+        preview_hash=str(preview.get("preview_hash") or ""),
+        review_action="/inventory/import/review",
+        confirm_action="/inventory/import/confirm",
+        upload_href="/inventory/import",
+        back_href="/inventory",
+        notice=notice,
+    )
+
+
+async def _item_import_check(token: str, csv_ref: str, rows: list[dict], cols: list[str]):
+    """Cell fixes first; once every cell is valid, the server's final review."""
+    validate, cell_renderers = await _build_item_validator(token)
+    if rows_have_errors(rows, cols, validate):
+        return _csv_validation_result(
+            csv_ref=csv_ref,
+            rows=rows,
+            cols=cols,
+            validate=validate,
+            confirm_action="/inventory/import/confirm",
+            error_report_action="/inventory/import/errors",
+            back_href="/inventory/import",
+            revalidate_action="/inventory/import/revalidate",
+            has_mapping=True,
+            cell_renderers=cell_renderers,
+        )
+    return await _item_import_review(token, csv_ref, rows, cols, upsert=False)
 
 
 # The dynamic item import spec (with the company's price columns) is built by
 # celerp_inventory.services.build_item_import_spec, the single source shared with
 # the agent preview/commit routes. This default spec (the three built-in price
 # lists) drives the upload form and template before a company's lists are known.
-_IMPORT_SPEC = CsvImportSpec(
-    cols=ITEM_IMPORT_BASE_COLS + ["retail_price", "wholesale_price", "cost_price"] + ITEM_IMPORT_TAIL_COLS,
-    required={"name", "sell_by"},
-    type_map={"quantity": float, "retail_price": float, "wholesale_price": float,
-              "cost_price": float, "weight": float, "purchase_conversion_factor": float},
-)
+_IMPORT_SPEC = build_item_import_spec(PRICE_LISTS_FALLBACK)
 
 
 def _build_import_spec(price_lists: list[dict]) -> CsvImportSpec:
@@ -7497,15 +7559,6 @@ def _import_price_col_labels(price_lists: list[dict]) -> dict[str, str]:
         labels[key] = t("inventory.import_col_unit_price", name=name)
         labels[f"{key}_total"] = t("inventory.import_col_total", name=name)
     return labels
-
-
-def _import_price_mutex_groups(price_lists: list[dict]) -> list[list[str]]:
-    """Mutex groups: mapping unit price and total for the same price list is mutually exclusive."""
-    groups = []
-    for pl in importable_price_lists(price_lists):
-        key = price_key(pl["name"])
-        groups.append([key, f"{key}_total"])
-    return groups
 
 
 def _import_upload_form(error: str | None = None) -> FT:

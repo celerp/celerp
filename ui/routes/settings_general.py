@@ -176,18 +176,9 @@ def setup_routes(app):
                 if is_owner:
                     tab = "company"
 
-        setup_done = request.query_params.get("setup") == "done"
-        setup_banner = Div(
-            P(t("settings._setup_complete_your_workspace_is_ready"), cls="setup-done-msg"),
-            A(t("settings.dismiss"), href="/settings/general", cls="btn btn--secondary btn--sm"),
-            cls="setup-done-banner",
-            id="setup-done-banner",
-        ) if setup_done else None
-
         return await base_shell(
             _section_breadcrumb("settings_general.breadcrumb_general"),
             page_header(t("page.settings", lang)),
-            *([setup_banner] if setup_banner else []),
             _general_tabs(tab, lang=lang, is_admin=is_admin),
             content,
             title=page_title("page.settings"),

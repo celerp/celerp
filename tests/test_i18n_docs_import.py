@@ -18,6 +18,7 @@ from fasthtml.common import to_xml, Div, Span
 
 from ui import i18n
 from ui.routes import docs_import as di
+from ui.routes.csv_import import stash_import_csv
 
 
 # Sentinel catalog: unmistakable values for the keys these routes render.
@@ -75,9 +76,14 @@ class _FormReq:
     def __init__(self, form: dict):
         self._form = form
         self.cookies: dict = {}
+        self.query_params: dict = {}
 
     async def form(self):
         return self._form
+
+
+async def _company(token):
+    return {"id": "company-a"}
 
 
 async def _fake_base_shell(*content, title="", **kwargs):
@@ -90,7 +96,8 @@ async def test_import_page_header_and_title_translate(monkeypatch):
     monkeypatch.setattr(di, "_token", lambda request: "tok")
 
     handler = _routes()[("GET", "/docs/import")]
-    html = to_xml(await handler(_FormReq({})))
+    page, _cookie = await handler(_FormReq({}))
+    html = to_xml(page)
 
     # page_header(t(...)) renders the sentinel as the H1 text.
     assert "XX_IMPORT_DOCS" in html
@@ -103,7 +110,7 @@ async def test_expired_csv_error_translates(monkeypatch):
     monkeypatch.setattr(di, "base_shell", _fake_base_shell)
     monkeypatch.setattr(di, "_token", lambda request: "tok")
 
-    # No csv_ref / csv_data in the form -> the "expired" branch renders
+    # No csv_ref in the form -> the "expired" branch renders
     # upload_form(error=t("import.csv_expired")).
     handler = _routes()[("POST", "/docs/import/mapped")]
     html = to_xml(await handler(_FormReq({})))
@@ -112,20 +119,23 @@ async def test_expired_csv_error_translates(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_upsert_label_translates(monkeypatch):
+async def test_upsert_label_translates(monkeypatch, tmp_path):
     monkeypatch.setattr(di, "_token", lambda request: "tok")
+    monkeypatch.setattr("ui.api_client.get_company", _company)
+    monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
 
     # Clean rows (required doc_type/doc_number present) -> the confirm panel,
     # whose upsert hint interpolates upsert_label=t("docs_import.upsert_label").
     handler = _routes()[("POST", "/docs/import/revalidate")]
-    req = _FormReq({"csv_data": "doc_type,doc_number\ninvoice,INV-1\n"})
+    csv_ref = await stash_import_csv("tok", "doc_type,doc_number\ninvoice,INV-1\n")
+    req = _FormReq({"csv_ref": csv_ref})
     html = to_xml(await handler(req))
 
     assert "XX_UPSERT" in html
 
 
 @pytest.mark.asyncio
-async def test_result_panel_entity_label_translates(monkeypatch):
+async def test_result_panel_entity_label_translates(monkeypatch, tmp_path):
     async def _no_rows(token, resource, number, doc_type=None):
         return []
 
@@ -135,11 +145,14 @@ async def test_result_panel_entity_label_translates(monkeypatch):
     monkeypatch.setattr(di, "_token", lambda request: "tok")
     monkeypatch.setattr(di.api, "batch_import", _fake_batch)
     monkeypatch.setattr(di.api, "numbered_ids", _no_rows)
+    monkeypatch.setattr("ui.api_client.get_company", _company)
+    monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
 
     # entity_label=t("docs_import.entity_documents"), title-cased inside the
     # result panel's "View {label}" button.
     handler = _routes()[("POST", "/docs/import/confirm")]
-    req = _FormReq({"csv_data": "doc_type,doc_number\ninvoice,INV-1\n"})
+    csv_ref = await stash_import_csv("tok", "doc_type,doc_number\ninvoice,INV-1\n")
+    req = _FormReq({"csv_ref": csv_ref})
     html = to_xml(await handler(req))
 
     assert "Zzdocs" in html

@@ -6,9 +6,10 @@
 State machine:
     bootstrapped=false  → /setup           (first-admin + company wizard)
     bootstrapped=true   → /login           (normal login)
-    logged in, no data  → /onboarding      (data integration landing)
-    logged in, has data → /                (dashboard)
-    
+    logged in, company setup pending and role can set it up
+                        → /onboarding      (getting-started hub)
+    logged in, otherwise → /dashboard
+
 /register is disabled at the public URL once bootstrapped.
 """
 
@@ -27,11 +28,13 @@ from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.api_client import migration_staged_run as api_migration_staged_run
 from ui.components.shell import auth_shell, flash, page_title, star_supporter_card, toast_header
-from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies
+from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, get_role, set_session_cookies, clear_session_cookies
 from ui.i18n import t, get_lang
+from ui.routes.csv_import import ONBOARDING_MARKER
 from ui.security import is_app_local_path
 from celerp.config import settings as _settings
 from celerp.services.auth import MIN_PASSWORD_LENGTH
+from celerp.services.permissions import role_has_permission
 
 
 def auth_header(title: str, subtitle: str = "") -> FT:
@@ -378,8 +381,7 @@ def setup_routes(app):
         # Validate token - stale cookies (e.g. after init --force) must not
         # skip setup when the DB has been wiped.
         try:
-            await api_get_company(token)
-            return RedirectResponse("/dashboard", status_code=302)
+            company = await api_get_company(token)
         except APIError as e:
             if e.status == 401:
                 bootstrapped = await bootstrap_status()
@@ -392,6 +394,11 @@ def setup_routes(app):
                 return staged
             # Any other API error: let them through to dashboard (transient failure)
             return RedirectResponse("/dashboard", status_code=302)
+        # A company still being set up resumes its getting-started hub, but only for
+        # someone who can set it up; the hub is a landing page, never a gate.
+        if _resumes_onboarding(company, request):
+            return RedirectResponse("/onboarding", status_code=302)
+        return RedirectResponse("/dashboard", status_code=302)
 
     # ── Onboarding / data integration landing ───────────────────────────────
 
@@ -404,26 +411,29 @@ def setup_routes(app):
             await api_get_company(token)
         except APIError:
             return RedirectResponse("/login", status_code=302)
-        return auth_shell(
-            _onboarding_view(),
-            title=page_title("page.get_started"),
-        )
+        return _onboarding_page(request)
 
-    @app.get("/onboarding/upload/items")
-    async def onboarding_upload_items(request: Request):
-        return RedirectResponse("/inventory/import", status_code=302)
-
-    @app.get("/onboarding/upload/contacts")
-    async def onboarding_upload_contacts(request: Request):
-        return RedirectResponse("/crm/import/contacts", status_code=302)
-
-    @app.get("/onboarding/upload/invoices")
-    async def onboarding_upload_invoices(request: Request):
-        return RedirectResponse("/docs/import", status_code=302)
-
-    @app.get("/onboarding/upload/cif")
-    async def onboarding_upload_cif(request: Request):
-        return RedirectResponse("/onboarding", status_code=302)
+    @app.post("/onboarding/complete")
+    async def onboarding_complete(request: Request):
+        """Finish the getting-started hub: clear the company's pending flag (when the
+        role may change company settings) and go to the dashboard. The dashboard is
+        only reported once the flag is stored; otherwise the hub is shown again with
+        the reason, so the user can retry."""
+        token = request.cookies.get(COOKIE_NAME)
+        if not token:
+            return RedirectResponse("/login", status_code=303)
+        try:
+            company = await api_get_company(token)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=303)
+            return _onboarding_page(request, error=t("onboarding.complete_failed", detail=e.detail))
+        if _can_set_up(company, request):
+            try:
+                await api.patch_company(token, {"onboarding_pending": False})
+            except APIError as e:
+                return _onboarding_page(request, error=t("onboarding.complete_failed", detail=e.detail))
+        return RedirectResponse("/dashboard", status_code=303)
 
     # ── Company switcher (HTMX partial) ─────────────────────────────────────
 
@@ -754,39 +764,57 @@ document.querySelector('#restore-btn').closest('form').addEventListener('submit'
     )
 
 
-def _onboarding_view() -> FT:
-    integrations = [
-        ("/onboarding/upload/items", t("page.import_inventory"), t("auth.upload_csv_or_json"), "items"),
-        ("/onboarding/upload/contacts", t("auth.import_customers"), t("auth.upload_csv_or_crm"), "crm"),
-        ("/onboarding/upload/invoices", t("auth.import_invoices"), t("auth.historical_sales_data"), "docs"),
-        ("/onboarding/upload/cif", t("auth.import_from_cif"), t("auth.cif_bundle_desc"), "cif"),
+def _can_set_up(company: dict, request: Request) -> bool:
+    return role_has_permission(company.get("settings") or {}, get_role(request), "manage_company_settings")
+
+
+def _resumes_onboarding(company: dict, request: Request) -> bool:
+    return (company.get("settings") or {}).get("onboarding_pending") is True and _can_set_up(company, request)
+
+
+# Getting-started actions: (page the action opens, title key, description key, is an
+# import). Import pages open with the onboarding marker so their result offers a way back.
+_ONBOARDING_ACTIONS: tuple[tuple[str, str, str, bool], ...] = (
+    ("/inventory/import", "onboarding.products", "onboarding.file_desc", True),
+    ("/crm/import/contacts", "onboarding.contacts", "onboarding.file_desc", True),
+    ("/docs/import", "onboarding.documents", "onboarding.file_desc", True),
+    ("/settings/cloud", "onboarding.connect", "onboarding.connect_desc", False),
+)
+
+
+def _onboarding_page(request: Request, error: str | None = None) -> FT:
+    registered = {getattr(r, "path", None) for r in request.app.routes}
+    return auth_shell(
+        _onboarding_view(registered, error=error),
+        title=page_title("page.get_started"),
+    )
+
+
+def _onboarding_view(registered: set[str], error: str | None = None) -> FT:
+    """The getting-started hub. Only actions whose page is registered in this
+    installation are offered."""
+    cards = [
+        A(
+            Strong(t(title)),
+            P(t(desc), cls="quick-link-desc"),
+            href=f"{path}?{ONBOARDING_MARKER}=1" if is_import else path,
+            cls="quick-link-card",
+        )
+        for path, title, desc, is_import in _ONBOARDING_ACTIONS
+        if path in registered
     ]
     return Div(
-        auth_header(t("page.welcome_lets_load_your_data"), t("msg.onboarding_subtitle")),
+        auth_header(t("onboarding.title"), t("onboarding.subtitle")),
+        H2(t("onboarding.bring_in_data"), cls="section-title"),
+        Div(*cards, cls="quick-links-grid"),
         Div(
-            # Featured first: link the cloud account. For an App-Store-acquired Shopify
-            # merchant this claims the subscription + binds the store (then it auto-syncs);
-            # for direct users it links their existing subscription by email.
-            A(
-                Strong(t("page.connect_your_store")),
-                P(t("msg.connect_store_desc"), cls="quick-link-desc"),
-                href="/settings/cloud",
-                cls="quick-link-card quick-link-card--featured",
+            flash(error) if error else "",
+            P(t("onboarding.start_working_desc"), cls="auth-subtitle"),
+            Form(
+                Button(t("onboarding.start_working"), type="submit", cls="btn btn--secondary"),
+                method="post",
+                action="/onboarding/complete",
             ),
-            *[
-                A(
-                    Strong(label),
-                    P(desc, cls="quick-link-desc"),
-                    href=href,
-                    cls="quick-link-card",
-                )
-                for href, label, desc, _ in integrations
-            ],
-            cls="quick-links-grid",
-        ),
-        Div(
-            P(t("msg.onboarding_skip"), cls="auth-subtitle"),
-            A(t("btn.go_to_dashboard"), href="/dashboard", cls="btn btn--secondary"),
             cls="mt-lg text-center",
         ),
         star_supporter_card("onboarding"),

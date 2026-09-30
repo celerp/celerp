@@ -19,6 +19,7 @@ from fasthtml.common import to_xml, Div, Span
 import ui.api_client as api_client
 from ui import i18n
 from ui.routes import lists_import as li
+from ui.routes.csv_import import stash_import_csv
 
 
 # Sentinel catalog: unmistakable values for the keys these routes render.
@@ -81,6 +82,10 @@ class _FormReq:
         return self._form
 
 
+async def _company(token):
+    return {"id": "company-a"}
+
+
 async def _fake_base_shell(*content, title="", **kwargs):
     return Div(Span(title), Div(*content))
 
@@ -104,7 +109,7 @@ async def test_expired_csv_error_translates(monkeypatch):
     monkeypatch.setattr(li, "base_shell", _fake_base_shell)
     monkeypatch.setattr(li, "_token", lambda request: "tok")
 
-    # No csv_ref / csv_data in the form -> the "expired" branch renders
+    # No csv_ref in the form -> the "expired" branch renders
     # upload_form(error=t("import.csv_expired")).
     handler = _routes()[("POST", "/lists/import/mapped")]
     html = to_xml(await handler(_FormReq({})))
@@ -113,20 +118,23 @@ async def test_expired_csv_error_translates(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_upsert_label_translates(monkeypatch):
+async def test_upsert_label_translates(monkeypatch, tmp_path):
     monkeypatch.setattr(li, "_token", lambda request: "tok")
+    monkeypatch.setattr("ui.api_client.get_company", _company)
+    monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
 
-    # csv_data present -> the validation panel's upsert hint interpolates
+    # A staged CSV -> the validation panel's upsert hint interpolates
     # upsert_label=t("lists_import.upsert_label").
     handler = _routes()[("POST", "/lists/import/revalidate")]
-    req = _FormReq({"csv_data": "ref_id,status\nL-1,draft\n"})
+    csv_ref = await stash_import_csv("tok", "ref_id,status\nL-1,draft\n")
+    req = _FormReq({"csv_ref": csv_ref})
     html = to_xml(await handler(req))
 
     assert "XX_UPSERT" in html
 
 
 @pytest.mark.asyncio
-async def test_result_panel_entity_label_translates(monkeypatch):
+async def test_result_panel_entity_label_translates(monkeypatch, tmp_path):
     async def _no_rows(token, resource, number, doc_type=None):
         return []
 
@@ -136,11 +144,14 @@ async def test_result_panel_entity_label_translates(monkeypatch):
     monkeypatch.setattr(li, "_token", lambda request: "tok")
     monkeypatch.setattr(api_client, "batch_import", _fake_batch)
     monkeypatch.setattr(api_client, "numbered_ids", _no_rows)
+    monkeypatch.setattr(api_client, "get_company", _company)
+    monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
 
     # entity_label=t("lists_import.entity_lists"), title-cased inside the
     # result panel's "View {label}" button.
     handler = _routes()[("POST", "/lists/import/confirm")]
-    req = _FormReq({"csv_data": "ref_id,status\nL-1,draft\n"})
+    csv_ref = await stash_import_csv("tok", "ref_id,status\nL-1,draft\n")
+    req = _FormReq({"csv_ref": csv_ref})
     html = to_xml(await handler(req))
 
     assert "Zzlists" in html

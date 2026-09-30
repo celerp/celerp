@@ -66,4 +66,4 @@ def test_card_medium_is_parameterized():
 
 
 def test_onboarding_view_includes_card():
-    assert 'id="star-supporter-card"' in to_xml(_onboarding_view())
+    assert 'id="star-supporter-card"' in to_xml(_onboarding_view(set()))
