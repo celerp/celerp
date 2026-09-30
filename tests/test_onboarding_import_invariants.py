@@ -1625,17 +1625,14 @@ class TestTabularParityInvariant:
         assert 'name="sheet"' not in html
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("route,module", [
-        ("/inventory/import/preview", "ui.routes.inventory"),
-        ("/lists/import/preview", "ui.routes.lists_import"),
-    ])
-    async def test_importers_stage_the_same_rows_from_csv_and_xlsx(self, route, module):
+    @pytest.mark.parametrize("route", ["/inventory/import/preview", "/lists/import/preview"])
+    async def test_importers_stage_the_same_rows_from_csv_and_xlsx(self, route):
         from ui.app import app as ui_app
         company = {"id": _COMPANY_A, "currency": "USD", "current_role": "owner", "settings": {}}
         staged: dict[str, str] = {}
         for fmt, data in (("csv", _PARITY_CSV.encode()), ("xlsx", _xlsx({"Items": _PARITY_XLSX_ROWS}))):
             stash = AsyncMock(return_value="imp_" + "0" * 32)
-            with patch(f"{module}.stash_import_csv", new=stash), \
+            with patch("ui.routes.csv_import.stash_import_csv", new=stash), \
                  patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
                  patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}])), \
                  patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})):

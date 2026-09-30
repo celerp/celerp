@@ -2685,6 +2685,7 @@
   "import.err_decode": "Impossible de décoder le fichier. Utilisez l'encodage UTF-8.",
   "import.err_parse": "Impossible d'analyser le fichier. Vérifiez qu'il s'agit d'un fichier CSV valide.",
   "import.err_read_file": "Impossible de lire le fichier : {detail}",
+  "import.err_stage_unavailable": "Le fichier n'a pas pu être enregistré pour l'import. Veuillez réessayer et contacter votre administrateur si le problème persiste.",
   "import.err_choose_sheet": "Ce classeur contient plusieurs feuilles avec des données. Choisissez la feuille à importer, puis sélectionnez à nouveau le fichier.",
   "import.sheet_label": "Feuille",
   "import.back_to_setup": "Retour à la configuration",

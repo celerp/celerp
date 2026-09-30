@@ -2786,6 +2786,7 @@
   "import.err_decode": "ፋይል መፍታት አልተቻለም። UTF-8 ኢንኮዲንግ ይጠቀሙ።",
   "import.err_parse": "ፋይልን መተንተን አልተቻለም። እባክዎ ትክክለኛ CSV መሆኑን ያረጋግጡ።",
   "import.err_read_file": "ፋይሉን ማንበብ አልተቻለም፦ {detail}",
+  "import.err_stage_unavailable": "ፋይሉን ለማስገባት ማስቀመጥ አልተቻለም። እባክዎን እንደገና ይሞክሩ፣ ችግሩ ከቀጠለ አስተዳዳሪዎን ያነጋግሩ።",
   "import.err_choose_sheet": "ይህ የስራ መጽሐፍ ከአንድ በላይ ውሂብ ያለው ሉህ አለው። የሚያስገቡትን ሉህ ይምረጡ፣ ከዚያ ፋይሉን እንደገና ይምረጡ።",
   "import.sheet_label": "ሉህ",
   "import.back_to_setup": "ወደ ማዋቀር ይመለሱ",

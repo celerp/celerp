@@ -1445,7 +1445,7 @@ def setup_routes(app):
             return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
         form = await request.form()
-        rows, err = await read_tabular_upload(form)
+        rows, csv_ref, err = await stage_tabular_upload(token, form)
         if err:
             return await base_shell(
                 page_header(t("page.import_inventory", lang)),
@@ -1466,10 +1466,6 @@ def setup_routes(app):
                 lang=lang,
                 request=request,
             )
-
-        # Stash the raw CSV and show column mapping UI
-        csv_text = _rows_to_csv(rows, cols)
-        csv_ref = await stash_import_csv(token, csv_text)
 
         # Fetch price lists + category attribute keys
         try:
@@ -1669,7 +1665,7 @@ def setup_routes(app):
                 )
             return _item_import_api_error(e)
 
-        await discard_import_csv(token, form)
+        await discard_import_csv(token, form, result)
         return import_result_panel(
             created=int(result.get("created", 0) or 0),
             skipped=int(result.get("skipped", 0) or 0),
@@ -7440,7 +7436,7 @@ from ui.routes.csv_import import (
     import_result_panel,
     entered_from_onboarding,
     onboarding_entry_cookie,
-    read_tabular_upload,
+    stage_tabular_upload,
     rows_have_errors,
     semantic_review_panel,
     upload_form as _csv_upload_form,

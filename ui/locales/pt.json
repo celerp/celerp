@@ -2684,6 +2684,7 @@
   "import.err_decode": "Não foi possível decodificar o arquivo. Use a codificação UTF-8.",
   "import.err_parse": "Não foi possível analisar o arquivo. Verifique se é um CSV válido.",
   "import.err_read_file": "Não foi possível ler o arquivo: {detail}",
+  "import.err_stage_unavailable": "Não foi possível salvar o arquivo para importação. Tente novamente e contate o administrador se isso continuar acontecendo.",
   "import.err_choose_sheet": "Esta pasta de trabalho tem mais de uma planilha com dados. Escolha a planilha a importar e selecione o arquivo novamente.",
   "import.sheet_label": "Planilha",
   "import.back_to_setup": "Voltar à configuração",

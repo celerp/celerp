@@ -2684,6 +2684,7 @@
   "import.err_decode": "No se ha podido decodificar el archivo. Utilice la codificación UTF-8.",
   "import.err_parse": "No se ha podido analizar el archivo. Compruebe que se trata de un CSV válido.",
   "import.err_read_file": "No se pudo leer el archivo: {detail}",
+  "import.err_stage_unavailable": "No se pudo guardar el archivo para importarlo. Inténtalo de nuevo y contacta con tu administrador si sigue ocurriendo.",
   "import.err_choose_sheet": "Este libro tiene más de una hoja con datos. Elija la hoja que desea importar y vuelva a seleccionar el archivo.",
   "import.sheet_label": "Hoja",
   "import.back_to_setup": "Volver a la configuración",

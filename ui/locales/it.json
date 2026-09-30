@@ -2685,6 +2685,7 @@
   "import.err_decode": "Impossibile decodificare il file. Utilizzare la codifica UTF-8.",
   "import.err_parse": "Impossibile analizzare il file. Verificare che si tratti di un file CSV valido.",
   "import.err_read_file": "Impossibile leggere il file: {detail}",
+  "import.err_stage_unavailable": "Impossibile salvare il file per l'importazione. Riprova e contatta l'amministratore se il problema persiste.",
   "import.err_choose_sheet": "Questa cartella di lavoro ha più di un foglio con dati. Scegli il foglio da importare, poi seleziona di nuovo il file.",
   "import.sheet_label": "Foglio",
   "import.back_to_setup": "Torna alla configurazione",

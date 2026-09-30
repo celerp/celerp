@@ -2684,6 +2684,7 @@
   "import.err_decode": "Tidak dapat mendekode berkas. Gunakan pengkodean UTF-8.",
   "import.err_parse": "Tidak dapat mengurai berkas. Silakan periksa apakah berkas CSV tersebut valid.",
   "import.err_read_file": "Tidak dapat membaca file: {detail}",
+  "import.err_stage_unavailable": "Berkas tidak dapat disimpan untuk diimpor. Silakan coba lagi, dan hubungi administrator Anda jika masalah ini terus terjadi.",
   "import.err_choose_sheet": "Buku kerja ini memiliki lebih dari satu lembar berisi data. Pilih lembar yang akan diimpor, lalu pilih file lagi.",
   "import.sheet_label": "Lembar",
   "import.back_to_setup": "Kembali ke penyiapan",

@@ -26,7 +26,7 @@ from ui.routes.csv_import import (
     column_mapping_form,
     error_report_response,
     import_result_panel,
-    read_tabular_upload,
+    stage_tabular_upload,
     upload_form,
     validate_cell,
     validate_column_mapping,
@@ -89,7 +89,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        rows, err = await read_tabular_upload(form)
+        rows, csv_ref, err = await stage_tabular_upload(token, form)
         if err:
             return await base_shell(
                 page_header(t("accounting_import.header_chart")),
@@ -105,8 +105,6 @@ def setup_routes(app):
                 request=request,
             )
         cols = list(rows[0].keys()) if rows else []
-        csv_text = _rows_to_csv(rows, cols)
-        csv_ref = await stash_import_csv(token, csv_text)
         return await base_shell(
             page_header(t("accounting_import.header_chart")),
             column_mapping_form(
@@ -272,7 +270,7 @@ def setup_routes(app):
         failed = int(result.get("failed", 0) or 0)
         errors = [t("settings_import.records_failed", n=failed)] if failed else []
 
-        await discard_import_csv(token, form)
+        await discard_import_csv(token, form, result)
         return import_result_panel(
             created=created,
             skipped=skipped,

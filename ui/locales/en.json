@@ -2805,6 +2805,7 @@
   "import.err_decode": "Could not decode file. Use UTF-8 encoding.",
   "import.err_parse": "Could not parse file. Please check it is a valid CSV.",
   "import.err_read_file": "Could not read the file: {detail}",
+  "import.err_stage_unavailable": "The file could not be saved for import. Please try again, and contact your administrator if this keeps happening.",
   "import.err_choose_sheet": "This workbook has more than one sheet with data. Choose the sheet to import, then select the file again.",
   "import.sheet_label": "Sheet",
   "import.back_to_setup": "Back to setup",

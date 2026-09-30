@@ -2684,6 +2684,7 @@
   "import.err_decode": "Không thể giải mã tệp. Hãy sử dụng mã hóa UTF-8.",
   "import.err_parse": "Không thể phân tích cú pháp tệp. Vui lòng kiểm tra xem đây có phải là tệp CSV hợp lệ hay không.",
   "import.err_read_file": "Không thể đọc tệp: {detail}",
+  "import.err_stage_unavailable": "Không thể lưu tệp để nhập. Vui lòng thử lại và liên hệ quản trị viên nếu sự cố vẫn tiếp diễn.",
   "import.err_choose_sheet": "Sổ làm việc này có nhiều trang tính chứa dữ liệu. Hãy chọn trang tính cần nhập, sau đó chọn lại tệp.",
   "import.sheet_label": "Trang tính",
   "import.back_to_setup": "Quay lại thiết lập",

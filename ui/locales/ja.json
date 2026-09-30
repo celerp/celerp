@@ -2684,6 +2684,7 @@
   "import.err_decode": "ファイルをデコードできませんでした。UTF-8 エンコーディングを使用してください。",
   "import.err_parse": "ファイルを解析できませんでした。有効な CSV ファイルであるかご確認ください。",
   "import.err_read_file": "ファイルを読み取れませんでした: {detail}",
+  "import.err_stage_unavailable": "インポート用にファイルを保存できませんでした。もう一度お試しください。問題が続く場合は管理者にお問い合わせください。",
   "import.err_choose_sheet": "このブックにはデータのあるシートが複数あります。取り込むシートを選び、もう一度ファイルを選択してください。",
   "import.sheet_label": "シート",
   "import.back_to_setup": "セットアップに戻る",

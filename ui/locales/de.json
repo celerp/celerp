@@ -2685,6 +2685,7 @@
   "import.err_decode": "Datei konnte nicht dekodiert werden. Verwenden Sie die UTF-8-Kodierung.",
   "import.err_parse": "Datei konnte nicht analysiert werden. Bitte überprüfen Sie, ob es sich um eine gültige CSV-Datei handelt.",
   "import.err_read_file": "Die Datei konnte nicht gelesen werden: {detail}",
+  "import.err_stage_unavailable": "Die Datei konnte nicht für den Import gespeichert werden. Bitte versuchen Sie es erneut und wenden Sie sich an Ihren Administrator, falls das Problem weiterhin besteht.",
   "import.err_choose_sheet": "Diese Arbeitsmappe enthält mehr als ein Blatt mit Daten. Wählen Sie das zu importierende Blatt und wählen Sie die Datei erneut aus.",
   "import.sheet_label": "Blatt",
   "import.back_to_setup": "Zurück zur Einrichtung",
