@@ -665,9 +665,9 @@ async def test_reconciliation_pack_matches_stored_verification(client, session, 
     assert r.headers["content-type"].startswith("text/csv")
     assert r.headers["content-disposition"] == f'attachment; filename="reconciliation-{run_id}.csv"'
     lines = list(csv.reader(io.StringIO(r.text)))
-    header = {line[0]: line[1] for line in lines[:7]}
+    header = {line[0]: line[1] for line in lines[:8]}
     assert header == {"Run id": run_id, "Source": "Fake source", "Mode": "Full history", "Cutover date": "--",
-                      "Source hash": run.source_artifact_sha256, "Prepared by": "Example Accountant",
+                      "Lock date": "--", "Source hash": run.source_artifact_sha256, "Prepared by": "Example Accountant",
                       "Generated at": generated}
     table = lines[lines.index(["Check", "Key", "Currency", "Source", "Celerp", "Difference", "Rule", "Result"]) + 1:]
     assert len(table) == len(rows)
