@@ -405,3 +405,73 @@ async def test_cutover_imported_documents_support_return_void_revert(
     assert r.status_code == 200, r.text
     assert (await _doc(books, "BILLP"))["status"] == "draft"
     assert (await _position(books))["stock"] == (D("7"), D("35.00"))
+
+
+async def _recognized(books: Books, label: str):
+    from celerp.services import auto_je
+
+    async with maker(books.engine)() as s:
+        return await auto_je.recognized_cogs(s, books.run.company_id, books.id("SalesInvoice", label))
+
+
+async def test_imported_invoice_recognizes_the_cost_of_sales_its_source_booked(
+    real_engine, monkeypatch, tmp_path,
+):
+    """RED before the change: a migrated invoice's entry carried no record of the cost of
+    sales it booked or the stock it relieved, so Celerp's COGS correction had nothing to
+    correct against.
+
+    Each invoice line recognizes the cost of sales Manager booked for it, 5.00 a widget
+    (the unit cost from 01-14), drawn from the sold lot its deliveries became; what was
+    never delivered names no lot. A bill recognizes no cost of sales."""
+    books = await _migrated(real_engine, monkeypatch, tmp_path)
+    expected = {
+        # invoice: (quantity delivered, quantity never delivered, cost of sales booked)
+        "INVE": (2, 0, 10.0), "INVD": (4, 0, 20.0), "INVX": (1, 0, 5.0),
+        "INVP": (3, 2, 25.0), "INVN": (0, 1, 5.0),
+    }
+    for label, (delivered, undelivered, booked) in expected.items():
+        recognized = await _recognized(books, label)
+        assert recognized is not None, label
+        lots = [{"lot_entity_id": await _sold_lot(books, label), "qty": float(delivered), "unit_cost": 5.0}] \
+            if delivered else []
+        assert recognized.cycle == "fin"
+        assert recognized.allocations == {"0": {"lots": lots, "provisional_qty": float(undelivered),
+                                                "amount": booked}}, label
+    from celerp.services import auto_je
+
+    async with maker(real_engine)() as s:
+        assert await auto_je.recognized_cogs(s, books.run.company_id, books.id("PurchaseInvoice", "BILLG")) is None
+
+
+async def test_imported_invoice_cogs_corrected_like_a_native_invoice(real_engine, real_client, monkeypatch, tmp_path):
+    """RED before the change: with no recognized cost of sales on record, sending INV-E's
+    goods again and correcting the cost of INV-P's sold lot posted no COGS correction, and
+    the lot correction failed outright.
+
+    A Celerp invoice that recognized 10.00 for 2 widgets and ships a lot costing 9.50 books
+    a 0.50 correction back into inventory. INV-E is that invoice: its delivery is reverted
+    (the goods come back at 9.50 and nothing is corrected, since 10.00 is recognized for
+    goods not shipped), then shipped again, which puts 0.50 back on inventory.
+
+    INV-P recognized 25.00 for 5 widgets, 15.00 of it for the 3 delivered from a lot
+    costing 14.25. Correcting that lot to 15.25 leaves 15.25 for what was shipped and the
+    10.00 recognized for the 2 never delivered, 25.25 in all: 0.25 more cost of sales,
+    taken off inventory. Stock on hand is untouched."""
+    books = await _migrated(real_engine, monkeypatch, tmp_path)
+    invoice, lot = books.id("SalesInvoice", "INVE"), await _sold_lot(books, "INVE")
+    start = await _position(books)
+    r = await real_client.post(f"/docs/{invoice}/revert-lines", headers=books.headers, json={"line_entity_ids": [lot]})
+    assert r.status_code == 200, r.text
+    reverted = await _position(books)
+    assert _moved(start, reverted) == ((D("2"), D("9.50")), D("0.00"))
+    r = await real_client.post(f"/docs/{invoice}/fulfill-lines", headers=books.headers, json={"line_entity_ids": [lot]})
+    assert r.status_code == 200, r.text
+    shipped = await _position(books)
+    assert _moved(reverted, shipped) == ((D("-2"), D("-9.50")), D("0.50"))
+
+    partial = await _sold_lot(books, "INVP")
+    r = await real_client.patch(f"/items/{partial}", headers=books.headers,
+                                json={"fields_changed": {"cost_total": {"old": None, "new": 15.25}}})
+    assert r.status_code == 200, r.text
+    assert _moved(shipped, await _position(books)) == ((D("0"), D("0.00")), D("-0.25"))

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
+from decimal import Decimal as D
 
 import pytest
 from sqlalchemy import text
@@ -241,3 +242,39 @@ async def test_scan_preview_shows_inventory_blocker_rows(client, session, migrat
     for label, count in {LOCATIONS: 2, LOCATED: 1, TRANSFERS: 2, NEGATIVE: 1}.items():
         assert f"<li>{label}: {count} records. {reasons[label]}</li>" in blocking, label
         assert label not in warnings, label
+
+
+ZERO_QUANTITY = {"PurchaseInvoice": ("PurchaseInvoice (unsupported feature)", 64),
+                 "SalesInvoice": ("SalesInvoice (unsupported feature)", 69)}
+
+
+@pytest.mark.parametrize("source_type", sorted(ZERO_QUANTITY))
+async def test_manager_own_stock_zero_quantity_line_refused_at_scan(
+    client, session, migration_env, tmp_path, source_type,
+):
+    """RED before the change: a bill or invoice flagged to move its own stock, with an item
+    line of quantity 0, crashed the scan with a server error instead of naming the record.
+
+    Celerp cannot move no stock at a cost, so the document is a blocker under the same
+    reason a zero-quantity goods receipt or delivery note is, refused on every mode."""
+    from celerp.importers.adapters.base import MigrationDecisions, ScanError
+    from celerp.importers.schema import CIFMode
+    from fixtures.manager_io.encoder import write_manager_file
+    from fixtures.manager_io.support import adapter, artifact
+
+    label, flag = ZERO_QUANTITY[source_type]
+    record = (specs._bill("BZ", date(2026, 1, 5), {"WID": (D("0"), D("4"))}, {flag: True})
+              if source_type == "PurchaseInvoice" else
+              specs._sale("SZ", date(2026, 1, 5), {"WID": D("0")}, {flag: True}))
+
+    def build(path, **_):
+        return write_manager_file(path, [*specs._stocked_masters(), record])
+
+    scan_token, scan = await _scan(client, tmp_path, build)
+    assert _blockers(scan) == {label: 1}
+    (blocker,) = scan["blockers"]
+    assert "A zero or negative quantity." in json.dumps(blocker)
+    _not_a_warning(scan, [label])
+    await _refused_everywhere(client, session, migration_env, scan_token, [f"{label} (1)"])
+    with pytest.raises(ScanError, match=re.escape(f"{label} (1)")):
+        adapter().build_manifest([artifact(tmp_path / "safety.manager")], MigrationDecisions(mode=CIFMode.FULL_HISTORY))

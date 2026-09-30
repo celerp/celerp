@@ -10,6 +10,7 @@ before the date exactly as a lock set in Settings does."""
 
 from __future__ import annotations
 
+import re
 import shutil
 import uuid
 from datetime import date
@@ -143,18 +144,89 @@ def test_manager_lock_date_decoded_and_carried(tmp_path):
     a lock that is switched off in the source, or absent, carries no date."""
     from celerp.importers.adapters.base import MigrationDecisions
     from celerp.importers.adapters.manager_io import ManagerIOAdapter
-    from celerp.importers.adapters.manager_io.lock_date import read_lock_date
-    from celerp.importers.adapters.manager_io.sqlite_reader import ManagerReader
     from celerp.importers.schema import CIFMode
 
     locked = _locked_book(tmp_path / "locked.manager")
     switched_off = _locked_book(tmp_path / "off.manager", effective=False)
     adapter, decisions = ManagerIOAdapter(), MigrationDecisions(mode=CIFMode.FULL_HISTORY)
     for path, expected in ((locked, LOCKED_THROUGH), (switched_off, None), (BASIC, None)):
-        with ManagerReader(path) as reader:
-            assert read_lock_date(reader) == expected
         assert adapter.inspect([artifact(path)]).lock_date == expected
         assert adapter.build_manifest([artifact(path)], decisions).lock_date == expected
+
+
+def _lock_row(scan_or_manifest):
+    (row,) = [r for r in scan_or_manifest.coverage if r.source_type.startswith("LockDate")]
+    return row
+
+
+def test_manager_lock_date_read_whatever_the_case_of_its_type(tmp_path):
+    """RED before the change: the lock date was looked up by its type in lower case only,
+    while every other object is classified case-blind, so a file storing the type in upper
+    case showed the lock as carried yet installed none.
+
+    Manager's type and key GUIDs name the same object in either case; the lock through
+    2026-02-28 is carried on the scan and the manifest either way."""
+    import sqlite3
+
+    from celerp.importers.adapters.base import MigrationDecisions
+    from celerp.importers.adapters.manager_io import ManagerIOAdapter
+    from celerp.importers.schema import CIFMode
+
+    path = _locked_book(tmp_path / "upper.manager")
+    with sqlite3.connect(path) as conn:
+        changed = conn.execute("UPDATE Objects SET ContentType = upper(ContentType), Key = upper(Key) "
+                               "WHERE lower(ContentType) = ?", (str(LOCK_GUID),)).rowcount
+    assert changed == 1
+    adapter = ManagerIOAdapter()
+    scan = adapter.inspect([artifact(path)])
+    manifest = adapter.build_manifest([artifact(path)], MigrationDecisions(mode=CIFMode.FULL_HISTORY))
+    for carried in (scan, manifest):
+        assert carried.lock_date == date(2026, 2, 28)
+        row = _lock_row(carried)
+        assert (row.source_type, row.count, row.coverage_class.value) == ("LockDate", 1, "mapped")
+        assert row.note == "Installed as the company lock date when the migration finishes."
+
+
+def test_manager_lock_switched_off_previews_no_lock_date(tmp_path):
+    """RED before the change: with locking switched off in Manager no lock date is carried,
+    yet the preview still said one would be installed when the migration finishes.
+
+    The preview says plainly that no lock date is installed, and promises no install."""
+    from celerp.importers.adapters.base import MigrationDecisions
+    from celerp.importers.adapters.manager_io import ManagerIOAdapter
+    from celerp.importers.schema import CIFMode
+
+    path = _locked_book(tmp_path / "off.manager", effective=False)
+    adapter = ManagerIOAdapter()
+    scan = adapter.inspect([artifact(path)])
+    manifest = adapter.build_manifest([artifact(path)], MigrationDecisions(mode=CIFMode.FULL_HISTORY))
+    for carried in (scan, manifest):
+        assert carried.lock_date is None
+        row = _lock_row(carried)
+        assert row.source_type == "LockDate" and row.target is None
+        assert "Installed" not in row.note
+        assert "no lock date is installed" in row.note
+
+
+def test_manager_unreadable_lock_date_blocks_the_scan(tmp_path):
+    """RED before the change: a file with two lock dates stopped the scan outright, so the
+    preview could not show which record was at fault.
+
+    Two LockDate objects cannot say which lock the user set: the scan names LockDate as a
+    blocker and the migration is refused rather than guessing or dropping the lock."""
+    from celerp.importers.adapters.base import MigrationDecisions, ScanError
+    from celerp.importers.adapters.manager_io import ManagerIOAdapter
+    from celerp.importers.schema import CIFMode
+
+    second = Obj(uuid.UUID("00000000-0000-4000-8000-00000000a499"), LOCK_GUID, {1: date(2026, 1, 31), 2: True})
+    path = write_manager_file(tmp_path / "twice.manager", [
+        *specs.basic_objects(), Obj(LOCK_GUID, LOCK_GUID, {1: LOCKED_THROUGH, 2: True}), second], specs.basic_blobs())
+    adapter = ManagerIOAdapter()
+    blockers = [r for r in adapter.inspect([artifact(path)]).coverage if r.coverage_class.value ==
+                "unsupported_financial_blocker"]
+    assert [(r.source_type, r.count) for r in blockers] == [("LockDate (unreadable)", 1)]
+    with pytest.raises(ScanError, match=re.escape("LockDate (unreadable) (1)")):
+        adapter.build_manifest([artifact(path)], MigrationDecisions(mode=CIFMode.FULL_HISTORY))
 
 
 async def test_migration_preview_and_summary_show_lock_date(real_engine, monkeypatch, tmp_path):
