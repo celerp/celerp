@@ -137,6 +137,11 @@ class StorageBackend(Protocol):
         """Content this backend stored for ``company_id`` under ``stored_id``, or None."""
         ...
 
+    async def delete(self, company_id: str, stored_id: str, mime: str) -> None:
+        """Delete the file stored for ``company_id`` under ``stored_id``; one already gone
+        counts as deleted. Raises when it cannot delete."""
+        ...
+
     async def delete_company(self, company_id: str) -> None:
         """Delete every file this backend stored for ``company_id``; raises when it cannot."""
         ...
@@ -181,6 +186,12 @@ class LocalBackend:
     async def read_stored(self, company_id: str, stored_id: str, mime: str, max_bytes: int) -> bytes | None:
         """Read back the file stored under ``stored_id``, or None when there is none."""
         return _read_local(local_attachment_path(company_id, stored_id + _stored_extension(mime)), max_bytes)
+
+    async def delete(self, company_id: str, stored_id: str, mime: str) -> None:
+        name = stored_id + _stored_extension(mime)
+        if not (_is_plain_name(str(company_id)) and _is_plain_name(name)):
+            raise ValueError(f"Invalid attachment id: {stored_id!r}")
+        await asyncio.to_thread((self._root / str(company_id) / name).unlink, missing_ok=True)
 
     async def delete_company(self, company_id: str) -> None:
         if not _is_plain_name(str(company_id)):
@@ -317,6 +328,13 @@ class S3Backend:
                 data = await stream.read(max_bytes + 1)
         return data if len(data) <= max_bytes else None
 
+    async def delete(self, company_id: str, stored_id: str, mime: str) -> None:
+        name = stored_id + _stored_extension(mime)
+        if not _is_plain_name(name):
+            raise ValueError(f"Invalid attachment id: {stored_id!r}")
+        async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
+            await client.delete_object(Bucket=self._bucket, Key=f"attachments/{company_id}/{name}")
+
     async def delete_company(self, company_id: str) -> None:
         if not _is_plain_name(str(company_id)):
             raise ValueError(f"Invalid company id: {company_id!r}")
@@ -372,6 +390,14 @@ async def delete_company_files(company_id: str) -> None:
         await backend.delete_company(company_id)
 
 
+async def delete_stored_file(company_id: str, stored_id: str, mime: str) -> None:
+    """Delete one stored file and its list thumbnail from the configured backend; files
+    already gone count as deleted. Raises when the backend cannot delete."""
+    backend = get_backend()
+    await backend.delete(company_id, stored_id, mime)
+    await backend.delete(company_id, thumbnail_id(stored_id), _THUMB_MIME)
+
+
 async def store_upload(
     company_id: str,
     file: UploadFile,
@@ -395,9 +421,13 @@ async def store_file(
     filename: str | None,
     mime: str,
     attachment_type: AttachmentType | None = None,
+    *,
+    att_id: str | None = None,
 ) -> dict:
     """Save file content of an allowed type and size; return attachment metadata dict.
 
+    The file is stored under ``att_id`` when the caller derives one, so storing the same
+    file again overwrites it rather than adding a copy; otherwise under a new random id.
     Raises ValueError for a file over the size limit or of a type outside the allowlist.
     """
     check_file_size(len(content))
@@ -405,7 +435,7 @@ async def store_file(
         raise ValueError(f"Unsupported file type: {mime}")
 
     att_type: AttachmentType = attachment_type or infer_attachment_type(mime)
-    att_id = str(uuid.uuid4())
+    att_id = att_id or str(uuid.uuid4())
     filename = filename or f"file_{att_id}"
 
     url = await get_backend().store(company_id, att_id, content, mime)

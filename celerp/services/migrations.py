@@ -31,8 +31,8 @@ from decimal import Decimal
 from functools import lru_cache, partial
 
 from fastapi import HTTPException
-from sqlalchemy import select, text, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import cast, delete, select, text, update
+from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.importers.adapters.base import (
@@ -42,7 +42,7 @@ from celerp.importers.adapters.base import (
     SourceAdapter,
     SourceRevisionError,
 )
-from celerp.events.engine import write_period_lock
+from celerp.events.engine import find_event_by_idempotency, write_period_lock
 from celerp.importers.adapters.registry import get_adapter
 from celerp.importers.schema import (
     MIGRATION_CIF_VERSION,
@@ -650,6 +650,7 @@ async def run_migration(run_id: uuid.UUID) -> None:
         try:
             await _run_locked(run_id)
         finally:
+            await _clean_run_attachments(run_id)
             await holder.execute(text("SELECT pg_advisory_unlock(hashtext(:k))"), {"k": _lock_key(run_id)})
             await holder.commit()
 
@@ -702,16 +703,19 @@ async def _run_locked(run_id: uuid.UUID) -> None:
                     result = await batch[0].sink.import_batch(context, records)
                     validate_batch_result(records, result)  # any rejected record rolls the batch back
                     await _record_mappings(s, run_id, batch[0].group, result.mappings, targets)
-                    cursor += len(batch)
-                    entry = {**entry, "cursor": cursor, "created": entry["created"] + result.created,
-                             "skipped": entry["skipped"] + result.skipped, "errors": 0,
-                             "status": "done" if cursor >= len(phase_steps) else "running"}
-                    state[phase.value] = entry
-                    status = await _checkpoint(s, run_id, phase, state)
+                    advanced = cursor + len(batch)
+                    written = {**entry, "cursor": advanced, "created": entry["created"] + result.created,
+                               "skipped": entry["skipped"] + result.skipped, "errors": 0,
+                               "status": "done" if advanced >= len(phase_steps) else "running"}
+                    status = await _checkpoint(s, run_id, phase, {**state, phase.value: written})
                     await s.commit()
             except Exception as exc:
+                # The cursor the database last confirmed: a commit whose outcome is unknown is
+                # replayed from the batch start, and the sinks skip whatever did land.
                 await _fail(maker, run_id, phase, entry["cursor"], exc)
                 return
+            cursor, entry = advanced, written
+            state[phase.value] = entry
             if await _stop_if_cancelled(maker, run_id, status):
                 return
 
@@ -932,7 +936,7 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     if not await _try_xact_lock(session, run.id):
         raise MigrationError(409, ALREADY_RUNNING)
     for table in await _company_tables(session):
-        if table in _DISCARD_ORDER:
+        if table in _DISCARD_ORDER or table == MigrationCleanupTask.__tablename__:
             continue
         held = await session.scalar(text(f'SELECT 1 FROM "{table}" WHERE company_id = :c LIMIT 1'),
                                     {"c": str(company.id)})
@@ -943,6 +947,9 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all())
     owner_id = run.created_by_user_id
     bootstrap = bool(run.source_summary.get("bootstrap"))
+    # The company task removes every file of the company, the staged ones included.
+    await session.execute(delete(MigrationCleanupTask).where(
+        MigrationCleanupTask.company_id == company.id, MigrationCleanupTask.attachment.is_not(None)))
     task = MigrationCleanupTask(company_id=company.id, run_ids=[str(r) for r in run_ids])
     session.add(task)
     for table in _DISCARD_ORDER:
@@ -961,18 +968,32 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     return redirect
 
 
-async def run_cleanup_task(session: AsyncSession, task_id: uuid.UUID) -> bool:
-    """Delete a discarded company's run sources and attachment files, then its cleanup
-    task. Files already gone count as deleted. A failure keeps the task for the startup
-    sweep and is logged by task id only; never raises. Returns whether the task is done."""
+async def _delete_task_files(session: AsyncSession, task: MigrationCleanupTask) -> None:
+    """Delete what *task* names. An attachment task's file is deleted only while no
+    committed record links it: the link and the task's deletion commit together, so a
+    linked file whose task survives is never removed."""
+    if task.attachment is None:
+        for run_id in task.run_ids:
+            await asyncio.to_thread(store.remove_run_dir, uuid.UUID(run_id))
+        await attachments.delete_company_files(str(task.company_id))
+        return
+    if await find_event_by_idempotency(session, task.company_id, task.attachment["idempotency_key"]) is None:
+        await attachments.delete_stored_file(str(task.company_id), task.attachment["file_id"],
+                                             task.attachment["mime"])
+
+
+async def _run_task(session: AsyncSession, task_id: uuid.UUID, *, runner_holds_lock: bool) -> bool:
     try:
         task = await session.scalar(select(MigrationCleanupTask).where(MigrationCleanupTask.id == task_id)
                                     .with_for_update(skip_locked=True))
         if task is None:  # done, or another sweep holds it
             return True
-        for run_id in task.run_ids:
-            await asyncio.to_thread(store.remove_run_dir, uuid.UUID(run_id))
-        await attachments.delete_company_files(str(task.company_id))
+        # A live runner may be about to link an attachment task's file: leave it to that runner.
+        if task.attachment is not None and not runner_holds_lock \
+                and not await _try_xact_lock(session, uuid.UUID(task.run_ids[0])):
+            await session.rollback()
+            return False
+        await _delete_task_files(session, task)
         await session.delete(task)
         await session.commit()
         return True
@@ -980,6 +1001,27 @@ async def run_cleanup_task(session: AsyncSession, task_id: uuid.UUID) -> bool:
         await session.rollback()
         logger.warning("Migration cleanup task %s is kept for a retry at startup: %s", task_id, type(exc).__name__)
         return False
+
+
+async def run_cleanup_task(session: AsyncSession, task_id: uuid.UUID) -> bool:
+    """Delete the files a cleanup task names, then the task: a discarded company's run
+    sources and attachment files, or one staged attachment file no committed record
+    links. Files already gone count as deleted. A failure, or a runner still working on
+    the task's run, keeps the task for the startup sweep and is logged by task id only;
+    never raises. Returns whether the task is done."""
+    return await _run_task(session, task_id, runner_holds_lock=False)
+
+
+async def _clean_run_attachments(run_id: uuid.UUID) -> None:
+    """Remove the files a run's batches stored but never linked. Called by the runner while
+    it still holds the run's lock, so no batch of this run can be linking them."""
+    async with _maker()() as s:
+        task_ids = (await s.scalars(select(MigrationCleanupTask.id).where(
+            MigrationCleanupTask.attachment.is_not(None),
+            cast(MigrationCleanupTask.run_ids, JSONB).contains([str(run_id)]),
+        ))).all()
+        for task_id in task_ids:
+            await _run_task(s, task_id, runner_holds_lock=True)
 
 
 async def sweep_cleanup_tasks(session: AsyncSession) -> int:

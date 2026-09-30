@@ -16,7 +16,9 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import find_event_by_idempotency
 from celerp.importers.adapters.base import ScanError
@@ -39,7 +41,7 @@ from celerp.importers.sinks import (
 )
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
-from celerp.models.migration import MigrationEntityMap
+from celerp.models.migration import MigrationCleanupTask, MigrationEntityMap
 from celerp.models.projections import Projection
 from celerp.services.attachments import FILE_ATTACHED_EVENTS, attach_file, item_file_role, store_file
 from celerp.services.company_lock import locked_company
@@ -206,12 +208,45 @@ class CoreMigrationSink:
         return []
 
 
+class AttachmentStorageError(Exception):
+    """The storage backend failed to store a migrated file; nothing links it."""
+
+    def __init__(self, file_name: str) -> None:
+        super().__init__(f"The file {file_name} could not be stored. Check the file storage, then resume the migration.")
+
+
+def attachment_file_id(run_id: uuid.UUID, source_external_id: str, sha256: str) -> str:
+    """The stored id of a migrated file, from its run, its source identity and its content
+    hash: a retry stores the same file under the same id, never a second copy."""
+    return str(uuid.uuid5(run_id, f"attachment:{source_external_id}:{sha256}"))
+
+
+def attachment_cleanup_task_id(run_id: uuid.UUID, file_id: str) -> uuid.UUID:
+    return uuid.uuid5(run_id, f"cleanup:{file_id}")
+
+
+async def _stage_cleanup(context: SinkContext, file_id: str, mime: str, key: str) -> uuid.UUID:
+    """Record the file for deletion, committed on its own before the file is written, so a
+    file whose batch never commits is always found and removed."""
+    task_id = attachment_cleanup_task_id(context.run_id, file_id)
+    async with AsyncSession(bind=context.session.bind) as s:
+        await s.execute(pg_insert(MigrationCleanupTask.__table__).values(
+            id=task_id, company_id=context.company_id, run_ids=[str(context.run_id)],
+            attachment={"file_id": file_id, "mime": mime, "idempotency_key": key},
+        ).on_conflict_do_nothing(index_elements=["id"]))
+        await s.commit()
+    return task_id
+
+
 async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tuple[str, str | None]:
     """Store one source file and attach it to the imported record it belongs to, as the
     upload routes do. Returns the stored file id, or the reason the file was not attached.
 
     The adapter sends only files for records that can hold them, so a file for any other
-    record is a defect in the adapter: it fails the batch rather than being skipped."""
+    record is a defect in the adapter: it fails the batch rather than being skipped. The
+    file is stored under an id derived from its identity and content, after a cleanup task
+    naming it is committed; the batch that links it deletes the task, so a file whose
+    batch rolls back is removed by the runner or the startup sweep."""
     key = context.idempotency_key(record, "attached")
     replay = await find_event_by_idempotency(context.session, context.company_id, key)
     if replay is not None:
@@ -228,6 +263,9 @@ async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tup
     entity_type, entity_id = target
     if entity_type not in FILE_ATTACHED_EVENTS:
         raise ValueError(f"A {entity_type.replace('_', ' ')} cannot hold files; the adapter sent a file for one.")
+    row = await context.session.get(Projection, {"company_id": context.company_id, "entity_id": entity_id})
+    if row is None:
+        return "", "Its target record no longer exists; the file was not attached."
     try:
         content = await asyncio.to_thread(context.read_attachment, record.source_external_id)
     except ScanError as exc:
@@ -235,16 +273,20 @@ async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tup
     if hashlib.sha256(content).hexdigest() != record.sha256:
         return "", "The file content does not match its recorded hash; the file was not attached."
     mime = record.declared_content_type or mimetypes.guess_type(record.file_name)[0] or "application/octet-stream"
+    file_id = attachment_file_id(context.run_id, record.source_external_id, record.sha256)
+    task_id = await _stage_cleanup(context, file_id, mime, key)
     try:
-        meta = await store_file(str(context.company_id), content, record.file_name, mime)
+        meta = await store_file(str(context.company_id), content, record.file_name, mime, att_id=file_id)
     except ValueError as exc:
         return "", f"{exc}; the file was not attached."
+    except Exception as exc:
+        raise AttachmentStorageError(record.file_name) from exc
     document_tag, is_hero = None, None
     if entity_type == "item":
-        row = await context.session.get(Projection, {"company_id": context.company_id, "entity_id": entity_id})
         is_hero, document_tag = item_file_role(row.state.get("files", []), mime)
     await attach_file(context.session, context.company_id, entity_type, entity_id, meta, context.user_id,
                       source="migration", idempotency_key=key, document_tag=document_tag, is_hero=is_hero)
+    await context.session.execute(delete(MigrationCleanupTask).where(MigrationCleanupTask.id == task_id))
     return meta["id"], None
 
 
