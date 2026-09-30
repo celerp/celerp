@@ -1095,6 +1095,11 @@ document.addEventListener('DOMContentLoaded', function() {
           setState(s.version ? i18n.versionReady.replace('{version}', s.version) : i18n.updateReady, true);
           setCheckBtn(false);
           setProgress(100);
+        } else if (s.checking) {
+          // A check has started and has no result yet.
+          setState(i18n.checking, false);
+          setCheckBtn(false);
+          setProgress(-1);
         } else if (s.status === 'error') {
           setState(i18n.updateCheckFailed, false);
           resetToIdle();

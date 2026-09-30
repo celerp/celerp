@@ -15,7 +15,7 @@
 const MAX_LOG_LINES = 200;
 
 function initialUpdateState() {
-  return Object.freeze({ status: "idle", version: "", percent: 0, message: "" });
+  return Object.freeze({ status: "idle", version: "", percent: 0, message: "", checking: false });
 }
 
 // A download percent from 0 to 100; anything that is not a number is 0.
@@ -31,15 +31,20 @@ function toPercent(value) {
  * - "downloaded" is terminal for the running app: nothing moves it.
  * - not-available while downloading is ignored: the download in progress still
  *   ends in downloaded or error.
+ * - a check marks an idle or failed state as checking, keeping the rest of it,
+ *   until the check has a result.
  *
- * @param {{status: string, version: string, percent: number, message: string}} state
- * @param {{type: "found"|"progress"|"downloaded"|"not-available"|"error",
+ * @param {{status: string, version: string, percent: number, message: string, checking: boolean}} state
+ * @param {{type: "check"|"found"|"progress"|"downloaded"|"not-available"|"error",
  *          version?: string, percent?: number, message?: string}} event
  */
 function nextUpdateState(state, event) {
   if (state.status === "downloaded") return null;
-  const next = (fields) => Object.freeze({ ...state, message: "", ...fields });
+  const next = (fields) => Object.freeze({ ...state, message: "", checking: false, ...fields });
   switch (event.type) {
+    case "check":
+      if (state.status !== "idle" && state.status !== "error") return null;
+      return Object.freeze({ ...state, checking: true });
     case "found": {
       const version = event.version || "";
       const same = state.status === "downloading" && state.version === version;
@@ -92,7 +97,9 @@ function trackUpdater(updater, send) {
   updater.on("checking-for-update", () => {
     // Once downloaded the state is final, so a later check changes nothing,
     // not even the log that says the update is ready.
-    if (state.status === "downloaded") return;
+    const next = nextUpdateState(state, { type: "check" });
+    if (!next) return;
+    state = next;
     log = ["Checking for update..."];
     send("update-log", snapshot());
   });

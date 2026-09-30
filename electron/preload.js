@@ -26,7 +26,7 @@ contextBridge.exposeInMainWorld("celerp", {
   // Modules page: native folder picker; resolves to a path string or null.
   pickModuleFolder: () => ipcRenderer.invoke("pick-module-folder"),
 
-  // Updater state ({ status, version, percent, message, log }), read-only.
+  // Updater state ({ status, version, percent, message, checking, log }), read-only.
   // Every page load replays it; the update callbacks below receive the same shape.
   getUpdateState: () => ipcRenderer.invoke("get-update-state"),
 

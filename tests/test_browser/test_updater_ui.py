@@ -394,6 +394,24 @@ def test_downloaded_survives_later_noise_across_reload(page, ui_server):
     assert page.evaluate(_VISIBLE_STATE_JS) == after
 
 
+@pytest.mark.parametrize("seed", [[], [_ERROR]], ids=["idle", "after-error"])
+def test_check_shows_checking_until_it_has_a_result(page, ui_server, seed):
+    """A check the user starts shows "Checking..." and no Check button until the
+    updater has a result, also once the updater reports that it is checking."""
+    _fake_electron(page, seed)
+    _open(page, f"{ui_server}/")
+    page.evaluate("() => document.querySelector('.update-card__check-btn').click()")
+    page.evaluate("() => window.__updaterEmit('checking-for-update', null)")
+    checking = page.evaluate(_VISIBLE_STATE_JS)
+    assert (checking["state"], checking["check"]) == ("Checking...", False)
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent !== ''")
+    assert page.evaluate(_VISIBLE_STATE_JS) == checking
+    page.evaluate("() => window.__updaterEmit('update-not-available', {})")
+    done = page.evaluate(_VISIBLE_STATE_JS)
+    assert (done["state"], done["check"]) == ("Up to date", True)
+
+
 def test_recheck_after_downloaded_keeps_the_card(page, ui_server):
     """A later re-check that finds the same update leaves the ready card and its
     log as they were, live and after a reload."""
