@@ -14,6 +14,10 @@ const { EventEmitter } = require("events");
 
 const APP_MAIN = path.join(__dirname, "..", "app-main.js");
 
+// app-main.js keeps its window in a module variable that createWindow sets once
+// the app is ready. The app never becomes ready here, so the test sets it.
+const SET_MAIN_WINDOW = "\n;module.exports.setMainWindow = (win) => { mainWindow = win; };\n";
+
 // Runs app-main.js as Node would (it has a top-level return), resolving the
 // modules below to fakes and everything else normally. The app never becomes
 // ready, so only the load-time wiring runs.
@@ -52,9 +56,9 @@ function loadAppMain() {
   fakeRequire.cache = cache;
   const mod = { exports: {} };
   const body = new Function("exports", "require", "module", "__filename", "__dirname",
-    fs.readFileSync(APP_MAIN, "utf8"));
+    fs.readFileSync(APP_MAIN, "utf8") + SET_MAIN_WINDOW);
   body(mod.exports, fakeRequire, mod, APP_MAIN, path.dirname(APP_MAIN));
-  return { handlers, updater };
+  return { handlers, updater, setMainWindow: mod.exports.setMainWindow };
 }
 
 test("app-main serves get-update-state from the updater it tracks",
@@ -66,4 +70,14 @@ test("app-main serves get-update-state from the updater it tracks",
     const state = handlers["get-update-state"]();
     expect([state.status, state.version]).toEqual(["downloaded", "2.0.1"]);
     expect(state.log).toEqual(["Found v2.0.1, downloading...", "v2.0.1 ready. Click 'Restart to Install'"]);
+  });
+
+test("app-main sends the updater's changes to its window as they happen",
+  function test_app_main_forwards_updater_events_to_the_window() {
+    const { updater, setMainWindow } = loadAppMain();
+    const sent = [];
+    setMainWindow({ webContents: { send: (channel, state) => sent.push([channel, state.status]) } });
+    updater.emit("update-available", { version: "2.0.1" });
+    updater.emit("update-downloaded", { version: "2.0.1" });
+    expect(sent).toEqual([["update-available", "downloading"], ["update-downloaded", "downloaded"]]);
   });
