@@ -54,7 +54,7 @@ def test_unknown_populated_field_fails_the_scan_naming_it(tmp_path, label, chang
     carried as though it said nothing more."""
     source = _source(tmp_path, label, change)
     (row,) = [r for r in adapter().inspect([source]).coverage if r.source_type == blocked]
-    assert row.count == 1 and row.coverage_class == CoverageClass.BLOCKED
+    assert row.count == 1 and row.coverage_class == CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER
     assert f"Field {path} " in row.note
     with pytest.raises(ScanError, match=re.escape(f"{blocked} (1)")):
         adapter().build_manifest([source], MigrationDecisions(mode=CIFMode.FULL_HISTORY))

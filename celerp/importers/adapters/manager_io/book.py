@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 
+from celerp.importers.adapters.manager_io import fields
 from celerp.importers.adapters.manager_io.protobuf import DecodeError, Message, decode
 from celerp.importers.adapters.manager_io.sqlite_reader import ManagerReader
 from celerp.importers.adapters.manager_io.types import CONTENT_TYPES, GUIDS, NOTES, TARGETS, TYPE_NAMES
@@ -1017,7 +1018,12 @@ def read_book(reader: ManagerReader) -> Book:
         try:
             if row.content is None:
                 raise DecodeError(f"Object payload larger than {reader.max_object_bytes} bytes.")
-            _decode_object(book, name, key, decode(row.content))
+            message = decode(row.content)
+            unknown = fields.unknown_field(name, message)
+            if unknown:
+                raise Blocked("unknown field", f"Field {unknown} is not one Celerp reads or has classified, so "
+                                               "what it records would be lost in the migration.")
+            _decode_object(book, name, key, message)
         except DecodeError as exc:
             book.block(name, key, "unreadable", f"Could not be read: {exc}")
         except Blocked as blocked:
