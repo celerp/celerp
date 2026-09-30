@@ -738,3 +738,24 @@ async def test_concurrent_bootstrap_start_starts_one_migration(real_client, real
     assert await count(real_engine, "users") == 1
     assert await count(real_engine, "companies") == 1
     assert await count(real_engine, "migration_runs") == 1
+
+
+@pytest.mark.asyncio
+async def test_fallback_journal_keeps_its_representation_when_its_coverage_row_is_relabelled(
+    real_engine, migration_env,
+):
+    """RED before the change: the only coverage row for the payment is its relabelled
+    journal fallback row, so the journal written for it was recorded as native."""
+    from celerp.models.migration import MigrationEntityMap
+    from celerp.services import migrations
+
+    spec = fake_spec(coverage=fake_spec()["coverage"][:2] + [
+        {"source_type": "Payment (journal fallback)", "count": 1, "coverage_class": "mapped_with_loss",
+         "target": "journal"}])
+    run_id, _, _ = await staged_run(real_engine, spec=spec)
+    await migrations.run_migration(run_id)
+    async with maker(real_engine)() as s:
+        (journal,) = (await s.execute(select(MigrationEntityMap).where(
+            MigrationEntityMap.migration_run_id == run_id,
+            MigrationEntityMap.source_external_id == "pay-1:journal"))).scalars().all()
+    assert journal.meta["representation"] == "journal_fallback"

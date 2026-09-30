@@ -132,7 +132,7 @@ class FakeAdapter:
         journals = []
         if spec["journal"]:
             journals.append(CIFJournalEntry(
-                **common, source_type="Payment", source_external_id="pay-1:journal",
+                **common, source_type="Payment", source_external_id="pay-1:journal", fallback=True,
                 entry_date=date.fromisoformat(spec["first_transaction"]),
                 lines=[CIFJournalLine(account_external_id="1000", debit=Decimal("5")),
                        CIFJournalLine(account_external_id="2000", credit=Decimal("5"))],

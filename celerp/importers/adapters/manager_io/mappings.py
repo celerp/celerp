@@ -184,7 +184,7 @@ def _journals(book: Book, ledger: Ledger) -> list[CIFJournalEntry]:
         narration = source.narration if part == "journal" else FALLBACK_NARRATION
         out.append(CIFJournalEntry(**_src(book.names[record], record + JOURNAL_PARTS[part], source.ref),
                                    entry_date=postings[0].date, narration=narration, currency=book.base_code,
-                                   lines=lines))
+                                   fallback=part == "fallback", lines=lines))
     return out
 
 

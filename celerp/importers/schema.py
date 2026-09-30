@@ -472,6 +472,7 @@ class CIFJournalLine(BaseModel):
 
 class CIFJournalEntry(CIFSourceRecord):
     entry_date: CIFDate
+    fallback: bool = False                    # carries lines of a record Celerp stores as another entity
     narration: str | None = None
     currency: str | None = None
     lines: Annotated[list[CIFJournalLine], Field(min_length=2)]

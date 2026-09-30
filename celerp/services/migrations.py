@@ -14,7 +14,7 @@ sinks' deterministic ids and idempotency keys make a replayed batch a no-op.
 Financial write invariant: each source transaction reaches Celerp through exactly
 one CIF group, so it is written once, either as a native document or settlement
 or as a journal fallback. The runner records which representation each mapped
-record took, from the coverage plan, in the entity map metadata.
+record took, as its CIF record states it, in the entity map metadata.
 """
 
 from __future__ import annotations
@@ -46,7 +46,9 @@ from celerp.events.engine import find_event_by_idempotency, write_period_lock
 from celerp.importers.adapters.registry import get_adapter
 from celerp.importers.schema import (
     MIGRATION_CIF_VERSION,
+    CIFBankTransfer,
     CIFImportManifest,
+    CIFJournalEntry,
     CIFMode,
     CoverageClass,
     ReconciliationExpectation,
@@ -522,20 +524,6 @@ def _next_batch(steps: list[_Step], cursor: int) -> list[_Step]:
     return batch
 
 
-# Coverage targets Celerp stores as journal entries natively.
-_JOURNAL_TARGETS = {"journal", "bank_transfer"}
-
-
-def _representation(mapping, targets: dict[str, str | None]) -> str:
-    """A journal written for a record whose coverage target is another entity is a
-    fallback: a settlement's other lines, or a debit note posted on its bill. A record
-    with no coverage row of its own, such as the cutover opening balances, is native."""
-    target = targets.get(mapping.source_type)
-    if mapping.target_entity_type == "journal_entry" and target is not None and target not in _JOURNAL_TARGETS:
-        return "journal_fallback"
-    return "native"
-
-
 def _maker():
     import celerp.db  # resolved per call: the engine is replaced in tests and on reconfigure
     return lambda: AsyncSession(bind=celerp.db.engine, expire_on_commit=False)
@@ -677,10 +665,6 @@ async def _run_locked(run_id: uuid.UUID) -> None:
         except Exception as exc:  # a missing source, adapter or module sink, or a changed importer or lock date: nothing written
             await _fail(maker, run_id, stopped_at, _phase_entry(state, stopped_at)["cursor"], exc)
             return
-    targets: dict[str, str | None] = {}
-    for entry in manifest.coverage:
-        targets.setdefault(entry.source_type, entry.target)
-
     for phase in IMPORT_PHASES:
         entry = _phase_entry(state, phase)
         if entry["status"] == "done":
@@ -705,7 +689,7 @@ async def _run_locked(run_id: uuid.UUID) -> None:
                     records = [b.record for b in batch]
                     result = await batch[0].sink.import_batch(context, records)
                     validate_batch_result(records, result)  # any rejected record rolls the batch back
-                    await _record_mappings(s, run_id, batch[0].group, result.mappings, targets)
+                    await _record_mappings(s, run_id, batch[0].group, result.mappings, records)
                     advanced = cursor + len(batch)
                     written = {**entry, "cursor": advanced, "created": entry["created"] + result.created,
                                "skipped": entry["skipped"] + result.skipped, "errors": 0,
@@ -726,17 +710,22 @@ async def _run_locked(run_id: uuid.UUID) -> None:
                          [(r.source_type, r.source_external_id) for r in manifest.bundle.source_records()])
 
 
-async def _record_mappings(session: AsyncSession, run_id: uuid.UUID, group: str, mappings,
-                           targets: dict[str, str | None]) -> None:
-    """Persist every mapping a batch returned, created or skipped; a replay adds nothing."""
+async def _record_mappings(session: AsyncSession, run_id: uuid.UUID, group: str, mappings, records) -> None:
+    """Persist every mapping a batch returned, created or skipped; a replay adds nothing.
+    A journal written for a record Celerp does not store as a journal, such as a debit note
+    posted on its bill, or for a journal that says it carries lines of such a record, is a
+    journal fallback; every other mapping is native."""
     if not mappings:
         return
+    native = {(r.source_type, r.source_external_id) for r in records
+              if isinstance(r, CIFBankTransfer) or isinstance(r, CIFJournalEntry) and not r.fallback}
     table = MigrationEntityMap.__table__
     await session.execute(pg_insert(table).values([{
         "id": uuid.uuid4(), "migration_run_id": run_id, "source_type": m.source_type,
         "source_external_id": m.source_external_id, "target_entity_type": m.target_entity_type,
         "target_entity_id": m.target_entity_id, "status": m.status,
-        "metadata": {"group": group, "representation": _representation(m, targets)},
+        "metadata": {"group": group, "representation": "journal_fallback" if m.target_entity_type == "journal_entry"
+                                 and (m.source_type, m.source_external_id) not in native else "native"},
     } for m in mappings]).on_conflict_do_nothing(constraint="uq_migration_entity_map_source"))
 
 
