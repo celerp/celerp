@@ -192,6 +192,19 @@ test("an error after the update downloaded is logged, and the state stays downlo
     expect(sent).toEqual([["update-error", getUpdateState()]]);
   });
 
+test("a re-check after the update downloaded changes nothing, not even the log",
+  function test_recheck_after_downloaded_keeps_the_log() {
+    const { updater, sent, getUpdateState } = downloadedSetup();
+    const ready = getUpdateState();
+    expect(ready.log.slice(-1)).toEqual(["v2.0.1 ready. Click 'Restart to Install'"]);
+    // The periodic re-check finds the same, already downloaded, update.
+    updater.emit("checking-for-update");
+    updater.emit("update-available", { version: "2.0.1" });
+    updater.emit("update-downloaded", { version: "2.0.1" });
+    expect(getUpdateState()).toEqual(ready);
+    expect(sent).toEqual([]);
+  });
+
 test("each check starts a fresh log", function test_check_starts_fresh_log() {
   const { updater, sent, getUpdateState } = setup();
   updater.emit("error", new Error("boom"));

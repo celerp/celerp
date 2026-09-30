@@ -394,6 +394,20 @@ def test_downloaded_survives_later_noise_across_reload(page, ui_server):
     assert page.evaluate(_VISIBLE_STATE_JS) == after
 
 
+def test_recheck_after_downloaded_keeps_the_card(page, ui_server):
+    """A later re-check that finds the same update leaves the ready card and its
+    log as they were, live and after a reload."""
+    _fake_electron(page, [("checking-for-update", None), _FOUND, _DOWNLOADED])
+    ready = _open(page, f"{ui_server}/")
+    assert ready["log"].split("\n")[-1] == "v2.0.1 ready. Click 'Restart to Install'"
+    for name, payload in [("checking-for-update", None), _FOUND, _DOWNLOADED]:
+        page.evaluate(f"() => window.__updaterEmit({json.dumps(name)}, {json.dumps(payload)})")
+    assert page.evaluate(_VISIBLE_STATE_JS) == ready
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent !== ''")
+    assert page.evaluate(_VISIBLE_STATE_JS) == ready
+
+
 @pytest.mark.parametrize("events", [
     [_FOUND],
     [_FOUND, _PROGRESS],

@@ -90,6 +90,9 @@ function trackUpdater(updater, send) {
   }
 
   updater.on("checking-for-update", () => {
+    // Once downloaded the state is final, so a later check changes nothing,
+    // not even the log that says the update is ready.
+    if (state.status === "downloaded") return;
     log = ["Checking for update..."];
     send("update-log", snapshot());
   });
