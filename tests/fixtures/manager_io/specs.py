@@ -483,7 +483,8 @@ NEGATIVE_CUTOVER = date(2026, 1, 9)
 def negative_recovery_objects() -> list[Obj]:
     """Stock that runs below zero and is later made good. 5 widgets come in on 01-05; a
     delivery of 9 on 01-08 and a flagged invoice taking out 6 on 01-09 each take more than
-    is held; 10 more are received on 01-12. The history ends holding stock, but at the
+    is held; 10 more, billed on 01-04, are received on 01-12. The bills own every widget
+    sold, so only the physical stock runs short: the history ends holding stock, but at the
     01-09 cutover Manager's opening position is 5 - 9 - 6 = -10."""
     return [
         *_stocked_masters(),
@@ -491,7 +492,7 @@ def negative_recovery_objects() -> list[Obj]:
         _sale("INVNEG", date(2026, 1, 6), {"WID": D("9")}),
         delivery_note("DNNEG", date(2026, 1, 8), "INVNEG", {"WID": D("9")}),
         _sale("INVFN", date(2026, 1, 9), {"WID": D("6")}, {69: True}),
-        _bill("BILLR", date(2026, 1, 10), {"WID": (D("10"), D("4"))}),
+        _bill("BILLR", date(2026, 1, 4), {"WID": (D("10"), D("4"))}),
         goods_receipt("GRR", date(2026, 1, 12), "BILLR", {"WID": D("10")}),
     ]
 
@@ -519,7 +520,9 @@ def build_single_named_location(path: Path) -> Path:
 def inventory_safety_objects(locations: int = 0, transfers: int = 0, negative: bool = False) -> list[Obj]:
     """A flagged bill bringing in 5 widgets, plus what Celerp cannot carry yet: `locations`
     extra inventory locations (the bill stocks the first), `transfers` stock transfers, and
-    a delivery of 9 widgets against the 5 held, which takes stock below zero."""
+    a delivery of 9 widgets against the 5 held, which takes stock below zero. BILLN bills the
+    other 4 without receiving them, so the 9 sold are owned and only the physical stock is
+    short."""
     objects = [
         *masters(),
         _bill("BILLS", date(2026, 1, 5), {"WID": (D("5"), D("4"))}, {64: True, **({13: k("LOC2")} if locations else {})}),
@@ -529,7 +532,8 @@ def inventory_safety_objects(locations: int = 0, transfers: int = 0, negative: b
           for n in range(1, transfers + 1)),
     ]
     if negative:
-        objects += [_sale("INVNEG", date(2026, 1, 12), {"WID": D("9")}),
+        objects += [_bill("BILLN", date(2026, 1, 11), {"WID": (D("4"), D("4"))}),
+                    _sale("INVNEG", date(2026, 1, 12), {"WID": D("9")}),
                     delivery_note("DNNEG", date(2026, 1, 15), "INVNEG", {"WID": D("9")})]
     return objects
 
@@ -609,4 +613,20 @@ def unowned_sale_objects() -> list[Obj]:
         *_stocked_masters(),
         _sale("INVZ", date(2026, 1, 3), {"WID": D("1")}),
         _bill("BILLZ", date(2026, 1, 5), {"WID": (D("4"), D("4"))}, {64: True}),
+    ]
+
+
+def over_owned_sale_objects() -> list[Obj]:
+    """Five widgets are on hand by 01-03, but the bill for three of them is dated 01-10, and
+    a unit cost is set. INVQ sells three on 01-05: more than Manager's books own then (two),
+    though fewer than are on hand. Manager clears the shortfall through negative inventory,
+    which Celerp does not rebuild."""
+    return [
+        *_stocked_masters(),
+        obj("InventoryUnitCost", "UCQ", {1: date(2026, 1, 1), 2: k("WID"), 3: D("4")}),
+        _bill("BILLQ", date(2026, 1, 2), {"WID": (D("2"), D("4"))}),
+        _bill("BILLL", date(2026, 1, 10), {"WID": (D("3"), D("4"))}),
+        goods_receipt("GRQ", date(2026, 1, 2), "BILLQ", {"WID": D("2")}),
+        goods_receipt("GRL", date(2026, 1, 3), "BILLL", {"WID": D("3")}),
+        _sale("INVQ", date(2026, 1, 5), {"WID": D("3")}),
     ]

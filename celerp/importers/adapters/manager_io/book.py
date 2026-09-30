@@ -733,8 +733,9 @@ def _cost_sales(book: Book) -> None:
     sales invoice costs the item's unit cost on the invoice date when one is set, and
     otherwise the average of what is owned then: every bill bought on or before that day,
     less every earlier sale. Documents Celerp cannot carry still count, since Manager's
-    books hold them. An invoice selling an item when none is owned and no unit cost is set
-    is blocked, since nothing says what Manager booked for it."""
+    books hold them. An invoice selling more of an item than is owned is blocked, even with
+    goods on hand or a unit cost set: Manager clears negative inventory with later cost
+    corrections that are not rebuilt."""
     code = book.base_code or ""
     trading = sorted((doc for doc in book.documents.values() if doc.source_type in ("PurchaseInvoice", "SalesInvoice")),
                      key=lambda d: (d.date, d.source_type != "PurchaseInvoice", d.key))
@@ -745,14 +746,15 @@ def _cost_sales(book: Book) -> None:
             if doc.source_type == "PurchaseInvoice":
                 owned[line.item] = (qty + line.quantity, value + line.net)
                 continue
+            if line.quantity > qty and not book.is_blocked(doc.key):
+                book.block(doc.source_type, doc.key, "negative quantity owned", "Sells more of an item than the "
+                           "business owned on the invoice date, which Manager settles through negative inventory "
+                           "clearing. Celerp does not carry that yet.")
             unit = _unit_cost(book, line.item, doc.date)
             if unit is not None:
                 line.cost = round_money(line.quantity * unit, code)
-            elif qty:
+            elif qty > 0:
                 line.cost = round_money(value * line.quantity / qty, code)
-            elif line.quantity and not book.is_blocked(doc.key):
-                book.block(doc.source_type, doc.key, "no unit cost", "Sold when none of the item was owned and no "
-                           "unit cost was set, so the cost of sales Manager booked cannot be worked out.")
             owned[line.item] = (qty - line.quantity, value - line.cost)
 
 

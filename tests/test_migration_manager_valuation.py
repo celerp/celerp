@@ -185,5 +185,12 @@ async def test_migrated_sale_recognizes_the_cost_manager_booked(real_engine, mon
 def test_sale_with_nothing_owned_and_no_unit_cost_refused_at_scan(tmp_path):
     """RED before the change: INV-Z is carried with no cost of sales, which Manager's books
     may not show."""
-    with pytest.raises(ScanError, match=re.escape("SalesInvoice (no unit cost) (1)")):
+    with pytest.raises(ScanError, match=re.escape("SalesInvoice (negative quantity owned) (1)")):
         _manifest(_write(tmp_path, "unowned", specs.unowned_sale_objects()))
+
+
+def test_sale_beyond_quantity_owned_refused_at_scan_though_on_hand(tmp_path):
+    """RED before the change: INV-Q is costed from the unit cost and takes Manager's quantity
+    owned to -1, a position Manager clears through negative inventory that is not rebuilt."""
+    with pytest.raises(ScanError, match=re.escape("SalesInvoice (negative quantity owned) (1)")):
+        _manifest(_write(tmp_path, "over-owned", specs.over_owned_sale_objects()))
