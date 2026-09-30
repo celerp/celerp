@@ -26,6 +26,7 @@ from ui.routes.csv_import import (
     apply_fixes_to_rows,
     column_mapping_form,
     error_report_response,
+    import_result_errors,
     import_result_panel,
     stage_tabular_upload,
     upload_form,
@@ -257,8 +258,7 @@ def setup_routes(app):
             )
         created = int(result.get("created", 0) or 0)
         skipped = int(result.get("skipped", 0) or 0)
-        failed = int(result.get("failed", 0) or 0)
-        errors = [t("settings_import.records_failed", n=failed)] if failed else []
+        errors = import_result_errors(result)
         await discard_import_csv(token, form, result)
         return import_result_panel(
             created=created, skipped=skipped, errors=errors,
@@ -457,8 +457,7 @@ def setup_routes(app):
             )
         created = int(result.get("created", 0) or 0)
         skipped = int(result.get("skipped", 0) or 0)
-        failed = int(result.get("failed", 0) or 0)
-        errors = [t("settings_import.records_failed", n=failed)] if failed else []
+        errors = import_result_errors(result)
         await discard_import_csv(token, form, result)
         return import_result_panel(
             created=created, skipped=skipped, errors=errors,
@@ -655,8 +654,7 @@ def setup_routes(app):
             )
         created = int(result.get("created", 0) or 0)
         skipped = int(result.get("skipped", 0) or 0)
-        failed = int(result.get("failed", 0) or 0)
-        errors = [t("settings_import.records_failed", n=failed)] if failed else []
+        errors = import_result_errors(result)
         await discard_import_csv(token, form, result)
         return import_result_panel(
             created=created, skipped=skipped, errors=errors,

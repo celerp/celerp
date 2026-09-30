@@ -229,6 +229,20 @@ async def load_import_csv(token: str, ref: str) -> str | None:
     return _read_stage(await _company_id(token), ref)
 
 
+def import_result_errors(result: dict) -> list[str]:
+    """The messages an import result page shows for rows that were not imported.
+
+    Batch endpoints report incomplete success one of two ways: a list of error
+    messages, or only a count of failed rows. The messages are shown whenever
+    there are any; the count is shown only when it is all the endpoint said.
+    """
+    errors = [str(e) for e in result.get("errors") or []]
+    if errors:
+        return errors
+    failed = int(result.get("failed", 0) or 0)
+    return [t("settings_import.records_failed", n=failed)] if failed else []
+
+
 async def discard_import_csv(token: str, form, result: dict) -> None:
     """Remove the caller's own stage once its import finished cleanly.
 
@@ -237,7 +251,7 @@ async def discard_import_csv(token: str, form, result: dict) -> None:
     failed rows keeps the stage until it expires, so the user can go back and
     retry the same file.
     """
-    if result.get("errors") or int(result.get("failed", 0) or 0):
+    if import_result_errors(result):
         return
     ref = str(form.get("csv_ref", "") or "")
     if await load_import_csv(token, ref) is not None:
@@ -857,6 +871,7 @@ def upload_form(
     return Div(
         _step_indicator(1, has_mapping=has_mapping),
         P(error, cls="flash flash--error") if error else "",
+        P(hint, cls="form-hint", style="margin:0 0 8px") if hint else "",
         Form(
             Input(type="file", id="csv_file", name="csv_file", accept=".csv,.xlsx",
                   required=True, style="display:none"),

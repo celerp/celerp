@@ -3114,7 +3114,7 @@
   "subscriptions_import.upsert_label": "name + start date",
   "accounting_import.header_chart": "Import Chart of Accounts",
   "accounting_import.title_chart": "Import Chart",
-  "accounting_import.chart_hint": "Upload a CSV to add accounts to your chart. Existing codes will be skipped.",
+  "accounting_import.chart_hint": "Adds accounts to your chart. Existing codes are kept.",
   "accounting_import.entity_accounts": "accounts",
   "lists_import.import_lists": "Import Lists",
   "lists_import.upsert_label": "ref ID",
