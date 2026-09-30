@@ -121,22 +121,20 @@ function trackUpdater(updater, send) {
 }
 
 /**
- * Serve the updater state to the window: answer "get-update-state" (idle with
- * an empty log until an updater is tracked, as in dev builds) and forward every
- * change to the current window. Returns `track(updater)`.
+ * Serve the updater's state to the window: track `updater`, forward every
+ * change to the current window, and answer "get-update-state". The state stays
+ * idle with an empty log until the updater checks, which dev builds never do.
  *
  * @param {{handle: (channel: string, fn: Function) => void}} ipcMain
  * @param {() => ({webContents: {send: Function}}|null)} getWindow
+ * @param {{on: (event: string, fn: Function) => void}} updater
  */
-function serveUpdateState(ipcMain, getWindow) {
-  let getUpdateState = () => ({ ...initialUpdateState(), log: [] });
+function serveUpdateState(ipcMain, getWindow, updater) {
+  const getUpdateState = trackUpdater(updater, (channel, state) => {
+    const win = getWindow();
+    if (win) win.webContents.send(channel, state);
+  });
   ipcMain.handle("get-update-state", () => getUpdateState());
-  return function track(updater) {
-    getUpdateState = trackUpdater(updater, (channel, state) => {
-      const win = getWindow();
-      if (win) win.webContents.send(channel, state);
-    });
-  };
 }
 
 module.exports = { initialUpdateState, nextUpdateState, trackUpdater, serveUpdateState };

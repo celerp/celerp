@@ -214,22 +214,22 @@ function serveSetup() {
   const ipcMain = { handle: (channel, fn) => { handlers[channel] = fn; } };
   const windowSent = [];
   let win = { webContents: { send: (channel, state) => windowSent.push([channel, state]) } };
-  const track = serveUpdateState(ipcMain, () => win);
-  return { handlers, windowSent, track, closeWindow: () => { win = null; } };
+  const updater = new EventEmitter();
+  serveUpdateState(ipcMain, () => win, updater);
+  return { handlers, windowSent, updater, closeWindow: () => { win = null; } };
 }
 
-test("get-update-state answers idle before an updater is tracked (dev builds)",
-  function test_serve_answers_idle_before_tracking() {
-    const { handlers } = serveSetup();
+test("get-update-state answers idle before the updater checks (dev builds)",
+  function test_serve_answers_idle_before_a_check() {
+    const { handlers, windowSent } = serveSetup();
     expect(Object.keys(handlers)).toEqual(["get-update-state"]);
     expect(handlers["get-update-state"]()).toEqual({ ...IDLE, log: [] });
+    expect(windowSent).toEqual([]);
   });
 
-test("a tracked updater's changes reach the window and get-update-state",
+test("the updater's changes reach the window and get-update-state",
   function test_serve_forwards_to_window_and_answers_state() {
-    const { handlers, windowSent, track, closeWindow } = serveSetup();
-    const updater = new EventEmitter();
-    track(updater);
+    const { handlers, windowSent, updater, closeWindow } = serveSetup();
     updater.emit("update-available", { version: "2.0.1" });
     updater.emit("update-downloaded", { version: "2.0.1" });
     const replay = handlers["get-update-state"]();

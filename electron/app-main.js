@@ -723,8 +723,8 @@ function resolveStorageEnv(cfg) {
  * The updater state (update-state.js) lives here, not in the page, so a page
  * that loads or is restored later replays it via get-update-state.
  */
-// get-update-state answers idle until the updater is tracked (dev builds never track it).
-const trackAppUpdater = serveUpdateState(ipcMain, () => mainWindow);
+// get-update-state answers idle until the updater checks (dev builds never check).
+serveUpdateState(ipcMain, () => mainWindow, autoUpdater);
 
 function setupAutoUpdater() {
   if (!app.isPackaged) return;
@@ -732,9 +732,6 @@ function setupAutoUpdater() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.allowPrerelease = false;
-
-  // The state and its log go to the window as they change (update-state.js).
-  trackAppUpdater(autoUpdater);
 
   autoUpdater.on("error", (err) => {
     // Update failures must never interrupt work, but must be visible: the
