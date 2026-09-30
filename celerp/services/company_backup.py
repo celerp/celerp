@@ -45,7 +45,7 @@ import celerp.db
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.modules.importer import installed_table_prefixes
-from celerp.modules.loader import module_search_path, read_manifest, resolve_module_path
+from celerp.modules.loader import is_running, module_search_path, read_manifest, resolve_module_path
 from celerp.modules.registry import get_enabled, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
 from celerp.services.auth import verify_password
@@ -731,12 +731,17 @@ class _Checked:
 
 
 def _check_modules(manifest: dict) -> None:
-    """Every module the backup needs, enabled or holding its data, is installed here and new enough."""
+    """Every module the backup needs, enabled or holding its data, is installed here, new
+    enough, and running, so its tables are in place."""
     versions = manifest["modules"]["versions"]
     for name in sorted(set(manifest["modules"]["enabled"]) | set(versions)):
         path = _installed(name)
         if path is None:
             raise BackupError(422, f"This company backup needs the {name} module, which is not installed here."
+                              + _NOT_RESTORED)
+        if not is_running(name):
+            raise BackupError(422, f"This company backup needs the {name} module, which is installed here but "
+                                   f"not turned on. Turn it on in Modules, restart Celerp, then try again."
                               + _NOT_RESTORED)
         if name not in versions:
             continue

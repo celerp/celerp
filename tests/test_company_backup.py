@@ -59,6 +59,20 @@ _BK_DROPPED_SETTINGS = ("role_grants", "ai_memory", "lock_date_set_by", "reorder
 
 # ── Shared helpers (module level, distinct names) ─────────────────────────────
 
+@pytest.fixture(autouse=True)
+def _bk_modules_running(monkeypatch):
+    """Every bundled module and the fake third-party one run here, as on an installation
+    that turned them on; tests model a module that is not running by taking it out."""
+    from celerp.modules import loader
+    names = [p.name for p in (REPO_ROOT / "default_modules").iterdir() if (p / "__init__.py").is_file()]
+    monkeypatch.setattr(loader, "_loaded", [*loader._loaded, *({"name": n} for n in [*names, _BK_MODULE])])
+
+
+def _bk_not_running(monkeypatch, name: str) -> None:
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "_loaded", [m for m in loader._loaded if m["name"] != name])
+
+
 def _bk_cb():
     """The company backup service module."""
     return importlib.import_module("celerp.services.company_backup")
@@ -2595,6 +2609,28 @@ async def test_enabled_module_without_version_refused_before_writes(real_engine,
         m["modules"]["versions"].pop("zz-absent", None)
     data = _bk_edit_manifest(await download(real_client, tok), change)
     await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "needs the zz-absent module")
+
+
+@pytest.mark.parametrize("need", ["enabled", "data"])
+async def test_installed_module_not_running_refused(real_engine, real_client, tmp_path, monkeypatch, need):
+    """A module the backup needs that is installed here but not running, so its tables may not
+    be in place, is refused with what to do, and nothing is written."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    enabled = [_BK_MODULE] if need == "enabled" else []
+    user, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": enabled})
+    await _bk_sql(real_engine, "CREATE TABLE zz_widgets (id uuid primary key, "
+                               "company_id uuid not null references companies(id) on delete cascade)")
+    try:
+        if need == "data":
+            await _bk_sql(real_engine, "INSERT INTO zz_widgets (id, company_id) VALUES (:i, :c)",
+                          i=uuid.uuid4(), c=cid)
+        data = await download(real_client, tok)
+        assert _BK_MODULE in manifest(data)["modules"]["versions"]
+        _bk_not_running(monkeypatch, _BK_MODULE)
+        await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, _BK_MODULE, "not turned on")
+    finally:
+        await _bk_drop(real_engine, "zz_widgets")
 
 
 async def test_enabled_but_uninstalled_module_not_a_backup_requirement(real_engine, real_client, tmp_path, monkeypatch):
