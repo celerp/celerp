@@ -448,29 +448,9 @@ class TestProtectedPriceListDeletion:
         assert "celerpToast" in resp.headers.get("HX-Trigger", "")
         assert "base price list" in resp.headers.get("HX-Trigger", "")
 
-# ── Restore journey: restart continuation + post-restart notice ───────────────
+# ── Restore journey: post-restart notice ──────────────────────────────────────
 
-class TestRestoreJourneyContinuation:
-    @pytest.mark.asyncio
-    async def test_restart_app_route_restarts_and_polls(self, ui_client):
-        """The Restart Now continuation triggers the graceful restart and swaps to a
-        status that reloads the page once the server is back."""
-        with patch("ui.api_client.restart_system", new=AsyncMock(return_value={"ok": True})) as mock_restart:
-            r = await ui_client.post("/backup/restart-app", cookies=_authed())
-        assert r.status_code == 200
-        assert mock_restart.await_count == 1
-        html = r.text
-        assert "Restarting" in html
-        assert "setInterval" in html  # self-recovers; no dead end
-
-    @pytest.mark.asyncio
-    async def test_restart_app_route_surfaces_api_error(self, ui_client):
-        from ui.api_client import APIError
-        with patch("ui.api_client.restart_system", new=AsyncMock(side_effect=APIError(403, "Admin role required"))):
-            r = await ui_client.post("/backup/restart-app", cookies=_authed())
-        assert r.status_code == 200
-        assert "Admin role required" in r.text
-
+class TestRestoreJourneyNotice:
     @pytest.mark.asyncio
     async def test_login_shows_restore_notice_once(self, ui_client, monkeypatch, tmp_path):
         """The one-shot notice survives the post-restore restart: first login render

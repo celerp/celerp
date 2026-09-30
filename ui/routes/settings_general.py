@@ -31,6 +31,7 @@ from ui.routes.settings import (
     _user_display_cell,
     _preference_display_cell,
     _backup_tab,
+    _system_recovery_content,
     _company_tab,
     _users_tab,
     _password_form,
@@ -66,7 +67,55 @@ def _section_breadcrumb(section_key: str) -> FT:
     )
 
 
+async def _is_install_owner(token: str) -> bool:
+    """True when the API lets this session read the installation backup status.
+
+    That status is gated to the installation owner, so any refusal or error
+    reads as not the owner and nothing whole-installation is offered."""
+    try:
+        await api.get_backup_status(token)
+    except Exception:
+        return False
+    return True
+
+
 def setup_routes(app):
+
+    @app.get("/settings/system-recovery")
+    async def system_recovery_page(request: Request):
+        """Whole-installation recovery: installation owner only."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
+        status = 200
+        try:
+            content = _system_recovery_content(lang=lang, backup_data=await api.get_backup_status(token))
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            status = 403 if e.status == 403 else 502
+            message = t("system_recovery.owner_only") if status == 403 else str(e.detail)
+        except Exception as e:
+            status, message = 502, str(e) or repr(e)
+        if status != 200:
+            content = Div(
+                H3(t("system_recovery.title"), cls="settings-section-title"),
+                flash(message),
+                cls="settings-card",
+            )
+        page = await base_shell(
+            _section_breadcrumb("system_recovery.title"),
+            page_header(t("system_recovery.title", lang)),
+            content,
+            title=page_title("system_recovery.title"),
+            nav_active="settings",
+            lang=lang,
+            request=request,
+        )
+        if status == 200:
+            return page
+        return HTMLResponse(to_xml(page), status_code=status)
 
     @app.get("/settings/general")
     async def settings_general_page(request: Request):
@@ -116,12 +165,7 @@ def setup_routes(app):
             elif tab == "users":
                 content = _users_tab(users, company.get("settings"), lang=lang, is_owner=is_owner)
             elif tab == "backup":
-                backup_data: dict | None = None
-                try:
-                    backup_data = await api.get_backup_status(token)
-                except Exception:
-                    pass
-                content = _backup_tab(backup_data=backup_data)
+                content = _backup_tab(is_install_owner=await _is_install_owner(token))
             else:
                 content = _company_tab(company, lang=lang, is_owner=is_owner)
                 if is_owner:

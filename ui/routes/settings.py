@@ -2422,9 +2422,9 @@ def setup_routes(app):
 
     # ── Backup HTMX handlers ──────────────────────────────────────────────
     # These forward to the API process via api_client (standard auth pattern).
-    # The HTMX targets on the backup tab (/backup/list, /backup/trigger,
-    # /backup/export, /backup/import) point here; we call the API with the
-    # user's JWT just like every other settings route handler.
+    # The HTMX targets on System Recovery (/backup/list, /backup/trigger,
+    # /backup/restore, /backup/export, /backup/import) point here; we call the
+    # API with the user's JWT just like every other settings route handler.
     #
     # Error handling rule: HTMX requests must ALWAYS return an HTML fragment
     # (never a redirect). Any 401 from the relay means "cloud not connected"
@@ -2505,7 +2505,7 @@ def setup_routes(app):
                       cls="btn btn--xs btn--secondary"),
                     Button(t("btn.restore"),
                         hx_post=f"/backup/restore/{bid}",
-                        hx_confirm=t("settings.confirm_restore_backup"),
+                        hx_confirm=t("system_recovery.confirm"),
                         hx_target="#backup-flash", hx_swap="outerHTML",
                         cls="btn btn--xs btn--outline btn--danger ml-sm"),
                     cls="cell",
@@ -2595,34 +2595,57 @@ def setup_routes(app):
             headers={k.title(): v for k, v in headers.items() if k != "content-type"},
         )
 
-    @app.post("/backup/restart-app")
-    async def backup_restart_app(request: Request):
-        """Restart the servers after a restore, then reload once they are back.
+    def _recovery_result(request: Request, r) -> Response:
+        """Relay a System Recovery import or restore response from the API.
 
-        Only ever rendered as the continuation of a just-completed restore flash;
-        there is no standing restart control anywhere in the UI.
+        The API answers with a flash (success, or "Import failed" / "Restore
+        failed") at HTTP 200 for the HTMX swap; it is relayed verbatim so a
+        failed restore is never reported as a success. On success every session
+        has ended, so the browser's session cookies are dropped as well. Any
+        other status (403 for anyone but the installation owner) is an error flash.
         """
-        from starlette.responses import Response as _R
-        from ui.components.shell import RESTART_POLL_JS
+        from fasthtml.common import Div, to_xml
+        from celerp.services.backup_import import SESSION_ENDED_HEADER
+        if r.status_code >= 400:
+            detail = r.text[:200]
+            if r.headers.get("content-type", "").startswith("application/json"):
+                detail = str(r.json().get("detail") or detail)
+            return Response(
+                content=to_xml(Div(detail, cls="flash flash--error", id="backup-flash")),
+                media_type="text/html",
+            )
+        resp = Response(content=r.text, media_type="text/html")
+        if r.headers.get(SESSION_ENDED_HEADER):
+            from ui.config import clear_session_cookies
+            clear_session_cookies(resp, request)
+        return resp
+
+    def _recovery_error(detail: str) -> Response:
+        from fasthtml.common import Div, to_xml
+        return Response(
+            content=to_xml(Div(detail, cls="flash flash--error", id="backup-flash")),
+            media_type="text/html",
+        )
+
+    @app.post("/backup/restore/{backup_id}")
+    async def backup_restore(request: Request, backup_id: str):
+        """Restore a cloud recovery point: replaces the whole installation."""
+        import httpx
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return RedirectResponse("/login", status_code=302)
         try:
-            await api.restart_system(token)
-        except APIError as e:
-            return Div(Span(str(e.detail), cls="flash flash--error"), id="backup-flash")
-        return Div(
-            Div(t("settings.restarting_the_application"), cls="flash flash--warning"),
-            Script(RESTART_POLL_JS),
-            id="backup-flash",
-        )
+            async with api._local_client(token, timeout=900.0, follow_redirects=False, bulk=True) as c:
+                r = await c.post(f"/backup/restore/{backup_id}")
+        except httpx.HTTPError as exc:
+            return _recovery_error(str(exc) or repr(exc))
+        return _recovery_result(request, r)
 
     @app.post("/backup/import")
     async def backup_import(request: Request):
         """Import a .celerp-backup archive. Multipart upload forwarded to API."""
 
         import httpx
-        from fasthtml.common import Div, to_xml
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -2630,10 +2653,7 @@ def setup_routes(app):
         form = await request.form()
         file_field = form.get("file")
         if file_field is None:
-            return Response(
-                content=to_xml(Div(t("msg.no_file_selected", lang), cls="flash flash--error", id="backup-flash")),
-                media_type="text/html",
-            )
+            return _recovery_error(t("msg.no_file_selected", lang))
         # Stream the upload to a temp file so a multi-GB archive never sits in UI memory,
         # then forward it to the API as a streamed multipart file handle.
         import asyncio
@@ -2650,21 +2670,9 @@ def setup_routes(app):
                         r = await c.post("/backup/import", files={"file": (file_field.filename, fh, file_field.content_type or "application/octet-stream")})
             finally:
                 _Path(tmp.name).unlink(missing_ok=True)
-            if r.status_code >= 400:
-                detail = r.json().get("detail", r.text[:200]) if r.headers.get("content-type", "").startswith("application/json") else r.text[:200]
-                return Response(
-                    content=to_xml(Div(detail, cls="flash flash--error", id="backup-flash")),
-                    media_type="text/html",
-                )
         except httpx.HTTPError as exc:
-            return Response(
-                content=to_xml(Div(str(exc), cls="flash flash--error", id="backup-flash")),
-                media_type="text/html",
-            )
-        # The API returns a flash (success OR "Import failed: …") at HTTP 200 for the HTMX
-        # swap. Relay it verbatim instead of assuming success — otherwise a failed restore
-        # (e.g. a pg_restore version mismatch) is reported to the user as "imported".
-        return Response(content=r.text, media_type="text/html")
+            return _recovery_error(str(exc))
+        return _recovery_result(request, r)
 
 
 # ── Display cell helpers (click-to-edit pattern) ─────────────────────────
@@ -4098,11 +4106,37 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
     return _cloud_relay_unconnected(iid)
 
 
-def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
-    """Cloud Backup settings tab - full history UI with export/import."""
+def _backup_tab(is_install_owner: bool, company_backup: FT | str = "") -> FT:
+    """Backup tab: this company's backup, plus the way to System Recovery for the installation owner.
+
+    `company_backup` is the company backup section (download and restore of this
+    company only). Whole-installation controls never appear here: they live on
+    System Recovery, which only the installation owner can open.
+    """
+    recovery = Div(
+        H4(t("system_recovery.title"), cls="settings-section-title"),
+        P(t("system_recovery.scope"), cls="settings-hint"),
+        A(t("system_recovery.title"), href="/settings/system-recovery", cls="btn btn--secondary btn--sm"),
+        cls="mt-lg",
+    ) if is_install_owner else ""
+    return Div(
+        H3(t("settings.tab_backup"), cls="settings-section-title"),
+        company_backup,
+        recovery,
+        cls="settings-card",
+    )
+
+
+def _system_recovery_content(lang: str = "en", backup_data: dict | None = None) -> FT:
+    """System Recovery: whole-installation export and import, and the cloud recovery points."""
     from celerp.config import settings as _cfg
     from ui.components.backup import local_backup_buttons
     from ui.components.cloud_gate import upgrade_banner
+
+    heading = (
+        H3(t("system_recovery.title"), cls="settings-section-title"),
+        P(t("system_recovery.scope"), cls="flash flash--warning"),
+    )
 
     enc_ok = bool(backup_data and backup_data.get("enc_ok")) if backup_data is not None else bool(_cfg.backup_encryption_key)
     # Backup recovery is account-scoped, not Web-Access-scoped. A canceled paid
@@ -4120,7 +4154,7 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
 
     if not gw_ok:
         return Div(
-            H3(t("settings.tab_backup"), cls="settings-section-title"),
+            *heading,
             upgrade_banner(
                 t("cloud.backup_feature_name", lang),
                 t("cloud.backup_desc", lang),
@@ -4242,7 +4276,7 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     )
 
     return Div(
-        H3(t("settings.tab_backup"), cls="settings-section-title"),
+        *heading,
         local_section,
         how_it_works,
         status_section,
