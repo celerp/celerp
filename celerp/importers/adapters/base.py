@@ -79,6 +79,7 @@ class SourceScan:
     features: tuple[str, ...]
     coverage: tuple[CIFCoverageEntry, ...]
     questions: tuple[MappingQuestion, ...] = ()
+    lock_date: date | None = None             # the source's accounting lock date, if it has one
 
 
 @dataclass(frozen=True)

@@ -625,6 +625,7 @@ class CIFImportManifest(BaseModel):
     adapter_version: NonEmptyStr
     mode: CIFMode = CIFMode.FULL_HISTORY
     cutover_date: CIFDate | None = None
+    lock_date: CIFDate | None = None          # installed on the company when the migration finalizes
     exported_at: CIFDateTime
     bundle: CIFImportBundle
     coverage: list[CIFCoverageEntry] = Field(default_factory=list)
