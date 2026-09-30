@@ -78,7 +78,7 @@ function trackUpdater(updater, send) {
   updater.on("update-not-available", () =>
     apply("update-not-available", { type: "not-available" }));
   updater.on("error", (err) =>
-    apply("update-error", { type: "error", message: (err && err.message) || String(err) }));
+    apply("update-error", { type: "error", message: typeof err === "string" ? err : (err && err.message) || "" }));
 
   return () => ({ ...state });
 }

@@ -307,6 +307,7 @@ _VISIBLE_STATE_JS = """() => {
     restart: shown(q('.update-card__restart-btn')),
     check: shown(q('.update-card__check-btn')),
     progress: shown(q('.update-card__progress-bar')) ? q('.update-card__progress-fill').style.width : '',
+    log: shown(q('.update-card__log')) ? q('.update-card__log').textContent : '',
   };
 }"""
 
@@ -422,3 +423,43 @@ def test_not_available_restores_check_button(page, ui_server):
     assert seen["check"] is True
     assert seen["state"] == "Up to date"
     assert seen["badge"] == ""
+
+
+def test_update_found_without_version_lights_bell(page, ui_server):
+    """An update found with no version number still lights the bell."""
+    _fake_electron(page)
+    _open(page, f"{ui_server}/")
+    page.evaluate("() => window.__updaterEmit('update-available', {})")
+    seen = page.evaluate(_VISIBLE_STATE_JS)
+    assert seen["badge"] == "1"
+    assert seen["check"] is False
+
+
+def test_back_to_cached_page_shows_current_state(page, ui_server):
+    """Going Back to a page htmx restores from its history cache shows the
+    updater as it is now, and the card keeps following later events."""
+    _fake_electron(page, [_FOUND, _PROGRESS])
+    _open(page, f"{ui_server}/inventory")
+    page.fill("#search-input", "zzzz")
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') !== -1")
+    page.evaluate("() => window.__updaterEmit('update-downloaded', { version: '2.0.1' })")
+    ready = page.evaluate(_VISIBLE_STATE_JS)
+    assert ready["restart"] is True
+    page.go_back()
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') === -1")
+    page.wait_for_function("() => document.querySelector('.update-card__restart-btn').style.display !== 'none'")
+    assert page.evaluate(_VISIBLE_STATE_JS) == ready
+
+
+
+def test_card_follows_live_events_after_back_to_cached_page(page, ui_server):
+    """After Back restores a cached page, later updater events still reach its card."""
+    _fake_electron(page, [_FOUND])
+    _open(page, f"{ui_server}/inventory")
+    page.fill("#search-input", "zzzz")
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') !== -1")
+    page.go_back()
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') === -1")
+    page.evaluate("() => window.__updaterEmit('download-progress', { percent: 70 })")
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent.indexOf('70') !== -1")
+    assert page.evaluate(_VISIBLE_STATE_JS)["progress"] == "70%"

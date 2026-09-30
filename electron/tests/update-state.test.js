@@ -122,3 +122,23 @@ test("an updater error is forwarded as update-error, never as not-available",
     updater.emit("error", new Error("boom"));
     expect(sent.map(([ch]) => ch)).toEqual(["update-error"]);
   });
+
+test("an error with no usable message is stored with an empty message",
+  function test_error_without_message_is_stored_empty() {
+    for (const err of [undefined, null, {}, new Error("")]) {
+      const { updater, getUpdateState } = setup();
+      updater.emit("error", err);
+      expect(getUpdateState()).toEqual({ status: "error", version: "", percent: 0, message: "" });
+    }
+  });
+
+test("a check that finds nothing does not stop a download in progress",
+  function test_not_available_is_ignored_while_downloading() {
+    const { updater, sent, getUpdateState } = setup();
+    updater.emit("update-available", { version: "2.0.1" });
+    updater.emit("download-progress", { percent: 30 });
+    sent.length = 0;
+    updater.emit("update-not-available", {});
+    expect(getUpdateState()).toEqual({ status: "downloading", version: "2.0.1", percent: 30, message: "" });
+    expect(sent).toEqual([]);
+  });

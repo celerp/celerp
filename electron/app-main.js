@@ -771,12 +771,13 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on("error", (err) => {
-    // Always surface errors in the log, never silently swallow them; the
-    // state (trackUpdater) records them unless an update is already downloaded.
-    // Update failures must never interrupt work, but must be visible.
+    // Never silently swallow an error. The card shows it from the state
+    // (trackUpdater), except once an update is downloaded, when the state no
+    // longer changes, so the log carries it instead. Update failures must never
+    // interrupt work, but must be visible.
     const msg = err?.message ?? String(err);
     console.error("[updater] error:", msg);
-    sendLog("Update error: " + msg);
+    if (getUpdateState().status === "downloaded") sendLog("Update error: " + msg);
   });
 
   // Delay initial check until the renderer has loaded and registered its IPC handlers.

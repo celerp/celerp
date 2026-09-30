@@ -1032,7 +1032,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   /* ── Update status card ───────────────────────────────────────────── */
-  (function initUpdateCard() {
+  function initUpdateCard() {
     var card = document.getElementById('update-status-card');
     if (!card) return;
 
@@ -1086,8 +1086,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
       // One render for the main process's updater state, used for live events
       // and for the replay on every page load, so both always look the same.
-      // The bell counts any update the user has been told about: downloading,
-      // downloaded, or a download that then failed.
+      // The bell counts any update the user has been told about: found and
+      // downloading, downloaded, or a download that then failed.
       function renderUpdateState(s) {
         var i18n = window.__shellI18n;
         var v = s.version || i18n.updateWord;
@@ -1108,27 +1108,27 @@ document.addEventListener('DOMContentLoaded', function() {
           setState(i18n.upToDate, false);
           resetToIdle();
         }
-        window.celerpSetUpdateBell(s.status !== 'idle' && !!s.version);
+        window.celerpSetUpdateBell(s.status === 'downloading' || s.status === 'downloaded'
+                                   || (s.status === 'error' && !!s.version));
       }
 
-      // Log lines: always show, with no isManualCheck gate.
-      window.celerp.onUpdateLog(function(msg) { appendLog(msg); });
+      // Updater events are subscribed once per page load and always reach the
+      // card on screen now, which a Back restore from the htmx history cache
+      // replaces with fresh elements.
+      window._celerpUpdateCard = { render: renderUpdateState, log: appendLog };
+      if (!window._celerpUpdateSubscribed) {
+        window._celerpUpdateSubscribed = true;
+        var render = function(s) { window._celerpUpdateCard.render(s); };
+        // Log lines: always show, with no isManualCheck gate.
+        window.celerp.onUpdateLog(function(msg) { window._celerpUpdateCard.log(msg); });
+        window.celerp.onUpdateAvailable(render);
+        window.celerp.onDownloadProgress(render);
+        window.celerp.onUpdateDownloaded(render);
+        window.celerp.onUpdateNotAvailable(render);
+        window.celerp.onUpdateError(render);
+      }
 
-      window.celerp.onUpdateAvailable(renderUpdateState);
-      window.celerp.onDownloadProgress(renderUpdateState);
-      window.celerp.onUpdateError(renderUpdateState);
-
-      window.celerp.onUpdateNotAvailable(function(s) {
-        renderUpdateState(s);
-        appendLog(window.__shellI18n.alreadyLatest);
-      });
-
-      window.celerp.onUpdateDownloaded(function(s) {
-        renderUpdateState(s);
-        appendLog(window.__shellI18n.updateDownloadedLog.replace('{version}', s.version || window.__shellI18n.updateWord));
-      });
-
-      // Replay whatever the updater did before this page loaded. Until it
+      // Replay whatever the updater did before this card appeared. Until it
       // answers, the card stays as rendered (no status claimed).
       window.celerp.getUpdateState().then(renderUpdateState).catch(function() {});
 
@@ -1298,7 +1298,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
       refresh(false);
     }
-  })();
+  }
+  initUpdateCard();
+  // Back and Forward can restore a page from the htmx history cache instead of
+  // loading it. The restored card is a saved copy with no listeners that shows
+  // the status from when it was saved, so set it up again.
+  document.addEventListener('htmx:historyRestore', initUpdateCard);
 });
 """
 
@@ -1657,9 +1662,7 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "downloadingVersion": t("shell.js_downloading_version", lang),
         "updateWord": t("shell.js_update_word", lang),
         "downloadingPct": t("shell.js_downloading_pct", lang),
-        "alreadyLatest": t("shell.js_already_latest", lang),
         "versionReady": t("shell.js_version_ready", lang),
-        "updateDownloadedLog": t("shell.js_update_downloaded_log", lang),
         "unknownError": t("shell.unknown_error", lang),
         "updateCheckFailed": t("shell.update_check_failed", lang),
         "errorPrefix": t("shell.error_prefix", lang),
