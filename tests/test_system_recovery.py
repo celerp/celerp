@@ -506,3 +506,11 @@ async def test_system_recovery_success_ends_session(ui, real_engine, tmp_path, m
     lead = r.headers.get("location", "") + r.headers.get("hx-redirect", "") + r.text
     assert "/login" in lead or "/backup/restart-app" in lead or "restart" in lead.lower()
     assert "Import failed" not in r.text and "Restore failed" not in r.text
+
+
+async def test_system_recovery_sign_in_button_is_labelled():
+    """The sign-in button offered after a recovery shows its label, never a raw text key."""
+    from celerp_backup.routes import _restore_flash
+    body = _restore_flash(_result(), "Restored.").body.decode()
+    assert re.search(r'<a href="/login"[^>]*>Sign in</a>', body), body
+    assert "system_recovery." not in body

@@ -107,7 +107,7 @@ def _restore_flash(result, base_msg: str) -> Response:
         parts.append(t("system_recovery.signed_out"))
         body = Div(
             Div(" ".join(parts), cls=f"flash flash--{kind}"),
-            A(t("system_recovery.sign_in"), href="/login", cls="btn btn--primary mt-sm"),
+            A(t("btn.sign_in"), href="/login", cls="btn btn--primary mt-sm"),
             id="backup-flash",
         )
     return Response(content=to_xml(body), media_type="text/html",
