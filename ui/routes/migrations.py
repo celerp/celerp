@@ -811,7 +811,7 @@ def _run_actions(run: dict) -> FT:
     run_id = run["id"]
     status = run.get("status")
     buttons = []
-    if status in ("running", "reconciling"):
+    if status == "running":  # a run that is reconciling cannot be cancelled
         buttons.append(Form(Button(t("btn.cancel"), type="submit", cls="btn btn--secondary"),
                             method="post", action=f"/migrations/{run_id}/cancel"))
     if status == "interrupted":

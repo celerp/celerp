@@ -24,6 +24,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 
+from celerp.models.migration import MigrationStatus
 from test_helpers import make_test_token
 
 
@@ -878,3 +879,16 @@ async def test_company_mode_lost_start_response_returns_to_the_same_run(ui, rout
     r = await ui.post(f"{base}/start", data={"company_name": "Harbor Goods Ltd"})
     assert r.status_code == 303 and r.headers["location"] == run_url, r.text
     assert len(fake_api.runs) == 1
+
+
+@pytest.mark.parametrize("status", [s.value for s in MigrationStatus])
+def test_cancel_offered_only_where_the_run_can_be_cancelled(status):
+    """RED before the change: Cancel shows while reconciling, where the run cannot be
+    cancelled, so pressing it only returns an error."""
+    from fasthtml.common import to_xml
+
+    from celerp.models.migration import can_transition
+    from ui.routes.migrations import _run_actions
+
+    shown = "/cancel" in to_xml(_run_actions({"id": "r1", "status": status}))
+    assert shown == can_transition(MigrationStatus(status), MigrationStatus.CANCEL_REQUESTED)
