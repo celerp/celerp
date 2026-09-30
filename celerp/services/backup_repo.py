@@ -11,7 +11,7 @@ SHA-256 of its plaintext, encrypted client-side and stored once on the relay. A
 daily backup sends only what changed.
 
 Restore downloads the manifest, fetches its blobs, reassembles a ``.celerp-backup``
-and feeds the canonical ``run_import`` engine — the same importer as a local restore.
+and feeds the canonical ``run_recovery`` engine, the same importer as a local restore.
 """
 
 from __future__ import annotations
@@ -39,25 +39,10 @@ _CHUNK = 1024 * 1024  # 1 MiB read window for streaming hashes
 _ENC_OVERHEAD = 28
 
 
-def _attachment_dirs() -> list[Path]:
-    return [settings.data_dir / "static" / "attachments", settings.data_dir / "ai_uploads"]
-
-
 def _members() -> list[tuple[str, Path]]:
-    """(arcname, path) for every backed-up file, arcname relative to the dir's parent
-    so it round-trips through the same ``.celerp-backup`` layout as a local export."""
-    out: list[tuple[str, Path]] = []
-    for d in _attachment_dirs():
-        if not d.exists():
-            continue
-        for p in sorted(d.rglob("*")):
-            if p.is_file():
-                try:
-                    rel = str(p.relative_to(d.parent))
-                except ValueError:
-                    rel = p.name
-                out.append((rel, p))
-    return out
+    """(arcname, path) for every backed-up file, in the local export's layout."""
+    from celerp.services.backup_export import archive_members, restore_roots
+    return archive_members(restore_roots().values())
 
 
 def _hash_file(path: Path) -> tuple[str, int]:
@@ -71,17 +56,20 @@ def _hash_file(path: Path) -> tuple[str, int]:
 
 
 async def _build_meta() -> dict:
-    from celerp.services.backup_export import _pg_version, _read_company_enabled_modules, _version
+    from celerp.services.backup_export import _pg_version, _version, required_installation_modules
     import datetime as _dt
 
     from celerp.config import read_config
+    from celerp.db import get_session_ctx
     cfg = read_config()
+    async with get_session_ctx() as session:
+        enabled_modules = sorted(await required_installation_modules(session))
     return {
         "celerp_version": _version(),
         "pg_version": _pg_version(),
         "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "company_name": cfg.get("company", {}).get("name", "unknown"),
-        "enabled_modules": await _read_company_enabled_modules(),
+        "enabled_modules": enabled_modules,
     }
 
 
@@ -239,10 +227,10 @@ async def restore_snapshot(snapshot_id: str) -> BackupResult:
     if not settings.backup_encryption_key:
         return BackupResult(ok=False, size_bytes=0, error="BACKUP_ENCRYPTION_KEY is not configured")
     try:
-        from celerp.services.backup_import import run_import
+        from celerp.services import backup_import
         path = await reassemble_snapshot(snapshot_id)
         try:
-            return await run_import(path)
+            return await backup_import.run_recovery(path)
         finally:
             path.unlink(missing_ok=True)
     except Exception as exc:

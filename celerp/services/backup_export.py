@@ -3,7 +3,7 @@
 
 """Export a full local backup as .celerp-backup (unencrypted tar.gz).
 
-``export_full()`` bundles a local pg_dump + attachments + meta.json. Cloud snapshots
+``export_full()`` bundles a local pg_dump + the restore-owned file roots + meta.json. Cloud snapshots
 are rebuilt into the same format by ``backup_repo.reassemble_snapshot``.
 """
 
@@ -39,7 +39,25 @@ def _pg_version() -> str:
         return "unknown"
 
 
-def _build_archive(dump: bytes, attachment_dirs: list[Path], meta: dict) -> Path:
+def archive_members(dirs) -> list[tuple[str, Path]]:
+    """(arcname, path) for every file under *dirs*, arcname relative to the dir's parent
+    so local exports and cloud snapshots share one ``.celerp-backup`` layout."""
+    out: list[tuple[str, Path]] = []
+    for d in dirs:
+        if not d.exists():
+            continue
+        for p in sorted(d.rglob("*")):
+            # Skip regenerable Python bytecode: bundling it bloats the archive and
+            # stale .pyc across machines/python versions is actively harmful on
+            # restore (custom modules carry these).
+            if "__pycache__" in p.parts or p.suffix == ".pyc":
+                continue
+            if p.is_file():
+                out.append((str(p.relative_to(d.parent)), p))
+    return out
+
+
+def _build_archive(dump: bytes, dirs: list[Path], meta: dict) -> Path:
     """Build a .celerp-backup tar.gz archive. Returns path to temp file."""
     tmp = tempfile.NamedTemporaryFile(suffix=".celerp-backup", delete=False)
     tmp.close()
@@ -56,93 +74,61 @@ def _build_archive(dump: bytes, attachment_dirs: list[Path], meta: dict) -> Path
         info.size = len(meta_bytes)
         tar.addfile(info, io.BytesIO(meta_bytes))
 
-        # File directories (attachments, ai_uploads, custom modules)
-        for d in attachment_dirs:
-            if not d.exists():
-                continue
-            for p in sorted(d.rglob("*")):
-                # Skip regenerable Python bytecode: bundling it bloats the
-                # archive and stale .pyc across machines/python versions is
-                # actively harmful on restore (custom modules carry these).
-                if "__pycache__" in p.parts or p.suffix == ".pyc":
-                    continue
-                if p.is_file():
-                    try:
-                        rel = str(p.relative_to(d.parent))
-                    except ValueError:
-                        rel = p.name
-                    tar.add(str(p), arcname=rel)
+        for arcname, path in archive_members(dirs):
+            tar.add(str(path), arcname=arcname)
 
     return Path(tmp.name)
 
 
-async def _read_company_enabled_modules() -> list[str]:
-    """Read the first available company's enabled modules from the DB.
+def restore_roots() -> dict[str, Path]:
+    """The file roots a whole-installation backup carries, keyed by their archive prefix.
 
-    Returns [] if no company exists (fresh install exporting nothing useful)
-    or on any DB error (we never want a bad DB to fail the export).
-
-    This is a soft read: the export is allowed to proceed without the
-    modules list. The restore side will fall back to the company row it
-    just restored from the dump, so the worst case is "meta doesn't know
-    what was enabled" — same as the pre-fix behavior.
+    Attachments, AI uploads and custom module code live on disk, not in the database
+    dump; a restore on another machine needs them to use the restored rows.
     """
-    try:
-        from sqlalchemy import select
-        from celerp.db import SessionLocal
-        from celerp.models.company import Company
-    except Exception:
-        return []
+    from celerp.config import settings
+    return {
+        "attachments": settings.data_dir / "static" / "attachments",
+        "ai_uploads": settings.data_dir / "ai_uploads",
+        "modules": settings.data_dir / "modules",
+    }
 
-    try:
-        async with SessionLocal() as session:
-            from celerp.models.company import Company as _Company
-            result = await session.execute(select(_Company).limit(1))
-            company = result.scalar_one_or_none()
-            if company is None:
-                return []
-            settings_dict = company.settings or {}
-            raw = settings_dict.get("enabled_modules") or []
-            return list(raw) if isinstance(raw, list) else []
-    except Exception as exc:
-        log.warning("Could not read enabled_modules for export: %s", exc)
-        return []
+
+async def required_installation_modules(session) -> set[str]:
+    """Every module enabled by any company of this installation."""
+    from sqlalchemy import select
+    from celerp.models.company import Company
+
+    required: set[str] = set()
+    for company_settings in (await session.scalars(select(Company.settings))).all():
+        names = (company_settings or {}).get("enabled_modules") or []
+        if isinstance(names, list):
+            required.update(str(n) for n in names)
+    return required
 
 
 async def export_full() -> Path:
-    """Export pg_dump + all attachments + meta.json as .celerp-backup.
+    """Export pg_dump + all restore-owned files + meta.json as .celerp-backup.
 
-    Works without Cloud subscription — pure local operation.
+    Works without Cloud subscription - pure local operation.
     Returns path to temp file.
     """
+    import asyncio
+    import datetime
+
     from celerp.config import settings, read_config
-    from celerp.services.backup import dump_database
+    from celerp.db import get_session_ctx
+    from celerp.services import backup
 
-    dump = dump_database(settings.database_url)
-
-    cfg = read_config()
-    company_name = cfg.get("company", {}).get("name", "unknown")
-    enabled_modules = await _read_company_enabled_modules()
+    dump = await asyncio.to_thread(backup.dump_database, settings.database_url)
+    async with get_session_ctx() as session:
+        enabled_modules = sorted(await required_installation_modules(session))
 
     meta = {
         "celerp_version": _version(),
         "pg_version": _pg_version(),
-        "created_at": __import__("datetime").datetime.now(
-            __import__("datetime").timezone.utc
-        ).isoformat(),
-        "company_name": company_name,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "company_name": read_config().get("company", {}).get("name", "unknown"),
         "enabled_modules": enabled_modules,
     }
-
-    return _build_archive(
-        dump,
-        [
-            settings.data_dir / "static" / "attachments",
-            settings.data_dir / "ai_uploads",
-            # Custom module code lives on disk (user data), not in the DB dump.
-            # Bundle it so a restore on another machine has the code to interpret
-            # the module's restored tables — not just the tables.
-            settings.data_dir / "modules",
-        ],
-        meta,
-    )
+    return await asyncio.to_thread(_build_archive, dump, list(restore_roots().values()), meta)

@@ -8,7 +8,7 @@ Covers:
     re-uploaded on the next snapshot
   - round-trip: a snapshot reassembles into a valid .celerp-backup whose database dump
     and files match the originals
-  - restore: restore_snapshot feeds the reassembled archive to run_import
+  - restore: restore_snapshot feeds the reassembled archive to run_recovery
   - write-pause (#161): emit_event returns 503 while a backup is in progress, and is
     unaffected otherwise
 """
@@ -105,10 +105,10 @@ def fake_repo(monkeypatch, tmp_path):
 
     settings.backup_encryption_key = base64.b64encode(secrets.token_bytes(32)).decode()
 
-    # data_dir/static/attachments + data_dir/ai_uploads, real files (hashed for real)
+    # The restore-owned roots under data_dir, real files (hashed for real)
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
     att = tmp_path / "static" / "attachments"
     att.mkdir(parents=True)
-    monkeypatch.setattr(backup_repo, "_attachment_dirs", lambda: [att])
     return store, snapshots, put_calls, att
 
 
@@ -170,7 +170,7 @@ async def test_snapshot_round_trip_rebuilds_valid_archive(fake_repo):
 
 
 @pytest.mark.asyncio
-async def test_restore_snapshot_invokes_run_import(fake_repo, monkeypatch):
+async def test_restore_snapshot_invokes_run_recovery(fake_repo, monkeypatch):
     store, snapshots, put_calls, att = fake_repo
     (att / "f.txt").write_bytes(b"X")
     await backup_repo.run_snapshot(label="r")
@@ -178,13 +178,13 @@ async def test_restore_snapshot_invokes_run_import(fake_repo, monkeypatch):
 
     called = {}
 
-    async def fake_run_import(path):
+    async def fake_run_recovery(path):
         from celerp.services.backup import BackupResult
         called["path"] = str(path)
         assert path.exists()
         return BackupResult(ok=True, size_bytes=0)
 
-    monkeypatch.setattr("celerp.services.backup_import.run_import", fake_run_import)
+    monkeypatch.setattr("celerp.services.backup_import.run_recovery", fake_run_recovery)
     result = await backup_repo.restore_snapshot(snap_id)
     assert result.ok, result.error
     assert called["path"].endswith(".celerp-backup")

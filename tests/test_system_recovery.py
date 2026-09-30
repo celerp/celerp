@@ -7,6 +7,7 @@ restore results, the safety point, and ending every session after a recovery."""
 from __future__ import annotations
 
 import base64
+import html
 import io
 import json
 import re
@@ -56,8 +57,9 @@ def _result(**kw):
     return BackupResult(**{"ok": True, "size_bytes": 0, **kw})
 
 
-def _import_internals(monkeypatch, tmp_path, *, safety=None) -> dict:
-    """Stub the database, file and module steps of run_import; returns the recorded calls."""
+def _import_internals(monkeypatch, tmp_path, *, safety_error: str | None = None) -> dict:
+    """Stub the database and connector steps of a recovery and the safety archive; returns the
+    recorded calls. With ``safety_error`` the safety archive cannot be made."""
     import celerp.connectors.ownership as ownership
     from celerp.config import settings
     from celerp.services import backup_import
@@ -65,12 +67,17 @@ def _import_internals(monkeypatch, tmp_path, *, safety=None) -> dict:
     calls: dict[str, list] = {"safety": [], "restore": []}
     monkeypatch.setattr(settings, "data_dir", tmp_path)
 
-    async def _safety(label):
-        calls["safety"].append(label)
-        return safety or _result()
+    async def _safety():
+        calls["safety"].append(True)
+        if safety_error:
+            return backup_import.SafetyResult(ok=False, error=safety_error)
+        path = tmp_path / "recovery-safety" / "pre-recovery.celerp-backup"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"SAFETY")
+        return backup_import.SafetyResult(ok=True, path=path)
 
-    async def _restore(dump_bytes, url):
-        calls["restore"].append(dump_bytes)
+    async def _restore(dump_path, url):
+        calls["restore"].append(dump_path.read_bytes())
 
     @asynccontextmanager
     async def _guard():
@@ -79,17 +86,12 @@ def _import_internals(monkeypatch, tmp_path, *, safety=None) -> dict:
     async def _none(*a, **kw):
         return None
 
-    async def _no_modules():
-        return []
-
-    monkeypatch.setattr(backup_import, "_safety_backup", _safety)
+    monkeypatch.setattr(backup_import, "make_safety_archive", _safety)
     monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
     monkeypatch.setattr(ownership, "connector_maintenance_guard", _guard)
     for name in ("_revoke_current_connector_state", "_dispose_engine", "_reconcile_schema",
-                 "_clear_restored_connector_state", "_extract_files"):
+                 "_clear_restored_connector_state"):
         monkeypatch.setattr(backup_import, name, _none)
-    monkeypatch.setattr(backup_import, "_activate_modules", AsyncMock(return_value=False))
-    monkeypatch.setattr(backup_import, "_read_modules_from_restored_db", _no_modules)
     return calls
 
 
@@ -224,7 +226,7 @@ async def test_legacy_import_api_install_owner_only(real_client, real_engine, tm
     """The whole-installation import refuses a company owner who is not the installation owner, and never imports."""
     from celerp.services import backup_import
     run = AsyncMock(return_value=_result())
-    monkeypatch.setattr(backup_import, "run_import", run)
+    monkeypatch.setattr(backup_import, "run_recovery", run)
     await owner(real_engine)
     _, _, tok = await _company_owner(real_engine)
     archive = _archive(tmp_path / "whole.celerp-backup").read_bytes()
@@ -237,19 +239,25 @@ async def test_legacy_import_api_install_owner_only(real_client, real_engine, tm
 
 
 async def test_system_recovery_continue_install_owner_only(ui, real_client, real_engine, tmp_path, monkeypatch):
-    """Continuing a recovery, by import or cloud restore, is refused for anyone but the installation owner."""
+    """Continuing a recovery, by import, cloud restore or restoring without a safety copy, is
+    refused for anyone but the installation owner."""
     from celerp.services import backup_import, backup_repo
     run = AsyncMock(return_value=_result())
     snap = AsyncMock(return_value=_result())
-    monkeypatch.setattr(backup_import, "run_import", run)
+    resume = AsyncMock(return_value=_result())
+    monkeypatch.setattr(backup_import, "run_recovery", run)
+    monkeypatch.setattr(backup_import, "continue_recovery", resume)
     monkeypatch.setattr(backup_repo, "restore_snapshot", snap)
     await owner(real_engine)
     _, _, tok = await _company_owner(real_engine)
     archive = _archive(tmp_path / "whole.celerp-backup").read_bytes()
+    confirm = {"confirmation_id": "a" * 32, "digest": "0" * 64}
 
     r = await real_client.post("/backup/import", files={"file": ("whole.celerp-backup", archive)}, headers=auth(tok))
     assert r.status_code == 403
     r = await real_client.post("/backup/restore/snap-1", headers=auth(tok))
+    assert r.status_code == 403
+    r = await real_client.post("/backup/import/continue", data=confirm, headers=auth(tok))
     assert r.status_code == 403
 
     ui.cookies.set("celerp_token", tok)
@@ -259,8 +267,12 @@ async def test_system_recovery_continue_install_owner_only(ui, real_client, real
     r = await ui.post("/backup/restore/snap-1")
     assert r.status_code in (200, 403)
     assert "Database restored" not in r.text
+    r = await ui.post("/backup/import/continue", data=confirm)
+    assert r.status_code in (200, 403)
+    assert "Database restored" not in r.text
     run.assert_not_called()
     snap.assert_not_called()
+    resume.assert_not_called()
 
 
 # ── Restore results ──────────────────────────────────────────────────────────
@@ -278,14 +290,14 @@ async def test_cloud_restore_failure_propagates(tmp_path, monkeypatch):
 
     monkeypatch.setattr(backup_repo, "reassemble_snapshot", _reassemble)
     failed = _result(ok=False, error="pg_restore exited with status 1")
-    monkeypatch.setattr(backup_import, "run_import", AsyncMock(return_value=failed))
+    monkeypatch.setattr(backup_import, "run_recovery", AsyncMock(return_value=failed))
     result = await backup_repo.restore_snapshot("snap-1")
     assert result.ok is False
     assert result.error == "pg_restore exited with status 1"
     assert not archive.exists()
 
     done = _result(size_bytes=42, warnings=["celerp-example-widgets"], restart_scheduled=True)
-    monkeypatch.setattr(backup_import, "run_import", AsyncMock(return_value=done))
+    monkeypatch.setattr(backup_import, "run_recovery", AsyncMock(return_value=done))
     result = await backup_repo.restore_snapshot("snap-1")
     assert result.ok is True
     assert result.warnings == ["celerp-example-widgets"]
@@ -302,7 +314,7 @@ async def test_cloud_restore_failure_shown_in_ui(ui, real_engine, tmp_path, monk
         return _archive(tmp_path / "snap.celerp-backup")
 
     monkeypatch.setattr(backup_repo, "reassemble_snapshot", _reassemble)
-    monkeypatch.setattr(backup_import, "run_import",
+    monkeypatch.setattr(backup_import, "run_recovery",
                         AsyncMock(return_value=_result(ok=False, error="pg_restore exited with status 1")))
     _, _, tok = await _install_owner(real_engine)
     ui.cookies.set("celerp_token", tok)
@@ -374,7 +386,7 @@ async def test_cloud_snapshot_relay_payload_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(backup_repo, "_relay", _relay)
     monkeypatch.setattr(backup_repo, "dump_database", lambda url: dump)
     monkeypatch.setattr(backup_repo, "_build_meta", _meta)
-    monkeypatch.setattr(backup_repo, "_attachment_dirs", lambda: [att])
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "backup_encryption_key", _key())
     monkeypatch.setattr(settings, "cloud_disconnected", False)
 
@@ -429,7 +441,7 @@ async def test_system_recovery_validates_before_safety_point(real_client, real_e
            _archive(tmp_path / "no-meta.celerp-backup", members=("database.dump",))]
     bad[0].write_bytes(b"not a tar archive")
     for path in bad:
-        result = await backup_import.run_import(path)
+        result = await backup_import.run_recovery(path)
         assert result.ok is False and result.error, path.name
     assert calls == {"safety": [], "restore": []}
 
@@ -441,41 +453,58 @@ async def test_system_recovery_validates_before_safety_point(real_client, real_e
 
 
 async def test_system_recovery_warns_when_safety_point_fails(real_engine, tmp_path, monkeypatch):
-    """When the safety backup fails the restore still runs and the result carries the safety warning."""
+    """When the safety backup fails nothing is restored and the result asks to confirm, with the reason."""
     from celerp.services import backup_import
-    calls = _import_internals(monkeypatch, tmp_path, safety=_result(ok=False, error="relay unavailable"))
-    result = await backup_import.run_import(_archive(tmp_path / "whole.celerp-backup", dump=b"PGDUMP-DATA"))
-    assert result.ok is True, result.error
-    assert calls["restore"] == [b"PGDUMP-DATA"]
+    calls = _import_internals(monkeypatch, tmp_path, safety_error="No space left on device")
+    result = await backup_import.run_recovery(_archive(tmp_path / "whole.celerp-backup", dump=b"PGDUMP-DATA"))
+    assert result.ok is False
+    assert result.needs_confirmation is True
+    assert calls["restore"] == []
     assert len(calls["safety"]) == 1
-    assert any(SAFETY_WARNING in w for w in result.warnings)
+    assert SAFETY_WARNING in result.error and "No space left on device" in result.error
 
 
 async def test_system_recovery_warns_when_no_safety_point_can_be_made(real_engine, tmp_path, monkeypatch):
-    """With no backup encryption key set no safety backup can be made; the restore runs and says so."""
+    """When no safety archive of the current installation can be made, nothing is restored and the
+    owner is told why."""
     from celerp.config import settings
-    from celerp.services import backup_import
-    safety_backup = backup_import._safety_backup
+    from celerp.services import backup_export, backup_import
+    make_safety_archive = backup_import.make_safety_archive
     calls = _import_internals(monkeypatch, tmp_path)
-    monkeypatch.setattr(backup_import, "_safety_backup", safety_backup)
+    monkeypatch.setattr(backup_import, "make_safety_archive", make_safety_archive)
     monkeypatch.setattr(settings, "backup_encryption_key", None)
-    result = await backup_import.run_import(_archive(tmp_path / "whole.celerp-backup", dump=b"PGDUMP-DATA"))
-    assert result.ok is True, result.error
-    assert calls["restore"] == [b"PGDUMP-DATA"]
-    assert any(SAFETY_WARNING in w for w in result.warnings)
+
+    async def _no_export():
+        raise RuntimeError("pg_dump not found in PATH")
+
+    monkeypatch.setattr(backup_export, "export_full", _no_export)
+    result = await backup_import.run_recovery(_archive(tmp_path / "whole.celerp-backup", dump=b"PGDUMP-DATA"))
+    assert result.ok is False and result.needs_confirmation is True
+    assert calls["restore"] == []
+    assert SAFETY_WARNING in result.error and "pg_dump not found in PATH" in result.error
 
 
 async def test_system_recovery_continues_when_safety_point_fails(real_client, real_engine, tmp_path, monkeypatch):
-    """A whole-installation import whose safety backup fails still restores and says the safety backup was not made."""
-    calls = _import_internals(monkeypatch, tmp_path, safety=_result(ok=False, error="relay unavailable"))
+    """A whole-installation import whose safety backup fails restores nothing until the owner
+    explicitly continues without a safety copy; then it restores the same upload."""
+    calls = _import_internals(monkeypatch, tmp_path, safety_error="No space left on device")
     _, _, tok = await _install_owner(real_engine)
     archive = _archive(tmp_path / "whole.celerp-backup", dump=b"PGDUMP-DATA").read_bytes()
     r = await real_client.post("/backup/import", files={"file": ("whole.celerp-backup", archive)}, headers=auth(tok))
     assert r.status_code == 200, r.text
-    assert calls["restore"] == [b"PGDUMP-DATA"]
-    assert "Imported backup from Harbor Goods Ltd" in r.text
+    assert calls["restore"] == []
     assert SAFETY_WARNING in r.text
-    assert "Import failed" not in r.text
+    assert "Imported backup" not in r.text and "Import failed" not in r.text
+    button = re.search(r'<button[^>]*hx-post="/backup/import/continue"[^>]*>', r.text)
+    assert button, r.text
+    match = re.search(r"""hx-vals=(["'])(.*?)\1""", button.group(0))
+    assert match, r.text
+    vals = json.loads(html.unescape(match.group(2)))
+
+    r = await real_client.post("/backup/import/continue", data=vals, headers=auth(tok))
+    assert r.status_code == 200, r.text
+    assert calls["restore"] == [b"PGDUMP-DATA"]
+    assert "Database restored from the recovery point." in r.text
 
 
 # ── Sessions after a recovery ────────────────────────────────────────────────
@@ -487,7 +516,7 @@ async def test_pre_restore_token_rejected_after_system_recovery(real_client, rea
     _, _, tok = await _install_owner(real_engine)
     assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 200
 
-    result = await backup_import.run_import(_archive(tmp_path / "whole.celerp-backup"))
+    result = await backup_import.run_recovery(_archive(tmp_path / "whole.celerp-backup"))
     assert result.ok is True, result.error
     r = await real_client.get("/companies/me", headers=auth(tok))
     assert r.status_code == 401
@@ -505,7 +534,7 @@ async def test_system_recovery_success_ends_session(ui, real_engine, tmp_path, m
         return _archive(tmp_path / "snap.celerp-backup")
 
     monkeypatch.setattr(backup_repo, "reassemble_snapshot", _reassemble)
-    monkeypatch.setattr(backup_import, "run_import", AsyncMock(return_value=_result(size_bytes=6)))
+    monkeypatch.setattr(backup_import, "run_recovery", AsyncMock(return_value=_result(size_bytes=6)))
     _, _, tok = await _install_owner(real_engine)
     ui.cookies.set("celerp_token", tok)
     ui.cookies.set("celerp_refresh", "refresh-before-restore")

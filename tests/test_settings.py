@@ -463,7 +463,7 @@ class TestRestoreJourneyNotice:
         (tmp_path / RESTORE_NOTICE_FILE).write_text(_json.dumps({
             "company_name": "Acme",
             "warnings": ["celerp-fictional"],
-            "schema_warning": None,
+            "safety_archive": "/data/recovery-safety/pre-recovery.celerp-backup",
             "restart_scheduled": True,
         }))
         with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
@@ -471,6 +471,7 @@ class TestRestoreJourneyNotice:
             assert r.status_code == 200
             assert "Backup from Acme restored" in r.text
             assert "celerp-fictional" in r.text
+            assert "/data/recovery-safety/pre-recovery.celerp-backup" in r.text
             assert not (tmp_path / RESTORE_NOTICE_FILE).exists()  # consumed
 
             r2 = await ui_client.get("/login")

@@ -10,12 +10,14 @@ Endpoints:
   GET  /backup/export             Export full local backup (.celerp-backup)
   GET  /backup/export/{id}        Export a cloud backup as .celerp-backup
   POST /backup/import             Import a .celerp-backup file (authenticated)
+  POST /backup/import/continue    Continue a staged recovery without a safety copy
   POST /backup/import-bootstrap   Import a .celerp-backup file (no auth, pre-bootstrap only)
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,9 +95,9 @@ def _restore_flash(result, base_msg: str) -> Response:
     from celerp.services.backup_import import SESSION_ENDED_HEADER
 
     parts = [base_msg, *result.warnings]
-    if result.schema_warning:
-        parts.append(f"Warning: {result.schema_warning}")
-    kind = "warning" if (result.warnings or result.schema_warning) else "success"
+    if result.safety_archive:
+        parts.append(t("system_recovery.safety_saved", path=result.safety_archive))
+    kind = "warning" if result.warnings else "success"
     if result.restart_scheduled:
         parts.append(t("settings.restarting_automatically"))
         body = Div(
@@ -112,6 +114,34 @@ def _restore_flash(result, base_msg: str) -> Response:
         )
     return Response(content=to_xml(body), media_type="text/html",
                     headers={SESSION_ENDED_HEADER: "1"})
+
+
+def _recovery_response(result, success_msg: str, failure_prefix: str) -> Response:
+    """The page's answer to a recovery: restored, waiting for confirmation, or failed."""
+    if result.needs_confirmation:
+        return _confirm_without_safety(result)
+    if not result.ok:
+        return _flash(f"{failure_prefix}: {result.error or 'Unknown error'}", "error")
+    return _restore_flash(result, success_msg)
+
+
+def _confirm_without_safety(result) -> Response:
+    """No safety copy could be made, so nothing changed: say why and offer to continue
+    from the staged backup without one."""
+    from fasthtml.common import Button, Div, to_xml
+    body = Div(
+        Div(f"{result.error} {t('system_recovery.safety_failed_confirm')}", cls="flash flash--warning"),
+        Button(
+            t("system_recovery.continue_without_safety"),
+            hx_post="/backup/import/continue",
+            hx_vals=json.dumps({"confirmation_id": result.confirmation_id, "digest": result.archive_digest}),
+            hx_target="#backup-flash",
+            hx_swap="outerHTML",
+            cls="btn btn--danger mt-sm",
+        ),
+        id="backup-flash",
+    )
+    return Response(content=to_xml(body), media_type="text/html")
 
 
 def _backup_table(items: list[dict]):
@@ -218,9 +248,7 @@ async def restore_backup(backup_id: str):
     """Restore a cloud snapshot (database + files) via the canonical importer."""
     from celerp.services import backup_repo
     result = await backup_repo.restore_snapshot(backup_id)
-    if not result.ok:
-        return _flash(f"Restore failed: {result.error or 'Unknown error'}", "error")
-    return _restore_flash(result, t("system_recovery.restored"))
+    return _recovery_response(result, t("system_recovery.restored"), "Restore failed")
 
 
 @router.get("/export")
@@ -256,7 +284,7 @@ async def import_backup(
     session: AsyncSession = Depends(get_session),
 ):
     """Import a .celerp-backup file."""
-    from celerp.services.backup_import import run_import, validate_archive
+    from celerp.services.backup_import import run_recovery, validate_archive
 
     tmp_path = await _spool_upload(file)
     try:
@@ -266,14 +294,26 @@ async def import_backup(
             return _flash(str(exc), "error")
 
         await session.close()
-        result = await run_import(tmp_path)
-        if not result.ok:
-            return _flash(f"Import failed: {result.error or 'Unknown error'}", "error")
-        return _restore_flash(
-            result, t("system_recovery.imported", company=meta.company_name or "unknown"),
+        result = await run_recovery(tmp_path)
+        return _recovery_response(
+            result, t("system_recovery.imported", company=meta.company_name or "unknown"), "Import failed",
         )
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+@router.post("/import/continue")
+async def continue_import(
+    confirmation_id: str = Form(...),
+    digest: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+):
+    """Restore a staged recovery without a safety copy, on the owner's explicit confirmation."""
+    from celerp.services import backup_import
+
+    await session.close()
+    result = await backup_import.continue_recovery(confirmation_id, digest)
+    return _recovery_response(result, t("system_recovery.restored"), "Restore failed")
 
 
 # ── Bootstrap import (public — no auth, only works before first user exists) ──
@@ -296,7 +336,7 @@ async def import_backup_bootstrap(
     from sqlalchemy import select
     from celerp.models.company import User
     from celerp.services import bootstrap
-    from celerp.services.backup_import import run_import, validate_archive
+    from celerp.services.backup_import import bootstrap_recovery, validate_archive
 
     setup_code_configured = bootstrap.verify_setup_code(setup_code)
     existing = (await session.execute(select(User.id).limit(1))).scalar_one_or_none()
@@ -323,7 +363,7 @@ async def import_backup_bootstrap(
                     detail=_ALREADY_SET_UP,
                 )
             await session.close()
-            result = await run_import(tmp_path)
+            result = await bootstrap_recovery(tmp_path)
             if not result.ok:
                 raise HTTPException(
                     status_code=422, detail=result.error or "Import failed"
@@ -335,7 +375,6 @@ async def import_backup_bootstrap(
             "ok": True,
             "company_name": meta.company_name,
             "warnings": result.warnings,
-            "schema_warning": result.schema_warning,
             "restart_scheduled": result.restart_scheduled,
         }
     finally:

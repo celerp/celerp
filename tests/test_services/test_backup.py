@@ -7,7 +7,7 @@ Covers:
   - _parse_key: valid key, bad base64, wrong length
   - encrypt / decrypt round-trip
   - dump_database: success, pg_dump not found, exit code failure, timeout
-  - restore_database: success + failure
+  - restore_database_file: success + failure
   - _find_pg_tool resolution order
 """
 
@@ -29,7 +29,7 @@ from celerp.services.backup import (
     decrypt,
     dump_database,
     encrypt,
-    restore_database,
+    restore_database_file,
 )
 
 
@@ -147,14 +147,20 @@ def test_relay_base_url_from_http_url():
         _cfg.settings.gateway_http_url = orig
 
 
-# ── restore_database ──────────────────────────────────────────────────────────
+# ── restore_database_file ──────────────────────────────────────────────────────────
 
-def test_restore_database_success(monkeypatch):
+def test_restore_database_success(monkeypatch, tmp_path):
+    calls = []
+
     def fake_run(cmd, **kwargs):
+        calls.append(cmd)
         return subprocess.CompletedProcess(cmd, returncode=0, stdout=b"", stderr=b"")
 
+    dump = tmp_path / "database.dump"
+    dump.write_bytes(b"dump_data")
     monkeypatch.setattr(subprocess, "run", fake_run)
-    restore_database(b"dump_data", "postgresql+asyncpg://u:p@localhost/db")
+    restore_database_file(dump, "postgresql+asyncpg://u:p@localhost/db")
+    assert calls[0][-1] == str(dump)
 
 
 def test_restore_database_not_found(monkeypatch):
@@ -163,7 +169,7 @@ def test_restore_database_not_found(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(RuntimeError, match="pg_restore not found"):
-        restore_database(b"dump_data", "postgresql+asyncpg://u:p@localhost/db")
+        restore_database_file(Path("database.dump"), "postgresql+asyncpg://u:p@localhost/db")
 
 
 def test_restore_database_error(monkeypatch):
@@ -172,7 +178,7 @@ def test_restore_database_error(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(RuntimeError, match="pg_restore failed"):
-        restore_database(b"dump_data", "postgresql+asyncpg://u:p@localhost/db")
+        restore_database_file(Path("database.dump"), "postgresql+asyncpg://u:p@localhost/db")
 
 
 # ── Mac PATH resolution (regression: backup 500 on Mac Electron) ─────────────
@@ -354,10 +360,10 @@ class TestDumpDatabaseUsesResolvedPath:
 
 
 class TestRestoreDatabaseUsesResolvedPath:
-    """restore_database must resolve pg_restore via _find_pg_tool."""
+    """restore_database_file must resolve pg_restore via _find_pg_tool."""
 
     def test_finds_pg_restore_via_candidate_dir_on_macos(self, monkeypatch, tmp_path):
-        """When pg_restore is only in a candidate dir (not in PATH), restore_database finds it."""
+        """When pg_restore is only in a candidate dir (not in PATH), restore_database_file finds it."""
         import sys as _sys
         from celerp.services import backup as backup_mod
         monkeypatch.setattr(_sys, "platform", "darwin")
@@ -371,5 +377,5 @@ class TestRestoreDatabaseUsesResolvedPath:
         monkeypatch.setenv("PATH", "")
 
         # Should not raise — binary is found via candidate dir
-        restore_database(b"dump", "postgresql+asyncpg://u:p@localhost/db")
+        restore_database_file(tmp_path / "database.dump", "postgresql+asyncpg://u:p@localhost/db")
 

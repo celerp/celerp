@@ -66,9 +66,9 @@ def _restore_notice_message(notice: dict) -> str:
     """One readable sentence block for the post-restore login banner."""
     company = notice.get("company_name") or "backup"
     parts = [t("auth.restore_notice_message", company=company)]
-    if notice.get("schema_warning"):
-        parts.append(str(notice["schema_warning"]))
     parts.extend(str(w) for w in notice.get("warnings") or [])
+    if notice.get("safety_archive"):
+        parts.append(t("system_recovery.safety_saved", path=notice["safety_archive"]))
     return " ".join(parts)
 
 
@@ -137,7 +137,7 @@ def setup_routes(app):
             notice = flash(t("settings.password_changed"), kind="success")
         elif (restore_notice := _consume_restore_notice()) is not None:
             notice = flash(_restore_notice_message(restore_notice),
-                           kind="warning" if (restore_notice.get("warnings") or restore_notice.get("schema_warning")) else "success")
+                           kind="warning" if restore_notice.get("warnings") else "success")
         elif request.query_params.get("imported"):
             notice = flash(t("auth.backup_restored_signin"), kind="success")
         else:
@@ -285,23 +285,18 @@ def setup_routes(app):
                     ),
                     title=page_title("system_recovery.title"),
                 )
-            # Success - surface missing-module / schema warnings (if any) on the form
+            # Success - surface missing-module warnings (if any) on the form
             warnings: list[str] = []
-            schema_warning: str | None = None
             restart_scheduled = False
             try:
                 payload = r.json()
                 warnings = list(payload.get("warnings") or [])
-                schema_warning = payload.get("schema_warning") or None
                 restart_scheduled = bool(payload.get("restart_scheduled"))
             except Exception:
                 warnings = []
-            if warnings or schema_warning:
+            if warnings:
                 # Show a non-blocking warning page with "Continue anyway" link
-                parts: list[str] = []
-                if schema_warning:
-                    parts.append(schema_warning)
-                parts.extend(str(w) for w in warnings)
+                parts: list[str] = [str(w) for w in warnings]
                 if restart_scheduled:
                     parts.append(t("auth.restore_restart_note"))
                 warn_msg = t("auth.restore_complete_but") + " ".join(parts)

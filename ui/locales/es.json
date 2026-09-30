@@ -3466,5 +3466,8 @@
   "system_recovery.confirm": "Esto reemplaza la base de datos y los archivos de instalación de Celerp para todas las empresas y usuarios, y cierra la sesión de todos. ¿Continuar?",
   "system_recovery.restored": "Base de datos restaurada desde el punto de recuperación.",
   "system_recovery.imported": "Copia de seguridad de {company} importada.",
-  "system_recovery.signed_out": "Se ha cerrado la sesión de todos. Inicia sesión con una cuenta de la instalación restaurada."
+  "system_recovery.signed_out": "Se ha cerrado la sesión de todos. Inicia sesión con una cuenta de la instalación restaurada.",
+  "system_recovery.safety_saved": "Se guardó una copia de seguridad de la instalación anterior en {path}.",
+  "system_recovery.safety_failed_confirm": "No se ha cambiado nada. Puedes restaurar sin una copia de seguridad, lo cual no se puede deshacer.",
+  "system_recovery.continue_without_safety": "Restaurar sin copia de seguridad"
 }

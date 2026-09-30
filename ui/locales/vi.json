@@ -3466,5 +3466,8 @@
   "system_recovery.confirm": "Thao tác này sẽ thay thế cơ sở dữ liệu và các tệp cài đặt của Celerp cho mọi công ty và người dùng, đồng thời đăng xuất tất cả mọi người. Tiếp tục?",
   "system_recovery.restored": "Đã khôi phục cơ sở dữ liệu từ điểm khôi phục.",
   "system_recovery.imported": "Đã nhập bản sao lưu từ {company}.",
-  "system_recovery.signed_out": "Tất cả mọi người đã bị đăng xuất. Vui lòng đăng nhập bằng một tài khoản từ bản cài đặt đã khôi phục."
+  "system_recovery.signed_out": "Tất cả mọi người đã bị đăng xuất. Vui lòng đăng nhập bằng một tài khoản từ bản cài đặt đã khôi phục.",
+  "system_recovery.safety_saved": "Bản sao an toàn của bản cài đặt trước đã được lưu tại {path}.",
+  "system_recovery.safety_failed_confirm": "Chưa có gì thay đổi. Bạn có thể khôi phục mà không có bản sao an toàn, thao tác này không thể hoàn tác.",
+  "system_recovery.continue_without_safety": "Khôi phục không có bản sao an toàn"
 }

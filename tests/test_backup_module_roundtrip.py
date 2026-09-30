@@ -36,37 +36,49 @@ def test_build_archive_bundles_modules_and_excludes_bytecode(tmp_path):
     assert not any("__pycache__" in n or n.endswith(".pyc") for n in names)
 
 
-@pytest.mark.asyncio
-async def test_extract_files_restores_module_code(tmp_path, monkeypatch):
-    from celerp.config import settings
+def _archive(path, members: list[tuple[str, bytes]]):
+    import json
+
+    from celerp.services.backup_import import _safe_test_version
+
+    meta = json.dumps({"celerp_version": _safe_test_version(), "pg_version": "16",
+                       "created_at": "2026-06-04T00:00:00Z", "company_name": "T"}).encode()
+    with tarfile.open(path, mode="w:gz") as tar:
+        for name, body in [("database.dump", b"PGDMP"), ("meta.json", meta), *members]:
+            info = tarfile.TarInfo(name)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+    return path
+
+
+async def _stage_and_swap(archive):
+    import asyncio
+
     from celerp.services import backup_import as bi
 
+    prepared = await bi.prepare_recovery(archive)
+    try:
+        await asyncio.to_thread(bi._swap_roots, prepared)
+    finally:
+        bi._remove_staging(prepared.root)
+
+
+@pytest.mark.asyncio
+async def test_recovery_restores_module_code(tmp_path, monkeypatch):
+    from celerp.config import settings
+
     monkeypatch.setattr(settings, "data_dir", tmp_path)
+    archive = _archive(tmp_path / "backup.celerp-backup", [("modules/mymod/__init__.py", b"PLUGIN = 1")])
 
-    # An archive carrying a module file (plus the always-present db dump).
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        dump = b"PGDMP"
-        di = tarfile.TarInfo("database.dump")
-        di.size = len(dump)
-        tar.addfile(di, io.BytesIO(dump))
-        body = b"PLUGIN = 1"
-        mi = tarfile.TarInfo("modules/mymod/__init__.py")
-        mi.size = len(body)
-        tar.addfile(mi, io.BytesIO(body))
-    archive = tmp_path / "backup.celerp-backup"
-    archive.write_bytes(buf.getvalue())
-
-    await bi._extract_files(archive)
+    await _stage_and_swap(archive)
 
     restored = tmp_path / "modules" / "mymod" / "__init__.py"
     assert restored.read_bytes() == b"PLUGIN = 1"
 
 
 @pytest.mark.asyncio
-async def test_extract_files_never_overwrites_current_first_party_modules(tmp_path, monkeypatch):
+async def test_recovery_never_overwrites_current_first_party_modules(tmp_path, monkeypatch):
     from celerp.config import settings
-    from celerp.services import backup_import as bi
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
 
@@ -74,22 +86,14 @@ async def test_extract_files_never_overwrites_current_first_party_modules(tmp_pa
     current.parent.mkdir(parents=True)
     current.write_bytes(b"CURRENT")
 
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for name, body in (
-            ("database.dump", b"PGDMP"),
-            ("modules/celerp-inventory/sentinel.py", b"STALE"),
-            ("modules//celerp-inventory/double.py", b"STALE"),
-            ("modules/./celerp-inventory/dot.py", b"STALE"),
-            ("modules/acme-custom/__init__.py", b"CUSTOM"),
-        ):
-            info = tarfile.TarInfo(name)
-            info.size = len(body)
-            tar.addfile(info, io.BytesIO(body))
-    archive = tmp_path / "backup.celerp-backup"
-    archive.write_bytes(buf.getvalue())
+    archive = _archive(tmp_path / "backup.celerp-backup", [
+        ("modules/celerp-inventory/sentinel.py", b"STALE"),
+        ("modules//celerp-inventory/double.py", b"STALE"),
+        ("modules/./celerp-inventory/dot.py", b"STALE"),
+        ("modules/acme-custom/__init__.py", b"CUSTOM"),
+    ])
 
-    await bi._extract_files(archive)
+    await _stage_and_swap(archive)
 
     assert current.read_bytes() == b"CURRENT"
     assert not (tmp_path / "modules" / "celerp-inventory" / "double.py").exists()

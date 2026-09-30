@@ -3466,5 +3466,8 @@
   "system_recovery.confirm": "Cette opération remplace la base de données et les fichiers d'installation de Celerp pour toutes les entreprises et tous les utilisateurs, et déconnecte tout le monde. Continuer ?",
   "system_recovery.restored": "Base de données restaurée à partir du point de récupération.",
   "system_recovery.imported": "Sauvegarde de {company} importée.",
-  "system_recovery.signed_out": "Tout le monde a été déconnecté. Connectez-vous avec un compte de l'installation restaurée."
+  "system_recovery.signed_out": "Tout le monde a été déconnecté. Connectez-vous avec un compte de l'installation restaurée.",
+  "system_recovery.safety_saved": "Une copie de sécurité de l'installation précédente a été enregistrée dans {path}.",
+  "system_recovery.safety_failed_confirm": "Rien n'a été modifié. Vous pouvez restaurer sans copie de sécurité, ce qui est irréversible.",
+  "system_recovery.continue_without_safety": "Restaurer sans copie de sécurité"
 }

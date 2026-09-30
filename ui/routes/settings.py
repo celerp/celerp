@@ -2674,6 +2674,22 @@ def setup_routes(app):
             return _recovery_error(str(exc))
         return _recovery_result(request, r)
 
+    @app.post("/backup/import/continue")
+    async def backup_import_continue(request: Request):
+        """Continue a staged System Recovery without a safety copy: replaces the whole installation."""
+        import httpx
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        data = {k: str(form.get(k) or "") for k in ("confirmation_id", "digest")}
+        try:
+            async with api._local_client(token, timeout=900.0, follow_redirects=False, bulk=True) as c:
+                r = await c.post("/backup/import/continue", data=data)
+        except httpx.HTTPError as exc:
+            return _recovery_error(str(exc) or repr(exc))
+        return _recovery_result(request, r)
+
 
 # ── Display cell helpers (click-to-edit pattern) ─────────────────────────
 

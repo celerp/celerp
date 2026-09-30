@@ -1,0 +1,847 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: LicenseRef-Proprietary
+"""System Recovery replaces the installation exactly: the module set and file roots end up
+as the backup had them, a local safety archive is made before anything is overwritten, and a
+failed safety archive stops the restore until the owner explicitly continues without one."""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import html
+import io
+import json
+import re
+import shutil
+import tarfile
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import AsyncMock
+
+import pytest
+
+from company_backup_support import company, owner, token
+from migration_support import auth, code_config, real_client, real_engine  # noqa: F401
+
+pytestmark = pytest.mark.asyncio
+
+SAFETY_WARNING = "A safety backup could not be made before restoring."
+SOURCE_DUMP = b"SOURCE-DUMP"
+SAFETY_DUMP = b"SAFETY-DUMP"
+ROOTS = {"attachments": ("static", "attachments"), "ai_uploads": ("ai_uploads",), "modules": ("modules",)}
+
+# The destination before a recovery: its own files in every restore-owned root, plus a
+# directory named after a bundled module, which the application owns.
+DEST_FILES = {
+    "attachments/old.pdf": b"DEST-ATTACHMENT",
+    "attachments/shared.pdf": b"DEST-SHARED",
+    "ai_uploads/old.txt": b"DEST-AI",
+    "modules/celerp-example-old/__init__.py": b"PLUGIN_MANIFEST = {}\n",
+    "modules/celerp-inventory/keep.py": b"# bundled\n",
+}
+SOURCE_FILES = {
+    "attachments/new.pdf": bytes(range(256)) * 4,
+    "attachments/shared.pdf": b"SOURCE-SHARED",
+    "ai_uploads/new.txt": b"SOURCE-AI",
+    "modules/celerp-example-new/__init__.py": b"PLUGIN_MANIFEST = {'name': 'celerp-example-new'}\n",
+    "modules/celerp-inventory/evil.py": b"raise SystemExit\n",
+}
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _add(tar: tarfile.TarFile, name: str, body: bytes) -> None:
+    info = tarfile.TarInfo(name=name)
+    info.size = len(body)
+    tar.addfile(info, io.BytesIO(body))
+
+
+def _archive(path: Path, files: dict[str, bytes] | None = None, *, dump: bytes = SOURCE_DUMP,
+             modules=("celerp-inventory",), extra: tuple[tarfile.TarInfo, ...] = ()) -> Path:
+    """A whole-installation archive in the .celerp-backup layout."""
+    meta = {"pg_version": "unknown", "company_name": "Harbor Goods Ltd", "enabled_modules": modules}
+    with tarfile.open(path, "w:gz") as tar:
+        _add(tar, "database.dump", dump)
+        _add(tar, "meta.json", json.dumps(meta).encode())
+        for name, body in (files or {}).items():
+            _add(tar, name, body)
+        for info in extra:
+            tar.addfile(info)
+    return path
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _members(path: Path) -> dict[str, bytes]:
+    with tarfile.open(path, "r:gz") as tar:
+        return {m.name: tar.extractfile(m).read() for m in tar.getmembers() if m.isfile()}
+
+
+def _enabled() -> list[str]:
+    from celerp.config import read_config
+    return list(read_config().get("modules", {}).get("enabled", []))
+
+
+def _set_enabled(names: list[str]) -> None:
+    from celerp.config import read_config, write_config
+    cfg = read_config()
+    cfg.setdefault("modules", {})["enabled"] = list(names)
+    write_config(cfg)
+
+
+def _closure(names: list[str]) -> list[str]:
+    from celerp.config import resolve_install_order
+    return resolve_install_order(list(names), Path(__file__).resolve().parent.parent / "default_modules")
+
+
+class _Recovery:
+    """Stubs the database side of a recovery (dump, pg_restore, schema reconcile, connector
+    and session steps) and records each step with whether writes were paused and the
+    connector maintenance guard held at that moment."""
+
+    def __init__(self, tmp_path: Path, monkeypatch, *, real_database: bool = False):
+        import celerp.connectors.ownership as ownership
+        import celerp.routers.system as system
+        from celerp.config import settings
+        from celerp.services import backup, backup_import, backup_repo, backup_state, session_tracker
+
+        self.mp = monkeypatch
+        self.data = tmp_path / "data"
+        self.data.mkdir()
+        self.calls: list[tuple[str, bool, bool]] = []
+        self.restored: list[bytes] = []
+        self.safety_at_restore: list[Path] = []
+        self.write_status_during_restore: int | None = None
+        self.pg_error: Exception | None = None
+        self.guard_held = False
+        self.reassembled = 0
+        self._state = backup_state
+        monkeypatch.setattr(settings, "data_dir", self.data)
+        monkeypatch.setattr(settings, "backup_encryption_key", None)
+        monkeypatch.setattr(system, "_send_sigterm", lambda: self.record("sigterm"))
+        self.cloud_snapshot = AsyncMock(return_value=backup.BackupResult(ok=True, size_bytes=1))
+        monkeypatch.setattr(backup_repo, "run_snapshot", self.cloud_snapshot)
+
+        real_guard = ownership.connector_maintenance_guard
+
+        @asynccontextmanager
+        async def _guard():
+            async with real_guard():
+                self.guard_held = True
+                self.record("guard")
+                try:
+                    yield
+                finally:
+                    self.guard_held = False
+
+        monkeypatch.setattr(ownership, "connector_maintenance_guard", _guard)
+
+        async def _reconcile():
+            self.record("reconcile")
+
+        self.real_reconcile = backup_import._reconcile_schema
+        monkeypatch.setattr(backup_import, "_reconcile_schema", _reconcile)
+        if real_database:
+            return
+
+        def _dump(url):
+            self.record("safety_dump")
+            return SAFETY_DUMP
+
+        async def _restore(dump, url):
+            self.record("pg_restore")
+            self.restored.append(Path(dump).read_bytes() if isinstance(dump, (str, Path)) else dump)
+            self.safety_at_restore = sorted((self.data / "recovery-safety").glob("*.celerp-backup"))
+            from fastapi import HTTPException
+
+            from celerp.events.engine import emit_event
+            try:
+                await emit_event(None, event_type="item.created", data={})
+            except HTTPException as exc:
+                self.write_status_during_restore = exc.status_code
+            if self.pg_error is not None:
+                raise self.pg_error
+
+        async def _none(*a, **kw):
+            return None
+
+        monkeypatch.setattr(backup, "dump_database", _dump)
+        monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+        monkeypatch.setattr(backup_import, "_dispose_engine", _none)
+
+        def _recorder(name):
+            async def _run(*a, **kw):
+                self.record(name)
+            return _run
+
+        monkeypatch.setattr(backup_import, "_revoke_current_connector_state", _recorder("revoke"))
+        monkeypatch.setattr(backup_import, "_clear_restored_connector_state", _recorder("clear_connectors"))
+        monkeypatch.setattr(session_tracker, "end_all_sessions", _recorder("end_sessions"))
+
+    def record(self, name: str) -> None:
+        self.calls.append((name, self._state.is_active(), self.guard_held))
+
+    def names(self) -> list[str]:
+        return [c[0] for c in self.calls]
+
+    def root(self, key: str) -> Path:
+        return self.data.joinpath(*ROOTS[key])
+
+    def seed(self, files: dict[str, bytes] = DEST_FILES) -> None:
+        for name, body in files.items():
+            key, rel = name.split("/", 1)
+            path = self.root(key) / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body)
+
+    def tree(self, key: str) -> dict[str, bytes]:
+        root = self.root(key)
+        if not root.exists():
+            return {}
+        return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+    def trees(self) -> dict[str, dict[str, bytes]]:
+        return {key: self.tree(key) for key in ROOTS}
+
+    def fail_safety(self, message: str = "No space left on device") -> None:
+        from celerp.services import backup_export
+
+        async def _fail():
+            raise RuntimeError(message)
+
+        self.mp.setattr(backup_export, "export_full", _fail)
+
+    def staging(self) -> list[Path]:
+        root = self.data / "recovery-staging"
+        return sorted(root.iterdir()) if root.exists() else []
+
+    def safety_archives(self) -> list[Path]:
+        return sorted((self.data / "recovery-safety").glob("*.celerp-backup"))
+
+    def cloud(self, archive: Path, tmp_path: Path) -> None:
+        """Serve ``archive`` as cloud recovery point snap-1, counting downloads."""
+        from celerp.config import settings
+        from celerp.services import backup_repo
+        import base64
+        import secrets
+        self.mp.setattr(settings, "backup_encryption_key", base64.b64encode(secrets.token_bytes(32)).decode())
+
+        async def _reassemble(snapshot_id):
+            assert snapshot_id == "snap-1"
+            self.reassembled += 1
+            copy = tmp_path / f"snap-{self.reassembled}.celerp-backup"
+            shutil.copyfile(archive, copy)
+            return copy
+
+        self.mp.setattr(backup_repo, "reassemble_snapshot", _reassemble)
+
+    async def start(self, kind: str, archive: Path, tmp_path: Path):
+        from celerp.services import backup_import, backup_repo
+        if kind == "local":
+            return await backup_import.run_recovery(archive)
+        self.cloud(archive, tmp_path)
+        return await backup_repo.restore_snapshot("snap-1")
+
+
+@pytest.fixture
+def rec(tmp_path, monkeypatch, code_config, real_engine):
+    _set_enabled(["celerp-inventory"])
+    return _Recovery(tmp_path, monkeypatch)
+
+
+async def _install_owner(engine):
+    user = await owner(engine)
+    cid = await company(engine, user, "Alpha Trading", "alpha-marker")
+    return await token(engine, user, cid)
+
+
+def _continue_vals(body: str) -> dict:
+    """The fields the continue-without-safety button posts."""
+    button = re.search(r'<button[^>]*hx-post="/backup/import/continue"[^>]*>', body)
+    assert button, body
+    match = re.search(r"""hx-vals=(["'])(.*?)\1""", button.group(0))
+    assert match, body
+    return json.loads(html.unescape(match.group(2)))
+
+
+# ── Installation-wide module metadata ────────────────────────────────────────
+
+async def test_required_installation_modules_unions_all_companies(real_engine):
+    """Every company's enabled modules count, not only the first company's."""
+    from celerp.db import get_session_ctx
+    from celerp.services.backup_export import required_installation_modules
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-labels"]})
+    await company(real_engine, user, "Beta Trading", "beta", settings={"enabled_modules": ["celerp-contacts"]})
+    await company(real_engine, user, "Gamma Trading", "gamma")
+    async with get_session_ctx() as session:
+        assert await required_installation_modules(session) == {"celerp-labels", "celerp-contacts"}
+
+
+async def test_local_backup_meta_lists_every_company_module(rec, real_engine):
+    """A whole-installation backup lists the modules of every company in its metadata."""
+    from celerp.services.backup_export import export_full
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-labels"]})
+    await company(real_engine, user, "Beta Trading", "beta", settings={"enabled_modules": ["celerp-contacts"]})
+    path = await export_full()
+    try:
+        meta = json.loads(_members(path)["meta.json"])
+    finally:
+        path.unlink(missing_ok=True)
+    assert sorted(meta["enabled_modules"]) == ["celerp-contacts", "celerp-labels"]
+
+
+async def test_cloud_snapshot_meta_lists_every_company_module(rec, real_engine):
+    """A cloud recovery point lists the modules of every company in its metadata."""
+    from celerp.services import backup_repo
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-labels"]})
+    await company(real_engine, user, "Beta Trading", "beta", settings={"enabled_modules": ["celerp-contacts"]})
+    meta = await backup_repo._build_meta()
+    assert sorted(meta["enabled_modules"]) == ["celerp-contacts", "celerp-labels"]
+
+
+async def test_old_backup_fallback_uses_every_company_module(rec, real_engine, tmp_path):
+    """A backup without module metadata takes the module set from every restored company."""
+    from celerp.services import backup_import
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-labels"]})
+    await company(real_engine, user, "Beta Trading", "beta", settings={"enabled_modules": ["celerp-contacts"]})
+    result = await backup_import.run_recovery(_archive(tmp_path / "old.celerp-backup", modules=None))
+    assert result.ok is True, result.error
+    assert set(_enabled()) == set(_closure(["celerp-contacts", "celerp-labels"]))
+
+
+# ── Exact module configuration ───────────────────────────────────────────────
+
+async def test_replace_enabled_modules_includes_dependencies(code_config):
+    """The exact set written includes every dependency of the requested modules."""
+    from celerp.config import replace_enabled_modules
+    _set_enabled(["celerp-inventory", "celerp-contacts", "celerp-ai"])
+    assert replace_enabled_modules(["celerp-labels"]) is True
+    assert _enabled() == ["celerp-inventory", "celerp-labels"]
+
+
+async def test_replace_enabled_modules_unchanged_schedules_no_restart(rec, tmp_path):
+    """Restoring the module set the installation already has changes nothing and needs no restart."""
+    from celerp.config import replace_enabled_modules
+    from celerp.routers.system import _restart_sentinel_path
+    from celerp.services import backup_import
+    assert replace_enabled_modules(["celerp-inventory"]) is False
+    result = await backup_import.run_recovery(_archive(tmp_path / "same.celerp-backup"))
+    assert result.ok is True, result.error
+    assert result.restart_scheduled is False
+    assert not _restart_sentinel_path().exists()
+    assert _enabled() == ["celerp-inventory"]
+
+
+async def test_replace_enabled_modules_restart_on_removal(code_config):
+    """Dropping a module is a change, exactly like adding one."""
+    from celerp.config import replace_enabled_modules
+    _set_enabled(["celerp-inventory", "celerp-labels"])
+    assert replace_enabled_modules(["celerp-inventory"]) is True
+    assert _enabled() == ["celerp-inventory"]
+
+
+async def test_set_enabled_modules_stays_additive(code_config):
+    """Enabling a module keeps every module already enabled."""
+    from celerp.config import set_enabled_modules
+    _set_enabled(["celerp-inventory", "celerp-contacts"])
+    assert set_enabled_modules(["celerp-labels"]) is True
+    assert set(_enabled()) == {"celerp-inventory", "celerp-contacts", "celerp-labels"}
+    assert set_enabled_modules(["celerp-inventory"]) is False
+    assert set(_enabled()) == {"celerp-inventory", "celerp-contacts", "celerp-labels"}
+
+
+async def test_recovery_removes_destination_only_module(rec, tmp_path):
+    """A module enabled only on this installation is disabled after the recovery, with a restart."""
+    from celerp.routers.system import _restart_sentinel_path
+    from celerp.services import backup_import
+    _set_enabled(["celerp-inventory", "celerp-contacts", "celerp-labels"])
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", modules=["celerp-inventory"]))
+    assert result.ok is True, result.error
+    assert _enabled() == ["celerp-inventory"]
+    assert result.restart_scheduled is True
+    assert _restart_sentinel_path().exists()
+
+
+async def test_recovery_config_reflects_source_and_warns_missing_package(rec, tmp_path):
+    """A source module that is not installed here is still enabled as the source had it, and named in a warning."""
+    from celerp.services import backup_import
+    result = await backup_import.run_recovery(_archive(
+        tmp_path / "src.celerp-backup", modules=["celerp-inventory", "celerp-example-absent"]))
+    assert result.ok is True, result.error
+    assert set(_enabled()) == {"celerp-inventory", "celerp-example-absent"}
+    assert any("celerp-example-absent" in w for w in result.warnings), result.warnings
+
+
+# ── Exact file roots ─────────────────────────────────────────────────────────
+
+async def _files_recovery(rec, tmp_path, files=SOURCE_FILES):
+    from celerp.services import backup_import
+    rec.seed()
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", files))
+    assert result.ok is True, result.error
+    return result
+
+
+async def test_recovery_removes_destination_only_attachment(rec, tmp_path):
+    """An attachment only this installation had is gone after the recovery."""
+    await _files_recovery(rec, tmp_path)
+    assert set(rec.tree("attachments")) == {"new.pdf", "shared.pdf"}
+
+
+async def test_recovery_removes_destination_only_ai_upload(rec, tmp_path):
+    """An AI upload only this installation had is gone after the recovery."""
+    await _files_recovery(rec, tmp_path)
+    assert set(rec.tree("ai_uploads")) == {"new.txt"}
+
+
+async def test_recovery_removes_destination_only_custom_module(rec, tmp_path):
+    """A custom module only this installation had is gone after the recovery."""
+    await _files_recovery(rec, tmp_path)
+    assert not (rec.root("modules") / "celerp-example-old").exists()
+    assert "celerp-example-new/__init__.py" in rec.tree("modules")
+
+
+async def test_recovery_restores_source_files_byte_for_byte(rec, tmp_path):
+    """Every restore-owned file is exactly the backup's file."""
+    await _files_recovery(rec, tmp_path)
+    assert rec.tree("attachments") == {"new.pdf": SOURCE_FILES["attachments/new.pdf"],
+                                       "shared.pdf": b"SOURCE-SHARED"}
+    assert rec.tree("ai_uploads") == {"new.txt": b"SOURCE-AI"}
+    assert rec.tree("modules")["celerp-example-new/__init__.py"] == SOURCE_FILES["modules/celerp-example-new/__init__.py"]
+
+
+async def test_recovery_leaves_bundled_module_files_untouched(rec, tmp_path):
+    """A bundled module directory keeps its files and takes nothing from the backup."""
+    keep = rec.root("modules") / "celerp-inventory" / "keep.py"
+    rec.seed()
+    inode = keep.stat().st_ino
+    from celerp.services import backup_import
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.ok is True, result.error
+    assert keep.read_bytes() == b"# bundled\n" and keep.stat().st_ino == inode
+    assert not (rec.root("modules") / "celerp-inventory" / "evil.py").exists()
+    bundled = Path(__file__).resolve().parent.parent / "default_modules" / "celerp-inventory"
+    assert not (bundled / "evil.py").exists()
+
+
+async def test_recovery_empty_root_in_archive_empties_destination(rec, tmp_path):
+    """A root the backup has no files for is empty after the recovery."""
+    files = {k: v for k, v in SOURCE_FILES.items() if not k.startswith("ai_uploads/")}
+    await _files_recovery(rec, tmp_path, files)
+    assert rec.root("ai_uploads").is_dir()
+    assert rec.tree("ai_uploads") == {}
+
+
+async def test_recovery_file_swap_failure_is_not_success(rec, tmp_path, monkeypatch):
+    """A file swap that fails after the database was restored is a failure naming the safety
+    archive, with the roots already swapped put back."""
+    from celerp.services import backup_import
+    rec.seed()
+    before = rec.trees()
+    real_rename = backup_import._rename
+    failed: list[Path] = []
+
+    def _rename(src, dst):
+        if Path(dst) == rec.root("ai_uploads") and not failed:
+            failed.append(Path(dst))
+            raise OSError("Device or resource busy")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(backup_import, "_rename", _rename)
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert failed
+    assert result.ok is False
+    assert result.safety_archive and Path(result.safety_archive).is_file()
+    assert result.safety_archive in result.error
+    assert rec.trees() == before
+    assert not (rec.data / "restore-notice.json").exists()
+
+
+# ── Safety archive ───────────────────────────────────────────────────────────
+
+async def test_recovery_writes_local_safety_archive_before_pg_restore(rec, tmp_path, monkeypatch):
+    """A validated local safety archive of the current installation exists before pg_restore runs."""
+    from celerp.services import backup_export, backup_import
+    rec.seed()
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.ok is True, result.error
+    assert rec.names().index("safety_dump") < rec.names().index("pg_restore")
+    assert len(rec.safety_at_restore) == 1
+    safety = rec.safety_at_restore[0]
+    assert result.safety_archive == str(safety)
+    backup_import.validate_archive(safety)
+    saved = _members(safety)
+    assert saved["database.dump"] == SAFETY_DUMP
+    assert saved["attachments/old.pdf"] == b"DEST-ATTACHMENT"
+
+    # An export that does not validate is no safety archive: nothing is restored.
+    async def _corrupt():
+        bad = tmp_path / "corrupt.celerp-backup"
+        bad.write_bytes(b"not an archive")
+        return bad
+
+    monkeypatch.setattr(backup_export, "export_full", _corrupt)
+    rec.calls.clear()
+    result = await backup_import.run_recovery(_archive(tmp_path / "src2.celerp-backup"))
+    assert result.ok is False and result.needs_confirmation is True
+    assert "pg_restore" not in rec.names()
+
+
+@pytest.mark.parametrize("kind", ["local", "cloud"])
+async def test_recovery_safety_failure_stops_before_pg_restore(rec, tmp_path, kind):
+    """When no safety archive can be made nothing is changed and the owner is asked to confirm."""
+    from celerp.services import backup_state
+    rec.seed()
+    before, modules = rec.trees(), _enabled()
+    rec.fail_safety()
+    archive = _archive(tmp_path / "src.celerp-backup", SOURCE_FILES)
+    result = await rec.start(kind, archive, tmp_path)
+    assert result.ok is False
+    assert result.needs_confirmation is True
+    assert result.confirmation_id
+    assert result.archive_digest == _sha(archive)
+    assert SAFETY_WARNING in result.error and "No space left on device" in result.error
+    assert not {"revoke", "pg_restore", "reconcile", "end_sessions"} & set(rec.names())
+    assert rec.trees() == before and _enabled() == modules
+    assert backup_state.is_active() is False
+    assert not (rec.data / "restore-notice.json").exists()
+
+
+async def test_safety_archive_taken_with_writes_paused(rec, tmp_path):
+    """The safety archive is made while writes are paused and connector work is excluded."""
+    from celerp.services import backup_import, backup_state
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup"))
+    assert result.ok is True, result.error
+    dump = next(c for c in rec.calls if c[0] == "safety_dump")
+    assert dump == ("safety_dump", True, True)
+    assert backup_state.is_active() is False
+
+
+async def test_recovery_blocks_writes_during_commit(rec, tmp_path):
+    """Guard, then paused writes, then the safety archive, then connector revoke, then pg_restore;
+    a write attempted during pg_restore is refused."""
+    from celerp.services import backup_import
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup"))
+    assert result.ok is True, result.error
+    steps = [c for c in rec.calls if c[0] in {"guard", "safety_dump", "revoke", "pg_restore"}]
+    assert [c[0] for c in steps] == ["guard", "safety_dump", "revoke", "pg_restore"]
+    assert all(active and held for _, active, held in steps[1:])
+    assert rec.write_status_during_restore == 503
+
+
+async def test_recovery_cloud_safety_snapshot_optional(rec, tmp_path):
+    """A cloud safety snapshot that fails does not stop a recovery that has its local safety archive."""
+    from celerp.services.backup import BackupResult
+    rec.cloud(tmp_path / "unused.celerp-backup", tmp_path)
+    rec.cloud_snapshot.return_value = BackupResult(ok=False, size_bytes=0, error="relay unavailable")
+    from celerp.services import backup_import
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup"))
+    assert result.ok is True, result.error
+    rec.cloud_snapshot.assert_awaited_once()
+    assert len(rec.safety_archives()) == 1
+    assert rec.restored == [SOURCE_DUMP]
+
+
+async def test_recovery_safety_archive_without_cloud_key(rec, tmp_path):
+    """With no cloud encryption key the local safety archive is still made and the restore runs."""
+    from celerp.config import settings
+    from celerp.services import backup_import
+    assert not settings.backup_encryption_key
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup"))
+    assert result.ok is True, result.error
+    assert len(rec.safety_archives()) == 1
+    rec.cloud_snapshot.assert_not_awaited()
+    assert not any(SAFETY_WARNING in w for w in result.warnings)
+    assert rec.restored == [SOURCE_DUMP]
+
+
+async def test_recovery_safety_archive_retention_is_bounded(rec, tmp_path):
+    """Only the newest safety archives are kept."""
+    from celerp.services import backup_import
+    safety_dir = rec.data / "recovery-safety"
+    safety_dir.mkdir()
+    old = [safety_dir / f"pre-recovery-2026010{d}T000000000000Z.celerp-backup" for d in range(1, 5)]
+    for path in old:
+        _archive(path)
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup"))
+    assert result.ok is True, result.error
+    assert rec.safety_archives() == sorted([old[2], old[3], Path(result.safety_archive)])
+
+
+async def test_recovery_safety_archive_outside_restore_roots_and_survives_swap(rec, tmp_path):
+    """The safety archive sits outside every replaced root and still holds the replaced files."""
+    from celerp.services import backup_import
+    rec.seed()
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.ok is True, result.error
+    safety = Path(result.safety_archive)
+    assert safety.is_file() and safety.parent == rec.data / "recovery-safety"
+    for key in ROOTS:
+        assert not safety.is_relative_to(rec.root(key))
+    saved = _members(safety)
+    assert saved["attachments/old.pdf"] == b"DEST-ATTACHMENT"
+    assert saved["modules/celerp-example-old/__init__.py"] == DEST_FILES["modules/celerp-example-old/__init__.py"]
+    assert "old.pdf" not in rec.tree("attachments")
+
+
+async def test_recovery_notice_names_safety_archive(rec, tmp_path):
+    """The result, the post-restore sign-in notice and the page all name the safety archive."""
+    from celerp.services import backup_import
+    from celerp_backup.routes import _restore_flash
+    from ui.routes.auth import _restore_notice_message
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup"))
+    assert result.ok is True, result.error
+    notice = json.loads((rec.data / "restore-notice.json").read_text())
+    assert notice["safety_archive"] == result.safety_archive
+    assert result.safety_archive in _restore_notice_message(notice)
+    assert result.safety_archive in _restore_flash(result, "Restored.").body.decode()
+
+
+# ── Preparing the recovery ───────────────────────────────────────────────────
+
+def _special(name: str, kind: bytes, link: str = "") -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name=name)
+    info.type = kind
+    info.linkname = link
+    return info
+
+
+async def test_recovery_invalid_archive_makes_no_safety_and_no_change(rec, tmp_path):
+    """An archive that is not a valid recovery point is refused before any safety archive or change."""
+    from celerp.services import backup_import
+    rec.seed()
+    before, modules = rec.trees(), _enabled()
+    not_tar = tmp_path / "not-tar.celerp-backup"
+    not_tar.write_bytes(b"not a tar archive")
+    no_dump = tmp_path / "no-dump.celerp-backup"
+    with tarfile.open(no_dump, "w:gz") as tar:
+        _add(tar, "meta.json", b"{}")
+    bad = [
+        not_tar,
+        no_dump,
+        _archive(tmp_path / "traversal.celerp-backup", {"attachments/../../escape.pdf": b"X"}),
+        _archive(tmp_path / "symlink.celerp-backup",
+                 extra=(_special("attachments/link.pdf", tarfile.SYMTYPE, "/etc/passwd"),)),
+        _archive(tmp_path / "hardlink.celerp-backup", {"attachments/a.pdf": b"A"},
+                 extra=(_special("modules/celerp-example-new/b.py", tarfile.LNKTYPE, "attachments/a.pdf"),)),
+        _archive(tmp_path / "device.celerp-backup", extra=(_special("ai_uploads/dev", tarfile.CHRTYPE),)),
+    ]
+    for path in bad:
+        result = await backup_import.run_recovery(path)
+        assert result.ok is False and result.error, path.name
+        assert result.needs_confirmation is False, path.name
+    assert rec.calls == [] or set(rec.names()) <= {"guard"}
+    assert rec.safety_archives() == []
+    assert rec.staging() == []
+    assert rec.trees() == before and _enabled() == modules
+
+
+async def test_recovery_stages_and_validates_files_before_destruction(rec, tmp_path, monkeypatch):
+    """Every incoming file is staged on the installation's filesystem before pg_restore, and the
+    destination roots are untouched until the database is restored."""
+    from celerp.services import backup_import
+    rec.seed()
+    before = rec.trees()
+    seen: dict = {}
+    restore = backup_import._run_pg_restore
+
+    async def _restore(dump, url):
+        staged = {p.name: p for p in (rec.data / "recovery-staging").rglob("*") if p.is_file()}
+        seen["staged"] = {name: staged[name].read_bytes() for name in ("new.pdf", "new.txt") if name in staged}
+        seen["same_fs"] = all(p.stat().st_dev == rec.data.stat().st_dev for p in staged.values())
+        seen["dest"] = rec.trees()
+        await restore(dump, url)
+
+    monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.ok is True, result.error
+    assert seen["staged"] == {"new.pdf": SOURCE_FILES["attachments/new.pdf"], "new.txt": b"SOURCE-AI"}
+    assert seen["same_fs"] is True
+    assert seen["dest"] == before
+    assert rec.staging() == []
+
+
+# ── Continuing without a safety archive ──────────────────────────────────────
+
+@pytest.mark.parametrize("kind", ["local", "cloud"])
+async def test_recovery_no_safety_confirmation_bound_to_digest(rec, tmp_path, kind):
+    """Continuing without a safety archive needs the exact staged archive's digest, and a staged
+    archive that changed since it was confirmed is refused."""
+    from celerp.services import backup_import
+    rec.fail_safety()
+    archive = _archive(tmp_path / "src.celerp-backup")
+    first = await rec.start(kind, archive, tmp_path)
+    assert first.needs_confirmation is True
+
+    refused = await backup_import.continue_recovery(first.confirmation_id, "0" * 64)
+    assert refused.ok is False and refused.needs_confirmation is False
+    assert rec.restored == []
+
+    done = await backup_import.continue_recovery(first.confirmation_id, first.archive_digest)
+    assert done.ok is True, done.error
+    assert rec.restored == [SOURCE_DUMP]
+    assert done.safety_archive is None
+
+    second = await rec.start(kind, _archive(tmp_path / "src2.celerp-backup", dump=b"SECOND"), tmp_path)
+    assert second.needs_confirmation is True
+    staged = next((rec.data / "recovery-staging" / second.confirmation_id).glob("*.celerp-backup"))
+    _archive(staged, dump=b"SWAPPED")
+    refused = await backup_import.continue_recovery(second.confirmation_id, second.archive_digest)
+    assert refused.ok is False
+    assert rec.restored == [SOURCE_DUMP]
+
+
+@pytest.mark.parametrize("kind", ["local", "cloud"])
+async def test_recovery_no_safety_confirmation_expires(rec, tmp_path, monkeypatch, kind):
+    """A confirmation to continue without a safety archive expires."""
+    from celerp.services import backup_import
+    rec.fail_safety()
+    result = await rec.start(kind, _archive(tmp_path / "src.celerp-backup"), tmp_path)
+    assert result.needs_confirmation is True
+    later = datetime.now(timezone.utc) + timedelta(minutes=16)
+    monkeypatch.setattr(backup_import, "_now", lambda: later)
+    refused = await backup_import.continue_recovery(result.confirmation_id, result.archive_digest)
+    assert refused.ok is False and "expired" in refused.error.lower()
+    assert rec.restored == []
+    assert rec.staging() == []
+
+
+@pytest.mark.parametrize("kind", ["local", "cloud"])
+async def test_recovery_no_safety_confirmation_needs_no_reupload(rec, real_client, real_engine, tmp_path, kind):
+    """The owner continues from the staged archive: no second upload or download."""
+    tok = await _install_owner(real_engine)
+    rec.fail_safety()
+    archive = _archive(tmp_path / "src.celerp-backup", {"attachments/new.pdf": b"NEW"})
+    if kind == "local":
+        r = await real_client.post("/backup/import", files={"file": ("src.celerp-backup", archive.read_bytes())},
+                                   headers=auth(tok))
+    else:
+        rec.cloud(archive, tmp_path)
+        r = await real_client.post("/backup/restore/snap-1", headers=auth(tok))
+    assert r.status_code == 200, r.text
+    assert SAFETY_WARNING in r.text
+    assert "Import failed" not in r.text and "Restore failed" not in r.text
+    vals = _continue_vals(r.text)
+    assert rec.restored == []
+
+    r = await real_client.post("/backup/import/continue", data=vals, headers=auth(tok))
+    assert r.status_code == 200, r.text
+    assert "Database restored from the recovery point." in r.text
+    assert r.headers.get("X-Session-Ended") == "1"
+    assert rec.restored == [SOURCE_DUMP]
+    assert rec.tree("attachments") == {"new.pdf": b"NEW"}
+    assert rec.reassembled == (1 if kind == "cloud" else 0)
+
+
+# ── One commit engine ────────────────────────────────────────────────────────
+
+async def test_cloud_and_local_recovery_share_commit_engine(rec, tmp_path, monkeypatch):
+    """Local upload, cloud recovery point and bootstrap restore all run the one commit engine."""
+    from celerp.services import backup_import, backup_repo
+    commit = backup_import.commit_recovery
+    seen: list[tuple[str, bool]] = []
+
+    async def _commit(prepared, safety):
+        seen.append((prepared.digest, safety is not None))
+        return await commit(prepared, safety)
+
+    monkeypatch.setattr(backup_import, "commit_recovery", _commit)
+    local = _archive(tmp_path / "local.celerp-backup", dump=b"LOCAL")
+    cloud = _archive(tmp_path / "cloud.celerp-backup", dump=b"CLOUD")
+    boot = _archive(tmp_path / "boot.celerp-backup", dump=b"BOOT")
+    digests = [_sha(local), _sha(cloud), _sha(boot)]
+    assert (await backup_import.run_recovery(local)).ok
+    rec.cloud(cloud, tmp_path)
+    assert (await backup_repo.restore_snapshot("snap-1")).ok
+    assert (await backup_import.bootstrap_recovery(boot)).ok
+    assert seen == [(digests[0], True), (digests[1], True), (digests[2], False)]
+    assert rec.restored == [b"LOCAL", b"CLOUD", b"BOOT"]
+
+
+async def test_bootstrap_restore_needs_no_safety_archive(rec, real_client, code_config, tmp_path):
+    """Restoring into a fresh installation makes no safety archive."""
+    archive = _archive(tmp_path / "boot.celerp-backup", {"attachments/new.pdf": b"NEW"})
+    r = await real_client.post("/backup/import-bootstrap", files={"file": ("boot.celerp-backup", archive.read_bytes())},
+                               data={"setup_code": code_config})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True and "schema_warning" not in body
+    assert "safety_dump" not in rec.names()
+    assert rec.safety_archives() == []
+    assert rec.restored == [SOURCE_DUMP]
+    assert rec.tree("attachments") == {"new.pdf": b"NEW"}
+
+
+# ── Failures after the safety archive ────────────────────────────────────────
+
+async def test_recovery_pg_restore_failure_reports_failure(rec, tmp_path):
+    """A failed pg_restore is a failure naming the safety archive; no file or module is replaced."""
+    from celerp.services import backup_import
+    rec.seed()
+    before, modules = rec.trees(), _enabled()
+    rec.pg_error = RuntimeError("pg_restore exited with status 1")
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES,
+                                                       modules=["celerp-labels"]))
+    assert result.ok is False
+    assert "pg_restore exited with status 1" in result.error
+    assert result.safety_archive and result.safety_archive in result.error
+    assert Path(result.safety_archive).is_file()
+    assert rec.trees() == before and _enabled() == modules
+    assert "end_sessions" not in rec.names()
+    assert rec.staging() == []
+
+
+async def test_recovery_schema_reconcile_failure_reported(rec, tmp_path, monkeypatch):
+    """A schema that cannot be brought up to date after the restore is a failure naming the safety archive."""
+    from celerp import cli
+    from celerp.services import backup_import
+
+    def _migrate(url):
+        raise RuntimeError("DuplicateColumn: column already exists")
+
+    monkeypatch.setattr(backup_import, "_reconcile_schema", rec.real_reconcile)
+    monkeypatch.setattr(cli, "_migration_lock", lambda url: contextlib.nullcontext())
+    monkeypatch.setattr(cli, "_apply_migrations", _migrate)
+    rec.seed()
+    before = rec.trees()
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.ok is False
+    assert "DuplicateColumn" in result.error
+    assert result.safety_archive and result.safety_archive in result.error
+    assert Path(result.safety_archive).is_file()
+    assert rec.trees() == before
+    assert not (rec.data / "restore-notice.json").exists()
+
+
+async def test_recovery_real_database_replaces_installation(tmp_path, monkeypatch, code_config, real_engine,
+                                                            real_client):
+    """A real dump restored through System Recovery replaces the whole database, and a
+    session from before the recovery no longer signs in."""
+    from sqlalchemy import text
+
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    alpha = await company(real_engine, user, "Alpha Trading", "alpha")
+    tok = await token(real_engine, user, alpha)
+    source = await backup_export.export_full()
+    try:
+        await company(real_engine, user, "Beta Trading", "beta")
+        assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 200
+        result = await backup_import.run_recovery(source)
+    finally:
+        source.unlink(missing_ok=True)
+    assert result.ok is True, result.error
+    async with real_engine.connect() as conn:
+        names = {r[0] for r in await conn.execute(text("SELECT name FROM companies"))}
+    assert names == {"Alpha Trading"}
+    assert len(rec.safety_archives()) == 1
+    assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 401

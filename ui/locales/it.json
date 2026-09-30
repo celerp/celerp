@@ -3466,5 +3466,8 @@
   "system_recovery.confirm": "Questa operazione sostituisce il database e i file di installazione di Celerp per tutte le aziende e tutti gli utenti e disconnette tutti. Continuare?",
   "system_recovery.restored": "Database ripristinato dal punto di ripristino.",
   "system_recovery.imported": "Backup di {company} importato.",
-  "system_recovery.signed_out": "Tutti sono stati disconnessi. Accedi con un account dell'installazione ripristinata."
+  "system_recovery.signed_out": "Tutti sono stati disconnessi. Accedi con un account dell'installazione ripristinata.",
+  "system_recovery.safety_saved": "Una copia di sicurezza dell'installazione precedente è stata salvata in {path}.",
+  "system_recovery.safety_failed_confirm": "Non è stato modificato nulla. Puoi ripristinare senza una copia di sicurezza, operazione che non può essere annullata.",
+  "system_recovery.continue_without_safety": "Ripristina senza copia di sicurezza"
 }

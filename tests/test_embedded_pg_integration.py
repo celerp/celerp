@@ -347,7 +347,9 @@ def test_clean_schema_restore_returns_database_to_the_dump(config_dir, monkeypat
         conn.execute(text("INSERT INTO kept VALUES ('after', 1)"))
     engine.dispose()
 
-    backup.restore_database(dump, uri, clean_schema=True)
+    dump_path = config_dir / "database.dump"
+    dump_path.write_bytes(dump)
+    backup.restore_database_file(dump_path, uri, clean_schema=True)
 
     engine = create_engine(_sync(uri))
     try:
@@ -369,5 +371,7 @@ def test_clean_schema_restore_of_bad_dump_raises(config_dir, monkeypatch):
 
     monkeypatch.setattr(settings, "pg_bin_dir", embedded_pg.bin_dir())
     uri = embedded_pg.ensure_cluster(config_dir)
+    bad = config_dir / "database.dump"
+    bad.write_bytes(b"not a dump")
     with pytest.raises(RuntimeError, match="pg_restore failed"):
-        backup.restore_database(b"not a dump", uri, clean_schema=True)
+        backup.restore_database_file(bad, uri, clean_schema=True)

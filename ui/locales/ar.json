@@ -3466,5 +3466,8 @@
   "system_recovery.confirm": "سيؤدي هذا إلى استبدال قاعدة بيانات Celerp وملفات التثبيت لكل الشركات وكل المستخدمين، وتسجيل خروج الجميع. هل تريد المتابعة؟",
   "system_recovery.restored": "تمت استعادة قاعدة البيانات من نقطة الاسترداد.",
   "system_recovery.imported": "تم استيراد النسخة الاحتياطية من {company}.",
-  "system_recovery.signed_out": "تم تسجيل خروج الجميع. قم بتسجيل الدخول بحساب من التثبيت المستعاد."
+  "system_recovery.signed_out": "تم تسجيل خروج الجميع. قم بتسجيل الدخول بحساب من التثبيت المستعاد.",
+  "system_recovery.safety_saved": "تم حفظ نسخة أمان من التثبيت السابق في {path}.",
+  "system_recovery.safety_failed_confirm": "لم يتم تغيير أي شيء. يمكنك الاستعادة بدون نسخة أمان، ولا يمكن التراجع عن ذلك.",
+  "system_recovery.continue_without_safety": "الاستعادة بدون نسخة أمان"
 }

@@ -3466,5 +3466,8 @@
   "system_recovery.confirm": "Ini akan mengganti basis data dan file instalasi Celerp untuk setiap perusahaan dan pengguna, serta mengeluarkan semua orang. Lanjutkan?",
   "system_recovery.restored": "Basis data dipulihkan dari titik pemulihan.",
   "system_recovery.imported": "Cadangan dari {company} telah diimpor.",
-  "system_recovery.signed_out": "Semua orang telah dikeluarkan. Silakan masuk dengan akun dari instalasi yang dipulihkan."
+  "system_recovery.signed_out": "Semua orang telah dikeluarkan. Silakan masuk dengan akun dari instalasi yang dipulihkan.",
+  "system_recovery.safety_saved": "Salinan pengaman dari instalasi sebelumnya disimpan di {path}.",
+  "system_recovery.safety_failed_confirm": "Tidak ada yang diubah. Anda dapat memulihkan tanpa salinan pengaman, dan ini tidak dapat dibatalkan.",
+  "system_recovery.continue_without_safety": "Pulihkan tanpa salinan pengaman"
 }
