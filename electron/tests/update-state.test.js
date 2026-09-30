@@ -22,15 +22,15 @@ function downloadedSetup() {
   return t;
 }
 
-// The state without its log lines.
-const stateOf = ({ log, ...state }) => state;
+// The state without its log lines and revision.
+const stateOf = ({ log, revision, ...state }) => state;
 
 const IDLE = { status: "idle", version: "", percent: 0, message: "", checking: false, downloadFailed: false };
 const DOWNLOADED = { status: "downloaded", version: "2.0.1", percent: 100, message: "", checking: false, downloadFailed: false };
 
 test("a fresh tracker starts idle", function test_new_tracker_starts_idle() {
   const { getUpdateState } = setup();
-  expect(getUpdateState()).toEqual({ ...IDLE, log: [] });
+  expect(getUpdateState()).toEqual({ ...IDLE, log: [], revision: 0 });
 });
 
 test("relaunch starts fresh: a new tracker is idle even after another reached downloaded",
@@ -38,7 +38,7 @@ test("relaunch starts fresh: a new tracker is idle even after another reached do
     const first = downloadedSetup();
     expect(first.getUpdateState().status).toBe("downloaded");
     const second = setup();
-    expect(second.getUpdateState()).toEqual({ ...IDLE, log: [] });
+    expect(second.getUpdateState()).toEqual({ ...IDLE, log: [], revision: 0 });
   });
 
 test("update found goes straight to downloading and is forwarded", function test_update_found_starts_downloading() {
@@ -101,7 +101,7 @@ test("an error before any download is retained for later replay", function test_
   const { updater, sent, getUpdateState } = setup();
   updater.emit("error", new Error("getaddrinfo ENOTFOUND github.com"));
   const state = { status: "error", version: "", percent: 0, message: "getaddrinfo ENOTFOUND github.com", checking: false, downloadFailed: false,
-                  log: ["Update error: getaddrinfo ENOTFOUND github.com"] };
+                  log: ["Update error: getaddrinfo ENOTFOUND github.com"], revision: 1 };
   expect(getUpdateState()).toEqual(state);
   // Reading it again (a later page load) still returns the error.
   expect(getUpdateState()).toEqual(state);
@@ -147,7 +147,7 @@ test("an error with no usable message is stored with an empty message",
     for (const err of [undefined, null, {}, new Error("")]) {
       const { updater, getUpdateState } = setup();
       updater.emit("error", err);
-      expect(getUpdateState()).toEqual({ status: "error", version: "", percent: 0, message: "", checking: false, downloadFailed: false, log: ["Update error"] });
+      expect(getUpdateState()).toEqual({ status: "error", version: "", percent: 0, message: "", checking: false, downloadFailed: false, log: ["Update error"], revision: 1 });
     }
   });
 
@@ -281,7 +281,7 @@ test("get-update-state answers idle before the updater checks (dev builds)",
   function test_serve_answers_idle_before_a_check() {
     const { handlers, windowSent } = serveSetup();
     expect(Object.keys(handlers)).toEqual(["get-update-state", "check-for-updates"]);
-    expect(handlers["get-update-state"]()).toEqual({ ...IDLE, log: [] });
+    expect(handlers["get-update-state"]()).toEqual({ ...IDLE, log: [], revision: 0 });
     expect(windowSent).toEqual([]);
   });
 
@@ -323,4 +323,17 @@ test("a check the user asks for dismisses a failed download, and the check's res
     const state = handlers["get-update-state"]();
     expect(stateOf(state)).toEqual(IDLE);
     expect(state.log).toContain("Update error: sha512 checksum mismatch");
+  });
+
+test("every change sent carries a higher revision than the state read before it",
+  function test_revision_rises_with_every_change() {
+    const { handlers, windowSent, updater } = serveSetup();
+    const before = handlers["get-update-state"]();
+    updater.emit("checking-for-update");
+    updater.emit("update-available", { version: "2.0.1" });
+    updater.emit("download-progress", { percent: 50 });
+    updater.emit("update-not-available", {}); // ignored: nothing sent, revision unchanged
+    const revisions = windowSent.map(([, state]) => state.revision);
+    expect([before.revision, ...revisions]).toEqual([0, 1, 2, 3]);
+    expect(handlers["get-update-state"]().revision).toBe(3);
   });

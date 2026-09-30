@@ -1083,7 +1083,11 @@ document.addEventListener('DOMContentLoaded', function() {
       // and for the replay on every page load, so both always look the same.
       // The bell counts any update the user has been told about: found and
       // downloading, downloaded, or a download that then failed.
+      // A state older than the one already shown (the page's replay answered
+      // after a live event) is ignored; the revision outlives a Back restore.
       function renderUpdateState(s) {
+        if (s.revision < (window._celerpUpdateRevision || 0)) return;
+        window._celerpUpdateRevision = s.revision;
         var i18n = window.__shellI18n;
         if (s.status === 'downloading') {
           setState(s.percent > 0 ? i18n.downloadingPct.replace('{pct}', Math.round(s.percent))

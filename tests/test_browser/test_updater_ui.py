@@ -245,7 +245,7 @@ def _pin_empty_inbox(page):
 _UPDATE_STATE_JS = Path(__file__).parents[2] / "electron" / "update-state.js"
 
 
-def _fake_electron(page, seed=()):
+def _fake_electron(page, seed=(), *, hold_replay=False):
     """Stand in for the Electron main process and preload bridge.
 
     The real electron/update-state.js runs in the page as the main process.
@@ -254,7 +254,9 @@ def _fake_electron(page, seed=()):
     as the real one does, while each page load gets a fresh renderer. `seed`
     holds events the updater fired before the first page opened. A check the
     user asks for goes through the real check-for-updates handler and is kept
-    in the same event list as "user-check".
+    in the same event list as "user-check". With `hold_replay`, the page's
+    get-update-state answer is read when asked but delivered only when the page
+    calls window.__releaseReplay(), as a slow IPC reply would be.
     """
     _pin_empty_inbox(page)
     page.add_init_script(
@@ -292,7 +294,11 @@ def _fake_electron(page, seed=()):
           function on(channel) { return function(cb) { windowCallbacks[channel] = cb; }; }
           window.celerp = {
             getVersion: function() { return Promise.resolve('2.0.0'); },
-            getUpdateState: function() { return Promise.resolve(ipcHandlers['get-update-state']()); },
+            getUpdateState: function() {
+              var state = ipcHandlers['get-update-state']();
+              if (!%s) return Promise.resolve(state);
+              return new Promise(function(resolve) { window.__releaseReplay = function() { resolve(state); }; });
+            },
             onUpdateLog: on('update-log'),
             onUpdateAvailable: on('update-available'),
             onDownloadProgress: on('download-progress'),
@@ -303,7 +309,7 @@ def _fake_electron(page, seed=()):
             installUpdate: function() {},
           };
         })();
-        """ % (json.dumps(list(seed)), _UPDATE_STATE_JS.read_text())
+        """ % (json.dumps(list(seed)), _UPDATE_STATE_JS.read_text(), json.dumps(hold_replay))
     )
 
 
@@ -630,3 +636,17 @@ def test_malformed_progress_shows_a_percent_in_range(page, ui_server, percent, b
     seen = page.evaluate(_VISIBLE_STATE_JS)
     assert seen["progress"] == bar
     assert state in seen["state"]
+
+
+def test_replay_answered_after_a_live_event_does_not_undo_it(page, ui_server):
+    """A page's replay that was read before a live event but arrives after it is older,
+    so the card keeps the live event's state."""
+    _fake_electron(page, [_FOUND, _PROGRESS], hold_replay=True)
+    page.goto(f"{ui_server}/", wait_until="domcontentloaded")
+    page.wait_for_function("() => typeof window.__releaseReplay === 'function'")
+    page.evaluate("() => window.__updaterEmit('update-downloaded', { version: '2.0.1' })")
+    page.evaluate("() => window.__releaseReplay()")
+    page.wait_for_timeout(100)
+    seen = page.evaluate(_VISIBLE_STATE_JS)
+    assert "2.0.1" in seen["state"] and seen["restart"] is True, seen
+    assert seen["progress"] == "100%"

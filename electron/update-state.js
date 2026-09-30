@@ -78,15 +78,17 @@ function nextUpdateState(state, event) {
 
 /**
  * Track an electron-updater instance. The state and its log lines go to the
- * window together, as `send(channel, {...state, log})`, whenever either
- * changes, so the window can never be shown a demoted state. The log is the
+ * window together, as `send(channel, {...state, log, revision})`, whenever
+ * either changes, so the window can never be shown a demoted state. `revision`
+ * rises with each change, so a state read earlier but delivered later (the
+ * page's get-update-state answer racing a live event) is recognisably older. The log is the
  * history of every check, kept until relaunch. An error is always logged, even
  * when it no longer changes the state.
  *
  * @param {{on: (event: string, fn: Function) => void}} updater
  * @param {(channel: string, state: object) => void} send
  * @returns {{getUpdateState: () => object, dismissError: () => void}}
- *   getUpdateState returns a copy with its log; dismissError clears a failed
+ *   getUpdateState returns a copy with its log and revision; dismissError clears a failed
  *   download, at the user's request.
  */
 function trackUpdater(updater, send) {
@@ -94,8 +96,10 @@ function trackUpdater(updater, send) {
   let log = [];
   // Progress is logged once per 10% step, so the log stays short.
   let loggedStep = -1;
+  // Rises with every change sent, so the window can tell an older state from a newer one.
+  let revision = 0;
 
-  const snapshot = () => ({ ...state, log: [...log] });
+  const snapshot = () => ({ ...state, log: [...log], revision });
 
   // Apply `event`; `lineFor(state)` gives the log line for it, if any.
   // `logIgnored` still logs the line when the state ignores the event.
@@ -105,6 +109,7 @@ function trackUpdater(updater, send) {
     if (next) state = next;
     const line = lineFor(state);
     if (line) log = log.concat(line).slice(-MAX_LOG_LINES);
+    revision += 1;
     send(channel, snapshot());
   }
 
