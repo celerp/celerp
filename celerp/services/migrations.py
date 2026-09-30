@@ -35,7 +35,13 @@ from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.importers.adapters.base import Artifact, MigrationDecisions, ScanError, SourceAdapter
+from celerp.importers.adapters.base import (
+    Artifact,
+    MigrationDecisions,
+    ScanError,
+    SourceAdapter,
+    SourceRevisionError,
+)
 from celerp.importers.adapters.registry import get_adapter
 from celerp.importers.schema import (
     MIGRATION_CIF_VERSION,
@@ -236,7 +242,7 @@ def validate_decisions(scan: store.ScanSession, body: dict) -> MigrationDecision
         adapter = _adapter(scan.adapter_key)
         try:
             adapter.build_manifest(scan.artifacts, decisions)
-        except ScanError as exc:
+        except (ScanError, SourceRevisionError) as exc:
             errors["cutover_date"] = str(exc)
     if errors:
         raise MigrationError(422, errors)

@@ -42,6 +42,7 @@ from celerp.importers.adapters.base import (
     MigrationDecisions,
     ScanError,
     SourceAdapter,
+    SourceRevisionError,
     SourceScan,
 )
 from celerp.importers.schema import CIFCoverageEntry, CIFMode
@@ -322,11 +323,16 @@ async def _receive(files: AsyncIterable[UploadPart], directory: Path) -> tuple[A
 
 
 def _recognise(artifacts: ArtifactSet, chosen: SourceAdapter | None) -> SourceAdapter:
-    if chosen is not None:
-        if not chosen.detect(artifacts).matched:
-            raise ScanStoreError(422, f"This file is not a {chosen.display_name} file.")
-        return chosen
-    adapter = registry.detect_adapter(artifacts)
+    """The adapter that reads the upload. A recognised source saved at a file format
+    revision its adapter does not read is refused with that adapter's own message."""
+    try:
+        if chosen is not None:
+            if not chosen.detect(artifacts).matched:
+                raise ScanStoreError(422, f"This file is not a {chosen.display_name} file.")
+            return chosen
+        adapter = registry.detect_adapter(artifacts)
+    except SourceRevisionError as exc:
+        raise ScanStoreError(422, str(exc)) from exc
     if adapter is None:
         raise ScanStoreError(422, "Celerp cannot read this file yet.")
     return adapter
@@ -360,7 +366,7 @@ async def create_scan(files: AsyncIterable[UploadPart], *, owner: ScanOwner) -> 
         adapter = _recognise(artifacts, chosen)
         try:
             scan = await asyncio.to_thread(adapter.inspect, artifacts)
-        except ScanError as exc:
+        except (ScanError, SourceRevisionError) as exc:
             raise ScanStoreError(422, str(exc)) from exc
         previous = _owned_tokens(owner)
         expires_at = _now() + SCAN_TTL_SECONDS

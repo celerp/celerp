@@ -154,8 +154,7 @@ async def test_manager_missing_or_unknown_revision_refused(client, migration_env
     assert "format version" in messages.pop()
 
 
-async def test_manager_revision_enforced_on_every_adapter_entry(real_client, real_engine, migration_env, monkeypatch,
-                                                                tmp_path):
+async def test_manager_revision_enforced_on_every_adapter_entry(real_client, real_engine, monkeypatch, tmp_path):
     """Every entry refuses an unsupported revision: the adapter entries, both scan routes,
     and a runner resuming a stopped run whose stored source is at such a revision."""
     from celerp.importers.adapters.manager_io import sqlite_reader

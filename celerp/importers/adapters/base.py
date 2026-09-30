@@ -48,6 +48,12 @@ class ScanError(Exception):
     """A source cannot be read. The message is shown to the user as written."""
 
 
+class SourceRevisionError(Exception):
+    """A source is recognised but saved at a file format revision this adapter does not
+    read. Not a ScanError: detection must refuse it with its own message rather than
+    treat the file as unrecognised. The message is shown to the user as written."""
+
+
 @dataclass(frozen=True)
 class DetectionResult:
     matched: bool
