@@ -182,6 +182,7 @@ const {
 } = require("./db-mode");
 const { migrateArgs } = require("./migrate_cmd");
 const { writeConfig: writeLockedConfig } = require("./config-writer");
+const { initialUpdateState, trackUpdater } = require("./update-state");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -708,9 +709,9 @@ function resolveStorageEnv(cfg) {
  * Guard: only active in packaged builds. Dev mode skips the updater so
  * a missing GitHub release file doesn't throw noise at the developer.
  *
- * State machine (matches doc section 10):
- *   IDLE -> CHECKING -> DOWNLOADING -> READY -> [admin clicks] -> INSTALLING
- *   Any state -> ERROR on failure (always surfaced to renderer)
+ * State machine (update-state.js):
+ *   idle -> downloading -> downloaded -> [admin clicks] -> install
+ *   idle/downloading -> error on failure; downloaded is final until relaunch
  *
  * autoInstallOnAppQuit = false: Squirrel/NSIS never install on normal quit.
  * The ONLY install trigger is an explicit admin action (installUpdate IPC).
@@ -718,7 +719,13 @@ function resolveStorageEnv(cfg) {
  *
  * Periodic re-check: every 4 hours while the app is running, in case a new
  * version is released while the user has the app open.
+ *
+ * The updater state (update-state.js) lives here, not in the page: every
+ * navigation is a full page load, so each page replays it via get-update-state.
  */
+// Idle until the updater is set up (dev builds never set it up).
+let getUpdateState = initialUpdateState;
+
 function setupAutoUpdater() {
   if (!app.isPackaged) return;
 
@@ -734,18 +741,18 @@ function setupAutoUpdater() {
     sendLog("Checking for update...");
   });
 
-  autoUpdater.on("update-available", (info) => {
-    sendLog("Found v" + info.version + " — downloading...");
-    if (mainWindow) mainWindow.webContents.send("update-available", info);
+  // State changes go to the window as the new state on each update channel.
+  getUpdateState = trackUpdater(autoUpdater, (channel, state) => {
+    if (mainWindow) mainWindow.webContents.send(channel, state);
   });
 
-  autoUpdater.on("update-not-available", () => {
-    if (mainWindow) mainWindow.webContents.send("update-not-available");
+  autoUpdater.on("update-available", (info) => {
+    sendLog("Found v" + info.version + " — downloading...");
   });
 
   autoUpdater.on("download-progress", (progress) => {
     // Throttle log output to at most once per second to avoid flooding IPC/DOM.
-    // Progress bar updates are sent every tick (just a width change, cheap).
+    // Progress state is forwarded every tick by trackUpdater (a cheap width change).
     const now = Date.now();
     if (!autoUpdater._lastProgressLog || now - autoUpdater._lastProgressLog >= 1000) {
       autoUpdater._lastProgressLog = now;
@@ -757,21 +764,19 @@ function setupAutoUpdater() {
           " KB/s)"
       );
     }
-    if (mainWindow) mainWindow.webContents.send("download-progress", progress);
   });
 
   autoUpdater.on("update-downloaded", (info) => {
     sendLog("v" + info.version + " ready — click 'Restart to Install'");
-    if (mainWindow) mainWindow.webContents.send("update-downloaded", info);
   });
 
   autoUpdater.on("error", (err) => {
-    // Always surface errors to the renderer — never silently swallow them.
+    // Always surface errors in the log, never silently swallow them; the
+    // state (trackUpdater) records them unless an update is already downloaded.
     // Update failures must never interrupt work, but must be visible.
     const msg = err?.message ?? String(err);
     console.error("[updater] error:", msg);
     sendLog("Update error: " + msg);
-    if (mainWindow) mainWindow.webContents.send("update-error", { message: msg });
   });
 
   // Delay initial check until the renderer has loaded and registered its IPC handlers.
@@ -1113,6 +1118,9 @@ ipcMain.on("restart-app", () => fullRelaunch(app));
 
 // get-version: renderer fetches the current app version
 ipcMain.handle("get-version", () => app.getVersion());
+
+// get-update-state: read-only copy of the updater state, replayed on page load
+ipcMain.handle("get-update-state", () => getUpdateState());
 
 // Modules page bridge: open the modules folder in the OS file manager, and a
 // native folder picker for Import Module (the picked path goes to the local
