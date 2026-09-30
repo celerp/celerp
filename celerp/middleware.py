@@ -264,3 +264,27 @@ class DrainMiddleware:
             return
 
         await self.app(scope, receive, send)
+
+
+class RecoveryMaintenanceMiddleware:
+    """Serve nothing but the health check while a System Recovery is unfinished.
+
+    Until the recovery finishes or is undone, the database, files and modules may
+    not agree, and no session from before the replacement may be honoured.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        from celerp.services.backup_import import MAINTENANCE_MESSAGE, recovery_incomplete
+
+        if (scope["type"] != "http" or scope.get("path", "").startswith(_DRAIN_BYPASS_PREFIXES)
+                or not recovery_incomplete()):
+            await self.app(scope, receive, send)
+            return
+        response = JSONResponse(
+            status_code=503,
+            content={"detail": f"System Recovery did not finish. {MAINTENANCE_MESSAGE}"},
+        )
+        await response(scope, receive, send)

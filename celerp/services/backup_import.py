@@ -338,6 +338,10 @@ def missing_modules_sentence(missing: list[str]) -> str:
 
 RECOVERY_STAGING_DIR = "recovery-staging"
 RECOVERY_SAFETY_DIR = "recovery-safety"
+# Present from the first change to the installation until the recovery finishes or is undone.
+RECOVERY_MARKER = "recovery-in-progress.json"
+# An archive restored without a safety archive, kept until its recovery finishes.
+UNFINISHED_RECOVERY_ARCHIVE = "unfinished-recovery.celerp-backup"
 # Safety archives kept in RECOVERY_SAFETY_DIR; older ones are removed.
 SAFETY_KEEP = 3
 # How long a recovery staged without a safety archive waits for the owner to continue.
@@ -735,49 +739,165 @@ def _failed(error: str, **kw):
     return BackupResult(ok=False, size_bytes=0, error=error, **kw)
 
 
-def _commit_failure(exc: Exception, safety_archive: str | None) -> str:
+def _commit_failure(exc: Exception, safety_archive: str | None, restored: bool) -> str:
     detail = (str(exc) or repr(exc)).rstrip(".")
-    if safety_archive:
-        return (f"System Recovery did not complete: {detail}. The installation as it was "
-                f"before is saved in the safety archive {safety_archive}.")
-    return f"System Recovery did not complete: {detail}. No safety archive was made."
+    if restored:
+        return (f"System Recovery did not complete: {detail}. The installation was put back "
+                f"as it was before, from the safety archive {safety_archive}; connections to "
+                "other services must be connected again and everyone must sign in again.")
+    saved = (f" The installation as it was before is saved in the safety archive {safety_archive}."
+             if safety_archive else "")
+    return f"System Recovery did not complete: {detail}.{saved} {MAINTENANCE_MESSAGE}"
 
 
-async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | None):
-    """The one destructive recovery engine; the caller holds the recovery locks.
+MAINTENANCE_MESSAGE = ("Celerp stays unavailable until the recovery is finished; "
+                       "restart Celerp to try again.")
 
-    Revokes the current connectors' remote state, restores the staged dump, brings
-    the schema up to date, clears restored connectors and ends every session, swaps
-    in the staged file roots, and makes the enabled modules exactly the backup's.
-    A failure at any step is a failure naming the safety archive. The staging
-    directory is removed either way.
+
+def _marker_path() -> Path:
+    from celerp.config import settings
+    return settings.data_dir / RECOVERY_MARKER
+
+
+def recovery_incomplete() -> bool:
+    """Whether a destructive recovery started and has not finished or been undone.
+
+    While true the installation serves nothing but its health check: its database,
+    files and modules may not agree, and no session from before the replacement may
+    be honoured.
+    """
+    return _marker_path().exists()
+
+
+def _mark_recovery_started(target: Path) -> None:
+    """Durably record that the installation is being replaced and what *target* archive
+    brings it back to a whole state if the replacement does not finish."""
+    path = _marker_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(path.name + ".partial")
+    with partial.open("w") as out:
+        json.dump({"target": str(target)}, out)
+        out.flush()
+        os.fsync(out.fileno())
+    partial.replace(path)
+    _fsync_dir(path.parent)
+
+
+def _mark_recovery_finished() -> None:
+    from celerp.config import settings
+    _marker_path().unlink(missing_ok=True)
+    (settings.data_dir / RECOVERY_SAFETY_DIR / UNFINISHED_RECOVERY_ARCHIVE).unlink(missing_ok=True)
+    _fsync_dir(_marker_path().parent)
+
+
+def _fsync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _keep_for_retry(prepared: PreparedRecovery) -> Path:
+    """Move the staged archive out of staging so an unfinished recovery can be retried."""
+    from celerp.config import settings
+    safety_dir = settings.data_dir / RECOVERY_SAFETY_DIR
+    safety_dir.mkdir(parents=True, exist_ok=True)
+    kept = safety_dir / UNFINISHED_RECOVERY_ARCHIVE
+    _rename(prepared.root / _STAGED_ARCHIVE, kept)
+    return kept
+
+
+async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], bool]:
+    """Replace the database, file roots and enabled modules with *prepared*'s.
+
+    Clears the restored connectors and ends every session. Returns the enabled
+    modules and whether a restart was scheduled. The caller holds the recovery locks and the recovery marker.
     """
     import asyncio
     from celerp.config import settings
     from celerp.db import get_session_ctx
     from celerp.services import session_tracker
-    from celerp.services.backup import BackupResult
     from celerp.services.backup_export import required_installation_modules
+
+    await _dispose_engine()
+    await _run_pg_restore(prepared.dump, settings.database_url)
+    await _reconcile_schema()
+    async with get_session_ctx() as session:
+        await _clear_restored_connector_state(session)
+        # Backups without module metadata take the set from every restored company.
+        modules = prepared.meta.enabled_modules or sorted(await required_installation_modules(session))
+        # No session from before the replacement stays valid; this also
+        # commits the connector cleanup.
+        await session_tracker.end_all_sessions(session)
+    await asyncio.to_thread(_swap_roots, prepared)
+    return modules, _apply_modules(modules)
+
+
+async def _replace_from(target: Path) -> None:
+    """Replace the installation with the archive *target*, then clear the recovery marker."""
+    import asyncio
+    prepared = await prepare_recovery(target)
+    try:
+        await _replace_installation(prepared)
+    finally:
+        await asyncio.to_thread(_remove_staging, prepared.root)
+    _mark_recovery_finished()
+
+
+async def finish_incomplete_recovery() -> None:
+    """At startup, bring back to a whole state an installation whose recovery did not finish.
+
+    Replaces it with the archive the marker names: the safety archive of the
+    installation as it was, or, when the owner restored without one, the archive
+    being restored. On failure the marker stays and the installation stays
+    unavailable; the next start tries again.
+    """
+    if not recovery_incomplete():
+        return
+    try:
+        target = Path(json.loads(_marker_path().read_text())["target"])
+        async with _recovery_locks():
+            await _replace_from(target)
+        log.info("Unfinished System Recovery completed from %s", target)
+    except Exception:
+        log.exception("Unfinished System Recovery could not be completed; Celerp stays unavailable")
+
+
+async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | None):
+    """The one destructive recovery engine; the caller holds the recovery locks.
+
+    Revokes the current connectors' remote state, then replaces the installation
+    (`_replace_installation`) under a durable recovery marker. When the replacement
+    fails, the installation is put back from the safety archive; with no safety
+    archive, or when putting it back fails too, the marker stays and the
+    installation serves nothing until a start finishes the recovery. The staging
+    directory is removed either way.
+    """
+    import asyncio
+    from celerp.services.backup import BackupResult
 
     safety = str(safety_archive) if safety_archive else None
     try:
         try:
             await _revoke_current_connector_state()
-            await _dispose_engine()
-            await _run_pg_restore(prepared.dump, settings.database_url)
-            await _reconcile_schema()
-            async with get_session_ctx() as session:
-                await _clear_restored_connector_state(session)
-                # Backups without module metadata take the set from every restored company.
-                modules = prepared.meta.enabled_modules or sorted(await required_installation_modules(session))
-                # No session from before the replacement stays valid; this also
-                # commits the connector cleanup.
-                await session_tracker.end_all_sessions(session)
-            await asyncio.to_thread(_swap_roots, prepared)
-            restart_scheduled = _apply_modules(modules)
+        except Exception as exc:
+            log.exception("System Recovery failed before the installation was changed")
+            return _failed(f"System Recovery did not start: {str(exc) or repr(exc)}")
+        _mark_recovery_started(safety_archive or await asyncio.to_thread(_keep_for_retry, prepared))
+        try:
+            modules, restart_scheduled = await _replace_installation(prepared)
         except Exception as exc:
             log.exception("System Recovery failed")
-            return _failed(_commit_failure(exc, safety), safety_archive=safety)
+            restored = False
+            if safety_archive is not None:
+                try:
+                    await _replace_from(safety_archive)
+                    restored = True
+                except Exception:
+                    log.exception("The installation could not be put back from %s", safety_archive)
+            return _failed(_commit_failure(exc, safety, restored), safety_archive=safety)
+        _mark_recovery_finished()
         warnings = _missing_module_warnings(modules)
         _write_restore_notice(prepared.meta.company_name, warnings, safety, restart_scheduled)
         return BackupResult(ok=True, size_bytes=prepared.files[_STAGED_DUMP], warnings=warnings,

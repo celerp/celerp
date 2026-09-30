@@ -845,3 +845,149 @@ async def test_recovery_real_database_replaces_installation(tmp_path, monkeypatc
     assert names == {"Alpha Trading"}
     assert len(rec.safety_archives()) == 1
     assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 401
+
+
+# ── A failed replacement is undone, or the installation stays closed ─────────
+
+def _fail_once(monkeypatch, owner, name: str, label: str, *, after: bool = False) -> list[str]:
+    """Make ``owner.name`` raise *label* the first time it is called (after running, when *after*)."""
+    import inspect
+    real = getattr(owner, name)
+    failed: list[str] = []
+
+    def _raise():
+        failed.append(label)
+        raise RuntimeError(f"{label} broke")
+
+    if inspect.iscoroutinefunction(real):
+        async def _wrapped(*a, **kw):
+            if failed:
+                return await real(*a, **kw)
+            if after:
+                await real(*a, **kw)
+            _raise()
+    else:
+        def _wrapped(*a, **kw):
+            if failed:
+                return real(*a, **kw)
+            if after:
+                real(*a, **kw)
+            _raise()
+    monkeypatch.setattr(owner, name, _wrapped)
+    return failed
+
+
+def _inject(monkeypatch, boundary: str) -> list[str]:
+    from celerp import config
+    from celerp.services import backup_import, session_tracker
+    target = {
+        "pg_restore": (backup_import, "_run_pg_restore", False),
+        "schema": (backup_import, "_reconcile_schema", False),
+        "connector_cleanup": (backup_import, "_clear_restored_connector_state", True),
+        "session_rotation": (session_tracker, "end_all_sessions", True),
+        "root_swap": (backup_import, "_swap_roots", False),
+        "module_application": (config, "replace_enabled_modules", True),
+    }[boundary]
+    return _fail_once(monkeypatch, target[0], target[1], boundary, after=target[2])
+
+
+BOUNDARIES = ["pg_restore", "schema", "connector_cleanup", "session_rotation", "root_swap",
+              "module_application"]
+
+
+@pytest.mark.parametrize("boundary", BOUNDARIES)
+async def test_failed_recovery_puts_installation_back(rec, tmp_path, monkeypatch, real_engine, boundary):
+    """A recovery failing at any step after the remote connectors were revoked puts the
+    database, files and modules back from the safety archive, clears the revoked
+    connectors, ends every session, and leaves the installation open."""
+    from celerp.services import backup_import
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-inventory"]})
+    rec.seed()
+    before, modules = rec.trees(), _enabled()
+    failed = _inject(monkeypatch, boundary)
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES,
+                                                       modules=["celerp-labels"]))
+    assert failed == [boundary]
+    assert result.ok is False
+    assert f"{boundary} broke" in result.error and "put back" in result.error
+    assert result.safety_archive and result.safety_archive in result.error
+    assert rec.restored[-1] == SAFETY_DUMP
+    names = rec.names()
+    last_restore = len(names) - 1 - names[::-1].index("pg_restore")
+    assert {"clear_connectors", "end_sessions"} <= set(names[last_restore:])
+    assert rec.trees() == before and _enabled() == modules
+    assert backup_import.recovery_incomplete() is False
+    assert rec.staging() == []
+    assert not (rec.data / "restore-notice.json").exists()
+
+
+async def test_recovery_that_cannot_be_undone_keeps_installation_closed(rec, tmp_path, monkeypatch,
+                                                                         real_client, real_engine):
+    """When the safety archive cannot be put back either, nothing but the health check is
+    served, not even a session from before; the next start puts the installation back."""
+    from celerp.services import backup_import
+    rec.seed()
+    before, modules = rec.trees(), _enabled()
+    tok = await _install_owner(real_engine)
+    real_restore = backup_import._run_pg_restore
+    broken = [True]
+
+    async def _restore(dump, url):
+        await real_restore(dump, url)
+        if broken:
+            raise RuntimeError("disk full")
+
+    monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.ok is False and "restart Celerp" in result.error
+    assert backup_import.recovery_incomplete() is True
+    assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 503
+    assert (await real_client.get("/health")).status_code == 200
+
+    broken.clear()
+    await backup_import.finish_incomplete_recovery()
+    assert backup_import.recovery_incomplete() is False
+    assert rec.restored[-1] == SAFETY_DUMP
+    assert rec.trees() == before and _enabled() == modules
+
+
+async def test_recovery_without_safety_archive_is_finished_at_next_start(rec, tmp_path, monkeypatch):
+    """With no safety archive to go back to, a failed recovery keeps the installation closed
+    and the next start finishes restoring the archive the owner chose."""
+    from celerp.services import backup_import
+    rec.seed()
+    _inject(monkeypatch, "root_swap")
+    rec.fail_safety()
+    first = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    result = await backup_import.continue_recovery(first.confirmation_id, first.archive_digest)
+    assert result.ok is False and "restart Celerp" in result.error
+    assert backup_import.recovery_incomplete() is True
+
+    await backup_import.finish_incomplete_recovery()
+    assert backup_import.recovery_incomplete() is False
+    assert rec.restored[-1] == SOURCE_DUMP
+    assert rec.tree("ai_uploads") == {"new.txt": b"SOURCE-AI"}
+    assert list((rec.data / "recovery-safety").glob("unfinished-*")) == []
+
+
+async def test_failed_recovery_does_not_revive_sessions(tmp_path, monkeypatch, code_config, real_engine,
+                                                        real_client):
+    """A session valid in the restored database does not sign in after the recovery
+    failed and the installation was put back."""
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    alpha = await company(real_engine, user, "Alpha Trading", "alpha")
+    tok = await token(real_engine, user, alpha)
+    source = await backup_export.export_full()
+    try:
+        failed = _inject(monkeypatch, "schema")
+        result = await backup_import.run_recovery(source)
+    finally:
+        source.unlink(missing_ok=True)
+    assert failed == ["schema"] and result.ok is False
+    assert len(rec.safety_archives()) == 1
+    assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 401
+    assert backup_import.recovery_incomplete() is False

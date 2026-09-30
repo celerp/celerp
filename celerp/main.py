@@ -31,7 +31,7 @@ assert_secure_jwt()
 _FIRST_BOOT = not settings.gateway_instance_id
 _BOOT_ID = uuid.uuid4().hex
 ensure_instance_id()
-from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
+from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from celerp.models.base import Base
 
 from celerp.routers import auth, companies, company_backup, ledger, migrations
@@ -202,6 +202,11 @@ async def lifespan(_app: FastAPI):
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # A System Recovery that stopped part way is finished (or undone from its safety
+    # archive) before anything reads the installation; until then nothing is served.
+    from celerp.services.backup_import import finish_incomplete_recovery
+    await finish_incomplete_recovery()
 
     # Load external modules (opt-in: no-op if MODULE_DIR not set)
     _loaded_modules = []
@@ -531,6 +536,7 @@ app = FastAPI(title="Celerp REST API", docs_url=None, redoc_url=None, lifespan=l
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(DrainMiddleware)
+app.add_middleware(RecoveryMaintenanceMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(SlidingTokenRefreshMiddleware)
 app.add_middleware(MaxBodySizeMiddleware, max_body_size_bytes=10 * 1024 * 1024)
