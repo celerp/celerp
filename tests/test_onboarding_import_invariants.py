@@ -10,6 +10,7 @@ property that must hold for every import path, not one screen's behavior.
 from __future__ import annotations
 
 import ast
+import io
 import json
 import re
 import time
@@ -1519,12 +1520,14 @@ class TestUnitAndPriceInvariant:
 
 
 class _Upload:
+    """Reads like Starlette's UploadFile: ``read(size)`` returns the next chunk."""
+
     def __init__(self, data: bytes, filename: str):
-        self._data = data
+        self._data = io.BytesIO(data)
         self.filename = filename
 
-    async def read(self) -> bytes:
-        return self._data
+    async def read(self, size: int = -1) -> bytes:
+        return self._data.read(size)
 
 
 def _xlsx(sheets: dict[str, list[list]]) -> bytes:
@@ -1653,6 +1656,23 @@ class TestTabularParityInvariant:
             staged[fmt] = stash.await_args.args[1]
         assert staged["xlsx"] == staged["csv"]
         assert "Ruby, oval" in staged["csv"]
+
+    @pytest.mark.asyncio
+    async def test_document_line_upload_refuses_a_value_it_would_lose(self):
+        """Document line uploads read through the same table reader: a repeated
+        header is refused by column before any line reaches the document."""
+        from ui.app import app as ui_app
+        add_lines = AsyncMock()
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value={"id": _COMPANY_A, "settings": {}})), \
+             patch("ui.api_client.patch_doc", new=add_lines), \
+             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_doc", new=AsyncMock(return_value={"entity_id": "doc:1", "line_items": []})):
+            async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+                r = await c.post("/docs/doc:1/items/csv", cookies=_owner_cookies(),
+                                 files={"file": ("lines.csv", b"sku,quantity,sku\nA1,2,B2\n")})
+        assert r.status_code == 400, r.text
+        assert "same header" in r.json()["error"]
+        add_lines.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

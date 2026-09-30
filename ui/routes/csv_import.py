@@ -922,10 +922,10 @@ async def read_tabular_upload(form: Any) -> tuple[list[dict], str | None]:
     file_obj = form.get("csv_file")
     if not file_obj or not hasattr(file_obj, "read"):
         return [], t("import.err_select_file")
-    content = await file_obj.read()
     filename = getattr(file_obj, "filename", None) or "upload.csv"
     sheet = (form.get("sheet") or "").strip() or None
     try:
+        content = await tabular.read_upload_bytes(file_obj)
         fieldnames, rows = tabular.read_table(content, filename, sheet=sheet)
     except UnicodeDecodeError:
         return [], t("import.err_decode")
@@ -934,15 +934,14 @@ async def read_tabular_upload(form: Any) -> tuple[list[dict], str | None]:
     except tabular.TabularError as exc:
         if exc.sheets:
             return [], UploadError(t("import.err_choose_sheet"), sheets=exc.sheets)
+        if exc.code == "extra_columns":
+            return [], t("import.err_extra_columns")
+        if exc.code == "no_header":
+            return [], t("import.err_no_header")
         return [], t("import.err_read_file", detail=str(exc))
     names = [str(f or "").strip() for f in fieldnames]
-    while names and not names[-1]:
-        names.pop()
     if not names or "" in names:
         return [], t("import.err_no_header")
-    if len(names) < len(fieldnames):
-        # Cells past the last header name: some row is wider than the header.
-        return [], t("import.err_extra_columns")
     if not rows:
         return [], t("import.err_empty")
     return rows, None

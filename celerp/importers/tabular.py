@@ -29,11 +29,12 @@ from ui.i18n import t
 
 ValidateFn = Callable[[str, str, dict], bool]
 
-# Size guards. MAX_XLSX_BYTES matches the upload bound; the uncompressed and
-# entry-count guards stop a zip bomb before openpyxl ever parses the workbook.
+# Size guards. MAX_TABLE_BYTES bounds every uploaded table, CSV or workbook,
+# before it is read into memory; the uncompressed and entry-count guards stop a
+# zip bomb before openpyxl ever parses the workbook.
 MAX_ROWS = 10_000
 MAX_CELLS = 200_000
-MAX_XLSX_BYTES = 10 * 1024 * 1024
+MAX_TABLE_BYTES = 10 * 1024 * 1024
 MAX_XLSX_UNCOMPRESSED = 50 * 1024 * 1024
 MAX_XLSX_ENTRIES = 4096
 
@@ -41,7 +42,9 @@ MAX_XLSX_ENTRIES = 4096
 class TabularError(ValueError):
     """A file that cannot be turned into a table. Carries the offending cell
     position (``row``/``column``) for formula errors and the available sheet
-    names (``sheets``) when the caller must choose one."""
+    names (``sheets``) when the caller must choose one, and for a header that
+    would lose values a ``code``: ``no_header``, ``extra_columns`` or
+    ``duplicate_header``."""
 
     def __init__(
         self,
@@ -50,11 +53,13 @@ class TabularError(ValueError):
         row: int | None = None,
         column: str | None = None,
         sheets: list[str] | None = None,
+        code: str | None = None,
     ) -> None:
         super().__init__(message)
         self.row = row
         self.column = column
         self.sheets = sheets
+        self.code = code
 
 
 # Columns always shown in the error table (identifiers), even if they have no errors.
@@ -564,6 +569,27 @@ def _enforce_bounds(n_cols: int, n_rows: int) -> None:
         raise TabularError(f"Too many cells: {cells} exceeds the {MAX_CELLS} limit.")
 
 
+def _filled_width(line: list[str]) -> int:
+    """Columns up to the last filled cell of a line: the width it adds to the grid."""
+    return max((i + 1 for i, v in enumerate(line) if v), default=0)
+
+
+async def read_upload_bytes(upload: Any, limit: int = MAX_TABLE_BYTES) -> bytes:
+    """Read an uploaded file, refusing it once it passes ``limit`` bytes.
+
+    Reads in chunks, so a file over the limit is never held in memory whole.
+    Every table upload reads its bytes here before parsing.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := await upload.read(1024 * 1024):
+        size += len(chunk)
+        if size > limit:
+            raise TabularError(f"File is too large: the limit is {limit // (1024 * 1024)} MB.")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def read_csv(text: str) -> tuple[list[str], list[dict]]:
     """Parse CSV text into (header, rows), BOM stripped and row/cell bounds enforced.
 
@@ -571,13 +597,22 @@ def read_csv(text: str) -> tuple[list[str], list[dict]]:
     the header, even when blank; lines after it with no filled cell are skipped,
     as empty sheet rows are.
     """
-    if text.startswith("﻿"):
+    if text.startswith("\ufeff"):
         text = text[1:]
     reader = csv.reader(io.StringIO(text))
     header = next(reader, [])
     lines = [line for line in reader if any(line)]
-    _enforce_bounds(max(len(line) for line in [header, *lines]), len(lines))
+    _enforce_bounds(max(_filled_width(line) for line in [header, *lines]), len(lines))
     return _grid(header, lines)
+
+
+def _column_letter(index: int) -> str:
+    letters = ""
+    index += 1
+    while index:
+        index, rem = divmod(index - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
 
 
 def _grid(header: list[str], lines: list[list[str]]) -> tuple[list[str], list[dict]]:
@@ -585,11 +620,37 @@ def _grid(header: list[str], lines: list[list[str]]) -> tuple[list[str], list[di
 
     The grid ends at the last column holding any value, so trailing columns that
     are empty everywhere (a workbook's formatted but unused cells) are dropped.
-    A missing cell is empty; a filled cell past the header sits under an empty
-    column name.
+    A missing cell is empty.
+
+    Rows are keyed by header text, so every column that holds a value must have
+    a header of its own: a filled column with a blank header, or two columns
+    with the same header, would lose values when the row is built. Either is
+    refused here, before any row exists, naming the column.
     """
-    width = max((i + 1 for line in [header, *lines] for i, v in enumerate(line) if v), default=0)
+    width = max((_filled_width(line) for line in [header, *lines]), default=0)
     cols = header[:width] + [""] * (width - len(header))
+    last_named = max((i for i, c in enumerate(cols) if c.strip()), default=-1)
+    seen: dict[str, int] = {}
+    for i, col in enumerate(cols):
+        name = col.strip()
+        if name:
+            if name in seen:
+                raise TabularError(
+                    f"Columns {_column_letter(seen[name])} and {_column_letter(i)} have the same "
+                    f"header {name!r}; give each column its own header.",
+                    column=_column_letter(i), code="duplicate_header",
+                )
+            seen[name] = i
+        elif any(i < len(line) and line[i] for line in lines):
+            if i > last_named:
+                raise TabularError(
+                    f"Column {_column_letter(i)} has values but is past the last header.",
+                    column=_column_letter(i), code="extra_columns",
+                )
+            raise TabularError(
+                f"Column {_column_letter(i)} has values but no header.",
+                column=_column_letter(i), code="no_header",
+            )
     rows = [{cols[i]: (line[i] if i < len(line) else "") for i in range(width)} for line in lines]
     return cols, rows
 
@@ -615,6 +676,7 @@ def _stringify(value: Any) -> str:
 
 
 def _sheet_is_empty(ws) -> bool:
+    ws.reset_dimensions()
     for row in ws.iter_rows(values_only=True):
         if any(c is not None and str(c).strip() != "" for c in row):
             return False
@@ -629,7 +691,7 @@ def read_xlsx(data: bytes, *, sheet: str | None) -> tuple[list[str], list[dict]]
     one non-empty sheet auto-selects; several with no chosen sheet raise with the
     available names. A formula cell raises with its position.
     """
-    if len(data) > MAX_XLSX_BYTES:
+    if len(data) > MAX_TABLE_BYTES:
         raise TabularError("File is too large.")
 
     try:
@@ -661,8 +723,12 @@ def read_xlsx(data: bytes, *, sheet: str | None) -> tuple[list[str], list[dict]]
                 raise TabularError("Choose a sheet.", sheets=non_empty)
             worksheet = workbook[non_empty[0]]
 
+        # The stored sheet dimension is written by whatever produced the file;
+        # read every cell present rather than trusting it to size the rows.
+        worksheet.reset_dimensions()
         header: list[str] = []
         lines: list[list[str]] = []
+        width = 0
         for cells in worksheet.iter_rows():
             values: list[str] = []
             for cell in cells:
@@ -678,13 +744,14 @@ def read_xlsx(data: bytes, *, sheet: str | None) -> tuple[list[str], list[dict]]
                 values.append(_stringify(value))
             if not header:
                 header = values
+                width = _filled_width(header)
                 continue
             if not any(values):
                 continue
-            if len(lines) >= MAX_ROWS:
-                raise TabularError(f"Too many rows: exceeds the {MAX_ROWS} limit.")
-            if (len(lines) + 1) * max(len(header), 1) > MAX_CELLS:
-                raise TabularError(f"Too many cells: exceeds the {MAX_CELLS} limit.")
+            # The same bounds as CSV, counted on the widest row actually read,
+            # so a ragged row wider than the header counts in full.
+            width = max(width, _filled_width(values))
+            _enforce_bounds(width, len(lines) + 1)
             lines.append(values)
         return _grid(header, lines)
     finally:
@@ -699,6 +766,8 @@ def read_table(
 ) -> tuple[list[str], list[dict]]:
     """Dispatch on the file suffix. CSV and .xlsx are supported; .xlsm/.xls and
     everything else raise."""
+    if len(data) > MAX_TABLE_BYTES:
+        raise TabularError("File is too large.")
     suffix = Path(filename).suffix.lower()
     if suffix == ".csv":
         return read_csv(data.decode("utf-8-sig"))

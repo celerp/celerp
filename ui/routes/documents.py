@@ -1757,18 +1757,19 @@ def setup_routes(app):
         if not upload or not hasattr(upload, "read"):
             return _J({"error": t("doc.csv_no_file")}, status_code=400)
 
-        import io as _io, csv as _csv
+        from celerp.importers import tabular
         try:
-            raw = (await upload.read()).decode("utf-8-sig")
-        except Exception:
+            fieldnames, rows = tabular.read_table(await tabular.read_upload_bytes(upload), "items.csv")
+        except UnicodeDecodeError:
             return _J({"error": t("doc.csv_decode_error")}, status_code=400)
-        reader = _csv.DictReader(_io.StringIO(raw))
-        if not reader.fieldnames:
+        except tabular.TabularError as exc:
+            return _J({"error": str(exc)}, status_code=400)
+        if not fieldnames:
             return _J({"error": t("doc.csv_no_headers")}, status_code=400)
 
         # Map CSV headers to canonical names
         col_map: dict[str, str] = {}
-        for h in reader.fieldnames:
+        for h in fieldnames:
             mapped = _map_csv_header(h)
             if mapped:
                 col_map[h] = mapped
@@ -1779,7 +1780,7 @@ def setup_routes(app):
         # Parse rows
         new_lines: list[dict] = []
         price_list = form.get("price_list") or DEFAULT_PRICE_LIST_NAME
-        for row in reader:
+        for row in rows:
             mapped_row: dict[str, str] = {}
             for csv_col, canon in col_map.items():
                 mapped_row[canon] = row.get(csv_col, "").strip()

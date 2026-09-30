@@ -321,8 +321,9 @@ async def test_writer_failure_is_reported_without_internal_detail(client, sessio
     r = await _rows_commit(client, perm["admin_h"], rows, key="op-writer-fail")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["created"] == 0 and body["skipped"] == 1, body
-    assert body["errors"], body
+    # A row the writer failed on is neither created nor skipped; it is reported.
+    assert body["created"] == 0 and body["skipped"] == 0, body
+    assert len(body["errors"]) == 1, body
     text = json.dumps(body["errors"])
     for leaked in ("SQL", "INSERT", "ledger", "parameters", "secret_column", "RuntimeError"):
         assert leaked not in text, body["errors"]
