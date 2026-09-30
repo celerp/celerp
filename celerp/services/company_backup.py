@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Independent company copies.
+"""Company backups.
 
-A company copy is one company's records, settings and attachment files in a single
+A company backup is one company's records, settings and attachment files in a single
 ``.celerp-company`` file, opened elsewhere as a new, independent company. It never
 carries users, sign-in data, connector credentials, share links or anything else of
 the installation it came from.
@@ -29,20 +29,20 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company import Company, User
 from celerp.services.attachments import LocalBackend, is_plain_name, company_attachment_dir, get_backend
-from celerp.services.migrations import COMPANY_NAME_MAX, MigrationError, company_tables, validate_prepared_by
-from celerp.services.provisioning import provision_copied_company
+from celerp.services.migrations import COMPANY_NAME_MAX, company_tables
+from celerp.services.provisioning import provision_restored_company
 
 logger = logging.getLogger(__name__)
 
-FORMAT = "celerp-company-copy"
+FORMAT = "celerp-company-backup"
 FORMAT_VERSION = 1
-SUFFIX = ".celerp-company"
+EXTENSION = ".celerp-company"
 
 # The company's own records, in insert order (a table follows every table it references).
 COPY_TABLES = (
@@ -70,7 +70,7 @@ EXCLUDED_TABLES = {
 # Settings that describe this installation or its people, not the business.
 DROPPED_SETTINGS = frozenset({
     "role_grants", "ai_memory", "lock_date_set_by", "reorder_alert_email", "column_prefs",
-    "pay_tip_shown", "reorder_last_scan_at", "company_copy",
+    "pay_tip_shown", "reorder_last_scan_at", "restored_backup",
 })
 
 # Columns that point at a user of the source installation; a copy carries none.
@@ -84,13 +84,13 @@ _BATCH = 1000
 _MAX_MEMBER = 2 * 1024 ** 3
 
 FULL_BACKUP = "This is a full Celerp backup. Use Restore a Celerp backup instead."
-NOT_A_COPY = "This file is not a Celerp company copy."
-DAMAGED = "This company copy is damaged or was changed after it was made. Ask for a new copy."
-NEWER = "This company copy was made by a newer version of Celerp. Update Celerp, then open it again."
-TOO_LARGE = "This file is larger than a company copy upload allows."
+NOT_A_BACKUP = "This file is not a Celerp company backup."
+DAMAGED = "This company backup is damaged or was changed after it was made. Ask for a new copy."
+NEWER = "This company backup was made by a newer version of Celerp. Update Celerp, then open it again."
+TOO_LARGE = "This file is larger than a company backup upload allows."
 
 
-class CopyError(Exception):
+class BackupError(Exception):
     def __init__(self, status_code: int, detail: str) -> None:
         super().__init__(detail)
         self.status_code = status_code
@@ -98,7 +98,7 @@ class CopyError(Exception):
 
 
 @dataclass(frozen=True)
-class CopyFile:
+class BackupFile:
     """A copy file whose manifest and contents have been checked."""
     path: Path
     manifest: dict
@@ -111,7 +111,6 @@ class CopyFile:
         m = self.manifest
         return {
             "company_name": self.company_name,
-            "prepared_by": m.get("prepared_by") or None,
             "created_at": m["created_at"],
             "records": sum(t["rows"] for t in m["tables"].values()),
             "attachments": len(m["attachments"]),
@@ -151,7 +150,7 @@ def _copied_settings(settings: dict | None) -> dict:
 # ── Export ───────────────────────────────────────────────────────────────────
 
 async def export_company(session: AsyncSession, company_id: uuid.UUID, dest: Path, *,
-                         prepared_by: str | None) -> dict:
+                         provenance: dict | None = None) -> dict:
     """Write a copy of one company to ``dest``; returns its manifest.
 
     Refused, with nothing written, when the company holds data in a table this copy
@@ -160,23 +159,23 @@ async def export_company(session: AsyncSession, company_id: uuid.UUID, dest: Pat
 
     company = await session.get(Company, company_id)
     if company is None:
-        raise CopyError(404, "Company not found.")
+        raise BackupError(404, "Company not found.")
     for table in await company_tables(session):
         if table in COPY_TABLES or table in EXCLUDED_TABLES:
             continue
         if await session.scalar(text(f'SELECT 1 FROM "{table}" WHERE company_id = :c LIMIT 1'), {"c": company_id}):
-            raise CopyError(409, f"This company has data in {table} that a company copy cannot carry yet. "
+            raise BackupError(409, f"This company has data in {table} that a company backup cannot carry yet. "
                                  "Nothing was copied.")
     if not isinstance(get_backend(), LocalBackend) and await session.scalar(text(
             "SELECT 1 FROM projections WHERE company_id = :c AND state::text LIKE '%attachments/%' LIMIT 1"),
             {"c": company_id}):
-        raise CopyError(409, "This company has attachments kept in cloud storage, which a company copy "
+        raise BackupError(409, "This company has attachments kept in cloud storage, which a company backup "
                              "cannot carry yet. Nothing was copied.")
 
     manifest: dict = {
         "format": FORMAT, "format_version": FORMAT_VERSION, "scope": "company",
         "app_version": __version__, "created_at": datetime.now(timezone.utc).isoformat(),
-        "handoff_id": str(uuid.uuid4()), "prepared_by": prepared_by or "",
+        "backup_id": str(uuid.uuid4()), **({"provenance": provenance} if provenance else {}),
         "company": {"id": str(company.id), "name": company.name, "settings": _copied_settings(company.settings)},
         "tables": {}, "attachments": {},
     }
@@ -215,50 +214,45 @@ def _looks_like_backup(path: Path) -> bool:
         return f.read(2) == b"\x1f\x8b"
 
 
-def read_copy(path: Path) -> CopyFile:
+def read_backup(path: Path) -> BackupFile:
     """Check a copy file: its format, and every table and attachment against its hash."""
     if not zipfile.is_zipfile(path):
-        raise CopyError(422, FULL_BACKUP if _looks_like_backup(path) else NOT_A_COPY)
+        raise BackupError(422, FULL_BACKUP if _looks_like_backup(path) else NOT_A_BACKUP)
     try:
         with zipfile.ZipFile(path) as zf:
             try:
                 manifest = json.loads(zf.read("manifest.json"))
             except (KeyError, ValueError):
-                raise CopyError(422, NOT_A_COPY) from None
+                raise BackupError(422, NOT_A_BACKUP) from None
             if not isinstance(manifest, dict) or manifest.get("format") != FORMAT or manifest.get("scope") != "company":
-                raise CopyError(422, NOT_A_COPY)
+                raise BackupError(422, NOT_A_BACKUP)
             if not isinstance(manifest.get("format_version"), int) or manifest["format_version"] > FORMAT_VERSION:
-                raise CopyError(422, NEWER)
+                raise BackupError(422, NEWER)
             tables = manifest.get("tables")
             if not isinstance(tables, dict) or not isinstance(manifest.get("attachments"), dict):
-                raise CopyError(422, DAMAGED)
+                raise BackupError(422, DAMAGED)
             if set(tables) - set(COPY_TABLES):
-                raise CopyError(422, NEWER)
+                raise BackupError(422, NEWER)
             _check_manifest(manifest)
             names = set(zf.namelist())
             for table, meta in tables.items():
                 lines = _member_lines(zf, f"tables/{table}.jsonl", names)
                 if len(lines) != meta.get("rows") or _table_hash(lines) != meta.get("sha256"):
-                    raise CopyError(422, DAMAGED)
+                    raise BackupError(422, DAMAGED)
             for name, digest in manifest["attachments"].items():
                 if not is_plain_name(name) or f"attachments/{name}" not in names:
-                    raise CopyError(422, DAMAGED)
+                    raise BackupError(422, DAMAGED)
                 if _sha(_member(zf, f"attachments/{name}")) != digest:
-                    raise CopyError(422, DAMAGED)
+                    raise BackupError(422, DAMAGED)
     except (zipfile.BadZipFile, OSError, KeyError, TypeError, AttributeError, ValueError):
-        raise CopyError(422, DAMAGED) from None
-    return CopyFile(path=path, manifest=manifest)
+        raise BackupError(422, DAMAGED) from None
+    return BackupFile(path=path, manifest=manifest)
 
 
 def _check_manifest(manifest: dict) -> None:
     """The manifest fields a copy is opened from, each of the type the export writes."""
     company = manifest.get("company")
-    try:
-        validate_prepared_by(manifest.get("prepared_by"))
-    except MigrationError:
-        raise CopyError(422, DAMAGED) from None
     if not (isinstance(manifest.get("created_at"), str)
-            and isinstance(manifest.get("handoff_id"), str) and _UUID.fullmatch(manifest["handoff_id"])
             and isinstance(company, dict) and isinstance(company.get("name"), str)
             and company["name"].strip() and len(company["name"]) <= COMPANY_NAME_MAX
             and isinstance(company.get("id"), str) and _UUID.fullmatch(company["id"])
@@ -266,7 +260,7 @@ def _check_manifest(manifest: dict) -> None:
             and all(isinstance(meta, dict) and isinstance(meta.get("columns"), list)
                     and all(isinstance(c, str) for c in meta["columns"]) for meta in manifest["tables"].values())
             and not _has_nul(manifest)):
-        raise CopyError(422, DAMAGED)
+        raise BackupError(422, DAMAGED)
 
 
 def _has_nul(value) -> bool:
@@ -282,22 +276,22 @@ def _has_nul(value) -> bool:
 
 def _member(zf: zipfile.ZipFile, name: str) -> bytes:
     if zf.getinfo(name).file_size > _MAX_MEMBER:
-        raise CopyError(422, DAMAGED)
+        raise BackupError(422, DAMAGED)
     return zf.read(name)
 
 
 def _member_lines(zf: zipfile.ZipFile, name: str, names: set[str]) -> list[str]:
     if name not in names:
-        raise CopyError(422, DAMAGED)
+        raise BackupError(422, DAMAGED)
     body = _member(zf, name).decode()
     return body.split("\n") if body else []
 
 
-async def check_schema(session: AsyncSession, copy: CopyFile) -> None:
+async def check_schema(session: AsyncSession, copy: BackupFile) -> None:
     """Refuse a copy holding a column this installation does not have (a newer Celerp)."""
     for table, meta in copy.manifest["tables"].items():
         if not set(meta.get("columns") or []) <= set(await _columns(session, table)):
-            raise CopyError(422, NEWER)
+            raise BackupError(422, NEWER)
 
 
 # ── Opening a copy ───────────────────────────────────────────────────────────
@@ -311,9 +305,9 @@ def _objects(lines: list[str]) -> list[dict]:
     try:
         rows = [json.loads(line) for line in lines]
     except ValueError:
-        raise CopyError(422, DAMAGED) from None
+        raise BackupError(422, DAMAGED) from None
     if not all(isinstance(row, dict) for row in rows):
-        raise CopyError(422, DAMAGED)
+        raise BackupError(422, DAMAGED)
     return rows
 
 
@@ -321,7 +315,7 @@ def _row_ids(rows: list[dict]) -> set[str]:
     return {row["id"] for row in rows if isinstance(row.get("id"), str) and _UUID.fullmatch(row["id"])}
 
 
-def _id_map(copy: CopyFile, tables: dict[str, list[dict]]) -> dict[str, str]:
+def _id_map(copy: BackupFile, tables: dict[str, list[dict]]) -> dict[str, str]:
     """Fresh ids for the source company and every copied row keyed by a uuid."""
     ids = {copy.manifest["company"]["id"]}
     for rows in tables.values():
@@ -341,7 +335,7 @@ async def _foreign_keys(session: AsyncSession, table: str) -> list[tuple[str, st
         {"t": table})).all()]
 
 
-async def _check_references(session: AsyncSession, copy: CopyFile, tables: dict[str, list[dict]]) -> None:
+async def _check_references(session: AsyncSession, copy: BackupFile, tables: dict[str, list[dict]]) -> None:
     """Refuse a copy whose rows point outside it: every foreign key is empty or names the
     copy's own company or a row the copy itself carries in the referenced table. The ids
     are checked before they are remapped; the remap maps exactly these ids, so the check
@@ -354,7 +348,7 @@ async def _check_references(session: AsyncSession, copy: CopyFile, tables: dict[
             for row in rows:
                 value = row.get(column)
                 if value is not None and not (isinstance(value, str) and value in allowed):
-                    raise CopyError(422, DAMAGED)
+                    raise BackupError(422, DAMAGED)
 
 
 def _remap(line: str, mapping: dict[str, str]) -> str:
@@ -372,7 +366,7 @@ async def _insert(session: AsyncSession, table: str, columns: list[str], lines: 
             f'jsonb_populate_record(NULL::"{table}", e.v) AS r ORDER BY e.n'), {"rows": batch})
 
 
-async def open_copy(session: AsyncSession, copy: CopyFile, *, owner: User) -> Company:
+async def restore_backup(session: AsyncSession, copy: BackupFile, *, owner: User) -> Company:
     """Create a new company from a checked copy, owned by ``owner``, and commit it.
 
     The new company's rows are read back and checked against the copy before the
@@ -386,18 +380,19 @@ async def open_copy(session: AsyncSession, copy: CopyFile, *, owner: User) -> Co
     rows = {table: _objects(lines) for table, lines in source.items()}
     if not all(isinstance(row.get(column), dict) for table, column in _OBJECT_COLUMNS.items()
                for row in rows.get(table, [])):
-        raise CopyError(422, DAMAGED)
+        raise BackupError(422, DAMAGED)
     await _check_references(session, copy, rows)
     mapping = _id_map(copy, rows)
     back = {new: old for old, new in mapping.items()}
     settings = {
         **_copied_settings(manifest["company"].get("settings")),
-        "company_copy": {"handoff_id": manifest.get("handoff_id"), "prepared_by": manifest.get("prepared_by") or None,
-                         "opened_at": datetime.now(timezone.utc).isoformat()},
+        "restored_backup": {"backup_id": manifest.get("backup_id"), "created_at": manifest["created_at"],
+                            "source_company_name": manifest["company"]["name"],
+                            "restored_at": datetime.now(timezone.utc).isoformat()},
     }
     folder: Path | None = None
     try:
-        company = await provision_copied_company(session, owner=owner, company_name=manifest["company"]["name"],
+        company = await provision_restored_company(session, owner=owner, company_name=manifest["company"]["name"],
                                                  company_id=uuid.UUID(mapping[manifest["company"]["id"]]),
                                                  settings=settings)
         try:
@@ -406,11 +401,11 @@ async def open_copy(session: AsyncSession, copy: CopyFile, *, owner: User) -> Co
                     await _insert(session, table, manifest["tables"][table]["columns"],
                                   [_remap(line, mapping) for line in source[table]])
         except DBAPIError:
-            raise CopyError(422, DAMAGED) from None
+            raise BackupError(422, DAMAGED) from None
         for table, meta in manifest["tables"].items():
             lines = [_remap(line, back) for line in await _rows(session, table, company.id)]
             if len(lines) != meta["rows"] or _table_hash(lines) != meta["sha256"]:
-                raise CopyError(422, f"The opened company did not match the copy ({table}). Nothing was kept.")
+                raise BackupError(422, f"The opened company did not match the copy ({table}). Nothing was kept.")
         if files:
             folder = company_attachment_dir(str(company.id))
             folder.mkdir(parents=True, exist_ok=True)
@@ -424,13 +419,3 @@ async def open_copy(session: AsyncSession, copy: CopyFile, *, owner: User) -> Co
         raise
     return company
 
-
-async def latest_handoff_id(session: AsyncSession) -> str | None:
-    """The hand-off id of the most recently opened company copy on this installation."""
-    newest: tuple[str, str] | None = None
-    for settings in (await session.scalars(select(Company.settings))).all():
-        info = (settings or {}).get("company_copy")
-        if isinstance(info, dict) and info.get("handoff_id") and info.get("opened_at"):
-            if newest is None or info["opened_at"] > newest[0]:
-                newest = (info["opened_at"], info["handoff_id"])
-    return newest[1] if newest else None

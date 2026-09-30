@@ -34,7 +34,7 @@ ensure_instance_id()
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from celerp.models.base import Base
 
-from celerp.routers import auth, companies, company_copy, ledger, migrations
+from celerp.routers import auth, companies, company_backup, ledger, migrations
 from celerp.routers import health, notifications, system, events as events_router_mod
 from celerp.routers import stars as stars_router_mod
 from celerp.importers.sinks import register_sink
@@ -101,26 +101,19 @@ async def _try_auto_activate() -> None:
         iid = await asyncio.to_thread(ensure_instance_id)
         from celerp.gateway.state import (
             activate_payload, relay_http_url as _rhu, relay_post_with_retry)
-        from celerp.db import get_session_ctx
-        from celerp.services.company_copy import latest_handoff_id
         relay_base = _rhu()
         verifier = _s.activation_verifier or ""
-        try:
-            async with get_session_ctx() as session:
-                handoff_id = await latest_handoff_id(session)
-        except Exception:
-            handoff_id = None  # the report goes out without it rather than not at all
 
         if not verifier:
             await relay_post_with_retry(
                 f"{relay_base}/auth/checkin",
-                activate_payload(iid, first_boot=_FIRST_BOOT, boot_id=_BOOT_ID, handoff_id=handoff_id))
+                activate_payload(iid, first_boot=_FIRST_BOOT, boot_id=_BOOT_ID))
             return
         r = await relay_post_with_retry(
             f"{relay_base}/auth/activate",
             activate_payload(
                 iid, first_boot=_FIRST_BOOT, activation_verifier=verifier,
-                boot_id=_BOOT_ID, handoff_id=handoff_id))
+                boot_id=_BOOT_ID))
 
         if r is None or r.status_code != 200:
             return
@@ -599,7 +592,7 @@ app.include_router(notifications.router)
 app.include_router(events_router_mod.router)
 app.include_router(search_router_mod.router, tags=["search"])
 app.include_router(migrations.router)
-app.include_router(company_copy.router)
+app.include_router(company_backup.router)
 register_sink(CORE_SINK)
 
 # Backup router — always registered; individual endpoints gate on cloud connection.

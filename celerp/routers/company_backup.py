@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Independent company copy routes.
+"""Company backup routes.
 
 An owner makes a copy of the company their session is on and downloads it. Opening a
 copy is two steps: read (upload, check, preview) and open (create the new company).
@@ -28,15 +28,14 @@ from celerp.db import get_session
 from celerp.routers.auth import limiter
 from celerp.routers.migrations import ensure_not_bootstrapped, owner_account, user_owner
 from celerp.services import bootstrap
-from celerp.services import company_copy as cc
+from celerp.services import company_backup as cb
 from celerp.services import migration_scan_store as scan_store
-from celerp.services.migrations import MigrationError, validate_prepared_by
 from celerp.services.auth import AuthContext, issue_token_pair
 from celerp.services.provisioning import create_install_owner
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/company-copies", tags=["company-copies"])
+router = APIRouter(prefix="/company-backups", tags=["company-backups"])
 
 UPLOAD_AGAIN = "This upload is no longer available. Choose the file again."
 _BOOTSTRAP = "bootstrap"
@@ -46,7 +45,7 @@ _CHUNK = 1024 * 1024
 
 def _root() -> Path:
     from celerp.config import settings
-    return settings.data_dir / "company_copies"
+    return settings.data_dir / "company_backups"
 
 
 def _purge(folder: Path) -> None:
@@ -62,41 +61,22 @@ def _purge(folder: Path) -> None:
             continue  # removed by another request meanwhile
 
 
-def _error(exc: cc.CopyError) -> JSONResponse:
+def _error(exc: cb.BackupError) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 # ── Make and download a copy ─────────────────────────────────────────────────
 
-class CopyIn(BaseModel):
-    prepared_by: str | None = None
-
-
-@router.post("", status_code=201)
-async def create_copy(payload: CopyIn, ctx: AuthContext = Depends(user_owner),
-                      session: AsyncSession = Depends(get_session)):
-    """Copy the company the session is on."""
-    try:
-        prepared_by = validate_prepared_by(payload.prepared_by)
-    except MigrationError as exc:
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+@router.get("/download")
+async def download_backup(ctx: AuthContext = Depends(user_owner), session: AsyncSession = Depends(get_session)):
+    """Back up the company the session is on and serve the file."""
     _purge(_root())
-    copy_id = uuid.uuid4().hex
-    dest = _root() / str(ctx.company_id) / f"{copy_id}{cc.SUFFIX}"
+    dest = _root() / str(ctx.company_id) / f"{uuid.uuid4().hex}{cb.EXTENSION}"
     try:
-        manifest = await cc.export_company(session, ctx.company_id, dest, prepared_by=prepared_by)
-    except cc.CopyError as exc:
+        await cb.export_company(session, ctx.company_id, dest)
+    except cb.BackupError as exc:
         return _error(exc)
-    return {"copy_id": copy_id, "company_name": manifest["company"]["name"], "handoff_id": manifest["handoff_id"]}
-
-
-@router.get("/{copy_id}/download")
-async def download_copy(copy_id: str, ctx: AuthContext = Depends(user_owner)):
-    """Serve a copy of the session's own company; any other id is not found."""
-    path = _root() / str(ctx.company_id) / f"{copy_id}{cc.SUFFIX}"
-    if not copy_id.isalnum() or not path.is_file():
-        raise HTTPException(status_code=404, detail="Company copy not found. Make a new copy.")
-    return FileResponse(path, media_type="application/octet-stream", filename=f"{ctx.company.slug}{cc.SUFFIX}")
+    return FileResponse(dest, media_type="application/octet-stream", filename=f"{ctx.company.slug}{cb.EXTENSION}")
 
 
 # ── Open a copy ──────────────────────────────────────────────────────────────
@@ -104,7 +84,7 @@ async def download_copy(copy_id: str, ctx: AuthContext = Depends(user_owner)):
 def _staged(owner: str, token: str) -> Path:
     if not token.isalnum():
         raise HTTPException(status_code=409, detail=UPLOAD_AGAIN)
-    return _root() / "uploads" / f"{owner}-{token}{cc.SUFFIX}"
+    return _root() / "uploads" / f"{owner}-{token}{cb.EXTENSION}"
 
 
 def _save(source: BinaryIO, dest: Path) -> None:
@@ -115,7 +95,7 @@ def _save(source: BinaryIO, dest: Path) -> None:
         while chunk := source.read(_CHUNK):
             size += len(chunk)
             if size > scan_store.MAX_AGGREGATE_BYTES:
-                raise cc.CopyError(413, cc.TOO_LARGE)
+                raise cb.BackupError(413, cb.TOO_LARGE)
             out.write(chunk)
 
 
@@ -127,8 +107,8 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession) -> dict:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         await asyncio.to_thread(_save, file.file, path)
-        copy = await asyncio.to_thread(cc.read_copy, path)
-        await cc.check_schema(session, copy)
+        copy = await asyncio.to_thread(cb.read_backup, path)
+        await cb.check_schema(session, copy)
     except BaseException:
         path.unlink(missing_ok=True)
         raise
@@ -151,23 +131,23 @@ class OpenIn(BaseModel):
 
 
 @router.post("/read")
-async def read_copy(file: UploadFile = File(...), ctx: AuthContext = Depends(user_owner),
+async def read_backup(file: UploadFile = File(...), ctx: AuthContext = Depends(user_owner),
                     session: AsyncSession = Depends(get_session)):
     try:
         return await _read(file, str(ctx.user.id), session)
-    except cc.CopyError as exc:
+    except cb.BackupError as exc:
         return _error(exc)
 
 
-@router.post("/open", status_code=201)
-async def open_copy(payload: OpenIn, ctx: AuthContext = Depends(user_owner),
+@router.post("/restore", status_code=201)
+async def restore_backup(payload: OpenIn, ctx: AuthContext = Depends(user_owner),
                     session: AsyncSession = Depends(get_session)):
     """Open a staged copy as a new company owned by the caller; their session stays where it is."""
     path = _claim(str(ctx.user.id), payload.upload_token)
     try:
-        copy = await asyncio.to_thread(cc.read_copy, path)
-        company = await cc.open_copy(session, copy, owner=ctx.user)
-    except cc.CopyError as exc:
+        copy = await asyncio.to_thread(cb.read_backup, path)
+        company = await cb.restore_backup(session, copy, owner=ctx.user)
+    except cb.BackupError as exc:
         return _error(exc)
     finally:
         path.unlink(missing_ok=True)
@@ -182,7 +162,7 @@ async def bootstrap_read(request: Request, file: UploadFile = File(...),
     bootstrap.verify_setup_code(x_setup_code)
     try:
         return await _read(file, _BOOTSTRAP, session)
-    except cc.CopyError as exc:
+    except cb.BackupError as exc:
         return _error(exc)
 
 
@@ -192,7 +172,7 @@ class BootstrapOpenIn(OpenIn):
     password: str
 
 
-@router.post("/bootstrap/open", status_code=201)
+@router.post("/bootstrap/restore", status_code=201)
 @limiter.limit("5/minute")
 async def bootstrap_open(request: Request, payload: BootstrapOpenIn, session: AsyncSession = Depends(get_session),
                          x_setup_code: str | None = Header(None)):
@@ -213,10 +193,10 @@ async def bootstrap_open(request: Request, payload: BootstrapOpenIn, session: As
         raise
     path = _claim(_BOOTSTRAP, payload.upload_token)
     try:
-        copy = await asyncio.to_thread(cc.read_copy, path)
+        copy = await asyncio.to_thread(cb.read_backup, path)
         user = await create_install_owner(session, name=name, email=email, password=payload.password)
-        company = await cc.open_copy(session, copy, owner=user)
-    except cc.CopyError as exc:
+        company = await cb.restore_backup(session, copy, owner=user)
+    except cb.BackupError as exc:
         return _error(exc)
     finally:
         path.unlink(missing_ok=True)
@@ -225,5 +205,5 @@ async def bootstrap_open(request: Request, payload: BootstrapOpenIn, session: As
         try:
             await asyncio.to_thread(bootstrap.clear_setup_code)
         except Exception:
-            logger.warning("Setup-code cleanup failed after opening a company copy", exc_info=True)
+            logger.warning("Setup-code cleanup failed after restoring a company backup", exc_info=True)
     return {**tokens, "company_id": str(company.id), "company_name": company.name}

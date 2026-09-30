@@ -126,10 +126,10 @@ async def provision_migration_company(session: AsyncSession, *, owner: User, com
     return await _create_company(session, owner=owner, company_name=company_name, settings={}, staged=True)
 
 
-async def provision_copied_company(
+async def provision_restored_company(
     session: AsyncSession, *, owner: User, company_name: str, company_id: uuid.UUID, settings: dict,
 ) -> Company:
-    """Create an empty company for an opened company copy; its records come from the copy."""
+    """Create an empty company for a restored company backup; its records come from the backup."""
     return await _create_company(session, owner=owner, company_name=company_name, settings=settings,
                                  company_id=company_id)
 
