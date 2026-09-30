@@ -723,8 +723,9 @@ function resolveStorageEnv(cfg) {
  * The updater state (update-state.js) lives here, not in the page, so a page
  * that loads or is restored later replays it via get-update-state.
  */
-// get-update-state answers idle until the updater checks (dev builds never check).
-serveUpdateState(ipcMain, () => mainWindow, autoUpdater);
+// get-update-state answers idle until the updater checks (dev builds never check);
+// check-for-updates runs the check the user asks for.
+serveUpdateState(ipcMain, () => mainWindow, autoUpdater, app.isPackaged);
 
 function setupAutoUpdater() {
   if (!app.isPackaged) return;
@@ -1045,11 +1046,6 @@ function createWindow() {
 }
 
 // ── IPC handlers ─────────────────────────────────────────────────────────────
-
-// check-for-updates: renderer triggers a manual update check via window.celerp.checkForUpdates()
-ipcMain.handle("check-for-updates", () => {
-  if (app.isPackaged) autoUpdater.checkForUpdates().catch(() => {}); // errors handled by the "error" event
-});
 
 // install-update: renderer triggers quit-and-install via window.celerp.installUpdate()
 // ShipIt (Squirrel.Mac) aborts if ANY instance of the app is running when it tries to

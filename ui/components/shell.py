@@ -1109,7 +1109,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         setLog(s.log);
         window.celerpSetUpdateBell(s.status === 'downloading' || s.status === 'downloaded'
-                                   || (s.status === 'error' && !!s.version));
+                                   || (s.status === 'error' && s.downloadFailed));
       }
 
       // Updater events are subscribed once per page load and always reach the
@@ -1135,7 +1135,6 @@ document.addEventListener('DOMContentLoaded', function() {
         checkBtn.addEventListener('click', function() {
           setCheckBtn(false);
           setState(window.__shellI18n.checking, false);
-          if (logEl) { logEl.textContent = ''; logEl.style.display = 'none'; }
           window.celerp.checkForUpdates().catch(function() {
             setState(window.__shellI18n.updateCheckFailed, false);
             resetToIdle();

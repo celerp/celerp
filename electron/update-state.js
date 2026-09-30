@@ -15,7 +15,7 @@
 const MAX_LOG_LINES = 200;
 
 function initialUpdateState() {
-  return Object.freeze({ status: "idle", version: "", percent: 0, message: "", checking: false });
+  return Object.freeze({ status: "idle", version: "", percent: 0, message: "", checking: false, downloadFailed: false });
 }
 
 // A download percent from 0 to 100; anything that is not a number is 0.
@@ -32,33 +32,45 @@ function toPercent(value) {
  * - not-available while downloading is ignored: the download in progress still
  *   ends in downloaded or error.
  * - a check marks an idle or failed state as checking, keeping the rest of it,
- *   until the check has a result.
+ *   until the check has a result. A failed check is replaced only by that
+ *   result: not-available (up to date), found, or another error.
+ * - a failed download (downloadFailed) stays until a retried download finishes
+ *   or the user dismisses it: checks, found and progress leave it as it is.
  *
- * @param {{status: string, version: string, percent: number, message: string, checking: boolean}} state
- * @param {{type: "check"|"found"|"progress"|"downloaded"|"not-available"|"error",
+ * @param {{status: string, version: string, percent: number, message: string,
+ *          checking: boolean, downloadFailed: boolean}} state
+ * @param {{type: "check"|"dismiss"|"found"|"progress"|"downloaded"|"not-available"|"error",
  *          version?: string, percent?: number, message?: string}} event
  */
 function nextUpdateState(state, event) {
   if (state.status === "downloaded") return null;
-  const next = (fields) => Object.freeze({ ...state, message: "", checking: false, ...fields });
+  const failedDownload = state.status === "error" && state.downloadFailed;
+  const next = (fields) =>
+    Object.freeze({ ...state, message: "", checking: false, downloadFailed: false, ...fields });
   switch (event.type) {
     case "check":
-      if (state.status !== "idle" && state.status !== "error") return null;
+      if ((state.status !== "idle" && state.status !== "error") || failedDownload) return null;
       return Object.freeze({ ...state, checking: true });
+    case "dismiss":
+      if (!failedDownload) return null;
+      return Object.freeze({ ...state, downloadFailed: false });
     case "found": {
+      if (failedDownload) return null;
       const version = event.version || "";
       const same = state.status === "downloading" && state.version === version;
       return next({ status: "downloading", version, percent: same ? state.percent : 0 });
     }
     case "progress":
+      if (failedDownload) return null;
       return next({ status: "downloading", percent: toPercent(event.percent) });
     case "downloaded":
       return next({ status: "downloaded", version: event.version || state.version, percent: 100 });
     case "not-available":
-      if (state.status === "downloading") return null;
+      if (state.status === "downloading" || failedDownload) return null;
       return initialUpdateState();
     case "error":
-      return next({ status: "error", percent: 0, message: event.message || "" });
+      return next({ status: "error", percent: 0, message: event.message || "",
+                    downloadFailed: state.status === "downloading" || failedDownload });
     default:
       return null;
   }
@@ -67,13 +79,15 @@ function nextUpdateState(state, event) {
 /**
  * Track an electron-updater instance. The state and its log lines go to the
  * window together, as `send(channel, {...state, log})`, whenever either
- * changes, so the window can never be shown a demoted state. Each check starts
- * a fresh log. An error is always logged, even once downloaded, when it no
- * longer changes the state.
+ * changes, so the window can never be shown a demoted state. The log is the
+ * history of every check, kept until relaunch. An error is always logged, even
+ * when it no longer changes the state.
  *
  * @param {{on: (event: string, fn: Function) => void}} updater
  * @param {(channel: string, state: object) => void} send
- * @returns {() => object} getUpdateState, returning a copy with its log
+ * @returns {{getUpdateState: () => object, dismissError: () => void}}
+ *   getUpdateState returns a copy with its log; dismissError clears a failed
+ *   download, at the user's request.
  */
 function trackUpdater(updater, send) {
   let state = initialUpdateState();
@@ -94,15 +108,10 @@ function trackUpdater(updater, send) {
     send(channel, snapshot());
   }
 
-  updater.on("checking-for-update", () => {
-    // Once downloaded the state is final, so a later check changes nothing,
-    // not even the log that says the update is ready.
-    const next = nextUpdateState(state, { type: "check" });
-    if (!next) return;
-    state = next;
-    log = ["Checking for update..."];
-    send("update-log", snapshot());
-  });
+  // Once downloaded the state is final, so a later check changes nothing, not
+  // even the log that says the update is ready.
+  updater.on("checking-for-update", () =>
+    apply("update-log", { type: "check" }, () => "Checking for update..."));
   updater.on("update-available", (info) => {
     loggedStep = -1;
     apply("update-available", { type: "found", version: info && info.version },
@@ -127,24 +136,35 @@ function trackUpdater(updater, send) {
       () => (message ? "Update error: " + message : "Update error"), true);
   });
 
-  return snapshot;
+  return {
+    getUpdateState: snapshot,
+    dismissError: () => apply("update-log", { type: "dismiss" }, () => ""),
+  };
 }
 
 /**
  * Serve the updater's state to the window: track `updater`, forward every
- * change to the current window, and answer "get-update-state". The state stays
- * idle with an empty log until the updater checks, which dev builds never do.
+ * change to the current window, answer "get-update-state", and run the checks
+ * the user asks for ("check-for-updates"). The state stays idle with an empty
+ * log until the updater checks, which dev builds (`canCheck` false) never do.
  *
  * @param {{handle: (channel: string, fn: Function) => void}} ipcMain
  * @param {() => ({webContents: {send: Function}}|null)} getWindow
- * @param {{on: (event: string, fn: Function) => void}} updater
+ * @param {{on: (event: string, fn: Function) => void, checkForUpdates: () => Promise}} updater
+ * @param {boolean} canCheck
  */
-function serveUpdateState(ipcMain, getWindow, updater) {
-  const getUpdateState = trackUpdater(updater, (channel, state) => {
+function serveUpdateState(ipcMain, getWindow, updater, canCheck) {
+  const { getUpdateState, dismissError } = trackUpdater(updater, (channel, state) => {
     const win = getWindow();
     if (win) win.webContents.send(channel, state);
   });
   ipcMain.handle("get-update-state", () => getUpdateState());
+  // A check the user asks for dismisses a failed download; the checks the app
+  // runs by itself never do.
+  ipcMain.handle("check-for-updates", () => {
+    dismissError();
+    if (canCheck) updater.checkForUpdates().catch(() => {}); // errors handled by the "error" event
+  });
 }
 
 module.exports = { initialUpdateState, nextUpdateState, trackUpdater, serveUpdateState };

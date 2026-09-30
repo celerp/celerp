@@ -26,7 +26,8 @@ contextBridge.exposeInMainWorld("celerp", {
   // Modules page: native folder picker; resolves to a path string or null.
   pickModuleFolder: () => ipcRenderer.invoke("pick-module-folder"),
 
-  // Updater state ({ status, version, percent, message, checking, log }), read-only.
+  // Updater state ({ status, version, percent, message, checking, downloadFailed, log }),
+  // read-only.
   // Every page load replays it; the update callbacks below receive the same shape.
   getUpdateState: () => ipcRenderer.invoke("get-update-state"),
 
@@ -45,7 +46,7 @@ contextBridge.exposeInMainWorld("celerp", {
   // Register a callback for a new updater log line (the state, with its log).
   onUpdateLog: (cb) => ipcRenderer.on("update-log", (_event, state) => cb(state)),
 
-  // Trigger a manual update check.
+  // Trigger a manual update check. It also dismisses a failed download.
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
 
   // Register a callback for update errors (state: error, with message). Once

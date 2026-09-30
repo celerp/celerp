@@ -252,7 +252,9 @@ def _fake_electron(page, seed=()):
     Every updater event is kept in sessionStorage and replayed into a fresh
     tracker on each page load, so the "main process" outlives navigation just
     as the real one does, while each page load gets a fresh renderer. `seed`
-    holds events the updater fired before the first page opened.
+    holds events the updater fired before the first page opened. A check the
+    user asks for goes through the real check-for-updates handler and is kept
+    in the same event list as "user-check".
     """
     _pin_empty_inbox(page)
     page.add_init_script(
@@ -262,14 +264,23 @@ def _fake_electron(page, seed=()):
           if (sessionStorage.getItem(KEY) === null) sessionStorage.setItem(KEY, JSON.stringify(%s));
           var module = { exports: {} };
           (function(module) { %s })(module);
-          var handlers = {};
-          var updater = { on: function(name, fn) { (handlers[name] = handlers[name] || []).push(fn); } };
-          function fire(name, payload) { (handlers[name] || []).forEach(function(fn) { fn(payload); }); }
+          var listeners = {};
+          var updater = {
+            on: function(name, fn) { (listeners[name] = listeners[name] || []).push(fn); },
+            checkForUpdates: function() { return Promise.resolve(); },
+          };
+          var ipcHandlers = {};
+          var ipcMain = { handle: function(channel, fn) { ipcHandlers[channel] = fn; } };
           var windowCallbacks = {};
           var live = false;
-          var getUpdateState = module.exports.trackUpdater(updater, function(channel, state) {
+          var win = { webContents: { send: function(channel, state) {
             if (live && windowCallbacks[channel]) windowCallbacks[channel](state);
-          });
+          } } };
+          module.exports.serveUpdateState(ipcMain, function() { return win; }, updater, false);
+          function fire(name, payload) {
+            if (name === 'user-check') ipcHandlers['check-for-updates']();
+            else (listeners[name] || []).forEach(function(fn) { fn(payload); });
+          }
           JSON.parse(sessionStorage.getItem(KEY)).forEach(function(e) { fire(e[0], e[1]); });
           live = true;
           window.__updaterEmit = function(name, payload) {
@@ -281,14 +292,14 @@ def _fake_electron(page, seed=()):
           function on(channel) { return function(cb) { windowCallbacks[channel] = cb; }; }
           window.celerp = {
             getVersion: function() { return Promise.resolve('2.0.0'); },
-            getUpdateState: function() { return Promise.resolve(getUpdateState()); },
+            getUpdateState: function() { return Promise.resolve(ipcHandlers['get-update-state']()); },
             onUpdateLog: on('update-log'),
             onUpdateAvailable: on('update-available'),
             onDownloadProgress: on('download-progress'),
             onUpdateNotAvailable: on('update-not-available'),
             onUpdateDownloaded: on('update-downloaded'),
             onUpdateError: on('update-error'),
-            checkForUpdates: function() { return Promise.resolve(); },
+            checkForUpdates: function() { window.__updaterEmit('user-check', null); return Promise.resolve(); },
             installUpdate: function() {},
           };
         })();
@@ -363,6 +374,64 @@ def test_error_state_replays_on_page_load(page, ui_server):
     assert seen["check"] is True
     assert seen["restart"] is False
     assert seen["badge"] == ""
+
+
+def _emit(page, *events):
+    for name, payload in events:
+        page.evaluate(f"() => window.__updaterEmit({json.dumps(name)}, {json.dumps(payload)})")
+
+
+def _reloaded(page):
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent !== ''")
+    return page.evaluate(_VISIBLE_STATE_JS)
+
+
+_CHECKING = ("checking-for-update", None)
+_UP_TO_DATE = ("update-not-available", {})
+
+
+@pytest.mark.parametrize("result, state", [
+    (_UP_TO_DATE, "Up to date"), (_FOUND, "Downloading v2.0.1..."),
+], ids=["up-to-date", "update-found"])
+def test_failed_check_clears_to_the_next_result(page, ui_server, result, state):
+    """A failed check stays on the card, also after a reload, until a later check
+    has a result; the card then shows that result and the log keeps the failure."""
+    _fake_electron(page, [_ERROR])
+    failed = _open(page, f"{ui_server}/")
+    assert failed["state"] == "Update check failed"
+    assert _reloaded(page) == failed
+    _emit(page, _CHECKING, result)
+    seen = page.evaluate(_VISIBLE_STATE_JS)
+    assert seen["state"] == state
+    assert "Update error: getaddrinfo ENOTFOUND github.com" in seen["log"]
+    assert _reloaded(page) == seen
+
+
+def test_failed_download_survives_background_checks(page, ui_server):
+    """A failed download stays on the card and lights the bell through the
+    app's own checks and reloads, until the user checks again."""
+    _fake_electron(page, [_FOUND, _PROGRESS, ("error", {"message": "sha512 checksum mismatch"})])
+    failed = _open(page, f"{ui_server}/")
+    assert (failed["state"], failed["badge"], failed["check"]) == ("Update check failed", "1", True)
+    _emit(page, _CHECKING, _UP_TO_DATE, _CHECKING, _FOUND, _PROGRESS)
+    assert page.evaluate(_VISIBLE_STATE_JS) == failed
+    assert _reloaded(page) == failed
+    page.evaluate("() => document.querySelector('.update-card__check-btn').click()")
+    _emit(page, _CHECKING, _UP_TO_DATE)
+    seen = page.evaluate(_VISIBLE_STATE_JS)
+    assert (seen["state"], seen["badge"]) == ("Up to date", "")
+    assert "Update error: sha512 checksum mismatch" in seen["log"]
+    assert _reloaded(page) == seen
+
+
+@pytest.mark.parametrize("found", [_FOUND, ("update-available", {})], ids=["with-version", "no-version"])
+def test_failed_download_lights_bell(page, ui_server, found):
+    """A failed download lights the bell whether or not the update had a version."""
+    _fake_electron(page)
+    _open(page, f"{ui_server}/")
+    _emit(page, found, _ERROR)
+    assert page.evaluate(_VISIBLE_STATE_JS)["badge"] == "1"
 
 
 def test_update_found_lights_bell_live(page, ui_server):
