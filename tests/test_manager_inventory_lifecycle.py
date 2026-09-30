@@ -4,8 +4,8 @@
 invoice itself when it is flagged to move its own stock. An invoice or bill with no physical
 record moves no stock, a partial movement stays partial, and nothing is counted twice.
 
-Every expected figure is worked out by hand in specs.inventory_lifecycle_objects, never
-read back from the adapter."""
+Every expected figure is worked out by hand in specs.inventory_lifecycle_objects and
+recorded in checkpoints.json under "inventory", never read back from the adapter."""
 
 from __future__ import annotations
 
@@ -17,41 +17,28 @@ import pytest
 from celerp.importers.adapters.base import MigrationDecisions
 from celerp.importers.schema import CIFMode
 from fixtures.manager_io import specs
-from fixtures.manager_io.support import actual_rows, adapter, artifact, ref
+from fixtures.manager_io.support import CHECKPOINTS, INVENTORY, actual_rows, adapter, artifact, ref
 from migration_support import real_engine  # noqa: F401 - fixture
 
 FULL = MigrationDecisions(mode=CIFMode.FULL_HISTORY)
 CUTOVER = MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=specs.LIFECYCLE_CUTOVER)
 WID = ref("WID")
+_FULL, _CUT = CHECKPOINTS["inventory"]["full_history"], CHECKPOINTS["inventory"]["cutover"]
+assert date.fromisoformat(_CUT["cutover_date"]) == specs.LIFECYCLE_CUTOVER
 
 # (source type, movement, date, quantity, value) in the order stock moved.
-MOVES = [
-    ("PurchaseInvoice", "BILLF", date(2026, 1, 6), D("5"), D("30.00")),
-    ("GoodsReceipt", "GR1", date(2026, 1, 8), D("6"), D("24.00")),
-    ("GoodsReceipt", "GR3", date(2026, 1, 10), D("5"), D("25.00")),
-    ("GoodsReceipt", "GR2", date(2026, 1, 12), D("4"), D("16.00")),
-    ("DeliveryNote", "DN2", date(2026, 1, 16), D("-2"), D("-9.50")),
-    ("DeliveryNote", "DN3", date(2026, 1, 19), D("-3"), D("-14.25")),
-    ("DeliveryNote", "DN1", date(2026, 1, 20), D("-4"), D("-19.00")),
-    ("SalesInvoice", "INVX", date(2026, 1, 23), D("-1"), D("-4.75")),
-]
-HELD = (D("10"), D("47.50"))
-OPENING = (D("18"), D("85.50"))            # held at the 01-17 cutover, after DN2
+MOVES = [(source_type, label, date.fromisoformat(day), D(qty), D(value))
+         for source_type, label, day, qty, value in _FULL["moves"]]
+HELD = (D(_FULL["inventory_quantity"]["WID"]), D(_FULL["inventory_value"]["WID"]))
+OPENING = (D(_CUT["opening_quantity"]["WID"]), D(_CUT["opening_value"]["WID"]))   # after DN2
 # Physical records per document: (movement, date, line, quantity, value).
-LINKS = {
-    "BILLG": [("GR1", "2026-01-08", 0, D("6"), D("24.00")), ("GR2", "2026-01-12", 0, D("4"), D("16.00"))],
-    "BILLF": [("BILLF", "2026-01-06", 0, D("5"), D("30.00"))],
-    "BILLP": [("GR3", "2026-01-10", 0, D("5"), D("25.00"))],
-    "INVE": [("DN2", "2026-01-16", 0, D("2"), D("9.50"))],
-    "INVP": [("DN3", "2026-01-19", 0, D("3"), D("14.25"))],
-    "INVD": [("DN1", "2026-01-20", 0, D("4"), D("19.00"))],
-    "INVX": [("INVX", "2026-01-23", 0, D("1"), D("4.75"))],
-}
+LINKS = {doc: [(m, day, line, D(qty), D(value)) for m, day, line, qty, value in links]
+         for doc, links in _FULL["links"].items()}
 
 
 @pytest.fixture
-def lifecycle(tmp_path):
-    return specs.build_inventory_lifecycle(tmp_path / "lifecycle.manager")
+def lifecycle():
+    return INVENTORY
 
 
 def _manifest(path, decisions=FULL):
@@ -174,11 +161,8 @@ def test_manager_physical_movement_with_separate_financial_timing(lifecycle):
     balances: dict[str, D] = {}
     for p in ledger.postings:
         balances[p.account] = balances.get(p.account, D(0)) + p.amount
-    assert balances[ref("@BalanceSheetInventoryOnHandAccount")] == D("57.00")
-    assert balances[ref("@ProfitAndLossStatementAccountInventoryPurchases")] == D("65.00")
-    assert balances[ref("@ProfitAndLossStatementAccountInventorySales")] == D("-162.50")
-    assert balances[ref("@BalanceSheetAccountsPayableAccount")] == D("-122.00")
-    assert balances[ref("@BalanceSheetAccountsReceivableAccount")] == D("112.50")
+    assert {account: balances[ref(account)] for account in _FULL["balances"]} == {
+        account: D(amount) for account, amount in _FULL["balances"].items()}
     assert _held(_manifest(lifecycle)) == {WID: HELD}
 
 
@@ -226,8 +210,7 @@ async def test_manager_single_default_location_imports_with_exact_item_location_
     from migration_support import maker
     from test_migration_e2e import _maps, _passing, _projections, migrate
 
-    path = specs.build_inventory_lifecycle(tmp_path / "lifecycle.manager")
-    run, rejected = await migrate(real_engine, path.read_bytes(), "lifecycle.manager", decisions, monkeypatch, tmp_path)
+    run, rejected = await migrate(real_engine, INVENTORY.read_bytes(), "lifecycle.manager", decisions, monkeypatch, tmp_path)
     assert rejected == []
     _passing(run)
     held = {(r["check"], r["key"]): D(str(r["celerp"])) for r in run.reconciliation["rows"]

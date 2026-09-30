@@ -21,7 +21,7 @@ import pytest
 from sqlalchemy import select
 
 from fixtures.manager_io import specs
-from fixtures.manager_io.support import ref
+from fixtures.manager_io.support import INVENTORY, ref
 from migration_support import OWNER_EMAIL, auth, maker, real_client, real_engine  # noqa: F401 - fixtures
 from test_migration_e2e import _maps, _passing, _projections, migrate
 
@@ -56,8 +56,7 @@ async def _migrated(real_engine, monkeypatch, tmp_path, decisions=MODES[0]) -> B
     from celerp.services import migrations
     from celerp.services.auth import issue_token_pair
 
-    path = specs.build_inventory_lifecycle(tmp_path / "lifecycle.manager")
-    run, rejected = await migrate(real_engine, path.read_bytes(), "lifecycle.manager", decisions, monkeypatch, tmp_path)
+    run, rejected = await migrate(real_engine, INVENTORY.read_bytes(), "lifecycle.manager", decisions, monkeypatch, tmp_path)
     assert rejected == []
     _passing(run)
     async with maker(real_engine)() as s:

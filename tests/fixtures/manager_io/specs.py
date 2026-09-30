@@ -372,9 +372,12 @@ def inventory_lifecycle_objects() -> list[Obj]:
       INVX 1 (01-23), flagged: moves its own stock, 4.75, leaves 10 / 47.50
     Books: bills 122.00 to payables, invoices 13 @ 12.50 = 162.50 to receivables, cost of
     sales 13 x 5.00 (the unit cost from 01-14) = 65.00, so inventory on hand is 57.00. R1
-    pays INVD in full on 01-25. At the 01-17 cutover the opening stock is 18 / 85.50."""
+    pays INVD in full on 01-25. At the 01-17 cutover the opening stock is 18 / 85.50.
+    These figures are recorded in checkpoints.json under "inventory"."""
     return [
         *masters(),
+        obj("ProfitAndLossStatementAccountInventorySales", None, {1: "Inventory - sales"}),
+        obj("ProfitAndLossStatementAccountInventoryPurchases", None, {1: "Inventory - cost"}),
         obj("DefaultInventoryLocation", None, {1: "Main warehouse"}),
         obj("InventoryUnitCost", "UC1", {1: date(2026, 1, 14), 2: k("WID"), 3: D("5")}),
         _bill("BILLG", date(2026, 1, 5), D("10"), D("4")),
