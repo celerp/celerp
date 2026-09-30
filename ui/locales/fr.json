@@ -2644,6 +2644,7 @@
   "import.showing_rows": "Affichage de {n} sur {total} lignes",
   "import.processing": "Traitement en cours…",
   "import.err_custom_name_conflict": "Le nom du champ personnalisé « {name} » (issu de la colonne « {col} ») entre en conflit avec un champ intégré. Choisissez un autre nom.",
+  "import.err_reserved_field_unsupported": "La colonne « {col} » correspond au champ d'article « {name} », que l'importation ne peut pas renseigner. Ignorez la colonne ou donnez-lui un autre nom.",
   "import.err_duplicate_target": "Les colonnes {cols} sont toutes deux mappées à « {target} ». Chaque valeur cible ne peut être utilisée qu'une seule fois.",
   "import.err_price_currency_mismatch": "La colonne « {col} » est exprimée dans une autre devise que celle de l'entreprise. Convertissez les prix dans la devise de l'entreprise ou ignorez la colonne.",
   "import.err_price_basis_unsupported": "La colonne « {col} » est exprimée par une unité qui ne peut pas être vérifiée pour ce champ de prix. Associez-la à un prix unitaire ou ignorez la colonne.",

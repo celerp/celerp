@@ -2764,6 +2764,7 @@
   "import.showing_rows": "Showing {n} of {total} rows",
   "import.processing": "Processing…",
   "import.err_custom_name_conflict": "Custom field name \"{name}\" (from column \"{col}\") conflicts with a built-in field. Choose a different name.",
+  "import.err_reserved_field_unsupported": "Column \"{col}\" is the item field \"{name}\", which import cannot set. Skip the column or give it a different name.",
   "import.err_duplicate_target": "Columns {cols} are both mapped to \"{target}\". Each target can only be used once.",
   "import.err_price_currency_mismatch": "Column \"{col}\" is priced in a different currency from the company. Convert the prices to the company currency, or skip the column.",
   "import.err_price_basis_unsupported": "Column \"{col}\" is priced per a unit that cannot be checked against this price field. Map it to a unit price, or skip the column.",

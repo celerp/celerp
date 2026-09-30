@@ -2643,6 +2643,7 @@
   "import.showing_rows": "{total} 行の {n} を表示中",
   "import.processing": "処理中…",
   "import.err_custom_name_conflict": "カスタムフィールド名「{name}」（列「{col}」から）が、組み込みフィールドと重複しています。別の名前を選択してください。",
+  "import.err_reserved_field_unsupported": "列「{col}」は品目フィールド「{name}」で、インポートでは設定できません。この列をスキップするか、別の名前を付けてください。",
   "import.err_duplicate_target": "列 {cols} は両方とも「{target}」にマッピングされています。各ターゲットは 1 回しか使用できません。",
   "import.err_price_currency_mismatch": "列「{col}」の価格は会社とは異なる通貨です。価格を会社の通貨に換算するか、この列をスキップしてください。",
   "import.err_price_basis_unsupported": "列「{col}」の価格はこの価格項目と照合できない単位あたりの価格です。単価に割り当てるか、この列をスキップしてください。",

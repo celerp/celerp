@@ -2643,6 +2643,7 @@
   "import.showing_rows": "Mostrando {n} de {total} filas",
   "import.processing": "Procesando…",
   "import.err_custom_name_conflict": "El nombre del campo personalizado «{name}» (de la columna «{col}») entra en conflicto con un campo integrado. Elige otro nombre.",
+  "import.err_reserved_field_unsupported": "La columna «{col}» es el campo de artículo «{name}», que la importación no puede establecer. Omite la columna o ponle otro nombre.",
   "import.err_duplicate_target": "Las columnas {cols} están asignadas ambas a «{target}». Cada destino solo se puede utilizar una vez.",
   "import.err_price_currency_mismatch": "La columna «{col}» tiene precios en una moneda distinta a la de la empresa. Convierta los precios a la moneda de la empresa u omita la columna.",
   "import.err_price_basis_unsupported": "La columna «{col}» tiene precios por una unidad que no se puede comprobar con este campo de precio. Asígnela a un precio unitario u omita la columna.",

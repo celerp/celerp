@@ -2643,6 +2643,7 @@
   "import.showing_rows": "Exibindo {n} de {total} linhas",
   "import.processing": "Processando…",
   "import.err_custom_name_conflict": "O nome do campo personalizado “{name}” (da coluna “{col}”) entra em conflito com um campo embutido. Escolha um nome diferente.",
+  "import.err_reserved_field_unsupported": "A coluna “{col}” é o campo de item “{name}”, que a importação não pode definir. Ignore a coluna ou dê-lhe outro nome.",
   "import.err_duplicate_target": "As colunas {cols} estão ambas mapeadas para “{target}”. Cada destino só pode ser usado uma vez.",
   "import.err_price_currency_mismatch": "A coluna “{col}” tem preços numa moeda diferente da empresa. Converta os preços para a moeda da empresa ou ignore a coluna.",
   "import.err_price_basis_unsupported": "A coluna “{col}” tem preços por uma unidade que não pode ser verificada para este campo de preço. Associe-a a um preço unitário ou ignore a coluna.",

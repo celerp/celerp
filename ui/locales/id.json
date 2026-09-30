@@ -2643,6 +2643,7 @@
   "import.showing_rows": "Menampilkan {n} dari {total} baris",
   "import.processing": "Sedang diproses…",
   "import.err_custom_name_conflict": "Nama bidang kustom \"{name}\" (dari kolom \"{col}\") bertabrakan dengan bidang bawaan. Pilih nama yang berbeda.",
+  "import.err_reserved_field_unsupported": "Kolom \"{col}\" adalah bidang item \"{name}\", yang tidak dapat diisi oleh impor. Lewati kolom ini atau beri nama lain.",
   "import.err_duplicate_target": "Kolom {cols} keduanya dipetakan ke \"{target}\". Setiap target hanya dapat digunakan satu kali.",
   "import.err_price_currency_mismatch": "Kolom \"{col}\" berisi harga dalam mata uang yang berbeda dari perusahaan. Konversikan harga ke mata uang perusahaan, atau lewati kolom ini.",
   "import.err_price_basis_unsupported": "Kolom \"{col}\" berisi harga per satuan yang tidak dapat dicek untuk bidang harga ini. Petakan ke harga satuan, atau lewati kolom ini.",

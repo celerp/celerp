@@ -30,6 +30,7 @@ from celerp.inventory_codes import (
 from celerp.models.projections import Projection
 from .services import (
     _CORE_ITEM_COLS,
+    VALID_INVENTORY_TYPES,
     BatchImportRequest,
     BatchImportResult,
     adjust_item_quantity,
@@ -67,11 +68,11 @@ from celerp.services.pricing import (
     stored_price,
 )
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
-from celerp.services.vertical_presets import load_category
+from celerp.services.vertical_presets import category_item_defaults
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_basis, round_money, to_decimal, to_stored_float
 from celerp.schemas.numbers import FiniteFloat
-from celerp_inventory.projections import _is_core_key, _is_image_mime, is_item_available, thumbnail_file_id
+from celerp_inventory.projections import _is_image_mime, is_core_item_key, is_item_available, thumbnail_file_id
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -79,8 +80,6 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
-
-VALID_INVENTORY_TYPES: frozenset[str] = frozenset({"stocked", "component", "non_stocked", "service", "freight"})
 
 # Company units config lives in celerp.services.units (shared with labels + CSV export).
 _get_company_units = get_company_units
@@ -266,7 +265,7 @@ class ItemCreate(BaseModel):
 
     sku: str | None = None
     name: str
-    sell_by: str                           # required - must be a valid unit name from company settings
+    sell_by: str | None = None             # a company unit; omitted only when the category supplies one
     quantity: FiniteFloat = 0
     category: str | None = None
     location_id: uuid.UUID | None = None
@@ -289,7 +288,9 @@ class ItemCreate(BaseModel):
     allow_splitting: bool = True
     attributes: dict = Field(default_factory=dict)
     idempotency_key: str | None = None
-    inventory_type: str = "stocked"  # stocked | component | non_stocked | service | freight
+    # stocked | component | non_stocked | service | freight; omitted means the
+    # category's default, else stocked
+    inventory_type: str | None = None
     # Landed-cost charge lines (inventory_type=freight): refines reporting/GL routing.
     landed_cost_kind: str | None = None      # freight | insurance | duty | import_vat
     recoverable: bool | None = None          # import_vat only: recoverable VAT does not capitalise
@@ -628,12 +629,12 @@ def _text_match(record: dict, term: str) -> str | None:
             return field
     # Named fields aside, the only other searchable values are DYNAMIC category
     # attributes, which flatten to the top level. Skipping every core key
-    # (projections._is_core_key marks the closed core set) is what keeps internal
+    # (projections.is_core_item_key marks the closed core set) is what keeps internal
     # bookkeeping (idempotency_key, id/lineage refs) out of search (#306) while still
     # matching user-defined attribute values; numeric columns match only via the
     # explicit numeric path, never by substring.
     for k, v in record.items():
-        if _is_core_key(k) or k in _NUMERIC_FIELDS:
+        if is_core_item_key(k) or k in _NUMERIC_FIELDS:
             continue
         if isinstance(v, str) and term in v.lower():
             return k
@@ -682,7 +683,7 @@ def _term_match_reason(
             raw in _FIELD_ALIASES
             or field in numeric_fields
             or field in text_fields
-            or (field in record and not _is_core_key(field))
+            or (field in record and not is_core_item_key(field))
         )
         if resolved:
             # Textual identifier fields (sku, barcode, hs_code, batch_no, lot...) are
@@ -1035,7 +1036,7 @@ async def query_items(
     facet_sets: dict[str, set] = {}
     for r in result:
         for akey, aval in r.items():
-            if _is_core_key(akey) or akey in _NUMERIC_MEASURE_KEYS or aval in (None, ""):
+            if is_core_item_key(akey) or akey in _NUMERIC_MEASURE_KEYS or aval in (None, ""):
                 continue
             s = facet_sets.setdefault(akey, set())
             if len(s) < _FACET_MAX:
@@ -2149,8 +2150,19 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         if not draft_cost_carveout(_create_draft, role, settings):
             assert_role_permission(settings, role, "set_inventory_prices")
 
+    # The category's defaults fill what the payload leaves out; an explicit value wins.
+    category_defaults = category_item_defaults(payload.category)
+    payload = payload.model_copy(update={
+        "sell_by": payload.sell_by or category_defaults.get("sell_by"),
+        "inventory_type": (
+            payload.inventory_type if payload.inventory_type is not None
+            else category_defaults.get("inventory_type", "stocked")
+        ),
+    })
     if payload.inventory_type not in VALID_INVENTORY_TYPES:
         raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
+    if not payload.sell_by:
+        raise HTTPException(status_code=422, detail="sell_by is required unless the category has a default unit")
 
     if payload.landed_cost_kind is not None and payload.landed_cost_kind not in LANDED_COST_KINDS:
         raise HTTPException(status_code=422, detail=f"landed_cost_kind must be one of {sorted(LANDED_COST_KINDS)}")
@@ -2230,15 +2242,9 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         if _amt_val is not None and float(_amt_val) < 0:
             raise HTTPException(status_code=422, detail=f"{_amt} cannot be negative")
 
-    # Apply category defaults for purchase_unit and weight_unit if not explicitly provided
-    _cat = load_category(payload.category) if payload.category else None
-    if _cat:
-        if payload.purchase_unit is None and _cat.get("default_purchase_unit"):
-            data["purchase_unit"] = _cat["default_purchase_unit"]
-        if payload.purchase_conversion_factor is None:
-            data["purchase_conversion_factor"] = 1
-        if data.get("weight_unit") is None and _cat.get("default_weight_unit"):
-            data["weight_unit"] = _cat["default_weight_unit"]
+    for field in ("purchase_unit", "weight_unit"):
+        if data.get(field) is None and field in category_defaults:
+            data[field] = category_defaults[field]
 
     # Ensure status is set (not part of ItemCreate model but required for projections).
     # Manual creation starts as draft: the item stays authorable (amounts and costs

@@ -2644,6 +2644,7 @@
   "import.showing_rows": "Visualizzazione di {n} su {total} righe",
   "import.processing": "Elaborazione in corso…",
   "import.err_custom_name_conflict": "Il nome del campo personalizzato \"{name}\" (dalla colonna \"{col}\") è in conflitto con un campo predefinito. Scegliere un nome diverso.",
+  "import.err_reserved_field_unsupported": "La colonna \"{col}\" è il campo articolo \"{name}\", che l'importazione non può impostare. Salta la colonna o assegnale un nome diverso.",
   "import.err_duplicate_target": "Le colonne {cols} sono entrambe mappate su \"{target}\". Ogni destinazione può essere utilizzata una sola volta.",
   "import.err_price_currency_mismatch": "La colonna \"{col}\" ha prezzi in una valuta diversa da quella dell'azienda. Converti i prezzi nella valuta aziendale o ignora la colonna.",
   "import.err_price_basis_unsupported": "La colonna \"{col}\" ha prezzi per un'unità che non può essere verificata per questo campo prezzo. Associala a un prezzo unitario o ignora la colonna.",

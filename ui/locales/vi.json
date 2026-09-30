@@ -2643,6 +2643,7 @@
   "import.showing_rows": "Hiển thị {n} trong tổng số {total} hàng",
   "import.processing": "Đang xử lý…",
   "import.err_custom_name_conflict": "Tên trường tùy chỉnh \"{name}\" (từ cột \"{col}\") trùng lặp với một trường có sẵn. Vui lòng chọn tên khác.",
+  "import.err_reserved_field_unsupported": "Cột \"{col}\" là trường mặt hàng \"{name}\", trường này không thể được thiết lập khi nhập. Hãy bỏ qua cột hoặc đặt tên khác.",
   "import.err_duplicate_target": "Cả hai cột {cols} đều được ánh xạ đến \"{target}\". Mỗi mục đích chỉ có thể được sử dụng một lần.",
   "import.err_price_currency_mismatch": "Cột \"{col}\" có giá theo đơn vị tiền tệ khác với công ty. Hãy quy đổi giá sang tiền tệ của công ty hoặc bỏ qua cột này.",
   "import.err_price_basis_unsupported": "Cột \"{col}\" có giá theo một đơn vị không thể kiểm tra với trường giá này. Hãy ánh xạ sang đơn giá hoặc bỏ qua cột này.",

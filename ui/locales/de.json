@@ -2644,6 +2644,7 @@
   "import.showing_rows": "Anzeige von {n} von {total} Zeilen",
   "import.processing": "Wird verarbeitet…",
   "import.err_custom_name_conflict": "Der benutzerdefinierte Feldname „{name}“ (aus der Spalte „{col}“) steht in Konflikt mit einem integrierten Feld. Wählen Sie einen anderen Namen.",
+  "import.err_reserved_field_unsupported": "Die Spalte „{col}“ ist das Artikelfeld „{name}“, das beim Import nicht gesetzt werden kann. Überspringen Sie die Spalte oder geben Sie ihr einen anderen Namen.",
   "import.err_duplicate_target": "Die Spalten {cols} sind beide „{target}“ zugeordnet. Jedes Ziel darf nur einmal verwendet werden.",
   "import.err_price_currency_mismatch": "Spalte „{col}“ hat Preise in einer anderen Währung als das Unternehmen. Rechnen Sie die Preise in die Unternehmenswährung um oder überspringen Sie die Spalte.",
   "import.err_price_basis_unsupported": "Spalte „{col}“ hat Preise je Einheit, die für dieses Preisfeld nicht geprüft werden kann. Ordnen Sie sie einem Stückpreis zu oder überspringen Sie die Spalte.",

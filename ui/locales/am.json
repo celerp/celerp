@@ -2745,6 +2745,7 @@
   "import.showing_rows": "ከ{total} ረድፎች {n} በማሳየት ላይ",
   "import.processing": "በመስራት ላይ…",
   "import.err_custom_name_conflict": "ብጁ የመስክ ስም \"{name}\" (ከአምድ \"{col}\") ከተሰራው መስክ ጋር ይጋጫል። የተለየ ስም ይምረጡ።",
+  "import.err_reserved_field_unsupported": "አምድ \"{col}\" የእቃ መስክ \"{name}\" ነው፤ ማስመጣት ሊያዘጋጀው አይችልም። አምዱን ይዝለሉ ወይም የተለየ ስም ይስጡት።",
   "import.err_duplicate_target": "አምዶች {cols} ሁለቱም ወደ \"{target}\" ተቀርፀዋል። እያንዳንዱ ዒላማ አንድ ጊዜ ብቻ ጥቅም ላይ ሊውል ይችላል.",
   "import.err_price_currency_mismatch": "አምድ \"{col}\" ከኩባንያው የተለየ ምንዛሬ ዋጋ አለው። ዋጋዎቹን ወደ ኩባንያው ምንዛሬ ይቀይሩ፣ ወይም አምዱን ይዝለሉ።",
   "import.err_price_basis_unsupported": "አምድ \"{col}\" ለዚህ የዋጋ መስክ ሊረጋገጥ በማይችል አሃድ ዋጋ አለው። ከአንድ አሃድ ዋጋ ጋር ያዛምዱት፣ ወይም አምዱን ይዝለሉ።",

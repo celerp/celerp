@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import datetime
 import io
+import math
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,16 +68,36 @@ class CsvImportSpec:
     type_map: dict[str, Callable[[str], Any]]
 
 
-def validate_cell(spec: CsvImportSpec, col: str, value: str, row: dict | None = None) -> bool:
+def finite_float(value: str) -> float:
+    """The number a cell holds. NaN and infinities are refused like any non-number."""
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{value!r} is not a finite number")
+    return number
+
+
+def cell_error_code(spec: CsvImportSpec, col: str, value: str) -> str | None:
+    """Why a cell is invalid under ``spec``, or None when it is valid.
+
+    ``required`` for a blank required cell, ``not_finite`` for a number that is
+    NaN or infinite, ``invalid_value`` for anything else the column's type refuses.
+    """
     if col in spec.required and not value.strip():
-        return False
+        return "required"
     cast = spec.type_map.get(col)
     if cast and value.strip():
         try:
             cast(value)
         except (ValueError, TypeError):
-            return False
-    return True
+            try:
+                return "invalid_value" if math.isfinite(float(value)) else "not_finite"
+            except ValueError:
+                return "invalid_value"
+    return None
+
+
+def validate_cell(spec: CsvImportSpec, col: str, value: str, row: dict | None = None) -> bool:
+    return cell_error_code(spec, col, value) is None
 
 
 # ---------------------------------------------------------------------------
@@ -274,8 +295,9 @@ def normalize_and_validate_mapping(
     - a target is neither a sentinel nor one of ``allowed_targets``;
     - a category attribute key is empty or not in ``allowed_category_attrs``
       (``None`` when the importer has no category schema to check against);
-    - a custom or category attribute is named like an allowed target or one of
-      ``reserved_item_fields`` (case-insensitive);
+    - a custom or category attribute is named like an allowed target
+      (``reserved_field_conflict``) or like one of ``reserved_item_fields`` the
+      importer cannot set (``reserved_field_unsupported``), case-insensitive;
     - two columns resolve to the same destination after the sentinels are
       normalized (``attr_names`` holds the custom attribute names chosen for
       ``MAPPING_ATTRIBUTE`` columns);
@@ -298,7 +320,8 @@ def normalize_and_validate_mapping(
 
     mapping = {col: str(overrides.get(col, suggested.get(col, MAPPING_ATTRIBUTE))) for col in source_cols}
     allowed = set(allowed_targets)
-    reserved = {f.casefold() for f in (*allowed, *reserved_item_fields)}
+    allowed_folded = {f.casefold() for f in allowed}
+    reserved = {f.casefold() for f in reserved_item_fields} - allowed_folded
 
     core_sources: dict[str, list[str]] = {}
     attr_sources: dict[str, list[str]] = {}
@@ -313,8 +336,12 @@ def normalize_and_validate_mapping(
                 _error(col, "invalid_category_attribute",
                        t("import.err_invalid_category_attribute", col=col, name=dest))
                 continue
-            if dest.casefold() in reserved:
+            if dest.casefold() in allowed_folded:
                 _error(col, "reserved_field_conflict", t("import.err_custom_name_conflict", name=dest, col=col))
+                continue
+            if dest.casefold() in reserved:
+                _error(col, "reserved_field_unsupported",
+                       t("import.err_reserved_field_unsupported", name=dest, col=col))
                 continue
             attr_sources.setdefault(dest, []).append(col)
         else:

@@ -30,6 +30,11 @@ _COMPONENT = "component_part"    # a stocked part, no inventory type default
 _NON_FINITE = ["heavy", "nan", "inf", "-inf", "1e999"]
 
 
+def _non_finite_code(value: str) -> str:
+    """Text that is not a number is invalid_value; a number that is not finite is not_finite."""
+    return "invalid_value" if value == "heavy" else "not_finite"
+
+
 # ---------------------------------------------------------------------------
 # Company, transports and state readers
 # ---------------------------------------------------------------------------
@@ -244,7 +249,7 @@ class TestFiniteNumericFields:
         await _assert_rejected(client, session, ctx, transport, [{
             "sku": "GW-1", "name": "Cast part", "sell_by": "piece", "quantity": "1",
             "gross_weight": value, "gross_weight_unit": "gram",
-        }], "gross_weight", "invalid_value")
+        }], "gross_weight", _non_finite_code(value))
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("transport", _TRANSPORTS)
@@ -256,7 +261,7 @@ class TestFiniteNumericFields:
         await _assert_rejected(client, session, ctx, transport, [{
             "sku": "CF-1", "name": "Cased item", "sell_by": "piece", "quantity": "1",
             "purchase_unit": "piece", "purchase_conversion_factor": value,
-        }], "purchase_conversion_factor", "invalid_value")
+        }], "purchase_conversion_factor", _non_finite_code(value))
 
 
 # ---------------------------------------------------------------------------

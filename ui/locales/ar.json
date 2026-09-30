@@ -2643,6 +2643,7 @@
   "import.showing_rows": "عرض {n} من {total} صفوف",
   "import.processing": "قيد المعالجة…",
   "import.err_custom_name_conflict": "يتعارض اسم الحقل المخصص \"{name}\" (من العمود \"{col}\") مع حقل مدمج. اختر اسمًا مختلفًا.",
+  "import.err_reserved_field_unsupported": "العمود \"{col}\" هو حقل الصنف \"{name}\"، ولا يمكن للاستيراد تعيينه. تخطَّ العمود أو امنحه اسمًا مختلفًا.",
   "import.err_duplicate_target": "تم تعيين العمودين {cols} إلى \"{target}\". لا يمكن استخدام كل هدف إلا مرة واحدة.",
   "import.err_price_currency_mismatch": "العمود \"{col}\" مسعّر بعملة مختلفة عن عملة الشركة. حوّل الأسعار إلى عملة الشركة أو تخطَّ العمود.",
   "import.err_price_basis_unsupported": "العمود \"{col}\" مسعّر لكل وحدة لا يمكن التحقق منها لحقل السعر هذا. اربطه بسعر الوحدة أو تخطَّ العمود.",

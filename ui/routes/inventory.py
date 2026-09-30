@@ -36,8 +36,6 @@ from celerp.services.units import is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import splitting_allowed
 from celerp_inventory.services import (
     _CORE_ITEM_COLS,
-    ITEM_IMPORT_BASE_COLS,
-    ITEM_IMPORT_TAIL_COLS,
     apply_source_semantics,
     build_item_import_spec,
     importable_price_lists,
@@ -7524,12 +7522,7 @@ async def _item_import_check(token: str, csv_ref: str, rows: list[dict], cols: l
 # celerp_inventory.services.build_item_import_spec, the single source shared with
 # the agent preview/commit routes. This default spec (the three built-in price
 # lists) drives the upload form and template before a company's lists are known.
-_IMPORT_SPEC = CsvImportSpec(
-    cols=ITEM_IMPORT_BASE_COLS + ["retail_price", "wholesale_price", "cost_price"] + ITEM_IMPORT_TAIL_COLS,
-    required={"name"},
-    type_map={"quantity": float, "retail_price": float, "wholesale_price": float,
-              "cost_price": float, "weight": float, "purchase_conversion_factor": float},
-)
+_IMPORT_SPEC = build_item_import_spec(PRICE_LISTS_FALLBACK)
 
 
 def _build_import_spec(price_lists: list[dict]) -> CsvImportSpec:

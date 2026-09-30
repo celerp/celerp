@@ -20,6 +20,7 @@ from celerp.importers.schema import IMPORT_ITEM_STATUSES
 from celerp.inventory_codes import (
     PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
     validate_barcode,
+    validate_gtin,
     validate_rfid_epc,
 )
 from celerp.models.company import Company, Location
@@ -32,11 +33,11 @@ from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import round_basis
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
-from celerp.importers.tabular import CsvImportSpec, validate_cell
+from celerp.importers.tabular import CsvImportSpec, cell_error_code, finite_float
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
 from celerp.services.money import to_stored_float, unit_price_from_total
 from celerp.services.permissions import role_has_permission
-from celerp.services.vertical_presets import list_categories
+from celerp.services.vertical_presets import category_item_defaults
 from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, price_key
 from celerp.services.units import (
     build_unit_map,
@@ -45,6 +46,7 @@ from celerp.services.units import (
     is_weight_unit,
     validate_quantity,
 )
+from celerp_inventory.projections import CORE_ITEM_KEYS, is_core_item_key
 
 # Internally assigned SKUs/barcodes are short zero-padded sequences; imported
 # EAN-13/GTIN-14 barcodes (13-14 digits) are excluded from the sequence scan so
@@ -1716,16 +1718,19 @@ class BatchImportRequest(BaseModel):
     upsert: bool = False
 
 
-# Columns with dedicated item fields; everything else on a row is a category
-# attribute. Shared with the UI mapping form (imported from here) so the split
-# between core fields and attributes has one source of truth.
-_CORE_ITEM_COLS: frozenset[str] = frozenset({
-    "sku", "name", "category", "quantity",
-    "weight", "weight_ct", "weight_unit", "gross_weight", "gross_weight_unit",
-    "sell_by", "pieces", "status",
-    "barcode", "hs_code", "short_description", "description", "notes", "location_name",
-    "location_id", "created_at", "updated_at",
-})
+# Row keys the importer reads as item fields although the item model does not
+# keep them top-level: a carat weight becomes the weight, and the pieces count
+# is written through the item's own pieces handling.
+_IMPORT_ROW_KEYS: frozenset[str] = frozenset({"weight_ct", "pieces"})
+
+# Every name that means an item field, so a custom attribute may not take it.
+# Derived from the item model's core keys; shared with the UI mapping form.
+_CORE_ITEM_COLS: frozenset[str] = CORE_ITEM_KEYS | _IMPORT_ROW_KEYS
+
+
+def _is_item_field_key(key: str) -> bool:
+    """True when an import row key names an item field rather than a custom attribute."""
+    return is_core_item_key(key) or key in _IMPORT_ROW_KEYS or key.endswith("_price" + PRICE_BASIS_SUFFIX)
 
 # Max distinct values before an attribute column is treated as free-text instead
 # of a select field when a schema is inferred from the import.
@@ -1947,7 +1952,7 @@ def _collect_category_attributes(rows: list[dict]) -> dict[str, dict[str, list[s
         if cat not in result:
             result[cat] = {}
         for k, v in row.items():
-            if k in _CORE_ITEM_COLS or k.endswith(("_price", "_price_total", "_price" + PRICE_BASIS_SUFFIX)):
+            if _is_item_field_key(k):
                 continue
             v_str = str(v).strip() if v is not None else ""
             if not v_str:
@@ -1992,9 +1997,40 @@ ITEM_IMPORT_BASE_COLS = ["sku", "name", "sell_by", "category", "quantity"]
 ITEM_IMPORT_TAIL_COLS = [
     "weight", "weight_unit", "gross_weight", "gross_weight_unit", "pieces",
     "barcode", "hs_code", "purchase_sku", "purchase_name", "purchase_unit",
-    "purchase_conversion_factor", "short_description", "description", "notes",
-    "location_name",
+    "purchase_conversion_factor", "inventory_type", "gtin", "rfid_epc",
+    "short_description", "description", "notes", "location_name",
 ]
+# Numeric columns: each must hold a finite number.
+_ITEM_IMPORT_NUMBER_COLS = ("quantity", "weight", "gross_weight", "pieces", "purchase_conversion_factor")
+# Item fields an import row may set. Any other item field on a row is refused by
+# name rather than stored as a custom attribute; prices are matched by suffix.
+_IMPORTABLE_ITEM_FIELDS: frozenset[str] = frozenset(ITEM_IMPORT_BASE_COLS + ITEM_IMPORT_TAIL_COLS) | _IMPORT_ROW_KEYS
+
+VALID_INVENTORY_TYPES: frozenset[str] = frozenset({"stocked", "component", "non_stocked", "service", "freight"})
+
+
+def _unsupported_item_field(row: dict) -> str | None:
+    """The first item field with a value on the row that import cannot set, if any."""
+    return next((
+        key for key, value in row.items()
+        if _is_item_field_key(key) and key not in _IMPORTABLE_ITEM_FIELDS
+        and not key.endswith(("_price", "_price_total", "_price" + PRICE_BASIS_SUFFIX))
+        and str(value if value is not None else "").strip()
+    ), None)
+
+
+def _item_code_error(row: dict) -> dict | None:
+    """The first invalid inventory type or identifier code on the row, as a row error."""
+    inventory_type = str(row.get("inventory_type") or "").strip()
+    if inventory_type and inventory_type not in VALID_INVENTORY_TYPES:
+        return {"field": "inventory_type", "code": "invalid_value",
+                "message": f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}"}
+    for field, validate in (("gtin", validate_gtin), ("rfid_epc", validate_rfid_epc)):
+        try:
+            validate(str(row.get(field) or "").strip())
+        except ValueError as exc:
+            return {"field": field, "code": "invalid_value", "message": str(exc)}
+    return None
 
 
 def importable_price_lists(price_lists: list[dict]) -> list[dict]:
@@ -2008,9 +2044,7 @@ def build_item_import_spec(price_lists: list[dict]) -> CsvImportSpec:
     price lists. Shared by the browser mapper and the agent preview/commit."""
     price_cols = [price_key(pl["name"]) for pl in importable_price_lists(price_lists)]
     price_total_cols = [f"{col}_total" for col in price_cols]
-    type_map: dict = {"quantity": float, "weight": float, "pieces": float}
-    for col in price_cols + price_total_cols:
-        type_map[col] = float
+    type_map = {col: finite_float for col in (*_ITEM_IMPORT_NUMBER_COLS, *price_cols, *price_total_cols)}
     return CsvImportSpec(
         cols=ITEM_IMPORT_BASE_COLS + price_cols + price_total_cols + ITEM_IMPORT_TAIL_COLS,
         # sell_by may come from the category's default unit, so it is checked
@@ -2098,8 +2132,6 @@ async def build_import_records(
     category_keys = list(company_settings.get("category_schemas") or {})
     category_names = dict(company_settings.get("category_display_names") or {})
 
-    cat_sell_by = {c["name"]: c["default_sell_by"] for c in list_categories() if c.get("default_sell_by")}
-
     units = await get_company_units(session, company_id)
     unit_canonical = {u["name"].lower(): u["name"] for u in units}
     unit_map = build_unit_map(units)
@@ -2150,7 +2182,18 @@ async def build_import_records(
         if category_error:
             errors.append({"row": i + 1, "field": "category", "code": "category_ambiguous", "message": category_error})
             continue
-        sku = str(row.get("sku", "") or "").strip()
+        unsupported = _unsupported_item_field(row)
+        if unsupported:
+            errors.append({
+                "row": i + 1, "field": unsupported, "code": "reserved_field_unsupported",
+                "message": f"{unsupported} is an item field that import cannot set; remove the column",
+            })
+            continue
+        code_error = _item_code_error(row)
+        if code_error:
+            errors.append({"row": i + 1, **code_error})
+            continue
+        sku =str(row.get("sku", "") or "").strip()
         name = str(row.get("name", "") or "").strip()
         barcode = str(row.get("barcode", "") or "").strip()
         loc_name = str(row.get("location_name", "") or "").strip()
@@ -2231,10 +2274,21 @@ async def build_import_records(
                 })
                 continue
 
+        # A new item takes its category's defaults for the fields the row leaves
+        # blank, as ordinary item creation does. A default weight unit names the
+        # unit of a written weight and is never a conversion. Upserts keep the
+        # target's own values for blank cells.
+        defaults = category_item_defaults(category)
+        if target is None:
+            row = {**row, **{
+                field: value for field, value in defaults.items()
+                if not _has_value(row, field)
+                and (field != "weight_unit" or _to_float(row.get("weight")) is not None)
+            }}
         sell_by = (
             unit_canonical.get(str(row.get("sell_by", "") or "").strip().lower())
             or str(row.get("sell_by", "") or "").strip()
-            or cat_sell_by.get(str(row.get("category", "") or "").strip())
+            or defaults.get("sell_by")
             or ""
         )
         # The committer rejects these too; reporting them here keeps preview and
@@ -2291,13 +2345,21 @@ async def build_import_records(
 
         attrs: dict = {}
         for key, value in row.items():
-            if key in _CORE_ITEM_COLS or key.endswith(("_price", "_price_total", "_price" + PRICE_BASIS_SUFFIX)):
+            if _is_item_field_key(key):
                 continue
             value_s = str(value).strip() if value is not None else ""
             if value_s:
                 attrs[key] = value_s
 
         weight, weight_unit = _source_weight(row, unit_canonical)
+
+        def _text(key: str, _row: dict = row) -> str | None:
+            return str(_row.get(key, "") or "").strip() or None
+
+        def _unit(key: str, _row: dict = row) -> str | None:
+            raw = _text(key, _row)
+            return unit_canonical.get(raw.lower(), raw) if raw else None
+
         data = {
             "sku": sku,
             "name": name,
@@ -2306,18 +2368,28 @@ async def build_import_records(
             "weight": weight,
             "weight_unit": weight_unit or None,
             "gross_weight": _flt("gross_weight"),
-            "gross_weight_unit": unit_canonical.get(str(row.get("gross_weight_unit", "") or "").strip().lower())
-            or str(row.get("gross_weight_unit", "") or "").strip() or None,
+            "gross_weight_unit": _unit("gross_weight_unit"),
             "pieces": _flt("pieces"),
             "sell_by": sell_by or None,
             "barcode": barcode or None,
-            "hs_code": str(row.get("hs_code", "") or "").strip() or None,
-            "short_description": str(row.get("short_description", "") or "").strip() or None,
-            "description": str(row.get("description", "") or "").strip() or None,
-            "notes": str(row.get("notes", "") or "").strip() or None,
+            "hs_code": _text("hs_code"),
+            "short_description": _text("short_description"),
+            "description": _text("description"),
+            "notes": _text("notes"),
             "location_id": location_id,
             "attributes": attrs,
         }
+        # Written only when the row gives them, so the item model's own defaults
+        # (purchase unit from the selling unit, a factor of 1, a stocked item) apply.
+        data.update({key: value for key, value in (
+            ("purchase_sku", _text("purchase_sku")),
+            ("purchase_name", _text("purchase_name")),
+            ("purchase_unit", _unit("purchase_unit")),
+            ("purchase_conversion_factor", _flt("purchase_conversion_factor")),
+            ("inventory_type", _text("inventory_type")),
+            ("gtin", _text("gtin")),
+            ("rfid_epc", validate_rfid_epc(_text("rfid_epc"))),
+        ) if value is not None})
 
         # Use the target quantity for total->unit conversion on an upsert that does
         # not itself change quantity. Otherwise a price-only upsert would divide by 1.
@@ -2378,6 +2450,8 @@ async def build_import_records(
         for key in (
             "category", "weight", "weight_unit", "gross_weight", "gross_weight_unit",
             "pieces", "barcode", "hs_code", "short_description", "description", "notes",
+            "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor",
+            "inventory_type", "gtin", "rfid_epc",
         ):
             if _has_value(row, key):
                 value = data.get(key)
@@ -2416,6 +2490,13 @@ def import_preview_hash(inputs: dict) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+_CELL_ERROR_MESSAGES = {
+    "required": "Missing {col}",
+    "not_finite": "{col} must be a finite number",
+    "invalid_value": "Invalid {col}",
+}
+
+
 @dataclass
 class ImportRowsPreview:
     errors: list[dict]              # {"row", "field", "code", "message"}
@@ -2442,15 +2523,9 @@ async def preview_import_rows(
     errors: list[dict] = []
     for i, row in enumerate(rows):
         for col in spec.cols:
-            value = str(row.get(col, "") or "")
-            if not validate_cell(spec, col, value, row):
-                missing = col in spec.required and not value.strip()
-                errors.append({
-                    "row": i + 1,
-                    "field": col,
-                    "code": "required" if missing else "invalid_value",
-                    "message": f"Missing {col}" if missing else f"Invalid {col}",
-                })
+            code = cell_error_code(spec, col, str(row.get(col, "") or ""))
+            if code:
+                errors.append({"row": i + 1, "field": col, "code": code, "message": _CELL_ERROR_MESSAGES[code].format(col=col)})
     build = await build_import_records(
         session, company_id, rows, upsert=upsert, dry_run=True,
         create_missing_locations=role_has_permission(settings, role, "manage_company_settings"),
