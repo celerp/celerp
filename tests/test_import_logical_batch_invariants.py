@@ -6,7 +6,7 @@
 A semantic import (browser confirm, file preview and commit, or direct mapped
 rows) is written in bounded chunks but recorded as one Import History entry:
 the response names that entry, an exact retry resolves to it and appends
-nothing, a retry after an interrupted chunk resumes it, and Undo removes every
+nothing, an interrupted import leaves nothing behind, and Undo removes every
 item it created. Undo releases the operation so the same source can be
 imported again as a new history entry. The raw event batch endpoint keeps its
 per-call history. Every import and undo route stays behind the canonical
@@ -327,7 +327,7 @@ class TestLogicalImportRetry:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("transport", _TRANSPORTS)
-    async def test_interrupted_after_first_chunk_then_retry_resumes_same_logical_batch(
+    async def test_interrupted_after_first_chunk_leaves_nothing_and_the_retry_writes_it_whole(
         self, client, session, ctx, transport, monkeypatch,
     ):
         import celerp_inventory.services as svc
@@ -335,47 +335,46 @@ class TestLogicalImportRetry:
         before = await _item_ids(session, ctx["company_id"])
         op = _Operation(client, ctx, transport, _distinct_csv(rows))
 
-        real_commit = svc.commit_import_batch
+        real_write = svc.write_import_batch
         calls: list[int] = []
 
         async def _interrupt_after_first_chunk(*a, **k):
             calls.append(1)
             if len(calls) == 2:
                 raise RuntimeError("connection lost after the first chunk")
-            return await real_commit(*a, **k)
+            return await real_write(*a, **k)
 
-        monkeypatch.setattr(svc, "commit_import_batch", _interrupt_after_first_chunk)
+        monkeypatch.setattr(svc, "write_import_batch", _interrupt_after_first_chunk)
         try:
             status, _ = await op.run()
         except RuntimeError:
             status = None
         assert len(calls) == 2
         assert status != 200
-        monkeypatch.setattr(svc, "commit_import_batch", real_commit)
+        monkeypatch.setattr(svc, "write_import_batch", real_write)
+        await session.rollback()  # the failed request's session closes without committing
 
-        # The first chunk is durable and already owns the operation's history entry.
-        assert len(await _item_ids(session, ctx["company_id"]) - before) == _CHUNK
-        partial = await _history(client, ctx["admin_h"])
-        assert [(b["row_count"], b["status"]) for b in partial] == [(_CHUNK, "active")]
+        # One import is one transaction: the written first chunk is not durable.
+        assert await _item_ids(session, ctx["company_id"]) == before
+        assert await _history(client, ctx["admin_h"]) == []
 
         body = await _run_ok(op)
-        assert (body["created"], body["skipped"]) == (rows - _CHUNK, _CHUNK)
-        assert body["batch_id"] == partial[0]["id"]
+        assert (body["created"], body["skipped"]) == (rows, 0)
         created_ids = await _item_ids(session, ctx["company_id"]) - before
         assert len(created_ids) == rows
         history = await _history(client, ctx["admin_h"])
-        assert [(b["id"], b["row_count"], b["status"]) for b in history] == [(partial[0]["id"], rows, "active")]
+        assert [(b["id"], b["row_count"], b["status"]) for b in history] == [(body["batch_id"], rows, "active")]
         (batch,) = await _batch_rows(session, ctx["company_id"])
         assert set(batch.entity_ids) == created_ids
 
     @pytest.mark.asyncio
-    async def test_interrupted_upsert_resume_plans_later_rows_as_the_first_attempt_did(
+    async def test_interrupted_upsert_retry_plans_later_rows_as_the_first_attempt_did(
         self, client, session, ctx, monkeypatch,
     ):
         import celerp_inventory.services as svc
-        # Rows 1 and 501 are two new lots sharing a SKU. After the first chunk has
-        # written row 1, the resumed import must still plan row 501 as its own new
-        # lot, as the uninterrupted import does, not as an update of row 1's lot.
+        # Rows 1 and 501 are two new lots sharing a SKU. After an attempt that
+        # failed past the first chunk, the retry must still plan row 501 as its
+        # own new lot, as the uninterrupted import does, not as an update of row 1's lot.
         rows = [{"name": f"Lot {i:04d}", "sku": f"LOT-{i:04d}", "sell_by": "piece", "quantity": "1"}
                 for i in range(_CHUNK + 2)]
         rows[0].update(name="First lot", sku="SHARED")
@@ -383,23 +382,24 @@ class TestLogicalImportRetry:
         key = f"op-{uuid.uuid4().hex}"
         before = await _item_ids(session, ctx["company_id"])
 
-        real_commit = svc.commit_import_batch
+        real_write = svc.write_import_batch
         calls: list[int] = []
 
         async def _interrupt_after_first_chunk(*a, **k):
             calls.append(1)
             if len(calls) == 2:
                 raise RuntimeError("connection lost after the first chunk")
-            return await real_commit(*a, **k)
+            return await real_write(*a, **k)
 
-        monkeypatch.setattr(svc, "commit_import_batch", _interrupt_after_first_chunk)
+        monkeypatch.setattr(svc, "write_import_batch", _interrupt_after_first_chunk)
         with pytest.raises(RuntimeError):
             await _commit_rows(client, ctx["admin_h"], rows, upsert=True, key=key)
-        monkeypatch.setattr(svc, "commit_import_batch", real_commit)
-        assert len(await _item_ids(session, ctx["company_id"]) - before) == _CHUNK
+        monkeypatch.setattr(svc, "write_import_batch", real_write)
+        await session.rollback()  # the failed request's session closes without committing
+        assert await _item_ids(session, ctx["company_id"]) == before
 
         body = await _commit_rows(client, ctx["admin_h"], rows, upsert=True, key=key)
-        assert (body["created"], body["updated"], body["skipped"]) == (2, 0, _CHUNK)
+        assert (body["created"], body["updated"], body["skipped"]) == (_CHUNK + 2, 0, 0)
         assert len(await _item_ids(session, ctx["company_id"]) - before) == _CHUNK + 2
         assert await _names_with_sku(session, ctx["company_id"], "SHARED") == ["First lot", "Second lot"]
 

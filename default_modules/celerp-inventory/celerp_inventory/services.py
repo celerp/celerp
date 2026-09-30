@@ -1695,9 +1695,9 @@ async def upsert_from_connector(company_id: str, item) -> str:
 # Semantic catalog import
 # ---------------------------------------------------------------------------
 #
-# One committer, three transports: the browser CSV importer (POST /import/rows),
+# One writer, three transports: the browser CSV importer (POST /import/rows),
 # the agent commit (POST /import/commit), and the raw event batch
-# (POST /import/batch) all converge on commit_import_batch below. The business
+# (POST /import/batch) all converge on write_import_batch below. The business
 # transformation (location resolution, unit canonicalization, quantity/rate
 # derivation, dynamic attributes, idempotency) lives in build_import_records so
 # it is applied identically no matter which transport delivered the rows.
@@ -2202,9 +2202,8 @@ async def build_import_records(
     An upsert that omits ``location_name`` preserves the target location.
 
     ``create_key`` is the import's operation key. Items this same import created
-    are never upsert targets, so a retry, or a resume after an interrupted chunk,
-    plans every row against the state before the import, exactly as the first
-    attempt did.
+    are never upsert targets, so an exact retry plans every row against the state
+    before the import, exactly as the first attempt did.
     """
     loc_rows = (await session.execute(
         select(Location).where(Location.company_id == company_id)
@@ -2841,24 +2840,29 @@ async def import_items(
     idempotency_key: str | None,
     plan: SemanticImportPlan | None = None,
 ) -> BatchImportResult:
-    """Import mapped business rows through the canonical committer.
+    """Import mapped business rows through the canonical committer, in one transaction.
 
     Writes from exactly one semantic plan of the rows: ``plan`` when a bound
     commit has already made and checked it against its preview, otherwise the
     preflight run here. Any row error raises ImportRejected and nothing is
-    written. A clean import then creates any missing named locations under the
-    company lock and fills their ids into the planned records, commits the
-    records in chunks of 500 into one Import History entry named by the
-    operation key (a retry, or a resume after an interrupted chunk, adds to that
-    same entry and returns its id), and auto-merges newly discovered attribute
-    columns into the company's category schemas (best-effort, gated on
-    manage_company_settings). Every item import transport ends here.
+    written. A clean import then creates any missing named locations and fills
+    their ids into the planned records, writes the records in chunks of 500 into
+    one Import History entry named by the operation key, merges newly discovered
+    attribute columns into the company's category schemas (gated on
+    manage_company_settings), and commits once. Every item import transport ends
+    here.
+
+    The company lock is taken before the plan is made (the bound transports take
+    it through lock_import_authority before they re-preview) and held until that
+    one commit, so the state the plan read cannot change before it is written,
+    and a failure anywhere leaves nothing written for a retry to duplicate.
 
     Creates use ``import-attempt + row ordinal`` identity, so equal SKUs and rows
     without SKUs remain distinct lots while an exact retry of the same attempt is a
     no-op. Upserts resolve a concrete existing entity first and use a hash of the
     resulting patch, so the same patch dedupes but a later changed patch still applies.
     """
+    await lock_company(session, company_id)
     batch_key = import_operation_key(idempotency_key, rows, upsert)
     if plan is None:
         plan = await preflight_import_rows(
@@ -2881,45 +2885,53 @@ async def import_items(
             rec["entity_id"] = import_created_item_id(company_id, key)
 
     user = SimpleNamespace(id=actor_id)
-
-    created = skipped = updated = 0
-    errors: list[str] = []
+    outcome = ImportOutcome()
     batch_id: str | None = None
-
     _CHUNK = 500
-    all_records = plan.records
-    for i in range(0, max(len(all_records), 1), _CHUNK):
-        chunk = all_records[i : i + _CHUNK]
-        if not chunk:
-            break
+    for i in range(0, len(plan.records), _CHUNK):
         body = BatchImportRequest(
-            records=[ImportRecord(**r) for r in chunk],
+            records=[ImportRecord(**r) for r in plan.records[i : i + _CHUNK]],
             filename=filename,
             upsert=upsert,
         )
-        result = await commit_import_batch(
+        chunk_outcome, chunk_batch_id = await write_import_batch(
             session, company_id, user, role, settings, body, operation_key=batch_key,
         )
-        created += result.created
-        skipped += result.skipped
-        updated += result.updated
-        errors.extend(result.errors)
-        if result.batch_id:
-            batch_id = result.batch_id
+        outcome.records.extend(chunk_outcome.records)
+        batch_id = chunk_batch_id or batch_id
 
-    # Auto-merge discovered attribute keys into category schemas. Best-effort:
-    # mutating category schemas is a settings change, so the caller's role must
-    # carry manage_company_settings; without it the merge is skipped and the
-    # import still succeeds.
+    # Mutating category schemas is a settings change, so the caller's role must
+    # carry manage_company_settings; without it the merge is skipped.
     if plan.records and role_has_permission(settings, role, "manage_company_settings"):
         inferred = _infer_category_schemas(_collect_category_attributes(plan.rows))
         if inferred:
             await _merge_category_schemas(session, company_id, inferred)
-            await session.commit()
+    await session.commit()
 
-    return BatchImportResult(
-        created=created, skipped=skipped, updated=updated, errors=errors, batch_id=batch_id
-    )
+    return BatchImportResult(**outcome.route_counts(cap_rejections=False), batch_id=batch_id)
+
+
+async def lock_import_authority(session: AsyncSession, company_id, user_id) -> tuple[str, dict]:
+    """Take the company lock and read the importer's role and the company settings under it.
+
+    A bound import commit calls this before it re-previews, so the plan it
+    accepts and the write that follows see one state: settings, locations,
+    schemas, and every item behind the company lock stay as read until
+    import_items commits, and the membership row is held so the role cannot
+    change underneath the write. A membership that is gone reads as no role.
+    """
+    from celerp.models.accounting import UserCompany
+    from celerp.services.auth import normalize_role
+
+    company = await locked_company(session, company_id)
+    link = (await session.execute(
+        select(UserCompany).where(
+            UserCompany.user_id == user_id, UserCompany.company_id == company_id,
+            UserCompany.is_active == True,  # noqa: E712
+        ).with_for_update(read=True).execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    role = normalize_role(link.role) if link is not None else ""
+    return role, dict((company.settings if company else None) or {})
 
 
 async def _merge_category_schemas(session: AsyncSession, company_id, incoming: dict[str, list[dict]]) -> None:
@@ -2927,7 +2939,7 @@ async def _merge_category_schemas(session: AsyncSession, company_id, incoming: d
 
     Never overwrites an existing key (user customizations are preserved). This is
     the sole path that grows category schemas from imported attribute columns; it
-    stages the change on the company row and leaves the commit to import_items.
+    stages the change on the company row and import_items commits it with the items.
     """
     company = await locked_company(session, company_id)
     if company is None:
@@ -2998,8 +3010,8 @@ async def write_import_batch(
     """Write item import records through one bounded, company-scoped writer.
 
     Reports one outcome per record and the import batch id, and leaves the
-    commit to the caller: `commit_import_batch` for the HTTP and agent
-    transports, the migration runner for the migration sink.
+    commit to the caller: `import_items` and `commit_import_batch` for the
+    HTTP and agent transports, the migration runner for the migration sink.
 
     Exact retries resolve through the ledger before any allocation or uniqueness
     check. With ``body.upsert`` a record whose key created an item updates that

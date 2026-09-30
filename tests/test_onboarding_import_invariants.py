@@ -1057,15 +1057,15 @@ class TestPreviewCommitInvariant:
     async def test_inv_import_02_large_import_is_built_once_and_written_in_bounded_chunks(self, client, session, perm, monkeypatch):
         import celerp_inventory.services as svc
         events: list[tuple] = []
-        real_build, real_commit = svc.build_import_records, svc.commit_import_batch
+        real_build, real_write = svc.build_import_records, svc.write_import_batch
 
         async def build_spy(*a, **k):
             events.append(("build", len(a[2])))
             return await real_build(*a, **k)
 
-        async def commit_spy(session, company_id, user, role, settings, body, **kwargs):
+        async def write_spy(session, company_id, user, role, settings, body, **kwargs):
             events.append(("write", len(body.records)))
-            return await real_commit(session, company_id, user, role, settings, body, **kwargs)
+            return await real_write(session, company_id, user, role, settings, body, **kwargs)
 
         # Rows 1 and 1001 share a SKU no existing item carries, under update-existing.
         # Resolved once against the pre-commit state, both are creates. Were row 1001
@@ -1078,7 +1078,7 @@ class TestPreviewCommitInvariant:
         preview = await _rows_preview(client, perm["admin_h"], rows, upsert=True, key="big")
         assert preview["errors"] == []
         monkeypatch.setattr(svc, "build_import_records", build_spy)
-        monkeypatch.setattr(svc, "commit_import_batch", commit_spy)
+        monkeypatch.setattr(svc, "write_import_batch", write_spy)
         r = await _rows_commit(client, perm["admin_h"], rows, upsert=True, key="big", preview_hash=preview["preview_hash"])
         assert r.status_code == 200, r.text
         body = r.json()
@@ -1097,15 +1097,15 @@ class TestPreviewCommitInvariant:
         import celerp_inventory.services as svc
         from celerp.models.company import Location
         events: list[tuple] = []
-        real_build, real_commit = svc.build_import_records, svc.commit_import_batch
+        real_build, real_write = svc.build_import_records, svc.write_import_batch
 
         async def build_spy(*a, **k):
             events.append(("build", len(a[2])))
             return await real_build(*a, **k)
 
-        async def commit_spy(session, company_id, user, role, settings, body, **kwargs):
+        async def write_spy(session, company_id, user, role, settings, body, **kwargs):
             events.append(("write", len(body.records)))
-            return await real_commit(session, company_id, user, role, settings, body, **kwargs)
+            return await real_write(session, company_id, user, role, settings, body, **kwargs)
 
         rows = [
             {"name": "Annexed one", "sell_by": "piece", "quantity": "1", "location_name": "Annex"},
@@ -1114,7 +1114,7 @@ class TestPreviewCommitInvariant:
         preview = await _rows_preview(client, perm["admin_h"], rows, key="annex")
         assert (preview["errors"], preview["locations_to_create"]) == ([], ["Annex"])
         monkeypatch.setattr(svc, "build_import_records", build_spy)
-        monkeypatch.setattr(svc, "commit_import_batch", commit_spy)
+        monkeypatch.setattr(svc, "write_import_batch", write_spy)
         r = await _rows_commit(
             client, perm["admin_h"], rows, key="annex",
             preview_hash=preview["preview_hash"] if bound else None,

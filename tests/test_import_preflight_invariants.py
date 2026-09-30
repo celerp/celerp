@@ -19,6 +19,7 @@ import csv
 import io
 import json
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -118,8 +119,8 @@ async def _company_settings(session, company_id) -> dict:
 def _writer_spy(monkeypatch) -> AsyncMock:
     """Watch the low-level writer every import ends in."""
     import celerp_inventory.services as svc
-    spy = AsyncMock(wraps=svc.commit_import_batch)
-    monkeypatch.setattr(svc, "commit_import_batch", spy)
+    spy = AsyncMock(wraps=svc.write_import_batch)
+    monkeypatch.setattr(svc, "write_import_batch", spy)
     return spy
 
 
@@ -489,7 +490,7 @@ async def test_concurrent_same_missing_location_does_not_duplicate_or_abort(comm
     company_id, user_id = await _seed_race_company(factory)
 
     paused, release = asyncio.Event(), asyncio.Event()
-    real_writer = svc.commit_import_batch
+    real_writer = svc.write_import_batch
 
     async def _held(*args, **kwargs):
         if not paused.is_set():
@@ -497,7 +498,7 @@ async def test_concurrent_same_missing_location_does_not_duplicate_or_abort(comm
             await release.wait()
         return await real_writer(*args, **kwargs)
 
-    monkeypatch.setattr(svc, "commit_import_batch", _held)
+    monkeypatch.setattr(svc, "write_import_batch", _held)
 
     def _run(session, name, key):
         rows = [{"name": name, "sell_by": "piece", "quantity": "1", "location_name": "Annex"}]
@@ -523,6 +524,162 @@ async def test_concurrent_same_missing_location_does_not_duplicate_or_abort(comm
             Location.company_id == company_id, Location.name == "Annex",
         ))).scalar_one()
     assert annex == 1
+
+
+# ---------------------------------------------------------------------------
+# A bound commit holds what it accepted until the import commits
+# ---------------------------------------------------------------------------
+
+
+async def _seed_member_with_item(factory) -> tuple[uuid.UUID, uuid.UUID, str]:
+    """A committed company, its owner membership, and one item with SKU HOLD-1."""
+    import celerp_inventory.services as svc
+    from celerp.models.accounting import UserCompany
+    from celerp.models.projections import Projection
+
+    company_id, user_id = await _seed_race_company(factory)
+    async with factory() as s:
+        s.add(UserCompany(user_id=user_id, company_id=company_id, role="owner", is_active=True))
+        await s.commit()
+    async with factory() as s:
+        await svc.import_items(s, company_id, user_id, "owner", {},
+                               [{"name": "Original", "sku": "HOLD-1", "sell_by": "piece", "quantity": "1"}],
+                               upsert=False, filename=None, idempotency_key="seed")
+    async with factory() as s:
+        entity_id = next(
+            eid for eid, state in (await s.execute(select(Projection.entity_id, Projection.state).where(
+                Projection.company_id == company_id, Projection.entity_type == "item",
+            ))).all() if state.get("sku") == "HOLD-1"
+        )
+    return company_id, user_id, entity_id
+
+
+async def _change_upsert_target(s, company_id, user_id, entity_id):
+    from celerp.services.company_lock import lock_projections
+    row = (await lock_projections(s, company_id, [entity_id]))[entity_id]
+    row.state = {**row.state, "name": "Changed elsewhere"}
+
+
+async def _change_settings(s, company_id, user_id, entity_id):
+    from celerp.services.company_lock import locked_company
+    company = await locked_company(s, company_id)
+    company.settings = {**(company.settings or {}), "role_grants": {"edit_inventory": ["owner"]}}
+
+
+async def _change_role(s, company_id, user_id, entity_id):
+    from sqlalchemy import update
+    from celerp.models.accounting import UserCompany
+    await s.execute(update(UserCompany).where(
+        UserCompany.user_id == user_id, UserCompany.company_id == company_id,
+    ).values(role="viewer"))
+
+
+async def _concurrent_import(s, company_id, user_id, entity_id):
+    import celerp_inventory.services as svc
+    await svc.import_items(s, company_id, user_id, "owner", {},
+                           [{"name": "Other import", "sku": "HOLD-1", "sell_by": "piece"}],
+                           upsert=True, filename=None, idempotency_key="other")
+
+
+@pytest.mark.parametrize("change", [_change_upsert_target, _change_settings, _change_role, _concurrent_import],
+                         ids=["upsert_target", "settings", "role", "concurrent_import"])
+async def test_bound_commit_holds_what_it_accepted_until_the_import_commits(committed_engine, monkeypatch, change):
+    """From the re-preview a bound commit accepts to its one commit, a writer that
+    would change what the import writes waits: tried with a short lock timeout
+    before every chunk, each change is refused, and the import writes exactly
+    what was previewed."""
+    import celerp_inventory.services as svc
+    from celerp_inventory import routes
+    from celerp.models.projections import Projection
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    factory = _factory(committed_engine)
+    company_id, user_id, entity_id = await _seed_member_with_item(factory)
+    rows = [{"name": "Renamed", "sku": "HOLD-1", "sell_by": "piece"}] + [
+        {"name": f"New {i}", "sku": f"NEW-{i}", "sell_by": "piece", "quantity": "1"} for i in range(500)
+    ]
+    user = SimpleNamespace(id=user_id)
+    async with factory() as s:
+        preview = await routes.import_rows_preview(
+            routes.InventoryImportRowsPreviewRequest(rows=rows, upsert=True, idempotency_key="bound"),
+            company_id=company_id, role="owner", settings={}, session=s,
+        )
+    assert preview.errors == []
+
+    attempts: list[str] = []
+    real_write = svc.write_import_batch
+
+    async def _probe_then_write(*args, **kwargs):
+        async with factory() as other:
+            await other.execute(text("SET LOCAL lock_timeout = '300ms'"))
+            try:
+                await change(other, company_id, user_id, entity_id)
+                await other.commit()
+                attempts.append("changed")
+            except DBAPIError as exc:
+                assert "lock timeout" in str(exc).lower(), exc
+                attempts.append("waited")
+        return await real_write(*args, **kwargs)
+
+    monkeypatch.setattr(svc, "write_import_batch", _probe_then_write)
+    async with factory() as s:
+        result = await routes.import_rows(
+            routes.InventoryImportRows(rows=rows, upsert=True, idempotency_key="bound",
+                                       preview_hash=preview.preview_hash),
+            company_id=company_id, role="owner", settings={}, user=user, session=s,
+        )
+    assert attempts == ["waited", "waited"]
+    assert (result.created, result.updated) == (500, 1)
+    async with factory() as s:
+        state = (await s.get(Projection, {"company_id": company_id, "entity_id": entity_id})).state
+    assert state["name"] == "Renamed"
+
+
+async def test_commit_refuses_a_permission_lost_after_the_request_was_authorized(committed_engine):
+    """The importer's role is read again under the company lock; a role changed
+    after the request was authorized is what the commit is judged by."""
+    from celerp_inventory import routes
+    from celerp.models.projections import Projection
+    from fastapi import HTTPException
+
+    factory = _factory(committed_engine)
+    company_id, user_id, entity_id = await _seed_member_with_item(factory)
+    async with factory() as s:
+        await _change_role(s, company_id, user_id, entity_id)
+        await s.commit()
+    rows = [{"name": "Late", "sku": "LATE-1", "sell_by": "piece", "quantity": "1"}]
+    async with factory() as s:
+        with pytest.raises(HTTPException) as err:
+            await routes.import_rows(
+                routes.InventoryImportRows(rows=rows, idempotency_key="late"),
+                company_id=company_id, role="owner", settings={}, user=SimpleNamespace(id=user_id), session=s,
+            )
+    assert err.value.status_code == 403
+    async with factory() as s:
+        skus = [st.get("sku") for (st,) in (await s.execute(select(Projection.state).where(
+            Projection.company_id == company_id, Projection.entity_type == "item",
+        ))).all()]
+    assert "LATE-1" not in skus
+
+
+async def test_a_failed_schema_merge_leaves_no_import_behind(client, session, perm, monkeypatch):
+    """The category-schema merge is part of the import's one transaction, so an
+    import answered as failed has written nothing a retry could duplicate."""
+    import celerp_inventory.services as svc
+
+    monkeypatch.setattr(svc, "_infer_category_schemas", lambda attrs: {"Rings": [{"key": "band", "label": "Band"}]})
+
+    async def _merge_fails(*args, **kwargs):
+        raise RuntimeError("schema store unavailable")
+
+    monkeypatch.setattr(svc, "_merge_category_schemas", _merge_fails)
+    before = await _item_count(session, perm["company_id"])
+    rows = [{"name": "Ring", "sell_by": "piece", "quantity": "1", "category": "Rings"}]
+    with pytest.raises(RuntimeError):
+        await _rows_commit(client, perm["admin_h"], rows, key="op-schema")
+    await session.rollback()
+    assert await _item_count(session, perm["company_id"]) == before
 
 
 # ---------------------------------------------------------------------------

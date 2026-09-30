@@ -6,7 +6,7 @@
 These cover the transform and commit logic that used to live in the browser
 confirm handler and now lives in celerp_inventory.services: location resolution
 and creation, category default sell-by, unit-rate derivation, upsert accounting,
-building without writing, and the single committer shared by /import/rows and /import/batch.
+building without writing, and the single writer shared by /import/rows and /import/batch.
 """
 
 from __future__ import annotations
@@ -487,32 +487,32 @@ async def test_authorized_preview_can_plan_missing_location_without_writing(sess
 
 
 # ---------------------------------------------------------------------------
-# Shared committer
+# Shared writer
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_import_rows_and_import_batch_share_committer(client, session, monkeypatch):
-    """/import/rows (import_items) and /import/batch (commit_import_batch) converge on one committer."""
-    # /import/rows path: import_items must delegate to commit_import_batch.
+async def test_import_rows_and_import_batch_share_writer(client, session, monkeypatch):
+    """/import/rows (import_items) and /import/batch (commit_import_batch) converge on one writer."""
+    # /import/rows path: import_items must delegate to write_import_batch.
     company_a, user_a, _ = await _seed(session, locations=[{"name": "Main"}])
     rows = [{"name": "Shared", "sku": "SHARE-1", "sell_by": "piece", "pieces": "2"}]
 
     calls: list[int] = []
-    real_committer = svc.commit_import_batch
+    real_writer = svc.write_import_batch
 
     async def _spy(*args, **kwargs):
         calls.append(1)
-        return await real_committer(*args, **kwargs)
+        return await real_writer(*args, **kwargs)
 
-    monkeypatch.setattr(svc, "commit_import_batch", _spy)
+    monkeypatch.setattr(svc, "write_import_batch", _spy)
     ra = await import_items(session, company_a, user_a, "admin", {}, rows, upsert=False, filename=None, idempotency_key=None)
     monkeypatch.undo()
-    assert calls, "import_items must route through commit_import_batch"
+    assert calls, "import_items must route through write_import_batch"
     assert ra.created == 1
     items_a = await _item_projections(session, company_a)
     assert [p.state.get("sku") for p in items_a] == ["SHARE-1"]
 
-    # /import/batch path: the same committer lands an identical record hand-built as a raw batch.
+    # /import/batch path: the same writer lands an identical record hand-built as a raw batch.
     company_b, user_b, _ = await _seed(session, locations=[{"name": "Main"}])
     build = await build_import_records(session, company_b, rows, upsert=False)
     body = BatchImportRequest(records=[ImportRecord(**r) for r in build.records], upsert=False)

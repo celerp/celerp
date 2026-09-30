@@ -43,6 +43,7 @@ from .services import (
     import_preview_hash,
     is_item_field_key,
     item_price_mutex_groups,
+    lock_import_authority,
     preview_import_rows,
     source_header_semantics,
 )
@@ -1514,9 +1515,10 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
 
 # ── Import routes ─────────────────────────────────────────────────────────────
 # Declared before GET /{entity_id} so "import" is never captured as an entity id.
-# One committer (services.commit_import_batch), three transports: the browser
-# importer (/import/rows), the agent commit (/import/commit), and the raw event
-# batch (/import/batch). All converge on services.import_items / commit_import_batch.
+# One writer (services.write_import_batch), three transports: the browser
+# importer (/import/rows) and the agent commit (/import/commit) through
+# services.import_items, and the raw event batch (/import/batch) through
+# services.commit_import_batch.
 
 
 def _bounded_rows(rows: list[dict]) -> list[dict]:
@@ -1541,6 +1543,16 @@ def _validation_failed(errors: list[dict]) -> HTTPException:
 
 def _preview_stale() -> HTTPException:
     return HTTPException(status_code=409, detail={"code": "preview_stale"})
+
+
+async def _import_authority(session, company_id, user_id) -> tuple[str, dict]:
+    """The importer's role and the company settings, read and held under the
+    company lock before an import commit plans anything; a permission lost since
+    the request was authorized is refused here."""
+    role, settings = await lock_import_authority(session, company_id, user_id)
+    for key in ("import_export_data", "edit_inventory"):
+        assert_role_permission(settings, role, key)
+    return role, settings
 
 
 async def _write_import(session, company_id, user_id, role: str, settings: dict, rows: list[dict], **kwargs) -> BatchImportResult:
@@ -1634,8 +1646,10 @@ async def import_rows(
     with 422 before anything is written. With ``preview_hash`` the commit is also
     bound to /import/rows/preview: the preview is recomputed, a changed hash,
     including rows that now mean something else, is refused with 409, and the
-    rows are written from that recomputed plan.
+    rows are written from that recomputed plan. The company lock is taken before
+    that preview and held through the write.
     """
+    role, settings = await _import_authority(session, company_id, user.id)
     plan = None
     if body.preview_hash is not None:
         plan = await preview_import_rows(
@@ -1852,8 +1866,10 @@ async def import_commit(
     its mapping, or what its rows would write changed since the preview, refused
     with 409 rather than imported under stale assumptions. Any row validation
     error is refused with 422 and the error list; otherwise the shared committer
-    writes the rows from that recomputed plan.
+    writes the rows from that recomputed plan. The company lock is taken before
+    that preview and held through the write.
     """
+    role, settings = await _import_authority(session, company_id, user.id)
     operation_key = f"preview:{body.preview_hash}"
     result = await _build_item_preview(
         session, company_id, user.id, role, settings, file_id=body.file_id,
@@ -4328,8 +4344,8 @@ async def batch_import_items(
     """Batch-import CIF item records. Idempotent on idempotency_key. Max 500 per call.
 
     The raw-event-batch transport: records arrive already shaped by the caller.
-    The committer lives in services.commit_import_batch, shared with /import/rows
-    and the agent /import/commit.
+    The writer is services.write_import_batch, shared with /import/rows and the
+    agent /import/commit.
     """
     return await commit_import_batch(session, company_id, user, role, settings, body)
 
