@@ -1276,6 +1276,7 @@ def validation_result(
     upsert_label: str | None = None,
     cell_renderers: dict[str, "Callable[[str, int, dict, bool], FT]"] | None = None,
     notes: Any = "",
+    ready: int | None = None,
 ) -> FT:
     """Return the post-upload panel: inline-fix error panel or clean confirm panel.
 
@@ -1285,7 +1286,8 @@ def validation_result(
 
     If ``upsert_label`` is provided, a checkbox is shown above the import
     button letting users opt-in to updating existing records. ``notes`` are shown
-    on the confirm panel above the preview table.
+    on the confirm panel above the preview table; ``ready`` is how many rows the
+    import will add, when the server's preview says fewer than every row.
     """
     error_pairs = [(i, _row_errors(row, cols, validate)) for i, row in enumerate(rows)]
     error_row_indices = [i for i, errs in error_pairs if errs]
@@ -1319,6 +1321,7 @@ def validation_result(
         has_mapping=has_mapping,
         upsert_control=_upsert_control(upsert_label) if upsert_label else "",
         notes=notes,
+        ready=ready,
     )
 
 
@@ -1376,10 +1379,11 @@ def _confirm_panel(
     has_mapping: bool,
     upsert_control: Any = "",
     notes: Any = "",
+    ready: int | None = None,
 ) -> FT:
     """Rows-ready summary, preview table, and the single import button."""
     review_step = 3 if has_mapping else 2
-    n = len(rows)
+    n = len(rows) if ready is None else ready
     return Div(
         _step_indicator(review_step, has_mapping=has_mapping),
         Div(

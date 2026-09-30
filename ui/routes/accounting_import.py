@@ -105,12 +105,14 @@ async def _chart_review(token: str, csv_ref: str, rows: list[dict], cols: list[s
     """Cell fixes first; once every cell is valid, the import's own preview of
     which rows it would refuse and which codes it would keep."""
     notes: Any = ""
+    ready: int | None = None
     if not rows_have_errors(rows, cols, _chart_validate):
         try:
             preview = await api.batch_import(token, "/accounting/accounts/import/preview", _chart_records(rows))
         except APIError as e:
             return _chart_api_error_panel(e)
         errors = import_result_errors(preview)
+        ready = int(preview.get("created", 0) or 0)
         notes = Div(
             Div(
                 P(f"{len(errors)} {t('import.rows_need_changes')}"),
@@ -130,6 +132,7 @@ async def _chart_review(token: str, csv_ref: str, rows: list[dict], cols: list[s
         revalidate_action="/accounting/import/chart/revalidate",
         has_mapping=True,
         notes=notes,
+        ready=ready,
     )
 
 

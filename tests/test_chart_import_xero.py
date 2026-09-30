@@ -132,6 +132,12 @@ def _cards(html: str) -> dict[str, int]:
     return {label.strip(): int(value) for value, label in pairs}
 
 
+def _ready_count(html: str) -> int:
+    m = re.search(r'import-card-value">(\d+)</div>\s*<div class="import-card-label">rows ready<', html)
+    assert m, html[:2000]
+    return int(m.group(1))
+
+
 def _xero_rows(path: Path = _XERO) -> list[dict]:
     return list(csv.DictReader(io.StringIO(path.read_text(encoding="utf-8"))))
 
@@ -266,6 +272,7 @@ async def test_chart_review_lists_rows_the_import_would_refuse_before_confirm(cl
         "530,Fine,Expense,\n"
         "530,Fine Again,Expense,\n"
         "540,Already Here,Expense,\n"
+        "550,New,Expense,\n"
     ).encode()
     before = await _chart(client, owner)
 
@@ -277,14 +284,18 @@ async def test_chart_review_lists_rows_the_import_would_refuse_before_confirm(cl
     assert "Error details (5)" in review
     assert "999" in review and review.count("loop") >= 2 and "530" in review
     assert "Existing codes are kept." in review and "Skipped: 540" in review
+    # The counts are what the import will add: only 550.
+    assert _ready_count(review) == 1 and "Import All 1 Rows" in review, review[:3000]
     assert await _chart(client, owner) == before, "the review wrote to the chart"
 
 
 @pytest.mark.asyncio
-async def test_chart_review_of_a_clean_file_lists_nothing(client, owner):
+async def test_chart_review_counts_only_new_accounts_as_ready(client, owner):
+    await _import_file(owner, _XERO.read_bytes())
     review = await _review_page(owner, _XERO.read_bytes())
     assert 'hx-post="/accounting/import/chart/confirm"' in review
-    assert "rows need changes" not in review and "Skipped:" not in review
+    assert "rows need changes" not in review
+    assert _ready_count(review) == 0 and "Import All 0 Rows" in review, review[:3000]
 
 
 @pytest.mark.asyncio
