@@ -1334,14 +1334,14 @@ async def test_bundled_module_enabled_on_restore(real_engine, real_client, tmp_p
 
 async def test_manifest_records_module_versions(real_engine, real_client, tmp_path, monkeypatch):
     """The manifest records each enabled module's installed version, bundled and third-party alike."""
-    from celerp.modules.loader import read_manifest, resolve_module_path
+    from celerp.modules.loader import module_search_path, read_manifest, resolve_module_path
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch)
     enabled = ["celerp-labels", _BK_MODULE]
     _, _, tok = await _bk_setup(real_engine, settings={"enabled_modules": enabled})
     versions = manifest(await download(real_client, tok))["modules"]["versions"]
     assert versions[_BK_MODULE] == "2.0.0"
-    assert versions["celerp-labels"] == read_manifest(resolve_module_path("celerp-labels"))["version"]
+    assert versions["celerp-labels"] == read_manifest(resolve_module_path("celerp-labels", module_search_path()))["version"]
 
 
 async def test_backup_contains_no_module_code(real_engine, real_client, tmp_path, monkeypatch):
@@ -1419,8 +1419,8 @@ async def _r_set_json(engine, cid, *, state: dict | None = None, data: dict | No
 
 async def _r_rows(engine, table: str, cid) -> list[dict]:
     async with engine.connect() as conn:
-        rows = (await conn.execute(text(f'SELECT to_jsonb(x)::text FROM "{table}" x WHERE company_id = :c'),
-                                   {"c": cid})).scalars().all()
+        rows = (await conn.execute(text(f'SELECT to_jsonb(x)::text FROM "{table}" x WHERE company_id::text = :c'),
+                                   {"c": str(cid)})).scalars().all()
     return [json.loads(row) for row in rows]
 
 
