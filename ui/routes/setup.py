@@ -17,7 +17,6 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import json
-import logging
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -26,8 +25,6 @@ from celerp.services.currencies import CURRENCIES, CURRENCY_CODES
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
 from celerp.services.vertical_presets import list_presets, load_preset
-
-logger = logging.getLogger(__name__)
 
 
 def _preset_label(preset: dict) -> str:
@@ -147,12 +144,15 @@ def setup_routes(app):
         except APIError as e:
             return _rerender(e.detail)
         # The business type is applied; mark the company's getting-started hub as the
-        # landing page until the user finishes or dismisses it. It is a hint only,
-        # so failing to store it never undoes the completed setup.
+        # landing page until the user finishes it. Setup is only finished once that
+        # mark is stored, so a failed write keeps the user here to submit again.
+        # Resubmitting is safe because applying a business type is idempotent. The
+        # mark is stored before any restart so a server that goes down mid-restart
+        # still comes back to a company that is being set up.
         try:
             await api.patch_company(token, {"onboarding_pending": True})
         except APIError as e:
-            logger.warning("Could not set onboarding_pending: %s", e.detail)
+            return _rerender(t("setup.onboarding_not_started", detail=e.detail))
         if result.get("restart_required"):
             # The type's modules load on restart; the activating page waits for them.
             # The server may drop this request as it goes down, so its outcome is not

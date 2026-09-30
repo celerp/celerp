@@ -16,7 +16,6 @@ State machine:
 from __future__ import annotations
 
 import json
-import logging
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -36,8 +35,6 @@ from ui.security import is_app_local_path
 from celerp.config import settings as _settings
 from celerp.services.auth import MIN_PASSWORD_LENGTH
 from celerp.services.permissions import role_has_permission
-
-logger = logging.getLogger(__name__)
 
 
 def auth_header(title: str, subtitle: str = "") -> FT:
@@ -424,16 +421,14 @@ def setup_routes(app):
             await api_get_company(token)
         except APIError:
             return RedirectResponse("/login", status_code=302)
-        registered = {getattr(r, "path", None) for r in request.app.routes}
-        return auth_shell(
-            _onboarding_view(registered),
-            title=page_title("page.get_started"),
-        )
+        return _onboarding_page(request)
 
     @app.post("/onboarding/complete")
     async def onboarding_complete(request: Request):
         """Finish the getting-started hub: clear the company's pending flag (when the
-        role may change company settings) and go to the dashboard."""
+        role may change company settings) and go to the dashboard. The dashboard is
+        only reported once the flag is stored; otherwise the hub is shown again with
+        the reason, so the user can retry."""
         token = request.cookies.get(COOKIE_NAME)
         if not token:
             return RedirectResponse("/login", status_code=303)
@@ -445,7 +440,7 @@ def setup_routes(app):
             try:
                 await api.patch_company(token, {"onboarding_pending": False})
             except APIError as e:
-                logger.warning("Could not clear onboarding_pending: %s", e.detail)
+                return _onboarding_page(request, error=t("onboarding.complete_failed", detail=e.detail))
         return RedirectResponse("/dashboard", status_code=303)
 
     # ── Company switcher (HTMX partial) ─────────────────────────────────────
@@ -791,7 +786,15 @@ _ONBOARDING_ACTIONS: tuple[tuple[str, str, str, bool], ...] = (
 )
 
 
-def _onboarding_view(registered: set[str]) -> FT:
+def _onboarding_page(request: Request, error: str | None = None) -> FT:
+    registered = {getattr(r, "path", None) for r in request.app.routes}
+    return auth_shell(
+        _onboarding_view(registered, error=error),
+        title=page_title("page.get_started"),
+    )
+
+
+def _onboarding_view(registered: set[str], error: str | None = None) -> FT:
     """The getting-started hub. Only actions whose page is registered in this
     installation are offered."""
     cards = [
@@ -809,6 +812,7 @@ def _onboarding_view(registered: set[str]) -> FT:
         H2(t("onboarding.bring_in_data"), cls="section-title"),
         Div(*cards, cls="quick-links-grid"),
         Div(
+            flash(error) if error else "",
             P(t("onboarding.start_working_desc"), cls="auth-subtitle"),
             Form(
                 Button(t("onboarding.start_working"), type="submit", cls="btn btn--secondary"),
