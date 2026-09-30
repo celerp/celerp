@@ -2837,6 +2837,10 @@ async def _create_missing_locations(session: AsyncSession, company_id, names: li
     return ids
 
 
+# Records per write_import_batch call; one import still commits once.
+IMPORT_CHUNK = 500
+
+
 async def import_items(
     session: AsyncSession,
     company_id,
@@ -2856,7 +2860,7 @@ async def import_items(
     commit has already made and checked it against its preview, otherwise the
     preflight run here. Any row error raises ImportRejected and nothing is
     written. A clean import then creates any missing named locations and fills
-    their ids into the planned records, writes the records in chunks of 500 into
+    their ids into the planned records, writes the records in chunks of IMPORT_CHUNK into
     one Import History entry named by the operation key, merges newly discovered
     attribute columns into the company's category schemas (gated on
     manage_company_settings), and commits once. Every item import transport ends
@@ -2897,10 +2901,9 @@ async def import_items(
     user = SimpleNamespace(id=actor_id)
     outcome = ImportOutcome()
     batch_id: str | None = None
-    _CHUNK = 500
-    for i in range(0, len(plan.records), _CHUNK):
+    for i in range(0, len(plan.records), IMPORT_CHUNK):
         body = BatchImportRequest(
-            records=[ImportRecord(**r) for r in plan.records[i : i + _CHUNK]],
+            records=[ImportRecord(**r) for r in plan.records[i : i + IMPORT_CHUNK]],
             filename=filename,
             upsert=upsert,
         )
