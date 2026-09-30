@@ -529,3 +529,77 @@ def inventory_safety_objects(locations: int = 0, transfers: int = 0, negative: b
 
 def build_inventory_safety(path: Path, **kinds) -> Path:
     return write_manager_file(path, inventory_safety_objects(**kinds))
+
+
+DEPENDENCY_CUTOVER = date(2026, 1, 15)
+
+
+def cutover_dependency_objects() -> list[Obj]:
+    """A bill and an invoice each settled in full before the 01-15 cutover, whose goods move
+    only after it. BILLS brings in its own 5 widgets @ 4.00 on 01-03. BILLC bills 10 @ 4.00
+    on 01-05, PAYC pays it on 01-06 and GRC receives the 10 on 01-20. INVC sells 2 on 01-07,
+    at the 4.00 average of the 15 owned: cost of sales 8.00. RECC pays it on 01-08 and DNC
+    delivers the 2 on 01-21. Opening stock 5 / 20.00; on hand at the end 13 / 52.00."""
+    return [
+        *_stocked_masters(),
+        _bill("BILLS", date(2026, 1, 3), {"WID": (D("5"), D("4"))}, {64: True}),
+        _bill("BILLC", date(2026, 1, 5), {"WID": (D("10"), D("4"))}),
+        obj("Payment", "PAYC", {1: date(2026, 1, 6), 2: "P-C", 3: PAID_BY_SUPPLIER, 5: k("SA"), 7: k("OPB"), 11: [
+            {2: AP, 7: k("SA"), 8: k("BILLC"), 18: D("40")},
+        ]}),
+        _sale("INVC", date(2026, 1, 7), {"WID": D("2")}),
+        obj("Receipt", "RECC", {1: date(2026, 1, 8), 2: "R-C", 3: PAID_BY_CUSTOMER, 4: k("CA"), 7: k("OPB"), 11: [
+            {2: AR, 3: k("CA"), 4: k("INVC"), 18: D("25")},
+        ]}),
+        goods_receipt("GRC", date(2026, 1, 20), "BILLC", {"WID": D("10")}),
+        delivery_note("DNC", date(2026, 1, 21), "INVC", {"WID": D("2")}),
+    ]
+
+
+def batched_delivery_objects() -> list[Obj]:
+    """One invoice line shipped in two batches, with dearer stock arriving between them.
+    BILLS brings in its own 6 widgets @ 4.00 and BILLT 1 @ 5.00; BILLU bills 2 @ 10.00 on
+    01-02, received by GRU on 01-07. INVB sells 3 on 01-05, when 9 are owned for 49.00:
+    cost of sales 49.00 x 3 / 9 = 16.33. DNB1 delivers 1 on 01-06 (16.33 / 3 = 5.44) and
+    DNB2 the other 2 on 01-09 (16.33 - 5.44 = 10.89). On hand at the end 6 / 32.67."""
+    return [
+        *_stocked_masters(),
+        _bill("BILLU", date(2026, 1, 2), {"WID": (D("2"), D("10"))}),
+        _bill("BILLS", date(2026, 1, 3), {"WID": (D("6"), D("4"))}, {64: True}),
+        _bill("BILLT", date(2026, 1, 4), {"WID": (D("1"), D("5"))}, {64: True}),
+        _sale("INVB", date(2026, 1, 5), {"WID": D("3")}),
+        delivery_note("DNB1", date(2026, 1, 6), "INVB", {"WID": D("1")}),
+        goods_receipt("GRU", date(2026, 1, 7), "BILLU", {"WID": D("2")}),
+        delivery_note("DNB2", date(2026, 1, 9), "INVB", {"WID": D("2")}),
+    ]
+
+
+OWNERSHIP_CUTOVER = date(2026, 1, 10)
+
+
+def ownership_interleaving_objects() -> list[Obj]:
+    """Goods sold and delivered after a purchase is billed but before it arrives. BILL1 bills
+    10 @ 4.00 on 01-02, received by GR1 on 01-03. BILL2 bills 10 @ 6.00 on 01-05; its goods
+    arrive with GR2 on 01-12. INVO sells 5 on 01-07 and DNO delivers them on 01-08. Manager
+    owns 20 widgets worth 100.00 when INVO is invoiced, so its cost of sales is 5 @ 5.00 =
+    25.00, though only the 10 @ 4.00 are physically held when they leave. On hand at the
+    end 15 / 75.00, which is the inventory account's balance: 40.00 + 60.00 - 25.00."""
+    return [
+        *_stocked_masters(),
+        _bill("BILL1", date(2026, 1, 2), {"WID": (D("10"), D("4"))}),
+        goods_receipt("GR1", date(2026, 1, 3), "BILL1", {"WID": D("10")}),
+        _bill("BILL2", date(2026, 1, 5), {"WID": (D("10"), D("6"))}),
+        _sale("INVO", date(2026, 1, 7), {"WID": D("5")}),
+        delivery_note("DNO", date(2026, 1, 8), "INVO", {"WID": D("5")}),
+        goods_receipt("GR2", date(2026, 1, 12), "BILL2", {"WID": D("10")}),
+    ]
+
+
+def unowned_sale_objects() -> list[Obj]:
+    """A widget invoiced before any is bought, with no unit cost set: nothing says what
+    cost of sales Manager booked for it."""
+    return [
+        *_stocked_masters(),
+        _sale("INVZ", date(2026, 1, 3), {"WID": D("1")}),
+        _bill("BILLZ", date(2026, 1, 5), {"WID": (D("4"), D("4"))}, {64: True}),
+    ]

@@ -50,13 +50,13 @@ class Books:
         return auth(self.token)
 
 
-async def _migrated(real_engine, monkeypatch, tmp_path, decisions=MODES[0]) -> Books:
+async def _migrated(real_engine, monkeypatch, tmp_path, decisions=MODES[0], source: Path = INVENTORY) -> Books:
     from celerp.models.company import Company, User
     from celerp.models.migration import MigrationRun
     from celerp.services import migrations
     from celerp.services.auth import issue_token_pair
 
-    run, rejected = await migrate(real_engine, INVENTORY.read_bytes(), "lifecycle.manager", decisions, monkeypatch, tmp_path)
+    run, rejected = await migrate(real_engine, source.read_bytes(), source.name, decisions, monkeypatch, tmp_path)
     assert rejected == []
     _passing(run)
     async with maker(real_engine)() as s:
@@ -75,10 +75,14 @@ async def _doc(books: Books, label: str, source_type: str | None = None) -> dict
     return (await _projections(books.engine, books.run, "doc"))[books.id(source_type, label)]
 
 
-async def _sold_lot(books: Books, label: str) -> str:
+async def _sold_lots(books: Books, label: str) -> dict[str, dict]:
     invoice = books.id("SalesInvoice", label)
-    (lot,) = [key for key, item in (await _projections(books.engine, books.run, "item")).items()
-              if item.get("status") == "sold" and item.get("status_doc_id") == invoice]
+    return {key: item for key, item in (await _projections(books.engine, books.run, "item")).items()
+            if item.get("status") == "sold" and item.get("status_doc_id") == invoice}
+
+
+async def _sold_lot(books: Books, label: str) -> str:
+    (lot,) = await _sold_lots(books, label)
     return lot
 
 
