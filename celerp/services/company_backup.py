@@ -97,6 +97,9 @@ MAX_UPLOAD_BYTES = 2 * 1024 ** 3
 MAX_MEMBERS = 200_000
 MAX_MEMBER_BYTES = 1024 ** 3
 MAX_TOTAL_BYTES = 8 * 1024 ** 3
+# Members read whole: the manifest, one table row, one attachment (the ordinary attachment limit).
+MAX_MANIFEST_BYTES = 64 * 1024 ** 2
+MAX_ROW_BYTES = 64 * 1024 ** 2
 BATCH_ROWS = 1000
 
 _NOT_RESTORED = " Nothing was restored."
@@ -108,6 +111,7 @@ NEWER = ("This company backup was made by a newer version of Celerp. Update Cele
          + _NOT_RESTORED)
 TOO_LARGE = "This company backup is too large to restore here." + _NOT_RESTORED
 TOO_LARGE_UPLOAD = "This file is too large for a company backup upload." + _NOT_RESTORED
+TOO_LARGE_TO_BACK_UP = "This company has a record too large to back up." + _NOT_BACKED_UP
 UNSAVABLE = "This company backup has records this Celerp cannot save." + _NOT_RESTORED
 ATTACHMENT_FAILED = "Celerp could not save an attachment file from this backup." + _NOT_RESTORED
 ATTACHMENT_TYPE = "This company backup has an attachment file of a type Celerp does not store: {name}." + _NOT_RESTORED
@@ -511,7 +515,10 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
                     async for batch in _batches(session, table, company_id, expr):
                         for line in batch:
                             _collect_urls(json.loads(line), company_id, found, types)
-                            body = line.encode() + b"\n"
+                            body = line.encode()
+                            if len(body) > MAX_ROW_BYTES:
+                                raise BackupError(409, TOO_LARGE_TO_BACK_UP)
+                            body += b"\n"
                             digest.update(body)
                             fh.write(body)
                         rows += len(batch)
@@ -525,7 +532,8 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
             for backup_name, name in sorted(names.items()):
                 url = found[name]
                 try:
-                    body = await attachments.read_company_file(company_id, url, MAX_MEMBER_BYTES)
+                    body = await attachments.read_company_file(company_id, url,
+                                                              _member_limit(f"attachments/{backup_name}"))
                 except OSError:
                     logger.warning("Reading an attachment for a company backup failed", exc_info=True)
                     body = None
@@ -535,7 +543,10 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
                 zf.writestr(f"attachments/{backup_name}", body)
                 manifest["attachments"].append({"url": url, "name": backup_name, "size": len(body),
                                                 "sha256": hashlib.sha256(body).hexdigest()})
-            zf.writestr("manifest.json", json.dumps(manifest, indent=1))
+            body = json.dumps(manifest, indent=1).encode()
+            if len(body) > MAX_MANIFEST_BYTES:
+                raise BackupError(409, TOO_LARGE_TO_BACK_UP)
+            zf.writestr("manifest.json", body)
         partial.replace(out)
     except BaseException:
         partial.unlink(missing_ok=True)
@@ -615,6 +626,16 @@ def _check_manifest(m) -> None:
             raise BackupError(422, ATTACHMENT_TYPE.format(name=f["name"]))
 
 
+def _member_limit(name: str) -> int:
+    """Uncompressed size a member may have: members read whole into memory are held to
+    their own smaller limits."""
+    if name == "manifest.json":
+        return min(MAX_MEMBER_BYTES, MAX_MANIFEST_BYTES)
+    if name.startswith("attachments/"):
+        return min(MAX_MEMBER_BYTES, attachments.MAX_FILE_BYTES)
+    return MAX_MEMBER_BYTES
+
+
 class _Budget:
     """Uncompressed bytes read so far, against the per-member and total limits."""
 
@@ -622,19 +643,19 @@ class _Budget:
         self.total = 0
 
     def chunks(self, zf: zipfile.ZipFile, name: str):
-        size = 0
+        size, limit = 0, _member_limit(name)
         with zf.open(name) as fh:
             while chunk := fh.read(_CHUNK):
                 size += len(chunk)
                 self.total += len(chunk)
-                if size > MAX_MEMBER_BYTES or self.total > MAX_TOTAL_BYTES:
+                if size > limit or self.total > MAX_TOTAL_BYTES:
                     raise BackupError(422, TOO_LARGE)
                 yield chunk
 
 
 def _check_member(budget: _Budget, zf: zipfile.ZipFile, name: str, sha256: str, *,
                   rows: int | None = None, size: int | None = None) -> None:
-    digest, length, lines, pending = hashlib.sha256(), 0, 0, False
+    digest, length, lines, pending, row = hashlib.sha256(), 0, 0, False, 0
     for chunk in budget.chunks(zf, name):
         digest.update(chunk)
         length += len(chunk)
@@ -642,12 +663,20 @@ def _check_member(budget: _Budget, zf: zipfile.ZipFile, name: str, sha256: str, 
             parts = chunk.split(b"\n")
             for i, part in enumerate(parts):
                 pending = pending or bool(part.strip())
+                row += len(part)
+                if row > MAX_ROW_BYTES:
+                    raise BackupError(422, TOO_LARGE)
                 if i < len(parts) - 1:
                     lines += pending
-                    pending = False
+                    pending, row = False, 0
     lines += pending
     if digest.hexdigest() != sha256 or (rows is not None and lines != rows) or (size is not None and length != size):
         raise BackupError(422, DAMAGED)
+
+
+def _read_member(zf: zipfile.ZipFile, name: str) -> bytes:
+    """A member read whole, within its limit."""
+    return b"".join(_Budget().chunks(zf, name))
 
 
 def read_backup(path: Path) -> BackupFile:
@@ -658,7 +687,7 @@ def read_backup(path: Path) -> BackupFile:
     try:
         with zipfile.ZipFile(path) as zf:
             infos = zf.infolist()
-            if (len(infos) > MAX_MEMBERS or any(i.file_size > MAX_MEMBER_BYTES for i in infos)
+            if (len(infos) > MAX_MEMBERS or any(i.file_size > _member_limit(i.filename) for i in infos)
                     or sum(i.file_size for i in infos) > MAX_TOTAL_BYTES):
                 raise BackupError(422, TOO_LARGE)
             names = [i.filename for i in infos]
@@ -719,7 +748,9 @@ def _check_modules(manifest: dict) -> None:
 
 def _lines(zf: zipfile.ZipFile, name: str):
     with zf.open(name) as fh:
-        for line in fh:
+        while line := fh.readline(MAX_ROW_BYTES + 1):
+            if len(line) > MAX_ROW_BYTES and not line.endswith(b"\n"):
+                raise BackupError(422, TOO_LARGE)
             if line.strip():
                 yield line
 
@@ -1138,7 +1169,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             with zipfile.ZipFile(path) as zf:
                 stored = True
                 for f in m["attachments"]:
-                    content = await asyncio.to_thread(zf.read, f"attachments/{f['name']}")
+                    content = await asyncio.to_thread(_read_member, zf, f"attachments/{f['name']}")
                     try:
                         url_map[f["url"]] = await attachments.store_company_file(str(new_id), f["name"], content)
                     except Exception:

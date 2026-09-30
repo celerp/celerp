@@ -1144,6 +1144,55 @@ async def test_aggregate_uncompressed_size_limit_refused(real_engine, real_clien
     assert (await read(real_client, tok, data)).status_code == 200
 
 
+@pytest.mark.parametrize("member", ["manifest", "row", "attachment"])
+async def test_members_read_whole_have_their_own_limits(real_engine, real_client, tmp_path, monkeypatch, member):
+    """The manifest, a single table row and an attachment are each read whole, so each is held
+    to its own limit (an attachment to the ordinary attachment limit), well under the limit of
+    a streamed table."""
+    cb = _bk_cb()
+    from celerp.services import attachments
+    _bk_local(monkeypatch, tmp_path)
+    user, cid, tok = await _bk_setup(real_engine)
+    await _bk_point_at(real_engine, cid, _bk_local_file(tmp_path, cid, "photo.png", b"alpha-photo" * 100))
+    data = await download(real_client, tok)
+    parts = members(data)
+    rows = [line for n, body in parts.items() if n.startswith("tables/") for line in body.splitlines()]
+    owner_of, limit, size = {"manifest": (cb, "MAX_MANIFEST_BYTES", len(parts["manifest.json"])),
+                             "row": (cb, "MAX_ROW_BYTES", max(len(line) for line in rows)),
+                             "attachment": (attachments, "MAX_FILE_BYTES", len(parts["attachments/photo.png"]))}[member]
+    assert size < cb.MAX_MEMBER_BYTES
+    monkeypatch.setattr(owner_of, limit, size - 1)
+    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "too large")
+    monkeypatch.setattr(owner_of, limit, size)
+    assert (await read(real_client, tok, data)).status_code == 200
+
+
+async def test_oversized_row_refused_at_restore_insert(tmp_path, monkeypatch):
+    """Rows are read one at a time within the row limit even where the archive was not checked first."""
+    cb = _bk_cb()
+    path = tmp_path / "rows.zip"
+    path.write_bytes(rezip({"tables/t.jsonl": b"{}\n" + b"x" * 64 + b"\n"}))
+    monkeypatch.setattr(cb, "MAX_ROW_BYTES", 32)
+    import zipfile
+    with zipfile.ZipFile(path) as zf, pytest.raises(cb.BackupError) as err:
+        list(cb._lines(zf, "tables/t.jsonl"))
+    assert "too large" in err.value.detail
+
+
+async def test_record_too_large_to_restore_is_not_backed_up(real_engine, real_client, tmp_path, monkeypatch):
+    """A company holding a record larger than a restore accepts gets a clear refusal instead of
+    a backup it could not restore."""
+    cb = _bk_cb()
+    _bk_local(monkeypatch, tmp_path)
+    _, _, tok = await _bk_setup(real_engine)
+    rows = [line for n, body in members(await download(real_client, tok)).items()
+            if n.startswith("tables/") for line in body.splitlines()]
+    monkeypatch.setattr(cb, "MAX_ROW_BYTES", max(len(line) for line in rows) - 1)
+    r = await real_client.get("/company-backups/download", headers=auth(tok))
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == cb.TOO_LARGE_TO_BACK_UP
+
+
 @pytest.mark.parametrize("header", ["honest", "understated"])
 async def test_zip_bomb_refused_before_writes(real_engine, real_client, tmp_path, monkeypatch, header):
     """A small upload that inflates past the uncompressed limits is refused, whatever its headers claim."""
