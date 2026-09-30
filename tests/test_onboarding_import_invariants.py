@@ -1061,9 +1061,9 @@ class TestPreviewCommitInvariant:
             events.append(("build", len(a[2])))
             return await real_build(*a, **k)
 
-        async def commit_spy(session, company_id, user, role, settings, body):
+        async def commit_spy(session, company_id, user, role, settings, body, **kwargs):
             events.append(("write", len(body.records)))
-            return await real_commit(session, company_id, user, role, settings, body)
+            return await real_commit(session, company_id, user, role, settings, body, **kwargs)
 
         # Rows 1 and 1001 share a SKU no existing item carries, under update-existing.
         # Resolved once against the pre-commit state, both are creates. Were row 1001
@@ -1101,9 +1101,9 @@ class TestPreviewCommitInvariant:
             events.append(("build", len(a[2])))
             return await real_build(*a, **k)
 
-        async def commit_spy(session, company_id, user, role, settings, body):
+        async def commit_spy(session, company_id, user, role, settings, body, **kwargs):
             events.append(("write", len(body.records)))
-            return await real_commit(session, company_id, user, role, settings, body)
+            return await real_commit(session, company_id, user, role, settings, body, **kwargs)
 
         rows = [
             {"name": "Annexed one", "sell_by": "piece", "quantity": "1", "location_name": "Annex"},

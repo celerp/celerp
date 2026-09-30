@@ -2786,7 +2786,9 @@ async def import_items(
     preflight run here. Any row error raises ImportRejected and nothing is
     written. A clean import then creates any missing named locations under the
     company lock and fills their ids into the planned records, commits the
-    records in chunks of 500, and auto-merges newly discovered attribute
+    records in chunks of 500 into one Import History entry named by the
+    operation key (a retry, or a resume after an interrupted chunk, adds to that
+    same entry and returns its id), and auto-merges newly discovered attribute
     columns into the company's category schemas (best-effort, gated on
     manage_company_settings). Every item import transport ends here.
 
@@ -2833,7 +2835,9 @@ async def import_items(
             filename=filename,
             upsert=upsert,
         )
-        result = await commit_import_batch(session, company_id, user, role, settings, body)
+        result = await commit_import_batch(
+            session, company_id, user, role, settings, body, operation_key=batch_key,
+        )
         created += result.created
         skipped += result.skipped
         updated += result.updated
@@ -2926,6 +2930,8 @@ async def write_import_batch(
     role: str,
     settings: dict,
     body: BatchImportRequest,
+    *,
+    operation_key: str | None = None,
 ) -> tuple[ImportOutcome, str | None]:
     """Write item import records through one bounded, company-scoped writer.
 
@@ -2937,6 +2943,12 @@ async def write_import_batch(
     check. With ``body.upsert`` a record whose key created an item updates that
     item, and only when it names the same entity id. Semantic upserts arrive as
     ``item.patched`` records whose idempotency key is already target+content aware.
+
+    Created items are recorded in Import History in the same transaction as
+    their writes. With ``operation_key`` (one logical import written in several
+    chunks) every chunk adds to the company's active entry for that key, and the
+    entry's id is returned even when this chunk created nothing. Without it each
+    call that creates items records its own entry.
     """
     from celerp_inventory.models_import_batch import ImportBatch
     from celerp.models.ledger import LedgerEntry
@@ -3209,27 +3221,38 @@ async def write_import_batch(
             created_keys.append(idem_key)
             outcome.add(entity_id, "created")
 
-    batch_id: str | None = None
     created = len(created_entity_ids)
+    # The company lock taken above serialises the lookup and the insert, so two
+    # chunks of one operation never race to create its entry.
+    batch = None
+    if operation_key is not None and body.records:
+        batch = (await session.execute(
+            select(ImportBatch).where(
+                ImportBatch.company_id == company_id, ImportBatch.operation_key == operation_key,
+            )
+        )).scalar_one_or_none()
     if created > 0:
-        new_batch_id = uuid.uuid4()
-        batch = ImportBatch(
-            id=new_batch_id,
-            company_id=company_id,
-            entity_type="item",
-            filename=body.filename,
-            row_count=created,
-            entity_ids=created_entity_ids,
-            idempotency_keys=created_keys,
-            status="active",
-        )
-        session.add(batch)
-        batch_id = str(new_batch_id)
+        if batch is None:
+            batch = ImportBatch(
+                id=uuid.uuid4(),
+                company_id=company_id,
+                entity_type="item",
+                filename=body.filename,
+                row_count=0,
+                entity_ids=[],
+                idempotency_keys=[],
+                status="active",
+                operation_key=operation_key,
+            )
+            session.add(batch)
+        batch.row_count += created
+        batch.entity_ids = [*batch.entity_ids, *created_entity_ids]
+        batch.idempotency_keys = [*batch.idempotency_keys, *created_keys]
 
         # The first real import clears the demo items the user never edited or used.
         await delete_untouched_demo_items(session, company_id)
 
-    return outcome, batch_id
+    return outcome, (str(batch.id) if batch is not None else None)
 
 
 async def commit_import_batch(
@@ -3239,8 +3262,12 @@ async def commit_import_batch(
     role: str,
     settings: dict,
     body: BatchImportRequest,
+    *,
+    operation_key: str | None = None,
 ) -> BatchImportResult:
     """Write an item import batch and commit it; the route and agent transports call this."""
-    outcome, batch_id = await write_import_batch(session, company_id, user, role, settings, body)
+    outcome, batch_id = await write_import_batch(
+        session, company_id, user, role, settings, body, operation_key=operation_key,
+    )
     await session.commit()
     return BatchImportResult(**outcome.route_counts(cap_rejections=False), batch_id=batch_id)

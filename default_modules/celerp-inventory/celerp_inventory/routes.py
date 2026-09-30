@@ -4447,6 +4447,8 @@ async def undo_import_batch(
             )
 
     batch.status = "undone"
+    # Release the operation so the same source can be imported again as a new entry.
+    batch.operation_key = None
     batch.undone_at = datetime.now(_tz.utc)
     batch.undone_by = user.id
     await session.commit()
