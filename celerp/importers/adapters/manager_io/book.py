@@ -36,6 +36,9 @@ TAX = GUIDS["BalanceSheetTaxPayableAccount"]
 INVENTORY = GUIDS["BalanceSheetInventoryOnHandAccount"]
 RETAINED = GUIDS["BalanceSheetRetainedEarningsAccount"]
 FX_GAIN = GUIDS["ProfitAndLossStatementAccountCurrencyGainsLosses"]
+INVENTORY_SALES = GUIDS["ProfitAndLossStatementAccountInventorySales"]
+INVENTORY_PURCHASES = GUIDS["ProfitAndLossStatementAccountInventoryPurchases"]
+DEFAULT_LOCATION = GUIDS["DefaultInventoryLocation"]
 
 # Built-in account: (account type, control, name used when the file has no object for it).
 BUILTINS: dict[str, tuple[str, str | None, str]] = {
@@ -46,6 +49,12 @@ BUILTINS: dict[str, tuple[str, str | None, str]] = {
     RETAINED: ("equity", "retained_earnings", "Retained earnings"),
     FX_GAIN: ("expense", None, "Foreign exchange gains and losses"),
 }
+# Built-in accounts a business has once it sells inventory items: sales income, and the
+# cost of the items sold.
+INVENTORY_BUILTINS: dict[str, tuple[str, str | None, str]] = {
+    INVENTORY_SALES: ("revenue", None, "Inventory - sales"),
+    INVENTORY_PURCHASES: ("expense", None, "Inventory - cost"),
+}
 ROOT_TYPES = {ASSETS: "asset", LIABILITIES: "liability", EQUITY: "equity", INCOME: "revenue", EXPENSES: "expense"}
 
 DOC_TYPES = {
@@ -55,6 +64,17 @@ DOC_TYPES = {
 NOTE_OF = {"CreditNote": "SalesInvoice", "DebitNote": "PurchaseInvoice"}
 # Documents Celerp has no document type for: each posts as a journal on the document it notes.
 JOURNAL_DOCUMENTS = frozenset({"DebitNote"})
+# The document each physical stock record moves goods for.
+MOVEMENT_OF = {"DeliveryNote": "SalesInvoice", "GoodsReceipt": "PurchaseInvoice"}
+INBOUND = frozenset({"GoodsReceipt", "PurchaseInvoice"})
+LOCATION_NOTE = "Stock held at a location other than the default one; Celerp keeps each item at one location."
+# Inventory records Celerp cannot carry yet: each blocks under its own reason.
+INVENTORY_BLOCKERS = {
+    "CustomInventoryLocation": ("multiple locations", "A second inventory location; Celerp keeps each item at one "
+                                "location."),
+    "InventoryTransfer": ("inter-location transfer", "Stock moved between locations; Celerp keeps each item at one "
+                          "location."),
+}
 
 
 class Blocked(Exception):
@@ -150,6 +170,7 @@ class Line:
     tax: Decimal = Decimal(0)
     contact: str | None = None                 # party line of a settlement
     document: str | None = None                # settled document of a party line
+    cost: Decimal = Decimal(0)                 # cost of sales of an inventory item sold, base currency
 
 
 @dataclass
@@ -165,6 +186,8 @@ class Document:
     description: str | None
     lines: list[Line]
     applies_to: str | None = None              # the invoice a note settles
+    moves_stock: bool = False                  # an invoice that moves its own stock, with no physical record
+    location: str | None = None                # where such an invoice moves its stock
 
     @property
     def doc_type(self) -> str:
@@ -177,6 +200,35 @@ class Document:
     @property
     def tax_total(self) -> Decimal:
         return sum((ln.tax for ln in self.lines), Decimal(0))
+
+
+def line_account(doc: Document, line: Line) -> str | None:
+    """The account a document line posts its net to: an inventory item bought goes to
+    inventory on hand, one sold to inventory sales."""
+    if not line.item:
+        return line.account
+    return INVENTORY if doc.source_type == "PurchaseInvoice" else INVENTORY_SALES
+
+
+@dataclass
+class MoveLine:
+    item: str
+    quantity: Decimal                          # signed: positive into stock, negative out
+    line: int = 0                              # the document line it moves goods for
+    value: Decimal = Decimal(0)                # signed base value, set when stock is valued
+
+
+@dataclass
+class Movement:
+    """Goods physically moved into or out of stock: a goods receipt, a delivery note, or an
+    invoice that moves its own stock."""
+    key: str
+    source_type: str
+    date: date
+    ref: str | None
+    document: str | None                       # the invoice or bill the goods belong to
+    location: str | None
+    lines: list[MoveLine]
 
 
 @dataclass
@@ -269,6 +321,9 @@ class Book:
     settlements: dict[str, Settlement] = field(default_factory=dict)
     transfers: dict[str, Transfer] = field(default_factory=dict)
     journals: dict[str, Journal] = field(default_factory=dict)
+    movements: dict[str, Movement] = field(default_factory=dict)
+    unit_costs: dict[str, list[tuple[date, Decimal]]] = field(default_factory=dict)   # item -> dated costs
+    moves: list[Movement] = field(default_factory=list)          # valued movements, in the order stock moved
     attachments: dict[str, AttachmentRef] = field(default_factory=dict)
     names: dict[str, str] = field(default_factory=dict)          # object key -> Manager type name
     verdicts: dict[str, Verdict] = field(default_factory=dict)
@@ -391,7 +446,7 @@ def _document(source_type: str, key: str, m: Message) -> Document:
         _line_discounts(m, raw, lines, 31, 32)
         issue = _require_date(m, 1)
         return Document(key, source_type, issue, _due(m, issue, 54, 22, 6), m.str(2), _ref(m.guid(3)), None,
-                        m.bool(8), m.str(12), lines)
+                        m.bool(8), m.str(12), lines, moves_stock=m.bool(69), location=_ref(m.guid(30)))
     if source_type == "PurchaseInvoice":
         _unsupported(m, (24, 65, 68), "withholding tax, freight or landed costs")
         raw = m.messages(23)
@@ -399,7 +454,7 @@ def _document(source_type: str, key: str, m: Message) -> Document:
         _line_discounts(m, raw, lines, 14, 15)
         issue = _require_date(m, 1)
         return Document(key, source_type, issue, _due(m, issue, 31, 19, 5), m.str(2), _ref(m.guid(3)), None,
-                        m.bool(7), m.str(9), lines)
+                        m.bool(7), m.str(9), lines, moves_stock=m.bool(64), location=_ref(m.guid(13)))
     if source_type == "CreditNote":
         _unsupported(m, (13,), "withholding tax")
         raw = m.messages(22)
@@ -412,6 +467,22 @@ def _document(source_type: str, key: str, m: Message) -> Document:
     _line_discounts(m, raw, lines, 10, 11)
     return Document(key, source_type, _require_date(m, 1), None, m.str(2), _ref(m.guid(3)), None,
                     m.bool(5), m.str(7), lines, _ref(m.guid(6)))
+
+
+def _movement(source_type: str, key: str, m: Message) -> Movement:
+    """A goods receipt or delivery note: fields are laid out alike but for the document link."""
+    sign = 1 if source_type in INBOUND else -1
+    lines = []
+    for raw in m.messages(15):
+        item = _ref(raw.guid(1))
+        if item is None:
+            raise Blocked("unknown reference", "A line names no inventory item.")
+        quantity = raw.decimal(3) if raw.values(3) else Decimal(1)
+        if quantity <= 0:
+            raise Blocked("unsupported feature", "A zero or negative quantity.")
+        lines.append(MoveLine(item, sign * quantity))
+    document = _ref(m.guid(19 if source_type == "DeliveryNote" else 17))
+    return Movement(key, source_type, _require_date(m, 3), m.str(1), document, _ref(m.guid(11)), lines)
 
 
 def _settlement(source_type: str, key: str, m: Message) -> Settlement:
@@ -511,9 +582,9 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
         _unsupported(m, (12,), "a custom control account")
         book.accounts[key] = Account(key, name, m.str(1) or "", m.str(13), None, "asset", "bank",
                                      _ref(m.guid(3)), m.bool(10))
-    elif key in BUILTINS:
-        account_type, control, _ = BUILTINS[key]
-        book.accounts[key] = Account(key, name, m.str(1) or BUILTINS[key][2], None, None, account_type, control)
+    elif key in BUILTINS or key in INVENTORY_BUILTINS:
+        account_type, control, label = BUILTINS.get(key) or INVENTORY_BUILTINS[key]
+        book.accounts[key] = Account(key, name, m.str(1) or label, None, None, account_type, control)
     elif name == "TaxCode":
         if m.int(5, 0) == 1 or m.int(6, 0) == 1 or m.bool(11):
             raise Blocked("unsupported feature", "A total-rate, multiple-rate or reverse-charge tax code.")
@@ -533,6 +604,13 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
                                m.decimal(3) if m.bool(32) else None, m.decimal(2) if m.bool(31) else None, m.bool(10))
     elif name in DOC_TYPES:
         book.documents[key] = _document(name, key, m)
+    elif name in MOVEMENT_OF:
+        book.movements[key] = _movement(name, key, m)
+    elif name == "InventoryUnitCost":
+        item, cost = _ref(m.guid(2)), m.decimal(3)
+        if item is None or cost is None:
+            raise Blocked("unknown reference", "The unit cost names no inventory item or cost.")
+        book.unit_costs.setdefault(item, []).append((_require_date(m, 1), cost))
     elif name in ("Receipt", "Payment"):
         book.settlements[key] = _settlement(name, key, m)
     elif name == "InterAccountTransfer":
@@ -599,7 +677,7 @@ def _resolve_document(book: Book, doc: Document) -> None:
     for line in doc.lines:
         if line.item:
             _check(line.item in book.items, "an inventory item")
-            if doc.source_type != "PurchaseInvoice":
+            if doc.source_type not in ("PurchaseInvoice", "SalesInvoice"):
                 raise Blocked("inventory item line", "Inventory items on this record type are not carried yet.")
         else:
             _check(line.account in book.accounts, "an account")
@@ -610,7 +688,20 @@ def _resolve_document(book: Book, doc: Document) -> None:
     if doc.applies_to:
         target = book.documents.get(doc.applies_to)
         _check(target is not None and target.source_type == NOTE_OF[doc.source_type], "the invoice it settles")
+    if doc.moves_stock and doc.location not in (None, DEFAULT_LOCATION):
+        raise Blocked("multiple locations", LOCATION_NOTE)
     _price_lines(book, doc.currency, doc.lines, doc.include_tax)
+    if doc.source_type == "SalesInvoice":
+        code = book.currency_code(doc.currency)
+        for line in doc.lines:
+            if line.item:
+                line.cost = round_money(line.quantity * _unit_cost(book, line.item, doc.date), code)
+
+
+def _unit_cost(book: Book, item: str, day: date) -> Decimal:
+    """The item's latest unit cost on or before the day, or zero when none is set."""
+    costs = [cost for on, cost in sorted(book.unit_costs.get(item, [])) if on <= day]
+    return costs[-1] if costs else Decimal(0)
 
 
 def _resolve_settlement(book: Book, s: Settlement) -> None:
@@ -702,6 +793,12 @@ def _resolve(book: Book) -> None:
             _foreign_check(book, key)
         except Blocked as blocked:
             book.block("InterAccountTransfer", key, blocked.reason, blocked.note)
+    for key, movement in book.movements.items():
+        try:
+            _link(book, movement)
+        except Blocked as blocked:
+            book.block(movement.source_type, key, blocked.reason, blocked.note)
+    _value_stock(book)
     # A settlement that pays a blocked document, or a note on a blocked invoice, cannot stand alone.
     for key, s in book.settlements.items():
         if not book.is_blocked(key) and any(ln.document and book.is_blocked(ln.document) for ln in s.party_lines):
@@ -712,6 +809,81 @@ def _resolve(book: Book) -> None:
     if not book.base_code or len(book.base_code) != 3:
         key = book.base_key or GUIDS["BaseCurrency"]
         book.block("BaseCurrency", key, "missing", "The business has no base currency code.")
+
+
+def _link(book: Book, movement: Movement) -> None:
+    """Check a goods receipt or delivery note against the document it moves goods for, and
+    bind each item it moves to that document's line. Lines of one item are merged."""
+    if movement.document is None:
+        raise Blocked("not linked", "Carried only as linked to the invoice or bill it moves goods for.")
+    doc = book.documents.get(movement.document)
+    _check(doc is not None and doc.source_type == MOVEMENT_OF[movement.source_type],
+           "the invoice or bill it moves goods for")
+    if movement.location not in (None, DEFAULT_LOCATION):
+        raise Blocked("multiple locations", LOCATION_NOTE)
+    if book.is_blocked(doc.key):
+        raise Blocked("blocked document", "Moves goods for a document that cannot be migrated.")
+    if doc.moves_stock:
+        raise Blocked("unsupported feature", "Its invoice or bill already moves its own stock.")
+    merged: dict[str, Decimal] = {}
+    for line in movement.lines:
+        _check(line.item in book.items, "an inventory item")
+        merged[line.item] = merged.get(line.item, Decimal(0)) + line.quantity
+    lines = []
+    for item, quantity in merged.items():
+        matches = [index for index, line in enumerate(doc.lines) if line.item == item]
+        if not matches:
+            raise Blocked("not on the document", "Moves an item its invoice or bill does not list.")
+        if len(matches) > 1:
+            raise Blocked("unsupported feature", "Moves an item listed on more than one line of its invoice or bill.")
+        lines.append(MoveLine(item, quantity, matches[0]))
+    movement.lines = lines
+
+
+def _own_movement(doc: Document) -> Movement:
+    """The stock an invoice or bill flagged to move its own stock moves, line by line."""
+    sign = 1 if doc.source_type in INBOUND else -1
+    return Movement(doc.key, doc.source_type, doc.date, doc.ref, doc.key, doc.location,
+                    [MoveLine(line.item, sign * line.quantity, index) for index, line in enumerate(doc.lines)
+                     if line.item])
+
+
+def _value_stock(book: Book) -> None:
+    """Value every movement in the order stock moved, receipts first on a day.
+
+    Goods received carry their share of the bill line's net, the last receipt of a line
+    taking what is left of it; goods delivered leave at the moving average cost of what is
+    held. A movement that takes more than its document lists, or more stock than is held,
+    is blocked and moves nothing."""
+    code = book.base_code or ""
+    movements = [m for k, m in book.movements.items() if not book.is_blocked(k)]
+    movements += [_own_movement(d) for k, d in book.documents.items()
+                  if d.moves_stock and not book.is_blocked(k) and any(line.item for line in d.lines)]
+    held: dict[str, tuple[Decimal, Decimal]] = {}
+    taken: dict[tuple[str, int], tuple[Decimal, Decimal]] = {}
+    for movement in sorted(movements, key=lambda m: (m.date, m.source_type not in INBOUND, m.key)):
+        doc = book.documents[movement.document]
+        now_held, now_taken = dict(held), dict(taken)
+        try:
+            for line in movement.lines:
+                source = doc.lines[line.line]
+                qty, value = now_taken.get((doc.key, line.line), (Decimal(0), Decimal(0)))
+                if qty + abs(line.quantity) > source.quantity:
+                    raise Blocked("more than invoiced", "Moves more goods than its invoice or bill lists.")
+                on_hand, worth = now_held.get(line.item, (Decimal(0), Decimal(0)))
+                if line.quantity > 0:
+                    line.value = round_money(source.net * (qty + line.quantity) / source.quantity, code) - value
+                else:
+                    if on_hand + line.quantity < 0:
+                        raise Blocked("negative stock", "Moves more stock out than is on hand at the time.")
+                    line.value = -round_money(worth * -line.quantity / on_hand, code)
+                now_taken[(doc.key, line.line)] = (qty + abs(line.quantity), value + abs(line.value))
+                now_held[line.item] = (on_hand + line.quantity, worth + line.value)
+        except Blocked as blocked:
+            book.block(book.names[movement.key], movement.key, blocked.reason, blocked.note)
+            continue
+        held, taken = now_held, now_taken
+        book.moves.append(movement)
 
 
 def _receipt_verdicts(book: Book) -> None:
@@ -784,6 +956,9 @@ def read_book(reader: ManagerReader) -> Book:
             continue
         book.names[key] = name
         book.accept(name, key)
+        if name in INVENTORY_BLOCKERS:
+            book.block(name, key, *INVENTORY_BLOCKERS[name])
+            continue
         if CONTENT_TYPES[ctype] not in (CoverageClass.MAPPED, CoverageClass.MAPPED_WITH_LOSS):
             continue
         try:
@@ -796,6 +971,9 @@ def read_book(reader: ManagerReader) -> Book:
             book.block(name, key, blocked.reason, blocked.note)
     for key, (account_type, control, label) in BUILTINS.items():
         book.accounts.setdefault(key, Account(key, TYPE_NAMES[key], label, None, None, account_type, control))
+    if any(doc.source_type == "SalesInvoice" and any(line.item for line in doc.lines) for doc in book.documents.values()):
+        for key, (account_type, control, label) in INVENTORY_BUILTINS.items():
+            book.accounts.setdefault(key, Account(key, TYPE_NAMES[key], label, None, None, account_type, control))
     _resolve(book)
     _receipt_verdicts(book)
     _document_verdicts(book)

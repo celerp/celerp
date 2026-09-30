@@ -32,6 +32,9 @@ from celerp.importers.schema import (
 
 MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 MAPPED = (CoverageClass.MAPPED, CoverageClass.MAPPED_WITH_LOSS)
+# Records carried only through others: the default location holds all stock, and unit
+# costs price the cost of sales on each invoice.
+NOT_CARRIED = frozenset({"DefaultInventoryLocation", "InventoryUnitCost"})
 
 
 def _single(artifacts: ArtifactSet) -> Artifact:
@@ -40,10 +43,14 @@ def _single(artifacts: ArtifactSet) -> Artifact:
     return artifacts[0]
 
 
-def _representations(book: Book, key: str, postings: list[Posting]) -> set[str]:
-    """Bundle source ids a mapped source record must reach, given the postings it imports."""
-    if key in book.groups:
-        return set()                                    # chart grouping only; accounts carry the chart
+def _representations(book: Book, key: str, postings: list[Posting], moved: dict[str, int]) -> set[str]:
+    """Bundle source ids a mapped source record must reach, given the postings it imports
+    and the number of stock lines it moves."""
+    stock = {f"{key}:stock:{n}" for n in range(1, moved.get(key, 0) + 1)}
+    if key in book.groups or book.names.get(key) in NOT_CARRIED:
+        return set()                                    # chart grouping, or folded into other records
+    if key in book.movements:
+        return stock
     if not any(key in group for group in (book.documents, book.settlements, book.transfers, book.journals)):
         return {key} if key != book.company_key or book.company_name else set()
     parts = {p.part for p in postings}
@@ -52,8 +59,7 @@ def _representations(book: Book, key: str, postings: list[Posting]) -> set[str]:
         ids.add(key)
     if any(p.amount for p in postings if p.part == "fallback"):
         ids.add(f"{key}:journal")
-    stock_lines = sum(1 for p in postings if p.part == "document" and p.item)
-    return ids | {f"{key}:stock:{n}" for n in range(1, stock_lines + 1)}
+    return ids | stock
 
 
 def _refuse_gaps(book: Book, ledger: Ledger, bundle: CIFImportBundle) -> None:
@@ -63,12 +69,13 @@ def _refuse_gaps(book: Book, ledger: Ledger, bundle: CIFImportBundle) -> None:
     imported = ledger.imported_postings()
     for p in {*imported, *(p for p in ledger.postings if ledger.cutover is None or p.date > ledger.cutover)}:
         by_record[p.record].append(p)
+    moved = {m.key: len(m.lines) for m in ledger.moves}
     present = {r.source_external_id for r in bundle.source_records()}
     missing: Counter = Counter()
     for key, verdict in book.verdicts.items():
         if verdict.coverage_class not in MAPPED or verdict.source_type == attachments.REJECTED:
             continue
-        if not _representations(book, key, by_record.get(key, [])) <= present:
+        if not _representations(book, key, by_record.get(key, []), moved) <= present:
             missing[verdict.source_type] += 1
     if missing:
         listed = ", ".join(f"{source_type} ({count})" for source_type, count in sorted(missing.items()))

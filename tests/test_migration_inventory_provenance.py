@@ -12,6 +12,7 @@ INV-E delivered 2 at 4.75, INV-D delivered 4 at 4.75 and paid 50.00."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from decimal import Decimal as D
 from pathlib import Path
@@ -29,6 +30,8 @@ OFF_HAND = {"sold", "memo_out", "archived", "merged", "disposed"}
 CENT = D("0.01")
 # Account codes Celerp's own document actions post to, beside the migrated chart.
 INVENTORY_CODES, AR_CODES, AP_CODES = {"1130-P"}, {"1120"}, {"2110"}
+# The entry that puts a document on the receivable or payable.
+RECOGNITION = re.compile(r"^je:auto:(doc:[^:]+):(?:fin|bill)(?::\d+)?$")
 
 
 @dataclass
@@ -96,20 +99,30 @@ async def _position(books: Books) -> dict:
     ar = AR_CODES | {account_of[ref("@BalanceSheetAccountsReceivableAccount")]}
     ap = AP_CODES | {account_of[ref("@BalanceSheetAccountsPayableAccount")]}
     balances = {"inventory": D(0), "ar": D(0), "ap": D(0)}
-    for je in (await _projections(books.engine, books.run, "journal_entry")).values():
+    recognized: set[str] = set()
+    for je_id, je in (await _projections(books.engine, books.run, "journal_entry")).items():
         if je.get("status") == "void":
             continue
         lines = je.get("entries") or []
         assert sum(_d(l.get("debit")) for l in lines) == sum(_d(l.get("credit")) for l in lines), je
+        recognition = RECOGNITION.match(je_id)
+        if recognition:
+            recognized.add(recognition.group(1))
         for line in lines:
             net = _d(line.get("debit")) - _d(line.get("credit"))
+            # A supplier return takes the goods off the payable but leaves the bill's own
+            # balance as it was: the supplier now owes that credit back.
+            if ":rtn:" in je_id and line.get("account") in ap:
+                net = D(0)
             for name, codes in (("inventory", inventory), ("ar", ar), ("ap", ap)):
                 if line.get("account") in codes:
                     balances[name] += net
 
+    # Only a document whose recognition entry posted is on the receivable or payable: a
+    # credit note raised in Celerp posts no entry of its own until it is applied or refunded.
     open_docs = {"ar": D(0), "ap": D(0)}
-    for doc in (await _projections(books.engine, books.run, "doc")).values():
-        if doc.get("status") in ("draft", "void"):
+    for doc_id, doc in (await _projections(books.engine, books.run, "doc")).items():
+        if doc.get("status") in ("draft", "void") or doc_id not in recognized:
             continue
         outstanding = _d(doc.get("amount_outstanding"))
         if doc.get("doc_type") == "invoice":

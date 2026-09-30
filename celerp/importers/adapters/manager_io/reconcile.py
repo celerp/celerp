@@ -52,7 +52,7 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
     for key, contact in sorted(book.contacts.items()):
         add(M.AR_BY_CUSTOMER if contact.source_type == "Customer" else M.AP_BY_SUPPLIER, key, base, party[key])
 
-    held = stock(ledger.postings)
+    held = stock(ledger.book.moves)
     for key in sorted(book.items):
         qty, value = held.get(key, (ZERO, ZERO))
         add(M.INVENTORY_QUANTITY, key, None, qty)

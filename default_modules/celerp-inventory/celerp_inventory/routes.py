@@ -169,6 +169,12 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
 })
 
 
+def lot_fields(parent_state: dict) -> dict:
+    """The fields a new lot of an item inherits from it: everything but identity, quantity,
+    cost, status, timestamps and lineage, which each new lot sets for itself."""
+    return {k: v for k, v in parent_state.items() if k not in _CHILD_RESET_FIELDS}
+
+
 def _recipe_standard_unit_cost(state: dict) -> float | None:
     """The rolled standard unit cost of a recipe-backed (manufactured) item, else None.
 
@@ -2955,9 +2961,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         child_eids.append(child_eid)
         child_qty_list.append(child.quantity)
         # Copy-all-then-override: inherit every parent field; reset only identity/qty/cost/status.
-        child_data: dict = {
-            k: v for k, v in parent.state.items() if k not in _CHILD_RESET_FIELDS
-        }
+        child_data: dict = lot_fields(parent.state)
         # Pieces are never inherited from the mother: an explicit per-child count
         # (already merged into child.attributes) or, for a piece-unit item, the
         # child's own quantity. Otherwise the child carries no pieces.
@@ -3323,7 +3327,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     child_attrs = dict(parent_attrs)
     if ch_pieces is not None:
         child_attrs["pieces"] = ch_pieces
-    child_data = {k: v for k, v in parent.state.items() if k not in _CHILD_RESET_FIELDS}
+    child_data = lot_fields(parent.state)
     from celerp_inventory.services import (
         normalize_sku as _normalize_family_sku,
         resolve_catalog_anchor_for_item as _resolve_family_anchor,

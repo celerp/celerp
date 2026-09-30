@@ -13,6 +13,11 @@ are. Of the pre-cutover records it imports the documents still open at the
 cutover date or settled by a later record, the notes applied to them and the
 settlement portions allocated to them; one opening journal and an opening stock
 position per item carry the rest of the pre-cutover history.
+
+Stock moves on the physical record: a goods receipt or delivery note on its own date
+and quantity, or an invoice or bill flagged to move its own stock. An invoice or bill
+with neither moves no stock. An inventory item sold posts its cost of sales at the
+unit cost set for it on the invoice date.
 """
 
 from __future__ import annotations
@@ -23,7 +28,9 @@ from datetime import date
 from decimal import Decimal
 
 from celerp.importers.adapters.base import MigrationDecisions, ScanError
-from celerp.importers.adapters.manager_io.book import AP, AR, INVENTORY, Book, Document, Settlement
+from celerp.importers.adapters.manager_io.book import (
+    AP, AR, INVENTORY, INVENTORY_PURCHASES, Book, Document, Movement, Settlement, line_account,
+)
 from celerp.importers.schema import CIFMode
 
 ZERO = Decimal(0)
@@ -40,8 +47,6 @@ class Posting:
     account: str
     amount: Decimal                            # debit positive
     contact: str | None = None
-    item: str | None = None
-    quantity: Decimal = ZERO
     description: str | None = None
     document: str | None = None                # the document a settlement posting settles
 
@@ -64,6 +69,7 @@ class Ledger:
     settlement_amounts: dict[str, Decimal] = field(default_factory=dict)             # imported
     opening: list[Posting] = field(default_factory=list)
     opening_stock: dict[str, tuple[Decimal, Decimal]] = field(default_factory=dict)
+    moves: list[Movement] = field(default_factory=list)           # imported stock movements
 
     @property
     def opening_key(self) -> str:
@@ -89,10 +95,11 @@ def _document_postings(book: Book, doc: Document) -> list[Posting]:
     party = AR if doc.source_type in SALES_TYPES else AP
     out: list[Posting] = []
     for line in doc.lines:
-        account = INVENTORY if line.item else line.account
-        qty = -party_sign * line.quantity if line.item else ZERO
-        out.append(Posting(doc.key, "document", doc.date, account, -party_sign * line.net,
-                           item=line.item, quantity=qty, description=line.description))
+        out.append(Posting(doc.key, "document", doc.date, line_account(doc, line), -party_sign * line.net,
+                           description=line.description))
+        if line.cost:
+            out.append(Posting(doc.key, "document", doc.date, INVENTORY_PURCHASES, line.cost))
+            out.append(Posting(doc.key, "document", doc.date, INVENTORY, -line.cost))
         if line.tax:
             tax_account = book.tax_codes[line.tax_code].account
             out.append(Posting(doc.key, "document", doc.date, tax_account, -party_sign * line.tax))
@@ -168,22 +175,21 @@ def _states(book: Book, keys: set[str]) -> dict[str, DocumentState]:
     return states
 
 
-def stock(postings: list[Posting]) -> dict[str, tuple[Decimal, Decimal]]:
-    """Quantity and base value held per item after the given postings."""
+def stock(moves: list[Movement]) -> dict[str, tuple[Decimal, Decimal]]:
+    """Quantity and base value held per item after the given stock movements."""
     held: dict[str, tuple[Decimal, Decimal]] = {}
-    for p in postings:
-        if p.item:
-            qty, value = held.get(p.item, (ZERO, ZERO))
-            held[p.item] = (qty + p.quantity, value + p.amount)
+    for movement in moves:
+        for line in movement.lines:
+            qty, value = held.get(line.item, (ZERO, ZERO))
+            held[line.item] = (qty + line.quantity, value + line.value)
     return held
 
 
 def holding_stock(book: Book) -> set[str]:
-    """Items still holding quantity or value after every readable record. An inactive
-    item among them is imported as available: archiving it would hide stock that the
-    inventory account still carries from the inventory valuation."""
-    keys = {k for _, k in book.dated_records() if not book.is_blocked(k)}
-    return {item for item, (qty, value) in stock(_postings(book, keys)).items() if qty or value}
+    """Items still holding quantity or value after every stock movement. An inactive item
+    among them is imported as available: archiving it would hide its stock from the
+    inventory valuation."""
+    return {item for item, (qty, value) in stock(book.moves).items() if qty or value}
 
 
 def _check_cutover(book: Book, cutover: date | None) -> date:
@@ -246,9 +252,9 @@ def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
         ledger.opening = [Posting(ledger.opening_key, "opening", cutover, account, amount, contact=contact)
                           for (account, contact), amount in sorted(balance.items(), key=lambda kv: (kv[0][0], kv[0][1] or ""))
                           if amount]
-        held, moved = stock(ledger.postings), stock(imported_postings)
-        for item, (qty, value) in sorted(held.items()):
-            m_qty, m_value = moved.get(item, (ZERO, ZERO))
-            if qty - m_qty or value - m_value:
-                ledger.opening_stock[item] = (qty - m_qty, value - m_value)
+        before = stock([m for m in book.moves if m.date <= cutover])
+        ledger.opening_stock = {item: held for item, held in sorted(before.items()) if held[0] or held[1]}
+        ledger.moves = [m for m in book.moves if m.date > cutover]
+    else:
+        ledger.moves = list(book.moves)
     return ledger

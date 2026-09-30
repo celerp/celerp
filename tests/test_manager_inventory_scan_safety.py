@@ -19,7 +19,7 @@ LOCATIONS = "CustomInventoryLocation (multiple locations)"
 LOCATED = "PurchaseInvoice (multiple locations)"
 TRANSFERS = "InventoryTransfer (inter-location transfer)"
 NEGATIVE = "DeliveryNote (negative stock)"
-MODES = (("full_history", None), ("cutover", "2026-01-31"))
+MODES = (("full_history", None), ("cutover", "2026-01-05"))          # the first record's date
 
 
 async def _scan(client, tmp_path, **kinds) -> tuple[str, dict]:
