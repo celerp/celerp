@@ -23,6 +23,7 @@ import pytest
 from test_helpers import grant_permission, perm_setup
 
 PATH = "/accounting/accounts/import/batch"
+PREVIEW_PATH = "/accounting/accounts/import/preview"
 
 
 async def _reg(client) -> dict:
@@ -117,6 +118,21 @@ async def test_chart_import_existing_code_is_skipped_reported_and_unchanged(clie
 
 
 @pytest.mark.asyncio
+async def test_chart_import_existing_code_is_listed_once_whatever_the_row_says(client):
+    h = await _reg(client)
+    before = (await _chart(client, h))["1110"]
+    r = await _import(client, h, [
+        _row(" 1110 ", "Renamed Cash"),
+        _row("1110", "Bad Type", "not-a-type"),
+        _row("1110", ""),
+    ])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["created"], body["skipped"], body["errors"], body["skipped_codes"]) == (0, 1, [], ["1110"])
+    assert (await _chart(client, h))["1110"] == before
+
+
+@pytest.mark.asyncio
 async def test_chart_import_rejects_upsert_mode(client):
     h = await _reg(client)
     before = (await _chart(client, h))["1110"]
@@ -133,6 +149,16 @@ async def test_chart_import_rejects_replace_mode(client, extra):
     h = await _reg(client)
     r = await _import(client, h, [_row("8300", "New")], **extra)
     assert r.status_code == 422, r.text
+    assert "8300" not in await _chart(client, h)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["upsert=true", "mode=replace"])
+async def test_chart_import_rejects_options_in_the_query_string(client, query):
+    h = await _reg(client)
+    r = await client.post(f"{PATH}?{query}", headers=h, json={"records": [_row("8300", "New")]})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == "The chart import takes no query parameters."
     assert "8300" not in await _chart(client, h)
 
 
@@ -166,6 +192,9 @@ async def test_chart_import_repeat_same_file_creates_nothing(client):
     (_row("8500", "No Type", ""), "Account type must be one of"),
     ({"code": 8500, "name": "Numeric", "account_type": "asset"}, "code must be text"),
     ("not a row", "must be an object"),
+    (_row("8500", "Bad\x00Name"), "Account name cannot contain a NUL character."),
+    (_row("85\x0000"), "Account code cannot contain a NUL character."),
+    (_row("8500", parent_code="85\x0001"), "Parent code cannot contain a NUL character."),
 ])
 async def test_chart_import_validates_code_name_type(client, row, message):
     h = await _reg(client)
@@ -322,6 +351,24 @@ async def test_chart_import_cycle_through_existing_account_is_invalid(client):
 
 
 @pytest.mark.asyncio
+async def test_chart_import_row_under_a_loop_already_in_the_chart_is_invalid(client):
+    h = await _reg(client)
+    # An account already in the chart that is its own parent.
+    r = await client.post("/accounting/accounts", headers=h, json={
+        "code": "8955", "name": "Own Parent", "account_type": "asset", "parent_code": "8955"})
+    assert r.status_code == 200, r.text
+    r = await _import(client, h, [
+        _row("8956", "Under The Loop", parent_code="8955"),
+        _row("8957", "Under That", parent_code="8956"),
+    ])
+    body = r.json()
+    assert body["created"] == 0
+    assert any("8956" in e and "loop (8956 > 8955 > 8955)" in e for e in body["errors"]), body["errors"]
+    chart = await _chart(client, h)
+    assert "8956" not in chart and "8957" not in chart
+
+
+@pytest.mark.asyncio
 async def test_chart_import_child_of_invalid_row_is_invalid(client):
     h = await _reg(client)
     r = await _import(client, h, [
@@ -372,7 +419,16 @@ async def test_chart_import_parses_is_active_explicitly(client):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("value", ["maybe", "inactive", "2", 1, [True]])
+async def test_chart_import_is_active_takes_the_numbers_1_and_0(client):
+    h = await _reg(client)
+    r = await _import(client, h, [_row("8680", "One", is_active=1), _row("8681", "Zero", is_active=0)])
+    assert (r.json()["created"], r.json()["errors"]) == (2, [])
+    chart = await _chart(client, h)
+    assert chart["8680"]["is_active"] is True and chart["8681"]["is_active"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["maybe", "inactive", "2", 2, 1.5, [True]])
 async def test_chart_import_rejects_unrecognized_is_active(client, value):
     h = await _reg(client)
     r = await _import(client, h, [_row("8690", "Odd", is_active=value)])
@@ -380,3 +436,37 @@ async def test_chart_import_rejects_unrecognized_is_active(client, value):
     assert body["created"] == 0
     assert len(body["errors"]) == 1 and "is_active" in body["errors"][0]
     assert "8690" not in await _chart(client, h)
+
+
+# ---------------------------------------------------------------------------
+# Preview
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chart_import_preview_reports_what_the_import_would_do_and_writes_nothing(client):
+    h = await _reg(client)
+    rows = [
+        _row("1110", "Renamed Cash"),
+        _row("8990", "New Parent"),
+        _row("8991", "New Child", parent_code="8990"),
+        _row("8992", "Orphan", parent_code="8999"),
+    ]
+    before = await _chart(client, h)
+    preview = await client.post(PREVIEW_PATH, headers=h, json={"records": rows})
+    assert preview.status_code == 200, preview.text
+    assert await _chart(client, h) == before
+    imported = await _import(client, h, rows)
+    assert preview.json() == imported.json()
+    assert (preview.json()["created"], preview.json()["skipped_codes"]) == (2, ["1110"])
+    assert "8999" in preview.json()["errors"][0]
+
+
+@pytest.mark.asyncio
+async def test_chart_import_preview_needs_the_same_permissions(client, session):
+    s = await perm_setup(client, session)
+    r = await client.post(PREVIEW_PATH, headers=s["operator_h"], json={"records": [_row("8100", "Denied")]})
+    assert r.status_code == 403, r.text
+    await grant_permission(client, s["admin_h"], "import_export_data", "admin")
+    r = await client.post(PREVIEW_PATH, headers=s["manager_h"], json={"records": [_row("8100", "Denied")]})
+    assert r.status_code == 403, r.text

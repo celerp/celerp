@@ -233,3 +233,65 @@ async def test_chart_import_page_shows_add_only_copy(client, owner):
         r = await ui.get("/accounting/import/chart", cookies={"celerp_token": owner["token"]})
     assert r.status_code == 200, r.text
     assert "Adds accounts to your chart. Existing codes are kept." in r.text
+
+
+async def _review_page(owner: dict, content: bytes) -> str:
+    """Upload, map and fix types, stopping on the review page before confirm."""
+    cookies = {"celerp_token": owner["token"]}
+    async with _browser() as ui:
+        r = await ui.post("/accounting/import/chart/preview", cookies=cookies,
+                          files={"csv_file": ("chart.csv", content, "text/csv")})
+        header = next(csv.reader(io.StringIO(content.decode())))
+        form = {f"map__{col}": _MAPPING.get(col, MAPPING_SKIP) for col in header}
+        r = await ui.post("/accounting/import/chart/mapped", cookies=cookies,
+                          data={"csv_ref": _csv_ref(r.text), **form})
+        rows = list(csv.DictReader(io.StringIO(content.decode())))
+        fixes = {f"{i}__account_type": _TYPE_FOR_XERO[row["*Type"]] for i, row in enumerate(rows)}
+        r = await ui.post("/accounting/import/chart/revalidate", cookies=cookies,
+                          data={"csv_ref": _csv_ref(r.text), "fixes_json": json.dumps(fixes)})
+        assert r.status_code == 200, r.text
+        return r.text
+
+
+@pytest.mark.asyncio
+async def test_chart_review_lists_rows_the_import_would_refuse_before_confirm(client, owner):
+    r = await client.post("/accounting/accounts", headers=owner["h"], json={
+        "code": "540", "name": "Already Here", "account_type": "expense"})
+    assert r.status_code == 200, r.text
+    content = (
+        "*Code,*Name,*Type,Parent Code\n"
+        "500,Orphan,Expense,999\n"
+        "510,Loop A,Expense,520\n"
+        "520,Loop B,Expense,510\n"
+        "530,Fine,Expense,\n"
+        "530,Fine Again,Expense,\n"
+        "540,Already Here,Expense,\n"
+    ).encode()
+    before = await _chart(client, owner)
+
+    review = await _review_page(owner, content)
+
+    # Still importable: the refused rows are listed, the rest can go ahead.
+    assert 'hx-post="/accounting/import/chart/confirm"' in review, review[:2000]
+    assert "rows need changes" in review
+    assert "Error details (5)" in review
+    assert "999" in review and review.count("loop") >= 2 and "530" in review
+    assert "Existing codes are kept." in review and "Skipped: 540" in review
+    assert await _chart(client, owner) == before, "the review wrote to the chart"
+
+
+@pytest.mark.asyncio
+async def test_chart_review_of_a_clean_file_lists_nothing(client, owner):
+    review = await _review_page(owner, _XERO.read_bytes())
+    assert 'hx-post="/accounting/import/chart/confirm"' in review
+    assert "rows need changes" not in review and "Skipped:" not in review
+
+
+@pytest.mark.asyncio
+async def test_chart_upload_error_keeps_add_only_copy(client, owner):
+    async with _browser() as ui:
+        r = await ui.post("/accounting/import/chart/preview", cookies={"celerp_token": owner["token"]},
+                          files={"csv_file": ("chart.csv", b"", "text/csv")})
+    assert r.status_code == 200, r.text
+    assert "flash--error" in r.text
+    assert "Adds accounts to your chart. Existing codes are kept." in r.text
