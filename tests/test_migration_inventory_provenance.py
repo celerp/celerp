@@ -359,3 +359,49 @@ async def test_migration_lifecycle_uses_canonical_domain_code_only(real_engine, 
     for sink in sorted(root.glob("*/celerp_*/migration_sink.py")):
         source = sink.read_text()
         assert not [name for name in reversals if f'"{name}"' in source], sink
+
+
+@pytest.mark.parametrize("cutover", ["2026-01-09", specs.LIFECYCLE_CUTOVER.isoformat()])
+async def test_cutover_imported_documents_support_return_void_revert(
+    real_engine, real_client, monkeypatch, tmp_path, cutover,
+):
+    """RED before the change: a sales invoice with item lines stops the migration; before
+    it, a document carried across the cutover had no receipt or fulfilment to act on.
+
+    On a cutover migration, documents carried across the cutover keep the receipts and
+    deliveries made on either side of it. At 01-09, BILL-G's first receipt and BILL-P's
+    bill date fall inside the opening; at 01-17, INV-E's delivery does, before its invoice.
+    Each document action moves stock and books by exactly what the source recorded:
+    10 / 47.50, less 4 returned at 4.00, plus INV-E's 2 and INV-D's 4 back at 4.75, less
+    BILL-P's 5 at 5.00, is 7 / 35.00."""
+    books = await _migrated(real_engine, monkeypatch, tmp_path, {"mode": "cutover", "cutover_date": cutover})
+    wid = books.id("InventoryItem", "WID")
+    start = await _position(books)
+    assert start["stock"] == (D("10"), D("47.50"))
+
+    r = await _return(real_client, books, "BILLG", wid, 4)
+    assert r.status_code == 200, r.text
+    returned = await _position(books)
+    assert _moved(start, returned) == ((D("-4"), D("-16.00")), D("-16.00"))
+
+    for invoice, back in (("INVE", (D("2"), D("9.50"))), ("INVD", (D("4"), D("19.00")))):
+        before = await _position(books)
+        r = await real_client.post(f"/docs/{books.id('SalesInvoice', invoice)}/revert-lines", headers=books.headers,
+                                   json={"line_entity_ids": [await _sold_lot(books, invoice)]})
+        assert r.status_code == 200, (invoice, r.text)
+        assert _moved(before, await _position(books))[0] == back, invoice
+    reverted = await _position(books)
+    r = await real_client.post(f"/docs/{books.id('SalesInvoice', 'INVE')}/void", headers=books.headers, json={})
+    assert r.status_code == 200, r.text
+    assert (await _doc(books, "INVE"))["status"] == "void"
+    assert (await _position(books))["stock"] == reverted["stock"]
+
+    bill = books.id("PurchaseInvoice", "BILLP")
+    before = await _position(books)
+    r = await real_client.delete(f"/docs/{bill}/receive", headers=books.headers)
+    assert r.status_code == 200, r.text
+    assert _moved(before, await _position(books))[0] == (D("-5"), D("-25.00"))
+    r = await real_client.post(f"/docs/{bill}/revert-to-draft", headers=books.headers, json={})
+    assert r.status_code == 200, r.text
+    assert (await _doc(books, "BILLP"))["status"] == "draft"
+    assert (await _position(books))["stock"] == (D("7"), D("35.00"))

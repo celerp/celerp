@@ -365,7 +365,8 @@
       "SalesInvoice (foreign currency)": 1,
       "PurchaseInvoice (foreign currency)": 1,
       "Receipt (foreign currency)": 1
-    }
+    },
+    "lock_date": "2026-01-31"
   },
   "inventory": {
     "_comment": "specs.inventory_lifecycle_objects, worked by hand in its docstring. Moves are (source type, movement, date, quantity, value) in the order stock moved; links are each document's physical records as (movement, date, line, quantity, value).",
@@ -414,6 +415,9 @@
     ],
     "ForeignCurrency": [
       "fx.blocked"
+    ],
+    "LockDate": [
+      "fx.lock_date"
     ],
     "BalanceSheetAccount": [
       "basic.full_history.trial_balance"

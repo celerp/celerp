@@ -229,6 +229,7 @@ class Movement:
     document: str | None                       # the invoice or bill the goods belong to
     location: str | None
     lines: list[MoveLine]
+    source_lines: tuple[tuple[str, Decimal], ...] = ()   # (item, signed quantity) as the record states them
 
 
 @dataclass
@@ -482,7 +483,8 @@ def _movement(source_type: str, key: str, m: Message) -> Movement:
             raise Blocked("unsupported feature", "A zero or negative quantity.")
         lines.append(MoveLine(item, sign * quantity))
     document = _ref(m.guid(19 if source_type == "DeliveryNote" else 17))
-    return Movement(key, source_type, _require_date(m, 3), m.str(1), document, _ref(m.guid(11)), lines)
+    return Movement(key, source_type, _require_date(m, 3), m.str(1), document, _ref(m.guid(11)), lines,
+                    tuple((line.item, line.quantity) for line in lines))
 
 
 def _settlement(source_type: str, key: str, m: Message) -> Settlement:

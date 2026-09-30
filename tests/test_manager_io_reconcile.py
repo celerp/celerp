@@ -78,3 +78,6 @@ def test_manager_multicurrency_requires_proven_fx_treatment():
     assert coverage["ExchangeRate"].coverage_class == CoverageClass.UNSUPPORTED_NONFINANCIAL
     with pytest.raises(ScanError, match="cannot be migrated"):
         manager.build_manifest([art], FULL)
+
+    # The lock date is read and shown even on a file that cannot be migrated.
+    assert manager.inspect([art]).lock_date == date.fromisoformat(CHECKPOINTS["fx"]["lock_date"])
