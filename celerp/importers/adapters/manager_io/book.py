@@ -330,6 +330,7 @@ class Book:
     verdicts: dict[str, Verdict] = field(default_factory=dict)
     object_counts: dict[str, int] = field(default_factory=dict)
     history: dict[str, int] = field(default_factory=dict)
+    lock_date: date | None = None                                # the date periods are locked through
 
     # ── classification ──
 
@@ -627,6 +628,28 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
         book.journals[key] = _journal(key, m)
     elif name == "Attachment":
         book.attachments[key] = AttachmentRef(key, m.str(2) or "", m.int(4, 0), _ref(m.guid(6)), m.bytes(12))
+    elif name == "LockDate":
+        _lock_date(book, key, m)
+
+
+LOCK_OFF_NOTE = "Locking is switched off in Manager, so no lock date is installed."
+
+
+def _lock_date(book: Book, key: str, m: Message) -> None:
+    """Manager's one LockDate object: field 1 the date through which periods are locked,
+    field 2 whether locking is switched on. A date left behind with locking off locks
+    nothing in Manager, so none is installed. A second LockDate object, or locking on with
+    no date, cannot say which lock the user set, so the file is refused rather than a lock
+    dropped or guessed."""
+    locked, through = m.bool(2), m.date(1)
+    if book.object_counts.get("LockDate", 0) > 1:
+        raise Blocked("unreadable", "The file holds more than one lock date.")
+    if not locked:
+        book.verdicts[key] = Verdict("LockDate", CoverageClass.IGNORED_NON_BUSINESS, None, LOCK_OFF_NOTE)
+        return
+    if through is None:
+        raise Blocked("unreadable", "Locking is switched on but no lock date is set.")
+    book.lock_date = through
 
 
 # ── Resolution: references, account types, figures, currency ──────────────────
