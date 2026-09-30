@@ -581,8 +581,24 @@ async def _concurrent_import(s, company_id, user_id, entity_id):
                            upsert=True, filename=None, idempotency_key="other")
 
 
-@pytest.mark.parametrize("change", [_change_upsert_target, _change_settings, _change_role, _concurrent_import],
-                         ids=["upsert_target", "settings", "role", "concurrent_import"])
+async def _patch_item(s, company_id, user_id, entity_id, fields_changed):
+    from celerp_inventory import routes
+    await routes.patch_item(entity_id, routes.ItemPatch(fields_changed=fields_changed), company_id=company_id,
+                            user=SimpleNamespace(id=user_id), role="owner", settings={}, session=s)
+
+
+async def _patch_quantity(s, company_id, user_id, entity_id):
+    await _patch_item(s, company_id, user_id, entity_id, {"quantity": {"old": 1, "new": 5}})
+
+
+async def _item_page_sku_rename(s, company_id, user_id, entity_id):
+    await _patch_item(s, company_id, user_id, entity_id, {"sku": {"old": "HOLD-1", "new": "HOLD-RENAMED"}})
+
+
+@pytest.mark.parametrize(
+    "change", [_change_upsert_target, _change_settings, _change_role, _concurrent_import, _patch_quantity, _item_page_sku_rename],
+    ids=["upsert_target", "settings", "role", "concurrent_import", "item_page_quantity", "item_page_sku_rename"],
+)
 async def test_bound_commit_holds_what_it_accepted_until_the_import_commits(committed_engine, monkeypatch, change):
     """From the re-preview a bound commit accepts to its one commit, a writer that
     would change what the import writes waits: tried with a short lock timeout
@@ -907,3 +923,52 @@ async def test_all_semantic_transports_write_through_import_items(client, sessio
     assert preflights["direct_rows"] >= 1, preflights
     assert preflights["file"] > preflights["direct_rows"], preflights
     assert preflights["browser_confirm"] > preflights["file"], preflights
+
+
+async def test_location_delete_waits_for_an_import_placing_items_there(committed_engine, monkeypatch):
+    """A location an import places items in cannot be deleted under it: the delete
+    waits for the import, then is refused with the items it would orphan counted."""
+    import celerp_inventory.services as svc
+    from celerp_inventory import routes
+    from celerp.models.company import Location
+    from celerp.routers.companies import delete_location
+    from fastapi import HTTPException
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    factory = _factory(committed_engine)
+    company_id, user_id, _entity_id = await _seed_member_with_item(factory)
+    async with factory() as s:
+        annex = Location(id=uuid.uuid4(), company_id=company_id, name="Annex", type="warehouse")
+        s.add(annex)
+        await s.commit()
+        annex_id = str(annex.id)
+    rows = [{"name": f"Annex {i}", "sku": f"ANX-{i}", "sell_by": "piece", "quantity": "1",
+             "location_name": "Annex"} for i in range(3)]
+
+    attempts: list[str] = []
+    real_write = svc.write_import_batch
+
+    async def _delete_then_write(*args, **kwargs):
+        async with factory() as other:
+            await other.execute(text("SET LOCAL lock_timeout = '300ms'"))
+            try:
+                await delete_location(annex_id, company_id=company_id, session=other)
+                attempts.append("deleted")
+            except DBAPIError as exc:
+                assert "lock timeout" in str(exc).lower(), exc
+                attempts.append("waited")
+        return await real_write(*args, **kwargs)
+
+    monkeypatch.setattr(svc, "write_import_batch", _delete_then_write)
+    async with factory() as s:
+        result = await routes.import_rows(
+            routes.InventoryImportRows(rows=rows, idempotency_key="annex"),
+            company_id=company_id, role="owner", settings={}, user=SimpleNamespace(id=user_id), session=s,
+        )
+    assert attempts == ["waited"]
+    assert result.created == 3
+    async with factory() as s:
+        with pytest.raises(HTTPException) as err:
+            await delete_location(annex_id, company_id=company_id, session=s)
+    assert err.value.status_code == 409 and "3 item(s)" in err.value.detail

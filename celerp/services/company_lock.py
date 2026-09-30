@@ -83,6 +83,11 @@ async def locked_company(session: AsyncSession, company_id) -> Company | None:
     return company
 
 
+def holds_company_lock(session: AsyncSession, company_id) -> bool:
+    """True when this transaction loaded the company with locked_company()."""
+    return company_id in session.info.get(_LOCKED, ())
+
+
 @event.listens_for(Session, "before_flush")
 def _settings_change_needs_the_lock(session: Session, flush_context, instances) -> None:
     locked = session.info.get(_LOCKED, ())

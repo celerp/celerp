@@ -68,6 +68,7 @@ from celerp.services.pricing import (
     is_cost_list_name,
     is_price_item_key,
     price_key,
+    price_keys_in,
     stored_price,
 )
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
@@ -2202,7 +2203,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     # the same draft_cost_carveout the pricing surfaces use, so the three stay in lockstep.
     _create_draft = str((payload.model_extra or {}).get("status") or "draft").lower() == "draft"
     _price_lists = (await get_price_config(session, company_id))[0]
-    _gated = {k for k, v in payload.model_dump(exclude_none=True).items() if is_price_item_key(k, _price_lists)}
+    _gated = price_keys_in(payload.model_dump(exclude_none=True), _price_lists)
     if draft_cost_carveout(_create_draft, role, settings):
         _gated -= COST_ITEM_KEYS
     _reject_price_change(_gated, role, settings)
@@ -2362,6 +2363,17 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     return {"event_id": entry.id, "id": entry.entity_id}
 
 
+def _changed_attribute_keys(state: dict | None, fields_changed: dict) -> set[str]:
+    """Keys a patch changes inside ``attributes``: the read model lifts them to the
+    top level, so a price there is gated like a top-level price."""
+    change = fields_changed.get("attributes")
+    new = change.get("new") if isinstance(change, dict) else None
+    if not isinstance(new, dict):
+        return set()
+    old = (state or {}).get("attributes") or {}
+    return {k for k in set(new) | set(old) if new.get(k) != old.get(k)}
+
+
 def _reject_price_change(price_keys: set[str], role: str, settings: dict) -> None:
     """403 for the whole request when it sets a price without set_inventory_prices.
     The one price gate every item writer applies, so no surface can set a price the
@@ -2415,7 +2427,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     restricted -= COST_ITEM_KEYS
     changed_keys = set(payload.fields_changed.keys())
     _price_lists, _base_name, _ = await get_price_config(session, company_id)
-    _price_changes = {k for k in changed_keys if is_price_item_key(k, _price_lists)}
+    _price_changes = {k for k in changed_keys | _changed_attribute_keys(_proj.state, payload.fields_changed) if is_price_item_key(k, _price_lists)}
     if draft_cost_carveout(_is_draft, role, settings):
         _price_changes -= COST_ITEM_KEYS
     _reject_price_change(_price_changes, role, settings)
@@ -2939,8 +2951,10 @@ async def split_preview(
 
 @router.post("/{entity_id}/split")
 async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    _price_lists = (await get_price_config(session, company_id))[0]
     for _child in payload.children:
         _validate_sku(_child.sku)
+        _reject_price_change(price_keys_in({"attributes": _child.attributes}, _price_lists), role, settings)
     parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
@@ -3766,6 +3780,10 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             detail="target_sku_from must identify one of the merge sources.",
         )
 
+    _reject_price_change(
+        price_keys_in({"attributes": payload.resolved_attributes or {}}, (await get_price_config(session, company_id))[0]),
+        role, settings,
+    )
     locked_sources = await _lock_items_for_physical_mutation(session, company_id, payload.source_entity_ids)
     source_projections: list[Projection] = []
     for sid in payload.source_entity_ids:

@@ -590,7 +590,9 @@ async def delete_location(
         loc_uuid = uuid.UUID(location_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid location id")
-    loc = await session.get(Location, loc_uuid)
+    # Locked before the item count: an import naming this location holds it until
+    # the import commits, so the count below includes the items it placed here.
+    loc = await session.get(Location, loc_uuid, with_for_update=True, populate_existing=True)
     if loc is None or loc.company_id != company_id:
         raise HTTPException(status_code=404, detail="Location not found")
     if loc.is_default:

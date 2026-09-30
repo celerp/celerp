@@ -35,14 +35,14 @@ from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import round_basis
-from celerp.services.company_lock import lock_company, lock_projections, locked_company
+from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.importers.tabular import CsvImportSpec, cell_error_code, finite_float
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
 from celerp.services.money import to_stored_float, unit_price_from_total
 from celerp.services.permissions import role_has_permission
 from celerp.services.vertical_presets import category_item_defaults
-from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, is_price_item_key, price_key
+from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, price_key, price_keys_in
 from celerp.services.units import (
     SERVICE_SELL_BY,
     build_unit_map,
@@ -2204,10 +2204,18 @@ async def build_import_records(
     ``create_key`` is the import's operation key. Items this same import created
     are never upsert targets, so an exact retry plans every row against the state
     before the import, exactly as the first attempt did.
+
+    Under the company lock (an import commit) the rows the plan depends on are
+    pinned until that commit, in a stable order: the company's locations FOR
+    SHARE and the upsert targets FOR UPDATE. A concurrent item edit or location
+    change then waits for the import and lands on top of what it wrote, instead
+    of slipping in between the plan and the write.
     """
-    loc_rows = (await session.execute(
-        select(Location).where(Location.company_id == company_id)
-    )).scalars().all()
+    pin = holds_company_lock(session, company_id)
+    loc_query = select(Location).where(Location.company_id == company_id).order_by(Location.id)
+    if pin:
+        loc_query = loc_query.with_for_update(read=True).execution_options(populate_existing=True)
+    loc_rows = (await session.execute(loc_query)).scalars().all()
     location_map: dict[str, str] = {loc.name: str(loc.id) for loc in loc_rows}
 
     default_location_id: str | None = None
@@ -2254,13 +2262,14 @@ async def build_import_records(
         if skus:
             predicates.append(Projection.state["sku"].as_string().in_(skus))
         if predicates:
-            matches = (await session.execute(
-                select(Projection).where(
-                    Projection.company_id == company_id,
-                    Projection.entity_type == "item",
-                    or_(*predicates),
-                )
-            )).scalars().all()
+            match_query = select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+                or_(*predicates),
+            ).order_by(Projection.entity_id)
+            if pin:
+                match_query = match_query.with_for_update().execution_options(populate_existing=True)
+            matches = (await session.execute(match_query)).scalars().all()
             for proj in matches:
                 if proj.entity_id in own_ids:
                     continue
@@ -2659,8 +2668,7 @@ def _permission_errors(
     gated: list[tuple[str, str]] = []
     if not can_set_prices:
         gated += [
-            (_source_field(row, key), "set_inventory_prices") for key, value in data.items()
-            if value is not None and is_price_item_key(key, price_lists)
+            (_source_field(row, key), "set_inventory_prices") for key in sorted(price_keys_in(data, price_lists))
         ]
     if record["event_type"] == "item.patched" and not can_edit_amounts:
         gated += [(_source_field(row, key), "edit_inventory_amounts") for key in sorted(AMOUNT_ITEM_KEYS & set(data))]
@@ -2864,7 +2872,7 @@ async def import_items(
     no-op. Upserts resolve a concrete existing entity first and use a hash of the
     resulting patch, so the same patch dedupes but a later changed patch still applies.
     """
-    await lock_company(session, company_id)
+    await locked_company(session, company_id)
     batch_key = import_operation_key(idempotency_key, rows, upsert)
     if plan is None:
         plan = await preflight_import_rows(
@@ -3157,10 +3165,7 @@ async def write_import_batch(
         # Imported price values modify the same protected business data as the
         # interactive pricing surfaces. Import/export authority does not imply
         # permission to set prices.
-        price_keys = {
-            key for key, value in data.items()
-            if value is not None and is_price_item_key(key, price_lists)
-        }
+        price_keys = price_keys_in(data, price_lists)
         if price_keys and not role_has_permission(settings, role, "set_inventory_prices"):
             outcome.add(entity_id, "rejected",
                 f"Row (SKU={data.get('sku', '?')}): editing {sorted(price_keys)} "
