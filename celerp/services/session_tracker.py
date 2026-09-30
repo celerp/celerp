@@ -275,7 +275,6 @@ async def end_all_sessions(session: AsyncSession) -> None:
     for row in await _rotate_every_nonce(session):
         row.evicted_by_ip = None
     await session.commit()
-    _nonce_cache_bust_all()
 
 
 async def pop_evicted_by_ip(session: AsyncSession, user_id: str) -> str | None:
