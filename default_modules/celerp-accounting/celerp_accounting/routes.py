@@ -210,24 +210,24 @@ async def seed_chart_of_accounts_hook(*, session: AsyncSession, company_id: uuid
 async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     """Lifecycle hook called via on_modules_ready slot.
 
-    Seeds the chart of accounts for any active company that has none yet.
-    This handles the case where accounting is enabled after the company was
-    already created (e.g. first-run with no modules, then preset applied).
-    A company staged for a migration is inactive: its chart comes from the
-    imported books, so it is left alone.
+    Seeds the chart of accounts for every company, active or deactivated, that has none
+    yet. This handles the case where accounting is enabled after the company was already
+    created (e.g. first-run with no modules, then preset applied), and a deactivated
+    company then works when it is reactivated. A company staged for a migration is left
+    alone: its chart comes from the imported books.
     """
     from celerp.models.company import Company
+    from celerp.services import migrations
     from sqlalchemy import select as _select
 
-    companies = (await session.execute(_select(Company).where(Company.is_active.is_(True)))).scalars().all()
-    for company in companies:
-        has_accounts = (await session.execute(
-            _select(Account.id).where(Account.company_id == company.id).limit(1)
-        )).scalar_one_or_none()
-        if has_accounts:
+    company_ids = (await session.execute(
+        _select(Company.id).where(~_select(Account.id).where(Account.company_id == Company.id).exists())
+    )).scalars().all()
+    for company_id in company_ids:
+        if await migrations.is_company_migration_staged(session, company_id):
             continue
-        await seed_chart_of_accounts(session, company.id)
-        await _seed_default_bank_account(session, company.id)
+        await seed_chart_of_accounts(session, company_id)
+        await _seed_default_bank_account(session, company_id)
 
 
 def _account_to_dict(acc: Account) -> dict:

@@ -832,6 +832,15 @@ async def _reconcile_run(maker, run_id: uuid.UUID, state: dict, expected: list[t
 
 # ── Finish, discard and housekeeping ─────────────────────────────────────────
 
+async def is_company_migration_staged(session: AsyncSession, company_id: uuid.UUID) -> bool:
+    """Whether *company_id* is a company staged for a migration and not yet finished.
+
+    This is the one test every other module uses. It reads the migration's own staging
+    flag, never ``is_active``: a deactivated company is not staged, and a staged company
+    stays staged until its migration finalizes."""
+    return bool(await session.scalar(select(Company.is_migration_staged).where(Company.id == company_id)))
+
+
 async def finalize(session: AsyncSession, run: MigrationRun) -> MigrationRun:
     """Re-check verification under the company lock, then activate the company in one commit."""
     await _lock_run(session, run)
