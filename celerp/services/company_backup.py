@@ -1194,6 +1194,8 @@ async def reactivate_restored(path: Path, *, mode: str, user_id, current_company
         if plan.action == REFUSE:
             raise BackupError(409, NOT_A_MEMBER)
         if plan.action != OFFER_REACTIVATE:
+            if destination is None:  # nothing was restored from it yet, so there is nothing to reactivate
+                raise StalePreview(plan)
             done = company_lifecycle.Reactivated(company_id=destination.id, company_name=destination.name,
                                                  reactivated=False, connectors_to_reconnect=[])
             await session.rollback()

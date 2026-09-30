@@ -3204,3 +3204,18 @@ async def test_restore_refuses_attachment_missing_from_archive(real_engine, real
     m["attachments"] = []
     data = rezip({**parts, "manifest.json": json.dumps(m).encode()})
     await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "does not carry")
+
+
+async def test_reactivate_without_prior_restore_is_stale_preview(real_engine, real_client, tmp_path, monkeypatch):
+    """Reactivating a backup that was never restored answers with the current plan, which is to
+    create a company, and changes nothing."""
+    _r_env(tmp_path, monkeypatch)
+    _user, _cid, tok = await _r_source(real_engine)
+    data = await download(real_client, tok)
+    preview = await _ln_preview(real_client, tok, data, "new_company")
+    assert preview.json()["action"] == "create"
+    before = await snapshot(real_engine)
+    r = await _ln_reactivate(real_client, tok, preview)
+    assert r.status_code == 409, r.text
+    assert r.json()["code"] == "stale_preview" and r.json()["plan"]["action"] == "create"
+    assert await snapshot(real_engine) == before
