@@ -421,11 +421,11 @@ async def test_export_has_no_preparer_input(real_engine, real_client, tmp_path, 
     """The download takes no preparer: only an optional migration run id, and a supplied name is ignored."""
     from celerp.main import app
     _bk_local(monkeypatch, tmp_path)
-    routes = [r for r in app.routes if getattr(r, "path", None) == "/company-backups/download"]
-    assert routes and all("GET" in r.methods for r in routes)
-    for route in routes:
-        assert [p.name for p in route.dependant.query_params] == ["run_id"]
-        assert not route.dependant.body_params
+    # The OpenAPI schema lists every registered route whatever Starlette's route-table layout.
+    operations = app.openapi()["paths"].get("/company-backups/download", {})
+    assert list(operations) == ["get"]
+    assert [p["name"] for p in operations["get"].get("parameters", [])] == ["run_id"]
+    assert "requestBody" not in operations["get"]
     _, _, tok = await _bk_setup(real_engine)
     data = await download(real_client, tok, prepared_by="Someone Else")
     assert b"Someone Else" not in b"".join(members(data).values())
