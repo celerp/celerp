@@ -229,9 +229,9 @@ async def test_historical_delivery_of_part_of_a_line_leaves_the_invoice_partly_f
     invoice = await _invoice(client, token, item)
 
     with pytest.raises(HTTPException) as exc:
-        await record_historical_delivery(session, company_id, invoice, lines=_delivery(item) + _delivery(item, 0, 0),
+        await record_historical_delivery(session, company_id, invoice, lines=_delivery(item, 4, 16) + _delivery(item, 2, 8),
                                          actor_id=_user(token), source="migration", idempotency_key=f"m:{uuid.uuid4()}")
-    assert exc.value.status_code == 422 and "delivered twice" in exc.value.detail
+    assert exc.value.status_code == 422 and "at most 1 can be moved" in exc.value.detail
     await session.rollback()
 
     entry = await record_historical_delivery(session, company_id, invoice, lines=_delivery(item, 2, 8), actor_id=_user(token),
@@ -239,6 +239,35 @@ async def test_historical_delivery_of_part_of_a_line_leaves_the_invoice_partly_f
     await session.commit()
     assert entry.event_type == "doc.partially_fulfilled"
     assert (await _state(session, company_id, invoice))["fulfillment_status"] == "partial"
+
+
+@pytest.mark.asyncio
+async def test_historical_deliveries_of_one_line_are_one_sold_lot_each(client, session):
+    """RED before the change: a line delivered twice was refused, so the deliveries had to
+    be merged into one lot and lost which goods left when, and at what cost.
+
+    The line names the first delivery's lot; the second is its own lot on the same line,
+    and together they fulfil it."""
+    from celerp.services import auto_je
+    from celerp_docs.routes import record_historical_delivery
+
+    token, company_id = await _register(client)
+    _bill_id, item, _loc = await _bill(client, token)
+    invoice = await _invoice(client, token, item)
+    first, second = _delivery(item, 2, 8), [{**_delivery(item, 3, 12.5)[0], "date": "2025-02-05"}]
+
+    entry = await record_historical_delivery(session, company_id, invoice, lines=first + second, actor_id=_user(token),
+                                             source="migration", idempotency_key=f"m:{invoice}:delivered")
+    await session.commit()
+
+    assert entry.event_type == "doc.fulfilled"
+    state = await _state(session, company_id, invoice)
+    assert state["line_items"][0]["entity_id"] == first[0]["lot_id"]
+    for moved in first + second:
+        lot = await _state(session, company_id, moved["lot_id"])
+        assert (lot["status"], lot["quantity"], lot["cost_total"]) == ("sold", moved["quantity"], moved["cost"])
+        assert await auto_je.doc_line_of_lot(session, company_id, invoice, state, moved["lot_id"], lot) == 0
+    assert await _events(session, company_id, "item.fulfilled") == 2
 
 
 # ── Live receipts read the bill's receipt state ───────────────────────────────

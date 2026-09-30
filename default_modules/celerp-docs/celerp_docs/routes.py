@@ -3989,11 +3989,13 @@ async def record_historical_delivery(session: AsyncSession, company_id, entity_i
                                      actor_id, source: str, idempotency_key: str):
     """Record goods an issued invoice delivered before its books came to Celerp, as fulfilling
     it records them: each of ``lines`` ({line, item_id, quantity, cost, lot_id, date}) becomes
-    a sold lot ``lot_id`` of that quantity and cost, taken from the line's item, fulfilled on
-    the invoice at that line on ``date``, and the line names the lot. The stock that left is
-    carried separately, so the item's own quantity is not changed and no journal entry posts.
-    Returns the doc.fulfilled or doc.partially_fulfilled entry, or the earlier one when
-    ``idempotency_key`` was already used for this delivery."""
+    a sold lot ``lot_id`` of that quantity and cost, taken from the line's item and fulfilled
+    on the invoice at that line on ``date``. A line delivered more than once has one lot per
+    delivery: the line names the first, and the others belong to it as the lots a fulfilment
+    draws beside the line's own do. The stock that left is carried separately, so the item's
+    own quantity is not changed and no journal entry posts. Returns the doc.fulfilled or
+    doc.partially_fulfilled entry, or the earlier one when ``idempotency_key`` was already
+    used for these deliveries."""
     from celerp_inventory.services import allocate_internal_codes, lot_fields
 
     row, replay = await _historical_doc(session, company_id, entity_id, doc_type="invoice",
@@ -4005,14 +4007,10 @@ async def record_historical_delivery(session: AsyncSession, company_id, entity_i
     new_lines = [dict(li) for li in state.get("line_items") or []]
     barcodes = await allocate_internal_codes(session, company_id, len(lines))
     doc_number = state.get("doc_number") or state.get("ref_id") or ""
-    full: set[int] = set()
-    seen: set[int] = set()
+    delivered: dict[int, float] = {}
     for moved, barcode in zip(lines, barcodes):
         index = moved["line"]
-        if index in seen:
-            raise HTTPException(status_code=422, detail=f"Line {index + 1} is delivered twice")
-        seen.add(index)
-        line = _historical_line(state, moved, 0.0)
+        line = _historical_line(state, moved, delivered.get(index, 0.0))
         item = await session.get(Projection, {"company_id": company_id, "entity_id": moved["item_id"]})
         if item is None:
             raise HTTPException(status_code=422, detail=f"Item {moved['item_id']} does not exist")
@@ -4023,26 +4021,27 @@ async def record_historical_delivery(session: AsyncSession, company_id, entity_i
                   "quantity": quantity, "status": "available", "barcode": barcode,
                   "allow_splitting": splitting_allowed(item.state), "cost_total": float(moved["cost"])},
             actor_id=actor_id, location_id=None, source=source,
-            idempotency_key=f"{idempotency_key}:lot:{index}", metadata_={"parent_id": moved["item_id"]},
+            idempotency_key=f"{idempotency_key}:lot:{lot_id}", metadata_={"parent_id": moved["item_id"]},
         )
         await emit_event(
             session, company_id=company_id, entity_id=lot_id, entity_type="item", event_type="item.fulfilled",
             data={"source_doc_id": entity_id, "doc_number": doc_number, "quantity_fulfilled": quantity,
                   "fulfilled_by": str(actor_id), "doc_type": "invoice", "ts": moved["date"]},
             actor_id=actor_id, location_id=None, source=source,
-            idempotency_key=f"{idempotency_key}:fulfilled:{index}", metadata_={"doc_id": entity_id, "line_index": index},
+            idempotency_key=f"{idempotency_key}:fulfilled:{lot_id}", metadata_={"doc_id": entity_id, "line_index": index},
         )
-        new_lines[index] = {**line, "entity_id": lot_id, "item_id": lot_id}
-        if abs(quantity - float(line.get("quantity") or 0)) <= 1e-9:
-            full.add(index)
+        if index not in delivered:
+            new_lines[index] = {**line, "entity_id": lot_id, "item_id": lot_id}
+        delivered[index] = delivered.get(index, 0.0) + quantity
+    full = {i for i, quantity in delivered.items()
+            if abs(quantity - float(new_lines[i].get("quantity") or 0)) <= 1e-9}
     await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
         data={"fields_changed": {"line_items": {"old": state.get("line_items"), "new": new_lines}}},
         actor_id=actor_id, location_id=None, source=source, idempotency_key=f"{idempotency_key}:lines",
     )
-    lots = [moved["lot_id"] for moved in lines]
     stock_lines = [i for i, li in enumerate(new_lines) if li.get("entity_id") or li.get("item_id")]
-    data = {"fulfilled_items": _line_item_brief(new_lines, lots),
+    data = {"fulfilled_items": _line_item_brief(new_lines, [new_lines[i]["entity_id"] for i in sorted(delivered)]),
             "fulfilled_by": str(actor_id), "fulfilled_at": max(m["date"] for m in lines),
             "strategy": "per_line", "ts": max(m["date"] for m in lines)}
     if all(i in full for i in stock_lines):

@@ -20,6 +20,7 @@ from celerp.importers.schema import CIFMode
 from fixtures.manager_io import specs
 from fixtures.manager_io.support import actual_rows, adapter, artifact, ref
 from migration_support import maker, real_client, real_engine  # noqa: F401 - fixtures
+from test_migration_e2e import _projections
 from test_migration_inventory_provenance import _moved, _migrated, _position, _sold_lots
 
 WID = ref("WID")
@@ -114,10 +115,11 @@ def test_each_delivery_of_an_invoice_line_moves_its_own_share_of_cost(tmp_path):
 
 async def test_each_delivery_of_an_invoice_line_is_its_own_sold_lot(real_engine, real_client, monkeypatch, tmp_path):
     """RED before the change: INV-B's two deliveries become one sold lot of 3 dated at the
-    last, so reverting one of them can only bring back an average share of both.
+    last, so which goods left when, and at what cost, is lost.
 
     DN-B1's 1 widget at 5.44 and DN-B2's 2 at 10.89 are two sold lots, both recognized
-    against INV-B's line, and each revert brings back exactly what its delivery took."""
+    against INV-B's line. Reverting the line, as on an invoice fulfilled from two lots in
+    Celerp, brings back both, each lot at the cost its own delivery took."""
     from celerp.services import auto_je
 
     books = await _migrated(real_engine, monkeypatch, tmp_path,
@@ -136,11 +138,12 @@ async def test_each_delivery_of_an_invoice_line_is_its_own_sold_lot(real_engine,
 
     start = await _position(books)
     await _revert(real_client, books, "INVB", second)
-    after_second = await _position(books)
-    assert _moved(start, after_second)[0] == (D("2"), D("10.89"))
-    assert set(await _sold_lots(books, "INVB")) == {first}
-    await _revert(real_client, books, "INVB", first)
-    assert _moved(after_second, await _position(books))[0] == (D("1"), D("5.44"))
+    assert _moved(start, await _position(books))[0] == (D("3"), D("16.33"))
+    assert await _sold_lots(books, "INVB") == {}
+    items = await _projections(real_engine, books.run, "item")
+    assert {lot: (items[lot]["status"], D(str(items[lot]["cost_total"])).quantize(D("0.01")))
+            for lot in (first, second)} == {
+        first: ("available", D("5.44")), second: ("available", D("10.89"))}
 
 
 # --- 3. Ownership valuation apart from physical provenance ---------------------------------

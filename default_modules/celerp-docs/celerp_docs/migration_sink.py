@@ -404,40 +404,34 @@ def _moved(line: dict, items: dict[str, str]) -> dict:
             "cost": Decimal(line["value"])}
 
 
-def _deliveries(context: SinkContext, record: CIFDocument, items: dict[str, str]) -> dict[int, dict]:
-    """An invoice's deliveries per line index: the line's deliveries as one sold lot of
-    their total quantity and cost, dated the last of them. Empty for any other document."""
+def _deliveries(context: SinkContext, record: CIFDocument, items: dict[str, str]) -> list[dict]:
+    """An invoice's deliveries, one sold lot per line of each delivery, in delivery order.
+    A lot's id is fixed by the delivery, the invoice line and the item, so no two deliveries
+    of a line share one. Empty for any other document."""
     if record.doc_type != DocumentType.INVOICE:
-        return {}
-    per_line: dict[int, dict] = {}
-    for delivery in record.metadata.get("deliveries") or []:
-        for ln in delivery["lines"]:
-            line = _moved(ln, items)
-            if ln["line"] in per_line:
-                line["quantity"] += per_line[ln["line"]]["quantity"]
-                line["cost"] += per_line[ln["line"]]["cost"]
-            per_line[ln["line"]] = {**line, "date": delivery["date"], "lot_id": "item:" + str(deterministic_id(
-                context, record.source_type, f"{record.source_external_id}:line:{ln['line']}"))}
-    return per_line
+        return []
+    return [{**_moved(ln, items), "date": delivery["date"], "lot_id": "item:" + str(deterministic_id(
+                context, record.source_type,
+                f"{delivery['source']}:{record.source_external_id}:line:{ln['line']}:{ln['item']}"))}
+            for delivery in record.metadata.get("deliveries") or [] for ln in delivery["lines"]]
 
 
-def _cogs_allocations(record: CIFDocument, base: str, delivered: dict[int, dict]) -> dict:
+def _cogs_allocations(record: CIFDocument, base: str, delivered: list[dict]) -> dict:
     """The cost of sales an invoice's entry books, per line index, in the shape an invoice
-    finalized in Celerp records it: the amount the source booked for the line, the sold lot
-    that delivered part or all of it at the source's unit cost, and the quantity not yet
-    delivered. Lines that book no cost of sales are left out."""
+    finalized in Celerp records it: the amount the source booked for the line, each sold lot
+    that delivered part of it at that lot's unit cost, and the quantity not yet delivered.
+    Lines that book no cost of sales are left out."""
     if record.doc_type != DocumentType.INVOICE:
         return {}
     allocations = {}
     for index, line in enumerate(record.line_items):
         if not line.cost_basis or line.quantity <= 0:
             continue
-        unit_cost = line.cost_basis / line.quantity
-        sold = delivered.get(index)
-        quantity = sold["quantity"] if sold else Decimal(0)
+        sold = [lot for lot in delivered if lot["line"] == index]
+        quantity = sum((lot["quantity"] for lot in sold), Decimal(0))
         allocations[str(index)] = {
-            "lots": [{"lot_entity_id": sold["lot_id"], "qty": float(quantity), "unit_cost": float(unit_cost)}]
-            if sold else [],
+            "lots": [{"lot_entity_id": lot["lot_id"], "qty": float(lot["quantity"]),
+                      "unit_cost": float(lot["cost"] / lot["quantity"])} for lot in sold],
             "provisional_qty": float(line.quantity - quantity),
             "amount": _money(line.cost_basis, base),
         }
@@ -445,9 +439,9 @@ def _cogs_allocations(record: CIFDocument, base: str, delivered: dict[int, dict]
 
 
 async def _record_movements(
-    context: SinkContext, record: CIFDocument, items: dict[str, str], doc_id: str, per_line: dict[int, dict],
+    context: SinkContext, record: CIFDocument, items: dict[str, str], doc_id: str, delivered: list[dict],
 ) -> None:
-    """Record each receipt of a bill's goods, and an invoice's deliveries per line."""
+    """Record each receipt of a bill's goods, and each sold lot an invoice's deliveries became."""
     if record.doc_type == DocumentType.BILL:
         for receipt in record.metadata.get("receipts") or []:
             await record_historical_receipt(
@@ -455,11 +449,10 @@ async def _record_movements(
                 received_on=receipt["date"], actor_id=context.user_id, source="migration",
                 idempotency_key=context.idempotency_key(record, f"received:{receipt['source']}"),
             )
-    if per_line:
+    if delivered:
         await record_historical_delivery(
             context.session, context.company_id, doc_id, lines=[
-                {**line, "quantity": float(line["quantity"]), "cost": float(line["cost"])}
-                for _, line in sorted(per_line.items())],
+                {**lot, "quantity": float(lot["quantity"]), "cost": float(lot["cost"])} for lot in delivered],
             actor_id=context.user_id, source="migration", idempotency_key=context.idempotency_key(record, "delivered"),
         )
 
