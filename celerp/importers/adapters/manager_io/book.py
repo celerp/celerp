@@ -878,8 +878,8 @@ def _value_stock(book: Book) -> None:
 
     Goods received carry their share of the bill line's net, the last receipt of a line
     taking what is left of it; goods delivered leave at the moving average cost of what is
-    held. A movement that takes more than its document lists, or more stock than is held,
-    is blocked and moves nothing."""
+    held. A movement that takes more than its document lists, moves a line of zero or
+    negative quantity, or takes more stock than is held, is blocked and moves nothing."""
     code = book.base_code or ""
     movements = [m for k, m in book.movements.items() if not book.is_blocked(k)]
     movements += [_own_movement(d) for k, d in book.documents.items()
@@ -895,6 +895,8 @@ def _value_stock(book: Book) -> None:
                 qty, value = now_taken.get((doc.key, line.line), (Decimal(0), Decimal(0)))
                 if qty + abs(line.quantity) > source.quantity:
                     raise Blocked("more than invoiced", "Moves more goods than its invoice or bill lists.")
+                if source.quantity <= 0:
+                    raise Blocked("unsupported feature", "A zero or negative quantity.")
                 on_hand, worth = now_held.get(line.item, (Decimal(0), Decimal(0)))
                 if line.quantity > 0:
                     line.value = round_money(source.net * (qty + line.quantity) / source.quantity, code) - value
