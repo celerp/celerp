@@ -16,8 +16,8 @@ from datetime import date
 from celerp.importers.adapters.base import ScanError
 from celerp.importers.adapters.manager_io.protobuf import DecodeError, decode
 from celerp.importers.adapters.manager_io.sqlite_reader import ManagerReader
+from celerp.importers.adapters.manager_io.types import GUIDS
 
-LOCK_DATE_TYPE = "4c5dac8f-2d5e-4634-a51b-0bbdd021a499"
 # The object holds a date and a flag; anything larger is not a LockDate object.
 _MAX_BYTES = 256
 
@@ -32,7 +32,7 @@ def read_lock_date(reader: ManagerReader) -> date | None:
     locking is off or no lock date was ever set."""
     rows = reader.conn.execute(
         "SELECT CASE WHEN length(Content) <= ? THEN Content END, length(Content) FROM Objects WHERE ContentType = ?",
-        (_MAX_BYTES, LOCK_DATE_TYPE),
+        (_MAX_BYTES, GUIDS["LockDate"]),
     ).fetchall()
     if not rows:
         return None

@@ -6,7 +6,9 @@ the migration service's own staging predicate, never by the company being inacti
 
 from __future__ import annotations
 
+import importlib
 import uuid
+from pathlib import Path
 
 from sqlalchemy import select, text
 
@@ -171,3 +173,147 @@ async def test_backfilled_inactive_company_reactivated_accounting_works(real_cli
     })
     assert r.status_code == 200, r.text
 
+
+
+# ── Every on_modules_ready backfill ──────────────────────────────────────────
+
+PHONE = "+66 2 123 4567"
+
+
+async def _drop_chart(s, company_id) -> None:
+    for table in ("bank_accounts", "accounts"):
+        await s.execute(text(f"DELETE FROM {table} WHERE company_id = :c"), {"c": str(company_id)})
+
+
+async def _has_chart(s, company_id) -> bool:
+    from celerp_accounting.models import Account
+
+    return await s.scalar(select(Account.id).where(Account.company_id == company_id).limit(1)) is not None
+
+
+async def _drop_work_centers(s, company_id) -> None:
+    await s.execute(text("DELETE FROM work_centers WHERE company_id = :c"), {"c": str(company_id)})
+
+
+async def _has_default_work_center(s, company_id) -> bool:
+    from celerp.models.company import WorkCenter
+
+    return await s.scalar(select(WorkCenter.id).where(
+        WorkCenter.company_id == company_id, WorkCenter.is_default.is_(True)).limit(1)) is not None
+
+
+async def _self_contact_without_phone(s, company_id) -> None:
+    """A self-contact missing the phone the company's settings hold."""
+    from celerp.events.engine import emit_event
+    from celerp.services.company_lock import locked_company
+
+    sid = f"contact:{uuid.uuid4()}"
+    await emit_event(s, company_id=company_id, entity_id=sid, entity_type="contact",
+                     event_type="crm.contact.created", data={"name": "Own Co", "contact_type": "both"},
+                     actor_id=None, location_id=None, source="test",
+                     idempotency_key=f"test:self:{company_id}", metadata_={})
+    company = await locked_company(s, company_id)
+    company.settings = {**(company.settings or {}), "self_contact_id": sid, "phone": PHONE}
+
+
+async def _self_contact_has_phone(s, company_id) -> bool:
+    from celerp.models.company import Company
+    from celerp.models.projections import Projection
+
+    sid = ((await s.get(Company, company_id)).settings or {})["self_contact_id"]
+    return (await s.get(Projection, {"company_id": company_id, "entity_id": sid})).state.get("phone") == PHONE
+
+
+async def _legacy_import(s, company_id) -> None:
+    """An earlier import that nothing depends on, with the one-time move not yet run."""
+    from celerp.events.engine import emit_event
+    from celerp.migrations._data_reconcile import set_meta
+    from celerp_docs.received_legacy import LEGACY_RECEIVED_KEY
+
+    await emit_event(s, company_id=company_id, entity_id=f"doc:{uuid.uuid4().hex}", entity_type="doc",
+                     event_type="doc.shared_import",
+                     data={"doc_type": "invoice", "ref_id": "OLD-1", "company_name": "Old Sender",
+                           "total": 50.0, "line_items": []},
+                     actor_id=None, location_id=None, source="share_import",
+                     idempotency_key=f"share:{uuid.uuid4().hex}:{company_id}", metadata_={})
+    conn = await s.connection()
+    await conn.run_sync(lambda c: set_meta(c, LEGACY_RECEIVED_KEY, ""))
+
+
+async def _legacy_import_moved(s, company_id) -> bool:
+    from celerp.models.ledger import LedgerEntry
+
+    return await s.scalar(select(LedgerEntry.id).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == "doc.shared_import").limit(1)) is None
+
+
+# Each backfill, with what makes a company need it and whether the backfill reached it.
+LIFECYCLE_BACKFILLS = {
+    "celerp_accounting.routes:backfill_chart_of_accounts_hook": (_drop_chart, _has_chart),
+    "celerp_manufacturing.routes:backfill_default_work_center_hook": (_drop_work_centers, _has_default_work_center),
+    "celerp_contacts.migrations:backfill_self_contacts_hook": (_self_contact_without_phone, _self_contact_has_phone),
+    "celerp_docs.received_legacy:move_legacy_imports_hook": (_legacy_import, _legacy_import_moved),
+}
+# Needs a staged company cannot have: only the migration writes to it, and it never
+# emits doc.shared_import, which nothing but imports from before Received wrote.
+NOT_REACHABLE_WHEN_STAGED = {"celerp_docs.received_legacy:move_legacy_imports_hook"}
+
+
+def _declared_lifecycle_backfills() -> set[str]:
+    """Every on_modules_ready handler the default modules declare in their manifests."""
+    from celerp.modules.loader import read_manifest
+
+    handlers = set()
+    for pkg in sorted(p for p in (Path(__file__).resolve().parents[1] / "default_modules").iterdir()
+                      if (p / "__init__.py").exists() and p.name.startswith("celerp-")):
+        manifest = read_manifest(pkg)
+        assert manifest, f"{pkg.name} declares no readable PLUGIN_MANIFEST"
+        slot = manifest.get("slots", {}).get("on_modules_ready")
+        for entry in (slot if isinstance(slot, list) else [slot] if slot else []):
+            handlers.add(entry["handler"])
+    return handlers
+
+
+async def _company_rows(engine, company_id) -> dict:
+    """A fingerprint of every row the company owns, across every company-scoped table."""
+    from celerp.services.migrations import _company_tables
+
+    async with maker(engine)() as s:
+        rows = {"companies": await s.scalar(text("SELECT c::text FROM companies c WHERE id = :c"),
+                                            {"c": str(company_id)})}
+        for table in await _company_tables(s):
+            rows[table] = await s.scalar(text(
+                f'SELECT md5(coalesce(string_agg(t::text, \'|\' ORDER BY t::text), \'\')) '
+                f'FROM "{table}" t WHERE company_id::text = :c'), {"c": str(company_id)})
+    return rows
+
+
+async def test_no_lifecycle_backfill_filters_on_is_active_alone(real_engine):
+    """Every on_modules_ready backfill a default module declares reaches a deactivated company
+    that is not staged, and leaves a company staged for a migration exactly as it was."""
+    from celerp.services import provisioning
+
+    declared = _declared_lifecycle_backfills()
+    assert declared == set(LIFECYCLE_BACKFILLS), "declare each on_modules_ready backfill's need and coverage here"
+
+    async with maker(real_engine)() as s:
+        paused = await _plain_company(s, "Paused Co", active=False)
+        staged = await provisioning.provision_migration_company(s, owner=await _owner(s), company_name="Staged Co")
+        for handler, (need, _) in sorted(LIFECYCLE_BACKFILLS.items()):
+            await need(s, paused.id)
+            if handler not in NOT_REACHABLE_WHEN_STAGED:
+                await need(s, staged.id)
+        await s.commit()
+    before = await _company_rows(real_engine, staged.id)
+
+    for handler in sorted(declared):
+        module, name = handler.split(":")
+        async with maker(real_engine)() as s:
+            await getattr(importlib.import_module(module), name)(session=s)
+            await s.commit()
+
+    async with maker(real_engine)() as s:
+        missed = [h for h, (_, covered) in sorted(LIFECYCLE_BACKFILLS.items()) if not await covered(s, paused.id)]
+    assert missed == [], f"backfills that skipped a deactivated company: {missed}"
+    assert await _company_rows(real_engine, staged.id) == before
+    assert await _staged(real_engine, staged.id) is True
