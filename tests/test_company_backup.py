@@ -578,6 +578,35 @@ async def test_excluded_installation_state(real_engine, real_client, tmp_path, m
     assert await count(real_engine, "users") == 2
 
 
+async def test_imported_items_travel_and_import_again_after_restore(real_engine, real_client, tmp_path, monkeypatch):
+    """Items brought in by a file import come back with their prices in the restored company,
+    the import history stays behind, and the same import can run again in the restored company."""
+    _bk_local(monkeypatch, tmp_path)
+    _, cid, tok = await _bk_setup(real_engine)
+    rows = [{"sku": "IMP-1", "name": "Imported one", "sell_by": "piece", "retail_price": 120},
+            {"sku": "IMP-2", "name": "Imported two", "sell_by": "piece", "retail_price": 80}]
+    r = await real_client.post("/items/import/rows", json={"rows": rows, "idempotency_key": "op-1"},
+                               headers=auth(tok))
+    assert r.status_code == 200 and r.json()["created"] == 2 and not r.json()["errors"], r.text
+    assert await count(real_engine, "import_batches", "company_id = :c", c=cid) == 1
+
+    new = uuid.UUID(await _bk_restore_new(real_client, tok, await download(real_client, tok)))
+    assert await count(real_engine, "import_batches", "company_id = :c", c=new) == 0
+    new_tok = await token(real_engine, (await _bk_scalar(
+        real_engine, "SELECT user_id FROM user_companies WHERE company_id = :c", c=new)), new)
+    items = (await real_client.get("/items", headers=auth(new_tok))).json()["items"]
+    assert sorted((i["sku"], i["retail_price"]) for i in items if str(i.get("sku")).startswith("IMP-")) == [("IMP-1", 120), ("IMP-2", 80)]
+
+    again = [{**row, "retail_price": row["retail_price"] + 1} for row in rows]
+    r = await real_client.post("/items/import/rows", json={"rows": again, "upsert": True, "idempotency_key": "op-1"},
+                               headers=auth(new_tok))
+    assert r.status_code == 200 and r.json()["updated"] == 2 and not r.json()["errors"], r.text
+    items = (await real_client.get("/items", headers=auth(new_tok))).json()["items"]
+    assert sorted((i["sku"], i["retail_price"]) for i in items if str(i.get("sku")).startswith("IMP-")) == [("IMP-1", 121), ("IMP-2", 81)]
+    items = (await real_client.get("/items", headers=auth(tok))).json()["items"]
+    assert sorted((i["sku"], i["retail_price"]) for i in items if str(i.get("sku")).startswith("IMP-")) == [("IMP-1", 120), ("IMP-2", 80)]
+
+
 async def _bk_add_connector(engine, cid, user, marker):
     from celerp.models.connector_config import ConnectorConfig
     async with maker(engine)() as s:
