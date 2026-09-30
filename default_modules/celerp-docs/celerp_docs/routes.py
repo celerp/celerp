@@ -41,12 +41,12 @@ from celerp.services.attachments import attach_file, store_upload
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
-from celerp.services.permissions import assert_role_permission, get_current_company_settings, require_permission, role_has_permission
+from celerp.services.permissions import assert_role_permission, get_current_company_settings, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
-from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, resolve_price
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
@@ -3582,7 +3582,7 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
 
 
 @router.post("/{entity_id}/receive")
-async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("fulfill_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("fulfill_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # A receipt adds to the quantity and cost of the lots it reads, so it waits for any
     # receipt or cost change in flight and reads what that one committed.
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -3632,6 +3632,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     item_skus = {r.entity_id: str(r.state.get("sku") or "").strip() for r in all_item_rows}
     for it in payload.received_items:
         _resolve_inbound_line(row.state, it, item_skus)
+    _recv_price_lists = (await get_price_config(session, company_id))[0]
     item_conversion_map: dict[str, float] = {
         r.entity_id: float(r.state.get("purchase_conversion_factor") or 1)
         for r in all_item_rows
@@ -3815,6 +3816,12 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 _v = _doc_val or _payload_val
                 if _v:
                     item_data[_f] = _v
+            # Attributes from the bill line or the request are caller-authored, so a price
+            # among them (other than one carried over unchanged from the item) takes the
+            # same set_inventory_prices gate as every inventory writer.
+            _inherited = (sku_ref.get("attributes") or {}) | {k: sku_ref.get(k) for k in _INHERIT}
+            _authored = {k: v for k, v in (item_data.get("attributes") or {}).items() if _inherited.get(k) != v}
+            reject_price_change(price_keys_in({"attributes": _authored}, _recv_price_lists), role, settings)
             # Payload values always take precedence for the fields below
             item_data.update({
                 "sku": _sku,

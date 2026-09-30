@@ -657,6 +657,26 @@ class TestClickToEdit:
         assert b"<input" in granted.content
 
     @pytest.mark.asyncio
+    async def test_price_list_column_readonly_without_permission(self, ui_client):
+        """A column named after a price list (stored under the list's name) is a price
+        too, so it renders read-only for an operator without set_inventory_prices."""
+        schema = [{"key": "Wholesale", "label": "Wholesale", "type": "money", "editable": True}]
+        item = {"entity_id": "gc:123", "status": "available", "Wholesale": 5}
+        company = {"settings": {"price_lists": [{"name": "Retail"}, {"name": "Wholesale"}]}}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=company)),
+        ):
+            r = await ui_client.get("/api/items/gc:123/field/Wholesale/edit", cookies=_authed(role="operator"))
+            granted = await ui_client.get("/api/items/gc:123/field/Wholesale/edit", cookies=_authed(role="manager"))
+        assert r.status_code == 200
+        assert b"<input" not in r.content
+        assert b"<input" in granted.content
+
+    @pytest.mark.asyncio
     async def test_item_detail_prices_readonly_without_permission(self, ui_client):
         """The item page renders Retail and Wholesale without the click-to-edit entry
         for an operator lacking set_inventory_prices; other fields stay editable."""

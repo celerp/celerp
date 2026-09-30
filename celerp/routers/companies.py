@@ -558,6 +558,9 @@ async def patch_location(
         loc_uuid = uuid.UUID(location_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid location id")
+    # Company first, then the location: the order an import commit takes them in (and the
+    # tax re-seed below needs the company lock), so the two wait instead of deadlocking.
+    await lock_company(session, company_id)
     loc = await session.get(Location, loc_uuid)
     if loc is None or loc.company_id != company_id:
         raise HTTPException(status_code=404, detail="Location not found")

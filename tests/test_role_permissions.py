@@ -2131,3 +2131,100 @@ async def test_batch_import_nested_price_denied_without_permission(client, sessi
     )]}, headers=ctx["operator_h"])
     assert r.status_code == 200, r.text
     assert r.json()["created"] == 0 and r.json()["errors"], r.text
+
+
+# Document receipts and cost overrides are item writers too (issue #363).
+
+async def _finalized_bill(client, ctx, sku: str, line: dict | None = None) -> tuple[str, str]:
+    template = (await client.post("/items", headers=ctx["admin_h"], json={
+        "status": "available", "sku": sku, "name": sku, "quantity": 0, "sell_by": "piece",
+        "location_id": ctx["location_id"], "retail_price": 10,
+    })).json()["id"]
+    bill = (await client.post("/docs", headers=ctx["admin_h"], json={
+        "doc_type": "bill",
+        "line_items": [{"item_id": template, "sku": sku, "name": sku, "quantity": 2,
+                        "unit_price": 5, "line_total": 10, **(line or {})}],
+        "total": 10,
+    })).json()["id"]
+    assert (await client.post(f"/docs/{bill}/finalize", headers=ctx["admin_h"])).status_code == 200
+    return bill, template
+
+
+async def _receive_bill(client, ctx, bill, template, sku, **extra):
+    return await client.post(f"/docs/{bill}/receive", headers=ctx["operator_h"], json={
+        "location_id": ctx["location_id"],
+        "received_items": [{"item_id": template, "sku": sku, "name": sku, "quantity_received": 2,
+                            "cost_price": 5, "receive_as": "stock", **extra}],
+    })
+
+
+async def _parcels(client, ctx, sku, template):
+    items = (await client.get("/items", params={"q": sku}, headers=ctx["admin_h"])).json()["items"]
+    return [i for i in items if i["id"] != template and i.get("sku") == sku]
+
+
+@pytest.mark.parametrize("attrs", [{"retail_price": 4242}, {"Wholesale": 3131}])
+async def test_bill_receive_request_price_denied_without_permission(client, session, attrs):
+    """A receipt that carries a sell price in the received item's attributes is refused
+    whole for an operator without set_inventory_prices; no parcel is created."""
+    ctx = await perm_setup(client, session)
+    bill, template = await _finalized_bill(client, ctx, "RCV-P")
+    r = await _receive_bill(client, ctx, bill, template, "RCV-P", attributes=attrs)
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == _PRICE_DENIED
+    assert await _parcels(client, ctx, "RCV-P", template) == []
+
+
+async def test_bill_receive_keeps_inherited_price_without_permission(client, session):
+    """A plain receipt stays open to the operator: the parcel carries the item's own
+    price unchanged, and a non-price attribute is accepted."""
+    ctx = await perm_setup(client, session)
+    bill, template = await _finalized_bill(client, ctx, "RCV-OK")
+    r = await _receive_bill(client, ctx, bill, template, "RCV-OK", attributes={"color": "red"})
+    assert r.status_code == 200, r.text
+    [parcel] = await _parcels(client, ctx, "RCV-OK", template)
+    assert parcel["retail_price"] == 10
+
+
+async def test_merge_cost_override_denied_without_permission(client, session):
+    """A resulting cost that differs from the sources' sum is a price write: refused for
+    an operator without set_inventory_prices; sending the computed sum back is allowed."""
+    ctx = await perm_setup(client, session)
+    ids = []
+    for sku in ("MRG-C-A", "MRG-C-B"):
+        r = await client.post("/items", headers=ctx["admin_h"], json={
+            "sku": sku, "name": sku, "quantity": 1, "category": "Raw", "status": "available",
+            "location_id": ctx["location_id"], "sell_by": "piece", "cost_total": 10,
+        })
+        ids.append(r.json()["id"])
+    r = await client.post("/items/merge", headers=ctx["operator_h"], json={
+        "source_entity_ids": ids, "target_sku_from": ids[0], "resulting_cost_total": 99999,
+    })
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == _PRICE_DENIED
+    r = await client.post("/items/merge", headers=ctx["operator_h"], json={
+        "source_entity_ids": ids, "target_sku_from": ids[0], "resulting_cost_total": 20,
+    })
+    assert r.status_code == 200, r.text
+
+
+async def test_transform_cost_override_denied_without_permission(client, session):
+    """A child cost that differs from the parent's is a price write: refused for a role
+    that sees cost but lacks set_inventory_prices; without an override the child keeps
+    the parent's cost."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "set_inventory_prices", "admin")
+    r = await client.post("/items", headers=ctx["admin_h"], json={
+        "sku": "TF-C", "name": "TF-C", "quantity": 2, "status": "available",
+        "location_id": ctx["location_id"], "sell_by": "piece", "cost_total": 50,
+    })
+    parent = r.json()["id"]
+    body = {"child_sku": "TF-C.1", "child_category": "Raw", "child_sell_by": "piece", "child_quantity": 2}
+    r = await client.post(f"/items/{parent}/transform", headers=ctx["manager_h"],
+                          json={**body, "child_cost_total": 77777})
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == _PRICE_DENIED
+    r = await client.post(f"/items/{parent}/transform", headers=ctx["manager_h"], json=body)
+    assert r.status_code == 200, r.text
+    child = (await client.get("/items", params={"q": "TF-C.1"}, headers=ctx["admin_h"])).json()["items"]
+    assert [c["cost_total"] for c in child if c.get("sku") == "TF-C.1"] == [50]

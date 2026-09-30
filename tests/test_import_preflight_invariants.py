@@ -972,3 +972,34 @@ async def test_location_delete_waits_for_an_import_placing_items_there(committed
         with pytest.raises(HTTPException) as err:
             await delete_location(annex_id, company_id=company_id, session=s)
     assert err.value.status_code == 409 and "3 item(s)" in err.value.detail
+
+
+async def test_location_default_change_and_import_commit_do_not_deadlock(committed_engine):
+    """Making a location the default (which may re-seed the company's taxes) takes the
+    company lock before it changes any location: the order an import commit uses
+    (company, then its locations FOR SHARE), so the two wait for each other instead of
+    one failing with a deadlock."""
+    from celerp.models.company import Location
+    from celerp.routers.companies import LocationPatch, patch_location
+    from celerp.services.company_lock import lock_company
+
+    factory = _factory(committed_engine)
+    company_id, _user_id, _entity_id = await _seed_member_with_item(factory)
+    async with factory() as s:
+        annex = Location(id=uuid.uuid4(), company_id=company_id, name="Annex", type="warehouse")
+        s.add(annex)
+        await s.commit()
+        annex_id = str(annex.id)
+
+    async with factory() as importer, factory() as editor:
+        await lock_company(importer, company_id)
+        edit = asyncio.create_task(patch_location(
+            annex_id, LocationPatch(is_default=True, address={"country": "TH"}),
+            company_id=company_id, session=editor,
+        ))
+        await _until_blocked_or_done(committed_engine, edit)
+        await importer.execute(select(Location).where(Location.company_id == company_id)
+                               .order_by(Location.id).with_for_update(read=True))
+        await importer.commit()
+        result = await asyncio.wait_for(edit, timeout=10)
+    assert result["is_default"] is True

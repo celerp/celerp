@@ -29,7 +29,7 @@ from celerp.services.permissions import role_has_permission
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, cost_columns
 from celerp.services.field_schema import union_category_attr_keys as _union_category_attr_keys
-from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, is_price_item_key, price_key, resolve_price
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, is_price_item_key, price_key, price_lists_in, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
 from ui.i18n import t, get_lang, is_rtl, field_label
@@ -3610,9 +3610,10 @@ function celerpPrintLabel(entityId, templateId) {
             company = await api.get_company(token)
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--warning"))
-        # The endpoint is the trust boundary; cost is only shown to a role that holds
-        # view_inventory_costs. On any settings error the guard above fails closed.
-        can_see_cost = role_has_permission(company.get("settings") or {}, _get_role(request), "view_inventory_costs")
+        # The endpoint is the trust boundary; the cost override is only offered to a role
+        # that may both see cost and set prices. On any settings error the guard above fails closed.
+        _tf_settings = company.get("settings") or {}
+        can_see_cost = all(role_has_permission(_tf_settings, _get_role(request), p) for p in ("view_inventory_costs", "set_inventory_prices"))
 
         parent_qty = float(item.get("quantity") or 0)
         parent_sell_by = item.get("sell_by") or "piece"
@@ -6080,7 +6081,8 @@ def _locked_edit_keys(schema: list[dict], role: str, settings: dict, *, is_draft
     if not role_has_permission(settings, role, "edit_inventory_amounts"):
         locked |= AMOUNT_EDIT_GATED_KEYS
     if not role_has_permission(settings, role, "set_inventory_prices"):
-        locked |= {f["key"] for f in schema if f.get("key") and is_price_item_key(f["key"])}
+        _lists = price_lists_in(settings or {})
+        locked |= {f["key"] for f in schema if f.get("key") and is_price_item_key(f["key"], _lists)}
     if is_draft and role_has_permission(settings, role, "edit_inventory"):
         locked -= AMOUNT_EDIT_GATED_KEYS | COST_SCHEMA_KEYS
     return locked

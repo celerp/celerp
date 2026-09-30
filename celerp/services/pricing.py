@@ -262,6 +262,11 @@ def normalized_price_lists(price_lists: list[dict]) -> list[dict]:
     return out
 
 
+def price_lists_in(settings: dict) -> list[dict]:
+    """The company's price lists from its settings, or the fallback lists."""
+    return settings.get("price_lists") or PRICE_LISTS_FALLBACK
+
+
 async def get_price_config(session: AsyncSession, company_id) -> tuple[list[dict], str, str]:
     """The company's ``(price_lists, base_price_list, currency)`` in one settings read.
 
@@ -277,7 +282,7 @@ async def get_price_config(session: AsyncSession, company_id) -> tuple[list[dict
             return PRICE_LISTS_FALLBACK, DEFAULT_PRICE_LIST_NAME, "USD"
     co = await session.get(Company, company_id)
     settings = (co.settings if co else {}) or {}
-    price_lists = settings.get("price_lists") or PRICE_LISTS_FALLBACK
+    price_lists = price_lists_in(settings)
     base_name = settings.get("base_price_list") or DEFAULT_PRICE_LIST_NAME
     currency = settings.get("currency") or "USD"
     return price_lists, base_name, currency
