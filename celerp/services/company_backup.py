@@ -44,7 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import celerp.db
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
-from celerp.modules.importer import _installed_table_prefixes
+from celerp.modules.importer import installed_table_prefixes
 from celerp.modules.loader import module_search_path, read_manifest, resolve_module_path
 from celerp.modules.registry import get_enabled, set_enabled
 from celerp.services import attachments, bootstrap
@@ -233,7 +233,7 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
     """The tables a backup carries, parents first. Strict (export) refuses any company
     table it cannot carry; otherwise (restore) such tables are simply not carried."""
     schema = await _schema(session)
-    prefixes = _installed_table_prefixes("")
+    prefixes = installed_table_prefixes("")
     owners: dict[str, str] = {}
     carried: list[str] = []
     for name in sorted(schema):

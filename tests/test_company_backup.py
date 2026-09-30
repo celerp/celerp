@@ -686,7 +686,7 @@ async def test_every_company_table_classified_full_schema(real_engine):
     """Every company table in the shipped schema, bundled modules included, is portable,
     excluded with a reason, or owned by a module prefix, and exactly one of these."""
     from celerp.models.base import Base
-    from celerp.modules.importer import _installed_table_prefixes
+    from celerp.modules.importer import installed_table_prefixes
     from celerp.services.migrations import company_tables
     cb = _bk_cb()
     _bk_import_bundled_models()
@@ -694,7 +694,7 @@ async def test_every_company_table_classified_full_schema(real_engine):
         database = set(await company_tables(s))
         portable = await cb.classify(s)
     declared = {name for name, table in Base.metadata.tables.items() if "company_id" in table.columns}
-    prefixes = tuple(_installed_table_prefixes("").values())
+    prefixes = tuple(installed_table_prefixes("").values())
     for table in sorted(database | declared):
         groups = [table in cb.PORTABLE_TABLES, table in cb.EXCLUDED_TABLES,
                   bool(prefixes) and table.startswith(prefixes)]
@@ -706,11 +706,11 @@ async def test_every_company_table_classified_full_schema(real_engine):
 
 async def test_no_table_in_both_groups():
     """No table is both portable and excluded, and neither list claims a module-prefix table."""
-    from celerp.modules.importer import _installed_table_prefixes
+    from celerp.modules.importer import installed_table_prefixes
     cb = _bk_cb()
     assert isinstance(cb.PORTABLE_TABLES, frozenset) and isinstance(cb.EXCLUDED_TABLES, dict)
     assert not set(cb.PORTABLE_TABLES) & set(cb.EXCLUDED_TABLES)
-    prefixes = tuple(_installed_table_prefixes("").values())
+    prefixes = tuple(installed_table_prefixes("").values())
     if prefixes:
         assert not [t for t in (*cb.PORTABLE_TABLES, *cb.EXCLUDED_TABLES) if t.startswith(prefixes)]
     assert set(cb.PORTABLE_TABLES) == {"locations", "work_centers", "ledger", "projections", "accounts",
