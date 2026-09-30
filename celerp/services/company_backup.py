@@ -51,7 +51,9 @@ import celerp.db
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.modules.importer import installed_table_prefixes
-from celerp.modules.loader import is_running, module_search_path, read_manifest, resolve_module_path
+from celerp.modules.loader import (
+    is_core_folded, is_running, module_search_path, read_manifest, resolve_module_path, running_version,
+)
 from celerp.modules.registry import get_enabled, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
 from celerp.services.auth import verify_password
@@ -793,14 +795,20 @@ def _check_modules(manifest: dict) -> None:
         if name not in versions:
             continue
         needed = versions[name]
-        have = read_manifest(path).get("version")
-        try:
-            new_enough = Version(str(have)) >= Version(needed)
-        except InvalidVersion:
-            new_enough = have == needed
-        if not new_enough:
+        # Core-folded modules ship inside Celerp itself, so their installed copy is the running one.
+        have = read_manifest(path).get("version") if is_core_folded(name) else running_version(name)
+        if not _new_enough(have, needed):
+            restart = (" A newer copy is installed; restart Celerp, then try again."
+                       if _new_enough(read_manifest(path).get("version"), needed) else "")
             raise BackupError(422, f"This company backup needs the {name} module version {needed} or later."
-                              + _NOT_RESTORED)
+                              + restart + _NOT_RESTORED)
+
+
+def _new_enough(have, needed: str) -> bool:
+    try:
+        return Version(str(have)) >= Version(needed)
+    except InvalidVersion:
+        return have == needed
 
 
 def _lines(zf: zipfile.ZipFile, name: str):

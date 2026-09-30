@@ -64,8 +64,15 @@ def _bk_modules_running(monkeypatch):
     """Every bundled module and the fake third-party one run here, as on an installation
     that turned them on; tests model a module that is not running by taking it out."""
     from celerp.modules import loader
-    names = [p.name for p in (REPO_ROOT / "default_modules").iterdir() if (p / "__init__.py").is_file()]
-    monkeypatch.setattr(loader, "_loaded", [*loader._loaded, *({"name": n} for n in [*names, _BK_MODULE])])
+    running = [loader.read_manifest(p) for p in (REPO_ROOT / "default_modules").iterdir() if (p / "__init__.py").is_file()]
+    monkeypatch.setattr(loader, "_loaded", [*loader._loaded, *running, {"name": _BK_MODULE, "version": "2.0.0"}])
+
+
+def _bk_running_version(monkeypatch, name: str, version: str) -> None:
+    """This process runs *version* of *name*, whatever the installed copy on disk says."""
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "_loaded", [*(m for m in loader._loaded if m["name"] != name),
+                                            {"name": name, "version": version}])
 
 
 def _bk_not_running(monkeypatch, name: str) -> None:
@@ -117,6 +124,7 @@ def _bk_fake_module(tmp_path, monkeypatch, *, version: str = "2.0.0", backup: di
         f'    return "{_BK_CODE_MARKER}"\n')
     existing = [e for e in os.environ.get("MODULE_DIR", "").split(",") if e.strip() and e.strip() != str(root)]
     monkeypatch.setenv("MODULE_DIR", ",".join([str(root), *existing]))
+    _bk_running_version(monkeypatch, _BK_MODULE, version)
     return pkg
 
 
@@ -1486,6 +1494,18 @@ async def test_incompatible_module_version_refused_before_writes(real_engine, re
         assert manifest(data)["modules"]["versions"][_BK_MODULE] == "2.0.0"
         _bk_fake_module(tmp_path, monkeypatch, version="1.0.0")
         await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, _BK_MODULE)
+    finally:
+        await _bk_drop(real_engine, "zz_widgets")
+
+
+async def test_module_updated_on_disk_but_not_restarted_refused(real_engine, real_client, tmp_path, monkeypatch):
+    """A module whose newer copy is installed but not yet running is refused until a restart,
+    because the running code, not the files on disk, owns its tables."""
+    try:
+        user, tok, pkg, data = await _bk_module_backup(real_engine, real_client, tmp_path, monkeypatch)
+        assert manifest(data)["modules"]["versions"][_BK_MODULE] == "2.0.0"
+        _bk_running_version(monkeypatch, _BK_MODULE, "1.0.0")
+        await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, _BK_MODULE, "restart Celerp")
     finally:
         await _bk_drop(real_engine, "zz_widgets")
 
