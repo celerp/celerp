@@ -720,8 +720,8 @@ function resolveStorageEnv(cfg) {
  * Periodic re-check: every 4 hours while the app is running, in case a new
  * version is released while the user has the app open.
  *
- * The updater state (update-state.js) lives here, not in the page: every
- * navigation is a full page load, so each page replays it via get-update-state.
+ * The updater state (update-state.js) lives here, not in the page, so a page
+ * that loads or is restored later replays it via get-update-state.
  */
 // Idle until the updater is set up (dev builds never set it up).
 let getUpdateState = initialUpdateState;

@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 //
 // Updater state kept in the main process, so a page that loads after an
-// updater event can still show it. Every navigation in the app window is a
-// full page load, so the renderer asks for this state on load and renders it
-// with the same code it uses for live events.
+// updater event can still show it. The renderer asks for this state when a
+// page loads or is restored from history, and renders it with the same code
+// it uses for live events.
 //
 // No Electron imports: safe to require in Jest, and the state lives only in
 // memory, so a relaunch starts idle.
