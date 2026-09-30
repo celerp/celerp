@@ -3438,6 +3438,8 @@
   "company_backup.attachments": "File allegati",
   "company_backup.preview_subtitle": "Controlla il backup prima di ripristinarlo.",
   "company_backup.separate_company": "Celerp lo ripristina come azienda separata, così l'azienda attuale non viene sovrascritta. Puoi verificare l'azienda ripristinata prima di disattivare quella vecchia.",
+  "company_backup.team_keeps_access": "Membri del team che mantengono accesso e ruoli nell'azienda ripristinata: {count}",
+  "company_backup.team_given_access": "Membri del team a cui è stato dato accesso a questa azienda con i ruoli attuali: {count}",
   "company_backup.nothing_written": "Non è stato ancora scritto nulla.",
   "company_backup.restore": "Ripristina azienda",
   "company_backup.choose_other": "Scegli un altro file",

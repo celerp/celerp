@@ -3438,6 +3438,8 @@
   "company_backup.attachments": "File terlampir",
   "company_backup.preview_subtitle": "Periksa cadangan sebelum memulihkannya.",
   "company_backup.separate_company": "Celerp memulihkan ini sebagai perusahaan terpisah sehingga perusahaan Anda saat ini tidak ditimpa. Anda dapat memeriksa perusahaan yang dipulihkan sebelum menonaktifkan yang lama.",
+  "company_backup.team_keeps_access": "Anggota tim yang tetap memiliki akses dan peran di perusahaan yang dipulihkan: {count}",
+  "company_backup.team_given_access": "Anggota tim yang diberi akses ke perusahaan ini dengan peran mereka saat ini: {count}",
   "company_backup.nothing_written": "Belum ada yang ditulis.",
   "company_backup.restore": "Pulihkan perusahaan",
   "company_backup.choose_other": "Pilih file lain",

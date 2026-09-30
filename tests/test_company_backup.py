@@ -2415,3 +2415,26 @@ async def test_attachment_named_before_type_extensions_round_trips(real_engine, 
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
     assert "a type Celerp does not store" in r.json()["detail"] and r.json()["detail"].endswith("Nothing was backed up.")
+
+
+async def test_team_count_stated_in_preview_and_result(real_engine, real_client, tmp_path, monkeypatch):
+    """A same-company Settings restore states before and after how many team members get access; others state none."""
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(real_engine)
+    await member(real_engine, await owner(real_engine, "clerk@example.com", "Clerk"), cid, "viewer")
+    await member(real_engine, await owner(real_engine, "buyer@example.com", "Buyer"), cid, "manager")
+    await member(real_engine, await owner(real_engine, "gone@example.com", "Gone"), cid, "admin", active=False)
+    data = await download(real_client, tok)
+    r = await read(real_client, tok, data)
+    assert r.status_code == 200, r.text
+    assert r.json()["team_members"] == 2
+    body = _r_created(await restore(real_client, tok, data, "settings"))
+    assert body["team_members"] == 2
+    again = await restore(real_client, tok, data, "settings")
+    assert again.status_code == 200 and again.json()["team_members"] == 0
+
+    other = await company(real_engine, user, "Beta Trading", "beta-marker")
+    other_tok = await token(real_engine, user, other)
+    r = await read(real_client, other_tok, data)
+    assert r.status_code == 200, r.text
+    assert r.json()["team_members"] == 0

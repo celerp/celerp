@@ -3438,6 +3438,8 @@
   "company_backup.attachments": "ไฟล์แนบ",
   "company_backup.preview_subtitle": "ตรวจสอบไฟล์สำรองก่อนกู้คืน",
   "company_backup.separate_company": "Celerp กู้คืนข้อมูลนี้เป็นบริษัทแยกต่างหาก บริษัทปัจจุบันของคุณจึงไม่ถูกเขียนทับ คุณตรวจสอบบริษัทที่กู้คืนได้ก่อนปิดใช้งานบริษัทเดิม",
+  "company_backup.team_keeps_access": "สมาชิกในทีมที่ยังคงสิทธิ์เข้าถึงและบทบาทเดิมในบริษัทที่กู้คืน: {count}",
+  "company_backup.team_given_access": "สมาชิกในทีมที่ได้รับสิทธิ์เข้าถึงบริษัทนี้ตามบทบาทปัจจุบัน: {count}",
   "company_backup.nothing_written": "ยังไม่มีการเขียนข้อมูลใดๆ",
   "company_backup.restore": "กู้คืนบริษัท",
   "company_backup.choose_other": "เลือกไฟล์อื่น",

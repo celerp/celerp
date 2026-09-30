@@ -58,7 +58,7 @@ BOOTSTRAP = WizardMode("bootstrap", "/setup/restore-backup", "/setup", _TITLE, _
 
 UPLOAD_COOKIE = "celerp_company_backup_upload"
 UPLOAD_TTL_SECONDS = 24 * 3600
-_PREVIEW_FIELDS = ("company_name", "created_at", "records", "attachments", "prepared_by")
+_PREVIEW_FIELDS = ("company_name", "created_at", "records", "attachments", "prepared_by", "team_members")
 
 
 def _html(page, status_code: int = 200) -> HTMLResponse:
@@ -74,6 +74,12 @@ def _message(e: APIError) -> str:
 
 def _status(e: APIError) -> int:
     return e.status if e.status >= 400 else 502
+
+
+def _count(value) -> int:
+    """A count carried in a form or query value; 0 when it is not a count."""
+    value = str(value or "")
+    return int(value) if value.isdigit() else 0
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +152,7 @@ def _upload_again(request: Request, mode: WizardMode, message: str):
 async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, values: dict | None = None,
                         error: str | None = None):
     values = values or {}
+    team = _count(preview.get("team_members")) if mode is SETTINGS else 0
     rows = [
         (t("company_backup.backup_date"), format_value(preview.get("created_at"), "date")),
         (t("company_backup.records"), str(preview.get("records") or "--")),
@@ -159,6 +166,7 @@ async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, va
         flash(error) if error else "",
         Table(Tbody(*[Tr(Td(k), Td(v)) for k, v in rows]), cls="data-table"),
         P(t("company_backup.separate_company"), cls="form-hint") if mode is SETTINGS else "",
+        P(t("company_backup.team_keeps_access", count=team), cls="flash flash--warning") if team else "",
         P(t("company_backup.nothing_written"), cls="form-hint"),
         Form(
             *[Input(type="hidden", name=f"preview_{k}", value=str(preview.get(k) or "")) for k in _PREVIEW_FIELDS],
@@ -226,8 +234,10 @@ async def _restore(request: Request, mode: WizardMode):
         if e.status in (409, 422) and not isinstance(e.detail, dict):
             return _upload_again(request, mode, _message(e))
         return await _preview_page(request, mode, preview, values=values, error=_message(e))
-    # The session moves to the restored company; the next page says so.
-    resp = RedirectResponse(f"{mode.base}/done", status_code=303)
+    # The session moves to the restored company; the next page says so, and how many of the
+    # team were given access to it.
+    team = _count(restored.get("team_members"))
+    resp = RedirectResponse(f"{mode.base}/done" + (f"?team_members={team}" if team else ""), status_code=303)
     set_session_cookies(resp, restored["access_token"], restored["refresh_token"], request)
     _clear_upload_cookie(resp, mode, request)
     return resp
@@ -243,11 +253,13 @@ async def _done(request: Request, mode: WizardMode):
     except APIError:
         company = {}
     restored = (company.get("settings") or {}).get("restored_backup") or {}
+    team = _count(request.query_params.get("team_members")) if mode is SETTINGS else 0
     return wizard_page(
         request,
         auth_header(t("company_backup.restored_title"), company.get("name", "")),
         P(t("company_backup.restored_notice", date=format_value(restored["created_at"], "date")),
           cls="flash flash--success") if restored.get("created_at") else "",
+        P(t("company_backup.team_given_access", count=team), cls="flash flash--success") if team else "",
         A(t("migration.open_company"), href="/", cls="btn btn--primary btn--full"),
         title=_TITLE,
     )

@@ -3438,6 +3438,8 @@
   "company_backup.attachments": "የተያያዙ ፋይሎች",
   "company_backup.preview_subtitle": "ከመመለስዎ በፊት ምትኬውን ያረጋግጡ።",
   "company_backup.separate_company": "የአሁኑ ኩባንያዎ እንዳይተካ Celerp ይህንን እንደ የተለየ ኩባንያ ይመልሰዋል። የድሮውን ከማቦዘንዎ በፊት የተመለሰውን ኩባንያ ማረጋገጥ ይችላሉ።",
+  "company_backup.team_keeps_access": "በተመለሰው ኩባንያ ውስጥ መዳረሻቸውን እና ሚናቸውን የሚይዙ የቡድን አባላት: {count}",
+  "company_backup.team_given_access": "አሁን ባላቸው ሚና የዚህ ኩባንያ መዳረሻ የተሰጣቸው የቡድን አባላት: {count}",
   "company_backup.nothing_written": "እስካሁን ምንም አልተጻፈም።",
   "company_backup.restore": "ኩባንያውን መልስ",
   "company_backup.choose_other": "ሌላ ፋይል ይምረጡ",

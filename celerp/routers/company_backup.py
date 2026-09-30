@@ -122,8 +122,9 @@ def _save(source: BinaryIO, dest: Path) -> None:
             out.write(chunk)
 
 
-async def _read(file: UploadFile, owner: str, session: AsyncSession) -> dict:
-    """Stage an uploaded backup, check it, and return its preview with the upload token."""
+async def _read(file: UploadFile, owner: str, session: AsyncSession, ctx: AuthContext | None = None) -> dict:
+    """Stage an uploaded backup, check it, and return its preview with the upload token and,
+    for a signed-in owner, how many of the current company's team a Settings restore gives access."""
     _purge(_root() / "uploads")
     token = secrets.token_hex(16)
     path = _staged(owner, token)
@@ -132,10 +133,12 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession) -> dict:
         await asyncio.to_thread(_save, file.file, path)
         backup = await asyncio.to_thread(cb.read_backup, path)
         await cb.check_backup(session, backup)
+        team = 0 if ctx is None else await cb.team_members(session, backup, current_company_id=ctx.company_id,
+                                                            user_id=ctx.user.id)
     except BaseException:
         path.unlink(missing_ok=True)
         raise
-    return {"upload_token": token, **backup.summary()}
+    return {"upload_token": token, **backup.summary(), "team_members": team}
 
 
 async def _signed_in(session: AsyncSession, result: cb.RestoreResult) -> dict:
@@ -146,7 +149,7 @@ async def _signed_in(session: AsyncSession, result: cb.RestoreResult) -> dict:
         UserCompany.user_id == user.id, UserCompany.company_id == company.id, UserCompany.is_active.is_(True)))
     tokens = await issue_token_pair(session, user=user, company=company, role=role)
     return {"company_id": result.company_id, "company_name": result.company_name, "created": result.created,
-            "backup_created_at": result.backup_created_at, **tokens}
+            "backup_created_at": result.backup_created_at, "team_members": result.team_members, **tokens}
 
 
 class RestoreIn(BaseModel):
@@ -158,7 +161,7 @@ class RestoreIn(BaseModel):
 async def read_backup(file: UploadFile = File(...), ctx: AuthContext = Depends(user_owner),
                       session: AsyncSession = Depends(get_session)):
     try:
-        return await _read(file, str(ctx.user.id), session)
+        return await _read(file, str(ctx.user.id), session, ctx)
     except cb.BackupError as exc:
         return _error(exc)
 

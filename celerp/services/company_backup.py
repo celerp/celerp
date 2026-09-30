@@ -738,6 +738,7 @@ class RestoreResult:
     created: bool
     backup_created_at: str
     user_id: str
+    team_members: int
 
 
 def _lock_key(backup_id: str) -> int:
@@ -781,6 +782,25 @@ async def _existing(session: AsyncSession, backup_id: str, mode: str, user_id,
     if user is None or not await _is_member(session, user.id, company.id):
         raise BackupError(409, NOT_A_MEMBER)
     return company, user
+
+
+# The current company's other active members, who get the same access to a company
+# restored from its own backup through Settings.
+_TEAM = "FROM user_companies WHERE company_id = :src AND is_active AND user_id <> :me"
+
+
+def _same_lineage(mode: str, current_company_id, source: str) -> bool:
+    return mode == "settings" and current_company_id is not None and source == str(current_company_id)
+
+
+async def team_members(session: AsyncSession, backup: BackupFile, *, current_company_id, user_id) -> int:
+    """How many of the current company's other active members a Settings restore of this
+    backup gives access to the restored company: none unless the backup is of the current company."""
+    source = backup.manifest["company"]["id"]
+    if not _same_lineage("settings", current_company_id, source):
+        return 0
+    return await session.scalar(text(f"SELECT count(*) {_TEAM}"),
+                                {"src": uuid.UUID(source), "me": uuid.UUID(str(user_id))})
 
 
 def _next_rows(it, limit: int) -> list:
@@ -847,7 +867,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             if found is not None:
                 company, user = found
                 result = RestoreResult(company_id=str(company.id), company_name=company.name, created=False,
-                                       backup_created_at=m["created_at"], user_id=str(user.id))
+                                       backup_created_at=m["created_at"], user_id=str(user.id), team_members=0)
                 await session.rollback()
                 return result
             if mode == "bootstrap":
@@ -886,12 +906,12 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 except DBAPIError:
                     raise BackupError(422, UNSAVABLE) from None
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
-            if mode == "settings" and current_company_id is not None and source == str(current_company_id):
-                await session.execute(text(
+            team = 0
+            if _same_lineage(mode, current_company_id, source):
+                team = (await session.execute(text(
                     "INSERT INTO user_companies (id, user_id, company_id, role, is_active) "
-                    "SELECT gen_random_uuid(), user_id, CAST(:new AS uuid), role, true FROM user_companies "
-                    "WHERE company_id = :src AND is_active AND user_id <> :me"),
-                    {"new": new_id, "src": uuid.UUID(source), "me": user.id})
+                    f"SELECT gen_random_uuid(), user_id, CAST(:new AS uuid), role, true {_TEAM}"),
+                    {"new": new_id, "src": uuid.UUID(source), "me": user.id})).rowcount
             await session.commit()
         except BaseException:
             await session.rollback()
@@ -902,4 +922,4 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     logger.warning("Removing attachment files of a failed company restore failed", exc_info=True)
             raise
     return RestoreResult(company_id=str(company.id), company_name=company.name, created=True,
-                         backup_created_at=m["created_at"], user_id=str(user.id))
+                         backup_created_at=m["created_at"], user_id=str(user.id), team_members=team)

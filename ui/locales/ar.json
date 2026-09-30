@@ -3438,6 +3438,8 @@
   "company_backup.attachments": "الملفات المرفقة",
   "company_backup.preview_subtitle": "راجع النسخة الاحتياطية قبل استعادتها.",
   "company_backup.separate_company": "يستعيد Celerp هذه النسخة كشركة منفصلة حتى لا تتم الكتابة فوق شركتك الحالية. يمكنك التحقق من الشركة المستعادة قبل إلغاء تنشيط الشركة القديمة.",
+  "company_backup.team_keeps_access": "أعضاء الفريق الذين يحتفظون بصلاحية الوصول وأدوارهم في الشركة المستعادة: {count}",
+  "company_backup.team_given_access": "أعضاء الفريق الذين مُنحوا صلاحية الوصول إلى هذه الشركة بأدوارهم الحالية: {count}",
   "company_backup.nothing_written": "لم تتم كتابة أي شيء بعد.",
   "company_backup.restore": "استعادة الشركة",
   "company_backup.choose_other": "اختيار ملف آخر",

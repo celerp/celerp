@@ -3438,6 +3438,8 @@
   "company_backup.attachments": "添付ファイル",
   "company_backup.preview_subtitle": "復元する前にバックアップを確認してください。",
   "company_backup.separate_company": "Celerpはこれを別の会社として復元するため、現在の会社は上書きされません。古い会社を無効にする前に、復元した会社を確認できます。",
+  "company_backup.team_keeps_access": "復元した会社でアクセス権と役割を引き継ぐチームメンバー: {count}",
+  "company_backup.team_given_access": "現在の役割のままこの会社へのアクセス権が付与されたチームメンバー: {count}",
   "company_backup.nothing_written": "まだ何も書き込まれていません。",
   "company_backup.restore": "会社を復元",
   "company_backup.choose_other": "別のファイルを選択",

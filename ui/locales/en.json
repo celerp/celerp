@@ -3438,6 +3438,8 @@
   "company_backup.attachments": "Attached files",
   "company_backup.preview_subtitle": "Check the backup before restoring it.",
   "company_backup.separate_company": "Celerp restores this as a separate company so your current company is not overwritten. You can verify the restored company before deactivating the old one.",
+  "company_backup.team_keeps_access": "Team members who keep their access and roles in the restored company: {count}",
+  "company_backup.team_given_access": "Team members given access to this company with their current roles: {count}",
   "company_backup.nothing_written": "Nothing has been written yet.",
   "company_backup.restore": "Restore company",
   "company_backup.choose_other": "Choose a different file",

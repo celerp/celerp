@@ -3438,6 +3438,8 @@
   "company_backup.attachments": "Archivos adjuntos",
   "company_backup.preview_subtitle": "Revise la copia de seguridad antes de restaurarla.",
   "company_backup.separate_company": "Celerp la restaura como una empresa independiente para que su empresa actual no se sobrescriba. Puede verificar la empresa restaurada antes de desactivar la anterior.",
+  "company_backup.team_keeps_access": "Miembros del equipo que conservan su acceso y sus roles en la empresa restaurada: {count}",
+  "company_backup.team_given_access": "Miembros del equipo que recibieron acceso a esta empresa con sus roles actuales: {count}",
   "company_backup.nothing_written": "Todavía no se ha escrito nada.",
   "company_backup.restore": "Restaurar empresa",
   "company_backup.choose_other": "Elegir otro archivo",

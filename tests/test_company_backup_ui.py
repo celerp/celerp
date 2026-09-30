@@ -447,3 +447,27 @@ async def test_system_recovery_separate_from_company_backup(ui, real_engine):
     assert "Replaces the Celerp database and installation files, affecting every company and user." in recovery
     assert CONTENTS not in recovery
     assert "/company-backup/download" not in recovery and "/settings/restore-backup" not in recovery
+
+
+TEAM_BEFORE = "Team members who keep their access and roles in the restored company: 2"
+TEAM_AFTER = "Team members given access to this company with their current roles: 2"
+
+
+async def test_settings_restore_states_team_access_before_and_after(ui, real_engine, real_client):
+    """A same-company Settings restore says on the preview and on the restored company how many team members get access."""
+    from company_backup_support import member
+    _, alpha, tok = await _setup(real_engine)
+    await member(real_engine, await owner(real_engine, "clerk@example.com", "Clerk"), alpha, "viewer")
+    await member(real_engine, await owner(real_engine, "buyer@example.com", "Buyer"), alpha, "manager")
+    data = await download(real_client, tok)
+    ui.cookies.set("celerp_token", tok)
+    base = "/settings/restore-backup"
+
+    preview = _page(await _upload_and_preview(ui, base, data))
+    assert TEAM_BEFORE in preview
+    r = await ui.post(f"{base}/restore", data=_hidden(preview))
+    assert r.status_code == 303, r.text
+    page = _page(await _follow(ui, r))
+    assert TEAM_AFTER in page, page[:2000]
+    assert "company_backup." not in page
+

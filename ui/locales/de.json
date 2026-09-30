@@ -3438,6 +3438,8 @@
   "company_backup.attachments": "Angehängte Dateien",
   "company_backup.preview_subtitle": "Prüfen Sie die Sicherung, bevor Sie sie wiederherstellen.",
   "company_backup.separate_company": "Celerp stellt dies als separate Firma wieder her, damit Ihre aktuelle Firma nicht überschrieben wird. Sie können die wiederhergestellte Firma prüfen, bevor Sie die alte deaktivieren.",
+  "company_backup.team_keeps_access": "Teammitglieder, die in der wiederhergestellten Firma ihren Zugriff und ihre Rollen behalten: {count}",
+  "company_backup.team_given_access": "Teammitglieder, die mit ihren aktuellen Rollen Zugriff auf diese Firma erhalten haben: {count}",
   "company_backup.nothing_written": "Es wurde noch nichts geschrieben.",
   "company_backup.restore": "Firma wiederherstellen",
   "company_backup.choose_other": "Andere Datei wählen",

@@ -3438,6 +3438,8 @@
   "company_backup.attachments": "Tệp đính kèm",
   "company_backup.preview_subtitle": "Kiểm tra bản sao lưu trước khi khôi phục.",
   "company_backup.separate_company": "Celerp khôi phục đây thành một công ty riêng để công ty hiện tại của bạn không bị ghi đè. Bạn có thể kiểm tra công ty đã khôi phục trước khi ngừng kích hoạt công ty cũ.",
+  "company_backup.team_keeps_access": "Thành viên nhóm giữ quyền truy cập và vai trò trong công ty đã khôi phục: {count}",
+  "company_backup.team_given_access": "Thành viên nhóm được cấp quyền truy cập công ty này với vai trò hiện tại: {count}",
   "company_backup.nothing_written": "Chưa có gì được ghi.",
   "company_backup.restore": "Khôi phục công ty",
   "company_backup.choose_other": "Chọn tệp khác",

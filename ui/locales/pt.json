@@ -3438,6 +3438,8 @@
   "company_backup.attachments": "Arquivos anexados",
   "company_backup.preview_subtitle": "Confira o backup antes de restaurá-lo.",
   "company_backup.separate_company": "O Celerp restaura isto como uma empresa separada para que sua empresa atual não seja substituída. Você pode verificar a empresa restaurada antes de desativar a antiga.",
+  "company_backup.team_keeps_access": "Membros da equipe que mantêm o acesso e as funções na empresa restaurada: {count}",
+  "company_backup.team_given_access": "Membros da equipe que receberam acesso a esta empresa com suas funções atuais: {count}",
   "company_backup.nothing_written": "Nada foi gravado ainda.",
   "company_backup.restore": "Restaurar empresa",
   "company_backup.choose_other": "Escolher outro arquivo",
