@@ -166,7 +166,8 @@ def test_tap_toggles_the_tip_and_a_tap_elsewhere_closes_it(touch_page, ui_server
     page = touch_page
     page.goto(f"{ui_server}/settings/manufacturing", wait_until="load")
     tip = page.locator(".info-tip").first
-    checked = lambda: page.evaluate("() => [...document.querySelectorAll('input[type=checkbox]')].map(c => c.checked)")
+    # Only the checkbox this icon's label wraps: other page checkboxes fill in from background fetches.
+    checked = lambda: tip.evaluate("t => t.closest('label').querySelector('input[type=checkbox]').checked")
     before = checked()
     tip.tap()
     _bubble_box(page)
