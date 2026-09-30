@@ -182,6 +182,7 @@ def _scan_json(scan: SourceScan) -> dict:
         "features": list(scan.features),
         "coverage": [c.model_dump(mode="json") for c in scan.coverage],
         "questions": [{**asdict(q), "options": list(q.options)} for q in scan.questions],
+        "lock_date": scan.lock_date.isoformat() if scan.lock_date else None,
     }
 
 
@@ -201,6 +202,7 @@ def _scan_from_json(data: dict) -> SourceScan:
         features=tuple(data["features"]),
         coverage=tuple(CIFCoverageEntry(**c) for c in data["coverage"]),
         questions=tuple(MappingQuestion(**{**q, "options": tuple(q["options"])}) for q in data["questions"]),
+        lock_date=_date(data["lock_date"]),
     )
 
 

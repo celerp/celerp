@@ -3324,6 +3324,8 @@
   "migration.file": "Nome del file",
   "migration.base_currency": "Valuta di base",
   "migration.period": "Periodo",
+  "migration.lock_date": "Data di blocco",
+  "migration.lock_date_notice": "Il tuo file blocca i registri fino al {date}. Al termine viene impostato qui lo stesso blocco del periodo, quindi nulla con data pari o anteriore al {date} potrà più essere registrato o modificato.",
   "migration.currencies": "Valute",
   "migration.no_records": "Nessun dato trovato.",
   "migration.record_type": "Tipo di dato",

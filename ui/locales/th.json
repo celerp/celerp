@@ -3324,6 +3324,8 @@
   "migration.file": "ไฟล์",
   "migration.base_currency": "สกุลเงินหลัก",
   "migration.period": "ช่วงเวลา",
+  "migration.lock_date": "วันที่ล็อก",
+  "migration.lock_date_notice": "ไฟล์ของคุณล็อกบัญชีถึงวันที่ {date} เมื่อเสร็จสิ้น ระบบจะตั้งการล็อกงวดเดียวกันที่นี่ หลังจากนั้นจะไม่สามารถบันทึกหรือแก้ไขรายการที่ลงวันที่ {date} หรือก่อนหน้าได้",
   "migration.currencies": "สกุลเงิน",
   "migration.no_records": "ไม่พบรายการข้อมูล",
   "migration.record_type": "ประเภทรายการ",

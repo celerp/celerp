@@ -42,6 +42,7 @@ from celerp.importers.adapters.base import (
     SourceAdapter,
     SourceRevisionError,
 )
+from celerp.events.engine import write_period_lock
 from celerp.importers.adapters.registry import get_adapter
 from celerp.importers.schema import (
     MIGRATION_CIF_VERSION,
@@ -91,6 +92,8 @@ SCAN_ALREADY_STARTED = "This upload was already used to start a migration, or it
 NO_UNFINISHED = "This company has no unfinished migration to discard."
 NOTHING_TO_MIGRATE = "The source file contains no records to migrate."
 OLDER_IMPORTER = "This migration was created by an older importer version and must be restarted."
+CHANGED_LOCK_DATE = ("The lock date in the source file has changed since this migration started. "
+                     "Restore the original file or start a new migration.")
 
 _S = MigrationStatus
 _P = MigrationPhase
@@ -273,6 +276,7 @@ def scan_view(scan: store.ScanSession) -> dict:
         "base_currency": s.base_currency,
         "period_start": s.period_start.isoformat() if s.period_start else None,
         "period_end": s.period_end.isoformat() if s.period_end else None,
+        "lock_date": s.lock_date.isoformat() if s.lock_date else None,
         "currencies": list(s.currencies),
         "object_counts": dict(s.object_counts),
         "features": list(s.features),
@@ -344,7 +348,8 @@ async def create_run(session: AsyncSession, *, company: Company, user: User, sca
         company_id=company.id, created_by_user_id=user.id, scan_claim_sha256=store.scan_claim(scan.token),
         source_system=adapter.key, source_artifact_name=first.original_name,
         prepared_by=decisions.prepared_by, source_artifact_sha256=first.sha256,
-        source_schema_version=scan.scan.source_schema_version, adapter_version=adapter.adapter_version,
+        source_schema_version=scan.scan.source_schema_version, source_lock_date=scan.scan.lock_date,
+        adapter_version=adapter.adapter_version,
         cif_version=MIGRATION_CIF_VERSION, mode=str(decisions.mode), status=_S.PREPARING.value, phase_state={},
         coverage={"entries": [c.model_dump(mode="json") for c in scan.scan.coverage]},
         mapping_decisions=store.decisions_json(decisions),
@@ -616,6 +621,20 @@ def _require_same_importer(run: MigrationRun, adapter: SourceAdapter) -> None:
         raise IncompatibleImporterVersion()
 
 
+class ChangedLockDate(Exception):
+    """The source now carries a different lock date from the one the run recorded."""
+
+    def __init__(self) -> None:
+        super().__init__(CHANGED_LOCK_DATE)
+
+
+def _require_same_lock_date(run: MigrationRun, manifest: CIFImportManifest) -> None:
+    """A run installs the lock date it recorded when it was created; a source whose lock
+    date has moved since would verify books against a different lock, so it is refused."""
+    if manifest.lock_date != run.source_lock_date:
+        raise ChangedLockDate()
+
+
 async def run_migration(run_id: uuid.UUID) -> None:
     """Run or resume one migration to ready_to_finalize, failed or cancelled.
 
@@ -648,9 +667,10 @@ async def _run_locked(run_id: uuid.UUID) -> None:
             adapter, artifacts, decisions = _source(run)
             _require_same_importer(run, adapter)
             manifest = await asyncio.to_thread(adapter.build_manifest, artifacts, decisions)
+            _require_same_lock_date(run, manifest)
             steps = _phase_steps(manifest)
             read_attachment = partial(adapter.read_attachment, artifacts)
-        except Exception as exc:  # a missing source, adapter or module sink, or a changed importer: nothing written
+        except Exception as exc:  # a missing source, adapter or module sink, or a changed importer or lock date: nothing written
             await _fail(maker, run_id, stopped_at, _phase_entry(state, stopped_at)["cursor"], exc)
             return
     targets: dict[str, str | None] = {}
@@ -842,7 +862,8 @@ async def is_company_migration_staged(session: AsyncSession, company_id: uuid.UU
 
 
 async def finalize(session: AsyncSession, run: MigrationRun) -> MigrationRun:
-    """Re-check verification under the company lock, then activate the company in one commit."""
+    """Re-check verification under the company lock, then install the source's lock date and
+    activate the company in one commit, so the company never becomes normal without its lock."""
     await _lock_run(session, run)
     if run.status != _S.READY_TO_FINALIZE:
         raise _illegal("finalize", run)
@@ -855,6 +876,8 @@ async def finalize(session: AsyncSession, run: MigrationRun) -> MigrationRun:
             raise MigrationError(409, "Verification no longer matches the source. Resume the migration to re-run it.")
         company = await session.get(Company, run.company_id)
         await add_missing_required_defaults(session, run.company_id)
+        if run.source_lock_date:
+            write_period_lock(company, run.source_lock_date.isoformat(), run.created_by_user_id)
         company.is_active = True
         company.is_migration_staged = False
         run.reconciliation = report
@@ -980,6 +1003,7 @@ async def run_view(session: AsyncSession, run: MigrationRun) -> dict:
         "source_system": run.source_system,
         "mode": run.mode,
         "cutover_date": (run.mapping_decisions or {}).get("cutover_date"),
+        "lock_date": run.source_lock_date.isoformat() if run.source_lock_date else None,
         "status": run.status,
         "current_phase": run.current_phase,
         "phases": [{"phase": p.value, "label": PHASE_LABELS[p],
@@ -1053,6 +1077,7 @@ def reconciliation_pack_csv(run: MigrationRun) -> str:
         ("Source", adapter.display_name if adapter else run.source_system),
         ("Mode", _MODE_LABELS[CIFMode(run.mode)]),
         ("Cutover date", decisions.get("cutover_date") or "--"),
+        ("Lock date", run.source_lock_date.isoformat() if run.source_lock_date else "--"),
         ("Source hash", run.source_artifact_sha256),
         ("Prepared by", csv_safe(run.prepared_by) if run.prepared_by else "--"),
         ("Generated at", report["generated_at"]),

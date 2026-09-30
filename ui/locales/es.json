@@ -3324,6 +3324,8 @@
   "migration.file": "Archivo",
   "migration.base_currency": "Moneda base",
   "migration.period": "Periodo",
+  "migration.lock_date": "Fecha de bloqueo",
+  "migration.lock_date_notice": "Su archivo bloquea los libros hasta el {date}. Al finalizar se establece aquí el mismo bloqueo de periodo, por lo que después no se podrá registrar ni modificar nada con fecha igual o anterior al {date}.",
   "migration.currencies": "Monedas",
   "migration.no_records": "No se encontraron registros.",
   "migration.record_type": "Tipo de registro",

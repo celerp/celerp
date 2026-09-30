@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai.files import XLSX_CONTENT_TYPE, load_file
 from celerp.db import get_session
-from celerp.events.engine import emit_event
+from celerp.events.engine import emit_event, write_period_lock
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting import import_service
@@ -3900,17 +3900,10 @@ async def set_period_lock(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await locked_company(session, company_id)
-    settings = dict(company.settings or {})
     if payload.lock_date:
         _require_iso_date(payload.lock_date, "lock")
-        settings["lock_date"] = payload.lock_date
-        settings["lock_date_set_by"] = str(user.id)
-        settings["lock_date_set_at"] = datetime.now(timezone.utc).isoformat()
-    else:
-        settings.pop("lock_date", None)
-        settings.pop("lock_date_set_by", None)
-        settings.pop("lock_date_set_at", None)
-    company.settings = settings
+    write_period_lock(company, payload.lock_date, user.id)
+    settings = company.settings
     await session.commit()
     return {
         "lock_date": settings.get("lock_date"),
@@ -4020,12 +4013,7 @@ async def close_fiscal_year(
         metadata_={"trigger": "fiscal.close", "year_end": year_end},
     )
 
-    # Set period lock to the year-end date
-    settings = dict(company.settings or {})
-    settings["lock_date"] = year_end
-    settings["lock_date_set_by"] = str(user.id)
-    settings["lock_date_set_at"] = datetime.now(timezone.utc).isoformat()
-    company.settings = settings
+    write_period_lock(company, year_end, user.id)
 
     await session.commit()
 
