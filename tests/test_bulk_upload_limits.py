@@ -98,3 +98,66 @@ async def test_bulk_path_exempt_from_body_cap():
     mw = MaxBodySizeMiddleware(_ok_app, max_body_size_bytes=10 * 1024 * 1024)
     # 50 MB to the bulk route passes through instead of 413.
     assert await _drive(mw, "/items/files/bulk", 50 * 1024 * 1024) == 200
+
+
+async def _drive_chunked(limit: int, path: str, chunks: int, chunk_size: int) -> tuple[int, int]:
+    """Stream a body with no Content-Length through the body cap to an app that
+    reads it all; return (status, bytes the app read)."""
+    from celerp.middleware import MaxBodySizeMiddleware
+    statuses: list[int] = []
+    seen = {"bytes": 0}
+    pending = [b"x" * chunk_size] * chunks
+
+    async def receive():
+        body = pending.pop() if pending else b""
+        return {"type": "http.request", "body": body, "more_body": bool(pending)}
+
+    async def reading_app(scope, receive, send):
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                raise RuntimeError("client went away")
+            seen["bytes"] += len(message.get("body", b""))
+            if not message.get("more_body"):
+                break
+        await _ok_app(scope, receive, send)
+
+    async def send(msg):
+        if msg["type"] == "http.response.start":
+            statuses.append(msg["status"])
+
+    mw = MaxBodySizeMiddleware(reading_app, max_body_size_bytes=limit)
+    await mw({"type": "http", "path": path, "headers": []}, receive, send)
+    return statuses[0], seen["bytes"]
+
+
+@pytest.mark.asyncio
+async def test_body_cap_counts_a_chunked_body_without_content_length():
+    status, read = await _drive_chunked(1024, "/accounting/reconciliation/x/import-csv", 10, 512)
+    assert status == 413
+    assert read <= 1024  # the app never sees more than the limit
+    assert await _drive_chunked(1024, "/items", 2, 512) == (200, 1024)  # at the limit passes
+
+
+@pytest.mark.asyncio
+async def test_chunked_upload_over_the_cap_is_refused_by_the_app(client):
+    """A real upload route: a streamed multipart body with no Content-Length is
+    refused once it passes the cap, before any handler reads it whole."""
+    from celerp.main import app
+    import httpx
+
+    boundary = "b0undary"
+
+    async def body():
+        yield (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"s.csv\"\r\n"
+               "Content-Type: text/csv\r\n\r\n").encode()
+        for _ in range(11):
+            yield b"x" * (1024 * 1024)
+        yield f"\r\n--{boundary}--\r\n".encode()
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.post(
+            "/accounting/reconciliation/00000000-0000-0000-0000-000000000000/import-csv",
+            content=body(), headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+        )
+    assert r.status_code == 413, r.text
