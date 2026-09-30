@@ -128,7 +128,7 @@ NEWER = ("This company backup was made by a newer version of Celerp. Update Cele
          + _NOT_RESTORED)
 TOO_LARGE = "This company backup is too large to restore here." + _NOT_RESTORED
 TOO_LARGE_UPLOAD = "This file is too large for a company backup upload." + _NOT_RESTORED
-TOO_LARGE_TO_BACK_UP = "This company has a record too large to back up." + _NOT_BACKED_UP
+TOO_LARGE_TO_BACK_UP = "This company holds more data than a company backup can restore." + _NOT_BACKED_UP
 UNSAVABLE = "This company backup has records this Celerp cannot save." + _NOT_RESTORED
 ATTACHMENT_FAILED = "Celerp could not save an attachment file from this backup." + _NOT_RESTORED
 ATTACHMENT_TYPE = "This company backup has an attachment file of a type Celerp does not store: {name}." + _NOT_RESTORED
@@ -602,6 +602,9 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
             if len(body) > MAX_MANIFEST_BYTES:
                 raise BackupError(409, TOO_LARGE_TO_BACK_UP)
             zf.writestr("manifest.json", body)
+        # The same limits a restore applies, so no backup is made that restore would refuse.
+        if not _within_limits(partial):
+            raise BackupError(409, TOO_LARGE_TO_BACK_UP)
         partial.replace(out)
     except BaseException:
         partial.unlink(missing_ok=True)
@@ -734,6 +737,18 @@ def _read_member(zf: zipfile.ZipFile, name: str) -> bytes:
     return b"".join(_Budget().chunks(zf, name))
 
 
+def _within_limits(path: Path) -> bool:
+    """Whether a backup file fits every size limit a restore applies: the upload size,
+    the member count, each member's uncompressed size and the total. Shared by export
+    and read_backup so the two cannot disagree."""
+    if path.stat().st_size > MAX_UPLOAD_BYTES:
+        return False
+    with zipfile.ZipFile(path) as zf:
+        infos = zf.infolist()
+    return (len(infos) <= MAX_MEMBERS and all(i.file_size <= _member_limit(i.filename) for i in infos)
+            and sum(i.file_size for i in infos) <= MAX_TOTAL_BYTES)
+
+
 def read_backup(path: Path) -> BackupFile:
     """Check a backup file: its format, its size against the limits, and every member
     against its hash."""
@@ -742,8 +757,7 @@ def read_backup(path: Path) -> BackupFile:
     try:
         with zipfile.ZipFile(path) as zf:
             infos = zf.infolist()
-            if (len(infos) > MAX_MEMBERS or any(i.file_size > _member_limit(i.filename) for i in infos)
-                    or sum(i.file_size for i in infos) > MAX_TOTAL_BYTES):
+            if not _within_limits(path):
                 raise BackupError(422, TOO_LARGE)
             names = [i.filename for i in infos]
             if len(set(names)) != len(names):

@@ -1361,6 +1361,27 @@ async def test_record_too_large_to_restore_is_not_backed_up(real_engine, real_cl
     assert r.json()["detail"] == cb.TOO_LARGE_TO_BACK_UP
 
 
+@pytest.mark.parametrize("limit", ["MAX_MEMBERS", "MAX_MEMBER_BYTES", "MAX_TOTAL_BYTES", "MAX_UPLOAD_BYTES"])
+async def test_backup_restore_would_refuse_is_not_made(real_engine, real_client, tmp_path, monkeypatch, limit):
+    """Export checks the finished file against every size limit a restore applies (member
+    count, member size, total size, upload size) and refuses instead of handing over a
+    backup that restore would refuse."""
+    cb = _bk_cb()
+    _bk_local(monkeypatch, tmp_path)
+    _, _, tok = await _bk_setup(real_engine)
+    data = await download(real_client, tok)
+    parts = members(data)
+    # Sizes shrink by a few bytes between two exports (timestamps), so size limits are
+    # set a margin below this export rather than one byte below.
+    monkeypatch.setattr(cb, limit, {"MAX_MEMBERS": len(parts) - 1,
+                                    "MAX_MEMBER_BYTES": max(len(b) for b in parts.values()) - 64,
+                                    "MAX_TOTAL_BYTES": sum(len(b) for b in parts.values()) - 64,
+                                    "MAX_UPLOAD_BYTES": len(data) - 64}[limit])
+    r = await real_client.get("/company-backups/download", headers=auth(tok))
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == cb.TOO_LARGE_TO_BACK_UP
+
+
 @pytest.mark.parametrize("header", ["honest", "understated"])
 async def test_zip_bomb_refused_before_writes(real_engine, real_client, tmp_path, monkeypatch, header):
     """A small upload that inflates past the uncompressed limits is refused, whatever its headers claim."""
