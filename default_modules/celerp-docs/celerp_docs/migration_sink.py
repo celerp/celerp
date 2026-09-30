@@ -330,20 +330,23 @@ async def _post_document(
     items: dict[str, str], imported: dict[str, str], outcome: RecordOutcome,
 ) -> RecordOutcome:
     """Post an issued document's entry, record the receipts and deliveries that moved its
-    goods, and apply a credit note to its invoice."""
+    goods, and apply a credit note to its invoice. An invoice's entry carries the cost of
+    sales each line booked, so later deliveries, returns and cost corrections true it up."""
     if not _posts(record):
         return outcome
     label = f"Document {record.ref or record.source_external_id}"
     applies_to = record.metadata.get("applies_to")
     try:
         async with context.session.begin_nested():
+            delivered = _deliveries(context, record, items)
             await auto_je.create_for_imported_document(
                 context.session, company_id=context.company_id, user_id=context.user_id,
                 doc_id=outcome.entity_id, doc_type=record.doc_type.value,
                 contact_id=contacts.get(record.contact_external_id or ""),
                 entries=_entries(record, base, accounts), ts=_date(record),
+                cogs_allocations=_cogs_allocations(record, base, delivered),
             )
-            await _record_movements(context, record, items, outcome.entity_id)
+            await _record_movements(context, record, items, outcome.entity_id, delivered)
             if record.doc_type == DocumentType.CREDIT_NOTE and applies_to:
                 if applies_to not in imported:
                     raise ValueError(f"invoice {applies_to} was not imported.")
@@ -393,35 +396,65 @@ async def _import_debit_note(
     return RecordOutcome(f"je:auto:{bill_id}:{suffix}", status, entity_type=JOURNAL)
 
 
-async def _record_movements(context: SinkContext, record: CIFDocument, items: dict[str, str], doc_id: str) -> None:
-    """Record each receipt of a bill's goods, and an invoice's deliveries, line by line.
+def _moved(line: dict, items: dict[str, str]) -> dict:
+    """One line of a receipt or delivery, on the Celerp item its source item became."""
+    if line["item"] not in items:
+        raise ValueError(f"item {line['item']} was not imported.")
+    return {"line": line["line"], "item_id": items[line["item"]], "quantity": Decimal(line["quantity"]),
+            "cost": Decimal(line["value"])}
 
-    A delivery is recorded per line: the line's deliveries become one sold lot of their
-    total quantity and cost, fulfilled on the date of the last of them."""
-    def moved(line: dict) -> dict:
-        if line["item"] not in items:
-            raise ValueError(f"item {line['item']} was not imported.")
-        return {"line": line["line"], "item_id": items[line["item"]], "quantity": Decimal(line["quantity"]),
-                "cost": Decimal(line["value"])}
 
-    if record.doc_type == DocumentType.BILL:
-        for receipt in record.metadata.get("receipts") or []:
-            await record_historical_receipt(
-                context.session, context.company_id, doc_id, lines=[moved(ln) for ln in receipt["lines"]],
-                received_on=receipt["date"], actor_id=context.user_id, source="migration",
-                idempotency_key=context.idempotency_key(record, f"received:{receipt['source']}"),
-            )
+def _deliveries(context: SinkContext, record: CIFDocument, items: dict[str, str]) -> dict[int, dict]:
+    """An invoice's deliveries per line index: the line's deliveries as one sold lot of
+    their total quantity and cost, dated the last of them. Empty for any other document."""
     if record.doc_type != DocumentType.INVOICE:
-        return
+        return {}
     per_line: dict[int, dict] = {}
     for delivery in record.metadata.get("deliveries") or []:
         for ln in delivery["lines"]:
-            line = moved(ln)
+            line = _moved(ln, items)
             if ln["line"] in per_line:
                 line["quantity"] += per_line[ln["line"]]["quantity"]
                 line["cost"] += per_line[ln["line"]]["cost"]
             per_line[ln["line"]] = {**line, "date": delivery["date"], "lot_id": "item:" + str(deterministic_id(
                 context, record.source_type, f"{record.source_external_id}:line:{ln['line']}"))}
+    return per_line
+
+
+def _cogs_allocations(record: CIFDocument, base: str, delivered: dict[int, dict]) -> dict:
+    """The cost of sales an invoice's entry books, per line index, in the shape an invoice
+    finalized in Celerp records it: the amount the source booked for the line, the sold lot
+    that delivered part or all of it at the source's unit cost, and the quantity not yet
+    delivered. Lines that book no cost of sales are left out."""
+    if record.doc_type != DocumentType.INVOICE:
+        return {}
+    allocations = {}
+    for index, line in enumerate(record.line_items):
+        if not line.cost_basis or line.quantity <= 0:
+            continue
+        unit_cost = line.cost_basis / line.quantity
+        sold = delivered.get(index)
+        quantity = sold["quantity"] if sold else Decimal(0)
+        allocations[str(index)] = {
+            "lots": [{"lot_entity_id": sold["lot_id"], "qty": float(quantity), "unit_cost": float(unit_cost)}]
+            if sold else [],
+            "provisional_qty": float(line.quantity - quantity),
+            "amount": _money(line.cost_basis, base),
+        }
+    return allocations
+
+
+async def _record_movements(
+    context: SinkContext, record: CIFDocument, items: dict[str, str], doc_id: str, per_line: dict[int, dict],
+) -> None:
+    """Record each receipt of a bill's goods, and an invoice's deliveries per line."""
+    if record.doc_type == DocumentType.BILL:
+        for receipt in record.metadata.get("receipts") or []:
+            await record_historical_receipt(
+                context.session, context.company_id, doc_id, lines=[_moved(ln, items) for ln in receipt["lines"]],
+                received_on=receipt["date"], actor_id=context.user_id, source="migration",
+                idempotency_key=context.idempotency_key(record, f"received:{receipt['source']}"),
+            )
     if per_line:
         await record_historical_delivery(
             context.session, context.company_id, doc_id, lines=[

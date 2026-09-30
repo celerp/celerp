@@ -313,6 +313,16 @@ async def compute_doc_cogs(
     return result
 
 
+def _recognition_metadata(trigger: str, doc_id: str, allocations: dict | None) -> dict:
+    """Metadata of a recognition entry: its trigger and document, and the per-line COGS
+    allocation snapshot when it recognizes any, which fulfillment, returns and cost
+    corrections true up against (see reconcile_doc_cogs)."""
+    metadata_ = {"trigger": trigger, "doc_id": doc_id}
+    if allocations:
+        metadata_["cogs_allocations"] = allocations
+    return metadata_
+
+
 async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD", span_lots: bool = False) -> None:
     currency = doc.get("currency", "USD")
     rate = require_doc_rate(doc, base_currency)
@@ -342,11 +352,7 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     if cogs > 0:
         entries.append({"account": "5100", "debit": cogs, "credit": 0.0})
         entries.append({"account": _INVENTORY_ACCT, "debit": 0.0, "credit": cogs})
-    # The per-line allocation snapshot rides on the JE so fulfillment can true up
-    # actual lot costs against exactly what this JE recognized, per line.
-    metadata_ = {"trigger": "doc.finalized", "doc_id": doc_id}
-    if cogs_result.allocations:
-        metadata_["cogs_allocations"] = cogs_result.allocations
+    metadata_ = _recognition_metadata("doc.finalized", doc_id, cogs_result.allocations)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -554,7 +560,7 @@ _IMPORTED_DOC_ENTRY = {
 
 async def create_for_imported_document(
     session, *, company_id, user_id, doc_id: str, doc_type: str, contact_id: str | None,
-    entries: list[dict], ts: str | None, suffix: str | None = None,
+    entries: list[dict], ts: str | None, suffix: str | None = None, cogs_allocations: dict | None = None,
 ) -> None:
     """Post the entry an imported document carries in its source books.
 
@@ -563,7 +569,10 @@ async def create_for_imported_document(
     balancing line, named for the contact. The entry takes the id and keys of the
     document's normal recognition entry (`:fin` for the sales side, `:bill` for the
     purchase side), so a document can carry exactly one of the two. No cost of sales
-    is recognized: the source's own postings are the whole effect. A debit note has
+    is computed: the source's own postings are the whole effect, and
+    `cogs_allocations`, the per-line snapshot of the cost of sales those postings
+    book, lets later deliveries, returns and cost corrections true it up as on an
+    invoice finalized in Celerp. A debit note has
     no Celerp document: it posts on the bill it notes, `doc_id`, under its own
     `suffix`.
     """
@@ -585,7 +594,7 @@ async def create_for_imported_document(
         memo=f"Imported entry for {doc_id}",
         ts=ts,
         entries=[*entries, party],
-        metadata_={"trigger": "doc.imported", "doc_id": doc_id},
+        metadata_=_recognition_metadata("doc.imported", doc_id, cogs_allocations),
     )
 
 
@@ -1248,10 +1257,13 @@ async def reconcile_doc_cogs(
 ) -> None:
     """Bring an invoice's booked COGS to what it recognizes today, in one entry.
 
-    A shipped line recognizes the actual cost of the lots it shipped. A line not
-    shipped recognizes its finalize allocation plus every cost correction since
-    recorded against that allocation. The difference from the COGS the invoice's
-    live entries already book is rounded once, for the whole invoice, and posted
+    A shipped line recognizes the actual cost of the lots it shipped, plus its
+    allocation's share for any quantity it has not shipped (an imported invoice can
+    deliver part of a line). A line not shipped recognizes its finalize allocation plus
+    every cost correction since recorded against that allocation. The difference from
+    the cost of sales the invoice's live entries already book, measured as their net
+    relief of inventory, whichever account carries the expense, is rounded once, for
+    the whole invoice, and posted
     through create_for_doc_cogs_adjustment. An invoice with no recognized
     allocation on record posts nothing. Raises ValueError when a shipped lot
     cannot be matched to one of the invoice's lines.
@@ -1262,21 +1274,30 @@ async def reconcile_doc_cogs(
     doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
     doc_state = (doc.state or {}) if doc is not None else {}
     shipped: dict[int, float] = {}
+    shipped_qty: dict[int, float] = {}
     for lot in await _lots_out_on_doc(session, company_id, doc_id):
         idx = await doc_line_of_lot(session, company_id, doc_id, doc_state, lot.entity_id, lot.state or {})
         if idx is None:
             raise ValueError("cannot safely identify the invoice line of every shipped lot")
         shipped[idx] = shipped.get(idx, 0.0) + lot_cost_of_sale(lot.state or {})
+        shipped_qty[idx] = shipped_qty.get(idx, 0.0) + float((lot.state or {}).get("quantity") or 0)
     repriced = await _recorded_repricings(session, company_id, doc_id, recognized.cycle)
     truth = sum(shipped.values())
     for idx, alloc in recognized.allocations.items():
+        amount = float(alloc.get("amount") or 0)
         if int(idx) not in shipped:
-            truth += float(alloc.get("amount") or 0) + repriced.get(int(idx), 0.0)
+            truth += amount + repriced.get(int(idx), 0.0)
+            continue
+        allocated = sum(float(lot.get("qty") or 0) for lot in alloc.get("lots", [])) + float(
+            alloc.get("provisional_qty") or 0)
+        unshipped = allocated - shipped_qty[int(idx)]
+        if allocated > 0 and unshipped > 1e-9:
+            truth += amount * unshipped / allocated
     booked = sum(
-        float(e.get("debit") or 0) - float(e.get("credit") or 0)
+        float(e.get("credit") or 0) - float(e.get("debit") or 0)
         for row in (await _doc_recognition_jes(session, company_id, doc_id)).values()
         if (row.state or {}).get("status") == "posted"
-        for e in (row.state or {}).get("entries", []) if e.get("account") == "5100"
+        for e in (row.state or {}).get("entries", []) if e.get("account") == _INVENTORY_ACCT
     )
     await create_for_doc_cogs_adjustment(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id, delta=truth - booked,
@@ -1392,12 +1413,13 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str) 
             .order_by(LedgerEntry.id.desc())
             .limit(1)
         )).scalars().first()
-        metadata_ = {"trigger": "doc.unvoided", "doc_id": doc_id, "restores": voided_je_id}
-        allocations = ((created.metadata_ or {}) if created else {}).get("cogs_allocations")
-        if allocations:
-            # The allocation snapshot rides along so fulfillment still trues up
-            # against what the restored JE recognizes.
-            metadata_["cogs_allocations"] = allocations
+        # The allocation snapshot rides along so fulfillment still trues up against
+        # what the restored JE recognizes.
+        metadata_ = {
+            **_recognition_metadata("doc.unvoided", doc_id,
+                                    ((created.metadata_ or {}) if created else {}).get("cogs_allocations")),
+            "restores": voided_je_id,
+        }
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
