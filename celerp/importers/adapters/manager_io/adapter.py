@@ -106,7 +106,8 @@ class ManagerIOAdapter:
         with ManagerReader(_single(artifacts).path) as reader:
             book = read_book(reader)
             attachments.screen(book, reader)
-        dated = book.dated_records()
+        # Goods can move after the last invoice or payment; the period runs to the last movement.
+        dated = sorted([day for day, _ in book.dated_records()] + [m.date for m in book.moves])
         features = [name for name, present in (
             ("foreign_currency", any(book.is_foreign(c) for c in book.currencies)),
             ("inventory", bool(book.items)), ("tax", bool(book.tax_codes)),
@@ -116,7 +117,7 @@ class ManagerIOAdapter:
             source_system=self.key,
             source_schema_version=None if book.schema_version is None else str(book.schema_version),
             company_name=book.company_name, base_currency=book.base_code,
-            period_start=dated[0][0] if dated else None, period_end=dated[-1][0] if dated else None,
+            period_start=dated[0] if dated else None, period_end=dated[-1] if dated else None,
             currencies=tuple(sorted({book.base_code or "", *(c.code for c in book.currencies.values())} - {""})),
             object_counts=dict(book.object_counts), features=tuple(features), coverage=tuple(book.coverage()),
             lock_date=book.lock_date,

@@ -205,16 +205,25 @@ def _check_cutover(book: Book, cutover: date | None) -> date:
     return cutover
 
 
+def _depends_on(book: Book, key: str) -> set[str]:
+    """The documents a record acts on in Celerp: the invoices and bills a settlement settles,
+    the invoice a note applies to."""
+    if key in book.settlements:
+        return {ln.document for ln in book.settlements[key].party_lines}
+    if key in book.documents and book.documents[key].applies_to:
+        return {book.documents[key].applies_to}
+    return set()
+
+
 def _carried(book: Book, records: set[str], cutover: date) -> set[str]:
-    """Pre-cutover documents imported as themselves: those open at the cutover date or
-    settled by a later record, and the notes applied to them."""
+    """Pre-cutover documents imported as themselves: those open at the cutover date, those
+    a later record depends on (a settlement, a note, or goods moved for them), and the
+    notes applied to them."""
     pre = {k for k in records if _record_date(book, k)[0] <= cutover}
     carried = {k for k, state in _states(book, pre).items() if state.amount_outstanding != 0}
     for key in records - pre:
-        if key in book.settlements:
-            carried |= {ln.document for ln in book.settlements[key].party_lines}
-        elif key in book.documents and book.documents[key].applies_to:
-            carried.add(book.documents[key].applies_to)
+        carried |= _depends_on(book, key)
+    carried |= {m.document for m in book.moves if m.date > cutover}
     carried &= pre
     return carried | {k for k in pre if k in book.documents and book.documents[k].applies_to in carried}
 
