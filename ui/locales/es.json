@@ -1776,7 +1776,6 @@
   "shell.js_update_word": "Actualización",
   "shell.js_downloading_pct": "Descargando... {pct}%",
   "shell.js_version_ready": "v{version} lista para instalar",
-  "shell.unknown_error": "Error desconocido",
   "shell.update_check_failed": "Fallo en la comprobación de actualizaciones",
   "shell.error_prefix": "Error:",
   "shell.checking": "Comprobando...",

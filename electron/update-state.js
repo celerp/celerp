@@ -11,8 +11,17 @@
 
 "use strict";
 
+// Log lines kept for the update card, oldest dropped first.
+const MAX_LOG_LINES = 200;
+
 function initialUpdateState() {
   return Object.freeze({ status: "idle", version: "", percent: 0, message: "" });
+}
+
+// A download percent from 0 to 100; anything that is not a number is 0.
+function toPercent(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0;
 }
 
 /**
@@ -37,7 +46,7 @@ function nextUpdateState(state, event) {
       return next({ status: "downloading", version, percent: same ? state.percent : 0 });
     }
     case "progress":
-      return next({ status: "downloading", percent: event.percent || 0 });
+      return next({ status: "downloading", percent: toPercent(event.percent) });
     case "downloaded":
       return next({ status: "downloaded", version: event.version || state.version, percent: 100 });
     case "not-available":
@@ -51,36 +60,83 @@ function nextUpdateState(state, event) {
 }
 
 /**
- * Track an electron-updater instance. Each accepted event updates the state
- * and is forwarded to the window as `send(channel, state)`; ignored events are
- * not forwarded, so the window can never be shown a demoted state either.
+ * Track an electron-updater instance. The state and its log lines go to the
+ * window together, as `send(channel, {...state, log})`, whenever either
+ * changes, so the window can never be shown a demoted state. Each check starts
+ * a fresh log. An error is always logged, even once downloaded, when it no
+ * longer changes the state.
  *
  * @param {{on: (event: string, fn: Function) => void}} updater
  * @param {(channel: string, state: object) => void} send
- * @returns {() => object} getUpdateState, returning a copy
+ * @returns {() => object} getUpdateState, returning a copy with its log
  */
 function trackUpdater(updater, send) {
   let state = initialUpdateState();
+  let log = [];
+  // Progress is logged once per 10% step, so the log stays short.
+  let loggedStep = -1;
 
-  function apply(channel, event) {
+  const snapshot = () => ({ ...state, log: [...log] });
+
+  // Apply `event`; `lineFor(state)` gives the log line for it, if any.
+  // `logIgnored` still logs the line when the state ignores the event.
+  function apply(channel, event, lineFor, logIgnored) {
     const next = nextUpdateState(state, event);
-    if (!next) return;
-    state = next;
-    send(channel, { ...state });
+    if (!next && !logIgnored) return;
+    if (next) state = next;
+    const line = lineFor(state);
+    if (line) log = log.concat(line).slice(-MAX_LOG_LINES);
+    send(channel, snapshot());
   }
 
-  updater.on("update-available", (info) =>
-    apply("update-available", { type: "found", version: info && info.version }));
+  updater.on("checking-for-update", () => {
+    log = ["Checking for update..."];
+    send("update-log", snapshot());
+  });
+  updater.on("update-available", (info) => {
+    loggedStep = -1;
+    apply("update-available", { type: "found", version: info && info.version },
+      (s) => (s.version ? "Found v" + s.version : "Found an update") + ", downloading...");
+  });
   updater.on("download-progress", (progress) =>
-    apply("download-progress", { type: "progress", percent: progress && progress.percent }));
+    apply("download-progress", { type: "progress", percent: progress && progress.percent }, (s) => {
+      const step = Math.floor(s.percent / 10);
+      if (step <= loggedStep) return "";
+      loggedStep = step;
+      const kbps = Math.round(((progress && Number(progress.bytesPerSecond)) || 0) / 1024);
+      return "Downloading: " + Math.round(s.percent) + "% (" + kbps + " KB/s)";
+    }));
   updater.on("update-downloaded", (info) =>
-    apply("update-downloaded", { type: "downloaded", version: info && info.version }));
+    apply("update-downloaded", { type: "downloaded", version: info && info.version },
+      (s) => (s.version ? "v" + s.version : "The update") + " ready. Click 'Restart to Install'"));
   updater.on("update-not-available", () =>
-    apply("update-not-available", { type: "not-available" }));
-  updater.on("error", (err) =>
-    apply("update-error", { type: "error", message: typeof err === "string" ? err : (err && err.message) || "" }));
+    apply("update-not-available", { type: "not-available" }, () => ""));
+  updater.on("error", (err) => {
+    const message = typeof err === "string" ? err : (err && err.message) || "";
+    apply("update-error", { type: "error", message },
+      () => (message ? "Update error: " + message : "Update error"), true);
+  });
 
-  return () => ({ ...state });
+  return snapshot;
 }
 
-module.exports = { initialUpdateState, nextUpdateState, trackUpdater };
+/**
+ * Serve the updater state to the window: answer "get-update-state" (idle with
+ * an empty log until an updater is tracked, as in dev builds) and forward every
+ * change to the current window. Returns `track(updater)`.
+ *
+ * @param {{handle: (channel: string, fn: Function) => void}} ipcMain
+ * @param {() => ({webContents: {send: Function}}|null)} getWindow
+ */
+function serveUpdateState(ipcMain, getWindow) {
+  let getUpdateState = () => ({ ...initialUpdateState(), log: [] });
+  ipcMain.handle("get-update-state", () => getUpdateState());
+  return function track(updater) {
+    getUpdateState = trackUpdater(updater, (channel, state) => {
+      const win = getWindow();
+      if (win) win.webContents.send(channel, state);
+    });
+  };
+}
+
+module.exports = { initialUpdateState, nextUpdateState, trackUpdater, serveUpdateState };

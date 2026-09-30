@@ -1776,7 +1776,6 @@
   "shell.js_update_word": "更新",
   "shell.js_downloading_pct": "ダウンロード中... {pct}%",
   "shell.js_version_ready": "v{version} のインストール準備完了",
-  "shell.unknown_error": "不明なエラー",
   "shell.update_check_failed": "更新チェックに失敗しました",
   "shell.error_prefix": "エラー：",
   "shell.checking": "確認中...",

@@ -282,7 +282,7 @@ def _fake_electron(page, seed=()):
           window.celerp = {
             getVersion: function() { return Promise.resolve('2.0.0'); },
             getUpdateState: function() { return Promise.resolve(getUpdateState()); },
-            onUpdateLog: function() {},
+            onUpdateLog: on('update-log'),
             onUpdateAvailable: on('update-available'),
             onDownloadProgress: on('download-progress'),
             onUpdateNotAvailable: on('update-not-available'),
@@ -386,10 +386,12 @@ def test_downloaded_survives_later_noise_across_reload(page, ui_server):
       window.__updaterEmit('download-progress', { percent: 5 });
       window.__updaterEmit('error', { message: 'net::ERR_INTERNET_DISCONNECTED' });
     }""")
-    assert page.evaluate(_VISIBLE_STATE_JS) == ready
+    after = page.evaluate(_VISIBLE_STATE_JS)
+    # The failure is logged, and nothing else on the card changes.
+    assert after == {**ready, "log": ready["log"] + "\nUpdate error: net::ERR_INTERNET_DISCONNECTED"}
     page.reload(wait_until="domcontentloaded")
     page.wait_for_function("() => document.querySelector('.update-card__state').textContent !== ''")
-    assert page.evaluate(_VISIBLE_STATE_JS) == ready
+    assert page.evaluate(_VISIBLE_STATE_JS) == after
 
 
 @pytest.mark.parametrize("events", [
@@ -451,7 +453,6 @@ def test_back_to_cached_page_shows_current_state(page, ui_server):
     assert page.evaluate(_VISIBLE_STATE_JS) == ready
 
 
-
 def test_card_follows_live_events_after_back_to_cached_page(page, ui_server):
     """After Back restores a cached page, later updater events still reach its card."""
     _fake_electron(page, [_FOUND])
@@ -463,3 +464,55 @@ def test_card_follows_live_events_after_back_to_cached_page(page, ui_server):
     page.evaluate("() => window.__updaterEmit('download-progress', { percent: 70 })")
     page.wait_for_function("() => document.querySelector('.update-card__state').textContent.indexOf('70') !== -1")
     assert page.evaluate(_VISIBLE_STATE_JS)["progress"] == "70%"
+
+
+def test_back_to_cached_page_does_not_repeat_the_error_log(page, ui_server):
+    """Going Back after a failed check shows the failure once, as it was shown live."""
+    _fake_electron(page)
+    _open(page, f"{ui_server}/inventory")
+    page.evaluate("() => window.__updaterEmit('error', { message: 'getaddrinfo ENOTFOUND github.com' })")
+    failed = page.evaluate(_VISIBLE_STATE_JS)
+    assert failed["log"].count("getaddrinfo ENOTFOUND github.com") == 1
+    page.fill("#search-input", "zzzz")
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') !== -1")
+    page.go_back()
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') === -1")
+    page.go_forward()
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') !== -1")
+    page.go_back()
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') === -1")
+    assert page.evaluate(_VISIBLE_STATE_JS) == failed
+
+
+def test_update_log_lines_survive_reload(page, ui_server):
+    """The update log, including a failure after the download finished, shows the
+    same lines after a reload as it did live."""
+    _fake_electron(page)
+    _open(page, f"{ui_server}/")
+    for name, payload in [("checking-for-update", None), _FOUND, _DOWNLOADED,
+                          ("error", {"message": "net::ERR_INTERNET_DISCONNECTED"})]:
+        page.evaluate(f"() => window.__updaterEmit({json.dumps(name)}, {json.dumps(payload)})")
+    live = page.evaluate(_VISIBLE_STATE_JS)
+    assert live["log"].split("\n") == [
+        "Checking for update...",
+        "Found v2.0.1, downloading...",
+        "v2.0.1 ready. Click 'Restart to Install'",
+        "Update error: net::ERR_INTERNET_DISCONNECTED",
+    ]
+    assert live["restart"] is True
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent !== ''")
+    assert page.evaluate(_VISIBLE_STATE_JS) == live
+
+
+@pytest.mark.parametrize("percent, bar, state", [
+    (-3, "0%", "2.0.1"), ("abc", "0%", "2.0.1"), (150, "100%", "100%"),
+])
+def test_malformed_progress_shows_a_percent_in_range(page, ui_server, percent, bar, state):
+    """A download percent outside 0 to 100, or not a number, still shows a sane bar."""
+    _fake_electron(page, [_FOUND])
+    _open(page, f"{ui_server}/")
+    page.evaluate(f"() => window.__updaterEmit('download-progress', {{ percent: {json.dumps(percent)} }})")
+    seen = page.evaluate(_VISIBLE_STATE_JS)
+    assert seen["progress"] == bar
+    assert state in seen["state"]

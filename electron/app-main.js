@@ -182,7 +182,7 @@ const {
 } = require("./db-mode");
 const { migrateArgs } = require("./migrate_cmd");
 const { writeConfig: writeLockedConfig } = require("./config-writer");
-const { initialUpdateState, trackUpdater } = require("./update-state");
+const { serveUpdateState } = require("./update-state");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -723,8 +723,8 @@ function resolveStorageEnv(cfg) {
  * The updater state (update-state.js) lives here, not in the page, so a page
  * that loads or is restored later replays it via get-update-state.
  */
-// Idle until the updater is set up (dev builds never set it up).
-let getUpdateState = initialUpdateState;
+// get-update-state answers idle until the updater is tracked (dev builds never track it).
+const trackAppUpdater = serveUpdateState(ipcMain, () => mainWindow);
 
 function setupAutoUpdater() {
   if (!app.isPackaged) return;
@@ -733,51 +733,13 @@ function setupAutoUpdater() {
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.allowPrerelease = false;
 
-  function sendLog(msg) {
-    if (mainWindow) mainWindow.webContents.send("update-log", String(msg));
-  }
-
-  autoUpdater.on("checking-for-update", () => {
-    sendLog("Checking for update...");
-  });
-
-  // State changes go to the window as the new state on each update channel.
-  getUpdateState = trackUpdater(autoUpdater, (channel, state) => {
-    if (mainWindow) mainWindow.webContents.send(channel, state);
-  });
-
-  autoUpdater.on("update-available", (info) => {
-    sendLog("Found v" + info.version + ", downloading...");
-  });
-
-  autoUpdater.on("download-progress", (progress) => {
-    // Throttle log output to at most once per second to avoid flooding IPC/DOM.
-    // Progress state is forwarded every tick by trackUpdater (a cheap width change).
-    const now = Date.now();
-    if (!autoUpdater._lastProgressLog || now - autoUpdater._lastProgressLog >= 1000) {
-      autoUpdater._lastProgressLog = now;
-      sendLog(
-        "Downloading: " +
-          Math.round(progress.percent) +
-          "% (" +
-          Math.round(progress.bytesPerSecond / 1024) +
-          " KB/s)"
-      );
-    }
-  });
-
-  autoUpdater.on("update-downloaded", (info) => {
-    sendLog("v" + info.version + " ready. Click 'Restart to Install'");
-  });
+  // The state and its log go to the window as they change (update-state.js).
+  trackAppUpdater(autoUpdater);
 
   autoUpdater.on("error", (err) => {
-    // Never silently swallow an error. The card shows it from the state
-    // (trackUpdater), except once an update is downloaded, when the state no
-    // longer changes, so the log carries it instead. Update failures must never
-    // interrupt work, but must be visible.
-    const msg = err?.message ?? String(err);
-    console.error("[updater] error:", msg);
-    if (getUpdateState().status === "downloaded") sendLog("Update error: " + msg);
+    // Update failures must never interrupt work, but must be visible: the
+    // update card shows them, and the console keeps them.
+    console.error("[updater] error:", err?.message ?? String(err));
   });
 
   // Delay initial check until the renderer has loaded and registered its IPC handlers.
@@ -1119,9 +1081,6 @@ ipcMain.on("restart-app", () => fullRelaunch(app));
 
 // get-version: renderer fetches the current app version
 ipcMain.handle("get-version", () => app.getVersion());
-
-// get-update-state: read-only copy of the updater state, replayed on page load
-ipcMain.handle("get-update-state", () => getUpdateState());
 
 // Modules page bridge: open the modules folder in the OS file manager, and a
 // native folder picker for Import Module (the picked path goes to the local

@@ -14811,11 +14811,6 @@ class TestBuildWorkflowVersioning:
         assert 'https://github.com/celerp/celerp/releases' in shell
         assert 'Data-Universal-Limited' not in shell
 
-    def test_preload_exposes_on_update_not_available(self):
-        from test_helpers import REPO_ROOT
-        preload = (REPO_ROOT / 'electron/preload.js').read_text()
-        assert 'onUpdateNotAvailable' in preload
-
 
 class TestInventoryUXFixes:
     """Tests for the 5-fix inventory UX improvements (2026-03-25)."""

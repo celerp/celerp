@@ -1877,7 +1877,6 @@
   "shell.js_update_word": "ዝማኔ",
   "shell.js_downloading_pct": "በማውረድ ላይ... {pct}%",
   "shell.js_version_ready": "v{version} ለመጫን ዝግጁ ነው",
-  "shell.unknown_error": "ያልታወቀ ስህተት",
   "shell.update_check_failed": "የማዘመን ፍተሻ አልተሳካም",
   "shell.error_prefix": "ስህተት፦",
   "shell.checking": "በማጣራት ላይ...",

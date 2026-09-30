@@ -1053,17 +1053,12 @@ document.addEventListener('DOMContentLoaded', function() {
       if (checkBtn) checkBtn.style.display = visible ? '' : 'none';
     }
 
-    function appendLog(msg) {
+    // The log is the updater's own lines, kept in the state (capped there),
+    // so a replay shows exactly what the live events showed.
+    function setLog(lines) {
       if (!logEl) return;
-      logEl.style.display = '';
-      // Append via text node (avoids re-reading/rewriting the full textContent string).
-      // Cap at 200 lines to prevent unbounded DOM growth during long downloads.
-      var lines = logEl.querySelectorAll('.log-line');
-      if (lines.length >= 200) lines[0].remove();
-      var line = document.createElement('span');
-      line.className = 'log-line';
-      line.textContent = (logEl.childNodes.length ? '\\n' : '') + msg;
-      logEl.appendChild(line);
+      logEl.textContent = lines.join('\\n');
+      logEl.style.display = lines.length ? '' : 'none';
       logEl.scrollTop = logEl.scrollHeight;
     }
 
@@ -1102,12 +1097,12 @@ document.addEventListener('DOMContentLoaded', function() {
           setProgress(100);
         } else if (s.status === 'error') {
           setState(i18n.updateCheckFailed, false);
-          appendLog(i18n.errorPrefix + ' ' + (s.message || i18n.unknownError));
           resetToIdle();
         } else {
           setState(i18n.upToDate, false);
           resetToIdle();
         }
+        setLog(s.log);
         window.celerpSetUpdateBell(s.status === 'downloading' || s.status === 'downloaded'
                                    || (s.status === 'error' && !!s.version));
       }
@@ -1115,12 +1110,11 @@ document.addEventListener('DOMContentLoaded', function() {
       // Updater events are subscribed once per page load and always reach the
       // card on screen now, which a Back restore from the htmx history cache
       // replaces with fresh elements.
-      window._celerpUpdateCard = { render: renderUpdateState, log: appendLog };
+      window._celerpUpdateCard = { render: renderUpdateState };
       if (!window._celerpUpdateSubscribed) {
         window._celerpUpdateSubscribed = true;
         var render = function(s) { window._celerpUpdateCard.render(s); };
-        // Log lines: always show, with no isManualCheck gate.
-        window.celerp.onUpdateLog(function(msg) { window._celerpUpdateCard.log(msg); });
+        window.celerp.onUpdateLog(render);
         window.celerp.onUpdateAvailable(render);
         window.celerp.onDownloadProgress(render);
         window.celerp.onUpdateDownloaded(render);
@@ -1663,9 +1657,7 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "updateWord": t("shell.js_update_word", lang),
         "downloadingPct": t("shell.js_downloading_pct", lang),
         "versionReady": t("shell.js_version_ready", lang),
-        "unknownError": t("shell.unknown_error", lang),
         "updateCheckFailed": t("shell.update_check_failed", lang),
-        "errorPrefix": t("shell.error_prefix", lang),
         "checking": t("shell.checking", lang),
         "restarting": t("shell.restarting", lang),
         "updateAvailablePrefix": t("shell.update_available_prefix", lang),

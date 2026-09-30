@@ -26,8 +26,8 @@ contextBridge.exposeInMainWorld("celerp", {
   // Modules page: native folder picker; resolves to a path string or null.
   pickModuleFolder: () => ipcRenderer.invoke("pick-module-folder"),
 
-  // Updater state ({ status, version, percent, message }), read-only. Every
-  // page load replays it; the update callbacks below receive the same shape.
+  // Updater state ({ status, version, percent, message, log }), read-only.
+  // Every page load replays it; the update callbacks below receive the same shape.
   getUpdateState: () => ipcRenderer.invoke("get-update-state"),
 
   // Register a callback for when an update is found (state: downloading).
@@ -42,14 +42,14 @@ contextBridge.exposeInMainWorld("celerp", {
   // Register a callback for download progress (state: downloading, with percent).
   onDownloadProgress: (cb) => ipcRenderer.on("download-progress", (_event, state) => cb(state)),
 
-  // Register a callback for updater log lines (string).
-  onUpdateLog: (cb) => ipcRenderer.on("update-log", (_event, msg) => cb(msg)),
+  // Register a callback for a new updater log line (the state, with its log).
+  onUpdateLog: (cb) => ipcRenderer.on("update-log", (_event, state) => cb(state)),
 
   // Trigger a manual update check.
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
 
-  // Register a callback for update errors (state: error, with message). Not
-  // fired once an update is downloaded; the error still shows in the log.
+  // Register a callback for update errors (state: error, with message). Once
+  // an update is downloaded the state stays downloaded; the error is only logged.
   onUpdateError: (cb) => ipcRenderer.on("update-error", (_event, state) => cb(state)),
 
   // Uninstall: quit and keep data (shows instructions to remove .app manually)

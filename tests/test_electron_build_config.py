@@ -11,7 +11,6 @@ from pathlib import Path
 
 _PKG = Path(__file__).parent.parent / "electron" / "package.json"
 _MAIN = Path(__file__).parent.parent / "electron" / "app-main.js"
-_PRELOAD = Path(__file__).parent.parent / "electron" / "preload.js"
 
 
 def test_stable_artifact_names():
@@ -58,42 +57,11 @@ def test_mac_has_zip_target():
 
 
 # ---------------------------------------------------------------------------
-# main.js: updater event wiring
+# main.js: installing a downloaded update
 # ---------------------------------------------------------------------------
 
 def _main_src() -> str:
     return _MAIN.read_text()
-
-
-def test_main_emits_download_progress_ipc():
-    """main.js must listen to download-progress and forward it to the renderer."""
-    src = _main_src()
-    assert '"download-progress"' in src or "'download-progress'" in src, (
-        "main.js does not listen to the electron-updater 'download-progress' event. "
-        "The progress bar will never update."
-    )
-    assert "download-progress" in src and "send" in src, (
-        "main.js must call mainWindow.webContents.send('download-progress', ...) "
-        "to forward progress events to the renderer."
-    )
-
-
-def test_main_emits_update_log_ipc():
-    """main.js must send 'update-log' IPC messages to the renderer for the log panel."""
-    src = _main_src()
-    assert '"update-log"' in src or "'update-log'" in src, (
-        "main.js does not emit 'update-log' IPC messages. "
-        "The log panel in the update card will never receive any text."
-    )
-
-
-def test_main_listens_checking_for_update():
-    """main.js must handle the 'checking-for-update' autoUpdater event to log it."""
-    src = _main_src()
-    assert "checking-for-update" in src, (
-        "main.js does not handle the 'checking-for-update' autoUpdater event. "
-        "The log panel will show no entry when a check begins."
-    )
 
 
 def test_main_kill_subprocesses_before_quit_and_install():
@@ -124,58 +92,6 @@ def test_main_kill_subprocesses_before_quit_and_install():
         "uiProcess/apiProcess must be killed BEFORE quitAndInstall is called, "
         "otherwise ShipIt sees the app still running and aborts the install."
     )
-
-
-# ---------------------------------------------------------------------------
-# preload.js: IPC bridge completeness
-# ---------------------------------------------------------------------------
-
-def _preload_src() -> str:
-    return _PRELOAD.read_text()
-
-
-def test_preload_exposes_on_download_progress():
-    """preload.js must expose onDownloadProgress so the renderer can show the progress bar."""
-    src = _preload_src()
-    assert "onDownloadProgress" in src, (
-        "preload.js does not expose 'onDownloadProgress'. "
-        "The renderer cannot receive download-progress events and the progress bar will never update."
-    )
-    assert "download-progress" in src, (
-        "preload.js must listen on the 'download-progress' IPC channel in onDownloadProgress."
-    )
-
-
-def test_preload_exposes_on_update_log():
-    """preload.js must expose onUpdateLog so the renderer can populate the log panel."""
-    src = _preload_src()
-    assert "onUpdateLog" in src, (
-        "preload.js does not expose 'onUpdateLog'. "
-        "The renderer cannot receive log lines and the log panel will stay empty."
-    )
-    assert "update-log" in src, (
-        "preload.js must listen on the 'update-log' IPC channel in onUpdateLog."
-    )
-
-
-def test_preload_exposes_required_updater_api():
-    """preload.js must expose the full updater API surface."""
-    src = _preload_src()
-    required = [
-        "onUpdateAvailable",
-        "onUpdateDownloaded",
-        "onUpdateNotAvailable",
-        "onDownloadProgress",
-        "onUpdateLog",
-        "checkForUpdates",
-        "onUpdateError",
-        "installUpdate",
-    ]
-    for name in required:
-        assert name in src, (
-            f"preload.js is missing '{name}'. "
-            f"The renderer will throw when it tries to call window.celerp.{name}()."
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -219,10 +135,6 @@ def test_shell_check_btn_hides_on_click():
     )
 
 
-
-
-
-
 def test_shell_restart_btn_disables_on_click():
     """The restart button must disable itself when clicked to prevent double-clicks."""
     src = _shell_src()
@@ -252,7 +164,6 @@ def test_css_has_progress_bar_styles():
     )
 
 
-
 # ---------------------------------------------------------------------------
 # Additional regression tests for Copilot review fixes
 # ---------------------------------------------------------------------------
@@ -274,57 +185,6 @@ def test_main_initial_check_deferred_until_did_finish_load():
     assert check_idx != -1, (
         "checkForUpdates() is not called inside the did-finish-load handler. "
         "Initial update checks may fire before the renderer is ready."
-    )
-
-
-def test_main_download_progress_log_throttled():
-    """download-progress handler must throttle sendLog calls (not log every tick).
-
-    download-progress fires many times per second. Logging every tick floods IPC
-    and causes excessive DOM work in the renderer.
-    """
-    src = _main_src()
-    # Find the download-progress handler
-    dp_idx = src.find('"download-progress"')
-    assert dp_idx != -1, "download-progress handler not found"
-    handler_block = src[dp_idx: dp_idx + 600]
-    # Must have some form of time-based throttle
-    assert "Date.now()" in handler_block or "throttle" in handler_block or "_lastProgressLog" in handler_block, (
-        "download-progress handler does not throttle sendLog calls. "
-        "Every progress tick will send an IPC message and trigger a DOM update."
-    )
-
-
-
-
-def test_shell_append_log_uses_dom_append_not_text_content():
-    """appendLog must use DOM appendChild, not textContent +=.
-
-    textContent += re-reads and rewrites the entire string every call - O(n) per append.
-    With frequent progress events this causes jank.
-    """
-    src = _shell_src()
-    al_idx = src.find("function appendLog")
-    assert al_idx != -1, "appendLog function not found in shell.py"
-    func_block = src[al_idx: al_idx + 800]
-    assert "appendChild" in func_block, (
-        "appendLog uses textContent += instead of DOM appendChild. "
-        "This is O(n) per call and causes jank during frequent progress events."
-    )
-    # The O(n) pattern: logEl.textContent += should NOT appear inside appendLog
-    assert "logEl.textContent +=" not in func_block, (
-        "appendLog still uses textContent += concatenation. Replace with appendChild."
-    )
-
-
-def test_shell_append_log_caps_line_count():
-    """appendLog must cap the number of retained log lines to prevent DOM bloat."""
-    src = _shell_src()
-    al_idx = src.find("function appendLog")
-    func_block = src[al_idx: al_idx + 500]
-    assert "200" in func_block or "remove()" in func_block, (
-        "appendLog does not cap retained log lines. "
-        "Long downloads will accumulate hundreds of DOM nodes."
     )
 
 
@@ -398,8 +258,6 @@ def test_main_auto_install_on_quit_disabled():
     )
 
 
-
-
 def test_main_periodic_check_interval():
     """main.js must schedule a periodic update check (every 4 hours).
 
@@ -433,8 +291,6 @@ def test_shell_no_is_manual_check_gate():
     assert "isManualCheck = true" not in src, (
         "shell.py still sets isManualCheck = true. Remove it."
     )
-
-
 
 
 def test_main_js_mac_hide_on_close():

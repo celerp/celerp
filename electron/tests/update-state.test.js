@@ -3,7 +3,7 @@
 "use strict";
 
 const { EventEmitter } = require("events");
-const { trackUpdater } = require("../update-state");
+const { trackUpdater, serveUpdateState } = require("../update-state");
 
 // A fake electron-updater: the tracker only subscribes to its events.
 function setup() {
@@ -22,11 +22,15 @@ function downloadedSetup() {
   return t;
 }
 
+// The state without its log lines.
+const stateOf = ({ log, ...state }) => state;
+
+const IDLE = { status: "idle", version: "", percent: 0, message: "" };
 const DOWNLOADED = { status: "downloaded", version: "2.0.1", percent: 100, message: "" };
 
 test("a fresh tracker starts idle", function test_new_tracker_starts_idle() {
   const { getUpdateState } = setup();
-  expect(getUpdateState()).toEqual({ status: "idle", version: "", percent: 0, message: "" });
+  expect(getUpdateState()).toEqual({ ...IDLE, log: [] });
 });
 
 test("relaunch starts fresh: a new tracker is idle even after another reached downloaded",
@@ -34,25 +38,36 @@ test("relaunch starts fresh: a new tracker is idle even after another reached do
     const first = downloadedSetup();
     expect(first.getUpdateState().status).toBe("downloaded");
     const second = setup();
-    expect(second.getUpdateState()).toEqual({ status: "idle", version: "", percent: 0, message: "" });
+    expect(second.getUpdateState()).toEqual({ ...IDLE, log: [] });
   });
 
 test("update found goes straight to downloading and is forwarded", function test_update_found_starts_downloading() {
   const { updater, sent, getUpdateState } = setup();
   updater.emit("update-available", { version: "2.0.1" });
   const state = { status: "downloading", version: "2.0.1", percent: 0, message: "" };
-  expect(getUpdateState()).toEqual(state);
-  expect(sent).toEqual([["update-available", state]]);
+  expect(stateOf(getUpdateState())).toEqual(state);
+  expect(sent.map(([ch, s]) => [ch, stateOf(s)])).toEqual([["update-available", state]]);
 });
 
 test("progress updates the percent and keeps the version", function test_progress_updates_percent() {
   const { updater, getUpdateState } = setup();
   updater.emit("update-available", { version: "2.0.1" });
   updater.emit("download-progress", { percent: 12.5 });
-  expect(getUpdateState()).toEqual({ status: "downloading", version: "2.0.1", percent: 12.5, message: "" });
+  expect(stateOf(getUpdateState())).toEqual({ status: "downloading", version: "2.0.1", percent: 12.5, message: "" });
   updater.emit("download-progress", { percent: 80 });
   expect(getUpdateState().percent).toBe(80);
 });
+
+test("a progress percent that is not 0 to 100 is kept in range, and one that is not a number is 0",
+  function test_progress_percent_is_validated() {
+    const cases = [["55", 55], [-3, 0], ["abc", 0], [150, 100], [null, 0], [Infinity, 0]];
+    for (const [given, stored] of cases) {
+      const { updater, getUpdateState } = setup();
+      updater.emit("update-available", { version: "2.0.1" });
+      updater.emit("download-progress", { percent: given });
+      expect([given, getUpdateState().percent]).toEqual([given, stored]);
+    }
+  });
 
 test("state carries version, percent and error message", function test_state_carries_version_percent_message() {
   const { updater, getUpdateState } = setup();
@@ -62,7 +77,7 @@ test("state carries version, percent and error message", function test_state_car
   updater.emit("error", new Error("disk full"));
   expect(getUpdateState()).toMatchObject({ status: "error", version: "3.1.0", message: "disk full" });
   const done = downloadedSetup();
-  expect(done.getUpdateState()).toEqual(DOWNLOADED);
+  expect(stateOf(done.getUpdateState())).toEqual(DOWNLOADED);
 });
 
 test("downloaded cannot be demoted by later updater noise", function test_downloaded_cannot_be_demoted() {
@@ -76,15 +91,17 @@ test("downloaded cannot be demoted by later updater noise", function test_downlo
   for (const [event, payload] of noise) {
     const { updater, sent, getUpdateState } = downloadedSetup();
     updater.emit(event, payload);
-    expect(getUpdateState()).toEqual(DOWNLOADED);
-    expect(sent).toEqual([]);
+    expect(stateOf(getUpdateState())).toEqual(DOWNLOADED);
+    // Anything still sent is a log line on the unchanged downloaded state.
+    for (const [, s] of sent) expect(stateOf(s)).toEqual(DOWNLOADED);
   }
 });
 
 test("an error before any download is retained for later replay", function test_pre_download_error_is_retained() {
   const { updater, sent, getUpdateState } = setup();
   updater.emit("error", new Error("getaddrinfo ENOTFOUND github.com"));
-  const state = { status: "error", version: "", percent: 0, message: "getaddrinfo ENOTFOUND github.com" };
+  const state = { status: "error", version: "", percent: 0, message: "getaddrinfo ENOTFOUND github.com",
+                  log: ["Update error: getaddrinfo ENOTFOUND github.com"] };
   expect(getUpdateState()).toEqual(state);
   // Reading it again (a later page load) still returns the error.
   expect(getUpdateState()).toEqual(state);
@@ -105,7 +122,9 @@ test("getUpdateState returns a copy the caller cannot use to change the state",
     updater.emit("update-available", { version: "2.0.1" });
     const snapshot = getUpdateState();
     try { snapshot.status = "idle"; } catch (_) { /* frozen copies may throw in strict mode */ }
+    snapshot.log.push("injected");
     expect(getUpdateState().status).toBe("downloading");
+    expect(getUpdateState().log).not.toContain("injected");
   });
 
 test("every progress tick is forwarded to the window", function test_every_progress_tick_is_forwarded() {
@@ -128,7 +147,7 @@ test("an error with no usable message is stored with an empty message",
     for (const err of [undefined, null, {}, new Error("")]) {
       const { updater, getUpdateState } = setup();
       updater.emit("error", err);
-      expect(getUpdateState()).toEqual({ status: "error", version: "", percent: 0, message: "" });
+      expect(getUpdateState()).toEqual({ status: "error", version: "", percent: 0, message: "", log: ["Update error"] });
     }
   });
 
@@ -139,6 +158,87 @@ test("a check that finds nothing does not stop a download in progress",
     updater.emit("download-progress", { percent: 30 });
     sent.length = 0;
     updater.emit("update-not-available", {});
-    expect(getUpdateState()).toEqual({ status: "downloading", version: "2.0.1", percent: 30, message: "" });
+    expect(stateOf(getUpdateState())).toEqual({ status: "downloading", version: "2.0.1", percent: 30, message: "" });
     expect(sent).toEqual([]);
+  });
+
+test("the log lines are part of the state, so a replay shows what the live events showed",
+  function test_log_lines_are_replayed_with_the_state() {
+    const { updater, sent, getUpdateState } = setup();
+    updater.emit("checking-for-update");
+    updater.emit("update-available", { version: "2.0.1" });
+    updater.emit("download-progress", { percent: 4, bytesPerSecond: 2048 });
+    updater.emit("download-progress", { percent: 7, bytesPerSecond: 2048 });
+    updater.emit("download-progress", { percent: 23, bytesPerSecond: 4096 });
+    updater.emit("update-downloaded", { version: "2.0.1" });
+    const log = [
+      "Checking for update...",
+      "Found v2.0.1, downloading...",
+      "Downloading: 4% (2 KB/s)",
+      "Downloading: 23% (4 KB/s)",
+      "v2.0.1 ready. Click 'Restart to Install'",
+    ];
+    expect(getUpdateState().log).toEqual(log);
+    // The last live event carried the same log the replay returns.
+    expect(sent[sent.length - 1][1]).toEqual(getUpdateState());
+  });
+
+test("an error after the update downloaded is logged, and the state stays downloaded",
+  function test_error_after_downloaded_is_logged() {
+    const { updater, sent, getUpdateState } = downloadedSetup();
+    updater.emit("error", new Error("net::ERR_INTERNET_DISCONNECTED"));
+    expect(stateOf(getUpdateState())).toEqual(DOWNLOADED);
+    expect(getUpdateState().log.slice(-1)).toEqual(["Update error: net::ERR_INTERNET_DISCONNECTED"]);
+    expect(sent).toEqual([["update-error", getUpdateState()]]);
+  });
+
+test("each check starts a fresh log", function test_check_starts_fresh_log() {
+  const { updater, sent, getUpdateState } = setup();
+  updater.emit("error", new Error("boom"));
+  updater.emit("checking-for-update");
+  expect(getUpdateState().log).toEqual(["Checking for update..."]);
+  expect(sent[sent.length - 1]).toEqual(["update-log", getUpdateState()]);
+});
+
+test("the log keeps the newest 200 lines", function test_log_is_capped() {
+  const { updater, getUpdateState } = setup();
+  for (let i = 0; i < 250; i++) updater.emit("error", new Error("e" + i));
+  const log = getUpdateState().log;
+  expect(log.length).toBe(200);
+  expect([log[0], log[199]]).toEqual(["Update error: e50", "Update error: e249"]);
+});
+
+// A fake ipcMain and window, as app-main.js passes them.
+function serveSetup() {
+  const handlers = {};
+  const ipcMain = { handle: (channel, fn) => { handlers[channel] = fn; } };
+  const windowSent = [];
+  let win = { webContents: { send: (channel, state) => windowSent.push([channel, state]) } };
+  const track = serveUpdateState(ipcMain, () => win);
+  return { handlers, windowSent, track, closeWindow: () => { win = null; } };
+}
+
+test("get-update-state answers idle before an updater is tracked (dev builds)",
+  function test_serve_answers_idle_before_tracking() {
+    const { handlers } = serveSetup();
+    expect(Object.keys(handlers)).toEqual(["get-update-state"]);
+    expect(handlers["get-update-state"]()).toEqual({ ...IDLE, log: [] });
+  });
+
+test("a tracked updater's changes reach the window and get-update-state",
+  function test_serve_forwards_to_window_and_answers_state() {
+    const { handlers, windowSent, track, closeWindow } = serveSetup();
+    const updater = new EventEmitter();
+    track(updater);
+    updater.emit("update-available", { version: "2.0.1" });
+    updater.emit("update-downloaded", { version: "2.0.1" });
+    const replay = handlers["get-update-state"]();
+    expect(stateOf(replay)).toEqual(DOWNLOADED);
+    expect(windowSent.map(([ch]) => ch)).toEqual(["update-available", "update-downloaded"]);
+    expect(windowSent[1][1]).toEqual(replay);
+    // With no window open, changes are still kept for the next replay.
+    closeWindow();
+    updater.emit("error", new Error("late"));
+    expect(windowSent.length).toBe(2);
+    expect(handlers["get-update-state"]().log.slice(-1)).toEqual(["Update error: late"]);
   });
