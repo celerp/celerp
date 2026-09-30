@@ -92,6 +92,18 @@ def test_zip_bomb_rejected_before_parse():
     assert "uncompressed" in str(excinfo.value).lower()
 
 
+@pytest.mark.parametrize("csv_text,cells", [
+    ("Title,sell_by,quantity,Notes\nRuby,piece,1\n",
+     [["Title", "sell_by", "quantity", "Notes"], ["Ruby", "piece", 1]]),
+    ("Title,sell_by,quantity\nRuby,piece,1,EXTRA\n",
+     [["Title", "sell_by", "quantity"], ["Ruby", "piece", 1, "EXTRA"]]),
+], ids=["short_row", "long_row"])
+def test_ragged_rows_normalize_the_same_for_csv_and_xlsx(csv_text, cells):
+    from_csv = tabular.read_table(csv_text.encode(), "items.csv")
+    from_xlsx = tabular.read_table(_xlsx_bytes({"Sheet": cells}), "items.xlsx")
+    assert from_csv == from_xlsx
+
+
 def test_row_and_cell_bounds():
     too_many_rows = "col\n" + "x\n" * (tabular.MAX_ROWS + 1)
     with pytest.raises(tabular.TabularError) as rows_err:

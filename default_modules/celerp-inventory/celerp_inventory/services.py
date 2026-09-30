@@ -2201,9 +2201,10 @@ async def build_import_records(
     row naming one keeps ``location_id`` empty until import_items creates it.
     An upsert that omits ``location_name`` preserves the target location.
 
-    ``create_key`` is the commit's batch key. An upsert row whose resolved target is
-    the item this same batch created at that row stays a create, so an exact retry
-    dedupes instead of patching the item it made.
+    ``create_key`` is the import's operation key. Items this same import created
+    are never upsert targets, so a retry, or a resume after an interrupted chunk,
+    plans every row against the state before the import, exactly as the first
+    attempt did.
     """
     loc_rows = (await session.execute(
         select(Location).where(Location.company_id == company_id)
@@ -2242,6 +2243,9 @@ async def build_import_records(
     # one current item has it.
     by_barcode: dict[str, list[Projection]] = {}
     by_sku: dict[str, list[Projection]] = {}
+    own_ids = {
+        import_created_item_id(company_id, f"{create_key}:row:{n}") for n in range(1, len(rows) + 1)
+    } if create_key else set()
     if upsert:
         barcodes = {str(r.get("barcode") or "").strip() for r in rows} - {""}
         skus = {str(r.get("sku") or "").strip() for r in rows} - {""}
@@ -2259,6 +2263,8 @@ async def build_import_records(
                 )
             )).scalars().all()
             for proj in matches:
+                if proj.entity_id in own_ids:
+                    continue
                 state = proj.state or {}
                 barcode = str(state.get("barcode") or "").strip()
                 sku = str(state.get("sku") or "").strip()
@@ -2335,11 +2341,6 @@ async def build_import_records(
                     "message": f"SKU '{sku}' matches multiple lots; include a barcode to choose one",
                 })
                 continue
-            if (
-                target is not None and create_key
-                and target.entity_id == import_created_item_id(company_id, f"{create_key}:row:{i + 1}")
-            ):
-                target = None
 
         # Location is required for a new item. Upsert without an explicit location
         # preserves the target's current location rather than inventing a default.
@@ -2624,16 +2625,20 @@ class ImportRejected(Exception):
 
 
 def import_operation_key(idempotency_key: str | None, rows: list[dict], upsert: bool) -> str:
-    """The retry identity of one import: the caller's key, or else the content.
+    """The retry identity of one import: the caller's key together with the content.
 
-    Creation retry identity belongs to the import content and row ordinal, not
-    SKU or barcode, so same-SKU and no-SKU rows stay distinct lots while an exact
-    re-submit of the same mapped rows is a no-op.
+    An exact re-submit of the same mapped rows under the same key (or with no
+    key) is the same import: a no-op, or a resume where an interrupted attempt
+    stopped. The same key sent with different rows names a different import, so
+    those rows are never mistaken for a retry and dropped. Creation identity
+    belongs to this key and the row ordinal, not SKU or barcode, so same-SKU and
+    no-SKU rows stay distinct lots.
     """
-    if idempotency_key:
-        return idempotency_key
-    canonical = json.dumps({"upsert": upsert, "rows": rows}, sort_keys=True, separators=(",", ":"), default=str)
-    return f"csv:{hashlib.sha256(canonical.encode()).hexdigest()}"
+    canonical = json.dumps(
+        {"key": idempotency_key, "upsert": upsert, "rows": rows},
+        sort_keys=True, separators=(",", ":"), default=str,
+    )
+    return f"import:{hashlib.sha256(canonical.encode()).hexdigest()}"
 
 
 def _source_field(row: dict, key: str) -> str:
@@ -2662,6 +2667,53 @@ def _permission_errors(record: dict, row: dict, *, can_set_prices: bool, can_edi
         {"field": field, "code": "permission_denied", "message": f"Setting {field} requires the {permission} permission"}
         for field, permission in dict(gated).items()
     ]
+
+
+def _pop_cost_change(data: dict) -> dict | None:
+    """Take the goods cost out of patch data as the item page's cost edit.
+
+    Returns ``fields_changed`` for an item.updated restatement, or None when the
+    row sets no cost. Raises TypeError or ValueError for a cost that is not a number.
+    """
+    cost_total, cost_price = data.pop("cost_total", None), data.pop("cost_price", None)
+    field, value = ("cost_total", cost_total) if cost_total not in (None, "") else ("cost_price", cost_price)
+    if value in (None, ""):
+        return None
+    return {field: {"new": float(value)}}
+
+
+async def _cost_restatement_error(session: AsyncSession, company_id, record: dict, row: dict) -> dict | None:
+    """The writer's cost-restatement refusal for a planned patch, found without writing.
+
+    The writer applies the patch and then restates the cost against the patched
+    item; this runs the same restatement check against the item as the patch
+    would leave it.
+    """
+    if record["event_type"] != "item.patched" or not COST_ITEM_KEYS & set(record["data"]):
+        return None
+    from celerp_inventory.projections import apply_item_event
+
+    data = dict(record["data"])
+    try:
+        cost_change = _pop_cost_change(data)
+    except (TypeError, ValueError):
+        return None  # the cell checks report a cost that is not a number
+    if cost_change is None:
+        return None
+    entity_id = record["entity_id"]
+    stored = (await session.execute(
+        select(Projection).where(Projection.company_id == company_id, Projection.entity_id == entity_id)
+    )).scalars().first()
+    if stored is None:
+        return None
+    patched = SimpleNamespace(entity_type=stored.entity_type,
+                              state=apply_item_event(stored.state or {}, "item.patched", data))
+    try:
+        await _restatement(session, company_id, entity_id, "item.updated",
+                           {"fields_changed": cost_change}, {entity_id: patched})
+    except CostRestatementConflict as exc:
+        return {"field": _source_field(row, next(iter(cost_change))), "code": "cost_not_carried", "message": str(exc)}
+    return None
 
 
 def _semantic_fingerprint(build: ImportBuild, errors: list[dict]) -> str:
@@ -2727,6 +2779,9 @@ async def preflight_import_rows(
                 rec, rows[row_no - 1], can_set_prices=can_set_prices, can_edit_amounts=can_edit_amounts,
             )
         )
+        cost_error = await _cost_restatement_error(session, company_id, rec, rows[row_no - 1])
+        if cost_error:
+            errors.append({"row": row_no, **cost_error})
     errors.sort(key=lambda e: e["row"])
     return SemanticImportPlan(
         rows=build.rows, records=build.records, record_rows=build.record_rows, errors=errors,
@@ -3179,14 +3234,11 @@ async def write_import_batch(
         # page makes, so it normalizes against the row's resulting quantity.
         cost_change = None
         if event_type == "item.patched" and stored_proj is not None and COST_ITEM_KEYS & set(data):
-            cost_total, cost_price = data.pop("cost_total", None), data.pop("cost_price", None)
-            field, value = ("cost_total", cost_total) if cost_total not in (None, "") else ("cost_price", cost_price)
-            if value not in (None, ""):
-                try:
-                    cost_change = {field: {"new": float(value)}}
-                except (TypeError, ValueError):
-                    outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): cost must be a number")
-                    continue
+            try:
+                cost_change = _pop_cost_change(data)
+            except (TypeError, ValueError):
+                outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): cost must be a number")
+                continue
 
         try:
             async with session.begin_nested():

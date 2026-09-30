@@ -219,6 +219,33 @@ async def _item_ids(session, company_id: str) -> set[str]:
     )).scalars().all() if not eid.startswith("item:demo-")}
 
 
+async def _commit_rows(client, h, rows: list[dict], *, upsert: bool, key: str | None) -> dict:
+    """Preview and commit mapped rows over the direct API; return the importer's result."""
+    r = await client.post("/items/import/rows/preview", headers=h, json={
+        "rows": rows, "upsert": upsert, "idempotency_key": key,
+    })
+    assert r.status_code == 200 and r.json()["errors"] == [], r.text
+    r = await client.post("/items/import/rows", headers=h, json={
+        "rows": rows, "upsert": upsert, "idempotency_key": key, "preview_hash": r.json()["preview_hash"],
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["errors"] == [], r.json()["errors"][:5]
+    return r.json()
+
+
+async def _names_with_sku(session, company_id: str, sku: str) -> list[str]:
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+    session.expire_all()
+    return sorted((await session.execute(
+        select(Projection.state["name"].as_string()).where(
+            Projection.company_id == uuid.UUID(company_id), Projection.entity_type == "item",
+            Projection.state["sku"].as_string() == sku,
+        )
+    )).scalars().all())
+
+
 async def _snapshot(session, company_id: str) -> dict:
     from test_onboarding_import_invariants import _business_snapshot
     return await _business_snapshot(session, company_id)
@@ -337,6 +364,64 @@ class TestLogicalImportRetry:
         assert [(b["id"], b["row_count"], b["status"]) for b in history] == [(partial[0]["id"], rows, "active")]
         (batch,) = await _batch_rows(session, ctx["company_id"])
         assert set(batch.entity_ids) == created_ids
+
+    @pytest.mark.asyncio
+    async def test_interrupted_upsert_resume_plans_later_rows_as_the_first_attempt_did(
+        self, client, session, ctx, monkeypatch,
+    ):
+        import celerp_inventory.services as svc
+        # Rows 1 and 501 are two new lots sharing a SKU. After the first chunk has
+        # written row 1, the resumed import must still plan row 501 as its own new
+        # lot, as the uninterrupted import does, not as an update of row 1's lot.
+        rows = [{"name": f"Lot {i:04d}", "sku": f"LOT-{i:04d}", "sell_by": "piece", "quantity": "1"}
+                for i in range(_CHUNK + 2)]
+        rows[0].update(name="First lot", sku="SHARED")
+        rows[_CHUNK].update(name="Second lot", sku="SHARED")
+        key = f"op-{uuid.uuid4().hex}"
+        before = await _item_ids(session, ctx["company_id"])
+
+        real_commit = svc.commit_import_batch
+        calls: list[int] = []
+
+        async def _interrupt_after_first_chunk(*a, **k):
+            calls.append(1)
+            if len(calls) == 2:
+                raise RuntimeError("connection lost after the first chunk")
+            return await real_commit(*a, **k)
+
+        monkeypatch.setattr(svc, "commit_import_batch", _interrupt_after_first_chunk)
+        with pytest.raises(RuntimeError):
+            await _commit_rows(client, ctx["admin_h"], rows, upsert=True, key=key)
+        monkeypatch.setattr(svc, "commit_import_batch", real_commit)
+        assert len(await _item_ids(session, ctx["company_id"]) - before) == _CHUNK
+
+        body = await _commit_rows(client, ctx["admin_h"], rows, upsert=True, key=key)
+        assert (body["created"], body["updated"], body["skipped"]) == (2, 0, _CHUNK)
+        assert len(await _item_ids(session, ctx["company_id"]) - before) == _CHUNK + 2
+        assert await _names_with_sku(session, ctx["company_id"], "SHARED") == ["First lot", "Second lot"]
+
+    @pytest.mark.asyncio
+    async def test_exact_retry_of_upsert_with_a_repeated_new_sku_returns_the_same_batch(self, client, session, ctx):
+        rows = [{"name": name, "sku": "TWIN", "sell_by": "piece", "quantity": "1"} for name in ("Lot A", "Lot B")]
+        first = await _commit_rows(client, ctx["admin_h"], rows, upsert=True, key=None)
+        assert first["created"] == 2 and first["batch_id"]
+        after_first = await _snapshot(session, ctx["company_id"])
+
+        again = await _commit_rows(client, ctx["admin_h"], rows, upsert=True, key=None)
+        assert (again["created"], again["updated"], again["skipped"]) == (0, 0, 2)
+        assert again["batch_id"] == first["batch_id"]
+        assert await _snapshot(session, ctx["company_id"]) == after_first
+
+    @pytest.mark.asyncio
+    async def test_same_key_with_different_rows_is_imported_not_treated_as_a_retry(self, client, session, ctx):
+        h = ctx["admin_h"]
+        key = f"op-{uuid.uuid4().hex}"
+        first = await _commit_rows(client, h, [{"name": "Apple", "sell_by": "piece", "quantity": "1"}],
+                                   upsert=False, key=key)
+        second = await _commit_rows(client, h, [{"name": "Banana", "sell_by": "piece", "quantity": "7"}],
+                                    upsert=False, key=key)
+        assert second["created"] == 1 and second["batch_id"] != first["batch_id"]
+        assert {b["id"] for b in await _history(client, h)} == {first["batch_id"], second["batch_id"]}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("transport", _TRANSPORTS)

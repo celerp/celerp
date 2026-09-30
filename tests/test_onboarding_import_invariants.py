@@ -1734,6 +1734,34 @@ class TestOnboardingStateInvariant:
         assert api.flag_writes() == [False]
 
     @pytest.mark.asyncio
+    async def test_onboarding_complete_company_read_failure_remains_on_onboarding(self):
+        from ui.api_client import APIError
+        api = _CompanyApi({"onboarding_pending": True})
+
+        async def _unreachable(token):
+            raise APIError(503, "The server could not be reached.")
+
+        api.get_company = _unreachable
+        r = await _fake_ui(api, "POST", "/onboarding/complete")
+        assert r.status_code == 200 and "location" not in r.headers
+        assert _RETRYABLE_ERROR in r.text
+        assert 'action="/onboarding/complete"' in r.text and 'method="post"' in r.text
+        assert api.flag_writes() == [] and api.settings["onboarding_pending"] is True
+
+    @pytest.mark.asyncio
+    async def test_onboarding_complete_with_expired_session_goes_to_login(self):
+        from ui.api_client import APIError
+        api = _CompanyApi({"onboarding_pending": True})
+
+        async def _expired(token):
+            raise APIError(401, "Session expired")
+
+        api.get_company = _expired
+        r = await _fake_ui(api, "POST", "/onboarding/complete")
+        assert r.status_code == 303 and r.headers["location"] == "/login"
+        assert api.flag_writes() == []
+
+    @pytest.mark.asyncio
     async def test_onboarding_complete_failure_preserves_pending_state(self, client):
         h = await _register(client)
         r = await client.patch("/companies/me", json={"settings": {"onboarding_pending": True}}, headers=h)

@@ -434,8 +434,10 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=303)
         try:
             company = await api_get_company(token)
-        except APIError:
-            return RedirectResponse("/login", status_code=303)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=303)
+            return _onboarding_page(request, error=t("onboarding.complete_failed", detail=e.detail))
         if _can_set_up(company, request):
             try:
                 await api.patch_company(token, {"onboarding_pending": False})

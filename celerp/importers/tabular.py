@@ -556,23 +556,34 @@ def _rows_to_csv(rows: list[dict], cols: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _enforce_bounds(cols: list[str], rows: list[dict]) -> None:
-    if len(rows) > MAX_ROWS:
-        raise TabularError(f"Too many rows: {len(rows)} exceeds the {MAX_ROWS} limit.")
-    cells = len(rows) * max(len(cols), 1)
+def _enforce_bounds(n_cols: int, n_rows: int) -> None:
+    if n_rows > MAX_ROWS:
+        raise TabularError(f"Too many rows: {n_rows} exceeds the {MAX_ROWS} limit.")
+    cells = n_rows * max(n_cols, 1)
     if cells > MAX_CELLS:
         raise TabularError(f"Too many cells: {cells} exceeds the {MAX_CELLS} limit.")
 
 
 def read_csv(text: str) -> tuple[list[str], list[dict]]:
-    """Parse CSV text into (header, rows) via csv.DictReader, BOM stripped and
-    row/cell bounds enforced."""
+    """Parse CSV text into (header, rows), BOM stripped and row/cell bounds enforced.
+
+    Rows are read as a grid as wide as the widest line, exactly as a workbook
+    sheet is read: a missing cell is empty, and a cell past the header sits
+    under an empty column name. The first line is the header, even when blank;
+    blank lines after it are skipped.
+    """
     if text.startswith("﻿"):
         text = text[1:]
-    reader = csv.DictReader(io.StringIO(text))
-    cols = list(reader.fieldnames or [])
-    rows = list(reader)
-    _enforce_bounds(cols, rows)
+    reader = csv.reader(io.StringIO(text))
+    header = next(reader, [])
+    lines = [line for line in reader if line]
+    width = max([len(header), *(len(line) for line in lines)])
+    _enforce_bounds(width, len(lines))
+    cols = header + [""] * (width - len(header))
+    rows = [
+        {cols[i]: (line[i] if i < len(line) else "") for i in range(width)}
+        for line in lines
+    ]
     return cols, rows
 
 

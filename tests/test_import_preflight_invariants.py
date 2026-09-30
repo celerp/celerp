@@ -328,6 +328,30 @@ async def test_writer_failure_is_reported_without_internal_detail(client, sessio
         assert leaked not in text, body["errors"]
 
 
+async def test_cost_correction_the_writer_cannot_carry_is_rejected_at_preview(client, session, perm, monkeypatch):
+    # Lowering a lot's stock uses part of its cost, so a later cost correction on that
+    # lot cannot be carried automatically. The preview reports it and nothing is written.
+    h = perm["admin_h"]
+    seed = [{"name": name, "sku": sku, "sell_by": "piece", "quantity": "10", "cost_price": "5"}
+            for name, sku in (("Cost A", "COST-A"), ("Cost B", "COST-B"))]
+    await _seed_items(client, h, seed, "op-cost-seed")
+    from celerp.models.projections import Projection
+    lowered = (await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == uuid.UUID(perm["company_id"]), Projection.entity_type == "item",
+        Projection.state["sku"].as_string() == "COST-A",
+    ))).scalar_one()
+    r = await client.post(f"/items/{lowered}/adjust", json={"new_qty": 4}, headers=h)
+    assert r.status_code == 200, r.text
+    untouched = await _item_state_by_sku(session, perm["company_id"], "COST-B")
+
+    rows = [{"name": "Cost A", "sku": "COST-A", "cost_price": "7"},
+            {"name": "Cost B", "sku": "COST-B", "cost_price": "7"}]
+    await _assert_preview_and_commits_reject(
+        client, session, perm, monkeypatch, h, rows, [("cost_price", "cost_not_carried")], upsert=True)
+    after = await _item_state_by_sku(session, perm["company_id"], "COST-B")
+    assert (after.get("cost_price"), after.get("cost_total")) == (untouched.get("cost_price"), untouched.get("cost_total"))
+
+
 @pytest.mark.parametrize("row", [
     {"name": "", "sell_by": "piece", "quantity": "1"},
     {"name": "   ", "sell_by": "piece", "quantity": "1"},
