@@ -622,7 +622,9 @@ async def _unbootstrapped_gate(request: Request):
 
 
 def _setup_chooser(code_required: bool) -> FT:
-    """First-run landing: every way to start, one card each."""
+    """First-run landing: every way to start, one card each, and below them the small
+    link to whole-installation recovery."""
+    from ui.routes.company_backup import BOOTSTRAP as RESTORE
     from ui.routes.migrations import BOOTSTRAP, chooser, choice_card
     # The sample run needs the setup code when one is configured; the migration
     # source page asks for it next to its sample button.
@@ -637,10 +639,10 @@ def _setup_chooser(code_required: bool) -> FT:
         [
             choice_card(t("setup.card_new"), t("setup.card_new_desc"), href="/setup/fresh"),
             choice_card(t("setup.card_move"), t("setup.card_move_desc"), href=BOOTSTRAP.base),
-            choice_card(t("setup.card_open_copy"), t("setup.card_open_copy_desc"), href="/setup/open-copy"),
+            choice_card(t("setup.card_restore"), t("setup.card_restore_desc"), href=RESTORE.base),
             sample,
-            choice_card(t("setup.card_restore"), t("setup.card_restore_desc"), href="/setup/import-backup"),
         ],
+        P(A(t("setup.recover_installation"), href="/setup/import-backup", cls="auth-link"), cls="auth-alt-action"),
     )
 
 

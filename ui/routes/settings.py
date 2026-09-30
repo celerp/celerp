@@ -4106,6 +4106,19 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
     return _cloud_relay_unconnected(iid)
 
 
+def _company_backup_section() -> FT:
+    """What a company backup holds, said once, then download and restore."""
+    from ui.routes.company_backup import DOWNLOAD, SETTINGS
+    return Div(
+        P(t("company_backup.contents"), cls="settings-hint"),
+        Div(
+            A(t("company_backup.download"), href=DOWNLOAD, cls="btn btn--primary btn--sm"),
+            A(t("company_backup.restore_title"), href=SETTINGS.base, cls="btn btn--secondary btn--sm"),
+            cls="flex-row gap-sm flex-wrap",
+        ),
+    )
+
+
 def _backup_tab(is_install_owner: bool, company_backup: FT | str = "") -> FT:
     """Backup tab: this company's backup, plus the way to System Recovery for the installation owner.
 

@@ -72,6 +72,8 @@ class WizardMode:
     key: str
     base: str
     back: str
+    title: str = "migration.title"
+    owner_only: str = "migration.owner_only"
 
     @property
     def bootstrap(self) -> bool:
@@ -119,9 +121,9 @@ async def _read_scan(request: Request, mode: WizardMode, token: str) -> dict:
 # Shared page pieces
 # ---------------------------------------------------------------------------
 
-def wizard_page(request: Request, *content, status_code: int = 200):
+def wizard_page(request: Request, *content, status_code: int = 200, title: str = "migration.title"):
     page = auth_shell(*client_scripts(get_lang(request)), Div(*content, cls="auth-card migration-wizard"),
-                      title=page_title("migration.title"))
+                      title=page_title(title))
     if status_code == 200:
         return page
     return HTMLResponse(to_xml(page), status_code=status_code)
@@ -199,8 +201,8 @@ async def gate(request: Request, mode: WizardMode):
         return RedirectResponse("/login", status_code=302)
     from celerp.services.permissions import role_has_permission
     if not role_has_permission({}, get_role(request), "manage_company_lifecycle"):
-        return wizard_page(request, auth_header(t("migration.title")),
-                     flash(t("migration.owner_only")), back_link(mode.back), status_code=403)
+        return wizard_page(request, auth_header(t(mode.title)), flash(t(mode.owner_only)), back_link(mode.back),
+                           status_code=403, title=mode.title)
     return None
 
 
@@ -209,16 +211,16 @@ def api_token(request: Request, mode: WizardMode) -> str | None:
     return None if mode.bootstrap else get_token(request)
 
 
-def upload_again_page(request: Request, mode: WizardMode, title: str, message: str) -> HTMLResponse:
+def upload_again_page(request: Request, mode: WizardMode, message: str) -> HTMLResponse:
     """An upload that is gone: the reason, and the way to upload the file again."""
-    resp = wizard_page(request, auth_header(title), flash(message),
+    resp = wizard_page(request, auth_header(t(mode.title)), flash(message),
                        A(t("migration.upload_again"), href=mode.base, cls="btn btn--primary btn--full"),
-                       back_link(mode.back))
+                       back_link(mode.back), title=mode.title)
     return resp if isinstance(resp, HTMLResponse) else HTMLResponse(to_xml(resp))
 
 
 def _expired(request: Request, mode: WizardMode, message: str | None = None):
-    resp = upload_again_page(request, mode, t("migration.title"), message or t("migration.scan_expired"))
+    resp = upload_again_page(request, mode, message or t("migration.scan_expired"))
     _clear_scan_cookie(resp, mode, request)
     return resp
 
@@ -1073,7 +1075,7 @@ async def _complete_page(request: Request, run: dict):
         ) if totals else "",
         pack,
         open_company,
-        A(t("company_copy.make_title"), href=f"/company-copy?from_run={run_id}",
+        A(t("company_backup.download"), href=f"/company-backup/download?from_run={run_id}",
           cls="btn btn--secondary btn--full mt-sm"),
         A(t("migration.move_another"), href=f"{COMPANY.base}?from_run={run_id}",
           cls="btn btn--secondary btn--full mt-sm"),

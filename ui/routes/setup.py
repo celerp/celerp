@@ -251,10 +251,11 @@ def setup_routes(app):
     @app.get("/setup/new-company")
     async def new_company_page(request: Request):
         """Entry point for adding a second (or nth) company workspace: start
-        fresh or move a company in from another system."""
+        fresh, move a company in from another system, or restore a company backup."""
         token = request.cookies.get(COOKIE_NAME)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        from ui.routes.company_backup import NEW_COMPANY
         from ui.routes.migrations import COMPANY, chooser, choice_card
         deactivated = request.query_params.get("reason", "") == "deactivated"
         # A deactivated company leaves nothing to go back to.
@@ -270,8 +271,8 @@ def setup_routes(app):
                 [
                     choice_card(t("setup.card_fresh"), t("setup.card_new_desc"), href="/setup/new-company/fresh"),
                     choice_card(t("setup.card_move"), t("setup.card_move_desc"), href=COMPANY.base),
-                    choice_card(t("setup.card_open_copy"), t("setup.card_open_copy_desc"),
-                                href="/setup/new-company/open-copy"),
+                    choice_card(t("setup.card_restore_from_backup"), t("setup.card_restore_desc"),
+                                href=NEW_COMPANY.base),
                 ],
                 back,
             ),

@@ -31,6 +31,7 @@ from ui.routes.settings import (
     _user_display_cell,
     _preference_display_cell,
     _backup_tab,
+    _company_backup_section,
     _system_recovery_content,
     _company_tab,
     _users_tab,
@@ -165,7 +166,11 @@ def setup_routes(app):
             elif tab == "users":
                 content = _users_tab(users, company.get("settings"), lang=lang, is_owner=is_owner)
             elif tab == "backup":
-                content = _backup_tab(is_install_owner=await _is_install_owner(token))
+                content = _backup_tab(
+                    is_install_owner=await _is_install_owner(token),
+                    company_backup=_company_backup_section()
+                    if role_has_permission(settings or {}, role, "manage_company_lifecycle") else "",
+                )
             else:
                 content = _company_tab(company, lang=lang, is_owner=is_owner)
                 if is_owner:
