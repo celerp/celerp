@@ -3,7 +3,7 @@
 """Screen Manager attachments. Every name, size, hash and content type in the file is untrusted.
 
 An attachment is accepted only when its name is a plain file name with an
-accepted extension, it belongs to a carried record that Celerp can attach files
+extension of a type Celerp stores, it belongs to a carried record that Celerp can attach files
 to (a contact, a document or an item), its content is
 stored in the business file within the size cap, the stored hash matches the
 content, and the content's signature matches the extension. Anything else is
@@ -21,6 +21,7 @@ from celerp.importers.adapters.base import ScanError
 from celerp.importers.adapters.manager_io.book import AttachmentRef, Book
 from celerp.importers.adapters.manager_io.sqlite_reader import ManagerReader
 from celerp.importers.schema import CoverageClass
+from celerp.services.attachments import accepts_mime
 
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 MAX_NAME = 255
@@ -33,9 +34,7 @@ FILE_TYPES: dict[str, tuple[str, tuple[bytes, ...]]] = {
     "gif": ("image/gif", (b"GIF87a", b"GIF89a")),
     "webp": ("image/webp", (b"RIFF",)),
     "pdf": ("application/pdf", (b"%PDF-",)),
-    "xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", (b"PK\x03\x04",)),
     "docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", (b"PK\x03\x04",)),
-    "csv": ("text/csv", ()),
     "txt": ("text/plain", ()),
 }
 # Record types an attachment can belong to: the ones that become Celerp contacts,
@@ -71,7 +70,8 @@ def _extension(name: str) -> str | None:
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
         return None
     _, dot, ext = name.rpartition(".")
-    return ext.lower() if dot and ext.lower() in FILE_TYPES else None
+    ext = ext.lower()
+    return ext if dot and ext in FILE_TYPES and accepts_mime(FILE_TYPES[ext][0]) else None
 
 
 def _signature_matches(ext: str, content: bytes) -> bool:

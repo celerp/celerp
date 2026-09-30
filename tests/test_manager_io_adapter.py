@@ -167,6 +167,30 @@ def test_manager_decoder_resource_limits(tmp_path):
         adapter().build_manifest([art], FULL)
 
 
+def test_every_attachment_type_the_manager_adapter_accepts_is_stored_by_celerp():
+    """RED before the change: XLSX and CSV pass the Manager screen, then every attempt to
+    store them fails, so the migration can never finish."""
+    from celerp.importers.adapters.manager_io.attachments import FILE_TYPES
+    from celerp.services.attachments import accepts_mime
+
+    assert [ext for ext, (mime, _) in FILE_TYPES.items() if not accepts_mime(mime)] == []
+
+
+def test_spreadsheet_attachments_rejected_as_disclosed_loss(tmp_path):
+    """RED before the change: the XLSX and CSV attachments are accepted into the manifest."""
+    objects, blobs = [*specs.basic_objects()], [*specs.basic_blobs()]
+    for label, name, content in (("XLSX", "stock.xlsx", b"PK\x03\x04sheet"), ("CSV", "stock.csv", b"a,b\n1,2\n")):
+        objects.append(specs.attachment_object(label, name, content, specs.k("INV1")))
+        blobs.append(Blob(specs.k(label), name, "application/octet-stream", content))
+    art = artifact(write_manager_file(tmp_path / "sheets.manager", objects, tuple(blobs)))
+    manager = adapter()
+
+    coverage = _coverage(manager.inspect([art]))
+    assert coverage["Attachment (rejected)"][:2] == (2, CoverageClass.MAPPED_WITH_LOSS)
+    (accepted,) = manager.build_manifest([art], FULL).bundle.attachments
+    assert accepted.source_external_id == ref("ATT1")
+
+
 def test_manager_attachment_handling_is_untrusted_and_reported(tmp_path):
     png = specs.PNG
     missing_target = specs.k("NO-SUCH-OBJECT")

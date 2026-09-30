@@ -92,6 +92,11 @@ def _stored_extension(mime: str) -> str:
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
 
 
+def accepts_mime(mime: str) -> bool:
+    """Whether Celerp stores files of this content type."""
+    return mime in _ALLOWED_MIMES
+
+
 def check_file_size(size: int) -> None:
     """ValueError when a file of *size* bytes is over the attachment limit."""
     if size > MAX_FILE_BYTES:
@@ -431,7 +436,7 @@ async def store_file(
     Raises ValueError for a file over the size limit or of a type outside the allowlist.
     """
     check_file_size(len(content))
-    if mime not in _ALLOWED_MIMES:
+    if not accepts_mime(mime):
         raise ValueError(f"Unsupported file type: {mime}")
 
     att_type: AttachmentType = attachment_type or infer_attachment_type(mime)
