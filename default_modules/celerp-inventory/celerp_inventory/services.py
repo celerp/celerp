@@ -42,7 +42,7 @@ from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
 from celerp.services.money import to_stored_float, unit_price_from_total
 from celerp.services.permissions import role_has_permission
 from celerp.services.vertical_presets import category_item_defaults
-from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, price_key
+from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, is_price_item_key, price_key
 from celerp.services.units import (
     SERVICE_SELL_BY,
     build_unit_map,
@@ -2651,14 +2651,16 @@ def _source_field(row: dict, key: str) -> str:
     return next((k for k in _AMOUNT_SOURCE_KEYS if _to_float(row.get(k)) is not None), key)
 
 
-def _permission_errors(record: dict, row: dict, *, can_set_prices: bool, can_edit_amounts: bool) -> list[dict]:
+def _permission_errors(
+    record: dict, row: dict, price_lists: list[dict], *, can_set_prices: bool, can_edit_amounts: bool,
+) -> list[dict]:
     """The permission rules the writer enforces on a record, as row errors."""
     data = record["data"]
     gated: list[tuple[str, str]] = []
     if not can_set_prices:
         gated += [
             (_source_field(row, key), "set_inventory_prices") for key, value in data.items()
-            if value is not None and (key.endswith("_price") or key == "cost_total")
+            if value is not None and is_price_item_key(key, price_lists)
         ]
     if record["event_type"] == "item.patched" and not can_edit_amounts:
         gated += [(_source_field(row, key), "edit_inventory_amounts") for key in sorted(AMOUNT_ITEM_KEYS & set(data))]
@@ -2775,7 +2777,7 @@ async def preflight_import_rows(
     for rec, row_no in zip(build.records, build.record_rows):
         errors.extend(
             {"row": row_no, **e} for e in _permission_errors(
-                rec, rows[row_no - 1], can_set_prices=can_set_prices, can_edit_amounts=can_edit_amounts,
+                rec, rows[row_no - 1], price_lists, can_set_prices=can_set_prices, can_edit_amounts=can_edit_amounts,
             )
         )
         cost_error = await _cost_restatement_error(session, company_id, rec, rows[row_no - 1])
@@ -3040,7 +3042,8 @@ async def write_import_batch(
 
     units = await get_company_units(session, company_id)
     valid_units: frozenset[str] = frozenset(u["name"] for u in units)
-    derived_keys = derived_price_keys((await get_price_config(session, company_id))[0])
+    price_lists = (await get_price_config(session, company_id))[0]
+    derived_keys = derived_price_keys(price_lists)
 
     outcome = ImportOutcome()
     created_entity_ids: list[str] = []
@@ -3156,7 +3159,7 @@ async def write_import_batch(
         # permission to set prices.
         price_keys = {
             key for key, value in data.items()
-            if value is not None and (key.endswith("_price") or key == "cost_total")
+            if value is not None and is_price_item_key(key, price_lists)
         }
         if price_keys and not role_has_permission(settings, role, "set_inventory_prices"):
             outcome.add(entity_id, "rejected",

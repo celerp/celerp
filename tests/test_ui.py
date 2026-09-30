@@ -636,6 +636,66 @@ class TestClickToEdit:
         assert b"<input" not in r.content
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["retail_price", "wholesale_price", "retail_price_total"])
+    async def test_price_cell_readonly_without_permission(self, ui_client, field):
+        """GET edit for a price field, as an operator without set_inventory_prices,
+        returns a non-editable display cell (no <input>), so the item page cannot
+        change a price the Pricing tab refuses."""
+        schema = [{"key": field, "label": field, "type": "money", "editable": True}]
+        item = {"entity_id": "gc:123", "status": "available", field: 5}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+        ):
+            r = await ui_client.get(f"/api/items/gc:123/field/{field}/edit", cookies=_authed(role="operator"))
+            granted = await ui_client.get(f"/api/items/gc:123/field/{field}/edit", cookies=_authed(role="manager"))
+        assert r.status_code == 200
+        assert b"<input" not in r.content
+        assert b"<input" in granted.content
+
+    @pytest.mark.asyncio
+    async def test_item_detail_prices_readonly_without_permission(self, ui_client):
+        """The item page renders Retail and Wholesale without the click-to-edit entry
+        for an operator lacking set_inventory_prices; other fields stay editable."""
+        schema = [
+            {"key": "name", "label": "Name", "type": "text", "editable": True},
+            {"key": "retail_price", "label": "Retail", "type": "money", "editable": True},
+            {"key": "wholesale_price", "label": "Wholesale", "type": "money", "editable": True},
+        ]
+        item = {**_ITEM, "status": "available", "retail_price": 10, "wholesale_price": 8}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
+        ):
+            operator = (await ui_client.get("/inventory/gc:123", cookies=_authed(role="operator"))).content
+            manager = (await ui_client.get("/inventory/gc:123", cookies=_authed(role="manager"))).content
+        for key in (b"retail_price", b"wholesale_price"):
+            assert b"/field/" + key + b"/edit" in manager
+            assert b"/field/" + key + b"/edit" not in operator
+        assert b"/field/name/edit" in operator
+
+    def test_duplicate_leaves_out_sell_prices_without_permission(self):
+        """A copy made without set_inventory_prices carries the cost but no sell price."""
+        from ui.routes.inventory import _duplicate_payload
+        source = {"sku": "A", "name": "A", "retail_price": 10, "wholesale_price": 8, "cost_price": 5}
+        denied = _duplicate_payload(source, "A-copy", can_set_prices=False)
+        assert "retail_price" not in denied and "wholesale_price" not in denied
+        assert denied["cost_price"] == 5
+        granted = _duplicate_payload(source, "A-copy", can_set_prices=True)
+        assert granted["retail_price"] == 10 and granted["wholesale_price"] == 8
+
+    @pytest.mark.asyncio
     async def test_sell_by_cell_readonly_without_permission(self, ui_client):
         """GET the single-field edit cell for sell_by, as a role lacking
         edit_inventory_amounts, returns a non-editable display cell: no <input> and

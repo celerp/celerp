@@ -66,6 +66,7 @@ from celerp.services.pricing import (
     get_price_config,
     inject_derived_prices,
     is_cost_list_name,
+    is_price_item_key,
     price_key,
     stored_price,
 )
@@ -569,11 +570,6 @@ _FIELD_ALIASES = {
 }
 
 
-def _is_cost_or_price_key(key: str) -> bool:
-    """True for a cost/price column, which must never become scope-searchable."""
-    return key in COST_ITEM_KEYS or key.endswith("_price") or key.endswith("_price_total")
-
-
 def searchable_field_sets(schema: list[dict]) -> tuple[frozenset[str], frozenset[str]]:
     """Derive (numeric, text) scoped-search field sets from an effective field schema.
 
@@ -589,15 +585,15 @@ def searchable_field_sets(schema: list[dict]) -> tuple[frozenset[str], frozenset
     text = set(_SEARCH_FIELDS)
     for f in schema:
         key = f.get("key")
-        if not key or _is_cost_or_price_key(key):
+        if not key or is_price_item_key(key):
             continue
         if f.get("type") in NUMERIC_SCHEMA_TYPES:
             numeric.add(key)
         else:
             text.add(key)
-    numeric -= {k for k in numeric if _is_cost_or_price_key(k)}
+    numeric -= {k for k in numeric if is_price_item_key(k)}
     text -= numeric
-    text -= {k for k in text if _is_cost_or_price_key(k)}
+    text -= {k for k in text if is_price_item_key(k)}
     return frozenset(numeric), frozenset(text)
 
 
@@ -2201,13 +2197,15 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
                 raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
             return {"event_id": replay.id, "id": replay.entity_id}
 
-    # Guard: setting cost fields on creation requires set_inventory_prices, except that a
+    # Guard: setting a price on creation requires set_inventory_prices, except that a
     # draft's creator authors cost with edit_inventory alone (the gate re-arms at commit) -
     # the same draft_cost_carveout the pricing surfaces use, so the three stay in lockstep.
-    if payload.cost_price is not None or payload.cost_total is not None:
-        _create_draft = str((payload.model_extra or {}).get("status") or "draft").lower() == "draft"
-        if not draft_cost_carveout(_create_draft, role, settings):
-            assert_role_permission(settings, role, "set_inventory_prices")
+    _create_draft = str((payload.model_extra or {}).get("status") or "draft").lower() == "draft"
+    _price_lists = (await get_price_config(session, company_id))[0]
+    _gated = {k for k, v in payload.model_dump(exclude_none=True).items() if is_price_item_key(k, _price_lists)}
+    if draft_cost_carveout(_create_draft, role, settings):
+        _gated -= COST_ITEM_KEYS
+    _reject_price_change(_gated, role, settings)
 
     # The category's defaults fill what the payload leaves out; an explicit value wins.
     category_defaults = category_item_defaults(payload.category)
@@ -2364,6 +2362,17 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     return {"event_id": entry.id, "id": entry.entity_id}
 
 
+def _reject_price_change(price_keys: set[str], role: str, settings: dict) -> None:
+    """403 for the whole request when it sets a price without set_inventory_prices.
+    The one price gate every item writer applies, so no surface can set a price the
+    Pricing tab would refuse."""
+    if price_keys and not role_has_permission(settings, role, "set_inventory_prices"):
+        raise HTTPException(
+            status_code=403,
+            detail="Setting inventory prices requires the 'set_inventory_prices' permission",
+        )
+
+
 def draft_cost_carveout(is_draft: bool, role: str, settings: dict) -> bool:
     """While an item is draft, its creator authors cost with edit_inventory alone;
     the set_inventory_prices gate re-arms at commit. Shared by the three cost surfaces
@@ -2404,8 +2413,12 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # Cost fields are gated by set_inventory_prices, not by the schema role floor:
     # a granted operator edits cost, an ungranted manager still cannot.
     restricted -= COST_ITEM_KEYS
-    if not draft_cost_carveout(_is_draft, role, settings) and not role_has_permission(settings, role, "set_inventory_prices"):
-        restricted |= COST_ITEM_KEYS
+    changed_keys = set(payload.fields_changed.keys())
+    _price_lists, _base_name, _ = await get_price_config(session, company_id)
+    _price_changes = {k for k in changed_keys if is_price_item_key(k, _price_lists)}
+    if draft_cost_carveout(_is_draft, role, settings):
+        _price_changes -= COST_ITEM_KEYS
+    _reject_price_change(_price_changes, role, settings)
     # Amount fields (quantity/weight/pieces/gross_weight) and the sell unit are
     # gated by edit_inventory_amounts, mirroring the cost gate above. sell_by is
     # included because changing it rewrites quantity, so it carries the same
@@ -2413,7 +2426,6 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     restricted -= AMOUNT_EDIT_GATED_KEYS
     if not _is_draft and not role_has_permission(settings, role, "edit_inventory_amounts"):
         restricted |= AMOUNT_EDIT_GATED_KEYS
-    changed_keys = set(payload.fields_changed.keys())
     if "status" in changed_keys:
         _new_status = (payload.fields_changed["status"] or {}).get("new")
         await reject_draft_status_change_via_generic_path(session, company_id, entity_id, _new_status)
@@ -2425,7 +2437,6 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # Derived price lists are computed from the base price list; their keys are never stored.
     # Both the conventional key ("trade_price") and the raw list name ("Trade") are blocked:
     # resolve_price honors a direct-name key first, so storing one would shadow the formula.
-    _price_lists, _base_name, _ = await get_price_config(session, company_id)
     _derived = derived_price_keys(_price_lists)
     derived_blocked = {k for k in changed_keys if k in _derived or price_key(k) in _derived}
     if derived_blocked:
@@ -2448,7 +2459,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # make every derived read treat that item as unpriced, and NaN/Infinity break the
     # Decimal arithmetic downstream.
     for _f, _fc in payload.fields_changed.items():
-        if (_f.endswith("_price") or _f == "cost_total") and isinstance(_fc, dict):
+        if is_price_item_key(_f, _price_lists) and isinstance(_fc, dict):
             _new = _fc.get("new")
             if _new is not None and coerce_price(_new) is None:
                 raise HTTPException(status_code=422, detail=f"'{_f}' must be a number")
@@ -4224,11 +4235,7 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
     _proj = await get_item_projection(session, company_id, entity_id)
     _is_draft = str((_proj.state or {}).get("status") or "").lower() == "draft"
     if not (is_cost_price_type(payload.price_type) and draft_cost_carveout(_is_draft, role, settings)):
-        if not role_has_permission(settings, role, "set_inventory_prices"):
-            raise HTTPException(
-                status_code=403,
-                detail="Setting inventory prices requires the 'set_inventory_prices' permission",
-            )
+        _reject_price_change({payload.price_type}, role, settings)
     event = dict(
         entity_id=entity_id,
         event_type="item.pricing.set",

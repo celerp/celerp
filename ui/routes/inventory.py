@@ -26,9 +26,10 @@ from ui.components.shell import base_shell, minimal_shell, page_header, search_h
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
+from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, cost_columns
 from celerp.services.field_schema import union_category_attr_keys as _union_category_attr_keys
-from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, price_key, resolve_price
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, is_price_item_key, price_key, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
 from ui.i18n import t, get_lang, is_rtl, field_label
@@ -1063,7 +1064,11 @@ async def _inventory_content(
         else f
         for f in eff_schema
     ]
-    eff_schema = _apply_amount_edit_permission(eff_schema, role, company.get("settings") or {})
+    _cs = company.get("settings") or {}
+    _draft_unlocked = sorted(
+        _locked_edit_keys(eff_schema, role, _cs) - _locked_edit_keys(eff_schema, role, _cs, is_draft=True)
+    )
+    eff_schema = _apply_edit_permission(eff_schema, role, _cs)
     if catalog_channels and any(f.get("key") == "name" for f in eff_schema):
         eff_schema = eff_schema + [{
             "key": "_channels", "label": "Channels", "type": "text",
@@ -1071,16 +1076,14 @@ async def _inventory_content(
             "visible_to_roles": [], "position": 2.5, "show_in_table": True,
             "virtual": True, "paired_with": "name", "sortable": False,
         }]
-    # Draft rows stay authorable: when the transform above locked the amount fields
-    # for this role, mark each DRAFT row so the table renders those cells
+    # Draft rows stay authorable: when the transform above locked the amount or cost
+    # fields for this role, mark each DRAFT row so the table renders those cells
     # click-to-edit anyway - the edit endpoints re-check status + permission
     # server-side, so this is presentation only.
-    _cs = company.get("settings") or {}
-    if (role_has_permission(_cs, role, "edit_inventory")
-            and not role_has_permission(_cs, role, "edit_inventory_amounts")):
+    if _draft_unlocked:
         for _it in items:
-            if str(_it.get("status") or "").lower() == "draft":
-                _it["_row_editable_keys"] = sorted(AMOUNT_EDIT_GATED_KEYS)
+            if _is_draft(_it):
+                _it["_row_editable_keys"] = _draft_unlocked
     # Derived read-only money columns, appended to the schema when their values exist:
     # - Under a contact holdings scope the meaningful per-row value is the scope value the
     #   total is summed from (quoted memo price / consignment cost), not the catalog
@@ -1170,13 +1173,15 @@ async def _import_export_allowed(request: Request, token: str) -> bool:
     return role_has_permission(settings, _get_role(request), "import_export_data")
 
 
-def _duplicate_payload(source: dict, new_sku: str) -> dict:
+def _duplicate_payload(source: dict, new_sku: str, *, can_set_prices: bool) -> dict:
     """Build a create payload from an existing item, carrying every field except
     id, status, location_name, created_at, updated_at (status is reset by the create
     path) and barcode. Barcode is globally unique, so a copy never inherits the
     source's: auto_barcode tells the create path to mint a fresh unique one from the
     shared sequence (the same reset a split child gets). Core columns and any *_price
-    stay top-level; everything else goes into attributes. Shared by the single-item
+    stay top-level; everything else goes into attributes. Without set_inventory_prices
+    the copy leaves the sell prices out (the create path refuses them); the cost is kept,
+    because the copy is a draft its creator may still cost. Shared by the single-item
     and bulk duplicate paths."""
     _SKIP = {"id", "status", "location_name", "created_at", "updated_at", "barcode",
              "idempotency_key", "external_links", "_channel_state"}
@@ -1186,6 +1191,8 @@ def _duplicate_payload(source: dict, new_sku: str) -> dict:
     attrs: dict = {}
     for k, v in source.items():
         if k in _SKIP or k == "sku" or v is None:
+            continue
+        if not can_set_prices and is_price_item_key(k) and k not in COST_ITEM_KEYS:
             continue
         if k in _CORE or k.endswith("_price"):
             payload[k] = v
@@ -1760,10 +1767,7 @@ def setup_routes(app):
             else f
             for f in schema
         ]
-        schema = _apply_amount_edit_permission(schema, _get_role(request), company.get("settings") or {})
-        if (str(item.get("status") or "").lower() == "draft"
-                and role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory")):
-            schema = [{**f, "editable": True} if f.get("key") in AMOUNT_EDIT_GATED_KEYS else f for f in schema]
+        schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item))
         # Merge category-specific fields for this item's category
         item_cat = item.get("category", "")
         if item_cat and item_cat in cat_schemas:
@@ -2271,14 +2275,12 @@ function celerpPrintLabel(entityId, templateId) {
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                                 cell_type=_f.get("type", "text"), editable=False)
-        if (field in AMOUNT_EDIT_GATED_KEYS
-                and str(item.get("status") or "").lower() != "draft"
-                and not role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory_amounts")):
-            # Amount fields (quantity/weight/pieces/gross_weight) and sell_by are gated
-            # by edit_inventory_amounts: this GET is the single edit-entry chokepoint, so
+        if field in _locked_edit_keys(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item)):
+            # Amount fields and sell_by (edit_inventory_amounts) and prices
+            # (set_inventory_prices): this GET is the single edit-entry chokepoint, so
             # no gated cell can enter edit state without the permission, however it rendered.
-            # Draft items are exempt - the lock attaches when the item is committed to
-            # available, so its creator can finish authoring it (status re-read per edit).
+            # Draft items keep amounts and cost authorable - the lock attaches when the
+            # item is committed to available (status re-read per edit).
             from ui.components.table import display_cell
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
@@ -2380,9 +2382,9 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return P(t("inventory.error_detail", detail=e.detail), cls="cell-error")
         locations = locs.get("items", [])
-        # ESC restore inherits the same amount read-only state as the static cell, so a
-        # restored amount cell never re-offers click-to-edit without the permission.
-        schema = _apply_amount_edit_permission(schema, _get_role(request), company.get("settings") or {})
+        # ESC restore inherits the same read-only state as the static cell, so a
+        # restored gated cell never re-offers click-to-edit without the permission.
+        schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item))
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
         from ui.components.table import display_cell
         label_map: dict | None = None
@@ -2665,7 +2667,7 @@ function celerpPrintLabel(entityId, templateId) {
             _fp_company = await api.get_company(token)
         except Exception:
             _fp_company = {}
-        schema = _apply_amount_edit_permission(schema, _get_role(request), _fp_company.get("settings") or {})
+        schema = _apply_edit_permission(schema, _get_role(request), _fp_company.get("settings") or {}, is_draft=_is_draft(item))
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
         # Category change: context-aware response
         if field == "category":
@@ -2970,7 +2972,7 @@ function celerpPrintLabel(entityId, templateId) {
             company, currency = {}, None
         active_cat = item.get("category", "")
         eff_schema = _effective_schema(schema, cat_schemas, active_cat)
-        eff_schema = _apply_amount_edit_permission(eff_schema, _get_role(request), company.get("settings") or {})
+        eff_schema = _apply_edit_permission(eff_schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item))
         col_prefs: dict = {}
         try:
             col_prefs = await api.get_column_prefs(token)
@@ -3045,7 +3047,7 @@ function celerpPrintLabel(entityId, templateId) {
             api.get_item_schema(token), api.get_item(token, entity_id),
             api.get_all_category_schemas(token), api.get_locations(token),
         )
-        schema = _apply_amount_edit_permission(schema, role, settings or {})
+        schema = _apply_edit_permission(schema, role, settings or {}, is_draft=_is_draft(item))
         # Purchase triple: purchase_unit + purchase_conversion_factor + sell_by (read-only)
         if field in ("purchase_unit", "purchase_conversion_factor"):
             from ui.components.table import purchase_display_cell
@@ -3397,7 +3399,10 @@ function celerpPrintLabel(entityId, templateId) {
             try:
                 source = await api.get_item(token, eid)
                 new_sku = await _gen_copy_sku(token, str(source.get("sku", "") or ""), reserved=reserved)
-                await api.create_item(token, _duplicate_payload(source, new_sku))
+                await api.create_item(token, _duplicate_payload(
+                    source, new_sku,
+                    can_set_prices=role_has_permission(settings, _get_role(request), "set_inventory_prices"),
+                ))
                 ok += 1
             except APIError:
                 failed += 1
@@ -4561,7 +4566,14 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         if not new_sku:
             new_sku = await _gen_copy_sku(token, str(source.get("sku", "") or ""))
-        payload = _duplicate_payload(source, new_sku)
+        try:
+            _dup_settings = (await api.get_company(token)).get("settings") or {}
+        except APIError as e:
+            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+        payload = _duplicate_payload(
+            source, new_sku,
+            can_set_prices=role_has_permission(_dup_settings, _get_role(request), "set_inventory_prices"),
+        )
         try:
             result = await api.create_item(token, payload)
         except APIError as e:
@@ -6063,17 +6075,33 @@ def _apply_unit_field_override(
     return cell_type, options, allow_custom
 
 
-def _apply_amount_edit_permission(schema: list[dict], role: str, settings: dict) -> list[dict]:
-    """Return *schema* with amount fields and the sell unit marked read-only when
-    *role* lacks the edit_inventory_amounts permission. One transform at the schema
-    source, mirroring apply_field_visibility for costs (celerp.services.cost_visibility):
-    every cell that reads a field's 'editable' flag - the data_table default cells
-    and the weight/pieces renderers alike - inherits the restriction, so no gated
-    cell renders as click-to-edit without the permission. The backend edit
-    endpoints enforce the same gate regardless of what the UI drew."""
-    if role_has_permission(settings, role, "edit_inventory_amounts"):
-        return schema
-    return [{**f, "editable": False} if f.get("key") in AMOUNT_EDIT_GATED_KEYS else f for f in schema]
+def _locked_edit_keys(schema: list[dict], role: str, settings: dict, *, is_draft: bool = False) -> set[str]:
+    """Schema keys *role* may not hand-edit: the amount fields and sell unit without
+    edit_inventory_amounts, every price without set_inventory_prices. On a draft the
+    creator (edit_inventory) still authors the amounts and the cost; sell prices stay
+    locked. Mirrors the backend item write gates, which enforce the same rules."""
+    locked: set[str] = set()
+    if not role_has_permission(settings, role, "edit_inventory_amounts"):
+        locked |= AMOUNT_EDIT_GATED_KEYS
+    if not role_has_permission(settings, role, "set_inventory_prices"):
+        locked |= {f["key"] for f in schema if f.get("key") and is_price_item_key(f["key"])}
+    if is_draft and role_has_permission(settings, role, "edit_inventory"):
+        locked -= AMOUNT_EDIT_GATED_KEYS | COST_SCHEMA_KEYS
+    return locked
+
+
+def _apply_edit_permission(schema: list[dict], role: str, settings: dict, *, is_draft: bool = False) -> list[dict]:
+    """Return *schema* with the fields *role* may not edit (_locked_edit_keys) marked
+    read-only. One transform at the schema source, mirroring apply_field_visibility for
+    costs (celerp.services.cost_visibility): every cell that reads a field's 'editable'
+    flag - the data_table default cells and the weight/pieces renderers alike - inherits
+    the restriction, so no gated cell renders as click-to-edit without the permission."""
+    locked = _locked_edit_keys(schema, role, settings, is_draft=is_draft)
+    return [{**f, "editable": False} if f.get("key") in locked else f for f in schema]
+
+
+def _is_draft(item: dict) -> bool:
+    return str(item.get("status") or "").lower() == "draft"
 
 
 def _resolve_field_def(

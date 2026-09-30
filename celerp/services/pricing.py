@@ -57,6 +57,16 @@ def price_key(name: str) -> str:
     return f"{name.lower()}_price"
 
 
+def is_price_item_key(key: str, price_lists: list[dict] = ()) -> bool:
+    """True when writing *key* on an item sets a price: any ``*_price`` or ``*_price_total``
+    key, the goods cost total, or a raw price list name (stored_price reads it directly).
+    Every item writer gates these keys on the set_inventory_prices permission."""
+    return (
+        key == "cost_total" or key.endswith(("_price", "_price_total"))
+        or any(key == pl.get("name") for pl in price_lists)
+    )
+
+
 def is_cost_list_name(name: str) -> bool:
     return name.lower() in COST_PRICE_LIST_NAMES
 
