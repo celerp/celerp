@@ -3,7 +3,9 @@
 """The fields each carried Manager record may hold, and what Celerp does with each.
 
 Every field Celerp reads, or checks and refuses when set, is READ. A field Celerp knows
-and deliberately leaves behind is IGNORED, with the reason written beside it. Any other
+and deliberately leaves behind is either LOST, when it holds something the user entered
+and the scan's coverage lists it as mapped with loss, or IGNORED, when it is bookkeeping
+the record already says elsewhere; the reason is written beside each. Any other
 field found populated stops the scan for that record: what it records could otherwise be
 lost without a word. Nested messages (lines, GUIDs, decimals, dates) are checked the same
 way, field by field, to any depth."""
@@ -19,6 +21,7 @@ from celerp.importers.adapters.manager_io.protobuf import Message
 class Field:
     note: str | None = None                         # None: read; otherwise why it is left behind
     nested: dict[int, "Field"] | None = None        # the fields of a nested message
+    lost: str | None = None                         # the coverage label of a loss the scan discloses
 
 
 Schema = dict[int, Field]
@@ -27,6 +30,10 @@ READ = Field()
 
 def ignored(note: str) -> Field:
     return Field(note)
+
+
+def lost(label: str, note: str, nested: Schema | None = None) -> Field:
+    return Field(note, nested, label)
 
 
 # protobuf-net's .NET value types.
@@ -72,8 +79,8 @@ _PAID_BY = dict(
                "the contact and document it settles, and that is what is carried."),
     f4=ignored("The customer the form shows. Each customer line names the customer it settles."),
     f5=ignored("The supplier the form shows. Each supplier line names the supplier it settles."),
-    f6=ignored("The name typed for a payer who is neither a customer nor a supplier. Celerp records the "
-               "payment against its accounts, without a payer name."),
+    f6=lost("payer name", "The name typed for a payer who is neither a customer nor a supplier is not "
+                          "carried. Celerp records the payment against its accounts, without a payer name."),
 )
 
 SCHEMAS: dict[str, Schema] = {
@@ -118,28 +125,31 @@ SCHEMAS: dict[str, Schema] = {
     "InterAccountTransfer": _fields(read=(5, 6), refs=(2, 3), numbers=(8, 9), days=(1,)),
     "JournalEntry": _fields(read=(2, 3), refs=(8,), days=(1,), f14=_lines(_JOURNAL_LINE)),
     "Attachment": _fields(read=(2, 4, 12), refs=(6,),
-                          f1=Field("When the file was attached. The file is carried as it is, onto the "
-                                   "record it belongs to, without the attach time.", DATE)),
+                          f1=lost("attach time", "When the file was attached is not carried. The file is "
+                                  "carried as it is, onto the record it belongs to.", DATE)),
     "LockDate": _fields(read=(2,), days=(1,)),
 }
 
 
-def unknown_field(name: str, m: Message) -> str | None:
+def check(name: str, m: Message) -> tuple[str | None, list[Field]]:
     """The dotted path of the first populated field *name* holds that its schema does not
-    list, or None when every populated field is listed."""
-    return _unknown(SCHEMAS[name], m, "")
+    list, or None when every populated field is listed; and every populated LOST field."""
+    found: list[Field] = []
+    return _walk(SCHEMAS[name], m, "", found), found
 
 
-def _unknown(schema: Schema, m: Message, prefix: str) -> str | None:
+def _walk(schema: Schema, m: Message, prefix: str, found: list[Field]) -> str | None:
     for number in sorted(m.fields):
         path = f"{prefix}{number}"
         entry = schema.get(number)
         if entry is None:
             return path
+        if entry.lost:
+            found.append(entry)
         if entry.nested is None:
             continue
         for nested in m.messages(number):
-            found = _unknown(entry.nested, nested, f"{path}.")
-            if found:
-                return found
+            unknown = _walk(entry.nested, nested, f"{path}.", found)
+            if unknown:
+                return unknown
     return None

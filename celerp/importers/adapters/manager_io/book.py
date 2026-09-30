@@ -329,6 +329,7 @@ class Book:
     attachments: dict[str, AttachmentRef] = field(default_factory=dict)
     names: dict[str, str] = field(default_factory=dict)          # object key -> Manager type name
     verdicts: dict[str, Verdict] = field(default_factory=dict)
+    losses: dict[tuple[str, str], str] = field(default_factory=dict)   # (key, row label) -> note
     object_counts: dict[str, int] = field(default_factory=dict)
     history: dict[str, int] = field(default_factory=dict)
     lock_date: date | None = None                                # the date periods are locked through
@@ -371,6 +372,13 @@ class Book:
         for label, row in rows.items():
             if notes.get(label):
                 row.note = " ".join(notes[label])[:MAX_NOTE]
+        # A value a carried record holds that Celerp leaves behind, listed once per record.
+        for (key, label), note in self.losses.items():
+            if self.is_blocked(key):
+                continue
+            row = rows.setdefault(label, CIFCoverageEntry(source_type=label, count=0,
+                                                          coverage_class=CoverageClass.MAPPED_WITH_LOSS, note=note))
+            row.count += 1
         return sorted(rows.values(), key=lambda r: r.source_type)
 
     # ── lookups ──
@@ -1021,11 +1029,12 @@ def read_book(reader: ManagerReader) -> Book:
             if row.content is None:
                 raise DecodeError(f"Object payload larger than {reader.max_object_bytes} bytes.")
             message = decode(row.content)
-            unknown = fields.unknown_field(name, message)
+            unknown, lost = fields.check(name, message)
             if unknown:
                 raise Blocked("unknown field", f"Field {unknown} is not one Celerp reads or has classified, so "
                                                "what it records would be lost in the migration.")
             _decode_object(book, name, key, message)
+            book.losses |= {(key, f"{name} ({f.lost})"): f.note for f in lost}
         except DecodeError as exc:
             book.block(name, key, "unreadable", f"Could not be read: {exc}")
         except Blocked as blocked:

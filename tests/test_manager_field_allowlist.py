@@ -69,3 +69,16 @@ def test_every_carried_type_has_a_field_allowlist():
                and TYPE_NAMES.get(ctype) and TYPE_NAMES[ctype] not in INVENTORY_BLOCKERS}
     assert carried - set(SCHEMAS) == set()
     assert set(SCHEMAS) - carried == set()
+
+
+def test_populated_lost_fields_are_disclosed_as_mapped_with_loss():
+    """RED before the change: the payer name typed on a receipt and the time a file was
+    attached are left behind with no coverage row saying so."""
+    from fixtures.manager_io.support import BASIC
+
+    rows = {r.source_type: r for r in adapter().inspect([artifact(BASIC)]).coverage}
+    for label in ("Receipt (payer name)", "Attachment (attach time)"):
+        assert rows[label].count == 1 and rows[label].coverage_class == CoverageClass.MAPPED_WITH_LOSS, label
+        assert rows[label].note
+    # Protobuf bookkeeping, such as a date's DateTime kind, is not listed as a loss.
+    assert not [label for label in rows if "kind" in label.lower()]
