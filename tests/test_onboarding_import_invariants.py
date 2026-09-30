@@ -1664,6 +1664,15 @@ class TestOnboardingStateInvariant:
         assert r.status_code == 200
 
     @pytest.mark.asyncio
+    async def test_onboarding_complete_clears_flag(self):
+        patch_company = AsyncMock(return_value={})
+        with patch("ui.api_client.patch_company", new=patch_company):
+            r = await _ui_request("POST", "/onboarding/complete", settings={"onboarding_pending": True})
+        assert r.status_code == 303 and r.headers["location"] == "/dashboard"
+        patch_company.assert_awaited_once()
+        assert patch_company.await_args.args[1] == {"onboarding_pending": False}
+
+    @pytest.mark.asyncio
     async def test_successful_completion_clears_flag_and_root_stays_dashboard(self, client):
         h = await _register(client)
         r = await client.patch("/companies/me", json={"settings": {"onboarding_pending": True}}, headers=h)
