@@ -228,6 +228,11 @@ async def test_failed_finalize_installs_no_lock_date(real_client, real_engine, m
     assert (await load_run(real_engine, run.id)).status == "ready_to_finalize"
     _assert_unlocked_and_staged(await _company(real_engine, run.company_id))
 
+    # Only a finish that succeeds installs the lock, together with making the company normal.
+    r = await _finalize(real_client, real_engine, run)
+    assert r.status_code == 200, r.text
+    _assert_locked_and_normal(await _company(real_engine, run.company_id), run)
+
 
 async def test_finalize_retry_keeps_lock_date(real_client, real_engine, monkeypatch, tmp_path):
     """A finish that failed is retried and installs the same date, not a shifted or missing one."""
@@ -305,7 +310,8 @@ async def test_post_finalize_posting_on_or_before_lock_refused(real_client, real
 
 
 async def test_post_finalize_posting_after_lock_allowed(real_client, real_engine, monkeypatch, tmp_path):
-    """After finishing, a posting dated the day after the lock date is accepted."""
+    """After finishing, with the lock installed, a posting dated the day after the lock date is accepted."""
     run, headers = await _finalized(real_client, real_engine, monkeypatch, tmp_path)
+    _assert_locked_and_normal(await _company(real_engine, run.company_id), run)
     r = await _post(real_client, headers, real_engine, run.company_id, "2026-03-01")
     assert r.status_code == 200, r.text
