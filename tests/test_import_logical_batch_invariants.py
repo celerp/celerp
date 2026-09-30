@@ -256,6 +256,9 @@ async def _snapshot(session, company_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# Each test writes 1001 rows through three chunks; on a shared CI runner that is
+# close to the suite-wide 30s guard, so these carry their own limit.
+@pytest.mark.timeout(120)
 class TestLogicalImportHistory:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("transport", _TRANSPORTS)

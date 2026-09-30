@@ -1052,6 +1052,7 @@ class TestPreviewCommitInvariant:
     # INV-IMPORT-02: one logical import is semantically built once ------------
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(120)  # 1001 rows in three chunks; slower than the suite guard allows on a shared runner
     async def test_inv_import_02_large_import_is_built_once_and_written_in_bounded_chunks(self, client, session, perm, monkeypatch):
         import celerp_inventory.services as svc
         events: list[tuple] = []
