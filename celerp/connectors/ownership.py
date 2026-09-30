@@ -36,6 +36,9 @@ class ConnectorStoreChangedError(ConnectorOwnershipError):
 # Bounded wait for the exclusive ownership fence. Syncs and webhooks hold the
 # fence shared for as long as their remote calls take; an ownership change
 # waits this long behind them, then reports busy instead of stalling a request.
+# Connectors that publish catalog products, and so carry an item's external links.
+PRODUCT_CHANNEL_PLATFORMS = ("shopify", "woocommerce")
+
 OWNER_LOCK_TIMEOUT_MS = 5000
 _LOCK_NOT_AVAILABLE = "55P03"
 
@@ -231,7 +234,7 @@ async def claim_connector_ownership(
     company_id = str(company_id)
     legacy_id = ensure_instance_id()
     await lock_connector_key(session, connector, exclusive=True)
-    await _lock_active_company(session, company_id)
+    company = await _lock_active_company(session, company_id)
     rows = await _connector_rows(session, connector, for_update=True)
     others = {
         str(row.company_id)
@@ -273,12 +276,18 @@ async def claim_connector_ownership(
 
     created = current is None and legacy is None and create
     if current is None and create:
+        # A company restored from a backup starts with nothing pushed outward
+        # until its owner turns outbound sync on for this connector.
         current = ConnectorConfig(
             company_id=company_id,
             connector=connector,
             **(
                 {"sync_frequency": default_sync_frequency}
                 if default_sync_frequency is not None else {}
+            ),
+            **(
+                {"direction": "inbound"}
+                if (company.settings or {}).get("restored_backup") else {}
             ),
         )
         session.add(current)
@@ -318,6 +327,23 @@ async def connector_ownership_state(
     except ConnectorOwnershipError:
         return OWNERSHIP_OTHER
     return OWNERSHIP_OWNED if current is not None else OWNERSHIP_NONE
+
+
+async def connected_connector_platforms(
+    session: AsyncSession, company_id, candidates=PRODUCT_CHANNEL_PLATFORMS
+) -> set[str]:
+    """The candidate connectors this company currently owns."""
+    try:
+        return {
+            connector
+            for connector in candidates
+            if await connector_ownership_state(session, company_id, connector)
+            == OWNERSHIP_OWNED
+        }
+    except DBAPIError as exc:
+        raise ConnectorOwnershipError(
+            "Could not read this company's connectors"
+        ) from exc
 
 
 async def connector_owned_by_company(

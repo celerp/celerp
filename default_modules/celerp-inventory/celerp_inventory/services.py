@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.importers.results import ImportOutcome
 from celerp.importers.schema import IMPORT_ITEM_STATUSES
@@ -435,9 +436,14 @@ async def restate_item_cost(
     return entry
 
 
+_CHANNEL_KEY_PREFIXES = tuple(f"{p}:" for p in PRODUCT_CHANNEL_PLATFORMS)
+
+
 def _legacy_external_link(platform: str, idem_key: str) -> dict:
     """Decode connector identity stored by releases before external_links existed."""
     parts = (idem_key or "").split(":")
+    if parts[0] != platform:
+        return {}
     if platform == "shopify" and len(parts) >= 3:
         return {"product_id": parts[1], "variant_id": parts[2], "sync_enabled": True}
     if platform == "woocommerce" and len(parts) >= 2:
@@ -573,7 +579,7 @@ def _is_product_anchor_state(state: dict) -> bool:
     ):
         return True
     idem = str(state.get("idempotency_key") or "")
-    if idem.startswith(("shopify:", "woocommerce:")):
+    if idem.startswith(_CHANNEL_KEY_PREFIXES):
         return True
     return not bool(state.get("barcode") or state.get("rfid_epc"))
 
@@ -1143,7 +1149,7 @@ def _is_explicit_catalog_anchor_state(state: dict) -> bool:
         return True
     idem = str(state.get("idempotency_key") or "")
     return bool(state.get("_catalog_sku_aliases")) or idem.startswith(
-        ("shopify:", "woocommerce:")
+        _CHANNEL_KEY_PREFIXES
     )
 
 
@@ -1374,8 +1380,13 @@ async def aggregate_sellable_quantity_for_sku(
     )
 
 
-def build_channel_states(rows: list[Projection]) -> dict[str, dict[str, dict]]:
-    """Derive product-family channel state from canonical family identity."""
+def build_channel_states(
+    rows: list[Projection], *, connected_platforms: set[str]
+) -> dict[str, dict[str, dict]]:
+    """Derive product-family channel state from canonical family identity.
+
+    A link to a store this company is not connected to is history only: it is
+    shown as historical and never as linked."""
     keys = _family_keys(rows)
     by_family: dict[tuple[str, str], list[Projection]] = {}
     for row in rows:
@@ -1384,12 +1395,6 @@ def build_channel_states(rows: list[Projection]) -> dict[str, dict[str, dict]]:
             by_family.setdefault(key, []).append(row)
 
     result: dict[str, dict[str, dict]] = {row.entity_id: {} for row in rows}
-    platforms: set[str] = {"shopify", "woocommerce"}
-    for row in rows:
-        links = (row.state or {}).get("external_links") or {}
-        if isinstance(links, dict):
-            platforms.update(str(key) for key in links)
-
     for family_rows in by_family.values():
         explicit_roots = [
             row
@@ -1399,12 +1404,18 @@ def build_channel_states(rows: list[Projection]) -> dict[str, dict[str, dict]]:
         product_roots = explicit_roots or [
             row for row in family_rows if _is_product_anchor_state(row.state or {})
         ]
-        for platform in platforms:
+        for platform in PRODUCT_CHANNEL_PLATFORMS:
             linked = [
                 row for row in family_rows
                 if external_link_for_state(row.state or {}, platform)
             ]
             if not linked:
+                continue
+            if platform not in connected_platforms:
+                for row in family_rows:
+                    result[row.entity_id][platform] = {
+                        "linked": False, "enabled": False, "historical": True,
+                    }
                 continue
             if len(product_roots) > 1:
                 for row in family_rows:

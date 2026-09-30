@@ -1054,6 +1054,25 @@ async def _apply_existing(session: AsyncSession, plan: RestorePlan, destination:
     return added
 
 
+async def _turn_off_shop_sync(session: AsyncSession, company_id, actor_id) -> None:
+    """A restored company pushes no item to a store until its owner opts the item in
+    again. Recorded as events, so a projection rebuild keeps the items opted out."""
+    from celerp.events.engine import emit_event
+    from celerp.models.projections import Projection
+
+    opted_in = (await session.scalars(
+        select(Projection.entity_id)
+        .where(Projection.company_id == company_id, Projection.entity_type == "item",
+               Projection.is_sync_to_shopify.is_(True))
+        .order_by(Projection.entity_id)
+    )).all()
+    for entity_id in opted_in:
+        await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
+                         event_type="shop.sync.disabled", data={}, actor_id=actor_id, location_id=None,
+                         source="restore", idempotency_key=f"company-restore:shop-sync-off:{entity_id}",
+                         metadata_={})
+
+
 async def restore_company(path: Path, *, mode: str, user_id=None, current_company_id=None,
                           owner_account: dict | None = None, plan_fingerprint: str | None = None) -> RestoreResult:
     """Restore a backup file as a new company and commit it.
@@ -1146,6 +1165,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 except DBAPIError:
                     raise BackupError(422, UNSAVABLE) from None
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
+            await _turn_off_shop_sync(session, new_id, user.id)
             team = await _add_team(session, new_id, plan.team_to_add) if plan.team_to_add else 0
             await session.commit()
         except BaseException:

@@ -1242,6 +1242,7 @@ async def connector_authorize_url(
 
     from celerp.connectors.base import ConnectorCategory, SyncFrequency
     from celerp.connectors.ownership import (
+        PRODUCT_CHANNEL_PLATFORMS,
         ConnectorOwnershipError,
         claim_connector_ownership,
         lock_connector_operation,
@@ -1291,6 +1292,11 @@ async def connector_authorize_url(
         ownership_created = await _claim()
 
     try:
+        # Old product links become history in the same commit that makes the
+        # company the connector's owner.
+        if platform in PRODUCT_CHANNEL_PLATFORMS:
+            from celerp_inventory.services import detach_external_links_for_platform
+            await detach_external_links_for_platform(session, company_id, platform)
         await session.commit()
         await lock_connector_operation(
             session, company_id, platform, require_owner=True, exclusive=True
@@ -1362,11 +1368,6 @@ async def connector_authorize_url(
         stale = await with_relay_client(8.0, _cancel)
         if isinstance(stale, dict) or stale.status_code not in (200, 404):
             return await _failure("Could not reset the previous connection.")
-        if platform in {"shopify", "woocommerce"}:
-            from celerp_inventory.services import detach_external_links_for_platform
-            await detach_external_links_for_platform(
-                session, company_id, platform
-            )
         response = await with_relay_client(8.0, _authorize)
     except httpx.ConnectError:
         return await _failure("Cannot reach relay.")

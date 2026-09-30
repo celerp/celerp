@@ -2272,6 +2272,7 @@ async def deactivate_company(
     import re as _re2
     import sqlalchemy as sa
     from celerp.connectors.ownership import (
+        PRODUCT_CHANNEL_PLATFORMS,
         RESET_STATUS_DEACTIVATED,
         lock_connector_maintenance,
         record_connector_reset,
@@ -2294,6 +2295,20 @@ async def deactivate_company(
         .where(ConnectorConfig.company_id == company_id_str)
         .with_for_update()
     )).all())
+    # Product links become history before anything is revoked remotely, so a
+    # failure here leaves the company and its connections untouched.
+    import celerp_inventory.services as inventory_services
+    for platform in PRODUCT_CHANNEL_PLATFORMS:
+        try:
+            await inventory_services.detach_external_links_for_platform(
+                session, company_id_str, platform
+            )
+        except Exception as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=503,
+                detail=f"Could not disconnect {platform}; the company was not deactivated.",
+            ) from exc
     for config in configs:
         connector_name = config.connector
         webhook_ids = list(config.webhook_ids or [])

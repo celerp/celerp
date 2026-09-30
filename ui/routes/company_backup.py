@@ -25,6 +25,8 @@ The upload token lives only in an HttpOnly cookie scoped to the entry point's ba
 
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -312,10 +314,12 @@ async def _restore(request: Request, mode: WizardMode):
                                                         preview["plan_fingerprint"])
     except APIError as e:
         return await _refused(request, mode, preview, e, values)
-    # The session moves to the restored company; the next page says so, and how many of the
-    # team were given access to it.
+    # The session moves to the restored company; the next page says so, how many of the
+    # team were given access to it and, for a newly made copy, that its integrations are off.
     team = _count(restored.get("team_members"))
-    resp = RedirectResponse(f"{mode.base}/done" + (f"?team_members={team}" if team else ""), status_code=303)
+    query = urlencode({**({"team_members": team} if team else {}),
+                       **({"restored": 1} if restored.get("created") else {})})
+    resp = RedirectResponse(f"{mode.base}/done" + (f"?{query}" if query else ""), status_code=303)
     set_session_cookies(resp, restored["access_token"], restored["refresh_token"], request)
     _clear_upload_cookie(resp, mode, request)
     return resp
@@ -350,6 +354,8 @@ async def _done(request: Request, mode: WizardMode):
         P(t("company_backup.restored_notice", date=format_value(restored["created_at"], "date")),
           cls="flash flash--success") if restored.get("created_at") else "",
         P(t("company_backup.team_given_access", count=team), cls="flash flash--success") if team else "",
+        P(t("company_backup.integrations_disconnected"), cls="flash flash--warning")
+        if request.query_params.get("restored") else "",
         A(t("migration.open_company"), href="/", cls="btn btn--primary btn--full"),
         title=_TITLE,
     )
