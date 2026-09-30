@@ -2135,13 +2135,13 @@ async def test_batch_import_nested_price_denied_without_permission(client, sessi
 
 # Document receipts and cost overrides are item writers too (issue #363).
 
-async def _finalized_bill(client, ctx, sku: str, line: dict | None = None) -> tuple[str, str]:
+async def _finalized_bill(client, ctx, sku: str, line: dict | None = None, doc_type: str = "bill") -> tuple[str, str]:
     template = (await client.post("/items", headers=ctx["admin_h"], json={
         "status": "available", "sku": sku, "name": sku, "quantity": 0, "sell_by": "piece",
         "location_id": ctx["location_id"], "retail_price": 10,
     })).json()["id"]
     bill = (await client.post("/docs", headers=ctx["admin_h"], json={
-        "doc_type": "bill",
+        "doc_type": doc_type,
         "line_items": [{"item_id": template, "sku": sku, "name": sku, "quantity": 2,
                         "unit_price": 5, "line_total": 10, **(line or {})}],
         "total": 10,
@@ -2184,6 +2184,33 @@ async def test_bill_receive_keeps_inherited_price_without_permission(client, ses
     assert r.status_code == 200, r.text
     [parcel] = await _parcels(client, ctx, "RCV-OK", template)
     assert parcel["retail_price"] == 10
+
+
+async def test_consignment_receive_cost_change_denied_without_permission(client, session):
+    """A receipt cost that differs from the consignment line's unit cost is a price edit:
+    refused whole for an operator without set_inventory_prices; no parcel is created."""
+    ctx = await perm_setup(client, session)
+    doc, template = await _finalized_bill(client, ctx, "CSG-P", doc_type="consignment_in")
+    r = await _receive_bill(client, ctx, doc, template, "CSG-P", cost_price=777)
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == _PRICE_DENIED
+    assert await _parcels(client, ctx, "CSG-P", template) == []
+
+
+@pytest.mark.parametrize("given", [{}, {"cost_price": 5}])
+async def test_consignment_receive_line_cost_without_permission(client, session, given):
+    """A plain consignment receipt stays open to the operator: the parcel is costed from
+    the consignment line, whether the receipt omits the cost or repeats the line's."""
+    ctx = await perm_setup(client, session)
+    doc, template = await _finalized_bill(client, ctx, "CSG-OK", doc_type="consignment_in")
+    r = await client.post(f"/docs/{doc}/receive", headers=ctx["operator_h"], json={
+        "location_id": ctx["location_id"],
+        "received_items": [{"item_id": template, "sku": "CSG-OK", "name": "CSG-OK",
+                            "quantity_received": 2, "receive_as": "stock", **given}],
+    })
+    assert r.status_code == 200, r.text
+    [parcel] = await _parcels(client, ctx, "CSG-OK", template)
+    assert parcel["cost_price"] == 5
 
 
 async def test_merge_cost_override_denied_without_permission(client, session):

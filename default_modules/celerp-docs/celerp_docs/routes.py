@@ -3714,8 +3714,15 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         stock_qty = float(it.quantity_received) * conversion
         cost: float | None = None
         if is_consignment:
-            # Consigned goods are not bought, so only a cost given on the receipt applies.
-            cost = float(it.cost_price) * stock_qty if it.cost_price is not None else None
+            # Consigned goods are costed from their consignment line. A different cost on the
+            # receipt is a price edit, so only a role that sets prices may give one.
+            cost = await _received_goods_cost(session, company_id, row.state, it.model_copy(update={"cost_price": None}), stock_qty)
+            if it.cost_price is not None:
+                base_currency = settings.get("currency", "USD")
+                given = float(it.cost_price) * stock_qty
+                if cost is None or round_money(given, base_currency) != round_money(cost, base_currency):
+                    reject_price_change({"cost_price"}, role, settings)
+                    cost = given
         elif doc_type == "purchase_order" or it.receive_as == "stock":
             cost = await _received_goods_cost(session, company_id, row.state, it, stock_qty)
             if cost is None:
