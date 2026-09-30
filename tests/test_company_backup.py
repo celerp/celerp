@@ -848,6 +848,41 @@ async def test_unsupported_module_refusal_names_module_and_table_before_archive(
         await _bk_drop(real_engine, "zz_widgets")
 
 
+_BK_LOOPS = {
+    "self": ["ALTER TABLE zz_widgets ADD COLUMN parent_id uuid REFERENCES zz_widgets(id)"],
+    "cycle": ["ALTER TABLE zz_widgets ADD COLUMN gadget_id uuid REFERENCES zz_gadgets(id)"],
+}
+
+
+@pytest.mark.parametrize("loop", sorted(_BK_LOOPS))
+async def test_module_tables_referencing_in_a_loop_refused(real_engine, real_client, tmp_path, monkeypatch, loop):
+    """Rows of a table that references itself, or of tables referencing each other, cannot be
+    inserted parents first, so such tables are neither backed up nor restored, and nothing is written."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    user, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    await _bk_sql(real_engine, "CREATE TABLE zz_widgets (id uuid primary key, "
+                               "company_id uuid not null references companies(id) on delete cascade)")
+    await _bk_sql(real_engine, "CREATE TABLE zz_gadgets (id uuid primary key, "
+                               "company_id uuid not null references companies(id) on delete cascade, "
+                               "widget_id uuid references zz_widgets(id))")
+    try:
+        widget = uuid.uuid4()
+        await _bk_sql(real_engine, "INSERT INTO zz_widgets (id, company_id) VALUES (:i, :c)", i=widget, c=cid)
+        await _bk_sql(real_engine, "INSERT INTO zz_gadgets (id, company_id, widget_id) VALUES (:i, :c, :w)",
+                      i=uuid.uuid4(), c=cid, w=widget)
+        data = await download(real_client, tok)
+        assert {"zz_widgets", "zz_gadgets"} <= set(manifest(data)["tables"])
+        for sql in _BK_LOOPS[loop]:
+            await _bk_sql(real_engine, sql)
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+        assert r.status_code == 409, r.text
+        assert _BK_MODULE in r.json()["detail"] and ("zz_widgets" in r.json()["detail"] or "zz_gadgets" in r.json()["detail"])
+        await _bk_refused(real_engine, real_client, tok, user, tmp_path, data)
+    finally:
+        await _bk_drop(real_engine, "zz_gadgets", "zz_widgets")
+
+
 async def test_insert_order_from_foreign_keys(real_engine, tmp_path, monkeypatch):
     """Tables come out parents first for every foreign key between two backed-up tables."""
     cb = _bk_cb()

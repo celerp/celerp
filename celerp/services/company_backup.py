@@ -274,32 +274,37 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
     while changed:
         changed = False
         keep = set(carried)
+        order, unordered = _fk_order(carried, schema)
         for name in list(carried):
-            if any(schema[name].columns[c].notnull for cols, target, _ in schema[name].fks
-                   if target != "companies" and target not in keep for c in cols):
+            if name in unordered or any(schema[name].columns[c].notnull for cols, target, _ in schema[name].fks
+                                        if target != "companies" and target not in keep for c in cols):
                 if strict:
                     raise _refusal(name, owners)
                 carried.remove(name)
                 changed = True
-    return _Plan(order=_fk_order(carried, schema), schema=schema, owners=owners)
+    return _Plan(order=order, schema=schema, owners=owners)
 
 
-def _fk_order(tables: list[str], schema: dict[str, _Table]) -> list[str]:
-    """Tables ordered so each follows every other listed table it references."""
+def _fk_order(tables: list[str], schema: dict[str, _Table]) -> tuple[list[str], set[str]]:
+    """Tables ordered so each follows every table it references, and the tables no such
+    order exists for, which a restore could not insert: those referencing themselves or
+    in a reference cycle."""
     listed = set(tables)
-    parents = {t: {target for _, target, _ in schema[t].fks if target in listed and target != t} for t in tables}
+    refs = {t: {target for _, target, _ in schema[t].fks if target in listed} for t in tables}
+    unordered = {t for t in tables if t in refs[t]}
+    parents = {t: refs[t] - {t} for t in tables}
     order: list[str] = []
-    while parents:
-        ready = sorted(t for t, p in parents.items() if not p)
-        if not ready:
-            order.extend(sorted(parents))  # a reference cycle: its rows are checked, not ordered
-            break
+    while ready := sorted(t for t, p in parents.items() if not p):
         order.extend(ready)
         for t in ready:
             del parents[t]
         for p in parents.values():
             p.difference_update(ready)
-    return order
+    # What is left is in a cycle or references one; only the cycles are unordered.
+    while behind := [t for t in parents if not any(t in p for p in parents.values())]:
+        for t in behind:
+            del parents[t]
+    return order, unordered | set(parents)
 
 
 async def classify(session: AsyncSession) -> list[str]:
