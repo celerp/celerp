@@ -398,9 +398,10 @@ async def test_transform_preserves_parent_cost_when_restricted(client, session):
 
 
 @pytest.mark.asyncio
-async def test_transform_ignores_crafted_cost_from_restricted(client, session):
+async def test_transform_refuses_crafted_cost_from_restricted(client, session):
     # A restricted user who crafts a cost directly into the request body must not be
-    # able to set it: the endpoint ignores the submitted value and preserves parent cost.
+    # able to set it: the endpoint refuses the whole transform with the price 403 and
+    # the parent is untouched.
     admin_h = {"Authorization": f"Bearer {await _token(client)}"}
     op_tok = await invite_user(client, session, admin_h, "operator@example.com", "operator")
     op_h = {"Authorization": f"Bearer {op_tok}"}
@@ -411,8 +412,7 @@ async def test_transform_ignores_crafted_cost_from_restricted(client, session):
         json=_transform_payload(child_quantity=1.0, child_cost_total=999999.0),
         headers=op_h,
     )
-    assert r.status_code == 200, r.text
-    child_id = r.json()["child_id"]
-    child = (await client.get(f"/items/{child_id}", headers=admin_h)).json()
-    assert float(child["cost_price"]) == pytest.approx(100.0)
-    assert float(child["cost_price"]) != pytest.approx(999999.0)
+    assert r.status_code == 403, r.text
+    parent = (await client.get(f"/items/{parent_id}", headers=admin_h)).json()
+    assert float(parent["quantity"]) == pytest.approx(1.0)
+    assert float(parent["cost_price"]) == pytest.approx(100.0)

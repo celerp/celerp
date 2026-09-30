@@ -140,6 +140,17 @@ def assert_role_permission(settings: dict | None, role: str, key: str) -> None:
         )
 
 
+def reject_price_change(price_keys: set[str], role: str, settings: dict | None) -> None:
+    """403 for the whole request when it sets a price without set_inventory_prices.
+    The one price gate every item writer applies (inventory and document routes
+    alike), so no surface can set a price the Pricing tab would refuse."""
+    if price_keys and not role_has_permission(settings, role, "set_inventory_prices"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Setting inventory prices requires the 'set_inventory_prices' permission",
+        )
+
+
 async def get_current_company_settings(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),

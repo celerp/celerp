@@ -57,6 +57,7 @@ from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEY
 from celerp.services.permissions import (
     assert_role_permission,
     get_current_company_settings,
+    reject_price_change,
     require_permission,
     role_has_permission,
 )
@@ -346,7 +347,7 @@ class TransformBody(BaseModel):
     child_weight: FiniteFloat | None = None
     child_weight_unit: str | None = None
     child_pieces: int | None = None
-    child_cost_total: FiniteFloat | None = None  # final cost (permitted override); None or a restricted caller preserves parent cost
+    child_cost_total: FiniteFloat | None = None  # final cost override (needs set_inventory_prices); None preserves parent cost
     idempotency_key: str | None = None
 
 
@@ -2206,7 +2207,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     _gated = price_keys_in(payload.model_dump(exclude_none=True), _price_lists)
     if draft_cost_carveout(_create_draft, role, settings):
         _gated -= COST_ITEM_KEYS
-    _reject_price_change(_gated, role, settings)
+    reject_price_change(_gated, role, settings)
 
     # The category's defaults fill what the payload leaves out; an explicit value wins.
     category_defaults = category_item_defaults(payload.category)
@@ -2374,17 +2375,6 @@ def _changed_attribute_keys(state: dict | None, fields_changed: dict) -> set[str
     return {k for k in set(new) | set(old) if new.get(k) != old.get(k)}
 
 
-def _reject_price_change(price_keys: set[str], role: str, settings: dict) -> None:
-    """403 for the whole request when it sets a price without set_inventory_prices.
-    The one price gate every item writer applies, so no surface can set a price the
-    Pricing tab would refuse."""
-    if price_keys and not role_has_permission(settings, role, "set_inventory_prices"):
-        raise HTTPException(
-            status_code=403,
-            detail="Setting inventory prices requires the 'set_inventory_prices' permission",
-        )
-
-
 def draft_cost_carveout(is_draft: bool, role: str, settings: dict) -> bool:
     """While an item is draft, its creator authors cost with edit_inventory alone;
     the set_inventory_prices gate re-arms at commit. Shared by the three cost surfaces
@@ -2430,7 +2420,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     _price_changes = {k for k in changed_keys | _changed_attribute_keys(_proj.state, payload.fields_changed) if is_price_item_key(k, _price_lists)}
     if draft_cost_carveout(_is_draft, role, settings):
         _price_changes -= COST_ITEM_KEYS
-    _reject_price_change(_price_changes, role, settings)
+    reject_price_change(_price_changes, role, settings)
     # Amount fields (quantity/weight/pieces/gross_weight) and the sell unit are
     # gated by edit_inventory_amounts, mirroring the cost gate above. sell_by is
     # included because changing it rewrites quantity, so it carries the same
@@ -2954,7 +2944,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     _price_lists = (await get_price_config(session, company_id))[0]
     for _child in payload.children:
         _validate_sku(_child.sku)
-        _reject_price_change(price_keys_in({"attributes": _child.attributes}, _price_lists), role, settings)
+        reject_price_change(price_keys_in({"attributes": _child.attributes}, _price_lists), role, settings)
     parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
@@ -3601,14 +3591,12 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     parent_cost_total = float(parent.state.get("cost_total") or 0) or (
         float(parent.state.get("cost_price") or 0) * parent_qty
     )
-    # Cost is gated by view_inventory_costs (the endpoint is the trust boundary, not the
-    # hidden UI field): only a permitted caller who actually submitted a cost may override
-    # it. Everyone else - restricted role, or no cost sent - preserves the parent's cost.
-    effective_cost = (
-        payload.child_cost_total
-        if (role_has_permission(settings, role, "view_inventory_costs") and payload.child_cost_total is not None)
-        else parent_cost_total
-    )
+    # A cost that differs from the parent's is a price write, so it takes the same
+    # set_inventory_prices gate as PATCH; with no cost sent (or the parent's cost sent
+    # back) the child keeps the parent's cost.
+    if payload.child_cost_total is not None and payload.child_cost_total != parent_cost_total:
+        reject_price_change({"cost_total"}, role, settings)
+    effective_cost = payload.child_cost_total if payload.child_cost_total is not None else parent_cost_total
     parent_location_id = parent.state.get("location_id")
 
     child_eid = f"item:{uuid.uuid4()}"
@@ -3780,7 +3768,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             detail="target_sku_from must identify one of the merge sources.",
         )
 
-    _reject_price_change(
+    reject_price_change(
         price_keys_in({"attributes": payload.resolved_attributes or {}}, (await get_price_config(session, company_id))[0]),
         role, settings,
     )
@@ -4030,6 +4018,10 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         _natural_qty = round(float(total_qty), _qty_dp) if _qty_dp is not None else float(total_qty)
         if resulting_qty != _natural_qty and not role_has_permission(settings, role, "edit_inventory_amounts"):
             raise HTTPException(status_code=403, detail=f"Role '{role}' cannot hand-set the merged quantity: requires the edit_inventory_amounts permission")
+    # A cost that differs from the sources' sum is a price write, so it takes the same
+    # set_inventory_prices gate as PATCH; sending the computed sum back is not a change.
+    if payload.resulting_cost_total is not None and payload.resulting_cost_total != merged_cost_total:
+        reject_price_change({"cost_total"}, role, settings)
     resulting_cost = payload.resulting_cost_total if payload.resulting_cost_total is not None else merged_cost_total
     resulting_name = payload.resulting_name if payload.resulting_name is not None else str(target_proj.state.get("name") or "")
 
@@ -4253,7 +4245,7 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
     _proj = await get_item_projection(session, company_id, entity_id)
     _is_draft = str((_proj.state or {}).get("status") or "").lower() == "draft"
     if not (is_cost_price_type(payload.price_type) and draft_cost_carveout(_is_draft, role, settings)):
-        _reject_price_change({payload.price_type}, role, settings)
+        reject_price_change({payload.price_type}, role, settings)
     event = dict(
         entity_id=entity_id,
         event_type="item.pricing.set",

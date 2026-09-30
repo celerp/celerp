@@ -3610,9 +3610,10 @@ function celerpPrintLabel(entityId, templateId) {
             company = await api.get_company(token)
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--warning"))
-        # The endpoint is the trust boundary; cost is only shown to a role that holds
-        # view_inventory_costs. On any settings error the guard above fails closed.
-        can_see_cost = role_has_permission(company.get("settings") or {}, _get_role(request), "view_inventory_costs")
+        # The endpoint is the trust boundary; the cost override is only offered to a role
+        # that may both see cost and set prices. On any settings error the guard above fails closed.
+        _tf_settings = company.get("settings") or {}
+        can_see_cost = all(role_has_permission(_tf_settings, _get_role(request), p) for p in ("view_inventory_costs", "set_inventory_prices"))
 
         parent_qty = float(item.get("quantity") or 0)
         parent_sell_by = item.get("sell_by") or "piece"
