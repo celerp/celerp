@@ -198,6 +198,27 @@ class TestPriceBasisInvariant:
         assert "price_basis_unsupported" in _header_codes({header: target}, "USD", header)
         await _assert_header_blocks_every_transport(client, session, perm, header, target, "USD", {"price_basis_unsupported"})
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("header,target", [
+        ("Price_per_box", "retail_price"),
+        ("price-per-box", "retail_price"),
+        ("Cost_per_dozen", "cost_price"),
+    ])
+    async def test_price_basis_written_with_underscores_or_hyphens_follows_the_same_grammar(
+            self, client, session, perm, stage_dir, header, target):
+        assert "price_basis_unsupported" in _header_codes({header: target}, "USD", header)
+        await _assert_header_blocks_every_transport(client, session, perm, header, target, "USD", {"price_basis_unsupported"})
+
+    @pytest.mark.parametrize("header,target,basis", [
+        ("Price_per_ct", "retail_price", "carat"),
+        ("price-per-gram", "retail_price", "gram"),
+        ("Cost_per_pc", "cost_price", "piece"),
+    ])
+    def test_recognized_basis_written_with_underscores_or_hyphens_is_preserved(self, header, target, basis):
+        mapping = {header: target}
+        assert _header_codes(mapping, "USD", header) == set()
+        assert _mapped_row(mapping, "USD", {header: "10"})[f"{target}_basis"] == basis
+
     @pytest.mark.parametrize("header,target,basis", [
         ("Price/ct", "retail_price", "carat"),
         ("Price / ct", "retail_price", "carat"),

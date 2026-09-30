@@ -35,9 +35,9 @@ from ui.i18n import t, get_lang, is_rtl, field_label
 from celerp.services.units import is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import splitting_allowed
 from celerp_inventory.services import (
-    _CORE_ITEM_COLS,
     apply_source_semantics,
     build_item_import_spec,
+    is_item_field_key,
     importable_price_lists,
     item_price_mutex_groups,
     source_header_semantics,
@@ -1530,7 +1530,7 @@ def setup_routes(app):
         cat_attrs = _union_category_attr_keys(await api.get_all_category_schemas(token))
         mapping_errors = validate_column_mapping(
             form, original_cols, core_fields=spec.cols, required_targets=spec.required,
-            reserved_item_fields=_CORE_ITEM_COLS, allowed_category_attrs=cat_attrs,
+            is_reserved_field=is_item_field_key, allowed_category_attrs=cat_attrs,
             mutex_groups=item_price_mutex_groups(price_lists),
         )
         company = await api.get_company(token)

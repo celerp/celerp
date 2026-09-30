@@ -34,7 +34,7 @@ from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from ui.routes.csv_import import _read_stage, _write_stage, MAPPING_ATTRIBUTE, MAPPING_SKIP
-from ui.routes.inventory import _IMPORT_SPEC, _CORE_ITEM_COLS
+from ui.routes.inventory import _IMPORT_SPEC
 from test_helpers import make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
 
@@ -7213,13 +7213,13 @@ class TestColumnMappingValidation:
     def test_valid_mapping_no_errors(self):
         from ui.routes.csv_import import validate_column_mapping
         form = {"map__sku": "sku", "map__name": "name", "map__extra": MAPPING_ATTRIBUTE}
-        errors = validate_column_mapping(form, ["sku", "name", "extra"], core_fields=_CORE_ITEM_COLS, required_targets=set())
+        errors = validate_column_mapping(form, ["sku", "name", "extra"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert errors == []
 
     def test_duplicate_target_detected(self):
         from ui.routes.csv_import import validate_column_mapping
         form = {"map__col_a": "category", "map__col_b": "category"}
-        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_CORE_ITEM_COLS, required_targets=set())
+        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert len(errors) == 1
         assert "col_a" in errors[0]
         assert "col_b" in errors[0]
@@ -7229,7 +7229,7 @@ class TestColumnMappingValidation:
         from ui.routes.csv_import import validate_column_mapping
         # "category" column mapped as attribute, no rename -> collides with core field "category"
         form = {"map__category": MAPPING_ATTRIBUTE}
-        errors = validate_column_mapping(form, ["category"], core_fields=_CORE_ITEM_COLS, required_targets=set())
+        errors = validate_column_mapping(form, ["category"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert len(errors) == 1
         assert "category" in errors[0].lower()
         assert "built-in" in errors[0].lower()
@@ -7238,7 +7238,7 @@ class TestColumnMappingValidation:
         from ui.routes.csv_import import validate_column_mapping
         # User renames attribute to "sku" which is a core field
         form = {"map__my_col": MAPPING_ATTRIBUTE, "attr_name__my_col": "sku"}
-        errors = validate_column_mapping(form, ["my_col"], core_fields=_CORE_ITEM_COLS, required_targets=set())
+        errors = validate_column_mapping(form, ["my_col"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert len(errors) == 1
         assert "sku" in errors[0]
 
@@ -7246,7 +7246,7 @@ class TestColumnMappingValidation:
         from ui.routes.csv_import import validate_column_mapping
         # "category" column renamed to "lot_type" -> no collision
         form = {"map__category": MAPPING_ATTRIBUTE, "attr_name__category": "lot_type"}
-        errors = validate_column_mapping(form, ["category"], core_fields=_CORE_ITEM_COLS, required_targets=set())
+        errors = validate_column_mapping(form, ["category"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert errors == []
 
     def test_duplicate_attribute_names_detected(self):
@@ -7256,7 +7256,7 @@ class TestColumnMappingValidation:
             "map__col_a": MAPPING_ATTRIBUTE, "attr_name__col_a": "grade",
             "map__col_b": MAPPING_ATTRIBUTE, "attr_name__col_b": "grade",
         }
-        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_CORE_ITEM_COLS, required_targets=set())
+        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert len(errors) == 1
         assert "grade" in errors[0]
         assert "col_a" in errors[0]
@@ -7265,7 +7265,7 @@ class TestColumnMappingValidation:
     def test_skip_columns_ignored(self):
         from ui.routes.csv_import import validate_column_mapping
         form = {"map__col_a": MAPPING_SKIP, "map__col_b": MAPPING_SKIP}
-        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_CORE_ITEM_COLS, required_targets=set())
+        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert errors == []
 
     def test_multiple_errors_reported(self):
@@ -7275,7 +7275,7 @@ class TestColumnMappingValidation:
             "map__a": "sku", "map__b": "sku",  # duplicate target
             "map__category": MAPPING_ATTRIBUTE,  # collides with core
         }
-        errors = validate_column_mapping(form, ["a", "b", "category"], core_fields=_CORE_ITEM_COLS, required_targets=set())
+        errors = validate_column_mapping(form, ["a", "b", "category"], core_fields=_IMPORT_SPEC.cols, required_targets=set())
         assert len(errors) == 2
 
     # ── apply_column_mapping with attribute rename ───────────────────────────

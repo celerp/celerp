@@ -3,6 +3,7 @@
 
 import hashlib
 import json
+import logging
 import math
 import re
 import unicodedata
@@ -51,7 +52,9 @@ from celerp.services.units import (
     is_weight_unit,
     validate_quantity,
 )
-from celerp_inventory.projections import CORE_ITEM_KEYS, is_core_item_key
+from celerp_inventory.projections import is_core_item_key
+
+logger = logging.getLogger(__name__)
 
 # Internally assigned SKUs/barcodes are short zero-padded sequences; imported
 # EAN-13/GTIN-14 barcodes (13-14 digits) are excluded from the sequence scan so
@@ -1724,17 +1727,17 @@ class BatchImportRequest(BaseModel):
 
 
 # Row keys the importer reads as item fields although the item model does not
-# keep them top-level: a carat weight becomes the weight, and the pieces count
-# is written through the item's own pieces handling.
-_IMPORT_ROW_KEYS: frozenset[str] = frozenset({"weight_ct", "pieces"})
-
-# Every name that means an item field, so a custom attribute may not take it.
-# Derived from the item model's core keys; shared with the UI mapping form.
-_CORE_ITEM_COLS: frozenset[str] = CORE_ITEM_KEYS | _IMPORT_ROW_KEYS
+# keep them top-level: ``qty`` is read as the quantity, a carat weight becomes
+# the weight, and the pieces count is written through the item's own pieces handling.
+_IMPORT_ROW_KEYS: frozenset[str] = frozenset({"qty", "weight_ct", "pieces"})
 
 
-def _is_item_field_key(key: str) -> bool:
-    """True when an import row key names an item field rather than a custom attribute."""
+def is_item_field_key(key: str) -> bool:
+    """True when an import row key names an item field rather than a custom attribute.
+
+    Exactly the keys the importer reads as item fields, so it is also the set a
+    custom attribute name may not take on any import transport.
+    """
     return is_core_item_key(key) or key in _IMPORT_ROW_KEYS or key.endswith("_price" + PRICE_BASIS_SUFFIX)
 
 # Max distinct values before an attribute column is treated as free-text instead
@@ -1860,9 +1863,10 @@ def _header_basis(header: str) -> str | None:
 
     Returns the canonical unit, the raw word for a basis Celerp has no unit for
     (``box``, ``dozen``, ``100g``), or None when the header states no basis
-    (``per unit`` is the normal meaning).
+    (``per unit`` is the normal meaning). Underscores and hyphens separate words
+    like spaces, so ``Price_per_box`` and ``price-per-box`` read as ``price per box``.
     """
-    lower = header.lower()
+    lower = re.sub(r"[_-]+", " ", header.lower())
     match = re.search(r"/\s*([a-z0-9.]+)", lower) or re.search(r"\bper\s+([a-z0-9.]+)", lower)
     if not match or match.group(1) == "unit":
         return None
@@ -1937,11 +1941,16 @@ def apply_source_semantics(rows: list[dict], semantics: SourceSemantics) -> list
 
 
 def _to_float(val) -> float | None:
+    """The finite number a cell holds, or None when it is blank or holds none.
+
+    The semantic preflight has already reported every typed cell that is not a
+    finite number, so None here only ever stands for a blank cell on a clean row.
+    """
     s = str(val).strip() if val is not None else ""
     if not s:
         return None
     try:
-        return float(s)
+        return finite_float(s)
     except ValueError:
         return None
 
@@ -2031,7 +2040,7 @@ def _collect_category_attributes(rows: list[dict]) -> dict[str, dict[str, list[s
         if cat not in result:
             result[cat] = {}
         for k, v in row.items():
-            if _is_item_field_key(k):
+            if is_item_field_key(k):
                 continue
             v_str = str(v).strip() if v is not None else ""
             if not v_str:
@@ -2079,23 +2088,33 @@ ITEM_IMPORT_TAIL_COLS = [
     "purchase_conversion_factor", "inventory_type", "gtin", "rfid_epc",
     "short_description", "description", "notes", "location_name",
 ]
-# Numeric columns: each must hold a finite number.
-_ITEM_IMPORT_NUMBER_COLS = ("quantity", "weight", "gross_weight", "pieces", "purchase_conversion_factor")
-# Item fields an import row may set. Any other item field on a row is refused by
-# name rather than stored as a custom attribute; prices are matched by suffix.
-_IMPORTABLE_ITEM_FIELDS: frozenset[str] = frozenset(ITEM_IMPORT_BASE_COLS + ITEM_IMPORT_TAIL_COLS) | _IMPORT_ROW_KEYS
+# Numeric row keys: each must hold a finite number. ``qty`` and ``weight_ct`` are
+# not offered as mapping targets but are read as the quantity and the weight.
+_ITEM_IMPORT_NUMBER_KEYS = ("quantity", "qty", "weight", "weight_ct", "gross_weight", "pieces", "purchase_conversion_factor")
 
 VALID_INVENTORY_TYPES: frozenset[str] = frozenset({"stocked", "component", "non_stocked", "service", "freight"})
 
 
-def _unsupported_item_field(row: dict) -> str | None:
-    """The first item field with a value on the row that import cannot set, if any."""
-    return next((
-        key for key, value in row.items()
-        if _is_item_field_key(key) and key not in _IMPORTABLE_ITEM_FIELDS
-        and not key.endswith(("_price", "_price_total", "_price" + PRICE_BASIS_SUFFIX))
-        and str(value if value is not None else "").strip()
-    ), None)
+def _unsupported_item_field_errors(spec: CsvImportSpec, row: dict) -> list[dict]:
+    """An error for each item field with a value on the row that import cannot set.
+
+    Import sets the spec's columns, the row keys it reads (``qty``, ``weight_ct``,
+    ``pieces``) and the price basis of each price column. A price key naming no
+    importable price list is an unknown target; any other item field is refused
+    by name. Neither is written or stored as a custom attribute.
+    """
+    importable = {*spec.cols, *_IMPORT_ROW_KEYS, *(col + PRICE_BASIS_SUFFIX for col in spec.cols if col.endswith("_price"))}
+    errors = []
+    for key, value in row.items():
+        if not is_item_field_key(key) or key in importable or not str(value if value is not None else "").strip():
+            continue
+        if key.endswith(("_price", "_price_total", "_price" + PRICE_BASIS_SUFFIX)):
+            errors.append({"field": key, "code": "unknown_target",
+                           "message": f"{key} is not a price list of this company; remove the column"})
+        else:
+            errors.append({"field": key, "code": "reserved_field_unsupported",
+                           "message": f"{key} is an item field that import cannot set; remove the column"})
+    return errors
 
 
 _ITEM_CODE_CHECKS = (
@@ -2131,7 +2150,7 @@ def build_item_import_spec(price_lists: list[dict]) -> CsvImportSpec:
     price lists. Shared by the browser mapper and the agent preview/commit."""
     price_cols = [price_key(pl["name"]) for pl in importable_price_lists(price_lists)]
     price_total_cols = [f"{col}_total" for col in price_cols]
-    type_map = {col: finite_float for col in (*_ITEM_IMPORT_NUMBER_COLS, *price_cols, *price_total_cols)}
+    type_map = {col: finite_float for col in (*_ITEM_IMPORT_NUMBER_KEYS, *price_cols, *price_total_cols)}
     return CsvImportSpec(
         cols=ITEM_IMPORT_BASE_COLS + price_cols + price_total_cols + ITEM_IMPORT_TAIL_COLS,
         # sell_by may come from the category's default unit, so it is checked
@@ -2262,13 +2281,6 @@ async def build_import_records(
         resolved_rows.append(row)
         if category_error:
             errors.append({"row": i + 1, "field": "category", "code": "category_ambiguous", "message": category_error})
-            continue
-        unsupported = _unsupported_item_field(row)
-        if unsupported:
-            errors.append({
-                "row": i + 1, "field": unsupported, "code": "reserved_field_unsupported",
-                "message": f"{unsupported} is an item field that import cannot set; remove the column",
-            })
             continue
         code_error = _item_code_error(row)
         if code_error:
@@ -2420,17 +2432,11 @@ async def build_import_records(
             continue
 
         def _flt(key: str, _row: dict = row) -> float | None:
-            raw = str(_row.get(key, "") or "").strip()
-            if not raw:
-                return None
-            try:
-                return float(raw)
-            except ValueError:
-                return None
+            return _to_float(_row.get(key))
 
         attrs: dict = {}
         for key, value in row.items():
-            if _is_item_field_key(key):
+            if is_item_field_key(key):
                 continue
             value_s = str(value).strip() if value is not None else ""
             if value_s:
@@ -2702,10 +2708,11 @@ async def preflight_import_rows(
     spec = build_item_import_spec(price_lists)
     errors: list[dict] = []
     for i, row in enumerate(rows):
-        for col in spec.cols:
+        for col in dict.fromkeys([*spec.cols, *spec.type_map]):
             code = cell_error_code(spec, col, str(row.get(col, "") or ""))
             if code:
                 errors.append({"row": i + 1, "field": col, "code": code, "message": _CELL_ERROR_MESSAGES[code].format(col=col)})
+        errors.extend({"row": i + 1, **e} for e in _unsupported_item_field_errors(spec, row))
     build = await build_import_records(
         session, company_id, rows, upsert=upsert,
         create_missing_locations=role_has_permission(settings, role, "manage_company_settings"),
@@ -3147,6 +3154,7 @@ async def write_import_batch(
         # even when another item already carries the same code: the resolver reports the
         # ambiguity at scan time and Doctor lists it, so an import never drops rows.
         try:
+            validate_sku(data.get("sku"))
             validate_barcode(data.get("barcode"))
             validate_rfid_epc(data.get("rfid_epc"))
         except ValueError as exc:
@@ -3205,8 +3213,10 @@ async def write_import_batch(
         except CostRestatementConflict as exc:
             outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {exc}")
             continue
-        except Exception as exc:
-            outcome.add(entity_id, "failed", f"{entity_id}: {exc}")
+        except Exception:
+            # The cause stays in the server log; the caller gets a plain row error.
+            logger.exception("Item import could not write %s", entity_id)
+            outcome.add(entity_id, "failed", f"Row (SKU={data.get('sku', '?')}): the item could not be written")
             continue
 
         existing[idem_key] = entry

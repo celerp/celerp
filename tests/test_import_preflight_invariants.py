@@ -299,6 +299,35 @@ async def test_bad_numeric_cannot_silently_become_zero_or_none(client, session, 
     assert await _item_count(session, perm["company_id"]) == before
 
 
+@pytest.mark.parametrize("field,sell_by", [("qty", "piece"), ("weight_ct", "carat")])
+@pytest.mark.parametrize("value,code", [("nan", "not_finite"), ("inf", "not_finite"), ("abc", "invalid_value")])
+async def test_non_finite_and_malformed_amounts_are_rejected_before_anything_is_written(
+        client, session, perm, monkeypatch, field, sell_by, value, code):
+    # qty and weight_ct are row keys the writer reads as the stock amount and the
+    # source weight, so they are checked like quantity and weight.
+    rows = [{"name": "Widget", "sell_by": sell_by, field: value, "location_name": f"Amount {field} {value}"}]
+    await _assert_preview_and_commits_reject(client, session, perm, monkeypatch, perm["admin_h"], rows, [(field, code)])
+    assert f"Amount {field} {value}" not in await _location_names(session, perm["company_id"])
+
+
+async def test_writer_failure_is_reported_without_internal_detail(client, session, perm, monkeypatch):
+    import celerp_inventory.services as svc
+
+    async def _fail(*_args, **_kwargs):
+        raise RuntimeError("[SQL: INSERT INTO ledger (secret_column) VALUES ($1)] [parameters: ('internal',)]")
+
+    monkeypatch.setattr(svc, "emit_event", _fail)
+    rows = [{"name": "Widget", "sell_by": "piece", "quantity": "1"}]
+    r = await _rows_commit(client, perm["admin_h"], rows, key="op-writer-fail")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["created"] == 0 and body["skipped"] == 1, body
+    assert body["errors"], body
+    text = json.dumps(body["errors"])
+    for leaked in ("SQL", "INSERT", "ledger", "parameters", "secret_column", "RuntimeError"):
+        assert leaked not in text, body["errors"]
+
+
 @pytest.mark.parametrize("row", [
     {"name": "", "sell_by": "piece", "quantity": "1"},
     {"name": "   ", "sell_by": "piece", "quantity": "1"},

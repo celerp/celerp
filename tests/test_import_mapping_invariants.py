@@ -151,6 +151,23 @@ async def test_file_mapping_rejects_reserved_field_as_custom_attribute(client, m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("header,value", [
+    ("qty", "9"), ("Supplier_price", "12"), ("List_price", "abc"), ("bogus_price_total", "5"), ("Retail_price_basis", "box"),
+])
+async def test_custom_attribute_named_like_a_field_the_importer_reads_is_rejected(
+        client, mapping_company, write_upload, monkeypatch, header, value):
+    # Kept as a custom attribute, the column would otherwise be read as stock
+    # quantity or a top-level price, or dropped.
+    fid = write_upload(mapping_company, _csv(["Title", "sell_by", "quantity", header], ["Ruby", "piece", "1", value]))
+    mapping = {"Title": "name", "sell_by": "sell_by", "quantity": "quantity", header: "__attr__"}
+    preview = await _preview(client, mapping_company, fid, mapping)
+    codes = {e["code"] for e in _mapping_errors(preview["errors"]) if e["field"] == header}
+    assert codes & {_RESERVED, "reserved_field_unsupported"}, preview["errors"]
+    code = next(iter(codes & {_RESERVED, "reserved_field_unsupported"}))
+    await _assert_commit_refused(client, mapping_company, fid, mapping, preview, code, monkeypatch)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("target", ["__catattr:not_an_attribute", "__catattr:", "__catattr:Clarity "])
 async def test_file_mapping_rejects_invalid_category_attribute_target(client, mapping_company, write_upload, target):
     fid = write_upload(mapping_company, _csv(["Name", "Grade"], ["Ruby", "A"]))
@@ -220,8 +237,10 @@ _EFFECTIVE_CASES = [
 @pytest.mark.parametrize("case", _EFFECTIVE_CASES, ids=[c[0] for c in _EFFECTIVE_CASES])
 async def test_browser_and_file_mapping_produce_same_effective_mapping(client, mapping_company, write_upload, monkeypatch, case):
     import celerp.importers.tabular as tabular
-    from celerp_inventory.services import apply_source_semantics, build_item_import_spec, source_header_semantics
-    from ui.routes.inventory import _CORE_ITEM_COLS, _union_category_attr_keys
+    from celerp_inventory.services import (
+        apply_source_semantics, build_item_import_spec, is_item_field_key, source_header_semantics,
+    )
+    from ui.routes.inventory import _union_category_attr_keys
 
     _id, header, row, overrides, browser_choices = case
     text = _csv(header, row)
@@ -245,7 +264,8 @@ async def test_browser_and_file_mapping_produce_same_effective_mapping(client, m
     spec = build_item_import_spec(price_lists)
     browser_mapping = {**tabular.suggest_mapping(header, spec.cols, _union_category_attr_keys(schemas)), **browser_choices}
     form = {f"map__{col}": target for col, target in browser_mapping.items()}
-    assert tabular.validate_column_mapping(form, header, core_fields=_CORE_ITEM_COLS, required_targets=spec.required) == []
+    assert tabular.validate_column_mapping(form, header, core_fields=spec.cols, required_targets=spec.required,
+                                          is_reserved_field=is_item_field_key) == []
     assert len(results) == 1, "the browser mapping check must resolve through normalize_and_validate_mapping"
     assert results[0].mapping == browser_mapping
     _csv_text, _cols = tabular.apply_column_mapping(form, text)

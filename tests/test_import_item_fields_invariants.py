@@ -264,6 +264,18 @@ class TestFiniteNumericFields:
         }], "purchase_conversion_factor", _non_finite_code(value))
 
 
+class TestUnknownPriceFields:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", ["bogus_price", "bogus_price_total"])
+    @pytest.mark.parametrize("value", ["5", "abc", "nan"])
+    async def test_unknown_price_list_field_is_rejected_not_written(self, client, session, ctx, key, value):
+        # A price key that names no company price list is neither written as a
+        # stray top-level price nor silently dropped.
+        await _assert_rejected(client, session, ctx, "rows", [{
+            "sku": "UP-1", "name": "Stray price", "sell_by": "piece", "quantity": "1", key: value,
+        }], key, "unknown_target")
+
+
 # ---------------------------------------------------------------------------
 # inventory_type is part of the import contract
 # ---------------------------------------------------------------------------

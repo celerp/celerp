@@ -29,7 +29,6 @@ from celerp.inventory_codes import (
 )
 from celerp.models.projections import Projection
 from .services import (
-    _CORE_ITEM_COLS,
     VALID_INVENTORY_TYPES,
     BatchImportRequest,
     BatchImportResult,
@@ -43,6 +42,7 @@ from .services import (
     import_items,
     lot_fields,
     import_preview_hash,
+    is_item_field_key,
     item_price_mutex_groups,
     preview_import_rows,
     source_header_semantics,
@@ -1737,7 +1737,7 @@ async def _build_item_preview(
         allowed_targets=spec.cols,
         required_targets=spec.required,
         allowed_category_attrs=category_attrs,
-        reserved_item_fields=_CORE_ITEM_COLS,
+        is_reserved_field=is_item_field_key,
         mutex_groups=item_price_mutex_groups(price_lists),
     )
     mapping = resolved.mapping

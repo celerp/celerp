@@ -288,7 +288,7 @@ def normalize_and_validate_mapping(
     allowed_targets: Collection[str],
     required_targets: Collection[str],
     allowed_category_attrs: Collection[str] | None,
-    reserved_item_fields: Collection[str],
+    is_reserved_field: Callable[[str], bool] | None,
     mutex_groups: Collection[Collection[str]],
     attr_names: dict[str, str] | None = None,
 ) -> MappingResult:
@@ -303,8 +303,9 @@ def normalize_and_validate_mapping(
     - a category attribute key is empty or not in ``allowed_category_attrs``
       (``None`` when the importer has no category schema to check against);
     - a custom or category attribute is named like an allowed target
-      (``reserved_field_conflict``) or like one of ``reserved_item_fields`` the
-      importer cannot set (``reserved_field_unsupported``), case-insensitive;
+      (``reserved_field_conflict``) or like any other key ``is_reserved_field``
+      says the importer reads as a field (``reserved_field_unsupported``),
+      case-insensitive; ``None`` when no other key is reserved;
     - two columns resolve to the same destination after the sentinels are
       normalized (``attr_names`` holds the custom attribute names chosen for
       ``MAPPING_ATTRIBUTE`` columns);
@@ -328,7 +329,6 @@ def normalize_and_validate_mapping(
     mapping = {col: str(overrides.get(col, suggested.get(col, MAPPING_ATTRIBUTE))) for col in source_cols}
     allowed = set(allowed_targets)
     allowed_folded = {f.casefold() for f in allowed}
-    reserved = {f.casefold() for f in reserved_item_fields} - allowed_folded
 
     core_sources: dict[str, list[str]] = {}
     attr_sources: dict[str, list[str]] = {}
@@ -346,7 +346,7 @@ def normalize_and_validate_mapping(
             if dest.casefold() in allowed_folded:
                 _error(col, "reserved_field_conflict", t("import.err_custom_name_conflict", name=dest, col=col))
                 continue
-            if dest.casefold() in reserved:
+            if is_reserved_field is not None and is_reserved_field(dest.casefold()):
                 _error(col, "reserved_field_unsupported",
                        t("import.err_reserved_field_unsupported", name=dest, col=col))
                 continue
@@ -384,7 +384,7 @@ def validate_column_mapping(
     *,
     core_fields: Collection[str],
     required_targets: Collection[str],
-    reserved_item_fields: Collection[str] = frozenset(),
+    is_reserved_field: Callable[[str], bool] | None = None,
     allowed_category_attrs: Collection[str] | None = None,
     mutex_groups: Collection[Collection[str]] = (),
 ) -> list[str]:
@@ -399,7 +399,7 @@ def validate_column_mapping(
         allowed_targets=core_fields,
         required_targets=required_targets,
         allowed_category_attrs=allowed_category_attrs,
-        reserved_item_fields=reserved_item_fields,
+        is_reserved_field=is_reserved_field,
         mutex_groups=mutex_groups,
         attr_names=form_attr_names(form, csv_cols),
     )
