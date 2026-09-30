@@ -397,10 +397,14 @@ def _backup_name(name: str, url: str, types: dict[str, str]) -> str:
     return backup_name
 
 
+def _installed(name: str):
+    return resolve_module_path(name, module_search_path())
+
+
 def _module_versions(names: set[str]) -> dict[str, str]:
     versions = {}
     for name in sorted(names):
-        path = resolve_module_path(name, module_search_path())
+        path = _installed(name)
         version = read_manifest(path).get("version") if path is not None else None
         if isinstance(version, str) and version:
             versions[name] = version
@@ -429,7 +433,9 @@ async def export_company(session: AsyncSession, company_id, out: Path, *,
     found: dict[str, str] = {}
     types: dict[str, str] = {}
     _collect_urls(settings, company_id, found, types)
-    enabled = get_enabled(settings)
+    # A module enabled in settings but not installed here is not something this company's
+    # data depends on, so it is not a requirement of the backup.
+    enabled = {name for name in get_enabled(settings) if _installed(name) is not None}
     manifest: dict = {
         "format": FORMAT, "format_version": FORMAT_VERSION, "backup_id": str(uuid.uuid4()),
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -635,11 +641,16 @@ class _Checked:
 
 
 def _check_modules(manifest: dict) -> None:
-    for name, needed in sorted(manifest["modules"]["versions"].items()):
-        path = resolve_module_path(name, module_search_path())
+    """Every module the backup needs, enabled or holding its data, is installed here and new enough."""
+    versions = manifest["modules"]["versions"]
+    for name in sorted(set(manifest["modules"]["enabled"]) | set(versions)):
+        path = _installed(name)
         if path is None:
             raise BackupError(422, f"This company backup needs the {name} module, which is not installed here."
                               + _NOT_RESTORED)
+        if name not in versions:
+            continue
+        needed = versions[name]
         have = read_manifest(path).get("version")
         try:
             new_enough = Version(str(have)) >= Version(needed)

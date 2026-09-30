@@ -2438,3 +2438,24 @@ async def test_team_count_stated_in_preview_and_result(real_engine, real_client,
     r = await read(real_client, other_tok, data)
     assert r.status_code == 200, r.text
     assert r.json()["team_members"] == 0
+
+
+async def test_enabled_module_without_version_refused_before_writes(real_engine, real_client, tmp_path, monkeypatch):
+    """A backup naming an enabled module that is not installed here is refused, naming it, even with no version recorded."""
+    _bk_local(monkeypatch, tmp_path)
+    user, _, tok = await _bk_setup(real_engine)
+
+    def change(m):
+        m["modules"]["enabled"].append("zz-absent")
+        m["modules"]["versions"].pop("zz-absent", None)
+    data = _bk_edit_manifest(await download(real_client, tok), change)
+    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "needs the zz-absent module")
+
+
+async def test_enabled_but_uninstalled_module_not_a_backup_requirement(real_engine, real_client, tmp_path, monkeypatch):
+    """A module left enabled in settings but not installed is not recorded as needed, so the backup still restores here."""
+    _bk_local(monkeypatch, tmp_path)
+    _, _, tok = await _bk_setup(real_engine, settings={"enabled_modules": ["celerp-labels", "zz-absent"]})
+    data = await download(real_client, tok)
+    assert manifest(data)["modules"]["enabled"] == ["celerp-labels"]
+    await _bk_restore_new(real_client, tok, data)
