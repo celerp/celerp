@@ -858,10 +858,10 @@ function _notifItemHtml(n) {
     + '</div>';
 }
 
-// A ready-to-install app update is worth one bell count so the user notices it
-// on the icon without opening the panel; the panel's update card carries the
-// version and the restart/upgrade action, so the count needs no list item.
-window._celerpUpdate = window._celerpUpdate || { ready: false, version: '' };
+// A found app update is worth one bell count so the user notices it on the
+// icon without opening the panel; the panel's update card carries the version
+// and the restart/upgrade action, so the count needs no list item.
+window._celerpUpdateLit = window._celerpUpdateLit || false;
 window._lastNotifData = window._lastNotifData || { items: [], unread_count: 0 };
 
 function _renderNotifs(data) {
@@ -869,7 +869,7 @@ function _renderNotifs(data) {
   data = window._lastNotifData;
   var badge = document.getElementById('notif-badge');
   var list = document.getElementById('notif-list');
-  var count = (data.unread_count || 0) + (window._celerpUpdate.ready ? 1 : 0);
+  var count = (data.unread_count || 0) + (window._celerpUpdateLit ? 1 : 0);
   if (badge) {
     if (count > 0) {
       badge.textContent = count > 99 ? '99+' : count;
@@ -887,11 +887,11 @@ function _renderNotifs(data) {
   }
 }
 
-// Light the bell when an update finishes downloading (Electron) or is available
-// on PyPI (pip). Re-renders off the last fetched inbox so no network call is
-// needed; the count clears when the user relaunches into the new version.
-window.celerpSetUpdateReady = function(version) {
-  window._celerpUpdate = { ready: true, version: version || '' };
+// Light or clear the bell's update count: lit while an update is found,
+// downloading or downloaded (Electron) or available on PyPI (pip). Re-renders
+// off the last fetched inbox so no network call is needed.
+window.celerpSetUpdateBell = function(lit) {
+  window._celerpUpdateLit = !!lit;
   _renderNotifs(null);
 };
 
@@ -1084,47 +1084,53 @@ document.addEventListener('DOMContentLoaded', function() {
         if (versionEl) versionEl.textContent = 'v' + v;
       }).catch(function() {});
 
-      setState(window.__shellI18n.upToDate, false);
+      // One render for the main process's updater state, used for live events
+      // and for the replay on every page load, so both always look the same.
+      // The bell counts any update the user has been told about: downloading,
+      // downloaded, or a download that then failed.
+      function renderUpdateState(s) {
+        var i18n = window.__shellI18n;
+        var v = s.version || i18n.updateWord;
+        if (s.status === 'downloading') {
+          setState(s.percent > 0 ? i18n.downloadingPct.replace('{pct}', Math.round(s.percent))
+                                 : i18n.downloadingVersion.replace('{version}', v), false);
+          setCheckBtn(false);
+          setProgress(s.percent);
+        } else if (s.status === 'downloaded') {
+          setState(i18n.versionReady.replace('{version}', v), true);
+          setCheckBtn(false);
+          setProgress(100);
+        } else if (s.status === 'error') {
+          setState(i18n.updateCheckFailed, false);
+          appendLog(i18n.errorPrefix + ' ' + (s.message || i18n.unknownError));
+          resetToIdle();
+        } else {
+          setState(i18n.upToDate, false);
+          resetToIdle();
+        }
+        window.celerpSetUpdateBell(s.status !== 'idle' && !!s.version);
+      }
 
-      // Log lines: always show — no isManualCheck gate.
+      // Log lines: always show, with no isManualCheck gate.
       window.celerp.onUpdateLog(function(msg) { appendLog(msg); });
 
-      window.celerp.onUpdateAvailable(function(info) {
-        setState(window.__shellI18n.downloadingVersion.replace('{version}', info && info.version ? info.version : window.__shellI18n.updateWord), false);
-        setCheckBtn(false);
-        setProgress(0);
-      });
+      window.celerp.onUpdateAvailable(renderUpdateState);
+      window.celerp.onDownloadProgress(renderUpdateState);
+      window.celerp.onUpdateError(renderUpdateState);
 
-      window.celerp.onDownloadProgress(function(progress) {
-        var pct = progress && typeof progress.percent === 'number' ? progress.percent : 0;
-        setProgress(pct);
-        // Also update state text so user sees live percentage
-        setState(window.__shellI18n.downloadingPct.replace('{pct}', Math.round(pct)), false);
-      });
-
-      window.celerp.onUpdateNotAvailable(function() {
-        setState(window.__shellI18n.upToDate, false);
+      window.celerp.onUpdateNotAvailable(function(s) {
+        renderUpdateState(s);
         appendLog(window.__shellI18n.alreadyLatest);
-        resetToIdle();
       });
 
-      window.celerp.onUpdateDownloaded(function(info) {
-        var v = info && info.version ? info.version : window.__shellI18n.updateWord;
-        setState(window.__shellI18n.versionReady.replace('{version}', v), false);
-        setProgress(100);
-        setCheckBtn(false);
-        if (restartBtn) restartBtn.style.display = '';
-        appendLog(window.__shellI18n.updateDownloadedLog.replace('{version}', v));
-        window.celerpSetUpdateReady(v);
+      window.celerp.onUpdateDownloaded(function(s) {
+        renderUpdateState(s);
+        appendLog(window.__shellI18n.updateDownloadedLog.replace('{version}', s.version || window.__shellI18n.updateWord));
       });
 
-      // Errors are always visible — never silently swallowed.
-      window.celerp.onUpdateError(function(info) {
-        var msg = info && info.message ? info.message : window.__shellI18n.unknownError;
-        setState(window.__shellI18n.updateCheckFailed, false);
-        appendLog(window.__shellI18n.errorPrefix + ' ' + msg);
-        resetToIdle();
-      });
+      // Replay whatever the updater did before this page loaded. Until it
+      // answers, the card stays as rendered (no status claimed).
+      window.celerp.getUpdateState().then(renderUpdateState).catch(function() {});
 
       if (checkBtn) {
         checkBtn.addEventListener('click', function() {
@@ -1190,7 +1196,7 @@ document.addEventListener('DOMContentLoaded', function() {
           setState(i18n.updateNotChecked, false);
         } else if (s.latest) {
           setState(i18n.updateAvailablePrefix + s.latest, s.can_install);
-          window.celerpSetUpdateReady(s.latest);
+          window.celerpSetUpdateBell(true);
           if (!s.can_install) {
             notes.push(reasonText(s.reason));
             show(upgradeEl, pipReasons.indexOf(s.reason) !== -1);

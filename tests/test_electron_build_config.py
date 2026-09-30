@@ -219,31 +219,8 @@ def test_shell_check_btn_hides_on_click():
     )
 
 
-def test_shell_check_btn_hidden_on_update_available():
-    """When an update is found, the check button must be hidden (not just disabled)."""
-    src = _shell_src()
-    # onUpdateAvailable callback must hide the check button
-    # Find the onUpdateAvailable block - look for setCheckBtn(false) near it
-    oa_idx = src.find("onUpdateAvailable")
-    assert oa_idx != -1, "onUpdateAvailable not found in shell.py"
-    # Within 300 chars of the onUpdateAvailable callback, setCheckBtn(false) must appear
-    nearby = src[oa_idx: oa_idx + 400]
-    assert "setCheckBtn(false)" in nearby, (
-        "onUpdateAvailable handler does not call setCheckBtn(false). "
-        "The check button will remain visible while a download is in progress."
-    )
 
 
-def test_shell_check_btn_shown_on_not_available():
-    """When no update is found, the check button must be shown again."""
-    src = _shell_src()
-    na_idx = src.find("onUpdateNotAvailable")
-    assert na_idx != -1, "onUpdateNotAvailable not found in shell.py"
-    nearby = src[na_idx: na_idx + 300]
-    assert "setCheckBtn(true)" in nearby or "resetToIdle" in nearby, (
-        "onUpdateNotAvailable handler does not restore the check button. "
-        "The button will stay hidden after a successful 'already up to date' check."
-    )
 
 
 def test_shell_restart_btn_disables_on_click():
@@ -318,18 +295,6 @@ def test_main_download_progress_log_throttled():
     )
 
 
-def test_main_download_progress_bar_unthrottled():
-    """Progress bar IPC must NOT be throttled - only the log sendLog call is throttled.
-
-    The bar update is a cheap CSS width change; throttling it would make it look laggy.
-    """
-    src = _main_src()
-    dp_idx = src.find('"download-progress"')
-    # Use a wider window - the handler can be longer than 600 chars
-    handler_block = src[dp_idx: dp_idx + 900]
-    assert 'send("download-progress"' in handler_block or "send('download-progress'" in handler_block, (
-        "download-progress IPC send to renderer not found in the handler block."
-    )
 
 
 def test_shell_append_log_uses_dom_append_not_text_content():
@@ -433,24 +398,6 @@ def test_main_auto_install_on_quit_disabled():
     )
 
 
-def test_main_error_sends_update_error_not_not_available():
-    """The updater error handler must send 'update-error', not 'update-not-available'.
-
-    Sending update-not-available on error is misleading — it resets state to
-    'Up to date' even when the check failed. Errors must be visible.
-    """
-    src = _main_src()
-    err_idx = src.find('autoUpdater.on("error"')
-    assert err_idx != -1, "autoUpdater error handler not found in main.js"
-    handler_block = src[err_idx: err_idx + 400]
-    assert '"update-error"' in handler_block, (
-        "autoUpdater error handler does not send 'update-error' IPC. "
-        "Errors will be silently swallowed in the renderer."
-    )
-    assert '"update-not-available"' not in handler_block, (
-        "autoUpdater error handler sends 'update-not-available' on error. "
-        "This misleadingly shows 'Up to date' when the check actually failed."
-    )
 
 
 def test_main_periodic_check_interval():
@@ -488,19 +435,6 @@ def test_shell_no_is_manual_check_gate():
     )
 
 
-def test_shell_has_on_update_error_handler():
-    """shell.py must handle the onUpdateError event from the IPC bridge."""
-    src = _shell_src()
-    assert "onUpdateError" in src, (
-        "shell.py does not register an onUpdateError handler. "
-        "Update errors will be silently ignored in the UI."
-    )
-    err_idx = src.find("onUpdateError")
-    handler_block = src[err_idx: err_idx + 300]
-    assert "Update check failed" in handler_block or "failed" in handler_block.lower(), (
-        "onUpdateError handler does not set an error state. "
-        "The UI will show 'Up to date' even when the check failed."
-    )
 
 
 def test_main_js_mac_hide_on_close():
