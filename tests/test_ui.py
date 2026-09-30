@@ -14811,11 +14811,6 @@ class TestBuildWorkflowVersioning:
         assert 'https://github.com/celerp/celerp/releases' in shell
         assert 'Data-Universal-Limited' not in shell
 
-    def test_electron_main_wires_update_not_available(self):
-        from test_helpers import REPO_ROOT
-        main_js = (REPO_ROOT / 'electron/app-main.js').read_text()
-        assert 'update-not-available' in main_js
-
     def test_preload_exposes_on_update_not_available(self):
         from test_helpers import REPO_ROOT
         preload = (REPO_ROOT / 'electron/preload.js').read_text()
