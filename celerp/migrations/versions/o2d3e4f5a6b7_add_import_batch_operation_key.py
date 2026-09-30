@@ -3,8 +3,8 @@
 
 """Add import_batches.operation_key so one logical import is one history entry.
 
-Revision ID: m0b1c2d3e4f5
-Revises: l9a0b1c2d3e4
+Revision ID: o2d3e4f5a6b7
+Revises: n1c2d3e4f5a6
 Create Date: 2026-09-30
 
 An item import is written in bounded chunks. Every chunk of one import now adds
@@ -17,8 +17,8 @@ NULL key.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "m0b1c2d3e4f5"
-down_revision = "l9a0b1c2d3e4"
+revision = "o2d3e4f5a6b7"
+down_revision = "n1c2d3e4f5a6"
 branch_labels = None
 depends_on = None
 
