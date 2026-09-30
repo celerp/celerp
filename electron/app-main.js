@@ -747,7 +747,7 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on("update-available", (info) => {
-    sendLog("Found v" + info.version + " — downloading...");
+    sendLog("Found v" + info.version + ", downloading...");
   });
 
   autoUpdater.on("download-progress", (progress) => {
@@ -767,7 +767,7 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on("update-downloaded", (info) => {
-    sendLog("v" + info.version + " ready — click 'Restart to Install'");
+    sendLog("v" + info.version + " ready. Click 'Restart to Install'");
   });
 
   autoUpdater.on("error", (err) => {
