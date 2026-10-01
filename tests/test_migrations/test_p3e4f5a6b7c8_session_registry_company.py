@@ -23,13 +23,13 @@ from .conftest import fresh_db, run_migration_ops  # noqa: F401
 MODULE = "p3e4f5a6b7c8_session_registry_company"
 
 
-def test_revision_is_the_single_head_after_import_operation_key():
+def test_revision_follows_import_operation_key_on_a_single_chain():
     from alembic.script import ScriptDirectory
 
     from celerp.alembic_config import build_alembic_config
 
     script = ScriptDirectory.from_config(build_alembic_config())
-    assert script.get_heads() == ["p3e4f5a6b7c8"]
+    assert len(script.get_heads()) == 1
     assert script.get_revision("p3e4f5a6b7c8").down_revision == "o2d3e4f5a6b7"
     ids = [r.revision for r in script.walk_revisions()]
     assert len(ids) == len(set(ids)), "a revision id is declared twice"
