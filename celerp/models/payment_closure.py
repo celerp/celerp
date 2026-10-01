@@ -48,6 +48,28 @@ class PaymentRecovery(Base):
 
     recovery_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True)
     company_ids: Mapped[list] = mapped_column(sa.JSON, nullable=False)
+    # When the restored backup started; Celerp Cloud delivers again every payment
+    # recorded since (every payment when None), so none is lost with the restore.
+    payments_since: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     generation: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False)
+
+
+class UnmatchedPayment(Base):
+    """An online payment Celerp Cloud delivered that could not be recorded on its
+    invoice: the company or the invoice no longer exists, or the invoice refused it.
+
+    Kept so the money received is never lost from view; recorded before Cloud is told
+    the payment arrived. Not company data: it must outlive the company it names, so
+    the company and invoice are plain values, not references."""
+
+    __tablename__ = "unmatched_payments"
+
+    reference: Mapped[str] = mapped_column(sa.String(255), primary_key=True)
+    amount_minor: Mapped[int] = mapped_column(sa.BigInteger, nullable=False)
+    currency: Mapped[str] = mapped_column(sa.String(8), nullable=False)
+    former_company: Mapped[str] = mapped_column(sa.String(64), nullable=False)
+    document: Mapped[str] = mapped_column(sa.String(255), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False)

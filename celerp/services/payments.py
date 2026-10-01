@@ -14,7 +14,7 @@ import uuid
 
 from sqlalchemy import func, select
 
-from celerp.models.payment_closure import PaymentClosure, PaymentRecovery
+from celerp.models.payment_closure import PaymentClosure, PaymentRecovery, UnmatchedPayment
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +55,19 @@ async def _cloud_post(path: str, payload: dict) -> dict | None:
 
 # ── Payment (customer-facing, via the hosted invoice view) ───────────────────
 
+async def checkout_paused() -> bool:
+    """Whether new online payments wait for a System Recovery restore Celerp Cloud has
+    not confirmed: until it has, a payment the restore lost may not be recorded again
+    yet, so an invoice it paid could look unpaid."""
+    try:
+        async with _own_session() as session:
+            return await report_recoveries(session) is None
+    except Exception:
+        log.warning("Checking for unconfirmed System Recovery restores failed", exc_info=True)
+        return True
+
+
+
 async def create_checkout(*, amount_minor: int, currency: str, description: str,
                           company_id: str, entity_id: str,
                           share_token: str) -> dict | None:
@@ -88,7 +101,7 @@ _PREPARED = ("prepared", "retired")
 _REFUSED = ("payment_settling", "payment_unrecorded")
 # Answers after which a step can never succeed: the request is forgotten, and Celerp
 # Cloud keeps the company's payments closed.
-_FINAL = {"finalize": ("payment_received", "generation_stale", "cancelled", "not_prepared"),
+_FINAL = {"finalize": ("generation_stale", "cancelled", "not_prepared"),
           "cancel": ("retired",)}
 RECONCILE_INTERVAL_S = 300
 
@@ -122,6 +135,53 @@ def _reached(answer: tuple[int, dict] | None, closure: PaymentClosure, states: t
     return answer is not None and answer[0] == 200 and answer[1] in [
         {"company_id": str(closure.target_company), "operation_id": str(closure.operation_id), "state": state}
         for state in states]
+
+
+async def receive_payment(payload: dict) -> bool:
+    """Record an online payment Celerp Cloud delivered: on its invoice, or, when the
+    company or the invoice no longer exists or the invoice refuses it, among the
+    unmatched payments. True once recorded either way (Cloud is then told it
+    arrived), False for a delivery that names no payment. Raises when nothing could
+    be recorded, so Cloud delivers it again. Recording the same payment twice
+    changes nothing."""
+    from fastapi import HTTPException
+    from celerp.models.projections import Projection
+    from celerp.services.company_lock import hold_company
+    from celerp_docs.routes_payments import record_stripe_payment
+    company_id, entity_id, reference = (str(payload.get(k) or "") for k in ("company_id", "entity_id", "reference"))
+    if not (company_id and entity_id and reference):
+        return False
+    amount_minor = int(payload.get("amount_minor") or 0)
+    currency = str(payload.get("currency") or "USD").upper()
+    try:
+        cid = uuid.UUID(company_id)
+    except ValueError:
+        cid = None
+    async with _own_session() as session:
+        # A reset waits for this hold; once it has deleted the company, the payment is unmatched.
+        row = await session.get(Projection, (cid, entity_id)) if cid and await hold_company(session, cid) else None
+        if row is not None:
+            try:
+                await record_stripe_payment(session, cid, entity_id, dict(row.state), reference=reference,
+                                            amount_minor=amount_minor, currency=currency)
+                return True
+            except HTTPException as exc:
+                if exc.status_code >= 500:
+                    raise
+                await session.rollback()
+                log.error("Invoice %s refused online payment %s: %s", entity_id, reference, exc.detail)
+        from sqlalchemy.dialects.postgresql import insert
+        await session.execute(insert(UnmatchedPayment).values(
+            reference=reference, amount_minor=amount_minor, currency=currency,
+            former_company=company_id, document=entity_id).on_conflict_do_nothing())
+        await session.commit()
+    return True
+
+
+async def unmatched_payments(session) -> list[UnmatchedPayment]:
+    """Every online payment that could not be recorded on its invoice, newest first."""
+    return list((await session.scalars(
+        select(UnmatchedPayment).order_by(UnmatchedPayment.received_at.desc()))).all())
 
 
 async def report_recoveries(session) -> int | None:
@@ -174,7 +234,8 @@ async def _settle(session, closure: PaymentClosure, company_exists: bool) -> boo
 async def prepare_company_closure(company_id: uuid.UUID) -> uuid.UUID | None:
     """Close a company's online invoice payments at Celerp Cloud before it is deleted:
     its open payment pages are closed and no new one can start. A payment already
-    made still reaches the installation, and stops the closing from becoming final.
+    made still reaches the installation, and the closing becomes final only once it
+    is recorded (``receive_payment``).
     The caller holds the company against deletion, and once its transaction has
     committed or rolled back passes the returned id to ``settle_company_closure``,
     which closes the payments for good or reopens them.

@@ -40,6 +40,7 @@ INSTALL_WIDE = {
     "instance_meta": "the installation's upgrade markers, created at runtime",
     "payment_closures": "requests to close a company's online payments, which outlive the company",
     "payment_recoveries": "the installation's System Recovery restores, as Celerp Cloud must learn of them",
+    "unmatched_payments": "online payments received for a company or invoice that no longer exists",
 }
 
 NAME_MISMATCH = "The name you typed does not match this company's name. Nothing was deleted."

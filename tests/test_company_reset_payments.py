@@ -6,7 +6,9 @@ does not commit, Cloud reopens them, so a company that stays keeps taking paymen
 When Celerp Cloud cannot confirm, nothing is deleted. A reset interrupted part way is
 settled the same way on the next start or the next reconciliation. A System Recovery
 restore is reported to Cloud, which reopens the payments of the companies it brought
-back; until Cloud confirms it, no company can be reset."""
+back; until Cloud confirms it, no company can be reset. A payment Celerp Cloud delivers
+for a company or invoice that no longer exists is kept among the unmatched payments, and
+holds the company's closing until it is recorded."""
 
 from __future__ import annotations
 
@@ -47,7 +49,8 @@ class _Cloud:
     def __init__(self, monkeypatch, engine, *, credential: str = "cloud-credential") -> None:
         from celerp.services import cloud_entitlement
         self.engine = engine
-        self.ops: dict[str, dict] = {}  # operation -> company, state, generation, paid
+        self.ops: dict[str, dict] = {}  # operation -> company, state, generation
+        self.deliveries: list[dict] = []  # payments delivered to the installation, with "acked"
         self.generation = 0
         self.recoveries: dict[str, tuple[int, list[str]]] = {}
         self.scripted: dict[str, list] = {"prepare": [], "finalize": [], "cancel": [], "recovery": []}
@@ -68,11 +71,30 @@ class _Cloud:
     def states(self) -> list[str]:
         return sorted(o["state"] for o in self.ops.values())
 
-    def pay(self, company_id) -> None:
-        """A customer's payment reaches the company while its closing is prepared."""
-        for o in self.ops.values():
-            if o["company"] == str(company_id) and o["state"] == "prepared":
-                o["paid"] = True
+    def pay(self, company_id, entity_id: str = "doc:gone", reference: str = "pi_late") -> None:
+        """A customer pays: Celerp Cloud delivers the payment until the installation
+        acknowledges it."""
+        self.deliveries.append({"company_id": str(company_id), "entity_id": entity_id, "reference": reference,
+                                "amount_minor": 107000, "currency": "usd",
+                                "delivery_id": str(uuid.uuid4()), "acked": False})
+
+    async def deliver(self) -> None:
+        """Deliver every payment not yet acknowledged, as the gateway receives it."""
+        from celerp.gateway.client import GatewayClient
+        gateway = GatewayClient(gateway_token="t", instance_id="i", gateway_url="wss://relay.invalid/ws")
+        gateway._ws = object()
+        acked = set()
+
+        async def send(ws, message):
+            assert message["type"] == "event.ack"
+            acked.add(message["payload"]["delivery_id"])
+        gateway._send = send
+        for d in [d for d in self.deliveries if not d["acked"]]:
+            await gateway._handle_invoice_payment({k: v for k, v in d.items() if k != "acked"})
+            d["acked"] = d["delivery_id"] in acked
+
+    def _unrecorded(self, company_id: str) -> bool:
+        return any(d["company_id"] == company_id and not d["acked"] for d in self.deliveries)
 
     @staticmethod
     def _refuse(detail: str) -> httpx.Response:
@@ -87,8 +109,7 @@ class _Cloud:
                 if any(o["company"] == company_id and o["state"] in ("prepared", "retired")
                        for o in self.ops.values()):
                     return self._refuse("closure_pending")
-                row = self.ops[op] = {"company": company_id, "state": "prepared",
-                                      "generation": generation, "paid": False}
+                row = self.ops[op] = {"company": company_id, "state": "prepared", "generation": generation}
             elif row["state"] == "cancelled":
                 return self._refuse("cancelled")
         elif step == "finalize":
@@ -99,13 +120,12 @@ class _Cloud:
             if row["state"] == "prepared":
                 if generation != row["generation"] or generation != self.generation:
                     return self._refuse("generation_stale")
-                if row["paid"]:
-                    return self._refuse("payment_received")
+                if self._unrecorded(company_id):
+                    return self._refuse("payment_unrecorded")
                 row["state"] = "retired"
         else:
             if row is None:
-                row = self.ops[op] = {"company": company_id, "state": "cancelled",
-                                      "generation": generation, "paid": False}
+                row = self.ops[op] = {"company": company_id, "state": "cancelled", "generation": generation}
             elif row["state"] == "retired":
                 return self._refuse("retired")
             row["state"] = "cancelled"
@@ -500,8 +520,8 @@ async def test_payments_are_closed_only_after_every_local_check_passes(real_engi
 
 # ── Refusals after the company is gone ───────────────────────────────────────
 
-async def test_a_payment_arriving_while_the_company_is_deleted_keeps_its_payments_closed(real_engine, real_client,
-                                                                                         monkeypatch):
+async def test_a_payment_arriving_while_the_company_is_deleted_holds_the_closing_until_it_is_recorded(
+        real_engine, real_client, monkeypatch):
     boss, a, b = await _harbor(real_engine)
     cloud = _Cloud(monkeypatch, real_engine)
 
@@ -515,13 +535,138 @@ async def test_a_payment_arriving_while_the_company_is_deleted_keeps_its_payment
     assert _steps(cloud) == ["prepare", "finalize"]
     assert cloud.states() == ["prepared"] and not cloud.payments_open(a)
     assert await _companies(real_engine) == {str(b)}
-    assert await _closures(real_engine) == []  # it can never finalize, so it is not retried
+    assert await _closures(real_engine) == [str(a)]  # kept, and tried again
 
     await reconcile_payments()
-    assert _steps(cloud) == ["prepare", "finalize"]
+    assert _steps(cloud) == ["prepare", "finalize", "finalize"]
+    assert cloud.states() == ["prepared"]
+
+    await cloud.deliver()
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+    assert await _unmatched(real_engine) == [("pi_late", 107000, "USD", str(a), "doc:gone")]
+
+    await reconcile_payments()
+    assert _steps(cloud) == ["prepare", "finalize", "finalize", "finalize"]
+    _one_operation(cloud)
+    assert cloud.states() == ["retired"] and not cloud.payments_open(a)
+    assert await _closures(real_engine) == []
 
 
-@pytest.mark.parametrize("detail", ["payment_received", "generation_stale", "cancelled", "not_prepared"])
+# ── Payments delivered around a reset ────────────────────────────────────────
+
+async def _unmatched(engine) -> list[tuple]:
+    async with maker(engine)() as s:
+        return [tuple(r) for r in (await s.execute(text(
+            "SELECT reference, amount_minor, currency, former_company, document FROM unmatched_payments "
+            "ORDER BY received_at"))).all()]
+
+
+async def _invoice(client, engine, boss, cid) -> str:
+    tok = auth(await token(engine, boss, cid))
+    r = await client.post("/docs", json={
+        "doc_type": "invoice", "contact_name": "Buyer",
+        "line_items": [{"description": "Widget", "quantity": 2, "unit_price": 500.0}],
+        "subtotal": 1000.0, "tax": 70.0, "total": 1070.0, "currency": "USD"}, headers=tok)
+    eid = r.json()["id"]
+    assert (await client.post(f"/docs/{eid}/finalize", headers=tok)).status_code == 200
+    return eid
+
+
+async def _waiting_on_a_lock(engine) -> bool:
+    async with engine.connect() as conn:
+        return bool(await conn.scalar(text(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'")))
+
+
+@pytest.mark.parametrize("moment", ["before", "during", "after"])
+async def test_a_payment_delivered_around_a_reset_is_recorded_once_and_the_closing_finishes(
+        real_engine, real_client, monkeypatch, moment):
+    import asyncio
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    cloud = _Cloud(monkeypatch, real_engine)
+    delivering = None
+    if moment == "before":
+        cloud.pay(a, invoice, "pi_1")
+        await cloud.deliver()
+        async with maker(real_engine)() as s:
+            state = (await s.execute(text("SELECT state FROM projections WHERE company_id = :c AND entity_id = :e"),
+                                     {"c": a, "e": invoice})).scalar_one()
+        assert state["status"] == "paid" and [p["reference"] for p in state["payments"]] == ["pi_1"]
+
+    async def during():
+        # The reset holds the company; the delivery waits for it to end.
+        nonlocal delivering
+        cloud.pay(a, invoice, "pi_1")
+        delivering = asyncio.create_task(cloud.deliver())
+        for _ in range(500):
+            if await _waiting_on_a_lock(real_engine):
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("the delivery did not wait for the reset")
+    if moment == "during":
+        cloud.on_prepared = during
+
+    r = await _reset(real_client, real_engine, boss, a)
+    assert r.status_code == 200, r.text
+    if delivering is not None:
+        await delivering
+    if moment == "after":
+        cloud.pay(a, invoice, "pi_1")
+        await cloud.deliver()
+    await reconcile_payments()
+
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+    assert await _unmatched(real_engine) == ([] if moment == "before" else
+                                             [("pi_1", 107000, "USD", str(a), invoice)])
+    assert cloud.states() == ["retired"]
+    assert await _closures(real_engine) == []
+
+
+async def test_a_payment_delivered_again_is_kept_once(real_engine, real_client, monkeypatch):
+    boss, a, b = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    cloud.pay(b, "doc:gone", "pi_1")
+    await cloud.deliver()
+    cloud.deliveries[0]["acked"] = False  # the acknowledgement was lost
+
+    await cloud.deliver()
+
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+    assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(b), "doc:gone")]
+
+
+async def test_a_payment_its_document_refuses_is_kept_among_the_unmatched(real_engine, real_client, monkeypatch):
+    boss, a, b = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    cloud.pay(b, "item:1", "pi_1")  # not an invoice
+
+    await cloud.deliver()
+
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+    assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(b), "item:1")]
+
+
+async def test_a_payment_that_cannot_be_recorded_is_not_acknowledged(real_engine, real_client, monkeypatch):
+    boss, a, b = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    cloud.pay(b, "doc:gone", "pi_1")
+
+    async def rename(old, new):
+        async with real_engine.begin() as conn:
+            await conn.execute(text(f"ALTER TABLE {old} RENAME TO {new}"))
+    await rename("unmatched_payments", "unmatched_payments_away")  # recording fails
+    try:
+        await cloud.deliver()
+    finally:
+        await rename("unmatched_payments_away", "unmatched_payments")
+
+    assert [d["acked"] for d in cloud.deliveries] == [False]
+    await cloud.deliver()
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+
+
+@pytest.mark.parametrize("detail", ["generation_stale", "cancelled", "not_prepared"])
 async def test_a_finalize_cloud_refuses_for_good_is_forgotten_and_the_payments_stay_closed(
         real_engine, real_client, monkeypatch, detail):
     boss, a, b = await _harbor(real_engine)
