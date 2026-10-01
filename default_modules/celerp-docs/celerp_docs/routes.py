@@ -33,6 +33,7 @@ from celerp.services import auto_je
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, AccountRole
 from celerp.services.account_roles import current_settings, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
+from celerp.services.journal_accounts import require_settlement_account
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
@@ -2627,7 +2628,7 @@ async def _alloc_payment_index(session, company_id, payments: list,
 
 async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
                             *, source: str, actor_id, idempotency_key: str,
-                            request: str | None = None, commit: bool = True):
+                            request: str | None = None, commit: bool = True, moves_cash: bool = True):
     """Record a payment against a doc: guard, emit doc.payment.received, post the cash
     JE, fire the payment lifecycle hook. Shared by the manual route and online payment
     so a Stripe payment lands identically to a hand-entered one. Commits per success and
@@ -2637,7 +2638,11 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     Takes the doc row under SELECT ... FOR UPDATE and validates against that fresh,
     committed read: the doc-row lock is the single serializer across every payment
     path and across connections, so two recorders on one doc are ordered at the row
-    and cannot compute a duplicate or colliding payment_index."""
+    and cannot compute a duplicate or colliding payment_index.
+
+    The money moves through ``bank_account``, which must be able to hold it. Only
+    an imported debit note passes ``moves_cash=False``: it settles its bill against
+    the bill's own payable account, so no money moves."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:
@@ -2693,6 +2698,8 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     bank_code = body.get("bank_account")
     if not bank_code:
         raise HTTPException(status_code=422, detail="bank_account is required")
+    if moves_cash:
+        await require_settlement_account(session, company_id, bank_code)
     body["currency"] = doc_currency
     # A payment carries its own rate because the rate moves between issuing a
     # foreign-currency document and being paid for it. On a document in the
@@ -3341,6 +3348,7 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
     if not payload.bank_account:
         raise HTTPException(status_code=422, detail="bank_account is required")
     bank_code = payload.bank_account
+    await require_settlement_account(session, company_id, bank_code)
 
     _refund_company = await session.get(Company, company_id)
     _refund_base_currency = (_refund_company.settings.get("currency", "USD") if _refund_company else "USD")
@@ -3431,6 +3439,7 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
         raise HTTPException(status_code=422, detail="Payment amount must be positive")
     if not payload.bank_account:
         raise HTTPException(status_code=422, detail="bank_account is required")
+    await require_settlement_account(session, company_id, payload.bank_account)
 
     payable.sort(key=lambda x: (
         x[1].get("due_date") or x[1].get("issue_date") or "9999",

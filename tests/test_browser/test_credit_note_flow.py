@@ -26,7 +26,7 @@ def _create_paid_invoice(api, sku: str = "W-01", amount: float = 100.0) -> str:
     api.post(f"/docs/{inv_id}/finalize")
     api.post(f"/docs/{inv_id}/payment", json={
         "amount": amount, "method": "transfer", "reference": f"PAY-{sku}",
-        "payment_date": "2026-04-26", "bank_account": "1110",
+        "payment_date": "2026-04-26", "bank_account": "1111",
     })
     return inv_id
 

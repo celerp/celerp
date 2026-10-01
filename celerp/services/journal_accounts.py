@@ -86,3 +86,29 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict) -
                     status_code=422,
                     detail=f"Account {code} has never been the {ROLE_LABELS[AccountRole(role)].lower()} account.",
                 )
+
+
+async def require_settlement_account(session: AsyncSession, company_id, code: str) -> None:
+    """Refuse a new payment or refund through ``code`` unless it can hold money: an
+    active asset account with nothing under it, such as a bank or a clearing account.
+
+    Only a new settlement is checked. Giving back money already recorded posts
+    through the account it came in through, even if that account is now inactive.
+    With the accounting module not running there is no chart to check against.
+    """
+    accounts = await lock_accounts(session, company_id, {code})
+    if accounts is None:
+        return
+    account = accounts.get(code)
+    if account is None:
+        problem = f"Account {code} is not in the chart of accounts."
+    elif not account["is_active"]:
+        problem = f"Account {code} is inactive."
+    elif account["has_children"]:
+        problem = f"Account {code} is a header account. Choose one of the accounts under it."
+    elif account["account_type"] != "asset":
+        problem = (f"Account {code} is a {account['account_type']} account. Money is paid or refunded "
+                   "through an asset account, such as a bank or a clearing account.")
+    else:
+        return
+    raise HTTPException(status_code=422, detail=problem)

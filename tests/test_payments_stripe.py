@@ -362,7 +362,7 @@ async def test_manual_payment_racing_online_confirm(client, session, payments_on
     stale = dict((await session.get(Projection, (cid, eid))).state)
 
     r = await client.post(f"/docs/{eid}/payment", json={
-        "amount": 500.0, "payment_date": "2026-07-13", "bank_account": "1110",
+        "amount": 500.0, "payment_date": "2026-07-13", "bank_account": "1111",
     }, headers=_h(tok))
     assert r.status_code == 200, r.text
 
@@ -429,7 +429,7 @@ async def test_paid_invoice_share_view_drops_pay_bar(client, payments_on):
     tok = await _register(client)
     eid, token = await _payable_invoice(client, tok)
     r = await client.post(f"/docs/{eid}/payment", json={
-        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1110",
+        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1111",
     }, headers=_h(tok))
     assert r.status_code == 200, r.text
     html = (await client.get(f"/share/{token}")).text

@@ -402,6 +402,7 @@ async def _import_debit_note(
                  "bank_account": payable, "method": "debit_note"},
                 source="migration", actor_id=context.user_id,
                 idempotency_key=context.idempotency_key(record, "applied"), commit=False,
+                moves_cash=False,
             )
     except Exception as exc:
         return RecordOutcome("", "failed", f"{label}: {getattr(exc, 'detail', exc)}")
