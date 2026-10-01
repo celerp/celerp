@@ -66,6 +66,46 @@ async def create_checkout(*, amount_minor: int, currency: str, description: str,
     })
 
 
+class PaymentsNotClosed(Exception):
+    """Celerp Cloud did not confirm that a company's online payments are closed.
+
+    ``reason`` is "disconnected", "payment_settling", "payment_unrecorded" or "unconfirmed".
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+async def close_company_payments(company_id: str) -> None:
+    """Close a company's online invoice payments at Celerp Cloud for good, before the
+    company is deleted: its open payment pages are closed and no new one can start.
+
+    An installation without a Celerp Cloud credential never took online payments and
+    returns at once. Otherwise returns only when Cloud confirms this company is closed,
+    and raises PaymentsNotClosed for anything else.
+    """
+    from celerp.config import settings
+    from celerp.services import cloud_entitlement
+    if not await cloud_entitlement.stored_api_key():
+        return
+    if settings.cloud_disconnected:
+        raise PaymentsNotClosed("disconnected")
+    try:
+        response = await cloud_entitlement.authenticated_request(
+            "POST", "/billing/connect/companies/retire", total_s=30.0, json={"company_id": company_id})
+        data = response.json() if response is not None else None
+    except Exception as exc:
+        log.warning("Closing company payments failed: %s", type(exc).__name__)
+        raise PaymentsNotClosed("unconfirmed") from exc
+    if not isinstance(data, dict):
+        raise PaymentsNotClosed("unconfirmed")
+    if response.status_code == 409 and data.get("detail") in ("payment_settling", "payment_unrecorded"):
+        raise PaymentsNotClosed(data["detail"])
+    if response.status_code != 200 or data != {"retired": True, "company_id": company_id}:
+        raise PaymentsNotClosed("unconfirmed")
+
+
 async def checkout_status(session_id: str) -> dict | None:
     """Session status for reconcile-on-return.
 

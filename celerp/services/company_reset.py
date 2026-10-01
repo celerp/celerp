@@ -25,6 +25,7 @@ from celerp.models.auth import SessionRegistry
 from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig
 from celerp.models.migration import MigrationCleanupTask, MigrationRun
+from celerp.services import payments
 from celerp.services.auth import first_usable_company_link
 from celerp.services.company_backup import _fk_order, _ident, _schema
 from celerp.services.company_lock import lock_company_for_deletion
@@ -43,6 +44,16 @@ NAME_MISMATCH = "The name you typed does not match this company's name. Nothing 
 AI_BATCH_ACTIVE = ("Wait for the assistant to finish reading files before resetting this company. "
                    "Nothing was deleted.")
 FAILED = "The company could not be reset. Nothing was deleted."
+PAYMENTS_NOT_CLOSED = {
+    "disconnected": (503, "Reconnect Celerp Cloud so this company's online invoice payments can be "
+                          "closed, then reset it. Nothing was deleted."),
+    "payment_settling": (409, "A payment on one of this company's invoices is still being processed by "
+                              "the bank. Try again once it has cleared. Nothing was deleted."),
+    "payment_unrecorded": (409, "A payment on one of this company's invoices has not reached Celerp yet. "
+                                "Try again once it shows on the invoice. Nothing was deleted."),
+    "unconfirmed": (503, "Celerp could not confirm with Celerp Cloud that this company's online invoice "
+                         "payments are closed. Try again in a moment. Nothing was deleted."),
+}
 
 
 class ResetRefused(Exception):
@@ -104,7 +115,8 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> uui
     """Delete *company* and every row it owns in the session's transaction, and record its
     files for deletion after the commit. The caller holds the connector maintenance lock,
     took ``lock_company_for_deletion`` before any other company lock, commits, then runs
-    the returned cleanup task. Nothing is written unless every check passes; a database
+    the returned cleanup task. Nothing is written unless every check passes, and a company
+    connected to Celerp Cloud has its online payments closed there first; a database
     failure part way leaves the transaction to roll back."""
     if typed_name != company.name:
         raise ResetRefused(422, NAME_MISMATCH)
@@ -128,6 +140,12 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> uui
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all()]
     members = set((await session.scalars(
         select(UserCompany.user_id).where(UserCompany.company_id == company.id))).all())
+    # Last, so a refusal above never closes the payments of a company that stays. Once
+    # closed they stay closed, even if the deletion below then fails and is retried.
+    try:
+        await payments.close_company_payments(cid)
+    except payments.PaymentsNotClosed as exc:
+        raise ResetRefused(*PAYMENTS_NOT_CLOSED[exc.reason]) from None
     try:
         for owned in tables:
             await session.execute(text(f"DELETE FROM {_ident(owned.table)} WHERE {owned.where}"), {"c": cid})
