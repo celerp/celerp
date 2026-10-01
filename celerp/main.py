@@ -323,6 +323,12 @@ async def lifespan(_app: FastAPI):
     except Exception:
         logging.getLogger(__name__).exception("Reconciling unfinished company restores failed (non-fatal)")
 
+    # A company reset that stopped after Celerp Cloud froze the company's online payments
+    # is settled in the background: a deleted company's payments close for good, a kept
+    # one's reopen. One that cannot be settled yet stays frozen until a later boot.
+    from celerp.services.payments import settle_company_closures
+    asyncio.create_task(settle_company_closures())
+
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links
     # to its document. Marker-gated (runs once); non-fatal like the guard above.

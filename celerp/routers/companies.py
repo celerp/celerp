@@ -2275,7 +2275,7 @@ async def reset_company(
     after the commit. Returns a token pair for another of the caller's companies, or
     ``{"next": "start_company"}`` when this was their last one."""
     from celerp.connectors.ownership import lock_connector_maintenance
-    from celerp.services import company_reset
+    from celerp.services import company_reset, payments
     from celerp.services.migrations import run_cleanup_task
 
     await lock_connector_maintenance(session)
@@ -2284,25 +2284,35 @@ async def reset_company(
     company = await session.get(Company, ctx.company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found")
+    closure = None
     try:
-        task_id = await company_reset.reset(session, company, payload.company_name)
-    except company_reset.ResetRefused as exc:
+        try:
+            done = await company_reset.reset(session, company, payload.company_name)
+        except company_reset.ResetRefused as exc:
+            closure = exc.closure
+            if exc.__cause__ is not None:
+                logger.error("Company reset failed: %s", type(exc.__cause__).__name__)
+            raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+        closure = done.closure
+        link = await first_usable_company_link(session, ctx.user.id)
+        if link is None:
+            await session.commit()
+            result = {"next": "start_company"}
+        else:
+            # The new session continues this one, so it cannot jump a concurrent sign-out.
+            result = await issue_token_pair(
+                session, user=ctx.user, company_id=link.company_id,
+                expected_snonce=ctx.snonce,
+            )
+    except BaseException:
         await session.rollback()
-        if exc.__cause__ is not None:
-            logger.error("Company reset failed: %s", type(exc.__cause__).__name__)
-        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
-    link = await first_usable_company_link(session, ctx.user.id)
-    if link is None:
-        await session.commit()
-        result = {"next": "start_company"}
-    else:
-        # The new session continues this one, so it cannot jump a concurrent sign-out.
-        result = await issue_token_pair(
-            session, user=ctx.user, company_id=link.company_id,
-            expected_snonce=ctx.snonce,
-        )
+        # Reopens the company's online payments, or closes them for good if the
+        # deletion committed after all.
+        await payments.settle_company_closure(closure)
+        raise
+    await payments.settle_company_closure(closure)
     session.expunge_all()
-    await run_cleanup_task(session, task_id)
+    await run_cleanup_task(session, done.task_id)
     return result
 
 

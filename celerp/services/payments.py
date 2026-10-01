@@ -10,6 +10,11 @@ the same path as a manual payment.
 from __future__ import annotations
 
 import logging
+import uuid
+
+from sqlalchemy import select
+
+from celerp.models.payment_closure import PaymentClosure
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +72,7 @@ async def create_checkout(*, amount_minor: int, currency: str, description: str,
 
 
 class PaymentsNotClosed(Exception):
-    """Celerp Cloud did not confirm that a company's online payments are closed.
+    """Celerp Cloud did not confirm that a company's online payments are frozen.
 
     ``reason`` is "disconnected", "payment_settling", "payment_unrecorded" or "unconfirmed".
     """
@@ -77,33 +82,126 @@ class PaymentsNotClosed(Exception):
         self.reason = reason
 
 
-async def close_company_payments(company_id: str) -> None:
-    """Close a company's online invoice payments at Celerp Cloud for good, before the
-    company is deleted: its open payment pages are closed and no new one can start.
+_CLOSURE = "/billing/connect/companies/retire"
+_PREPARED = ("prepared", "retired")
+_REFUSED = ("payment_settling", "payment_unrecorded")
+
+
+def _own_session():
+    import celerp.db
+    from sqlalchemy.ext.asyncio import AsyncSession
+    return AsyncSession(bind=celerp.db.engine, expire_on_commit=False)
+
+
+async def _closure_step(step: str, operation_id: uuid.UUID, company_id: uuid.UUID) -> tuple[int, dict] | None:
+    """Ask Celerp Cloud to take one step of a closing request: its status and answer,
+    or None when there is no readable answer."""
+    from celerp.services import cloud_entitlement
+    try:
+        response = await cloud_entitlement.authenticated_request(
+            "POST", f"{_CLOSURE}/{step}", total_s=30.0,
+            json={"company_id": str(company_id), "operation_id": str(operation_id)})
+        data = response.json() if response is not None else None
+    except Exception as exc:
+        log.warning("Closing company payments (%s) failed: %s", step, type(exc).__name__)
+        return None
+    return (response.status_code, data) if isinstance(data, dict) else None
+
+
+def _reached(answer: tuple[int, dict] | None, operation_id: uuid.UUID, company_id: uuid.UUID,
+             states: tuple[str, ...]) -> bool:
+    return answer is not None and answer[0] == 200 and answer[1] in [
+        {"company_id": str(company_id), "operation_id": str(operation_id), "state": state} for state in states]
+
+
+async def _settle(session, closure: PaymentClosure, company_exists: bool) -> bool:
+    """Tell Celerp Cloud how *closure* ended: a company still here reopens its payments,
+    a deleted one closes them for good. Forgets the closure once Cloud confirms."""
+    from celerp.config import settings
+    if settings.cloud_disconnected:
+        return False
+    step, state = ("cancel", "cancelled") if company_exists else ("finalize", "retired")
+    if not _reached(await _closure_step(step, closure.operation_id, closure.target_company),
+                    closure.operation_id, closure.target_company, (state,)):
+        return False
+    await session.delete(closure)
+    await session.commit()
+    return True
+
+
+async def prepare_company_closure(company_id: uuid.UUID) -> uuid.UUID | None:
+    """Freeze a company's online invoice payments at Celerp Cloud before it is deleted:
+    its open payment pages are closed, no new one can start, and payments arriving
+    meanwhile wait. The caller holds the company against deletion, and once its
+    transaction has committed or rolled back passes the returned id to
+    ``settle_company_closure``, which closes the payments for good or reopens them.
 
     An installation without a Celerp Cloud credential never took online payments and
-    returns at once. Otherwise returns only when Cloud confirms this company is closed,
-    and raises PaymentsNotClosed for anything else.
-    """
+    returns None at once. Otherwise returns only when Cloud confirms the freeze, and
+    raises PaymentsNotClosed for anything else, after asking Cloud to drop the request.
+    An earlier request for the same company that never settled is reopened first."""
     from celerp.config import settings
     from celerp.services import cloud_entitlement
     if not await cloud_entitlement.stored_api_key():
-        return
+        return None
     if settings.cloud_disconnected:
         raise PaymentsNotClosed("disconnected")
+    async with _own_session() as session:
+        stale = (await session.scalars(select(PaymentClosure).where(
+            PaymentClosure.target_company == company_id))).all()
+        for closure in stale:
+            if not await _settle(session, closure, company_exists=True):
+                raise PaymentsNotClosed("unconfirmed")
+        closure = PaymentClosure(operation_id=uuid.uuid4(), target_company=company_id)
+        session.add(closure)
+        await session.commit()
+        answer = await _closure_step("prepare", closure.operation_id, company_id)
+        if _reached(answer, closure.operation_id, company_id, _PREPARED):
+            return closure.operation_id
+        # Cloud may have frozen the payments without the answer arriving; until Cloud
+        # confirms they are reopened the request is kept, and the payments stay frozen.
+        await _settle(session, closure, company_exists=True)
+    if answer is not None and answer[0] == 409 and answer[1].get("detail") in _REFUSED:
+        raise PaymentsNotClosed(answer[1]["detail"])
+    raise PaymentsNotClosed("unconfirmed")
+
+
+async def settle_company_closure(operation_id: uuid.UUID | None) -> bool:
+    """Settle one closing request once the transaction that asked for it has ended:
+    the company gone closes its payments for good, the company still here reopens
+    them. Waits for a deletion of the company still in flight. True once Cloud has
+    confirmed (or there was nothing to settle); False leaves the request, and the
+    payments frozen, for the next attempt."""
+    if operation_id is None:
+        return True
+    from celerp.models.company import Company
     try:
-        response = await cloud_entitlement.authenticated_request(
-            "POST", "/billing/connect/companies/retire", total_s=30.0, json={"company_id": company_id})
-        data = response.json() if response is not None else None
-    except Exception as exc:
-        log.warning("Closing company payments failed: %s", type(exc).__name__)
-        raise PaymentsNotClosed("unconfirmed") from exc
-    if not isinstance(data, dict):
-        raise PaymentsNotClosed("unconfirmed")
-    if response.status_code == 409 and data.get("detail") in ("payment_settling", "payment_unrecorded"):
-        raise PaymentsNotClosed(data["detail"])
-    if response.status_code != 200 or data != {"retired": True, "company_id": company_id}:
-        raise PaymentsNotClosed("unconfirmed")
+        async with _own_session() as session:
+            closure = await session.get(PaymentClosure, operation_id)
+            if closure is None:
+                return True
+            exists = await session.scalar(select(Company.id).where(
+                Company.id == closure.target_company).with_for_update(read=True, key_share=True))
+            closure = await session.get(PaymentClosure, operation_id, populate_existing=True)
+            if closure is None:
+                return True
+            return await _settle(session, closure, company_exists=exists is not None)
+    except Exception:
+        log.warning("Settling a company payment closure failed", exc_info=True)
+        return False
+
+
+async def settle_company_closures() -> None:
+    """Settle every closing request left over, e.g. by a restart part way through a
+    reset. A request that cannot be settled now keeps its company's payments frozen."""
+    try:
+        async with _own_session() as session:
+            pending = (await session.scalars(select(PaymentClosure.operation_id))).all()
+    except Exception:
+        log.warning("Reading unsettled company payment closures failed", exc_info=True)
+        return
+    for operation_id in pending:
+        await settle_company_closure(operation_id)
 
 
 async def checkout_status(session_id: str) -> dict | None:

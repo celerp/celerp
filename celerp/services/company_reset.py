@@ -38,6 +38,7 @@ INSTALL_WIDE = {
     "system_runtime_state": "the installation's own runtime state",
     "alembic_version": "the database schema version",
     "instance_meta": "the installation's upgrade markers, created at runtime",
+    "payment_closures": "requests to close a company's online payments, which outlive the company",
 }
 
 NAME_MISMATCH = "The name you typed does not match this company's name. Nothing was deleted."
@@ -57,10 +58,19 @@ PAYMENTS_NOT_CLOSED = {
 
 
 class ResetRefused(Exception):
-    def __init__(self, status: int, detail: str) -> None:
+    def __init__(self, status: int, detail: str, closure: uuid.UUID | None = None) -> None:
         super().__init__(detail)
         self.status = status
         self.detail = detail
+        self.closure = closure
+
+
+@dataclass(frozen=True)
+class Reset:
+    """What a reset leaves for its caller once the transaction ends: the cleanup task
+    to run, and the payment closure to settle (``payments.settle_company_closure``)."""
+    task_id: uuid.UUID
+    closure: uuid.UUID | None
 
 
 @dataclass(frozen=True)
@@ -111,13 +121,15 @@ async def owned_tables(session: AsyncSession) -> list[_Owned]:
     return [_Owned(t, where[t]) for t in reversed(order)]
 
 
-async def reset(session: AsyncSession, company: Company, typed_name: str) -> uuid.UUID:
+async def reset(session: AsyncSession, company: Company, typed_name: str) -> Reset:
     """Delete *company* and every row it owns in the session's transaction, and record its
     files for deletion after the commit. The caller holds the connector maintenance lock,
-    took ``lock_company_for_deletion`` before any other company lock, commits, then runs
-    the returned cleanup task. Nothing is written unless every check passes, and a company
-    connected to Celerp Cloud has its online payments closed there first; a database
-    failure part way leaves the transaction to roll back."""
+    took ``lock_company_for_deletion`` before any other company lock, and ends the
+    transaction; then, whether it committed or rolled back, settles the payment closure
+    (also when this raises ResetRefused carrying one) and, after a commit, runs the
+    cleanup task. Nothing is written unless every check passes, and a company connected
+    to Celerp Cloud has its online payments frozen there first; a database failure part
+    way leaves the transaction to roll back."""
     if typed_name != company.name:
         raise ResetRefused(422, NAME_MISMATCH)
     # A session being issued, or a file being stored, holds the company FOR KEY SHARE until
@@ -140,10 +152,10 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> uui
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all()]
     members = set((await session.scalars(
         select(UserCompany.user_id).where(UserCompany.company_id == company.id))).all())
-    # Last, so a refusal above never closes the payments of a company that stays. Once
-    # closed they stay closed, even if the deletion below then fails and is retried.
+    # Last, so a refusal above never freezes the payments of a company that stays. They
+    # are reopened when the deletion below does not commit.
     try:
-        await payments.close_company_payments(cid)
+        closure = await payments.prepare_company_closure(company.id)
     except payments.PaymentsNotClosed as exc:
         raise ResetRefused(*PAYMENTS_NOT_CLOSED[exc.reason]) from None
     try:
@@ -158,5 +170,5 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> uui
         session.add(task)
         await session.flush()
     except SQLAlchemyError as exc:
-        raise ResetRefused(500, FAILED) from exc
-    return task.id
+        raise ResetRefused(500, FAILED, closure) from exc
+    return Reset(task.id, closure)
