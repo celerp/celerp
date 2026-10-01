@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Browser journeys for Reset this company: the dialog offers the company backup, asks
 for the exact company name and shows a refusal inside itself; resetting a login's last
-company lands on starting a new one, and an owner whose other company is still being
-moved in lands on that move."""
+company lands on starting a new one, moving books in from another system or restoring a
+backup, and an owner whose other company is still being moved in lands on that move."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import pytest
 
 from .test_company_backup_browser import _WAIT_MS, _add_user, _client, _db, _session_company, _token_for
 from .test_migration_journeys_browser import _start_additional, held_runner  # noqa: F401 - fixture
-from .test_migration_wizard_browser import _run_id
+from .test_migration_wizard_browser import _run_id, _through_review, _upload
 
 pytestmark = pytest.mark.browser
 
@@ -167,4 +167,60 @@ def test_resetting_the_last_company_lands_on_starting_a_new_one(playwright, ui_s
         page = ctx.new_page()
         _start_over(page, source, user_id, email)
     finally:
+        browser.close()
+
+
+def _no_sideways_scroll(page) -> bool:
+    return page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+
+
+def test_a_login_with_no_company_moves_its_books_in(playwright, ui_server, fresh_company, held_runner):
+    source = fresh_company.get("/companies/me").json()
+    user_id, email = _add_user(fresh_company, "owner")
+    moved = f"Moved In {uuid.uuid4().hex[:6]}"
+    browser = playwright.chromium.launch(headless=True)
+    errors: list[str] = []
+    from celerp.gateway.state import get_session_token, set_session_token
+    before = get_session_token()
+    try:
+        ctx = browser.new_context(base_url=ui_server, viewport={"width": 1440, "height": 900})
+        ctx.add_cookies([{"name": "celerp_token", "value": _token_for(user_id, source["id"]),
+                          "domain": "127.0.0.1", "path": "/"}])
+        page = ctx.new_page()
+        page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("response", lambda r: errors.append(f"{r.status} {r.url}") if r.status >= 500 else None)
+        _reset(page, source["name"])
+        page.wait_for_url(re.compile(r"/setup/start-company$"), timeout=_WAIT_MS)
+        assert "still exists" in page.content()
+        for width, height in ((390, 844), (1440, 900)):
+            page.set_viewport_size({"width": width, "height": height})
+            assert _no_sideways_scroll(page), width
+        _shot(page, "7-start-company-ways-back-in")
+
+        page.click('a:has-text("Move from another system")')
+        page.wait_for_url(re.compile(r"/setup/start-company/migrate$"), timeout=_WAIT_MS)
+        page.set_viewport_size({"width": 390, "height": 844})
+        assert _no_sideways_scroll(page)
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.fill("#email", email)
+        page.fill("#password", "TeamMember123!")
+        _upload(page, "Example Bookkeeping")
+        _through_review(page, moved)
+        assert page.locator("#email").input_value() == email
+        set_session_token("test-session-token-for-browser-tests")
+        page.fill("#password", "TeamMember123!")
+        page.click('button:has-text("Create company and migrate")')
+        page.wait_for_url(re.compile(r"/migrations/[0-9a-f-]{36}$"), timeout=_WAIT_MS)
+        _shot(page, "8-moving-in-with-no-company")
+
+        [(staged, is_staged)] = _db("SELECT id, is_migration_staged FROM companies WHERE name = %s", moved)
+        assert is_staged and _session_company(ctx) == str(staged)
+        assert _db("SELECT count(*) FROM user_companies WHERE user_id = %s", user_id)[0][0] == 1
+        # Back on start-company while signed in goes home, which is the move.
+        page.goto("/setup/start-company/migrate")
+        page.wait_for_url(re.compile(r"/migrations/[0-9a-f-]{36}$"), timeout=_WAIT_MS)
+        assert errors == []
+    finally:
+        set_session_token(before)
         browser.close()
