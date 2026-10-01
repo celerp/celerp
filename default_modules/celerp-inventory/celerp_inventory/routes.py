@@ -46,6 +46,8 @@ from .services import (
     preview_import_rows,
     source_header_semantics,
 )
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD
+from celerp.services.account_roles import lot_account
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility, restricted_field_keys
@@ -3747,6 +3749,23 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
 
 
 
+def _merged_lot_account(settings: dict, sources: list[Projection]) -> str | None:
+    """The inventory account a merged lot keeps: the one its sources share. Sources
+    valued in different inventory accounts are not merged, since one lot cannot hold
+    value on two accounts."""
+    recorded = {p.state.get(LOT_ACCOUNT_FIELD) for p in sources}
+    if len(recorded) == 1:
+        return recorded.pop()
+    accounts = {lot_account(settings, p.state) for p in sources}
+    if len(accounts) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"These items are valued in different inventory accounts ({', '.join(sorted(accounts))}), "
+                    "so they cannot be merged into one item."),
+        )
+    return accounts.pop()
+
+
 @router.post("/merge")
 async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     _validate_sku(payload.resulting_sku)
@@ -4062,6 +4081,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     }
     if merged_catalog_id:
         create_data["catalog_item_id"] = merged_catalog_id
+    create_data[LOT_ACCOUNT_FIELD] = _merged_lot_account(settings, source_projections)
 
     # The merged item is the same product as the target, so carry the target's product
     # GTIN. The physical RFID/EPC tag is NOT carried: the merged item is a new physical

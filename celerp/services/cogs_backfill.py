@@ -191,7 +191,7 @@ async def run_cogs_backfill(session) -> dict:
                         company_id=doc.company_id,
                         user_id=None,
                         doc_id=doc.entity_id,
-                        cogs=cogs,
+                        by_account=cogs_result.by_account,
                         ts=ts,
                     )
         except HTTPException as exc:

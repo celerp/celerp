@@ -195,4 +195,4 @@ async def test_a_missing_stock_role_refuses_the_cogs_entry_rather_than_guessing(
     await _unmap(session, auth, "cogs")
     with pytest.raises(PostingRoleError):
         await auto_je.create_for_doc_cogs_backfill(
-            session, company_id=auth["company_id"], user_id=auth["user_id"], doc_id="doc:none", cogs=5.0, ts=None)
+            session, company_id=auth["company_id"], user_id=auth["user_id"], doc_id="doc:none", by_account={"1130-P": 5.0}, ts=None)

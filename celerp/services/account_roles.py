@@ -167,6 +167,19 @@ def lot_account(settings: dict | None, state: dict) -> str:
     return code
 
 
+async def new_lot_account(session: AsyncSession, company_id) -> str | None:
+    """The inventory account a new lot's value is booked into: the company's current
+    inventory-purchased account. None for a company without posting accounts, whose
+    lots then move cost only where its history proves the account (``lot_account``)."""
+    from sqlalchemy import select
+
+    settings = (await session.execute(
+        select(Company.settings).where(Company.id == company_id))).scalar_one_or_none() or {}
+    if SCHEMA_KEY not in settings:
+        return None
+    return role_map(settings).get(AccountRole.INVENTORY_PURCHASED.value) or None
+
+
 async def current_settings(session: AsyncSession, company_id) -> dict:
     """The company's settings as last committed: one read per economic entry."""
     company = await session.get(Company, company_id, populate_existing=True)

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp.events.engine import emit_event, find_event_by_idempotency
@@ -93,8 +94,10 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
 
 def lot_fields(parent_state: dict) -> dict:
     """The fields a new lot of an item inherits from it: everything but identity, quantity,
-    cost, status, timestamps and lineage, which each new lot sets for itself."""
-    return {k: v for k, v in parent_state.items() if k not in _CHILD_RESET_FIELDS}
+    cost, status, timestamps and lineage, which each new lot sets for itself. A part of
+    a lot keeps the lot's inventory account, recorded or not, so it never takes today's."""
+    return {**{k: v for k, v in parent_state.items() if k not in _CHILD_RESET_FIELDS},
+            LOT_ACCOUNT_FIELD: parent_state.get(LOT_ACCOUNT_FIELD)}
 
 
 async def _next_seq(session: AsyncSession, company_id) -> int:

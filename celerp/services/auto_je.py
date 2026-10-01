@@ -23,6 +23,7 @@ from celerp.services.account_roles import (
     current_settings,
     line_has_role,
     line_roles,
+    lot_account,
     resolve,
     resolve_many,
     scope_codes,
@@ -197,13 +198,16 @@ class CogsResult:
 
     ``allocations`` is keyed by the line's index in doc["line_items"] as a
     string (JSON metadata round-trips string keys). Each entry carries the lots
-    the line prices at (lot_entity_id, qty, unit_cost), the provisional_qty no
-    lot could cover (priced at the bound lot's unit cost), and the line's total
-    amount. ``ambiguous`` is True when at least one splittable line exceeds its
-    bound lot, so bound-lot-only pricing is a guess rather than an exact cost.
+    the line prices at (lot_entity_id, qty, unit_cost, and the inventory account the
+    lot is valued in), the provisional_qty no lot could cover (priced at the bound
+    lot's unit cost, on its account), and the line's total amount. ``by_account``
+    is the total split by those inventory accounts. ``ambiguous`` is True when at
+    least one splittable line exceeds its bound lot, so bound-lot-only pricing is a
+    guess rather than an exact cost.
     """
     total: float = 0.0
     allocations: dict[str, dict] = field(default_factory=dict)
+    by_account: dict[str, float] = field(default_factory=dict)
     ambiguous: bool = False
 
 
@@ -245,6 +249,7 @@ async def _span_line_lots(
             "created_at": created_at.isoformat() if created_at else "",
             "expires_at": state.get("expires_at"),
             "unit_cost": lot_unit_cost(state),
+            "state": state,
         }
 
     rows = (await session.execute(_select(Projection).where(
@@ -266,7 +271,7 @@ async def _span_line_lots(
 
     primary = _lot(primary_proj.entity_id, primary_proj.created_at, primary_proj.state)
     draws, short_qty = plan_lot_draws(primary, needed, siblings, method)
-    lots = [{"lot_entity_id": lot["entity_id"], "qty": take, "unit_cost": lot["unit_cost"]}
+    lots = [{"lot_entity_id": lot["entity_id"], "qty": take, "unit_cost": lot["unit_cost"], "state": lot["state"]}
             for lot, take, _is_full in draws]
     amount = sum(take * lot["unit_cost"] for lot, take, _is_full in draws)
     if short_qty > 1e-9:
@@ -300,6 +305,7 @@ async def compute_doc_cogs(
     correctly costed siblings.
     """
     result = CogsResult()
+    settings = await current_settings(session, company_id)
     line_items = doc.get("line_items", [])
     bound = doc_bound_lots(line_items)
     span_consumed: set[str] = set()
@@ -327,14 +333,35 @@ async def compute_doc_cogs(
                 exclude=(bound - {str(item_id)}) | span_consumed)
             span_consumed.update(lot["lot_entity_id"] for lot in lots)
         else:
-            lots = [{"lot_entity_id": str(item_id), "qty": line_qty, "unit_cost": unit_cost}]
+            lots = [{"lot_entity_id": str(item_id), "qty": line_qty, "unit_cost": unit_cost, "state": state}]
             provisional_qty = 0.0
             amount = unit_cost * line_qty
         amount = max(0.0, amount)
+        states = {lot["lot_entity_id"]: lot.pop("state") for lot in lots}
+        states.setdefault(str(item_id), state)
+        # A lot's cost can only move on the account it is valued in, so a costed line
+        # names it, and refuses when the lot's account cannot be proven.
+        for lot in lots:
+            lot["account"] = lot_account(settings, states[lot["lot_entity_id"]]) if amount > 0 else None
+        if amount > 0:
+            parts = {lot["lot_entity_id"]: lot["qty"] * lot["unit_cost"] for lot in lots}
+            parts[str(item_id)] = parts.get(str(item_id), 0.0) + provisional_qty * unit_cost
+            for lot_id, share in _shares(parts, amount).items():
+                code = lot_account(settings, states[lot_id])
+                result.by_account[code] = result.by_account.get(code, 0.0) + share
         result.allocations[str(index)] = {
             "lots": lots, "provisional_qty": provisional_qty, "amount": amount}
         result.total += amount
     return result
+
+
+def _shares(parts: dict[str, float], amount: float) -> dict[str, float]:
+    """``amount`` split in proportion to ``parts``, or all on the first part when no
+    part carries weight."""
+    weight = sum(v for v in parts.values() if v > 0)
+    if weight <= 0:
+        return {next(iter(parts)): amount}
+    return {k: amount * v / weight for k, v in parts.items() if v > 0}
 
 
 def _recognition_metadata(trigger: str, doc_id: str, allocations: dict | None) -> dict:
@@ -372,7 +399,7 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     if tax:
         roles.append(R.TAX_OUTPUT)
     if cogs > 0:
-        roles += [R.COGS, R.INVENTORY_PURCHASED]
+        roles.append(R.COGS)
     acc = await resolve_many(session, company_id, roles)
     entries = [
         _line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=total),
@@ -381,8 +408,8 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     if tax:
         entries.append(_line(acc[R.TAX_OUTPUT], R.TAX_OUTPUT, credit=tax))
     if cogs > 0:
-        entries.append(_line(acc[R.COGS], R.COGS, debit=cogs))
-        entries.append(_line(acc[R.INVENTORY_PURCHASED], R.INVENTORY_PURCHASED, credit=cogs))
+        entries += _cogs_lines(await current_settings(session, company_id), acc[R.COGS],
+                               cogs_result.by_account, await company_currency(session, company_id))
     metadata_ = _recognition_metadata("doc.finalized", doc_id, cogs_result.allocations)
     await _emit_auto_posted_je(
         session,
@@ -1183,25 +1210,64 @@ async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str) -> N
         )
 
 
-async def _cogs_entries(session, company_id, amount: float, *, expense: bool = True) -> list[dict]:
-    """Cost of goods sold against inventory: ``expense`` moves ``amount`` out of stock
-    into COGS, otherwise back from COGS into stock."""
-    acc = await resolve_many(session, company_id, [R.COGS, R.INVENTORY_PURCHASED])
-    out, into = (R.INVENTORY_PURCHASED, R.COGS) if expense else (R.COGS, R.INVENTORY_PURCHASED)
-    return [_line(acc[into], into, debit=float(amount)), _line(acc[out], out, credit=float(amount))]
+def _cogs_lines(settings: dict, cogs_code: str, by_account: dict[str, float], currency: str) -> list[dict]:
+    """Cost of goods sold against the inventory accounts the goods are valued in.
+
+    ``by_account`` is a signed amount per inventory account: positive takes goods off
+    that account into COGS, negative puts them back. Each amount is rounded once and
+    the COGS line is their sum, so the entry balances once rounded."""
+    amounts = {code: round_money(v, currency) for code, v in sorted(by_account.items())}
+    amounts = {code: a for code, a in amounts.items() if a != 0}
+    total = sum(amounts.values(), _Dec(0))
+    lines = []
+    if total != 0:
+        lines.append(_line(cogs_code, R.COGS, debit=to_stored_float(max(total, _Dec(0))),
+                           credit=to_stored_float(max(-total, _Dec(0)))))
+    for code, a in amounts.items():
+        lines.append(_origin_line(settings, code, R.INVENTORY_PURCHASED, debit=to_stored_float(max(-a, _Dec(0))),
+                                  credit=to_stored_float(max(a, _Dec(0)))))
+    return lines
 
 
-async def stock_relief_line(session, company_id, amount: float) -> dict:
-    """The inventory credit that takes ``amount`` of goods off the books."""
-    return _line(await resolve(session, company_id, R.INVENTORY_PURCHASED), R.INVENTORY_PURCHASED, credit=float(amount))
+async def _cogs_entries(session, company_id, by_account: dict[str, float], *, expense: bool = True) -> list[dict]:
+    """Cost of goods sold against the inventory accounts the goods are valued in:
+    ``expense`` moves each account's amount out of stock into COGS, otherwise back
+    from COGS into stock."""
+    cogs_code = await resolve(session, company_id, R.COGS)
+    settings = await current_settings(session, company_id)
+    sign = 1 if expense else -1
+    return _cogs_lines(settings, cogs_code, {code: sign * v for code, v in by_account.items()},
+                       await company_currency(session, company_id))
 
 
-async def create_for_doc_cogs_backfill(session, *, company_id, user_id, doc_id: str, cogs: float, ts: str | None) -> None:
+async def lots_by_account(session, company_id, amounts: dict[str, float]) -> dict[str, float]:
+    """{lot entity id: amount} summed onto the inventory account each lot is valued in."""
+    settings = await current_settings(session, company_id)
+    out: dict[str, float] = {}
+    for lot_id, amount in amounts.items():
+        if not amount:
+            continue
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": lot_id})
+        code = lot_account(settings, (row.state or {}) if row is not None else {})
+        out[code] = out.get(code, 0.0) + amount
+    return out
+
+
+async def stock_relief_lines(session, company_id, by_account: dict[str, float]) -> list[dict]:
+    """The inventory credits that take goods off the books, each on the account the
+    goods are valued in."""
+    settings = await current_settings(session, company_id)
+    return [_origin_line(settings, code, R.INVENTORY_PURCHASED, credit=float(amount))
+            for code, amount in sorted(by_account.items()) if amount]
+
+
+async def create_for_doc_cogs_backfill(session, *, company_id, user_id, doc_id: str, by_account: dict[str, float], ts: str | None) -> None:
     """Post the one-time COGS JE for a finalized invoice that predates
     COGS-at-finalize and never received its COGS at fulfillment.
 
     ts carries the doc's finalize-family JE date so the expense lands in the
-    period that recognized the revenue; a dateless doc stays dateless.
+    period that recognized the revenue; a dateless doc stays dateless. by_account
+    is the cost per inventory account the goods are valued in (CogsResult).
     """
     await _emit_auto_posted_je(
         session,
@@ -1212,7 +1278,7 @@ async def create_for_doc_cogs_backfill(session, *, company_id, user_id, doc_id: 
         idem_posted=je_idempotency_key(doc_id, "invoice.cogs_backfill", "p"),
         memo=f"Auto JE for {doc_id} COGS backfill",
         ts=ts,
-        entries=await _cogs_entries(session, company_id, cogs),
+        entries=await _cogs_entries(session, company_id, by_account),
         metadata_={"trigger": "doc.cogs_backfill", "doc_id": doc_id},
     )
 
@@ -1418,63 +1484,90 @@ async def reconcile_doc_cogs(
     recognized = await recognized_cogs(session, company_id, doc_id)
     if recognized is None:
         return
+    settings = await current_settings(session, company_id)
     doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
     doc_state = (doc.state or {}) if doc is not None else {}
-    shipped: dict[int, float] = {}
+    truth: dict[str, float] = {}
+
+    def _add(by_account: dict[str, float]) -> None:
+        for code, amount in by_account.items():
+            truth[code] = truth.get(code, 0.0) + amount
+
     shipped_qty: dict[int, float] = {}
     for lot in await _lots_out_on_doc(session, company_id, doc_id):
         idx = await doc_line_of_lot(session, company_id, doc_id, doc_state, lot.entity_id, lot.state or {})
         if idx is None:
             raise ValueError("cannot safely identify the invoice line of every shipped lot")
-        shipped[idx] = shipped.get(idx, 0.0) + lot_cost_of_sale(lot.state or {})
+        cost = lot_cost_of_sale(lot.state or {})
+        if cost:
+            _add({lot_account(settings, lot.state or {}): cost})
         shipped_qty[idx] = shipped_qty.get(idx, 0.0) + float((lot.state or {}).get("quantity") or 0)
     repriced = await _recorded_repricings(session, company_id, doc_id, recognized.cycle)
-    truth = sum(shipped.values())
     for idx, alloc in recognized.allocations.items():
         amount = float(alloc.get("amount") or 0)
-        if int(idx) not in shipped:
-            truth += amount + repriced.get(int(idx), 0.0)
+        if int(idx) not in shipped_qty:
+            _add(await _allocation_by_account(session, company_id, settings, alloc,
+                                              amount + repriced.get(int(idx), 0.0)))
             continue
         allocated = sum(float(lot.get("qty") or 0) for lot in alloc.get("lots", [])) + float(
             alloc.get("provisional_qty") or 0)
         unshipped = allocated - shipped_qty[int(idx)]
         if allocated > 0 and unshipped > 1e-9:
-            truth += amount * unshipped / allocated
-    settings = await current_settings(session, company_id)
-    booked = sum(
-        float(e.get("credit") or 0) - float(e.get("debit") or 0)
-        for row in (await _doc_recognition_jes(session, company_id, doc_id)).values()
-        if (row.state or {}).get("status") == "posted"
-        for e in (row.state or {}).get("entries", [])
-        if line_has_role(settings, e, R.INVENTORY_PURCHASED)
-    )
+            _add(await _allocation_by_account(session, company_id, settings, alloc, amount * unshipped / allocated))
+    booked: dict[str, float] = {}
+    for row in (await _doc_recognition_jes(session, company_id, doc_id)).values():
+        if (row.state or {}).get("status") != "posted":
+            continue
+        for e in (row.state or {}).get("entries", []):
+            if line_has_role(settings, e, R.INVENTORY_PURCHASED):
+                booked[e["account"]] = booked.get(e["account"], 0.0) + float(e.get("credit") or 0) - float(
+                    e.get("debit") or 0)
     await create_for_doc_cogs_adjustment(
-        session, company_id=company_id, user_id=user_id, doc_id=doc_id, delta=truth - booked,
+        session, company_id=company_id, user_id=user_id, doc_id=doc_id,
+        delta={code: truth.get(code, 0.0) - booked.get(code, 0.0) for code in truth.keys() | booked.keys()},
         cycle_tag=cycle_tag, doc_number=doc_state.get("doc_number") or doc_state.get("ref_id") or doc_id,
         ts=ts, trigger=trigger, memo=memo, context=context,
     )
 
 
+async def _allocation_by_account(session, company_id, settings: dict, alloc: dict, amount: float) -> dict[str, float]:
+    """``amount`` of a line's finalize allocation, split over the inventory accounts its
+    lots are valued in, by each lot's share of the allocated cost. The quantity no lot
+    covered is priced at the bound lot's cost, so it sits with the first lot."""
+    lots = alloc.get("lots") or []
+    if not amount or not lots:
+        return {}
+    parts: dict[str, float] = {}
+    for position, lot in enumerate(lots):
+        code = lot.get("account")
+        if not code:
+            row = await session.get(Projection, {"company_id": company_id, "entity_id": lot["lot_entity_id"]})
+            code = lot_account(settings, (row.state or {}) if row is not None else {})
+        qty = float(lot.get("qty") or 0) + (float(alloc.get("provisional_qty") or 0) if position == 0 else 0.0)
+        parts[code] = parts.get(code, 0.0) + qty * float(lot.get("unit_cost") or 0)
+    return _shares(parts, amount)
+
+
 async def create_for_doc_cogs_adjustment(
-    session, *, company_id, user_id, doc_id: str, delta: float, cycle_tag: str, doc_number: str,
+    session, *, company_id, user_id, doc_id: str, delta: dict[str, float], cycle_tag: str, doc_number: str,
     ts: str | None = None, trigger: str = "doc.fulfilled", memo: str | None = None,
     context: dict | None = None,
 ) -> None:
     """Post one COGS true-up JE for a document (see reconcile_doc_cogs).
 
-    A positive delta debits COGS and relieves inventory; a negative one reverses
-    that. The delta is rounded once to the company currency and nothing posts when
-    it rounds to zero. cycle_tag scopes the JE id and its idempotency keys to the
+    delta is per inventory account: a positive amount debits COGS and relieves that
+    account; a negative one reverses that. Each amount is rounded once to the
+    company currency and nothing posts when they all round to zero. cycle_tag scopes the JE id and its idempotency keys to the
     event that triggered it (fulfill-0:l0-1, reverse-1:l2, restate-<id>), so
     replaying that event is a no-op while each distinct event trues up on its
     own JE.
     """
     currency = await company_currency(session, company_id)
-    rounded = round_money(delta, currency)  # one amount, used on both sides
-    amount = to_stored_float(abs(rounded))
-    if amount <= 0:
+    rounded = {code: round_money(v, currency) for code, v in delta.items()}
+    rounded = {code: v for code, v in rounded.items() if v != 0}
+    if not rounded:
         return
-    entries = await _cogs_entries(session, company_id, amount, expense=rounded > 0)
+    entries = await _cogs_entries(session, company_id, {code: to_stored_float(v) for code, v in rounded.items()})
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -1486,7 +1579,8 @@ async def create_for_doc_cogs_adjustment(
         ts=ts,
         entries=entries,
         metadata_={
-            "trigger": trigger, "doc_id": doc_id, "cogs_delta": to_stored_float(rounded), **(context or {}),
+            "trigger": trigger, "doc_id": doc_id, "cogs_delta": to_stored_float(sum(rounded.values(), _Dec(0))),
+            **(context or {}),
         },
     )
 
@@ -1574,13 +1668,14 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str) 
         )
 
 
-async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, total_cogs: float, cycle: int = 0, ts: str | None = None) -> None:
+async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, lot_costs: dict[str, float], cycle: int = 0, ts: str | None = None) -> None:
     """Create COGS JE when a doc is fulfilled: Debit COGS / Credit Inventory.
 
-    cycle must be incremented each time a doc is re-fulfilled (e.g. use doc revert_count so that
+    lot_costs is the cost each shipped lot takes off the books, relieved on the
+    inventory account that lot is valued in. cycle must be incremented each time a doc is re-fulfilled (e.g. use doc revert_count so that
     fulfill → revert → re-fulfill produces distinct JE idempotency keys and entity IDs).
     """
-    if total_cogs <= 0:
+    if sum(lot_costs.values()) <= 0:
         return
     cycle_tag = f"fulfill-{cycle}" if cycle else "fulfill"
     # Use cycle-scoped deterministic idempotency keys so retries are safe (same key → no-op)
@@ -1595,7 +1690,7 @@ async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str,
         idem_posted=f"je:auto:{doc_id}:{cycle_tag}:posted",
         memo=f"Auto JE for {doc_id} fulfilled (COGS)",
         ts=ts,
-        entries=await _cogs_entries(session, company_id, total_cogs),
+        entries=await _cogs_entries(session, company_id, await lots_by_account(session, company_id, lot_costs)),
         metadata_={"trigger": "doc.fulfilled", "doc_id": doc_id},
     )
 
@@ -1624,12 +1719,14 @@ async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, c
         )
 
 
-async def create_for_return_received(session, *, company_id, user_id, cn_id: str, total_cogs: float, je_suffix: str) -> None:
+async def create_for_return_received(session, *, company_id, user_id, cn_id: str, lot_costs: dict[str, float], je_suffix: str) -> None:
     """Reversing COGS JE when goods are returned via credit note: Debit Inventory / Credit COGS.
+
+    lot_costs is each returned lot's cost, put back on the inventory account that lot is valued in.
 
     je_suffix names the receive-return call, so each return received on the credit note has its own entry.
     """
-    if total_cogs <= 0:
+    if sum(lot_costs.values()) <= 0:
         return
     await _emit_auto_posted_je(
         session,
@@ -1640,17 +1737,20 @@ async def create_for_return_received(session, *, company_id, user_id, cn_id: str
         idem_posted=je_idempotency_key(cn_id, f"return:{je_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return received (COGS reversal)",
         ts=__import__("datetime").date.today().isoformat(),
-        entries=await _cogs_entries(session, company_id, total_cogs, expense=False),
+        entries=await _cogs_entries(session, company_id, await lots_by_account(session, company_id, lot_costs),
+                                    expense=False),
         metadata_={"trigger": "doc.return_received", "cn_id": cn_id},
     )
 
 
-async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, total_cogs: float, unique_suffix: str) -> None:
+async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, lot_costs: dict[str, float], unique_suffix: str) -> None:
     """Reverse the COGS reversal JE when a receive-return is undone: Debit COGS / Credit Inventory.
+
+    lot_costs is each returned lot's cost, taken off the inventory account that lot is valued in.
 
     unique_suffix must be unique per call (e.g. a UUID) so repeated undo attempts each get their own JE.
     """
-    if total_cogs <= 0:
+    if sum(lot_costs.values()) <= 0:
         return
     await _emit_auto_posted_je(
         session,
@@ -1661,7 +1761,7 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
         idem_posted=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return undone (COGS re-reversal)",
         ts=__import__("datetime").date.today().isoformat(),
-        entries=await _cogs_entries(session, company_id, total_cogs),
+        entries=await _cogs_entries(session, company_id, await lots_by_account(session, company_id, lot_costs)),
         metadata_={"trigger": "doc.return_undone", "cn_id": cn_id},
     )
 

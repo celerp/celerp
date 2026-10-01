@@ -434,7 +434,9 @@ async def test_events_engine_pg_notify_exception_swallowed():
 
     mock_session.add = capture_add
 
-    with patch.object(ProjectionEngine, "apply_event", new_callable=AsyncMock) as mock_apply:
+    # The mocked session cannot read company settings, so the new lot books into no account.
+    with patch.object(ProjectionEngine, "apply_event", new_callable=AsyncMock) as mock_apply, \
+            patch("celerp.services.account_roles.new_lot_account", AsyncMock(return_value=None)):
         result = await emit_event(
             mock_session,
             company_id="c1",

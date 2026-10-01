@@ -30,6 +30,8 @@ from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCL
 from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD
+from celerp.services.account_roles import current_settings, lot_account
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.pick import doc_bound_lots
@@ -7538,7 +7540,9 @@ async def receive_return(
     # --- Create returned inventory items ---
     now = datetime.now(timezone.utc).isoformat()
     total_cogs = 0.0
+    lot_costs: dict[str, float] = {}
     received_items = []
+    settings = await current_settings(session, company_id)
 
     _CORE_KEYS = frozenset({
         "id", "entity_id", "status", "quantity", "created_at", "updated_at",
@@ -7597,6 +7601,9 @@ async def receive_return(
             # the barcode is freshly minted above.
             "gtin": ref.get("gtin") or li_fallback.get("gtin") or None,
             "description": ref.get("description") or li_fallback.get("description") or "",
+            # Returned goods go back onto the account the sold lot was valued in.
+            **({LOT_ACCOUNT_FIELD: lot_account(settings, ref)}
+               if ref and float(ref.get("cost_price") or 0) * it.quantity > 0 else {}),
             "category": ref.get("category") or li_fallback.get("category") or "",
             "attributes": ref.get("attributes") or li_fallback.get("attributes") or {},
             **extra_prices,
@@ -7621,6 +7628,7 @@ async def receive_return(
         )
         cost_price = item_data["cost_price"]
         total_cogs += cost_price * it.quantity
+        lot_costs[item_id] = cost_price * it.quantity
         received_items.append({
             "item_id": item_id,
             "sku": it.sku,
@@ -7655,7 +7663,7 @@ async def receive_return(
         company_id=company_id,
         user_id=user.id,
         cn_id=entity_id,
-        total_cogs=total_cogs,
+        lot_costs=lot_costs,
         je_suffix=key,
     )
 
@@ -7686,10 +7694,11 @@ async def undo_receive_return(
 
     now = datetime.now(timezone.utc).isoformat()
     item_ids = [r["item_id"] for r in received_items if r.get("item_id")]
-    total_cogs = sum(
-        float(r.get("cost_total") or 0) or (float(r.get("cost_price") or 0) * float(r.get("quantity") or 0))
-        for r in received_items
-    )
+    lot_costs = {
+        r["item_id"]: float(r.get("cost_total") or 0) or (float(r.get("cost_price") or 0) * float(r.get("quantity") or 0))
+        for r in received_items if r.get("item_id")
+    }
+    total_cogs = sum(lot_costs.values())
 
     # Pre-flight: verify every returned item is still "available" before archiving.
     # If an item was re-sold or already archived, we cannot silently remove it.
@@ -7755,7 +7764,7 @@ async def undo_receive_return(
             company_id=company_id,
             user_id=user.id,
             cn_id=entity_id,
-            total_cogs=total_cogs,
+            lot_costs=lot_costs,
             unique_suffix=undo_suffix,
         )
 
@@ -8859,13 +8868,18 @@ async def write_off_stock(
     # Each line's value is money in the company currency; the account debits and the Inventory
     # credit are sums of those rounded values, so the entry balances.
     currency = await auto_je.company_currency(session, company_id)
+    settings = await current_settings(session, company_id)
+    origins = {item.entity_id: lot_account(settings, item.state or {}) for _l, item, _q in prepared}
     debits: dict[str, Decimal] = {}
+    credits: dict[str, Decimal] = {}
     written_off = 0
     remaining: dict[str, float] = dict(live_by_item)
     for l, item, qty_out in prepared:
         account = l.get("account")
         unit_cost = unit_cost_by_item[item.entity_id]
         value = round_money(unit_cost * qty_out, currency)
+        origin = origins[item.entity_id]
+        credits[origin] = credits.get(origin, Decimal(0)) + value
         sku = item.state.get("sku") or ""  # read before any rollback expires the ORM row
         rem = remaining[item.entity_id]
         try:
@@ -8904,7 +8918,8 @@ async def write_off_stock(
     total_value = to_stored_float(sum(debits.values(), Decimal(0)))
     entries = [{"account": acct, "debit": to_stored_float(val), "credit": 0.0} for acct, val in debits.items()]
     if entries:
-        entries.append(await auto_je.stock_relief_line(session, company_id, total_value))
+        entries += await auto_je.stock_relief_lines(
+            session, company_id, {code: to_stored_float(v) for code, v in credits.items()})
     await auto_je.create_for_line_adjustment(
         session, company_id=company_id, user_id=user.id, list_id=entity_id,
         kind="writeoff", entries=entries, cycle=cycle,

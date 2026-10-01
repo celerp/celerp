@@ -233,6 +233,36 @@ def _touches_physical_codes(state: dict, event_type: str, data: dict) -> bool:
     return str(probe.get("status") or "").lower() not in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 
 
+async def _record_lot_account(session, kwargs: dict, previous_state: dict | None) -> None:
+    """A new lot records the inventory account its value is booked into, unless its
+    writer names one (a part of a lot keeps the lot's). No later event may change it:
+    the lot's value stays on that account for as long as the lot holds stock."""
+    from celerp.accounting_roles import LOT_ACCOUNT_FIELD
+    from celerp.services.account_roles import new_lot_account
+
+    data = kwargs["data"]
+    if kwargs["event_type"] in {"item.created", "item.snapshot"} and previous_state is None:
+        if LOT_ACCOUNT_FIELD not in data:
+            code = await new_lot_account(session, kwargs["company_id"])
+            if code:
+                data[LOT_ACCOUNT_FIELD] = code
+        return
+    current = (previous_state or {}).get(LOT_ACCOUNT_FIELD)
+    changed = data.get("fields_changed")
+    if LOT_ACCOUNT_FIELD in data:
+        written = data[LOT_ACCOUNT_FIELD]
+    elif isinstance(changed, dict) and LOT_ACCOUNT_FIELD in changed:
+        change = changed[LOT_ACCOUNT_FIELD]
+        written = change.get("new") if isinstance(change, dict) else change
+    else:
+        return
+    if written != current:
+        raise HTTPException(
+            status_code=422,
+            detail="An item's inventory account is recorded when its stock is booked and cannot be changed.",
+        )
+
+
 async def emit_event(
     session, *, preserve_external_code_conflicts: bool = False, **kwargs
 ) -> LedgerEntry:
@@ -345,6 +375,9 @@ async def emit_event(
             await assert_new_physical_codes_available(
                 session, kwargs["company_id"], kwargs["entity_id"], previous_item_state, after
             )
+
+    if kwargs.get("entity_type") == "item":
+        await _record_lot_account(session, kwargs, previous_item_state)
 
     entry = LedgerEntry(**kwargs)
 

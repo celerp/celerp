@@ -3189,7 +3189,7 @@ async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup
         select(func.count()).select_from(LedgerEntry)
         .where(LedgerEntry.company_id == cid, LedgerEntry.entity_id == adj_id))).scalar()
     await auto_je_service.create_for_doc_cogs_adjustment(
-        session, company_id=cid, user_id=None, doc_id=doc1, delta=60.0,
+        session, company_id=cid, user_id=None, doc_id=doc1, delta={"1130-P": 60.0},
         cycle_tag="fulfill-0:l0", doc_number="RETRY", ts="2026-01-01")
     await session.commit()
     rows_after = (await session.execute(
@@ -3276,7 +3276,7 @@ async def test_fulfill_true_up_per_batch_posts_separate_adjustments(client, sess
         select(func.count()).select_from(LedgerEntry)
         .where(LedgerEntry.company_id == cid, LedgerEntry.entity_id == adj_l1_id))).scalar()
     await auto_je_service.create_for_doc_cogs_adjustment(
-        session, company_id=cid, user_id=None, doc_id=doc1, delta=42.0,
+        session, company_id=cid, user_id=None, doc_id=doc1, delta={"1130-P": 42.0},
         cycle_tag="fulfill-0:l1", doc_number="RETRY", ts="2026-01-01")
     await session.commit()
     rows_after = (await session.execute(

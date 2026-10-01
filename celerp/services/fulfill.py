@@ -249,10 +249,13 @@ async def execute_fulfill(
     # COGS journal entry: skip for inbound docs and memos.
     # Memo COGS is recognized when the memo converts to an invoice.
     je_cogs = 0.0 if doc_type in _NO_COGS_DOC_TYPES else total_cogs
+    lot_costs: dict[str, float] = {}
+    for p in pick_result.picks:
+        lot_costs[p.item_id] = lot_costs.get(p.item_id, 0.0) + p.pick_qty * p.cost_price
     if je_cogs > 0:
         await auto_je.create_for_doc_fulfilled(
             session, company_id=cid, user_id=uid,
-            doc_id=doc_entity_id, total_cogs=je_cogs,
+            doc_id=doc_entity_id, lot_costs=lot_costs,
             ts=fulfillment_date,
         )
 

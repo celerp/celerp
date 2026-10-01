@@ -3,6 +3,7 @@
 
 from copy import deepcopy
 
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD
 from celerp.services.money import round_basis
 
 # Maps old weight_unit abbreviations to new unit names
@@ -49,6 +50,8 @@ CORE_ITEM_KEYS: frozenset[str] = frozenset({
     # flags / classification
     "allow_splitting", "inventory_type", "pick_method", "consignment_flag", "item_type",
     "is_expired", "expires_at", "landed_cost_kind", "recoverable",
+    # the inventory account the lot's value sits in (celerp.accounting_roles)
+    LOT_ACCOUNT_FIELD,
     # purchase side
     "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor",
     # free-text core fields
