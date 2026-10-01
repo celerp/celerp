@@ -113,10 +113,14 @@ MAX_MANIFEST_BYTES = 64 * 1024 ** 2
 # documents with thousands of lines and company settings, a few megabytes at most.
 MAX_ROW_BYTES = 8 * 1024 ** 2
 # One row's values (objects, arrays, keys and scalars). Parsed JSON takes about a hundred
-# bytes per value whatever its text (a row of empty objects is fifty times its text), so
-# this, not the byte limit, bounds a row's memory: about 25 MB. A document line is about
-# a dozen values, so a row holds a document of some 20,000 lines.
+# bytes per value (a row of empty objects is fifty times its text), and a string written
+# with escapes about twenty times its text, so with the byte limit a row's memory stays
+# under about 200 MB. A document line is about a dozen values, so a row holds a document
+# of some 20,000 lines.
 MAX_ROW_NODES = 250_000
+# How deeply one row's values nest. Real rows nest a handful of levels, and a restore
+# walks each row recursively.
+MAX_ROW_DEPTH = 100
 # Rows are read and written in batches that end at BATCH_ROWS rows or BATCH_BYTES of
 # JSON, whichever comes first, so wide rows cannot make one batch large.
 BATCH_ROWS = 1000
@@ -151,6 +155,7 @@ _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 _TABLE_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 _RAW_NUL = re.compile(rb"(?<!\\)(?:\\\\)*\\u0000")
 _JSON_STRING = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"')
+_BRACKET = re.compile(rb"[\[\]{}]")
 _NUMBER = re.compile(r'"\\u0000([^"\\]*)\\u0000"')
 _KEY_TYPES = frozenset({"uuid", "text", "varchar"})
 _CHUNK = 1024 * 1024
@@ -396,18 +401,26 @@ def _refuse_constant(name: str):
     raise ValueError(name)
 
 
-def _row_nodes(line: bytes) -> int:
-    """At most how many values a row of JSON parses to: every value past the first
-    follows a comma, colon or opening bracket outside a string."""
+def _row_too_large(line: bytes) -> bool:
+    """Whether a row of JSON would parse to more than MAX_ROW_NODES values or nest deeper
+    than MAX_ROW_DEPTH. Every value past the first follows a comma, colon or opening
+    bracket outside a string."""
     bare = _JSON_STRING.sub(b"", line)
-    return 1 + sum(bare.count(c) for c in (b",", b":", b"[", b"{"))
+    if 1 + sum(bare.count(c) for c in (b",", b":", b"[", b"{")) > MAX_ROW_NODES:
+        return True
+    depth = 0
+    for bracket in _BRACKET.findall(bare):
+        depth += 1 if bracket in b"[{" else -1
+        if depth > MAX_ROW_DEPTH:
+            return True
+    return False
 
 
 def _parse_row(line: bytes | str):
     """One row, with every non-integer number kept as its exact text so it is written
-    back digit for digit. A row that would parse to more than MAX_ROW_NODES values is
-    refused before it is parsed."""
-    if _row_nodes(line.encode() if isinstance(line, str) else line) > MAX_ROW_NODES:
+    back digit for digit. A row too large to parse (_row_too_large) is refused before it
+    is parsed."""
+    if _row_too_large(line.encode() if isinstance(line, str) else line):
         raise BackupError(422, TOO_LARGE)
     return json.loads(line, parse_float=lambda s: "\x00" + s + "\x00", parse_constant=_refuse_constant)
 
@@ -584,10 +597,10 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
                 with zf.open(f"tables/{name}.jsonl", "w", force_zip64=True) as fh:
                     async for batch in _batches(session, table, company_id, expr):
                         for line in batch:
-                            _collect_urls(json.loads(line), company_id, found, types)
                             body = line.encode()
-                            if len(body) > MAX_ROW_BYTES or _row_nodes(body) > MAX_ROW_NODES:
+                            if len(body) > MAX_ROW_BYTES or _row_too_large(body):
                                 raise BackupError(409, ROW_TOO_LARGE_TO_BACK_UP.format(table=name))
+                            _collect_urls(json.loads(line), company_id, found, types)
                             body += b"\n"
                             digest.update(body)
                             fh.write(body)
@@ -1174,7 +1187,7 @@ async def _source_grants(session: AsyncSession, source: str):
 def _row_batches(lines, limit: int):
     """Parsed rows in batches of up to ``limit`` rows and BATCH_BYTES of JSON. The budget
     is checked before a row is parsed, so a batch never holds more than BATCH_BYTES of
-    rows (or one row, which MAX_ROW_NODES bounds)."""
+    rows (or one row, which MAX_ROW_NODES and MAX_ROW_DEPTH bound)."""
     rows, size = [], 0
     for line in lines:
         if rows and (len(rows) >= limit or size + len(line) > BATCH_BYTES):

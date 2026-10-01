@@ -1075,6 +1075,18 @@ def test_restore_memory_bounded_for_rows_of_empty_containers(tmp_path):
     assert peak < 32 * 1024 ** 2, peak
 
 
+def test_deeply_nested_row_is_refused_before_it_is_parsed():
+    """A row nested deeper than MAX_ROW_DEPTH is refused as too large instead of failing
+    while it is walked; brackets inside strings do not count."""
+    cb = _bk_cb()
+    deep = b'{"id":1,"state":' + b"[" * 5000 + b"]" * 5000 + b"}"
+    with pytest.raises(cb.BackupError) as err:
+        cb._parse_row(deep)
+    assert err.value.detail == cb.TOO_LARGE
+    text = b'{"id":1,"state":"' + b"[" * 5000 + b'"}'
+    assert cb._parse_row(text)["state"] == "[" * 5000
+
+
 async def test_company_with_a_large_document_backs_up_and_restores(real_engine, real_client, tmp_path, monkeypatch):
     """An ordinary invoice of 5,500 lines (over 1 MB as a row) is backed up and restored whole."""
     _bk_local(monkeypatch, tmp_path)
@@ -1376,12 +1388,14 @@ async def test_record_too_large_to_restore_is_not_backed_up(real_engine, real_cl
     assert r.json()["detail"].startswith("One record in ")
 
 
-async def test_record_with_too_many_values_is_not_backed_up(real_engine, real_client, tmp_path, monkeypatch):
-    """Export applies the restore's parsed-size limit too, and the refusal names the table."""
+@pytest.mark.parametrize("limit", [("MAX_ROW_NODES", 3), ("MAX_ROW_DEPTH", 1)])
+async def test_record_too_large_to_parse_is_not_backed_up(real_engine, real_client, tmp_path, monkeypatch, limit):
+    """Export applies the restore's parsed-size limits too (values and nesting), and the
+    refusal names the table."""
     cb = _bk_cb()
     _bk_local(monkeypatch, tmp_path)
     _, _, tok = await _bk_setup(real_engine)
-    monkeypatch.setattr(cb, "MAX_ROW_NODES", 3)
+    monkeypatch.setattr(cb, *limit)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
     assert r.json()["detail"].startswith("One record in ")
