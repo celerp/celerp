@@ -28,14 +28,14 @@ from celerp_accounting.import_service import AccImportRecord
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.company_lock import lock_company, locked_company
+from celerp.services.company_lock import locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
 from celerp.services.line_measures import line_label
 from celerp.services.money import (
     checked_exchange_rate, currency_dp, round_money, to_base, to_decimal, to_stored_float,
 )
-from celerp.services.permissions import require_permission
+from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -607,14 +607,16 @@ async def import_chart_accounts(
     request: Request,
     body: ChartImportRequest,
     company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_accounting"),
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> ChartImportResult:
     """Add accounts from a chart file. Existing codes are kept exactly as they are
     and listed, so running the same file again adds nothing."""
-    # Hold the company lock so two imports of one file cannot both see a code as new.
-    await lock_company(session, company_id)
+    # Hold the company lock so two imports of one file cannot both see a code as new,
+    # and judge the caller's authority as it stands once nothing can change it.
+    await locked_authority(session, company_id, user.id, ("manage_accounting", "import_export_data"))
     plan = await _planned_chart_import(request, body, company_id, session)
     for row in plan.to_create:
         session.add(Account(id=uuid.uuid4(), company_id=company_id, **row))
