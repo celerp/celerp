@@ -53,6 +53,7 @@ RECEIVABLE_CODE = "1120"
 PAYABLE_CODE = "2110"
 
 _CHART = {row["code"]: row for row in THAI_CHART_OF_ACCOUNTS}
+_TYPE_ROOTS = {"asset": 1000, "liability": 2000, "equity": 3000, "revenue": 4000, "cogs": 5000, "expense": 6000}
 
 # Source control accounts land on the Celerp control account with the same meaning:
 # inventory on the postable goods account every inventory posting uses, under its
@@ -209,7 +210,7 @@ async def _write_account(
         await _ensure_chart_account(session, company_id, control_code, existing)
         return control_code
 
-    code = _free_code(account.code or f"M{deterministic_id(context, ACCOUNT, account.source_external_id).hex[:8]}", taken)
+    code = _free_code(account.code, taken) if account.code else _next_code(account.account_type.value, taken)
     existing[code] = await import_service.create_chart_account(
         session, company_id, code=code, name=account.name, account_type=account.account_type.value,
         parent_code=parent_code, is_active=account.is_active,
@@ -234,6 +235,17 @@ def _control_code(account: CIFAccount) -> str | None:
     if account.control == AccountControl.TAX:
         return _INPUT_TAX_CODE if account.account_type.value == "asset" else _OUTPUT_TAX_CODE
     return _CONTROL_CODES.get(account.control) if account.control else None
+
+
+def _next_code(account_type: str, taken: set[str]) -> str:
+    """For an account the source gave no code: the first free number in its type's range of the
+    chart, in the chart's own steps of ten where one is free."""
+    root = _TYPE_ROOTS[account_type]
+    for step in (10, 1):
+        for n in range(root + step, root + 1000, step):
+            if str(n) not in taken:
+                return str(n)
+    raise ValueError("no account number is free for this account type")
 
 
 def _free_code(code: str, taken: set[str]) -> str:

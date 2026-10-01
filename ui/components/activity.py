@@ -771,6 +771,12 @@ def format_timestamp(ts: str) -> str:
     return clean[:16].strip()
 
 
+def _is_vendor_doc(entry: dict) -> bool:
+    """True when the entry's document is one the company pays (a bill, PO, ...)."""
+    from celerp_docs.doc_constants import VENDOR_DOC_TYPES
+    return str(entry.get("entity_doc_type") or "") in VENDOR_DOC_TYPES
+
+
 def _event_display(entry: dict) -> tuple[str, str]:
     """Return (display_text, url) for the Event column.
 
@@ -779,6 +785,8 @@ def _event_display(entry: dict) -> tuple[str, str]:
     """
     event_type = str(entry.get("event_type") or "")
     label = event_label(event_type)
+    if event_type == "doc.payment.received" and _is_vendor_doc(entry):
+        label = t("event.doc.payment.made")
     entity_id = str(entry.get("entity_id") or "")
     entity_name = str(entry.get("entity_name") or entry.get("name") or "")
     url = entity_url(entity_id)

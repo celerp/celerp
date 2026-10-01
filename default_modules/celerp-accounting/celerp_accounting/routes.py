@@ -939,6 +939,14 @@ def _id_chunks(ids: list[str], size: int = 10_000):
         yield ids[i:i + size]
 
 
+def _je_memo(memo: str, ref: dict | None) -> str:
+    """A journal memo as people read it: a system memo names its document by Celerp's
+    internal id, which is shown as the document's number. The stored memo is unchanged."""
+    for entity_id, number in ((ref or {}).get("numbers") or {}).items():
+        memo = memo.replace(entity_id, number)
+    return memo
+
+
 async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: list[str]) -> dict[str, dict]:
     """Source-doc display info per journal entry: {je_id: {"doc_id", "doc_ref", "fx"}}.
 
@@ -1029,9 +1037,18 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         contact_id = (party_state.get("contact_id") or party_state.get("customer_id")
                       or party_state.get("supplier_id"))
         doc_type = party_state.get("doc_type") or party_state.get("type") or ""
+        numbers = {
+            entity_id: number
+            for entity_id, number in (
+                (doc_id, state.get("ref_id") or state.get("doc_number")),
+                (meta.get("cn_id"), party_state.get("ref_id") or party_state.get("doc_number")),
+            )
+            if entity_id and number
+        }
         refs[je_id] = {
             "doc_id": doc_id,
             "doc_ref": state.get("ref_id") or state.get("doc_number") or doc_id,
+            "numbers": numbers,
             "fx": fx,
             "contact_id": contact_id,
             "doc_type": canonical_doc_type(doc_type),
@@ -1191,7 +1208,7 @@ async def _journal_payload(
         out = {
             "je_id": je_id,
             "ts": ts,
-            "memo": state.get("memo", ""),
+            "memo": _je_memo(state.get("memo", ""), ref),
             "status": state.get("status"),
             "je_type": state.get("je_type"),
             "void_reason": state.get("void_reason"),
@@ -1842,7 +1859,7 @@ async def account_ledger(
             lines.append({
                 "date": ts,
                 "je_id": je_id,
-                "memo": state.get("memo", ""),
+                "memo": _je_memo(state.get("memo", ""), ref),
                 "doc_id": ref.get("doc_id"),
                 "doc_ref": ref.get("doc_ref"),
                 "contact_id": line_contact,
@@ -2016,6 +2033,7 @@ async def general_ledger(
             for line in rows_for_code:
                 ref = detail_refs.get(line["je_id"]) or {}
                 line["source_ref"] = ref.get("doc_ref")
+                line["memo"] = _je_memo(line["memo"], ref)
 
     base = await _base_currency(session, company_id)
     rows_out = []
@@ -2807,6 +2825,9 @@ async def _je_entries_for_account(
                     "credit": float(amounts[1]),
                     "amount": float(amounts[0] - amounts[1]),
                 })
+    refs = await _je_doc_refs(session, company_id, sorted({r["je_id"] for r in result}))
+    for r in result:
+        r["memo"] = _je_memo(r["memo"], refs.get(r["je_id"]))
     result.sort(key=lambda x: x["ts"])
     return result
 

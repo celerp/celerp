@@ -21,6 +21,7 @@ in request bodies to the API, never in a URL.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from fasthtml.common import *
@@ -30,7 +31,8 @@ from starlette.responses import HTMLResponse, RedirectResponse, StreamingRespons
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import auth_shell, client_scripts, flash, page_title
-from ui.components.table import searchable_select
+from ui.components.activity import fmt_qty
+from ui.components.table import EMPTY, display_enum, fmt_money, searchable_select
 from ui.config import (
     clear_session_cookies,
     cookie_domain,
@@ -65,6 +67,7 @@ _COVERAGE_BADGE = {
 _PHASE_BADGE = {"done": "badge--active", "running": "badge--open", "failed": "badge--danger"}
 _RESULT_BADGE = {"pass": "badge--active", "rounding": "badge--warning", "fail": "badge--danger"}
 _TOTAL_CHECKS = ("debits_equal_credits", "ar_control", "ap_control")
+_UNIT_CHECKS = frozenset({"document_count", "document_status", "inventory_quantity"})
 
 
 @dataclass(frozen=True)
@@ -1000,10 +1003,43 @@ def bind(handler, mode: WizardMode, prefix: str):
 # Verify, complete, discard
 # ---------------------------------------------------------------------------
 
+def _check_subject(row: dict) -> str:
+    """What a check is about, by the source's own name or a translated term. A record key
+    without a name is never shown: it is an identifier, kept for the technical pack."""
+    check, key = row.get("check", ""), row.get("key") or ""
+    if row.get("label"):
+        return row["label"]
+    if check == "document_status":
+        doc_type, _, status = key.partition(":")
+        return f"{display_enum(doc_type, 'doc_type')}, {display_enum(status, 'doc_status')}"
+    if check == "settlement_allocation":
+        return display_enum(key, "settlement_kind")
+    if check in ("document_count", "document_total") and key:
+        doc_type = display_enum(key, "doc_type")
+        return f"{doc_type} ({row['currency']})" if check == "document_count" and row.get("currency") else doc_type
+    return ""
+
+
 def _check_label(row: dict) -> str:
     label = t(f"migration.check.{row.get('check', '')}")
-    extra = " ".join(x for x in (row.get("key") or "", row.get("currency") or "") if x)
-    return f"{label} {extra}".strip()
+    subject = _check_subject(row)
+    return f"{label}: {subject}" if subject else label
+
+
+def _figure(row: dict, field: str) -> str:
+    """One figure of a check: money at its currency's precision, counts and quantities as
+    plain numbers, and a credit-side balance shown as the amount it is."""
+    try:
+        value = Decimal(str(row.get(field)))
+    except (InvalidOperation, ValueError):
+        return EMPTY
+    if not value.is_finite():
+        return EMPTY
+    if row.get("credit_normal"):
+        value = -value + 0
+    if row.get("check") in _UNIT_CHECKS:
+        return fmt_qty(value)
+    return fmt_money(value, row.get("currency"))
 
 
 async def _verify_page(request: Request, run_id: str, error: str | None = None):
@@ -1031,9 +1067,9 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None):
             Tbody(*[
                 Tr(
                     Td(_check_label(row)),
-                    Td(str(row.get("source") or "--"), cls="cell--number"),
-                    Td(str(row.get("celerp") or "--"), cls="cell--number"),
-                    Td(str(row.get("difference") or "--"), cls="cell--number"),
+                    Td(_figure(row, "source"), cls="cell--number"),
+                    Td(_figure(row, "celerp"), cls="cell--number"),
+                    Td(_figure(row, "difference"), cls="cell--number"),
                     Td(_badge(t(f"migration.result.{row.get('result', 'n-a').replace('-', '_')}"),
                               _RESULT_BADGE.get(row.get("result"), "badge--inactive"))),
                 )
@@ -1073,7 +1109,7 @@ async def _complete_page(request: Request, run: dict):
         auth_header(t("migration.success_title"), run.get("company_name", "")),
         Table(
             Thead(Tr(Th(t("migration.col_check")), Th(t("migration.col_celerp"), cls="cell--number"))),
-            Tbody(*[Tr(Td(_check_label(row)), Td(str(row.get("celerp") or "--"), cls="cell--number"))
+            Tbody(*[Tr(Td(_check_label(row)), Td(_figure(row, "celerp"), cls="cell--number"))
                     for row in totals]),
             cls="data-table",
         ) if totals else "",

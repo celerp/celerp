@@ -11,6 +11,7 @@ from celerp.db import get_lifecycle_session_ctx, get_session
 from celerp.models.ledger import LedgerEntry
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.activity_redaction import redact_entries_for_role, redact_event_costs
+from celerp.services.ledger_display import display_fields, entry_ts
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import get_current_company_settings, require_permission
 
@@ -45,29 +46,7 @@ async def list_entries(
     total = (await session.execute(count_q)).scalar() or 0
     rows = (await session.execute(q.offset(offset).limit(limit))).scalars().all()
 
-    # Optionally resolve entity names and actor names
-    name_map: dict[str, str] = {}
-    actor_map: dict[str, str] = {}
-    if resolve and rows:
-        eids = list({r.entity_id for r in rows})
-        from celerp.models.projections import Projection
-        proj_rows = (await session.execute(
-            select(Projection.entity_id, Projection.state).where(
-                Projection.company_id == company_id, Projection.entity_id.in_(eids),
-            )
-        )).all()
-        for eid, state in proj_rows:
-            name_map[eid] = (
-                state.get("name") or state.get("sku") or state.get("doc_number") or state.get("title") or ""
-            )
-        actor_ids = list({r.actor_id for r in rows if r.actor_id})
-        if actor_ids:
-            from celerp.models.company import User
-            user_rows = (await session.execute(
-                select(User.id, User.name).where(User.id.in_(actor_ids))
-            )).all()
-            actor_map = {str(uid): uname for uid, uname in user_rows}
-
+    shown = await display_fields(rows, company_id, session) if resolve and rows else [{} for _ in rows]
     items = [
         {
             "id": r.id,
@@ -76,25 +55,17 @@ async def list_entries(
             "event_type": r.event_type,
             "data": r.data,
             "metadata": r.metadata_ or {},
-            "ts": r.ts.isoformat() if hasattr(r.ts, "isoformat") else str(r.ts),
-            **({"entity_name": name_map.get(r.entity_id, "")} if resolve else {}),
-            **(_actor(r, actor_map) if resolve else {}),
+            "ts": entry_ts(r, settings),
+            **({
+                "entity_name": f["name"],
+                "entity_doc_type": f["doc_type"],
+                **{k: v for k, v in f.items() if k.startswith("actor_")},
+            } if resolve else {}),
         }
-        for r in rows
+        for r, f in zip(rows, shown)
     ]
     # Fail-closed cost redaction: never ship cost amounts to under-manager roles.
     return {"items": redact_entries_for_role(items, settings, role), "total": total}
-
-
-def _actor(entry, actor_map: dict[str, str]) -> dict:
-    """Who made a change: the user it links to, or else the name a company backup carried
-    for it, marked as historical because it is not a user of this installation."""
-    if entry.actor_id and str(entry.actor_id) in actor_map:
-        return {"actor_name": actor_map[str(entry.actor_id)]}
-    carried = ((entry.metadata_ or {}).get("backup_actor") or {}) if isinstance(entry.metadata_, dict) else {}
-    if not entry.actor_id and isinstance(carried, dict) and carried.get("name"):
-        return {"actor_name": str(carried["name"]), "actor_historical": True}
-    return {"actor_name": str(entry.actor_id) if entry.actor_id else ""}
 
 
 @router.get("/{entry_id}")
@@ -111,7 +82,7 @@ async def get_entry(entry_id: int, company_id: str = Depends(get_current_company
         "event_type": entry.event_type,
         "data": data,
         "metadata": entry.metadata_ or {},
-        "ts": str(entry.ts),
+        "ts": entry_ts(entry, settings),
     }
 
 

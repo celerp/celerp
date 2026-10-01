@@ -883,6 +883,7 @@ def _rule(expectation: ReconciliationExpectation) -> tuple[str, Decimal]:
 def _row(expectation: ReconciliationExpectation, actual: Decimal | None) -> dict:
     rule, allowance = _rule(expectation)
     row = {"check": str(expectation.measure), "key": expectation.key, "currency": expectation.currency,
+           "label": expectation.label, "credit_normal": expectation.credit_normal,
            "source": str(expectation.expected), "celerp": None, "difference": None, "rule": rule, "result": "fail"}
     if actual is None:
         if expectation.expected == 0:
@@ -1273,10 +1274,11 @@ def reconciliation_pack_csv(run: MigrationRun) -> str:
             writer.writerow([csv_safe(entry["source_type"]), entry["count"], _PACK_LOSSES[entry["coverage_class"]],
                              csv_safe(entry.get("note") or "--")])
         writer.writerow([])
-    writer.writerow(["Check","Key", "Currency", "Source", "Celerp", "Difference", "Rule", "Result"])
+    writer.writerow(["Check", "Key", "Name", "Currency", "Source", "Celerp", "Difference", "Rule", "Result"])
     for row in report["rows"]:
         # Figures are Celerp-formatted decimals; only the text columns can carry a formula.
-        writer.writerow([csv_safe(row["check"]), csv_safe(row["key"]), csv_safe(row["currency"] or ""),
+        writer.writerow([csv_safe(row["check"]), csv_safe(row["key"]), csv_safe(row.get("label") or ""),
+                         csv_safe(row["currency"] or ""),
                          row["source"], row["celerp"] if row["celerp"] is not None else "--",
                          row["difference"] if row["difference"] is not None else "--",
                          csv_safe(row["rule"]), csv_safe(row["result"])])
