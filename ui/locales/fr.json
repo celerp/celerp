@@ -1195,6 +1195,8 @@
   "pay.send_includes_button": "Comprend un bouton Payer ({amount}).",
   "pay.settings_connected": "✓ Connecté. Le bouton Payer apparaît désormais sur les factures partagées et dans l'e-mail d'envoi, afin que les clients puissent vous payer en ligne.",
   "pay.settings_disconnecting": "Stripe se déconnecte pendant que les paiements en cours se terminent",
+  "pay.unmatched_head": "Paiements non rattachés à une facture",
+  "pay.unmatched_hint": "Ces paiements en ligne sont arrivés pour une entreprise ou une facture qui n'existe plus, ou qui n'a pas pu accepter le paiement. Enregistrez chacun à sa place ou remboursez-le depuis votre tableau de bord Stripe.",
   "pay.upgrade_desc": "Permettez à vos clients de payer leurs factures en ligne par carte. Connectez d'abord cette instance à Celerp Connect, puis liez un compte Stripe.",
   "perm.page_no_access": "Vous n'avez pas accès à cette page.",
   "reason_export.gift": "Cadeau",

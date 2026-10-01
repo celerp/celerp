@@ -347,10 +347,16 @@ async def connect_status() -> dict:
     return (await _cloud_get("/billing/connect/status")) or {"enabled": payments_enabled()}
 
 
-async def disconnect() -> bool:
+async def disconnect() -> dict | None:
     """Disconnect the merchant's account via Cloud. New payments stop at once; Cloud
-    finishes the disconnect once every payment already started has been recorded."""
-    return bool(await _cloud_post("/billing/connect/disconnect", {}))
+    finishes the disconnect once every payment already started has been recorded.
+    Returns Cloud's answer, {"disconnected": bool, "state": "disconnecting" |
+    "disconnected"}, or None when Cloud gave none."""
+    answer = await _cloud_post("/billing/connect/disconnect", {})
+    if (answer is None or type(answer.get("disconnected")) is not bool
+            or answer.get("state") not in ("disconnecting", "disconnected")):
+        return None
+    return {"disconnected": answer["disconnected"], "state": answer["state"]}
 
 
 # ── Subscription management (merchant-facing, from Web Access settings) ──────

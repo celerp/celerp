@@ -205,4 +205,19 @@ async def payments_connect() -> dict:
 
 @router.post("/payments/disconnect", dependencies=[Depends(require_install_owner)])
 async def payments_disconnect() -> dict:
-    return {"disconnected": await pay.disconnect()}
+    """What Cloud did: disconnected, or disconnecting while existing payments finish."""
+    result = await pay.disconnect()
+    if result is None:
+        raise HTTPException(status_code=502, detail="Could not disconnect Stripe")
+    return result
+
+
+@router.get("/payments/unmatched", dependencies=[Depends(require_install_owner)])
+async def payments_unmatched(session: AsyncSession = Depends(get_session)) -> dict:
+    """Online payments received for a company or invoice that no longer exists, or
+    that the invoice refused, newest first."""
+    return {"items": [{
+        "reference": p.reference, "amount": p.amount_minor / 10 ** currency_dp(p.currency),
+        "currency": p.currency, "company_id": p.former_company, "document_id": p.document,
+        "received_at": p.received_at.isoformat(),
+    } for p in await pay.unmatched_payments(session)]}

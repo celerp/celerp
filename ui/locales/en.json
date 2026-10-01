@@ -1353,6 +1353,8 @@
   "pay.send_includes_button": "Includes a Pay button ({amount}).",
   "pay.settings_connected": "✓ Connected. The Pay button now appears on shared invoices and in the send email, so customers can pay you online.",
   "pay.settings_disconnecting": "Stripe is disconnecting while existing payments finish",
+  "pay.unmatched_head": "Payments not matched to an invoice",
+  "pay.unmatched_hint": "These online payments arrived for a company or invoice that no longer exists, or one that could not take the payment. Record each where it belongs, or refund it from your Stripe dashboard.",
   "pay.upgrade_desc": "Let customers pay invoices online by card. Connect this instance to Celerp Connect first, then link a Stripe account.",
   "perm.page_no_access": "You do not have access to this page.",
   "reason_export.gift": "Gift",
