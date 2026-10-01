@@ -34,7 +34,7 @@ def _isolate_database_side_effects(monkeypatch):
 
     originals = {
         name: getattr(backup_import, name)
-        for name in ("_revoke_current_connector_state", "_clear_restored_connector_state")
+        for name in ("_current_connectors", "_reconcile_connectors", "_clear_restored_connector_state")
     }
 
     async def _noop(*_args, **_kwargs) -> None:
@@ -50,12 +50,13 @@ def _isolate_database_side_effects(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_current_connector_state_is_revoked_before_restore(
-    session, monkeypatch, _isolate_database_side_effects
+    session, monkeypatch, tmp_path, _isolate_database_side_effects
 ):
     import uuid
     from contextlib import asynccontextmanager
     from unittest.mock import AsyncMock
 
+    from celerp.config import settings
     from celerp.models.company import Company
     from celerp.models.connector_config import ConnectorConfig
     from celerp.services import backup_import
@@ -84,14 +85,22 @@ async def test_current_connector_state_is_revoked_before_restore(
         revoke,
     )
     monkeypatch.setattr(
+        "celerp.connectors.remote_state.connection_revision",
+        AsyncMock(return_value="rev-1"),
+    )
+    monkeypatch.setattr(
         "celerp.db.get_session_ctx",
         _shared_session_ctx,
     )
-    await _isolate_database_side_effects["_revoke_current_connector_state"]()
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    connectors = await _isolate_database_side_effects["_current_connectors"]()
+    backup_import._mark_recovery_started(tmp_path / "safety.celerp-backup", connectors)
+    await _isolate_database_side_effects["_reconcile_connectors"]()
 
     revoke.assert_awaited_once_with(
-        str(company_id), "woocommerce", webhook_ids=["11"]
+        str(company_id), "woocommerce", webhook_ids=["11"], revision="rev-1"
     )
+    assert json.loads(backup_import._marker_path().read_text())["connectors"] == []
 
 
 @pytest.mark.asyncio

@@ -89,7 +89,7 @@ def _import_internals(monkeypatch, tmp_path, *, safety_error: str | None = None)
     monkeypatch.setattr(backup_import, "make_safety_archive", _safety)
     monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
     monkeypatch.setattr(ownership, "connector_maintenance_guard", _guard)
-    for name in ("_revoke_current_connector_state", "_dispose_engine", "_reconcile_schema",
+    for name in ("_reconcile_connectors", "_dispose_engine", "_reconcile_schema",
                  "_clear_restored_connector_state"):
         monkeypatch.setattr(backup_import, name, _none)
     return calls

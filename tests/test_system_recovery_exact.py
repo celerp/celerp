@@ -24,7 +24,9 @@ import pytest
 from company_backup_support import company, owner, token
 from migration_support import auth, code_config, real_client, real_engine  # noqa: F401
 
-from celerp.services.backup_import import _revoke_current_connector_state as _real_revoke
+from celerp.services.backup_import import _clear_restored_connector_state as _real_clear
+from celerp.services.backup_import import _reconcile_connectors as _real_revoke
+from celerp.services.session_tracker import end_all_sessions as _real_end_sessions
 
 pytestmark = pytest.mark.asyncio
 
@@ -179,7 +181,7 @@ class _Recovery:
                 self.record(name)
             return _run
 
-        monkeypatch.setattr(backup_import, "_revoke_current_connector_state", _recorder("revoke"))
+        monkeypatch.setattr(backup_import, "_reconcile_connectors", _recorder("revoke"))
         monkeypatch.setattr(backup_import, "_clear_restored_connector_state", _recorder("clear_connectors"))
         monkeypatch.setattr(session_tracker, "end_all_sessions", _recorder("end_sessions"))
 
@@ -924,44 +926,186 @@ async def test_failed_recovery_puts_installation_back(rec, tmp_path, monkeypatch
     assert not (rec.data / "restore-notice.json").exists()
 
 
-async def test_partial_connector_revoke_is_a_started_recovery(rec, tmp_path, monkeypatch, real_engine):
-    """Connector revocation is the first step that cannot be undone. The recovery marker
-    is written before it; a failure after one connector was revoked is a started recovery
-    that is put back from the safety archive, never "did not start", and the revoked
-    connector's local config is gone."""
+RELAY = "https://relay.test"
+
+
+class _Relay:
+    """The Connect relay's connections for this installation and the store's webhooks.
+
+    ``plan[connector]`` scripts each DELETE in turn: ``"fail"`` answers 500 without
+    revoking, ``"lost"`` revokes and then loses the response, ``"timeout"`` loses the
+    request before it is applied. Unscripted DELETEs behave as the relay does."""
+
+    def __init__(self, monkeypatch, connectors):
+        import httpx
+        import respx
+
+        from celerp.connectors import remote_state
+        from celerp.gateway import state
+        self.live = {c: f"{c}-rev-1" for c in connectors}
+        self.webhooks: set[str] = set()
+        self.plan: dict[str, list[str]] = {}
+        self.deletes: list[tuple[str, str]] = []
+        monkeypatch.setattr(state, "relay_http_url", lambda: RELAY)
+        monkeypatch.setattr(state, "relay_session_headers", lambda: {"X-Session-Token": "s"})
+
+        async def _remove_webhooks(company_id, webhook_ids, *, force):
+            self.webhooks.difference_update(webhook_ids)
+
+        monkeypatch.setattr(remote_state, "_remove_woocommerce_webhooks", _remove_webhooks)
+        self.router = respx.mock(assert_all_called=False)
+        self.router.get(url__regex=rf"{RELAY}/tokens/(?P<name>[\w-]+)/revision").mock(
+            side_effect=lambda request, name: (
+                httpx.Response(200, json={"revision": self.live[name]}) if name in self.live
+                else httpx.Response(404)))
+
+        def _delete(request, name):
+            revision = request.headers["X-Celerp-Connector-Revision"]
+            self.deletes.append((name, revision))
+            step = (self.plan.get(name) or [None]).pop(0) if self.plan.get(name) else None
+            if step == "fail":
+                return httpx.Response(500)
+            if step == "timeout":
+                raise httpx.ReadTimeout("lost", request=request)
+            if name not in self.live:
+                return httpx.Response(404)
+            if revision != self.live[name]:
+                return httpx.Response(409)
+            del self.live[name]
+            if step == "lost":
+                raise httpx.ReadTimeout("lost", request=request)
+            return httpx.Response(200, json={"revoked": True})
+
+        self.router.delete(url__regex=rf"{RELAY}/tokens/(?P<name>[\w-]+)$").mock(side_effect=_delete)
+        self.router.start()
+
+    def stop(self):
+        self.router.stop()
+
+
+@pytest.fixture
+def relay_connectors(rec, monkeypatch, real_engine):
+    """Three connected connectors, each with a live relay connection; WooCommerce also
+    has two store webhooks. The real connector steps run against the fake relay."""
+    from celerp.services import backup_import, session_tracker
+    relay = _Relay(monkeypatch, ["shopify", "woocommerce", "quickbooks"])
+    relay.webhooks = {"w1", "w2"}
+    monkeypatch.setattr(backup_import, "_reconcile_connectors", _real_revoke)
+    monkeypatch.setattr(backup_import, "_clear_restored_connector_state", _real_clear)
+    monkeypatch.setattr(session_tracker, "end_all_sessions", _real_end_sessions)
+    yield relay
+    relay.stop()
+
+
+async def _connect_three(engine) -> str:
     from sqlalchemy import text
-
-    from celerp.connectors import remote_state
-    from celerp.services import backup_import
-    user = await owner(real_engine)
-    cid = await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-inventory"]})
-    async with real_engine.begin() as conn:
-        for connector in ("shopify", "woocommerce"):
+    user = await owner(engine)
+    cid = await company(engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-inventory"]})
+    async with engine.begin() as conn:
+        for connector in ("shopify", "woocommerce", "quickbooks"):
             await conn.execute(text(
-                "INSERT INTO connector_configs (company_id, connector, direction, sync_frequency, daily_sync_hour) "
-                "VALUES (:c, :n, 'both', 'realtime', 2)"), {"c": str(cid), "n": connector})
+                "INSERT INTO connector_configs (company_id, connector, direction, sync_frequency, "
+                "daily_sync_hour, webhook_ids_json) VALUES (:c, :n, 'both', 'realtime', 2, :w)"),
+                {"c": str(cid), "n": connector, "w": '["w1", "w2"]' if connector == "woocommerce" else "[]"})
+    return str(cid)
+
+
+async def _local_connectors(engine) -> list[str]:
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        return sorted((await conn.execute(text("SELECT connector FROM connector_configs"))).scalars().all())
+
+
+def _marked_connectors() -> list[dict] | None:
+    from celerp.services import backup_import
+    if not backup_import.recovery_incomplete():
+        return None
+    return json.loads(backup_import._marker_path().read_text())["connectors"]
+
+
+async def test_connector_revoke_failure_does_not_abandon_the_connectors_after_it(
+        rec, tmp_path, relay_connectors, real_engine):
+    """The second of three connectors cannot be revoked: the third is still revoked,
+    the second stays recorded for the next attempt with the connection it was sent
+    for, and nothing local is replaced while it is outstanding."""
+    from celerp.services import backup_import
+    await _connect_three(real_engine)
     rec.seed()
-    marked: list[bool] = []
+    before = rec.trees()
+    relay_connectors.plan["woocommerce"] = ["fail"] * 4
 
-    async def _revoke(company_id, connector, **kw):
-        marked.append(backup_import.recovery_incomplete())
-        if connector == "woocommerce":
-            raise remote_state.ConnectorRemoteCleanupError("Connector cleanup could not be confirmed.")
-
-    monkeypatch.setattr(remote_state, "revoke_connector_remote_state", _revoke)
-    monkeypatch.setattr(backup_import, "_revoke_current_connector_state", _real_revoke)
     result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
-    assert marked == [True, True]
-    assert result.ok is False
-    assert "did not start" not in result.error
-    assert "could not be confirmed" in result.error and "put back" in result.error
-    assert rec.restored[-1] == SAFETY_DUMP
+
+    assert result.ok is False and "restart Celerp" in result.error
+    assert set(relay_connectors.live) == {"woocommerce"}
+    assert relay_connectors.webhooks == set()
+    marked = _marked_connectors()
+    assert [(e["connector"], e["revision"]) for e in marked] == [("woocommerce", "woocommerce-rev-1")]
+    assert rec.restored == [] and rec.trees() == before
+    assert await _local_connectors(real_engine) == ["quickbooks", "shopify", "woocommerce"]
+
+
+async def test_lost_disconnect_response_is_retried_as_the_same_disconnect(
+        rec, tmp_path, relay_connectors, real_engine):
+    """A disconnect whose response is lost is retried for the connection it was sent
+    for: once applied it is confirmed gone, and one lost before it was applied is sent
+    again with the same revision. The recovery then completes."""
+    from celerp.services import backup_import
+    await _connect_three(real_engine)
+    rec.seed()
+    relay_connectors.plan = {"shopify": ["lost"], "quickbooks": ["timeout"]}
+
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+
+    assert result.ok is True, result.error
+    assert relay_connectors.live == {} and relay_connectors.webhooks == set()
+    assert [d for d in relay_connectors.deletes if d[0] != "woocommerce"] == [
+        ("shopify", "shopify-rev-1"), ("quickbooks", "quickbooks-rev-1"), ("quickbooks", "quickbooks-rev-1")]
     assert backup_import.recovery_incomplete() is False
-    async with real_engine.connect() as conn:
-        left = (await conn.execute(text(
-            "SELECT connector FROM connector_configs WHERE company_id = :c ORDER BY connector"),
-            {"c": str(cid)})).scalars().all()
-    assert left == ["woocommerce"]
+    assert await _local_connectors(real_engine) == []
+
+
+async def test_rollback_after_partial_revoke_leaves_no_remote_connection_behind(
+        rec, tmp_path, relay_connectors, real_engine):
+    """Revocation fails part way and the recovery is put back from the safety archive:
+    the put-back revokes what was left first, so once the restored local connector
+    configs are cleared no relay connection or store webhook outlives them."""
+    from celerp.services import backup_import
+    await _connect_three(real_engine)
+    rec.seed()
+    relay_connectors.plan["woocommerce"] = ["fail", "fail"]
+
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+
+    assert result.ok is False and "put back" in result.error, result.error
+    assert rec.restored == [SAFETY_DUMP]
+    assert relay_connectors.live == {} and relay_connectors.webhooks == set()
+    assert await _local_connectors(real_engine) == []
+    assert backup_import.recovery_incomplete() is False
+
+
+async def test_marker_stays_while_a_connector_outcome_is_unconfirmed(
+        rec, tmp_path, relay_connectors, real_engine):
+    """While any connector's disconnect stays unconfirmed the recovery marker stays,
+    across restarts; the start that confirms it puts the installation back and only
+    then clears the marker."""
+    from celerp.services import backup_import
+    await _connect_three(real_engine)
+    rec.seed()
+    relay_connectors.plan["quickbooks"] = ["timeout"] * 6
+
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.ok is False and "restart Celerp" in result.error
+    await backup_import.finish_incomplete_recovery()
+    assert [e["connector"] for e in _marked_connectors()] == ["quickbooks"]
+    assert rec.restored == []
+
+    await backup_import.finish_incomplete_recovery()
+    assert backup_import.recovery_incomplete() is False
+    assert relay_connectors.live == {}
+    assert {d[1] for d in relay_connectors.deletes if d[0] == "quickbooks"} == {"quickbooks-rev-1"}
+    assert rec.restored == [SAFETY_DUMP]
+    assert await _local_connectors(real_engine) == []
 
 
 async def test_recovery_that_cannot_be_undone_keeps_installation_closed(rec, tmp_path, monkeypatch,
@@ -1082,7 +1226,7 @@ async def test_boot_finishes_unfinished_recovery_before_schema_init(rec, tmp_pat
     rec.seed()
     blocker = await _break_schema_init(committed_engine)
     safety = _archive(tmp_path / "safety.celerp-backup", SOURCE_FILES)
-    backup_import._mark_recovery_started(safety)
+    backup_import._mark_recovery_started(safety, [])
     stub_restore = backup_import._run_pg_restore
 
     async def _restore(dump, url):
@@ -1096,7 +1240,7 @@ async def test_boot_finishes_unfinished_recovery_before_schema_init(rec, tmp_pat
     async with main_mod.lifespan(None):
         pass
 
-    assert rec.names()[:3] == ["guard", "pg_restore", "reconcile"]
+    assert rec.names()[:4] == ["guard", "revoke", "pg_restore", "reconcile"]
     assert rec.restored == [SOURCE_DUMP]
     assert backup_import.recovery_incomplete() is False
     assert rec.tree("ai_uploads") == {"new.txt": b"SOURCE-AI"}
@@ -1115,7 +1259,7 @@ async def test_boot_with_recovery_still_unfinished_starts_nothing_else(rec, tmp_
     from celerp.services import backup_import
     rec.seed()
     blocker = await _break_schema_init(committed_engine)
-    backup_import._mark_recovery_started(_archive(tmp_path / "safety.celerp-backup", SOURCE_FILES))
+    backup_import._mark_recovery_started(_archive(tmp_path / "safety.celerp-backup", SOURCE_FILES), [])
     rec.pg_error = RuntimeError("disk full")
     main_mod, verified = _boot_to_schema(monkeypatch, committed_engine)
 
@@ -1137,7 +1281,7 @@ async def test_migrate_leaves_a_database_under_unfinished_recovery_to_the_recove
     from celerp.services import backup_import
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
-    backup_import._mark_recovery_started(tmp_path / "safety.celerp-backup")
+    backup_import._mark_recovery_started(tmp_path / "safety.celerp-backup", [])
     ran = []
     monkeypatch.setattr(cli, "_run_migrations", lambda url: ran.append(url))
     monkeypatch.setattr(cli, "_migration_lock", lambda url: contextlib.nullcontext())

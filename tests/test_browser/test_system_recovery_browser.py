@@ -51,7 +51,7 @@ def test_system_recovery_safety_failure_confirm_browser(page, ui_server, api, tm
     monkeypatch.setattr(settings, "backup_encryption_key", None)
     monkeypatch.setattr(backup_export, "export_full", _no_export)
     monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
-    for name in ("_reconcile_schema", "_dispose_engine", "_revoke_current_connector_state",
+    for name in ("_reconcile_schema", "_dispose_engine", "_reconcile_connectors",
                  "_clear_restored_connector_state"):
         monkeypatch.setattr(backup_import, name, _none)
     monkeypatch.setattr(session_tracker, "end_all_sessions", _none)

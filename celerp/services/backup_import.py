@@ -686,48 +686,61 @@ def _write_restore_notice(company_name: str | None, warnings: list[str],
         log.warning("Could not write restore notice: %s", exc)
 
 
-async def _revoke_current_connector_state() -> None:
+async def _current_connectors() -> list[dict]:
+    """Every connector of the installation, as the recovery marker records it to revoke."""
     import sqlalchemy as sa
 
-    from celerp.connectors.remote_state import revoke_connector_remote_state
     from celerp.db import get_session_ctx
     from celerp.models.connector_config import ConnectorConfig
 
     async with get_session_ctx() as session:
-        configs = [
-            (
-                str(config.company_id),
-                config.connector,
-                list(config.webhook_ids or []),
-            )
-            for config in (await session.scalars(
-                sa.select(ConnectorConfig).order_by(ConnectorConfig.id)
-            )).all()
-        ]
-
-    for company_id, connector, webhook_ids in configs:
-        await revoke_connector_remote_state(
-            company_id,
-            connector,
-            webhook_ids=webhook_ids,
-        )
-        # A revoked connector's local config would point at remote state that is gone.
-        async with get_session_ctx() as session:
-            await _clear_connector(session, company_id, connector)
-            await session.commit()
+        configs = (await session.scalars(
+            sa.select(ConnectorConfig).order_by(ConnectorConfig.id))).all()
+        return [{"company_id": str(c.company_id), "connector": c.connector,
+                 "webhook_ids": list(c.webhook_ids or []), "revision": None} for c in configs]
 
 
-async def _clear_connector(session, company_id, connector: str) -> None:
-    """Remove one company's connector config and queued work, fenced until reconnected."""
-    import sqlalchemy as sa
+async def _reconcile_connectors() -> None:
+    """Revoke the remote state of every connector the recovery marker still lists.
 
-    from celerp.connectors.ownership import record_connector_reset
-    from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+    The replacement discards every local connector config, so none may leave a live
+    relay credential or store webhook behind. Each connector is attempted whatever
+    happened to the others. The revision a disconnect is sent for is in the marker
+    before the request leaves, so a retry after a lost response disconnects that same
+    connection; a connection that changed since is read afresh. A connector leaves the
+    marker only once its remote state is confirmed gone; while any is left this raises,
+    and the marker keeps them for the next attempt.
+    """
+    from celerp.connectors.remote_state import (
+        ConnectorRemoteCleanupError,
+        ConnectorRemoteStateChangedError,
+        connection_revision,
+        revoke_connector_remote_state,
+    )
 
-    record_connector_reset(session, company_id, connector)
-    for model in (OutboundQueue, ConnectorConfig):
-        await session.execute(sa.delete(model).where(
-            model.company_id == str(company_id), model.connector == connector))
+    state = json.loads(_marker_path().read_text())
+    for _ in range(2):
+        for entry in list(state["connectors"]):
+            try:
+                if entry["revision"] is None:
+                    entry["revision"] = await connection_revision(entry["connector"])
+                    _write_marker(state)
+                if entry["revision"] is not None:
+                    await revoke_connector_remote_state(
+                        entry["company_id"], entry["connector"],
+                        webhook_ids=entry["webhook_ids"], revision=entry["revision"])
+            except ConnectorRemoteStateChangedError:
+                entry["revision"] = None
+                _write_marker(state)
+                continue
+            except Exception:
+                log.warning("Connector %s could not be disconnected", entry["connector"], exc_info=True)
+                continue
+            state["connectors"].remove(entry)
+            _write_marker(state)
+    if state["connectors"]:
+        names = ", ".join(sorted({e["connector"] for e in state["connectors"]}))
+        raise ConnectorRemoteCleanupError(f"Connections to other services could not be disconnected ({names})")
 
 
 async def _clear_restored_connector_state(session) -> None:
@@ -786,14 +799,19 @@ def recovery_incomplete() -> bool:
     return _marker_path().exists()
 
 
-def _mark_recovery_started(target: Path) -> None:
-    """Durably record that the installation is being replaced and what *target* archive
-    brings it back to a whole state if the replacement does not finish."""
+def _mark_recovery_started(target: Path, connectors: list[dict]) -> None:
+    """Durably record that the installation is being replaced, what *target* archive
+    brings it back to a whole state if the replacement does not finish, and the
+    *connectors* whose remote state must be revoked before it is replaced."""
+    _write_marker({"target": str(target), "connectors": connectors})
+
+
+def _write_marker(state: dict) -> None:
     path = _marker_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(path.name + ".partial")
     with partial.open("w") as out:
-        json.dump({"target": str(target)}, out)
+        json.dump(state, out)
         out.flush()
         os.fsync(out.fileno())
     partial.replace(path)
@@ -852,8 +870,10 @@ async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], 
 
 
 async def _replace_from(target: Path) -> None:
-    """Replace the installation with the archive *target*, then clear the recovery marker."""
+    """Revoke the connectors the recovery marker still lists, replace the installation
+    with the archive *target*, then clear the marker."""
     import asyncio
+    await _reconcile_connectors()
     prepared = await prepare_recovery(target)
     try:
         await _replace_installation(prepared)
@@ -884,12 +904,12 @@ async def finish_incomplete_recovery() -> None:
 async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | None):
     """The one destructive recovery engine; the caller holds the recovery locks.
 
-    Under a durable recovery marker, revokes the current connectors' remote state, then
-    replaces the installation (`_replace_installation`). When either fails, the
-    installation is put back from the safety archive; with no safety
-    archive, or when putting it back fails too, the marker stays and the
-    installation serves nothing until a start finishes the recovery. The staging
-    directory is removed either way.
+    Under a durable recovery marker, revokes the current connectors' remote state
+    (`_reconcile_connectors`), then replaces the installation (`_replace_installation`).
+    When either fails, the installation is put back from the safety archive, once every
+    connector is revoked; with no safety archive, or when putting it back fails too, the
+    marker stays and the installation serves nothing until a start finishes the
+    recovery. The staging directory is removed either way.
     """
     import asyncio
     from celerp.services.backup import BackupResult
@@ -898,9 +918,10 @@ async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | Non
     try:
         # Marked before the first remote revoke: a revoke cannot be undone, so from here a
         # failure is a started recovery, finished or put back like any other.
-        _mark_recovery_started(safety_archive or await asyncio.to_thread(_keep_for_retry, prepared))
+        _mark_recovery_started(safety_archive or await asyncio.to_thread(_keep_for_retry, prepared),
+                               await _current_connectors())
         try:
-            await _revoke_current_connector_state()
+            await _reconcile_connectors()
             modules, restart_scheduled = await _replace_installation(prepared)
         except Exception as exc:
             log.exception("System Recovery failed")
