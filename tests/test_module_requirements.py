@@ -140,11 +140,13 @@ def test_prepare_turns_on_first_party_and_needs_restart(modules, monkeypatch):
     plan = plan_requirements({"celerp-accounting": None})
     assert [r.name for r in plan.preparable] == ["celerp-accounting"] and not plan.needs_consent
     assert prepare(plan) is True
-    assert _enabled() == ["celerp-sales-funnel", "celerp-accounting"]
+    enabled = _enabled()
+    # Added after what was on, with the bundled modules it depends on.
+    assert enabled[0] == "celerp-sales-funnel" and "celerp-accounting" in enabled
     # Idempotent: preparing again changes nothing and still reports the pending restart.
     again = plan_requirements({"celerp-accounting": None})
     assert prepare(again) is True
-    assert _enabled() == ["celerp-sales-funnel", "celerp-accounting"]
+    assert _enabled() == enabled
 
 
 def test_prepare_never_turns_on_third_party_without_consent(modules, monkeypatch):

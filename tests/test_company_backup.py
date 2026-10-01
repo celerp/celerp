@@ -776,21 +776,21 @@ async def test_no_table_in_both_groups():
 
 
 async def test_export_refuses_unclassified_table(real_engine, real_client, tmp_path, monkeypatch):
-    """A company table nobody classified stops the export by name and no file is written."""
+    """A company table nobody classified, holding the company's rows, stops the export
+    without naming the table, and no file is written."""
     cb = _bk_cb()
     _bk_local(monkeypatch, tmp_path)
     user, cid, tok = await _bk_setup(real_engine)
     await _bk_sql(real_engine, "CREATE TABLE bk_unknown_things (id uuid primary key, "
                                "company_id uuid not null references companies(id) on delete cascade, note text)")
+    await _bk_sql(real_engine, "INSERT INTO bk_unknown_things (id, company_id) VALUES (gen_random_uuid(), :c)",
+                  c=str(cid))
     try:
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
-        detail = r.json()["detail"]
-        assert "cannot back up yet: bk_unknown_things" in detail and detail.endswith("Nothing was backed up.")
+        assert r.json()["detail"] == cb.UNSUPPORTED
         async with maker(real_engine)() as s:
-            with pytest.raises(cb.BackupError) as err:
-                await cb.classify(s)
-        assert err.value.status_code == 409 and "bk_unknown_things" in err.value.detail
+            assert "bk_unknown_things" not in await cb.classify(s)
         out = tmp_path / "bk-out" / "books.celerp-company"
         out.parent.mkdir()
         with pytest.raises(cb.BackupError):
@@ -810,7 +810,9 @@ async def test_export_refusal_surfaces_on_settings_and_migration_download(real_e
     if reason == "unclassified_table":
         await _bk_sql(real_engine, "CREATE TABLE bk_unknown_things (id uuid primary key, "
                                    "company_id uuid not null references companies(id) on delete cascade)")
-        named = "bk_unknown_things"
+        await _bk_sql(real_engine, "INSERT INTO bk_unknown_things (id, company_id) VALUES (gen_random_uuid(), :c)",
+                      c=str(cid))
+        named = "cannot back up yet"
     else:
         named = f"/static/attachments/{cid}/missing.png"
         await _bk_point_at(real_engine, cid, named)
@@ -861,7 +863,7 @@ _BK_BAD_SHAPES = {
 
 @pytest.mark.parametrize("shape", sorted(_BK_BAD_SHAPES))
 async def test_module_table_outside_invariants_refused(real_engine, real_client, tmp_path, monkeypatch, shape):
-    """A module prefix table the generic engine cannot carry stops the export, naming the module and table."""
+    """A module prefix table the generic engine cannot carry stops the export, naming the module, never the table."""
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch)
     _, _, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
@@ -870,7 +872,7 @@ async def test_module_table_outside_invariants_refused(real_engine, real_client,
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert _BK_MODULE in detail and "zz_widgets" in detail and detail.endswith("Nothing was backed up.")
+        assert "Widgets" in detail and "zz_" not in detail and detail.endswith("Nothing was backed up.")
     finally:
         await _bk_drop(real_engine, "zz_widgets")
 
@@ -897,7 +899,7 @@ async def test_unsupported_module_refusal_names_module_and_table_before_archive(
         with pytest.raises(cb.BackupError) as err:
             await cb.export_company_snapshot(cid, out_dir / "books.celerp-company")
         assert err.value.status_code == 409
-        assert _BK_MODULE in err.value.detail and "zz_widgets" in err.value.detail
+        assert "Widgets" in err.value.detail and "zz_" not in err.value.detail
         assert err.value.detail.endswith("Nothing was backed up.")
         assert opened == [] and list(out_dir.iterdir()) == []
     finally:
@@ -933,7 +935,7 @@ async def test_module_tables_referencing_in_a_loop_refused(real_engine, real_cli
             await _bk_sql(real_engine, sql)
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
-        assert _BK_MODULE in r.json()["detail"] and ("zz_widgets" in r.json()["detail"] or "zz_gadgets" in r.json()["detail"])
+        assert "Widgets" in r.json()["detail"] and "zz_" not in r.json()["detail"]
         await _bk_refused(real_engine, real_client, tok, user, tmp_path, data)
     finally:
         await _bk_drop(real_engine, "zz_gadgets", "zz_widgets")
@@ -1385,20 +1387,19 @@ async def test_record_too_large_to_restore_is_not_backed_up(real_engine, real_cl
     monkeypatch.setattr(cb, "MAX_ROW_BYTES", max(len(line) for line in rows) - 1)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert r.json()["detail"].startswith("One record in ")
+    assert r.json()["detail"] == cb.ROW_TOO_LARGE_TO_BACK_UP
 
 
 @pytest.mark.parametrize("limit", [("MAX_ROW_NODES", 3), ("MAX_ROW_DEPTH", 1)])
 async def test_record_too_large_to_parse_is_not_backed_up(real_engine, real_client, tmp_path, monkeypatch, limit):
-    """Export applies the restore's parsed-size limits too (values and nesting), and the
-    refusal names the table."""
+    """Export applies the restore's parsed-size limits too (values and nesting)."""
     cb = _bk_cb()
     _bk_local(monkeypatch, tmp_path)
     _, _, tok = await _bk_setup(real_engine)
     monkeypatch.setattr(cb, *limit)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert r.json()["detail"].startswith("One record in ")
+    assert r.json()["detail"] == cb.ROW_TOO_LARGE_TO_BACK_UP
     assert "too large for a company backup" in r.json()["detail"]
 
 
@@ -3611,7 +3612,7 @@ async def test_module_tables_travel_only_as_their_manifest_declares(real_engine,
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert _BK_MODULE in detail and "zz_widgets" in detail and detail.endswith("Nothing was backed up.")
+        assert "Widgets" in detail and "zz_" not in detail and detail.endswith("Nothing was backed up.")
         await _bk_refused(real_engine, real_client, tok, user, tmp_path, data)
     finally:
         await _bk_drop(real_engine, "zz_tokens", "zz_widgets")

@@ -285,6 +285,17 @@ async def lifespan(_app: FastAPI):
                 logging.getLogger(__name__).debug(
                     "Demoted-module notification skipped (non-fatal)", exc_info=True)
 
+            # A module table its manifest does not place in or out of a company backup
+            # blocks the backups of companies holding its rows; say so in the bell.
+            try:
+                from celerp.services.company_backup import notify_undeclared_module_tables
+                async with _LifecycleSession() as _usess:
+                    await notify_undeclared_module_tables(_usess)
+                    await _usess.commit()
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Company backup declaration check skipped (non-fatal)", exc_info=True)
+
     if update_verify:
         await _verify_runtime_dependencies()
         yield

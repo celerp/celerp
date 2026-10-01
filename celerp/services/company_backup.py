@@ -13,10 +13,11 @@ table (one row per line, as Postgres renders it with ``to_jsonb``) and
 
 Which tables are backed up is read from the database itself: every table with a
 ``company_id`` column, and every table named with an installed module's table prefix,
-is either backed up or listed in ``EXCLUDED_TABLES``; anything else stops the export.
-A module says in its manifest's ``company_backup`` which of its tables belong to the
-company (``"include"``) and which to this installation (``"exclude"``, such as
-credentials or caches); a module table it does not name stops the export.
+is either backed up or listed in ``EXCLUDED_TABLES``. A module says in its manifest's
+``company_backup`` which of its tables belong to the company (``"include"``) and which
+to this installation (``"exclude"``, such as credentials or caches). A company table
+nobody classified, or a module table its module does not name, stops the export only of
+a company that holds rows in it; one that cannot be scoped to a company stops every export.
 Tables are written and restored in foreign-key order, a batch at a time.
 
 Restoring creates a new company with fresh ids for the company and every backed-up
@@ -50,9 +51,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import celerp.db
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
-from celerp.modules.importer import installed_table_prefixes
+from celerp.modules.importer import TABLE_NAME, installed_table_prefixes
 from celerp.modules.loader import (
-    is_core_folded, is_running, module_search_path, read_manifest, resolve_module_path, running_version,
+    is_core_folded, is_running, module_label, module_search_path, read_manifest, resolve_module_path,
+    running_version,
 )
 from celerp.modules.registry import get_enabled, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
@@ -136,7 +138,10 @@ NEWER = ("This company backup was made by a newer version of Celerp. Update Cele
 TOO_LARGE = "This company backup is too large to restore here." + _NOT_RESTORED
 TOO_LARGE_UPLOAD = "This file is too large for a company backup upload." + _NOT_RESTORED
 TOO_LARGE_TO_BACK_UP = "This company holds more data than a company backup can restore." + _NOT_BACKED_UP
-ROW_TOO_LARGE_TO_BACK_UP = "One record in {table} is too large for a company backup to restore." + _NOT_BACKED_UP
+ROW_TOO_LARGE_TO_BACK_UP = "One record is too large for a company backup to restore." + _NOT_BACKED_UP
+UNDECLARED = "The {label} module has not said whether its data belongs in a company backup." + _NOT_BACKED_UP
+UNSUPPORTED_MODULE = "The {label} module keeps data in a form Celerp cannot back up yet." + _NOT_BACKED_UP
+UNSUPPORTED = "This company has data Celerp cannot back up yet." + _NOT_BACKED_UP
 UNSAVABLE = "This company backup has records this Celerp cannot save." + _NOT_RESTORED
 ATTACHMENT_FAILED = "Celerp could not save an attachment file from this backup." + _NOT_RESTORED
 ATTACHMENT_TYPE = "This company backup has an attachment file of a type Celerp does not store: {name}." + _NOT_RESTORED
@@ -152,7 +157,6 @@ STALE_PREVIEW = ("Something changed since this preview. Check the updated previe
 ATTACHMENT_MISSING = "This company backup refers to an attachment file it does not carry." + _NOT_RESTORED
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-_TABLE_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 _RAW_NUL = re.compile(rb"(?<!\\)(?:\\\\)*\\u0000")
 _JSON_STRING = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"')
 _BRACKET = re.compile(rb"[\[\]{}]")
@@ -244,6 +248,8 @@ class _Plan:
     order: list[str]
     schema: dict[str, _Table]
     owners: dict[str, str]
+    # Company tables a backup cannot carry: they stop the export of a company holding rows in them.
+    blocked: dict[str, BackupError] = field(default_factory=dict)
 
     def outside_fks(self, table: str) -> list[tuple[str, ...]]:
         """Foreign keys of ``table`` pointing at a table the backup does not carry."""
@@ -280,20 +286,34 @@ def _declared(module: str) -> dict:
 
 
 def _refusal(table: str, owners: dict[str, str]) -> BackupError:
+    """Why ``table`` stops an export, by module name; the table itself goes to the log only."""
     if table in owners:
-        return BackupError(409, f"The {owners[table]} module keeps data in {table} in a form Celerp "
-                                f"cannot back up yet." + _NOT_BACKED_UP)
-    return BackupError(409, f"This company has data Celerp cannot back up yet: {table}." + _NOT_BACKED_UP)
+        return BackupError(409, UNSUPPORTED_MODULE.format(label=module_label(owners[table])))
+    return BackupError(409, UNSUPPORTED)
 
 
 async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
-    """The tables a backup carries, parents first. Strict (export) refuses any company
-    table it cannot carry; otherwise (restore) such tables are simply not carried."""
+    """The tables a backup carries, parents first. A company table it cannot carry is
+    simply not carried on restore. On export (strict) a company table nobody classified,
+    a module table its module does not name, and a table whose parent is not carried are
+    recorded in ``blocked`` and stop the export of any company holding rows in them; a
+    module table its module includes in a shape the backup cannot carry, or that cannot
+    be scoped to a company, stops every export."""
     schema = await _schema(session)
     prefixes = installed_table_prefixes("")
     declarations = {module: _declared(module) for module in prefixes}
     owners: dict[str, str] = {}
     carried: list[str] = []
+    blocked: dict[str, BackupError] = {}
+
+    def refuse(name: str, error: BackupError, *, scoped: bool) -> None:
+        if not strict:
+            return
+        logger.warning("A company backup cannot carry %s", name)
+        if not scoped or "company_id" not in schema[name].columns:
+            raise error
+        blocked[name] = error
+
     for name in sorted(schema):
         table = schema[name]
         owner = _owner(name, prefixes)
@@ -305,17 +325,15 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
                 continue
             owners[name] = owner
             if how != INCLUDE:
-                if strict:
-                    raise BackupError(409, f"The {owner} module has not said whether {name} belongs in a company "
-                                           f"backup." + _NOT_BACKED_UP)
+                refuse(name, BackupError(409, UNDECLARED.format(label=module_label(owner))), scoped=True)
                 continue
             ok = _module_shape_ok(table)
         else:
             ok = name in PORTABLE_TABLES and bool(table.pk)
         if ok:
             carried.append(name)
-        elif strict:
-            raise _refusal(name, owners)
+        else:
+            refuse(name, _refusal(name, owners), scoped=owner is None)
     changed = True
     while changed:
         changed = False
@@ -324,11 +342,44 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
         for name in list(carried):
             if name in unordered or any(schema[name].columns[c].notnull for cols, target, _ in schema[name].fks
                                         if target != "companies" and target not in keep for c in cols):
-                if strict:
-                    raise _refusal(name, owners)
+                refuse(name, _refusal(name, owners), scoped=True)
                 carried.remove(name)
                 changed = True
-    return _Plan(order=order, schema=schema, owners=owners)
+    return _Plan(order=order, schema=schema, owners=owners, blocked=blocked)
+
+
+async def undeclared_module_tables(session: AsyncSession) -> dict[str, list[str]]:
+    """Each installed module's tables in this database that its manifest does not say how
+    to back up, by module."""
+    schema = await _schema(session)
+    prefixes = installed_table_prefixes("")
+    found: dict[str, list[str]] = {}
+    for module in sorted(prefixes):
+        declared = _declared(module)
+        tables = [name for name in sorted(schema) if _owner(name, prefixes) == module
+                  and name not in PORTABLE_TABLES and name not in EXCLUDED_TABLES
+                  and declared.get(name) not in (INCLUDE, EXCLUDE)]
+        if tables:
+            found[module] = tables
+    return found
+
+
+async def notify_undeclared_module_tables(session: AsyncSession) -> int:
+    """A bell notice in every company for each installed module keeping data its manifest
+    does not place in or out of a company backup, deduped while unread. Caller commits.
+    Returns the number of notifications created."""
+    from celerp.notifications import service as notif_service
+
+    created = 0
+    for module, tables in (await undeclared_module_tables(session)).items():
+        logger.warning("The %s module does not declare how %s travel with a company backup", module, tables)
+        label = module_label(module)
+        created += await notif_service.notify_every_company(
+            session, "modules", f"The {label} module needs an update",
+            f"The {label} module keeps data it has not said belongs in a company backup. A company "
+            "holding that data cannot be backed up until the module is updated.",
+            action_url="/modules", priority="high")
+    return created
 
 
 def _fk_order(tables: list[str], schema: dict[str, _Table]) -> tuple[list[str], set[str]]:
@@ -560,14 +611,17 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
     if company is None:
         raise BackupError(404, "Company not found.")
     plan = await _classify(session, strict=True)
-    tables = []
-    for name in plan.order:
-        if name in plan.owners and not await session.scalar(text(
-                f"SELECT 1 FROM {_ident(name)} WHERE company_id = "
-                f"CAST(CAST(:c AS text) AS {_ident(plan.schema[name].columns['company_id'].udt)}) LIMIT 1"),
-                {"c": str(company_id)}):
-            continue
-        tables.append(name)
+
+    async def holds_rows(name: str) -> bool:
+        return bool(await session.scalar(text(
+            f"SELECT 1 FROM {_ident(name)} WHERE company_id = "
+            f"CAST(CAST(:c AS text) AS {_ident(plan.schema[name].columns['company_id'].udt)}) LIMIT 1"),
+            {"c": str(company_id)}))
+
+    for name, error in sorted(plan.blocked.items()):
+        if await holds_rows(name):
+            raise error
+    tables = [name for name in plan.order if name not in plan.owners or await holds_rows(name)]
     settings = _kept_settings(company.settings)
     found: dict[str, str] = {}
     types: dict[str, str] = {}
@@ -599,7 +653,8 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
                         for line in batch:
                             body = line.encode()
                             if len(body) > MAX_ROW_BYTES or _row_too_large(body):
-                                raise BackupError(409, ROW_TOO_LARGE_TO_BACK_UP.format(table=name))
+                                logger.warning("Company backup refused: a row of %s is too large", name)
+                                raise BackupError(409, ROW_TOO_LARGE_TO_BACK_UP)
                             _collect_urls(json.loads(line), company_id, found, types)
                             body += b"\n"
                             digest.update(body)
@@ -694,7 +749,7 @@ def _check_manifest(m) -> None:
           and isinstance(tables, dict) and isinstance(files, list) and not _has_nul(m))
     if ok:
         for name, meta in tables.items():
-            ok = ok and (_TABLE_NAME.fullmatch(name) is not None and isinstance(meta, dict)
+            ok = ok and (TABLE_NAME.fullmatch(name) is not None and isinstance(meta, dict)
                          and isinstance(meta.get("columns"), list)
                          and all(isinstance(c, str) for c in meta["columns"])
                          and len(set(meta["columns"])) == len(meta["columns"])

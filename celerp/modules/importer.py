@@ -26,6 +26,7 @@ from __future__ import annotations
 import ast
 import errno
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -236,6 +237,36 @@ def _validate_table_prefix(name: str, manifest: dict) -> None:
             )
 
 
+# A Postgres table name as Celerp creates them: lower case, at most 63 characters.
+TABLE_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}")
+
+
+def _validate_company_backup(name: str, manifest: dict) -> None:
+    """A module that owns tables must say, in ``company_backup``, how each travels with a
+    company backup: ``"include"`` for the company's business data, ``"exclude"`` for this
+    installation's state such as credentials or caches. Without it, a company holding the
+    module's data could not be backed up, so the install is refused up front."""
+    prefix = manifest.get("table_prefix")
+    if not manifest.get("migrations") and not prefix:
+        return
+    declared = manifest.get("company_backup")
+    if not isinstance(declared, dict) or not declared:
+        raise ModuleImportError(
+            f'Module "{name}" owns tables, so its PLUGIN_MANIFEST must set "company_backup" to a '
+            'mapping of each table to "include" or "exclude" '
+            f'(for example {{"{prefix}things": "include"}}).'
+        )
+    for table, how in declared.items():
+        if not isinstance(table, str) or not TABLE_NAME.fullmatch(table):
+            raise ModuleImportError(f'company_backup names "{table}", which is not a table name.')
+        if not table.startswith(prefix):
+            raise ModuleImportError(
+                f'company_backup names "{table}", which does not begin with the table_prefix "{prefix}".')
+        if how not in ("include", "exclude"):
+            raise ModuleImportError(
+                f'company_backup must say "include" or "exclude" for "{table}", not "{how}".')
+
+
 def _module_dir() -> Path:
     raw = os.environ.get("MODULE_DIR", "")
     first = raw.split(",")[0].strip()
@@ -310,6 +341,7 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
     _validate_name(name, official=official)
     _check_min_version(manifest)
     _validate_table_prefix(name, manifest)
+    _validate_company_backup(name, manifest)
     # Reconcile the marker in BOTH directions - belt and suspenders alongside
     # the explicit reserved-name refusals above: this is the one place every
     # entrypoint (zip, folder) funnels through, so it is the actual source of
