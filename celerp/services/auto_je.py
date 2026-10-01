@@ -1492,7 +1492,8 @@ def merge_reclassification(settings: dict, survivor: dict, sources: list[dict], 
         code = lot_account(settings, state)
         if code != destination:
             by_account[code] = by_account.get(code, _Dec(0)) + to_decimal(lot_cost_of_sale(state))
-    moves = {code: a for code, v in sorted(by_account.items()) if (a := round_money(v, currency)) != 0}
+    rounded = {code: round_money(v, currency) for code, v in sorted(by_account.items())}
+    moves = {code: amount for code, amount in rounded.items() if amount != 0}
     return MergeReclassification(destination, moves, currency)
 
 
