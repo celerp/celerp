@@ -664,7 +664,6 @@
   "inv.images_pdfs_and_documents_up_to_10mb": "Gambar, PDFs, dan dokumen hingga 10MB",
   "inv.invalid_json_body": "Isi JSON tidak valid",
   "inv.invalid_quantities_use_commaseparated_numbers": "Jumlah tidak valid - gunakan angka yang dipisahkan koma.",
-  "inv.invalid_resulting_cost_price": "Harga biaya yang dihasilkan tidak valid.",
   "inv.invalid_split_quantity": "Kuantitas pemisahan tidak valid.",
   "inv.items_merged_successfully": "Item berhasil digabungkan.",
   "inv.merge_reclass_pending": "Item ini disimpan di akun persediaan yang berbeda. Penggabungan akan memindahkan {moves} ke {to}.",

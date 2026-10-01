@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import re
 import uuid
 from dataclasses import dataclass
@@ -47,7 +50,6 @@ from .services import (
     source_header_semantics,
 )
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD
-from celerp.services.account_roles import lot_account
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.business_time import business_date_at
@@ -333,11 +335,12 @@ class MergeBody(BaseModel):
     source_entity_ids: list[str]
     target_sku_from: str                       # entity_id of the source whose SKU/barcode to use
     resulting_quantity: FiniteFloat | None = None    # optional override (default = sum)
-    resulting_cost_total: FiniteFloat | None = None  # optional override (default = sum of source cost_totals)
+    resulting_cost_total: FiniteFloat | None = None  # must equal the sources' cost; a merge never revalues
     resulting_name: str | None = None          # optional override (default = target's name)
     resulting_sku: str | None = None           # optional custom SKU (default = target's SKU); issue #190
     resolved_attributes: dict | None = None    # user picks for conflicting string attributes
     idempotency_key: str | None = None
+    plan_fingerprint: str | None = None        # from the preview the user confirmed; refused if the items changed since
 
 
 class TransformBody(BaseModel):
@@ -1717,7 +1720,6 @@ async def _build_item_preview(
     Raises 404 when the file id is malformed, missing, or owned by another
     company; 422 when the bytes cannot be read as a table.
     """
-    import hashlib
 
     from celerp.ai.files import load_file
     from celerp.importers.tabular import (
@@ -3750,20 +3752,58 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
 
 
 
-class MergePreviewBody(BaseModel):
-    source_entity_ids: list[str]
-    target_sku_from: str
-
-
 # A merge sent with an idempotency key gets its result id from the key, so every
 # delivery of the same merge names the same item and the same journal entry.
 _MERGE_ID_NAMESPACE = uuid.UUID("6f1d3c52-9a1e-4c55-9d1e-2a7f5b0e8c41")
+
+_STALE_MERGE = "The inventory changed since this merge was reviewed. Review the merge again."
 
 
 def _merge_result_id(company_id, idempotency_key: str | None) -> str:
     if not idempotency_key:
         return f"item:{uuid.uuid4()}"
     return f"item:{uuid.uuid5(_MERGE_ID_NAMESPACE, f'{company_id}:{idempotency_key}')}"
+
+
+def _check_merge_request(payload: MergeBody) -> None:
+    _validate_sku(payload.resulting_sku)
+    if len(payload.source_entity_ids) < 2:
+        raise HTTPException(status_code=422, detail="At least 2 source_entity_ids are required to merge.")
+    if len(set(payload.source_entity_ids)) != len(payload.source_entity_ids):
+        raise HTTPException(status_code=422, detail="source_entity_ids must contain distinct items.")
+    if payload.target_sku_from not in payload.source_entity_ids:
+        raise HTTPException(status_code=422, detail="target_sku_from must identify one of the merge sources.")
+
+
+def _merge_request_digest(payload: MergeBody) -> str:
+    """What a merge asks for, whatever order its items are listed in. A retry under
+    the same idempotency key must ask for exactly this."""
+    canonical = {
+        "sources": sorted(payload.source_entity_ids),
+        "target": payload.target_sku_from,
+        "quantity": payload.resulting_quantity,
+        "cost_total": payload.resulting_cost_total,
+        "name": payload.resulting_name,
+        "sku": payload.resulting_sku,
+        "attributes": payload.resolved_attributes or {},
+    }
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _merge_fingerprint(target_id: str, sources: list[Projection], reclass) -> str:
+    """Names the stock a merge plan was made from and where its value goes. Keyed, so
+    it reveals nothing about cost to a role that cannot see cost."""
+    from celerp.config import settings as app_settings
+
+    basis = {
+        "target": target_id,
+        "sources": [[p.entity_id, p.state] for p in sorted(sources, key=lambda p: p.entity_id)],
+        "destination": reclass.destination,
+        "moves": {code: str(amount) for code, amount in reclass.moves.items()},
+        "currency": reclass.currency,
+    }
+    message = json.dumps(basis, sort_keys=True, default=str).encode()
+    return hmac.new(app_settings.jwt_secret.encode(), message, hashlib.sha256).hexdigest()
 
 
 async def _merge_disclosure(session: AsyncSession, company_id, reclass, settings: dict, role: str) -> dict | None:
@@ -3784,69 +3824,35 @@ async def _merge_disclosure(session: AsyncSession, company_id, reclass, settings
     return disclosure
 
 
-async def _merge_reclassification(session: AsyncSession, company_id, settings: dict, target_id: str,
-                                  sources: list[Projection]):
+@dataclass
+class MergePlan:
+    """Everything a merge writes, decided once from the source items as they stand."""
+
+    sources: list[Projection]
+    create_data: dict
+    price_fields: dict
+    merged_sku: str
+    location_id: uuid.UUID | None
+    reclass: object
+    disclosure: dict | None
+    fingerprint: str
+
+
+async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, settings: dict, role: str,
+                      rows: dict[str, Projection]) -> MergePlan:
+    """The one merge plan, shared by the preview and the merge itself. ``rows`` are the
+    source items as read by the caller; the merge passes them locked."""
+    from celerp.connectors import ownership, registry
     from celerp.services.auto_je import company_currency, merge_reclassification
-
-    survivor = next(p for p in sources if p.entity_id == target_id)
-    return merge_reclassification(settings, survivor.state, [p.state for p in sources],
-                                  await company_currency(session, company_id))
-
-
-@router.post("/merge/preview")
-async def preview_merge(payload: MergePreviewBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
-    """What merging these items would do to the books, before the user confirms."""
-    if payload.target_sku_from not in payload.source_entity_ids:
-        raise HTTPException(status_code=422, detail="target_sku_from must identify one of the merge sources.")
-    rows = {p.entity_id: p for p in (await session.execute(select(Projection).where(
-        Projection.company_id == company_id, Projection.entity_type == "item",
-        Projection.entity_id.in_(payload.source_entity_ids)))).scalars()}
-    missing = [sid for sid in payload.source_entity_ids if sid not in rows]
-    if missing:
-        raise HTTPException(status_code=404, detail=f"Item '{missing[0]}' not found.")
-    reclass = await _merge_reclassification(session, company_id, settings, payload.target_sku_from,
-                                            [rows[sid] for sid in payload.source_entity_ids])
-    return {"inventory_reclassification": await _merge_disclosure(session, company_id, reclass, settings, role)}
-
-
-@router.post("/merge")
-async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    _validate_sku(payload.resulting_sku)
-    if len(payload.source_entity_ids) < 2:
-        raise HTTPException(status_code=422, detail="At least 2 source_entity_ids are required to merge.")
-    if len(set(payload.source_entity_ids)) != len(payload.source_entity_ids):
-        raise HTTPException(status_code=422, detail="source_entity_ids must contain distinct items.")
-
-    if payload.target_sku_from not in payload.source_entity_ids:
-        raise HTTPException(
-            status_code=422,
-            detail="target_sku_from must identify one of the merge sources.",
-        )
+    from celerp_inventory.services import external_link_for_state, normalize_sku
 
     reject_price_change(
         price_keys_in({"attributes": payload.resolved_attributes or {}}, (await get_price_config(session, company_id))[0]),
         role, settings,
     )
-    from celerp.connectors import ownership, registry
-
-    # Hold every product channel steady (connect and disconnect wait) before the
-    # item locks, so the link check below cannot race a connector change.
-    for platform in sorted(ownership.PRODUCT_CHANNEL_PLATFORMS):
-        await ownership.lock_connector_key(session, platform)
-    locked_sources = await _lock_items_for_physical_mutation(session, company_id, payload.source_entity_ids)
-    if payload.idempotency_key:
-        # A repeat delivery of a merge that already happened gets its result again. Read
-        # under the item locks, so a delivery still in flight finishes first.
-        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
-        if replay is not None:
-            merged_from = (replay.metadata_ or {}).get("merged_from")
-            if replay.event_type != "item.created" or merged_from != payload.source_entity_ids:
-                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
-            return {"id": replay.entity_id,
-                    "inventory_reclassification": (replay.metadata_ or {}).get("inventory_reclassification")}
     source_projections: list[Projection] = []
     for sid in payload.source_entity_ids:
-        proj = locked_sources.get(sid)
+        proj = rows.get(sid)
         if proj is None:
             raise HTTPException(status_code=404, detail=f"Item '{sid}' not found.")
         status = str((proj.state or {}).get("status") or "").lower()
@@ -3854,9 +3860,11 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             raise HTTPException(status_code=422, detail=f"Cannot merge a draft item ({sid}); make it available first.")
         if status == "merged":
             raise HTTPException(status_code=409, detail=f"Item '{sid}' has already been merged.")
+        if not is_item_available(proj.state or {}):
+            sku = (proj.state or {}).get("sku") or sid
+            raise HTTPException(status_code=409,
+                                detail=f"Item '{sku}' is not on hand ({status or 'no status'}), so it cannot be merged.")
         source_projections.append(proj)
-
-    from celerp_inventory.services import external_link_for_state, normalize_sku
 
     try:
         connected = await ownership.connected_connector_platforms(session, company_id)
@@ -3875,7 +3883,6 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             status_code=409,
             detail=f"This catalog product is currently linked to {' and '.join(live)}. Merge its physical lots instead.",
         )
-
     explicit_catalog_ids = {
         str((proj.state or {}).get("catalog_item_id"))
         for proj in source_projections
@@ -3960,7 +3967,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         )
 
     # Resolve target projection (SKU/barcode/name/prices come from this source).
-    target_proj = locked_sources[payload.target_sku_from]
+    target_proj = rows[payload.target_sku_from]
 
     def _get_expiry(proj: Projection) -> str | None:
         raw = proj.state.get("expires_at")
@@ -4089,20 +4096,28 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         _natural_qty = round(float(total_qty), _qty_dp) if _qty_dp is not None else float(total_qty)
         if resulting_qty != _natural_qty and not role_has_permission(settings, role, "edit_inventory_amounts"):
             raise HTTPException(status_code=403, detail=f"Role '{role}' cannot hand-set the merged quantity: requires the edit_inventory_amounts permission")
-    # A cost that differs from the sources' sum is a price write, so it takes the same
-    # set_inventory_prices gate as PATCH; sending the computed sum back is not a change.
-    if payload.resulting_cost_total is not None and payload.resulting_cost_total != merged_cost_total:
+    # A merge keeps the value of what it combines. Changing that value is a cost
+    # correction on the merged item, never part of the merge. A role that may not
+    # write prices is refused as for any price write, so its answer says nothing
+    # about the cost.
+    currency = await company_currency(session, company_id)
+    if payload.resulting_cost_total is not None and (
+        merged_cost_total is None
+        or round_money(to_decimal(payload.resulting_cost_total), currency) != round_money(to_decimal(merged_cost_total), currency)
+    ):
         reject_price_change({"cost_total"}, role, settings)
-    resulting_cost = payload.resulting_cost_total if payload.resulting_cost_total is not None else merged_cost_total
+        raise HTTPException(
+            status_code=422,
+            detail="A merge keeps the cost of the items it combines. To change the merged item's cost, "
+                   "merge first and then make a cost correction on the merged item.",
+        )
     resulting_name = payload.resulting_name if payload.resulting_name is not None else str(target_proj.state.get("name") or "")
 
     # Update expiry_date attribute to earliest.
     if earliest_expiry:
         resolved_attrs["expiry_date"] = earliest_expiry
 
-    # Build item.created data from target projection.
     target_state = target_proj.state
-    new_entity_id = _merge_result_id(company_id, payload.idempotency_key)
     # The merged item is genuinely new, so its SKU can be the target's (default),
     # or a custom value the user typed (issue #190). SKU is a product-type that may
     # repeat across lots (per-lot identity is the barcode + entity_id), so no
@@ -4115,13 +4130,6 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             status_code=409,
             detail="A merged catalog-family lot must keep its catalog product SKU.",
         )
-    # The merged item is a new physical lot, so it mints a FRESH barcode rather than
-    # inheriting the target's: the source items are deactivated (status="merged") but
-    # keep their barcodes, so copying the target's here would collide with the still
-    # indexed source under uq_projection_company_item_barcode. allocate_internal_codes
-    # locks the company's code namespace, so a concurrent create/split/merge cannot
-    # mint the same barcode.
-    merged_barcode = (await allocate_internal_codes(session, company_id))[0]
     create_data: dict = {
         "sku": merged_sku,
         "name": resulting_name,
@@ -4130,20 +4138,17 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         "status": "available",
         "allow_splitting": splitting_allowed(target_state),
         "attributes": resolved_attrs,
-        "barcode": merged_barcode,
     }
     if merged_catalog_id:
         create_data["catalog_item_id"] = merged_catalog_id
     # The merged lot keeps the surviving lot's inventory account; value held in any
-    # other account moves into it with the merge (posted below, before the commit).
-    reclass = await _merge_reclassification(session, company_id, settings, payload.target_sku_from,
-                                            source_projections)
+    # other account moves into it with the merge.
+    reclass = merge_reclassification(settings, target_state, [p.state for p in source_projections], currency)
     create_data[LOT_ACCOUNT_FIELD] = reclass.destination
-    disclosure = await _merge_disclosure(session, company_id, reclass, settings, role)
 
     # The merged item is the same product as the target, so carry the target's product
     # GTIN. The physical RFID/EPC tag is NOT carried: the merged item is a new physical
-    # unit (a fresh barcode is minted above), so it starts with no physical tag.
+    # unit (the merge mints a fresh barcode), so it starts with no physical tag.
     for field in ("category", "location_id", "description", "unit", "tax_codes", "gtin"):
         val = target_state.get(field)
         if val is not None:
@@ -4154,9 +4159,93 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     weight_unit = target_state.get("weight_unit")
     if weight_unit:
         create_data["weight_unit"] = weight_unit
-    # Create the new merged item.
+
+    # Pricing for the merged money fields (issue #199). Each *_price field is a PER-UNIT
+    # price, so it is reconciled on the source TOTALS (unit × qty): if every source has the price set,
+    # the merged total is their sum (stored back as a unit = total / merged_qty); if ANY source lacks
+    # the price, the merged item carries NO value for it (omit) rather than copying the target's price
+    # or treating the missing one as 0. cost_total is already a total (computed above).
+    price_fields: dict = {}
+    if merged_cost_total is not None:
+        price_fields["cost_total"] = merged_cost_total
+    _price_keys = {
+        k for p in source_projections for k in p.state
+        if k.endswith("_price") and k != "cost_price"
+    }
+    _merge_qty = float(resulting_qty) or 0.0
+    for pk in _price_keys:
+        src_totals = []
+        for p in source_projections:
+            unit = p.state.get(pk)
+            src_totals.append(None if unit in (None, "") else float(unit) * float(p.state.get("quantity") or 0))
+        if src_totals and all(t is not None for t in src_totals):
+            merged_total = sum(src_totals)
+            price_fields[pk] = round(merged_total / _merge_qty, 10) if _merge_qty else merged_total
+        # else: at least one source lacks this price → omit (merged item has no value for it)
+
     raw_loc = target_state.get("location_id")
-    emit_location_id = uuid.UUID(str(raw_loc)) if raw_loc else None
+    return MergePlan(
+        sources=source_projections,
+        create_data=create_data,
+        price_fields=price_fields,
+        merged_sku=merged_sku,
+        location_id=uuid.UUID(str(raw_loc)) if raw_loc else None,
+        reclass=reclass,
+        disclosure=await _merge_disclosure(session, company_id, reclass, settings, role),
+        fingerprint=_merge_fingerprint(payload.target_sku_from, source_projections, reclass),
+    )
+
+
+@router.post("/merge/preview")
+async def preview_merge(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
+    """What merging these items would do to the books, before the user confirms. The
+    merge refuses if the items change between this preview and the confirmation."""
+    _check_merge_request(payload)
+    rows = {p.entity_id: p for p in (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item",
+        Projection.entity_id.in_(payload.source_entity_ids)))).scalars()}
+    plan = await _plan_merge(session, company_id, payload, settings, role, rows)
+    return {"inventory_reclassification": plan.disclosure, "plan_fingerprint": plan.fingerprint}
+
+
+@router.post("/merge")
+async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    _check_merge_request(payload)
+    from celerp.connectors import ownership
+    from celerp.services.account_roles import current_settings
+    from celerp.services.auto_je import create_for_merge_reclassification
+
+    # Hold every product channel steady (connect and disconnect wait) before the
+    # item locks, so the link check in the plan cannot race a connector change.
+    for platform in sorted(ownership.PRODUCT_CHANNEL_PLATFORMS):
+        await ownership.lock_connector_key(session, platform)
+    locked_sources = await _lock_items_for_physical_mutation(session, company_id, payload.source_entity_ids)
+    request_digest = _merge_request_digest(payload)
+    if payload.idempotency_key:
+        # A repeat delivery of a merge that already happened gets its result again. Read
+        # under the item locks, so a delivery still in flight finishes first.
+        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
+        if replay is not None:
+            meta = replay.metadata_ or {}
+            if replay.event_type != "item.created" or meta.get("merge_request") != request_digest:
+                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            return {"id": replay.entity_id, "inventory_reclassification": meta.get("inventory_reclassification")}
+
+    # Plan again under the locks, from the settings as last committed, and refuse if
+    # the items are no longer what the user reviewed.
+    settings = await current_settings(session, company_id)
+    plan = await _plan_merge(session, company_id, payload, settings, role, locked_sources)
+    if payload.plan_fingerprint is not None and not hmac.compare_digest(payload.plan_fingerprint, plan.fingerprint):
+        raise HTTPException(status_code=409, detail=_STALE_MERGE)
+
+    new_entity_id = _merge_result_id(company_id, payload.idempotency_key)
+    # The merged item is a new physical lot, so it mints a FRESH barcode rather than
+    # inheriting the target's: the source items are deactivated (status="merged") but
+    # keep their barcodes, so copying the target's here would collide with the still
+    # indexed source under uq_projection_company_item_barcode. allocate_internal_codes
+    # locks the company's code namespace, so a concurrent create/split/merge cannot
+    # mint the same barcode.
+    create_data = {**plan.create_data, "barcode": (await allocate_internal_codes(session, company_id))[0]}
     await emit_event(
         session,
         company_id=company_id,
@@ -4165,10 +4254,11 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         event_type="item.created",
         data=create_data,
         actor_id=user.id,
-        location_id=emit_location_id,
+        location_id=plan.location_id,
         source="api",
         idempotency_key=payload.idempotency_key or f"merge:{new_entity_id}",
-        metadata_={"merged_from": payload.source_entity_ids, "inventory_reclassification": disclosure},
+        metadata_={"merged_from": payload.source_entity_ids, "merge_request": request_digest,
+                   "inventory_reclassification": plan.disclosure},
     )
 
     # Carry attached files from every source onto the merged item (dedup by id; keep one hero)
@@ -4176,7 +4266,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     from datetime import datetime as _dt, timezone as _tz
     _seen_files: set[str] = set()
     _hero_used = False
-    for proj in source_projections:
+    for proj in plan.sources:
         for f in (proj.state.get("files") or []):
             fid = f.get("id")
             if not fid or fid in _seen_files:
@@ -4211,30 +4301,8 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
                 metadata_={"reason": "from_merge"},
             )
 
-    # Emit pricing events for the merged money fields (issue #199). Each *_price field is a PER-UNIT
-    # price, so it is reconciled on the source TOTALS (unit × qty): if every source has the price set,
-    # the merged total is their sum (stored back as a unit = total / merged_qty); if ANY source lacks
-    # the price, the merged item carries NO value for it (omit) rather than copying the target's price
-    # or treating the missing one as 0. cost_total is already a total (computed above).
-    price_fields: dict = {}
-    if resulting_cost is not None:
-        price_fields["cost_total"] = resulting_cost
-    _price_keys = {
-        k for p in source_projections for k in p.state
-        if k.endswith("_price") and k != "cost_price"
-    }
-    _merge_qty = float(resulting_qty) or 0.0
-    for pk in _price_keys:
-        src_totals = []
-        for p in source_projections:
-            unit = p.state.get(pk)
-            src_totals.append(None if unit in (None, "") else float(unit) * float(p.state.get("quantity") or 0))
-        if src_totals and all(t is not None for t in src_totals):
-            merged_total = sum(src_totals)
-            price_fields[pk] = round(merged_total / _merge_qty, 10) if _merge_qty else merged_total
-        # else: at least one source lacks this price → omit (merged item has no value for it)
 
-    for price_type, price_val in price_fields.items():
+    for price_type, price_val in plan.price_fields.items():
         await emit_event(
             session,
             company_id=company_id,
@@ -4250,7 +4318,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         )
 
     # Emit item.merged marker on the new item for history display.
-    source_skus = {p.entity_id: str(p.state.get("sku") or p.entity_id) for p in source_projections}
+    source_skus = {p.entity_id: str(p.state.get("sku") or p.entity_id) for p in plan.sources}
     await emit_event(
         session,
         company_id=company_id,
@@ -4260,7 +4328,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         data={
             "source_entity_ids": payload.source_entity_ids,
             "source_skus": source_skus,
-            "resulting_qty": float(resulting_qty),
+            "resulting_qty": float(plan.create_data["quantity"]),
         },
         actor_id=user.id,
         location_id=None,
@@ -4270,8 +4338,8 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     )
 
     # Deactivate all source items: qty=0, is_available=False, merged_into=new item.
-    new_sku = merged_sku or new_entity_id
-    for proj in source_projections:
+    new_sku = plan.merged_sku or new_entity_id
+    for proj in plan.sources:
         await emit_event(
             session,
             company_id=company_id,
@@ -4293,15 +4361,14 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             metadata_={},
         )
 
-    from celerp.services.auto_je import create_for_merge_reclassification
     await create_for_merge_reclassification(
         session, company_id=company_id, user_id=user.id, merged_id=new_entity_id, merged_sku=new_sku,
-        source_ids=payload.source_entity_ids, reclass=reclass,
+        source_ids=payload.source_entity_ids, reclass=plan.reclass,
         ts=business_date_at(datetime.now(timezone.utc), settings.get("timezone")),
     )
 
     await session.commit()
-    return {"id": new_entity_id, "inventory_reclassification": disclosure}
+    return {"id": new_entity_id, "inventory_reclassification": plan.disclosure}
 
 
 async def _latest_item_event(session: AsyncSession, company_id, entity_id: str):

@@ -717,7 +717,6 @@
   "inv.images_pdfs_and_documents_up_to_10mb": "ምስሎች፣ PDF እና ሰነዶች እስከ 10MB",
   "inv.invalid_json_body": "ልክ ያልሆነ JSON ይዘት",
   "inv.invalid_quantities_use_commaseparated_numbers": "ልክ ያልሆኑ ብዛቶች - በኮማ የተለያዩ ቁጥሮችን ይጠቀሙ።",
-  "inv.invalid_resulting_cost_price": "ልክ ያልሆነ የመጨረሻ ወጪ ዋጋ።",
   "inv.invalid_split_quantity": "ልክ ያልሆነ የክፍፍል ብዛት።",
   "inv.items_merged_successfully": "ዕቃዎች በተሳካ ሁኔታ ተዋህደዋል።",
   "inv.merge_reclass_pending": "እነዚህ ዕቃዎች በተለያዩ የክምችት ሂሳቦች ውስጥ ናቸው። ማዋሃድ {moves} ወደ {to} ያስተላልፋል።",

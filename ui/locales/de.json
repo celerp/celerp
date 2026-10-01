@@ -664,7 +664,6 @@
   "inv.images_pdfs_and_documents_up_to_10mb": "Bilder, PDFs und Dokumente bis zu 10 MB",
   "inv.invalid_json_body": "Ungültiger JSON-Inhalt",
   "inv.invalid_quantities_use_commaseparated_numbers": "Ungültige Mengen – kommagetrennte Zahlen verwenden.",
-  "inv.invalid_resulting_cost_price": "Ungültiger resultierender Einstandspreis.",
   "inv.invalid_split_quantity": "Ungültige Aufteilungsmenge.",
   "inv.items_merged_successfully": "Artikel erfolgreich zusammengeführt.",
   "inv.merge_reclass_pending": "Diese Artikel werden auf verschiedenen Bestandskonten geführt. Beim Zusammenführen werden {moves} auf {to} umgebucht.",

@@ -184,14 +184,6 @@ async def test_independent_adjustment_of_the_result_is_preserved(client, session
 
 
 @pytest.mark.asyncio
-async def test_merge_cost_override_is_the_baseline_for_later_deltas(client, session, auth):
-    a, b = await _item(client, auth, 100.0), await _item(client, auth, 50.0)
-    c = await _merge(client, auth, [a, b], resulting_cost_total=130.0)
-    assert (await _set_cost(client, auth, b, 45.0)).status_code == 200
-    assert await _cost(session, auth, c) == 125.0
-
-
-@pytest.mark.asyncio
 async def test_cost_price_endpoint_restates_through_lineage(client, session, auth):
     a, b = await _item(client, auth, 100.0, qty=2), await _item(client, auth, 50.0)
     c = await _merge(client, auth, [a, b])

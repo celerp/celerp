@@ -120,7 +120,7 @@ EXTERNAL_LINK_CALLERS: dict[tuple[str, str], tuple[str, str]] = {
         ("SYNC", "requires the connector to be owned before changing a link"),
     ("default_modules/celerp-docs/celerp_docs/doc_service.py", "_set_woocommerce_order_stock_paused"): ("SYNC", _SYNC),
     ("default_modules/celerp-docs/celerp_docs/doc_service.py", "upsert_order_from_woocommerce"): ("SYNC", _SYNC),
-    (f"{INVENTORY}/routes.py", "merge_items"): ("ACTIVE", "refuses a merge for a live channel link"),
+    (f"{INVENTORY}/routes.py", "_plan_merge"): ("ACTIVE", "refuses a merge for a live channel link"),
     (f"{INVENTORY}/routes.py", "query_items"): ("ACTIVE", "Catalog channel state and the source filter"),
     (f"{INVENTORY}/services.py", "build_channel_states"): ("ACTIVE", "Catalog linked/historical state"),
     (f"{INVENTORY}/services.py", "_assert_external_identity_available"): ("SYNC", _SYNC),

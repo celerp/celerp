@@ -664,7 +664,6 @@
   "inv.images_pdfs_and_documents_up_to_10mb": "Hình ảnh, PDFs và tài liệu lên tới 10MB",
   "inv.invalid_json_body": "Nội dung JSON không hợp lệ",
   "inv.invalid_quantities_use_commaseparated_numbers": "Số lượng không hợp lệ - sử dụng các số được phân tách bằng dấu phẩy.",
-  "inv.invalid_resulting_cost_price": "Giá vốn kết quả không hợp lệ.",
   "inv.invalid_split_quantity": "Số lượng chia không hợp lệ.",
   "inv.items_merged_successfully": "Các mục được hợp nhất thành công.",
   "inv.merge_reclass_pending": "Các mục này nằm trong các tài khoản tồn kho khác nhau. Việc hợp nhất sẽ chuyển {moves} sang {to}.",

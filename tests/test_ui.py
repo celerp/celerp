@@ -5578,7 +5578,7 @@ class TestItemActionRouteCompleteness:
     async def test_merge_passes_correct_args(self, ui_client):
         captured = {}
         async def _mock(token, source_entity_ids, target_sku_from, resulting_quantity=None,
-                        resulting_cost_total=None, resulting_name=None, resulting_sku=None,
+                        resulting_name=None, resulting_sku=None,
                         resolved_attributes=None, idempotency_key=None):
             captured.update({
                 "sources": source_entity_ids,

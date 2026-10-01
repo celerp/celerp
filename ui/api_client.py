@@ -2473,17 +2473,15 @@ async def merge_items(
     source_entity_ids: list[str],
     target_sku_from: str,
     resulting_quantity: float | None = None,
-    resulting_cost_total: float | None = None,
     resulting_name: str | None = None,
     resulting_sku: str | None = None,
     resolved_attributes: dict | None = None,
     idempotency_key: str | None = None,
+    plan_fingerprint: str | None = None,
 ) -> dict:
     body: dict = {"source_entity_ids": source_entity_ids, "target_sku_from": target_sku_from}
     if resulting_quantity is not None:
         body["resulting_quantity"] = resulting_quantity
-    if resulting_cost_total is not None:
-        body["resulting_cost_total"] = resulting_cost_total
     if resulting_name is not None:
         body["resulting_name"] = resulting_name
     if resulting_sku is not None:
@@ -2492,6 +2490,8 @@ async def merge_items(
         body["resolved_attributes"] = resolved_attributes
     if idempotency_key:
         body["idempotency_key"] = idempotency_key
+    if plan_fingerprint:
+        body["plan_fingerprint"] = plan_fingerprint
     async with _api_client(token) as c:
         return _raise(await c.post("/items/merge", json=body)).json()
 

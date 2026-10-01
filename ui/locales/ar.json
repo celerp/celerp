@@ -664,7 +664,6 @@
   "inv.images_pdfs_and_documents_up_to_10mb": "الصور وPDFs والمستندات التي يصل حجمها إلى 10 ميجابايت",
   "inv.invalid_json_body": "نص JSON غير صالح",
   "inv.invalid_quantities_use_commaseparated_numbers": "كميات غير صالحة - استخدم أرقامًا مفصولة بفواصل.",
-  "inv.invalid_resulting_cost_price": "سعر التكلفة الناتج غير صالح.",
   "inv.invalid_split_quantity": "كمية مقسمة غير صالحة.",
   "inv.items_merged_successfully": "تم دمج العناصر بنجاح.",
   "inv.merge_reclass_pending": "هذه العناصر مسجلة في حسابات مخزون مختلفة. سيؤدي الدمج إلى نقل {moves} إلى {to}.",

@@ -3429,18 +3429,18 @@ function celerpPrintLabel(entityId, templateId) {
         target_sku_from = str(form.get("target_sku_from", "")).strip()
         resulting_sku = str(form.get("resulting_sku", "")).strip() or None
         idempotency_key = str(form.get("idempotency_key", "")).strip() or None
+        plan_fingerprint = str(form.get("plan_fingerprint", "")).strip() or None
         if len(entity_ids) < 2:
             return Div(P(t("inv.select_at_least_2_items_to_merge"), cls="flash flash--warning"), id="bulk-action-result")
         if not target_sku_from:
             return Div(P(t("inv.target_item_selection_is_required"), cls="flash flash--warning"), id="bulk-action-result")
-        # Fetch items to compute totals and resolve attribute conflicts
+        # Fetch items to name the merged SKU in the post-merge filter.
         items = []
         for eid in entity_ids:
             try:
                 items.append(await api.get_item(token, eid))
             except APIError as e:
                 return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
-        total_qty = sum(float(it.get("quantity", 0) or 0) for it in items)
         # Attribute conflict resolution lives entirely in the merge endpoint (schema-aware: dropdowns
         # and custom attributes collapse to the "Mixed" system value, numeric fields drop). The UI
         # must not duplicate that logic.
@@ -3449,9 +3449,9 @@ function celerpPrintLabel(entityId, templateId) {
                 token,
                 source_entity_ids=entity_ids,
                 target_sku_from=target_sku_from,
-                resulting_quantity=total_qty,
                 resulting_sku=resulting_sku,
                 idempotency_key=idempotency_key,
+                plan_fingerprint=plan_fingerprint,
             )
         except APIError as e:
             # Surface merge failures (e.g. a weight-unit mismatch) as the standard lower-right toast.
@@ -3467,7 +3467,8 @@ function celerpPrintLabel(entityId, templateId) {
     @app.post("/api/items/merge/preview")
     async def item_merge_preview(request: Request):
         """The inventory accounts the pending merge moves value between, as one sentence
-        for the merge confirmation; empty when the items share an account."""
+        for the merge confirmation (empty when the items share an account), and the
+        fingerprint the confirmation sends back so a changed item stops the merge."""
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3478,7 +3479,8 @@ function celerpPrintLabel(entityId, templateId) {
             preview = await api.preview_merge(token, entity_ids, target_sku_from)
         except APIError as e:
             return JSONResponse({"error": str(e.detail)}, status_code=e.status)
-        return JSONResponse({"message": _merge_reclass_sentence(preview.get("inventory_reclassification"))})
+        return JSONResponse({"message": _merge_reclass_sentence(preview.get("inventory_reclassification")),
+                             "plan_fingerprint": preview.get("plan_fingerprint")})
 
     @app.post("/api/items/{entity_id}/undo-merge")
     async def item_undo_merge(request: Request, entity_id: str):
@@ -4551,17 +4553,12 @@ function celerpPrintLabel(entityId, templateId) {
         if not source_entity_ids or not target_sku_from:
             return Span(t("inv.source_items_and_target_selection_are_required"), cls="flash flash--error")
         raw_qty = str(form.get("resulting_quantity", "")).strip()
-        raw_cost = str(form.get("resulting_cost_total", "")).strip()
         resulting_name = str(form.get("resulting_name", "")).strip() or None
         resulting_sku = str(form.get("resulting_sku", "")).strip() or None
         try:
             resulting_quantity = float(raw_qty) if raw_qty else None
         except ValueError:
             return Span(t("error.invalid_resulting_quantity"), cls="flash flash--error")
-        try:
-            resulting_cost_total = float(raw_cost) if raw_cost else None
-        except ValueError:
-            return Span(t("inv.invalid_resulting_cost_price"), cls="flash flash--error")
         # Collect resolved attributes for string conflicts.
         resolved_attributes: dict = {}
         for key, val in form.multi_items():
@@ -4580,7 +4577,6 @@ function celerpPrintLabel(entityId, templateId) {
                 source_entity_ids=source_entity_ids,
                 target_sku_from=target_sku_from,
                 resulting_quantity=resulting_quantity,
-                resulting_cost_total=resulting_cost_total,
                 resulting_name=resulting_name,
                 resulting_sku=resulting_sku,
                 resolved_attributes=resolved_attributes or None,

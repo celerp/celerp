@@ -664,7 +664,6 @@
   "inv.images_pdfs_and_documents_up_to_10mb": "Imágenes, PDFs y documentos de hasta 10 MB",
   "inv.invalid_json_body": "Cuerpo JSON no válido",
   "inv.invalid_quantities_use_commaseparated_numbers": "Cantidades no válidas: utilice números separados por comas.",
-  "inv.invalid_resulting_cost_price": "Precio de coste resultante no válido.",
   "inv.invalid_split_quantity": "Cantidad dividida no válida.",
   "inv.items_merged_successfully": "Los elementos se fusionaron correctamente.",
   "inv.merge_reclass_pending": "Estos artículos están en cuentas de inventario diferentes. Al fusionarlos se moverán {moves} a {to}.",

@@ -664,7 +664,6 @@
   "inv.images_pdfs_and_documents_up_to_10mb": "รูปภาพ PDFs และเอกสารขนาดสูงสุด 10MB",
   "inv.invalid_json_body": "เนื้อความ JSON ไม่ถูกต้อง",
   "inv.invalid_quantities_use_commaseparated_numbers": "ปริมาณไม่ถูกต้อง - ใช้ตัวเลขคั่นด้วยเครื่องหมายจุลภาค",
-  "inv.invalid_resulting_cost_price": "ราคาต้นทุนผลลัพธ์ไม่ถูกต้อง",
   "inv.invalid_split_quantity": "ปริมาณการแยกไม่ถูกต้อง",
   "inv.items_merged_successfully": "รวมรายการเรียบร้อยแล้ว",
   "inv.merge_reclass_pending": "รายการเหล่านี้อยู่ในบัญชีสินค้าคงคลังต่างกัน การรวมจะโอน {moves} ไปยัง {to}",

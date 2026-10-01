@@ -59,10 +59,34 @@ async def test_the_bulk_merge_sends_one_key_and_raises_the_moved_value_as_a_toas
 
 @pytest.mark.asyncio
 async def test_the_merge_preview_returns_the_sentence(ui_client):
-    with patch("ui.api_client.preview_merge", new=AsyncMock(return_value={"inventory_reclassification": _TWO})):
+    with patch("ui.api_client.preview_merge", new=AsyncMock(
+            return_value={"inventory_reclassification": _TWO, "plan_fingerprint": "fp-1"})):
         r = await ui_client.post("/api/items/merge/preview", data={"selected": ["item:a", "item:b"],
                                                                    "target_sku_from": "item:a"}, cookies=_authed())
-    assert r.json() == {"message": _merge_reclass_sentence(_TWO)}
+    assert r.json() == {"message": _merge_reclass_sentence(_TWO), "plan_fingerprint": "fp-1"}
+
+
+_STALE = "The inventory changed since this merge was reviewed. Review the merge again."
+
+
+@pytest.mark.asyncio
+async def test_the_confirmed_merge_carries_the_preview_and_a_stale_one_is_explained(ui_client):
+    from ui.api_client import APIError
+    merge = AsyncMock(side_effect=APIError(409, _STALE))
+    with (
+        patch("ui.api_client.get_item", new=AsyncMock(return_value={"id": "item:a", "sku": "A", "quantity": 1})),
+        patch("ui.api_client.merge_items", new=merge),
+    ):
+        r = await ui_client.post(
+            "/api/items/bulk/merge",
+            content=b"selected=item%3Aa&selected=item%3Ab&target_sku_from=item%3Aa&plan_fingerprint=fp-1",
+            headers={"content-type": "application/x-www-form-urlencoded"},
+            cookies=_authed(),
+        )
+    assert merge.await_args.kwargs["plan_fingerprint"] == "fp-1"
+    # The quantity is the merge's own sum, never a figure the screen read earlier.
+    assert "resulting_quantity" not in merge.await_args.kwargs
+    assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == _STALE
 
 
 @pytest.mark.asyncio

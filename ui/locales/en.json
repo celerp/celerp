@@ -785,7 +785,6 @@
   "inv.images_pdfs_and_documents_up_to_10mb": "Images, PDFs, and documents up to 10MB",
   "inv.invalid_json_body": "Invalid JSON body",
   "inv.invalid_quantities_use_commaseparated_numbers": "Invalid quantities - use comma-separated numbers.",
-  "inv.invalid_resulting_cost_price": "Invalid resulting cost price.",
   "inv.invalid_split_quantity": "Invalid split quantity.",
   "inv.items_merged_successfully": "Items merged successfully.",
   "inv.merge_reclass_pending": "These items are held in different inventory accounts. Merging will move {moves} to {to}.",

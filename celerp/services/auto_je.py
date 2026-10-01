@@ -10,7 +10,6 @@ duplicate JEs regardless of trigger source (API, import, doctor repair).
 from __future__ import annotations
 
 import re
-import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal as _Dec
 
@@ -1484,8 +1483,13 @@ def merge_reclassification(settings: dict, survivor: dict, sources: list[dict], 
     goes to today. Every other source's carrying value (what a sale of it would
     relieve, landed cost included) moves out of the account that lot is held in."""
     recorded = {s.get(LOT_ACCOUNT_FIELD) for s in sources}
-    if len(recorded) == 1:
+    if len(recorded) == 1 and None not in recorded:
         return MergeReclassification(recorded.pop(), {}, currency)
+    if not any(lot_cost_of_sale(state) for state in sources):
+        # No source carries value, so nothing moves and no account needs proving. The
+        # merged lot records the survivor's own account, unknown included, as any lot
+        # carved from it would.
+        return MergeReclassification(survivor.get(LOT_ACCOUNT_FIELD), {}, currency)
     destination = lot_account(settings, survivor)
     by_account: dict[str, _Dec] = {}
     for state in sources:

@@ -1957,10 +1957,13 @@ function _populateMergeTargets(){
     var pf=new FormData();
     CelerpSelection.ids().forEach(function(id){pf.append('selected',id);});
     pf.append('target_sku_from',survivor);
-    fetch('/api/items/merge/preview',{method:'POST',body:pf})
+    // The confirmation carries the preview's fingerprint, so the merge refuses if the
+    // items change after the user saw this.
+    var planned=fetch('/api/items/merge/preview',{method:'POST',body:pf})
       .then(function(r){return r.json();})
-      .then(function(d){var m=d&&(d.message||d.error);if(m){note.textContent=m;note.style.display='';}})
-      .catch(function(){});
+      .then(function(d){var m=d&&(d.message||d.error);if(m){note.textContent=m;note.style.display='';}
+        return (d&&d.plan_fingerprint)||'';})
+      .catch(function(){return '';});
     // One key per confirmation, so a repeated click merges once.
     var mergeKey='merge-'+(window.crypto&&crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());
     var btnRow=document.createElement('div');
@@ -1976,25 +1979,25 @@ function _populateMergeTargets(){
         if(skuEl) skuEl.focus();
         return;
       }
-      var form=document.createElement('form');
-      CelerpSelection.ids().forEach(function(id){
-        var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
-        form.appendChild(inp);
+      var resultingSku=isNewSku?skuEl.value.trim():'';
+      planned.then(function(fingerprint){
+        var form=document.createElement('form');
+        CelerpSelection.ids().forEach(function(id){
+          var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
+          form.appendChild(inp);
+        });
+        var fields={target_sku_from:survivor,idempotency_key:mergeKey,resulting_sku:resultingSku,plan_fingerprint:fingerprint};
+        Object.keys(fields).forEach(function(name){
+          if(!fields[name]) return;
+          var inp=document.createElement('input');inp.type='hidden';inp.name=name;inp.value=fields[name];
+          form.appendChild(inp);
+        });
+        document.body.appendChild(form);
+        // Keep the form attached until the request finishes - removing it early detaches the htmx
+        // event source so HX-Trigger toasts (e.g. a unit-mismatch error) never reach the listener.
+        htmx.ajax('POST','/api/items/bulk/merge',{source:form,target:'#bulk-action-result',swap:'outerHTML'})
+          .then(function(){form.remove();},function(){form.remove();});
       });
-      var t=document.createElement('input');t.type='hidden';t.name='target_sku_from';
-      t.value=survivor;
-      form.appendChild(t);
-      var k=document.createElement('input');k.type='hidden';k.name='idempotency_key';k.value=mergeKey;
-      form.appendChild(k);
-      if(isNewSku){
-        var sk=document.createElement('input');sk.type='hidden';sk.name='resulting_sku';sk.value=skuEl.value.trim();
-        form.appendChild(sk);
-      }
-      document.body.appendChild(form);
-      // Keep the form attached until the request finishes - removing it early detaches the htmx
-      // event source so HX-Trigger toasts (e.g. a unit-mismatch error) never reach the listener.
-      htmx.ajax('POST','/api/items/bulk/merge',{source:form,target:'#bulk-action-result',swap:'outerHTML'})
-        .then(function(){form.remove();},function(){form.remove();});
     });
     var cancel=document.createElement('button');
     cancel.type='button';cancel.className='btn btn--ghost btn--sm';cancel.textContent='Cancel';

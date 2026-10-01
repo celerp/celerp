@@ -664,7 +664,6 @@
   "inv.images_pdfs_and_documents_up_to_10mb": "最大 10MB の画像、PDF、ドキュメント",
   "inv.invalid_json_body": "無効な JSON 本文",
   "inv.invalid_quantities_use_commaseparated_numbers": "無効な数量 - カンマ区切りの数値を使用してください。",
-  "inv.invalid_resulting_cost_price": "結果として得られる原価が無効です。",
   "inv.invalid_split_quantity": "分割数量が無効です。",
   "inv.items_merged_successfully": "アイテムは正常に結合されました。",
   "inv.merge_reclass_pending": "これらのアイテムは異なる在庫勘定で管理されています。結合すると {moves} が {to} に振り替えられます。",
