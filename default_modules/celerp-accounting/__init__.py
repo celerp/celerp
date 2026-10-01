@@ -22,6 +22,10 @@ PLUGIN_MANIFEST = {
         "on_company_created": {"handler": "celerp_accounting.routes:seed_chart_of_accounts_hook"},
         # The chart as the core journal boundary sees it (celerp.services.journal_accounts).
         "journal_accounts": {"handler": "celerp_accounting.chart_rules:lock_accounts"},
+        # The chart as posting-account choices see it, and adding an account for a role
+        # (celerp.services.posting_readiness).
+        "chart_accounts": {"handler": "celerp_accounting.chart_rules:chart_accounts"},
+        "add_chart_account": {"handler": "celerp_accounting.import_service:add_posting_account"},
         "on_modules_ready": {"handler": "celerp_accounting.routes:backfill_chart_of_accounts_hook"},
         "projection_handler": [
             {"prefix": "account.", "handler": "celerp_accounting.projections:apply_accounting_event"},

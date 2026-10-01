@@ -3491,5 +3491,11 @@
   "system_recovery.signed_out": "Everyone has been signed out. Sign in with an account from the restored installation.",
   "system_recovery.safety_saved": "A safety copy of the previous installation was saved to {path}.",
   "system_recovery.safety_failed_confirm": "Nothing has been changed. You can restore without a safety copy, which cannot be undone.",
-  "system_recovery.continue_without_safety": "Restore without safety copy"
+  "system_recovery.continue_without_safety": "Restore without safety copy",
+  "posting.section_title": "Posting accounts",
+  "posting.section_hint": "Choose the account each kind of entry posts to. Where your chart has no suitable account, add the one shown.",
+  "posting.col_role": "Used for",
+  "posting.col_account": "Account",
+  "posting.choose": "Choose an account",
+  "posting.add_account": "Add account {code} {name} ({type})"
 }

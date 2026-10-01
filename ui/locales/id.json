@@ -3491,5 +3491,11 @@
   "system_recovery.signed_out": "Semua orang telah dikeluarkan. Silakan masuk dengan akun dari instalasi yang dipulihkan.",
   "system_recovery.safety_saved": "Salinan pengaman dari instalasi sebelumnya disimpan di {path}.",
   "system_recovery.safety_failed_confirm": "Tidak ada yang diubah. Anda dapat memulihkan tanpa salinan pengaman, dan ini tidak dapat dibatalkan.",
-  "system_recovery.continue_without_safety": "Pulihkan tanpa salinan pengaman"
+  "system_recovery.continue_without_safety": "Pulihkan tanpa salinan pengaman",
+  "posting.section_title": "Akun posting",
+  "posting.section_hint": "Pilih akun tempat setiap jenis entri diposting. Jika bagan akun Anda tidak memiliki akun yang sesuai, tambahkan akun yang ditampilkan.",
+  "posting.col_role": "Digunakan untuk",
+  "posting.col_account": "Akun",
+  "posting.choose": "Pilih akun",
+  "posting.add_account": "Tambahkan akun {code} {name} ({type})"
 }

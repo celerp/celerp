@@ -16,6 +16,7 @@ from migration_support import (
     OWNER_EMAIL,
     auth,
     creator_run,
+    finalize_run,
     maker,
     migration_env,  # noqa: F401 - fixture
     real_client,  # noqa: F401 - fixture
@@ -139,7 +140,7 @@ async def test_finalized_company_not_classified_staged(real_engine, migration_en
     await migrations.run_migration(run_id)
     assert await _staged(real_engine, company_id) is True
     async with maker(real_engine)() as s:
-        await migrations.finalize(s, await creator_run(s, run_id))
+        await finalize_run(s, await creator_run(s, run_id))
     assert await _staged(real_engine, company_id) is False
 
 

@@ -25,6 +25,7 @@ from migration_support import (
     count,
     fake_bytes,
     fake_spec,
+    finalize_run,
     load_run,
     maker,
     migration_env,  # noqa: F401 - fixture
@@ -325,7 +326,7 @@ async def test_migration_source_retention_and_cleanup(real_engine, migration_env
 
     async def finish(run_id):
         async with maker(real_engine)() as s:
-            await migrations.finalize(s, await creator_run(s, run_id))
+            await finalize_run(s, await creator_run(s, run_id))
 
     # Completion deletes the source.
     done, _, _ = await staged_run(real_engine, email="done@example.com")

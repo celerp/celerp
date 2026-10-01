@@ -3491,5 +3491,11 @@
   "system_recovery.signed_out": "Tutti sono stati disconnessi. Accedi con un account dell'installazione ripristinata.",
   "system_recovery.safety_saved": "Una copia di sicurezza dell'installazione precedente è stata salvata in {path}.",
   "system_recovery.safety_failed_confirm": "Non è stato modificato nulla. Puoi ripristinare senza una copia di sicurezza, operazione che non può essere annullata.",
-  "system_recovery.continue_without_safety": "Ripristina senza copia di sicurezza"
+  "system_recovery.continue_without_safety": "Ripristina senza copia di sicurezza",
+  "posting.section_title": "Conti di registrazione",
+  "posting.section_hint": "Scegli il conto su cui viene registrato ogni tipo di scrittura. Se il tuo piano dei conti non ha un conto adatto, aggiungi quello indicato.",
+  "posting.col_role": "Usato per",
+  "posting.col_account": "Conto",
+  "posting.choose": "Scegli un conto",
+  "posting.add_account": "Aggiungi il conto {code} {name} ({type})"
 }

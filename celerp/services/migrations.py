@@ -77,6 +77,7 @@ from celerp.models.migration import (
 )
 from celerp.services import attachments
 from celerp.services import migration_scan_store as store
+from celerp.services import posting_readiness
 from celerp.services.auth import normalize_role
 from celerp.services.company_lock import lock_company
 from celerp.services.csv_export import csv_safe
@@ -859,9 +860,11 @@ async def is_company_migration_staged(session: AsyncSession, company_id: uuid.UU
     return bool(await session.scalar(select(Company.is_migration_staged).where(Company.id == company_id)))
 
 
-async def finalize(session: AsyncSession, run: MigrationRun) -> MigrationRun:
-    """Re-check verification under the company lock, then install the source's lock date and
-    activate the company in one commit, so the company never becomes normal without its lock."""
+async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: dict | None = None) -> MigrationRun:
+    """Re-check verification under the company lock, then set the posting accounts
+    (``posting_readiness.apply_choices`` with ``posting_accounts``), install the source's
+    lock date and activate the company in one commit, so the company never becomes normal
+    without its lock or the accounts its workflows post to."""
     await _lock_run(session, run)
     if run.status != _S.READY_TO_FINALIZE:
         raise _illegal("finalize", run)
@@ -873,6 +876,11 @@ async def finalize(session: AsyncSession, run: MigrationRun) -> MigrationRun:
             await session.commit()
             raise MigrationError(409, "Verification no longer matches the source. Resume the migration to re-run it.")
         company = await session.get(Company, run.company_id)
+        try:
+            await posting_readiness.apply_choices(session, run.company_id, posting_accounts)
+        except posting_readiness.ReadinessError as exc:
+            await session.rollback()
+            raise MigrationError(409, str(exc)) from None
         await add_missing_required_defaults(session, run.company_id)
         if run.source_lock_date:
             write_period_lock(company, run.source_lock_date.isoformat(), run.created_by_user_id)

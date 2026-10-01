@@ -3491,5 +3491,11 @@
   "system_recovery.signed_out": "Alle wurden abgemeldet. Melden Sie sich mit einem Konto aus der wiederhergestellten Installation an.",
   "system_recovery.safety_saved": "Eine Sicherheitskopie der vorherigen Installation wurde unter {path} gespeichert.",
   "system_recovery.safety_failed_confirm": "Es wurde nichts geändert. Sie können ohne Sicherheitskopie wiederherstellen, dies kann nicht rückgängig gemacht werden.",
-  "system_recovery.continue_without_safety": "Ohne Sicherheitskopie wiederherstellen"
+  "system_recovery.continue_without_safety": "Ohne Sicherheitskopie wiederherstellen",
+  "posting.section_title": "Buchungskonten",
+  "posting.section_hint": "Wählen Sie das Konto, auf das jede Art von Eintrag gebucht wird. Hat Ihr Kontenplan kein passendes Konto, fügen Sie das angezeigte hinzu.",
+  "posting.col_role": "Verwendet für",
+  "posting.col_account": "Konto",
+  "posting.choose": "Konto wählen",
+  "posting.add_account": "Konto {code} {name} ({type}) hinzufügen"
 }

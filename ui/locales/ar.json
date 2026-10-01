@@ -3491,5 +3491,11 @@
   "system_recovery.signed_out": "تم تسجيل خروج الجميع. قم بتسجيل الدخول بحساب من التثبيت المستعاد.",
   "system_recovery.safety_saved": "تم حفظ نسخة أمان من التثبيت السابق في {path}.",
   "system_recovery.safety_failed_confirm": "لم يتم تغيير أي شيء. يمكنك الاستعادة بدون نسخة أمان، ولا يمكن التراجع عن ذلك.",
-  "system_recovery.continue_without_safety": "الاستعادة بدون نسخة أمان"
+  "system_recovery.continue_without_safety": "الاستعادة بدون نسخة أمان",
+  "posting.section_title": "حسابات الترحيل",
+  "posting.section_hint": "اختر الحساب الذي يُرحَّل إليه كل نوع من القيود. إذا لم يكن في دليل حساباتك حساب مناسب، فأضف الحساب المعروض.",
+  "posting.col_role": "يُستخدم لـ",
+  "posting.col_account": "الحساب",
+  "posting.choose": "اختر حسابًا",
+  "posting.add_account": "إضافة الحساب {code} {name} ({type})"
 }

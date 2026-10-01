@@ -3574,9 +3574,21 @@ async def migration_reconciliation(token: str, run_id: str) -> dict:
 
 
 async def migration_run_action(token: str, run_id: str, action: str) -> dict:
-    """POST start, cancel, finalize or discard on a run; returns the API body."""
+    """POST start, cancel or discard on a run; returns the API body."""
     async with _api_client(token, timeout=30.0) as c:
         return _raise(await c.post(f"/migrations/{run_id}/{action}")).json()
+
+
+async def migration_posting_accounts(token: str, run_id: str) -> dict:
+    """GET the posting accounts finishing the run needs, with the accounts that can serve each."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/migrations/{run_id}/posting-accounts")).json()
+
+
+async def migration_finalize(token: str, run_id: str, posting_accounts: dict) -> dict:
+    """POST finalize with the chosen posting accounts and any accounts to add."""
+    async with _api_client(token, timeout=30.0) as c:
+        return _raise(await c.post(f"/migrations/{run_id}/finalize", json=posting_accounts)).json()
 
 
 async def migration_pack(token: str, run_id: str):

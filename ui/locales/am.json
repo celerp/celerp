@@ -3491,5 +3491,11 @@
   "system_recovery.signed_out": "ሁሉም ሰው ከመለያ ወጥቷል። ከተመለሰው መጫኛ በሆነ መለያ ይግቡ።",
   "system_recovery.safety_saved": "የቀደመው መጫኛ የደህንነት ቅጂ በ {path} ተቀምጧል።",
   "system_recovery.safety_failed_confirm": "ምንም አልተቀየረም። ያለ የደህንነት ቅጂ መመለስ ይችላሉ፣ ይህ ሊቀለበስ አይችልም።",
-  "system_recovery.continue_without_safety": "ያለ የደህንነት ቅጂ መልስ"
+  "system_recovery.continue_without_safety": "ያለ የደህንነት ቅጂ መልስ",
+  "posting.section_title": "የመመዝገቢያ ሒሳቦች",
+  "posting.section_hint": "እያንዳንዱ ዓይነት ግቤት የሚመዘገብበትን ሒሳብ ይምረጡ። የሒሳብ ሰንጠረዥዎ ተስማሚ ሒሳብ ከሌለው፣ የሚታየውን ያክሉ።",
+  "posting.col_role": "የሚያገለግለው ለ",
+  "posting.col_account": "ሒሳብ",
+  "posting.choose": "ሒሳብ ይምረጡ",
+  "posting.add_account": "ሒሳብ {code} {name} ({type}) ያክሉ"
 }

@@ -29,6 +29,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, StreamingRespons
 
 import ui.api_client as api
 from ui.api_client import APIError
+from ui.components.posting_accounts import NEW_ACCOUNT, account_picker
 from ui.components.shell import auth_shell, client_scripts, flash, page_title
 from ui.components.table import searchable_select
 from ui.config import (
@@ -929,10 +930,20 @@ def migrations_routes(app) -> None:
 
     @app.post("/migrations/{run_id}/finalize")
     async def migration_finalize(request: Request, run_id: str):
-        _, error = await _action(request, run_id, "finalize")
-        if error is None:
-            return RedirectResponse(f"/migrations/{run_id}/complete", status_code=303)
-        return await _verify_page(request, run_id, error)
+        token = get_token(request)
+        chosen = {k.removeprefix(_ROLE_FIELD): str(v) for k, v in (await request.form()).items()
+                  if k.startswith(_ROLE_FIELD) and v}
+        try:
+            proposals = {row["role"]: row["proposal"]
+                         for row in (await api.migration_posting_accounts(token, run_id)).get("roles") or []}
+            await api.migration_finalize(token, run_id, {
+                "roles": {role: code for role, code in chosen.items() if code != NEW_ACCOUNT},
+                "add_accounts": [{**proposals[role], "role": role} for role, code in chosen.items()
+                                 if code == NEW_ACCOUNT and role in proposals],
+            })
+        except APIError as e:
+            return await _verify_page(request, run_id, str(e.detail), chosen)
+        return RedirectResponse(f"/migrations/{run_id}/complete", status_code=303)
 
     @app.get("/migrations/{run_id}/verify")
     async def migration_verify(request: Request, run_id: str):
@@ -1002,11 +1013,41 @@ def _check_label(row: dict) -> str:
     return f"{label} {extra}".strip()
 
 
-async def _verify_page(request: Request, run_id: str, error: str | None = None):
+_ROLE_FIELD = "role."
+
+
+def _posting_accounts(roles: list[dict], chosen: dict[str, str]) -> FT:
+    """The posting accounts finishing needs: each already set one shown, each other one
+    picked from the chart or added as proposed."""
+    rows = [row for row in roles if row["required"] or row["current"]]
+    if not rows:
+        return ""
+    return Div(
+        H3(t("posting.section_title")),
+        P(t("posting.section_hint"), cls="form-hint"),
+        Table(
+            Thead(Tr(Th(t("posting.col_role")), Th(t("posting.col_account")))),
+            Tbody(*[
+                Tr(Td(row["label"]),
+                   Td(row["current"] if row["current"] else account_picker(
+                       f"{_ROLE_FIELD}{row['role']}", row["candidates"],
+                       value=chosen.get(row["role"]) or row["preselect"] or "",
+                       proposal=row["proposal"], aria_label=row["label"])))
+                for row in rows
+            ]),
+            cls="data-table",
+        ),
+        cls="mt-md",
+    )
+
+
+async def _verify_page(request: Request, run_id: str, error: str | None = None,
+                       chosen: dict[str, str] | None = None):
     token = get_token(request)
     try:
         recon = await api.migration_reconciliation(token, run_id)
         run = await api.get_migration_run(token, run_id)
+        roles = (await api.migration_posting_accounts(token, run_id)).get("roles") or []
     except APIError as e:
         if e.status != 409:
             return _run_error_page(request, str(e.detail))
@@ -1038,7 +1079,8 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None):
             cls="data-table",
         ) if rows else P(t("migration.no_checks"), cls="form-hint"),
         P(t("migration.lock_date_notice", date=lock_date), cls="form-hint") if lock_date else "",
-        Form(Button(t("migration.finish"), type="submit", cls="btn btn--primary btn--full"),
+        Form(_posting_accounts(roles, chosen or {}),
+             Button(t("migration.finish"), type="submit", cls="btn btn--primary btn--full mt-md"),
              method="post", action=f"/migrations/{run_id}/finalize", cls="auth-form mt-md"),
         P(A(t("migration.download_pack"), href=f"/migrations/{run_id}/pack", cls="auth-link")),
         P(A(t("migration.discard"), href=f"/migrations/{run_id}/discard", cls="auth-link")),

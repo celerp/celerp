@@ -175,6 +175,17 @@ def _run_id(page) -> str:
     return m.group(1)
 
 
+def _choose_posting_accounts(page) -> None:
+    """Pick the first account offered for each posting account still unchosen."""
+    for select in page.locator('select[name^="role."]').all():
+        if not select.input_value():
+            select.select_option(index=1)
+    for picker in page.locator('.combobox-wrap:has(input[type="hidden"][name^="role."])').all():
+        if not picker.locator('input[type="hidden"]').input_value():
+            picker.locator(".combobox-input").click()
+            picker.locator(".combobox-option").first.click()
+
+
 def _verify_and_finish(page, run_id: str, company_name: str) -> None:
     page.goto(f"/migrations/{run_id}/verify")
     for header in ("Check", "Source", "Celerp", "Difference", "Result"):
@@ -187,6 +198,7 @@ def _verify_and_finish(page, run_id: str, company_name: str) -> None:
     assert f"Discard the migration into {company_name}?" in page.content()
     page.go_back()
     page.wait_for_url(re.compile(rf"/migrations/{run_id}/verify$"))
+    _choose_posting_accounts(page)
     page.click('button:has-text("Finish migration")')
     page.wait_for_url(re.compile(rf"/migrations/{run_id}/complete$"))
     assert "Your company is ready." in page.content()

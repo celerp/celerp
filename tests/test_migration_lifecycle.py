@@ -23,6 +23,8 @@ from migration_support import (
     auth,
     count,
     fake_bytes,
+    finalize_body,
+    finalize_run,
     fake_spec,
     load_run,
     maker,
@@ -101,10 +103,8 @@ async def _member_token(engine_or_session, company_id, role: str, email: str) ->
 
 
 async def _finalize(engine, run_id):
-    from celerp.services import migrations
     async with maker(engine)() as s:
-        run = await creator_run(s, run_id)
-        return await migrations.finalize(s, run)
+        return await finalize_run(s, await creator_run(s, run_id))
 
 
 @pytest.mark.asyncio
@@ -316,7 +316,8 @@ async def test_migration_state_machine_rejects_illegal_transitions(real_client, 
     assert await count(real_engine, "locations", "company_id = :c", c=run.company_id) == 3
 
     # Two concurrent finalize requests activate the company once.
-    results = await asyncio.gather(*[real_client.post(f"/migrations/{run_id}/finalize", headers=headers)
+    body = await finalize_body(real_client, headers, run_id)
+    results = await asyncio.gather(*[real_client.post(f"/migrations/{run_id}/finalize", headers=headers, json=body)
                                      for _ in range(2)])
     assert sorted(r.status_code for r in results) == [200, 409]
     assert [r.json()["detail"] for r in results if r.status_code == 409] == [

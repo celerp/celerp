@@ -3491,5 +3491,11 @@
   "system_recovery.signed_out": "Tất cả mọi người đã bị đăng xuất. Vui lòng đăng nhập bằng một tài khoản từ bản cài đặt đã khôi phục.",
   "system_recovery.safety_saved": "Bản sao an toàn của bản cài đặt trước đã được lưu tại {path}.",
   "system_recovery.safety_failed_confirm": "Chưa có gì thay đổi. Bạn có thể khôi phục mà không có bản sao an toàn, thao tác này không thể hoàn tác.",
-  "system_recovery.continue_without_safety": "Khôi phục không có bản sao an toàn"
+  "system_recovery.continue_without_safety": "Khôi phục không có bản sao an toàn",
+  "posting.section_title": "Tài khoản ghi sổ",
+  "posting.section_hint": "Chọn tài khoản mà mỗi loại bút toán được ghi vào. Nếu hệ thống tài khoản của bạn không có tài khoản phù hợp, hãy thêm tài khoản được hiển thị.",
+  "posting.col_role": "Dùng cho",
+  "posting.col_account": "Tài khoản",
+  "posting.choose": "Chọn tài khoản",
+  "posting.add_account": "Thêm tài khoản {code} {name} ({type})"
 }

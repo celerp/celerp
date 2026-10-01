@@ -3491,5 +3491,11 @@
   "system_recovery.signed_out": "Se ha cerrado la sesión de todos. Inicia sesión con una cuenta de la instalación restaurada.",
   "system_recovery.safety_saved": "Se guardó una copia de seguridad de la instalación anterior en {path}.",
   "system_recovery.safety_failed_confirm": "No se ha cambiado nada. Puedes restaurar sin una copia de seguridad, lo cual no se puede deshacer.",
-  "system_recovery.continue_without_safety": "Restaurar sin copia de seguridad"
+  "system_recovery.continue_without_safety": "Restaurar sin copia de seguridad",
+  "posting.section_title": "Cuentas de contabilización",
+  "posting.section_hint": "Elija la cuenta en la que se contabiliza cada tipo de asiento. Si su plan de cuentas no tiene una cuenta adecuada, añada la que se muestra.",
+  "posting.col_role": "Se usa para",
+  "posting.col_account": "Cuenta",
+  "posting.choose": "Elija una cuenta",
+  "posting.add_account": "Añadir la cuenta {code} {name} ({type})"
 }

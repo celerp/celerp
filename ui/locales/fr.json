@@ -3491,5 +3491,11 @@
   "system_recovery.signed_out": "Tout le monde a été déconnecté. Connectez-vous avec un compte de l'installation restaurée.",
   "system_recovery.safety_saved": "Une copie de sécurité de l'installation précédente a été enregistrée dans {path}.",
   "system_recovery.safety_failed_confirm": "Rien n'a été modifié. Vous pouvez restaurer sans copie de sécurité, ce qui est irréversible.",
-  "system_recovery.continue_without_safety": "Restaurer sans copie de sécurité"
+  "system_recovery.continue_without_safety": "Restaurer sans copie de sécurité",
+  "posting.section_title": "Comptes d'imputation",
+  "posting.section_hint": "Choisissez le compte sur lequel chaque type d'écriture est imputé. Si votre plan comptable n'a pas de compte adapté, ajoutez celui indiqué.",
+  "posting.col_role": "Utilisé pour",
+  "posting.col_account": "Compte",
+  "posting.choose": "Choisir un compte",
+  "posting.add_account": "Ajouter le compte {code} {name} ({type})"
 }

@@ -162,6 +162,15 @@ async def create_chart_account(
     return acc
 
 
+async def add_posting_account(
+    session: AsyncSession, company_id: uuid.UUID, *, code: str, name: str, account_type: str,
+) -> None:
+    """A top-level account added for a posting role (slot ``add_chart_account``)."""
+    await create_chart_account(session, company_id, code=code, name=name, account_type=account_type,
+                               parent_code=None)
+    await session.flush()
+
+
 async def next_bank_account_code(session: AsyncSession, company_id: uuid.UUID, parent_code: str | None) -> str:
     """The first free code numbered beneath ``parent_code``: 1111, 1112, ... under
     1110; 1015-1, 1015-2, ... under a code not ending in 0; BANK-1, BANK-2, ... for

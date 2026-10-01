@@ -3491,5 +3491,11 @@
   "system_recovery.signed_out": "全員がサインアウトされました。復元されたインストールのアカウントでサインインしてください。",
   "system_recovery.safety_saved": "以前のインストールの安全コピーを {path} に保存しました。",
   "system_recovery.safety_failed_confirm": "何も変更されていません。安全コピーなしで復元できますが、元に戻すことはできません。",
-  "system_recovery.continue_without_safety": "安全コピーなしで復元"
+  "system_recovery.continue_without_safety": "安全コピーなしで復元",
+  "posting.section_title": "転記勘定",
+  "posting.section_hint": "各種の仕訳を転記する勘定を選択してください。勘定科目表に適切な勘定がない場合は、表示された勘定を追加してください。",
+  "posting.col_role": "用途",
+  "posting.col_account": "勘定",
+  "posting.choose": "勘定を選択",
+  "posting.add_account": "勘定 {code} {name}（{type}）を追加"
 }
