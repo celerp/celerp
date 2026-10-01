@@ -3453,6 +3453,7 @@
   "company_backup.owner_only": "Nur der Firmeninhaber kann eine Firma sichern oder wiederherstellen.",
   "company_backup.contents": "Enthält die Datensätze, Einstellungen und Anhänge dieser Firma. Benutzer, Passwörter, Verbindungen und Freigabelinks bleiben bei dieser Celerp-Installation.",
   "company_backup.upload_subtitle": "Wählen Sie eine .celerp-company-Datei. Sie wird als neue Firma wiederhergestellt.",
+  "company_backup.confirm_with_password": "Geben Sie das Passwort dieses Logins erneut ein, um die Sicherung als dessen Unternehmen wiederherzustellen.",
   "company_backup.file_label": "Datei der Firmensicherung",
   "company_backup.backup_date": "Datum der Sicherung",
   "company_backup.records": "Datensätze",

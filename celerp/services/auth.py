@@ -336,6 +336,7 @@ async def get_current_role(ctx: AuthContext = Depends(get_auth_context)) -> str:
 
 # Sign-in refusal for a login with no active company left.
 NO_COMPANY = "No active company membership"
+HAS_COMPANY = "This login already has a company. Sign in instead."
 
 
 # The one rule for whether a login can work in a company: an active membership in an
@@ -360,6 +361,14 @@ async def first_usable_company_link(session: AsyncSession, user_id) -> UserCompa
     return (await session.execute(
         _usable_links(user_id).order_by(Company.is_migration_staged, UserCompany.id).limit(1)
     )).scalar_one_or_none()
+
+
+async def hold_companyless_login(session: AsyncSession, user_id) -> bool:
+    """Hold the login until the transaction ends and say whether it has no company, so two
+    requests giving it one cannot both find it without. The hold still lets the same
+    transaction add the login's membership."""
+    await session.execute(select(User.id).where(User.id == user_id).with_for_update(key_share=True))
+    return await first_usable_company_link(session, user_id) is None
 
 
 async def usable_company_link(session: AsyncSession, user_id, company_id) -> UserCompany | None:

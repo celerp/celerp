@@ -3453,6 +3453,7 @@
   "company_backup.owner_only": "เฉพาะเจ้าของบริษัทเท่านั้นที่สำรองหรือกู้คืนบริษัทได้",
   "company_backup.contents": "มีระเบียน การตั้งค่า และไฟล์แนบของบริษัทนี้ ผู้ใช้ รหัสผ่าน การเชื่อมต่อ และลิงก์แชร์ยังคงอยู่กับการติดตั้ง Celerp นี้",
   "company_backup.upload_subtitle": "เลือกไฟล์ .celerp-company ระบบจะกู้คืนเป็นบริษัทใหม่",
+  "company_backup.confirm_with_password": "ป้อนรหัสผ่านของบัญชีนี้อีกครั้งเพื่อกู้คืนข้อมูลสำรองเป็นบริษัทของบัญชีนี้",
   "company_backup.file_label": "ไฟล์สำรองของบริษัท",
   "company_backup.backup_date": "วันที่สำรองข้อมูล",
   "company_backup.records": "ระเบียน",

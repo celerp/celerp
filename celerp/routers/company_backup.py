@@ -9,7 +9,8 @@ the company it was already restored as, and is switched to it; when that company
 deactivated, its owner reactivates it instead of restoring a copy. A fresh
 installation with no user yet restores one through the bootstrap routes, which create
 the first owner, are gated by the setup code where one is configured, and close once
-any user exists.
+any user exists. A login left with no company, after its last company was reset,
+restores one through the start-company routes with its email and password.
 """
 
 from __future__ import annotations
@@ -30,11 +31,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.company import Company, User
 from celerp.models.migration import MigrationRun, MigrationStatus
-from celerp.routers.auth import limiter
+from celerp.routers.auth import authenticate, hold_direct_slot, limiter
 from celerp.routers.migrations import ensure_not_bootstrapped, owner_account, user_owner
 from celerp.services import bootstrap
 from celerp.services import company_backup as cb
-from celerp.services.auth import AuthContext, issue_token_pair
+from celerp.services.auth import HAS_COMPANY, AuthContext, first_usable_company_link, issue_token_pair
 from celerp.services.company_files import company_backups_dir
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ UPLOAD_AGAIN = "This upload is no longer available. Choose the file again."
 RUN_NOT_FOUND = "Migration not found."
 RUN_NOT_READY = "This migration has not finished, so its company cannot be backed up yet."
 _BOOTSTRAP = "bootstrap"
+_START_COMPANY = "start_company"
 _KEEP_SECONDS = 24 * 3600
 _CHUNK = 1024 * 1024
 
@@ -125,11 +127,11 @@ def _save(source: BinaryIO, dest: Path) -> None:
             out.write(chunk)
 
 
-async def _read(file: UploadFile, owner: str, session: AsyncSession, ctx: AuthContext | None = None,
-                mode: str = _BOOTSTRAP) -> dict:
+async def _read(file: UploadFile, owner: str, session: AsyncSession, mode: str = _BOOTSTRAP,
+                user_id=None, current_company_id=None) -> dict:
     """Stage an uploaded backup, check it, and return its preview with the upload token and
-    what restoring it does: for a signed-in owner the plan for restoring it in ``mode``,
-    refused when it was already restored as a company they may not open."""
+    what restoring it does: for a login the plan for restoring it in ``mode``, refused when
+    it was already restored as a company they may not open."""
     _purge(_root() / "uploads")
     token = secrets.token_hex(16)
     path = _staged(owner, token)
@@ -138,10 +140,10 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession, ctx: AuthCo
         await asyncio.to_thread(_save, file.file, path)
         backup = await asyncio.to_thread(cb.read_backup, path)
         await cb.check_backup(session, backup)
-        if ctx is None:
+        if user_id is None:
             plan = {"action": cb.CREATE, "team_members": 0}
         else:
-            planned = await cb.plan_existing_restore(session, backup, mode, ctx.user.id, ctx.company_id)
+            planned = await cb.plan_existing_restore(session, backup, mode, user_id, current_company_id)
             if planned.action == cb.REFUSE:
                 raise cb.BackupError(409, cb.NOT_A_MEMBER)
             plan = planned.public()
@@ -177,7 +179,7 @@ class RestoreIn(BaseModel):
 async def read_backup(file: UploadFile = File(...), mode: RestoreMode = Form("settings"),
                       ctx: AuthContext = Depends(user_owner), session: AsyncSession = Depends(get_session)):
     try:
-        return await _read(file, str(ctx.user.id), session, ctx, mode)
+        return await _read(file, str(ctx.user.id), session, mode, ctx.user.id, ctx.company_id)
     except cb.BackupError as exc:
         return _error(exc)
 
@@ -256,3 +258,46 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
         except Exception:
             logger.warning("Setup-code cleanup failed after restoring a company backup", exc_info=True)
     return JSONResponse(status_code=201 if result.created else 200, content=body)
+
+
+async def _companyless(session: AsyncSession, email: str, password: str) -> User:
+    """The login these credentials belong to, when it has no company left."""
+    user = await authenticate(session, email, password)
+    if await first_usable_company_link(session, user.id) is not None:
+        raise HTTPException(status_code=409, detail=HAS_COMPANY)
+    return user
+
+
+@router.post("/start-company/read")
+@limiter.limit("5/minute")
+async def start_company_read(request: Request, file: UploadFile = File(...), email: str = Form(...),
+                             password: str = Form(...), session: AsyncSession = Depends(get_session)):
+    user = await _companyless(session, email, password)
+    try:
+        return await _read(file, str(user.id), session, _START_COMPANY, user.id)
+    except cb.BackupError as exc:
+        return _error(exc)
+
+
+class StartCompanyRestoreIn(BaseModel):
+    email: str
+    password: str
+    upload_token: str
+    plan_fingerprint: str
+
+
+@router.post("/start-company/restore")
+@limiter.limit("5/minute")
+async def start_company_restore(request: Request, payload: StartCompanyRestoreIn,
+                                session: AsyncSession = Depends(get_session)):
+    """Restore a staged backup as the company of a login that has none left, as the preview
+    showed it, and sign it in to that company."""
+    user = await _companyless(session, payload.email, payload.password)
+    path = _uploaded(str(user.id), payload.upload_token)
+    await hold_direct_slot(session)
+    try:
+        result = await cb.restore_company(path, mode=_START_COMPANY, user_id=user.id,
+                                          plan_fingerprint=payload.plan_fingerprint)
+    except cb.BackupError as exc:
+        return _error(exc)
+    return JSONResponse(status_code=201 if result.created else 200, content=await _signed_in(session, result))

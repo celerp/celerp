@@ -3453,6 +3453,7 @@
   "company_backup.owner_only": "Solo il titolare dell'azienda può eseguire o ripristinare il backup di un'azienda.",
   "company_backup.contents": "Contiene le voci, le impostazioni e gli allegati di questa azienda. Utenti, password, connessioni e link di condivisione restano in questa installazione di Celerp.",
   "company_backup.upload_subtitle": "Scegli un file .celerp-company. Viene ripristinato come nuova azienda.",
+  "company_backup.confirm_with_password": "Inserisci di nuovo la password di questo accesso per ripristinare il backup come sua azienda.",
   "company_backup.file_label": "File di backup dell'azienda",
   "company_backup.backup_date": "Data del backup",
   "company_backup.records": "Voci",

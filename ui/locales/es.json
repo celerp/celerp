@@ -3453,6 +3453,7 @@
   "company_backup.owner_only": "Solo el propietario de la empresa puede hacer o restaurar una copia de seguridad de la empresa.",
   "company_backup.contents": "Contiene los registros, la configuración y los archivos adjuntos de esta empresa. Los usuarios, las contraseñas, las conexiones y los enlaces compartidos permanecen en esta instalación de Celerp.",
   "company_backup.upload_subtitle": "Elija un archivo .celerp-company. Se restaura como una empresa nueva.",
+  "company_backup.confirm_with_password": "Vuelva a introducir la contraseña de este inicio de sesión para restaurar la copia como su empresa.",
   "company_backup.file_label": "Archivo de copia de seguridad de la empresa",
   "company_backup.backup_date": "Fecha de la copia de seguridad",
   "company_backup.records": "Registros",

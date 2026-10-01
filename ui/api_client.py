@@ -3637,6 +3637,28 @@ async def company_backup_reactivate(token: str, upload_token: str, mode: str, pl
     return _raise(r).json()
 
 
+async def company_backup_start_read(email: str, password: str, filename: str, content: BinaryIO) -> dict:
+    """Upload a company backup for a login with no company left, for checking. Nothing is
+    written. Returns the upload token, a preview and what restoring it does."""
+    async with _local_error_mapping():
+        async with _local_client(None, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True) as c:
+            r = await c.post("/company-backups/start-company/read",
+                             files=[("file", (filename, content, "application/octet-stream"))],
+                             data={"email": email, "password": password})
+    return _raise(r).json()
+
+
+async def company_backup_start_restore(email: str, password: str, upload_token: str, plan_fingerprint: str) -> dict:
+    """Restore an uploaded backup as the company of a login with no company left. Returns
+    the company and tokens for it."""
+    async with _local_error_mapping():
+        async with _local_client(None, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
+            r = await c.post("/company-backups/start-company/restore", json={
+                "email": email, "password": password, "upload_token": upload_token,
+                "plan_fingerprint": plan_fingerprint})
+    return _raise(r).json()
+
+
 async def company_backup_bootstrap_restore(upload_token: str, name: str, email: str, password: str,
                                            setup_code: str | None = None) -> dict:
     """Create the first owner and restore an uploaded backup as their company. Returns tokens and the company."""

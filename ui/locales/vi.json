@@ -3453,6 +3453,7 @@
   "company_backup.owner_only": "Chỉ chủ sở hữu công ty mới có thể sao lưu hoặc khôi phục một công ty.",
   "company_backup.contents": "Chứa các bản ghi, cài đặt và tệp đính kèm của công ty này. Người dùng, mật khẩu, kết nối và liên kết chia sẻ vẫn ở lại bản cài đặt Celerp này.",
   "company_backup.upload_subtitle": "Chọn một tệp .celerp-company. Tệp được khôi phục thành một công ty mới.",
+  "company_backup.confirm_with_password": "Nhập lại mật khẩu của tài khoản này để khôi phục bản sao lưu thành công ty của tài khoản.",
   "company_backup.file_label": "Tệp sao lưu công ty",
   "company_backup.backup_date": "Ngày sao lưu",
   "company_backup.records": "Bản ghi",

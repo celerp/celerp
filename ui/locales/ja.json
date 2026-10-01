@@ -3453,6 +3453,7 @@
   "company_backup.owner_only": "会社のバックアップと復元ができるのは会社のオーナーだけです。",
   "company_backup.contents": "この会社のレコード、設定、添付ファイルが含まれます。ユーザー、パスワード、接続、共有リンクはこのCelerpインストールに残ります。",
   "company_backup.upload_subtitle": ".celerp-companyファイルを選択してください。新しい会社として復元されます。",
+  "company_backup.confirm_with_password": "このログインのパスワードをもう一度入力すると、バックアップをこのログインの会社として復元します。",
   "company_backup.file_label": "会社のバックアップファイル",
   "company_backup.backup_date": "バックアップの日付",
   "company_backup.records": "レコード",

@@ -3453,6 +3453,7 @@
   "company_backup.owner_only": "Only the company owner can back up or restore a company.",
   "company_backup.contents": "Contains this company's records, settings and attachments. Users, passwords, connections and share links stay with this Celerp installation.",
   "company_backup.upload_subtitle": "Choose a .celerp-company file. It is restored as a new company.",
+  "company_backup.confirm_with_password": "Enter this login's password again to restore the backup as its company.",
   "company_backup.file_label": "Company backup file",
   "company_backup.backup_date": "Backup date",
   "company_backup.records": "Records",

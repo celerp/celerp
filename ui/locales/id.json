@@ -3453,6 +3453,7 @@
   "company_backup.owner_only": "Hanya pemilik perusahaan yang dapat mencadangkan atau memulihkan perusahaan.",
   "company_backup.contents": "Berisi data, pengaturan, dan lampiran perusahaan ini. Pengguna, kata sandi, koneksi, dan tautan berbagi tetap berada di instalasi Celerp ini.",
   "company_backup.upload_subtitle": "Pilih file .celerp-company. File ini dipulihkan sebagai perusahaan baru.",
+  "company_backup.confirm_with_password": "Masukkan lagi kata sandi login ini untuk memulihkan cadangan sebagai perusahaannya.",
   "company_backup.file_label": "File cadangan perusahaan",
   "company_backup.backup_date": "Tanggal cadangan",
   "company_backup.records": "Data",

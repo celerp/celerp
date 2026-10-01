@@ -56,7 +56,7 @@ from celerp.modules.loader import (
 )
 from celerp.modules.registry import get_enabled, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
-from celerp.services.auth import verify_password
+from celerp.services.auth import HAS_COMPANY, hold_companyless_login, verify_password
 from celerp.services.company_lock import hold_company, lock_company, locked_company
 from celerp.services.migrations import COMPANY_NAME_MAX
 from celerp.services.provisioning import create_install_owner, provision_restored_company
@@ -100,7 +100,7 @@ DROPPED_SETTINGS = frozenset({
 # Columns every reader expects to hold a JSON object.
 OBJECT_COLUMNS = {"ledger": "data", "projections": "state"}
 
-MODES = frozenset({"settings", "new_company", "bootstrap"})
+MODES = frozenset({"settings", "new_company", "start_company", "bootstrap"})
 
 MAX_UPLOAD_BYTES = 2 * 1024 ** 3
 MAX_MEMBERS = 200_000
@@ -1277,7 +1277,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
 
     ``settings`` and ``new_company`` restore it for the signed-in ``user_id`` as the
     preview identified by ``plan_fingerprint`` showed it; a preview that no longer holds
-    raises StalePreview. ``bootstrap`` creates the installation's first owner from
+    raises StalePreview. ``start_company`` does the same for a login left with no company,
+    and refuses once it has one. ``bootstrap`` creates the installation's first owner from
     ``owner_account`` ({name, email, password}) in the same transaction. Restoring a
     backup that was already restored here returns that company (``created`` False) to its
     members, never reactivating it when it is deactivated."""
@@ -1307,6 +1308,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     await session.rollback()
                     return result
             else:
+                if mode == "start_company" and not await hold_companyless_login(session, user_id):
+                    raise BackupError(409, HAS_COMPANY)
                 plan, destination = await _plan(session, backup, mode, user_id, current_company_id, lock=True)
                 if plan.action == REFUSE:
                     raise BackupError(409, NOT_A_MEMBER)

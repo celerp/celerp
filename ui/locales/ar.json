@@ -3453,6 +3453,7 @@
   "company_backup.owner_only": "لا يمكن إلا لمالك الشركة نسخ الشركة احتياطيًا أو استعادتها.",
   "company_backup.contents": "تحتوي على سجلات هذه الشركة وإعداداتها ومرفقاتها. يبقى المستخدمون وكلمات المرور والاتصالات وروابط المشاركة في تثبيت Celerp هذا.",
   "company_backup.upload_subtitle": "اختر ملف .celerp-company. تتم استعادته كشركة جديدة.",
+  "company_backup.confirm_with_password": "أدخل كلمة مرور تسجيل الدخول هذا مرة أخرى لاستعادة النسخة الاحتياطية كشركته.",
   "company_backup.file_label": "ملف النسخة الاحتياطية للشركة",
   "company_backup.backup_date": "تاريخ النسخة الاحتياطية",
   "company_backup.records": "السجلات",

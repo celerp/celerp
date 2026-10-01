@@ -40,6 +40,7 @@ from celerp.services.permissions import role_has_permission
 
 # Where a login with no company left signs in and starts a new one.
 START_COMPANY = "/setup/start-company"
+START_COMPANY_RESTORE = f"{START_COMPANY}/restore-backup"
 
 
 def auth_header(title: str, subtitle: str = "") -> FT:
@@ -643,7 +644,8 @@ def _login_form(email: str = "", error: str | None = None, notice: str = "", nex
 
 
 def _start_company_form(email: str = "", company_name: str = "", error: str | None = None) -> FT:
-    """Sign in and name a new company: the way back in for a login whose last company was reset."""
+    """Sign in and name a new company, or restore a company backup: the way back in for a
+    login whose last company was reset."""
     return Div(
         auth_header(t("setup.start_company_title"), t("setup.start_company_subtitle")),
         Form(
@@ -660,6 +662,7 @@ def _start_company_form(email: str = "", company_name: str = "", error: str | No
                       required=True, cls="form-input"),
                 cls="form-group"),
             Button(t("setup.start_company_title"), type="submit", cls="btn btn--primary btn--full"),
+            P(A(t("setup.card_restore"), href=START_COMPANY_RESTORE, cls="auth-link"), cls="auth-alt-action"),
             P(A(t("auth.back_to_login"), href="/login", cls="auth-link"), cls="auth-footer-text"),
             method="post", action=START_COMPANY, cls="auth-form",
         ),

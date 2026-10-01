@@ -3453,6 +3453,7 @@
   "company_backup.owner_only": "ኩባንያን ምትኬ መያዝ ወይም መመለስ የሚችለው የኩባንያው ባለቤት ብቻ ነው።",
   "company_backup.contents": "የዚህን ኩባንያ መዝገቦች፣ ቅንብሮች እና የተያያዙ ፋይሎች ይዟል። ተጠቃሚዎች፣ የይለፍ ቃሎች፣ ግንኙነቶች እና የማጋሪያ አገናኞች በዚህ የCelerp መጫኛ ላይ ይቆያሉ።",
   "company_backup.upload_subtitle": "የ.celerp-company ፋይል ይምረጡ። እንደ አዲስ ኩባንያ ይመለሳል።",
+  "company_backup.confirm_with_password": "ምትኬውን እንደ ኩባንያው ለመመለስ የዚህን መግቢያ የይለፍ ቃል እንደገና ያስገቡ።",
   "company_backup.file_label": "የኩባንያ ምትኬ ፋይል",
   "company_backup.backup_date": "ምትኬው የተያዘበት ቀን",
   "company_backup.records": "መዝገቦች",

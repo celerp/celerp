@@ -25,7 +25,9 @@ from celerp.services.auth import (
     CompanyUnavailable,
     decode_refresh_token,
     NO_COMPANY,
+    HAS_COMPANY,
     first_usable_company_link,
+    hold_companyless_login,
     get_auth_context,
     MIN_PASSWORD_LENGTH,
     get_current_company_id,
@@ -172,7 +174,7 @@ async def _issue_login_tokens(session: AsyncSession, user: User) -> dict:
     raise CompanyUnavailable()
 
 
-async def _authenticate(session: AsyncSession, email: str, password: str) -> User:
+async def authenticate(session: AsyncSession, email: str, password: str) -> User:
     """The active login these credentials belong to; a neutral 401 otherwise."""
     user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
     if not user or not user.auth_hash or not verify_password(password, user.auth_hash) or not user.is_active:
@@ -180,7 +182,7 @@ async def _authenticate(session: AsyncSession, email: str, password: str) -> Use
     return user
 
 
-async def _hold_direct_slot(session: AsyncSession, *, taking_over: bool = False) -> None:
+async def hold_direct_slot(session: AsyncSession, *, taking_over: bool = False) -> None:
     """Without the cloud relay only one person may be signed in at a time.
 
     Takes the sign-in place for this transaction, held until the new session is saved,
@@ -200,8 +202,8 @@ async def _hold_direct_slot(session: AsyncSession, *, taking_over: bool = False)
 @router.post("/login")
 @limiter.limit("10/minute")
 async def login(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
-    user = await _authenticate(session, payload.email, payload.password)
-    await _hold_direct_slot(session)
+    user = await authenticate(session, payload.email, payload.password)
+    await hold_direct_slot(session)
     return await _issue_login_tokens(session, user)
 
 
@@ -210,8 +212,8 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
 async def login_force(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
     """Like /login but evicts all other active sessions from the tracker first, in the
     same transaction as the new session."""
-    user = await _authenticate(session, payload.email, payload.password)
-    await _hold_direct_slot(session, taking_over=True)
+    user = await authenticate(session, payload.email, payload.password)
+    await hold_direct_slot(session, taking_over=True)
     link = await first_usable_company_link(session, user.id)
     if link is None:
         raise HTTPException(status_code=401, detail=NO_COMPANY)
@@ -236,15 +238,13 @@ async def start_company(request: Request, payload: StartCompanyRequest,
                         session: AsyncSession = Depends(get_session)) -> dict:
     """Create a company for a login that has none left, after its last company was reset,
     and sign it in as that company's owner."""
-    user = await _authenticate(session, payload.email, payload.password)
+    user = await authenticate(session, payload.email, payload.password)
     name = payload.company_name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="Company name required")
-    await _hold_direct_slot(session)
-    # Held until the commit, so two requests cannot both find no company and make two.
-    await session.get(User, user.id, with_for_update=True, populate_existing=True)
-    if await first_usable_company_link(session, user.id) is not None:
-        raise HTTPException(status_code=409, detail="This login already has a company. Sign in instead.")
+    await hold_direct_slot(session)
+    if not await hold_companyless_login(session, user.id):
+        raise HTTPException(status_code=409, detail=HAS_COMPANY)
     company = await provision_additional_company(session, user=user, company_name=name)
     return await issue_token_pair(session, user=user, company_id=company.id)
 
