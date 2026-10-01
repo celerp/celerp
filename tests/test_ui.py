@@ -16584,6 +16584,27 @@ class TestInventoryImportDraftReview:
         assert _PREVIEW_HASH not in r.text
         assert 'hx-post="/inventory/import/confirm"' not in r.text
 
+    @staticmethod
+    def _counters(html: str) -> dict[str, int]:
+        import re as _re
+        return {k: int(v) for k, v in _re.findall(
+            r'data-count="(\w+)"[^>]*>\s*<div class="import-card-value">(\d+)</div>', html)}
+
+    @pytest.mark.asyncio
+    async def test_counters_follow_every_replan(self, ui_client):
+        import json as _json
+        ref = self._draft([{"sku": "X7", "name": "Ring", "sell_by": "fathom", "quantity": "1"},
+                           {"sku": "X8", "name": "Band", "sell_by": "piece", "quantity": "2"}])
+        blocked = {"errors": [self._unit_error()], "locations_to_create": [],
+                   "counts": {"create": 1, "blocked": 1}, "preview_hash": _PREVIEW_HASH}
+        r, _ = await self._post(ui_client, "/inventory/import/review", {"csv_ref": ref}, blocked)
+        assert self._counters(r.text) == {"create": 1, "blocked": 1}
+
+        fixed = {**_CLEAN_ROWS_PREVIEW, "counts": {"create": 2}}
+        r, _ = await self._post(ui_client, "/inventory/import/revalidate", {
+            "csv_ref": ref, "revision": "1", "fixes_json": _json.dumps({"0__sell_by": "piece"})}, fixed)
+        assert self._counters(r.text) == {"create": 2, "blocked": 0}
+
     @pytest.mark.asyncio
     async def test_review_without_revision_only_renders(self, ui_client):
         from celerp.services.import_stage import read_draft
