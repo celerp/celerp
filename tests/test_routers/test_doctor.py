@@ -111,7 +111,7 @@ async def test_doctor_all_checks_run(client, session):
     r = await client.post("/admin/doctor", headers=_h(token))
     assert r.status_code == 200
     data = r.json()
-    assert len(data["results"]) == 13
+    assert len(data["results"]) == 14
     check_names = [c["check"] for c in data["results"]]
     assert "missing_jes" in check_names
     assert "duplicate_jes" in check_names
@@ -122,6 +122,7 @@ async def test_doctor_all_checks_run(client, session):
     assert "zero_amount_jes" in check_names
     assert "fractional_piece_quantities" in check_names
     assert "physical_code_conflicts" in check_names
+    assert "posting_origins" in check_names
 
 
 @pytest.mark.asyncio
