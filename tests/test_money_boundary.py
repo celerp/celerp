@@ -88,7 +88,8 @@ async def test_half_cent_landed_capitalisation_stays_balanced(session):
     auth = await _company(session, "USD")
     await auto_je.create_for_landed_capitalisation(
         session, company_id=auth["company_id"], user_id=auth["user_id"], doc_id="doc:bill-1",
-        landed_by_kind={"freight": 0.005, "duty": 0.005}, receive_suffix="r1",
+        landed_by_kind={"freight": 0.005, "duty": 0.005}, landed_by_account={"1130-P": 0.01},
+        receive_suffix="r1",
     )
     await session.commit()
     lines = await _je(session, auth, "je:auto:doc:bill-1:landed-cap:r1")
@@ -100,7 +101,7 @@ async def test_half_cent_manufacturing_completion_stays_balanced(session):
     auth = await _company(session, "USD")
     await auto_je.create_for_mfg_completed(
         session, company_id=auth["company_id"], user_id=auth["user_id"], order_id="mo:1",
-        input_cost=0.015, waste_cost=0.005,
+        inputs={"1130-P": 0.015}, waste_cost=0.005, outputs={"1130-P": 1.0},
     )
     await session.commit()
     lines = await _je(session, auth, "je:auto:mo:1:mfg")

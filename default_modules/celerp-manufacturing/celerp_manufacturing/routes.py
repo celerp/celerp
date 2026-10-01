@@ -30,6 +30,7 @@ from celerp.models.company import Company, User, WorkCenter
 from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
 from celerp.services import auto_je, migrations
+from celerp.services.account_roles import current_settings, lot_account
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_basis
 from celerp.services.auth import get_current_company_id, get_current_user
@@ -1353,18 +1354,23 @@ def _component_unit_cost(state: dict | None) -> float:
     return 0.0
 
 
-def _run_input_cost(run_state: dict, states: dict[str, dict]) -> float:
-    """Actual input cost of a run = sum(quantity issued x component unit cost), falling back to the
-    planned required quantity for an input nothing has been issued against yet so a bare run still
-    costs something. Feeds both the produced lot cost and the completion JE input relief, so the
-    actuals propagate from this one edit."""
-    total = 0.0
+def _input_costs(run_state: dict, states: dict[str, dict]) -> list[tuple[str | None, float]]:
+    """(component id, cost) per run input = quantity issued x component unit cost, falling back to
+    the planned required quantity for an input nothing has been issued against yet so a bare run
+    still costs something."""
+    out: list[tuple[str | None, float]] = []
     for inp in run_state.get("inputs", []):
         unit = _component_unit_cost(states.get(inp.get("item_id")))
         issued = float(inp.get("issued_qty") or 0)
         qty = issued if issued > 0 else float(inp.get("quantity") or 0)
-        total += qty * unit
-    return round_basis(total)
+        out.append((inp.get("item_id"), qty * unit))
+    return out
+
+
+def _run_input_cost(run_state: dict, states: dict[str, dict]) -> float:
+    """Actual input cost of a run. Feeds both the produced lot cost and the completion JE input
+    relief, so the actuals propagate from this one edit."""
+    return round_basis(sum(cost for _, cost in _input_costs(run_state, states)))
 
 
 # Namespace for deterministic produced-lot ids: a receipt re-submitted with the same idempotency
@@ -1533,9 +1539,24 @@ async def _close_run(session: AsyncSession, company_id, user, order_id: str, run
         idempotency_key=f"mfg:{order_id}:completed",
         metadata_={},
     )
+    # Components leave the inventory accounts their lots are valued in; the output goes to the
+    # accounts the run's output lots recorded when they were received.
+    settings = await current_settings(session, company_id)
+    inputs: dict[str, float] = {}
+    for item_id, cost in _input_costs(run_state, states):
+        if cost:
+            code = lot_account(settings, states.get(item_id) or {})
+            inputs[code] = inputs.get(code, 0.0) + cost
+    fresh = await _all_item_states(session, company_id)
+    outputs: dict[str, float] = {}
+    for lot_id in run_state.get("received_lots") or []:
+        lot = fresh.get(lot_id)
+        if lot is not None and float(lot.get("quantity") or 0) > 0:
+            code = lot_account(settings, lot)
+            outputs[code] = outputs.get(code, 0.0) + float(lot["quantity"])
     await auto_je.create_for_mfg_completed(
         session, company_id=company_id, user_id=user.id, order_id=order_id,
-        input_cost=input_cost, waste_cost=waste_cost,
+        inputs=inputs, waste_cost=waste_cost, outputs=outputs,
     )
     await _recost_run_lots(session, company_id, user, order_id, run_state, input_cost - waste_cost)
 

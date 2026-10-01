@@ -184,7 +184,7 @@ async def test_audit_shrinkage_and_overage_post_to_their_roles(session, auth):
     await set_role(session, cid, "stock_gain", "4301")
     await auto_je.create_for_audit_adjustment(
         session, company_id=cid, user_id=auth["user_id"], list_id="list:audit-roles",
-        shrinkage_value=7.0, overage_value=3.0)
+        shrinkage={"1130-P": 7.0}, overage={"1130-P": 3.0})
     await session.commit()
     assert (await _account_net(session, cid, "6971"), await _account_net(session, cid, "4301")) == (7.0, -3.0)
     assert (await _account_net(session, cid, "6970"), await _account_net(session, cid, "4300")) == (0.0, 0.0)

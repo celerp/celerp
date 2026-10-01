@@ -30,7 +30,7 @@ from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCL
 from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, AccountRole
 from celerp.services.account_roles import current_settings, lot_account
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import lock_item_code_namespace
@@ -3745,6 +3745,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     _recv_barcodes = await allocate_internal_codes(session, company_id, _new_parcel_count) if _new_parcel_count else []
     _recv_barcode_idx = 0
     added_to_lot: dict[int, dict] = {}  # line -> what it added to a lot already on hand
+    line_lot_account: dict[int, str] = {}  # line -> inventory account of the lot it added stock to
+    landed_by_account: dict[str, float] = {}  # landed cost capitalised, per receiving lot's account
 
     for line_no, (it, (conversion, stock_qty_received, received_cost)) in enumerate(zip(payload.received_items, priced)):
         if it.item_id and not is_inbound and it.receive_as == "stock":
@@ -3764,6 +3766,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 idempotency_key=_step_key(key, "line", line_no), metadata_={"source_doc": entity_id},
             )
             added_to_lot[line_no] = {"lot_quantity_added": stock_qty_received, "lot_cost_added": received_cost}
+            if not is_consignment:
+                line_lot_account[line_no] = lot_account(settings, item.state)
         else:
             # Inbound doc (bill, consignment_in): always create a new parcel.
             # If item_id is set it refers to a catalog template - use it for attribute inheritance only.
@@ -3878,6 +3882,13 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 idempotency_key=_step_key(key, "line", line_no),
                 metadata_={"source_doc": entity_id},
             )
+            if not is_consignment and (doc_type == "purchase_order" or _landed):
+                parcel = await session.get(Projection, {"company_id": company_id, "entity_id": new_eid})
+                line_lot_account[line_no] = lot_account(settings, parcel.state)
+                if _landed:
+                    code = line_lot_account[line_no]
+                    landed_by_account[code] = landed_by_account.get(code, 0.0) + sum(
+                        u * stock_qty_received for u in _landed.values())
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.received",
@@ -3896,10 +3907,13 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     if doc_type == "purchase_order":
         # A purchase order books the goods this receipt brought in: Dr inventory / Cr AP. The
         # bill it becomes books only what its receipts have not.
+        # Goods added to stock are booked on their lot's inventory account; anything else
+        # on the account of the role it was received as.
         debits: dict = {}
-        for it, (_, _, received_cost) in zip(payload.received_items, priced):
+        for line_no, (it, (_, _, received_cost)) in enumerate(zip(payload.received_items, priced)):
             role = auto_je.po_receipt_role(row.state, it.receive_as)
-            debits[role] = debits.get(role, 0.0) + received_cost
+            target = line_lot_account.get(line_no, role) if role == AccountRole.INVENTORY_PURCHASED else role
+            debits[target] = debits.get(target, 0.0) + received_cost
         await auto_je.create_for_po_receipt(
             session, company_id=company_id, user_id=user.id, po_id=entity_id,
             receipt_key=key, debits=debits,
@@ -3911,7 +3925,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         # received landed cost from the clearing accounts into inventory (Dr inventory / Cr clearing).
         await auto_je.create_for_landed_capitalisation(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-            landed_by_kind=landed_drawdown, receive_suffix=key,
+            landed_by_kind=landed_drawdown, landed_by_account=landed_by_account, receive_suffix=key,
             receive_date=datetime.now(timezone.utc).date().isoformat(),
         )
     # consignment_in: no JE (goods not owned).
@@ -4162,8 +4176,11 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     lots = await lock_projections(session, company_id, [it.item_id for it in payload.items])
     added = _lot_additions(row.state)
     currency = await auto_je.company_currency(session, company_id)
-    goods_cost = 0.0
+    goods_role = auto_je.po_receipt_role(row.state)
+    account_settings = await current_settings(session, company_id) if owned else {}
+    goods: dict = {}  # cost leaving, per lot inventory account (or role, for goods not held as stock)
     landed_by_kind: dict[str, float] = {}
+    landed_by_account: dict[str, float] = {}
     returned: list[dict] = []
     for line_no, it in enumerate(payload.items):
         item = lots.get(it.item_id)
@@ -4201,13 +4218,16 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             share = basis if new_qty == 0 else min(
                 basis, to_stored_float(round_money(taken_cost + others_cost, currency)))
             adjustment["cost_base"] = round_basis(basis - share)
-            goods_cost += share
+            origin = lot_account(account_settings, item.state)
+            target = origin if goods_role == AccountRole.INVENTORY_PURCHASED else goods_role
+            goods[target] = goods.get(target, 0.0) + share
             if it.item_id in added:
                 taken_cost = min(share, to_stored_float(round_money(taken_cost, currency)))
                 returned[-1].update({"lot_quantity_taken": taken, "lot_cost_taken": taken_cost})
             for contribution, unit in (item.state.get("landed_contributions") or {}).items():
                 kind = contribution.rsplit("::", 1)[-1]
                 landed_by_kind[kind] = landed_by_kind.get(kind, 0.0) + float(unit or 0) * it.quantity_returned
+                landed_by_account[origin] = landed_by_account.get(origin, 0.0) + float(unit or 0) * it.quantity_returned
         await emit_event(
             session, company_id=company_id, entity_id=it.item_id, entity_type="item",
             event_type="item.quantity.adjusted", data=adjustment,
@@ -4218,8 +4238,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     if owned:
         await auto_je.create_for_supplier_return(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id, return_key=key,
-            goods_role=auto_je.po_receipt_role(row.state), goods=goods_cost,
-            landed_by_kind=landed_by_kind, return_date=datetime.now(timezone.utc).date().isoformat(),
+            goods=goods, landed_by_kind=landed_by_kind, landed_by_account=landed_by_account, return_date=datetime.now(timezone.utc).date().isoformat(),
         )
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
@@ -8503,6 +8522,10 @@ async def adjust_audit(
 
     shrink_val = Decimal(0)
     over_val = Decimal(0)
+    # Value lost and gained per inventory account of the lots counted.
+    shrink_by: dict[str, float] = {}
+    over_by: dict[str, float] = {}
+    account_settings = await current_settings(session, company_id)
     adjusted = 0
     skipped = 0
     for l in lines:
@@ -8525,6 +8548,10 @@ async def adjust_audit(
             continue
         unit_cost = auto_je.lot_unit_cost(item.state)
         value = abs(to_decimal(live) - to_decimal(cqf)) * to_decimal(unit_cost)
+        if value:
+            bucket = shrink_by if cqf < live else over_by
+            origin = lot_account(account_settings, item.state)
+            bucket[origin] = bucket.get(origin, 0.0) + float(value)
         if cqf < live:
             shrink_val += value
         else:
@@ -8542,7 +8569,7 @@ async def adjust_audit(
         adjusted += 1
     await auto_je.create_for_audit_adjustment(
         session, company_id=company_id, user_id=user.id, list_id=entity_id,
-        shrinkage_value=float(shrink_val), overage_value=float(over_val), cycle=cycle,
+        shrinkage=shrink_by, overage=over_by, cycle=cycle,
     )
     await _emit_list(session, company_id, entity_id, "list.closed",
                      {"result": "stock_adjusted", "line_items": lines, "adjust_count": cycle + 1}, user)
