@@ -148,3 +148,33 @@ async def test_two_deliveries_of_one_merge_move_the_value_once(real_engine, real
     items = await _rows(real_engine, cid, "SELECT entity_id FROM projections WHERE company_id = :c "
                                           "AND entity_type = 'item' AND state ->> 'sku' = 'A'")
     assert sorted(i for (i,) in items) == sorted([a, merged_id])
+
+
+async def test_a_cost_correction_landing_between_preview_and_confirm_refuses_the_merge(real_engine, real_client):
+    cid, tok, a, b = await _books(real_engine, real_client)
+    preview = await _post(real_client, tok, "/items/merge/preview", {"source_entity_ids": [a, b], "target_sku_from": a})
+    merge_body = {"source_entity_ids": [a, b], "target_sku_from": a,
+                  "plan_fingerprint": preview["plan_fingerprint"]}
+    correction = {"fields_changed": {"cost_total": {"old": 400.0, "new": 450.0}}}
+    created = "SELECT count(*) FROM ledger WHERE company_id = :c AND event_type = 'item.created'"
+    (created_before,) = await _rows(real_engine, cid, created)
+
+    conn, tx = await _held(real_engine, cid)
+    try:
+        t1 = asyncio.create_task(real_client.patch(f"/items/{b}", headers=auth(tok), json=correction))
+        await _blocked(real_engine, 1)
+        t2 = asyncio.create_task(real_client.post("/items/merge", headers=auth(tok), json=merge_body))
+        await _blocked(real_engine, 2)
+    finally:
+        await tx.commit()
+        await conn.close()
+    r1, r2 = await asyncio.wait_for(asyncio.gather(t1, t2), timeout=60)
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 409, r2.text
+    assert r2.json()["detail"] == "The inventory changed since this merge was reviewed. Review the merge again."
+    # The correction went through; the merge left nothing behind.
+    assert await _rows(real_engine, cid, created) == [created_before]
+    assert await _rows(real_engine, cid, "SELECT id FROM ledger WHERE company_id = :c AND event_type IN "
+                                         "('item.merged', 'item.source_deactivated')") == []
+    assert await _reclass_entries(real_engine, cid) == {}
+    assert (await _state(real_engine, cid, b))["status"] == "available"
