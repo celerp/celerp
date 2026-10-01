@@ -52,6 +52,13 @@ def _origin_line(settings: dict, code: str, role, debit=0.0, credit=0.0) -> dict
     return {"account": code, "debit": debit, "credit": credit}
 
 
+def _lot_line(settings: dict, code: str, debit=0.0, credit=0.0) -> dict:
+    """A line moving a lot's value on the inventory account the lot recorded: purchased
+    or opening inventory, whichever that account has served."""
+    role = R.INVENTORY_PURCHASED if code in scope_codes(settings, R.INVENTORY_PURCHASED) else R.INVENTORY_OPENING
+    return _origin_line(settings, code, role, debit, credit)
+
+
 # Ledger metadata key set on a doc.created written by a raw snapshot import. It is
 # the only doc.created that may carry an issued document and post its entry, so
 # the Doctor reads this record rather than the payload's status.
@@ -692,7 +699,7 @@ async def _post_po_receipt(session, *, company_id, user_id, po_id: str, receipt_
     roles = [k for k, amt in rounded.items() if amt and isinstance(k, AccountRole)]
     acc = await resolve_many(session, company_id, [*roles, *([] if ap else [R.PAYABLE])])
     entries = [_line(acc[k], k, debit=to_stored_float(amt)) if isinstance(k, AccountRole)
-               else _origin_line(settings, k, R.INVENTORY_PURCHASED, debit=to_stored_float(amt))
+               else _lot_line(settings, k, debit=to_stored_float(amt))
                for k, amt in rounded.items() if amt]
     entries.append(_origin_line(settings, ap, R.PAYABLE, credit=to_stored_float(total)) if ap
                    else _line(acc[R.PAYABLE], R.PAYABLE, credit=to_stored_float(total)))
@@ -796,6 +803,15 @@ def _net_key(settings: dict, entry: dict) -> tuple[str, tuple[str, ...]]:
     return entry["account"], tuple(sorted(line_roles(settings, entry)))
 
 
+_LOT_ROLES = (R.INVENTORY_OPENING.value, R.INVENTORY_PURCHASED.value)
+
+
+def _net_group(roles: tuple[str, ...]) -> tuple[str, ...]:
+    """Lines that net together: a lot's value is one thing whether its account holds
+    opening or purchased inventory."""
+    return _LOT_ROLES if roles and set(roles) <= set(_LOT_ROLES) else roles
+
+
 async def _doc_receipt_jes(session, company_id, doc_id: str) -> list[Projection]:
     """The posted receipt entries of a document."""
     prefix = f"je:auto:{doc_id}:rcv"
@@ -863,9 +879,8 @@ def _inventory_lines(settings: dict, total: _Dec, by_account: dict[str, float], 
     to ``by_account`` so the lines sum to ``total`` exactly."""
     codes = sorted(code for code, v in by_account.items() if v > 0)
     shares = allocate_pro_rata(total, [to_decimal(by_account[c]) for c in codes], currency)
-    return [_origin_line(settings, code, R.INVENTORY_PURCHASED,
-                         debit=to_stored_float(share) if debit else 0.0,
-                         credit=0.0 if debit else to_stored_float(share))
+    return [_lot_line(settings, code, debit=to_stored_float(share) if debit else 0.0,
+                      credit=0.0 if debit else to_stored_float(share))
             for code, share in zip(codes, shares) if share]
 
 
@@ -975,7 +990,7 @@ async def create_for_supplier_return(
         ap_line = (_origin_line(settings, ap, R.PAYABLE, debit=to_stored_float(goods_d)) if ap
                    else _line(acc[R.PAYABLE], R.PAYABLE, debit=to_stored_float(goods_d)))
         goods_lines = [_line(acc[k], k, credit=to_stored_float(amt)) if isinstance(k, AccountRole)
-                       else _origin_line(settings, k, R.INVENTORY_PURCHASED, credit=to_stored_float(amt))
+                       else _lot_line(settings, k, credit=to_stored_float(amt))
                        for k, amt in rounded.items() if amt]
         await _emit_auto_posted_je(
             session,
@@ -1118,21 +1133,26 @@ async def create_for_bill_conversion(
     entries.append(_line(acc[R.PAYABLE], R.PAYABLE, credit=base_total))
     # What the document's purchase order receipts already booked is not booked again, so
     # receiving before or after finalizing ends in the same books.
-    # A line whose role the receipts booked on other accounts (goods added to a lot on the
-    # lot's own account, AP recognized before a remap) nets on the account the receipts used.
+    # A line first takes up what the receipts booked for the same purpose, on the accounts
+    # they booked it to (goods added to a lot on the lot's own account, AP recognized before
+    # a remap); only what no receipt booked lands on the line's own account.
     booked = await _doc_receipt_booked(session, company_id, doc_id, settings)
     if booked:
-        homes: dict[tuple, str] = {}
-        for (acct, roles), amount in sorted(booked.items(), key=lambda kv: (-abs(kv[1]), kv[0][0])):
-            if roles:
-                homes.setdefault(roles, acct)
+        unfilled = dict(booked)
         net: dict[tuple, _Dec] = {}
         for e in entries:
-            acct, roles = _net_key(settings, e)
-            if roles in homes and (acct, roles) not in booked:
-                acct = homes[roles]
-            key = (acct, roles)
-            net[key] = net.get(key, _Dec(0)) + to_decimal(e["debit"]) - to_decimal(e["credit"])
+            key = _net_key(settings, e)
+            left = to_decimal(e["debit"]) - to_decimal(e["credit"])
+            slots = sorted((k for k in unfilled if k[1] and _net_group(k[1]) == _net_group(key[1])),
+                           key=lambda k: (k != key, -abs(unfilled[k]), k[0]))
+            for slot in slots:
+                if left and unfilled[slot] and (unfilled[slot] > 0) == (left > 0):
+                    take = min(abs(left), abs(unfilled[slot])) * (1 if left > 0 else -1)
+                    net[slot] = net.get(slot, _Dec(0)) + take
+                    unfilled[slot] -= take
+                    left -= take
+            if left:
+                net[key] = net.get(key, _Dec(0)) + left
         for key, amount in booked.items():
             net[key] = net.get(key, _Dec(0)) - amount
         entries = [{"account": acct, "account_roles": list(roles),
@@ -1332,8 +1352,8 @@ def _cogs_lines(settings: dict, cogs_code: str, by_account: dict[str, float], cu
         lines.append(_line(cogs_code, R.COGS, debit=to_stored_float(max(total, _Dec(0))),
                            credit=to_stored_float(max(-total, _Dec(0)))))
     for code, a in amounts.items():
-        lines.append(_origin_line(settings, code, R.INVENTORY_PURCHASED, debit=to_stored_float(max(-a, _Dec(0))),
-                                  credit=to_stored_float(max(a, _Dec(0)))))
+        lines.append(_lot_line(settings, code, debit=to_stored_float(max(-a, _Dec(0))),
+                               credit=to_stored_float(max(a, _Dec(0)))))
     return lines
 
 
@@ -1365,7 +1385,7 @@ async def stock_relief_lines(session, company_id, by_account: dict[str, float]) 
     """The inventory credits that take goods off the books, each on the account the
     goods are valued in."""
     settings = await current_settings(session, company_id)
-    return [_origin_line(settings, code, R.INVENTORY_PURCHASED, credit=float(amount))
+    return [_lot_line(settings, code, credit=float(amount))
             for code, amount in sorted(by_account.items()) if amount]
 
 
@@ -1517,12 +1537,10 @@ async def create_for_merge_reclassification(
     total = sum(reclass.moves.values(), _Dec(0))
     lines = []
     if total != 0:
-        lines.append(_origin_line(settings, reclass.destination, R.INVENTORY_PURCHASED,
-                                  debit=to_stored_float(max(total, _Dec(0))),
-                                  credit=to_stored_float(max(-total, _Dec(0)))))
+        lines.append(_lot_line(settings, reclass.destination, debit=to_stored_float(max(total, _Dec(0))),
+                               credit=to_stored_float(max(-total, _Dec(0)))))
     for code, a in reclass.moves.items():
-        lines.append(_origin_line(settings, code, R.INVENTORY_PURCHASED,
-                                  debit=to_stored_float(max(-a, _Dec(0))), credit=to_stored_float(max(a, _Dec(0)))))
+        lines.append(_lot_line(settings, code, debit=to_stored_float(max(-a, _Dec(0))), credit=to_stored_float(max(a, _Dec(0)))))
     await _emit_auto_posted_je(
         session, company_id=company_id, user_id=user_id, je_id=merge_reclass_je_id(merged_id),
         idem_create=je_idempotency_key(merged_id, "item.merged.reclass", "c"),
@@ -1712,7 +1730,7 @@ async def reconcile_doc_cogs(
         if (row.state or {}).get("status") != "posted":
             continue
         for e in (row.state or {}).get("entries", []):
-            if line_has_role(settings, e, R.INVENTORY_PURCHASED):
+            if any(line_has_role(settings, e, r) for r in (R.INVENTORY_PURCHASED, R.INVENTORY_OPENING)):
                 booked[e["account"]] = booked.get(e["account"], 0.0) + float(e.get("credit") or 0) - float(
                     e.get("debit") or 0)
     await create_for_doc_cogs_adjustment(
@@ -2003,7 +2021,7 @@ async def create_for_mfg_completed(session, *, company_id, user_id, order_id: st
         entries=[
             *(_inventory_lines(settings, output_amt, outputs, currency, debit=True) if output_amt else []),
             _line(cogs, R.COGS, debit=to_stored_float(waste_amt)),
-            *(_origin_line(settings, code, R.INVENTORY_PURCHASED, credit=to_stored_float(amt))
+            *(_lot_line(settings, code, credit=to_stored_float(amt))
               for code, amt in relief.items() if amt),
         ],
         metadata_={"trigger": "mfg.order.completed", "order_id": order_id},
@@ -2088,10 +2106,10 @@ async def create_for_audit_adjustment(
     entries: list[dict] = []
     if shrink_d > 0:
         entries.append(_line(acc[R.STOCK_SHRINKAGE], R.STOCK_SHRINKAGE, debit=to_stored_float(shrink_d)))
-        entries += [_origin_line(settings, code, R.INVENTORY_PURCHASED, credit=to_stored_float(a))
+        entries += [_lot_line(settings, code, credit=to_stored_float(a))
                     for code, a in lost.items() if a]
     if over_d > 0:
-        entries += [_origin_line(settings, code, R.INVENTORY_PURCHASED, debit=to_stored_float(a))
+        entries += [_lot_line(settings, code, debit=to_stored_float(a))
                     for code, a in gained.items() if a]
         entries.append(_line(acc[R.STOCK_GAIN], R.STOCK_GAIN, credit=to_stored_float(over_d)))
     await create_for_line_adjustment(
@@ -2120,8 +2138,13 @@ async def upsert_opening_inventory_je(
     (excluding the OB JE itself). The gap is rounded once to the company currency; a positive representable
     amount emits/updates je:auto:opening-inventory:{company_id}, while zero voids the OB JE.
 
-    When the gap changes (more stock added), voids the old JE and posts a fresh
-    one so the amount stays current.  Idempotent: safe to call on every render.
+    The gap is debited to each account that has served as the opening inventory
+    account, up to what the lots recording it hold beyond what is already posted
+    there, so every such account carries exactly its lots' value after the opening
+    account is changed; whatever is left goes to the current opening account.
+
+    When the gap or its split changes, voids the old JE and posts a fresh one so
+    it stays current.  Idempotent: safe to call on every render.
     """
     from sqlalchemy import select as _sel
 
@@ -2140,6 +2163,7 @@ async def upsert_opening_inventory_je(
     _INACTIVE = frozenset({"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired", "draft", "disposed"})
 
     catalog_total = _Dec("0")
+    by_lot_account: dict[str, _Dec] = {}  # catalog cost per recorded inventory account
     for row in item_rows:
         s = row.state
         status = str(s.get("status") or "").lower()
@@ -2150,13 +2174,17 @@ async def upsert_opening_inventory_je(
         if (s.get("inventory_type") or "stocked") != "stocked":
             continue
         cost_total = float(s.get("cost_total") or 0)
+        value = _Dec("0")
         if cost_total:
-            catalog_total += _Dec(str(cost_total))
+            value = _Dec(str(cost_total))
         else:
             cost = s.get("cost_price") or s.get("cost price")
             qty = s.get("quantity") or 0
             if cost is not None:
-                catalog_total += _Dec(str(cost)) * _Dec(str(qty))
+                value = _Dec(str(cost)) * _Dec(str(qty))
+        catalog_total += value
+        if s.get(LOT_ACCOUNT_FIELD):
+            by_lot_account[s[LOT_ACCOUNT_FIELD]] = by_lot_account.get(s[LOT_ACCOUNT_FIELD], _Dec("0")) + value
 
     # --- JE-backed inventory: every posted line that holds the value of goods on hand ---
     je_rows = (
@@ -2176,6 +2204,7 @@ async def upsert_opening_inventory_je(
     value_roles = {str(r) for r in INVENTORY_VALUE_ROLES}
     ob_je_id = f"je:auto:opening-inventory:{company_id}"
     je_backed = _Dec("0")
+    backed_by_account: dict[str, _Dec] = {}
     ob_proj = None
     for row in je_rows:
         if row.entity_id == ob_je_id:
@@ -2186,28 +2215,51 @@ async def upsert_opening_inventory_je(
             continue
         for entry in s.get("entries", []):
             if value_roles.intersection(line_roles(settings, entry)):
-                je_backed += _Dec(str(entry.get("debit") or 0))
-                je_backed -= _Dec(str(entry.get("credit") or 0))
+                net = _Dec(str(entry.get("debit") or 0)) - _Dec(str(entry.get("credit") or 0))
+                je_backed += net
+                code = entry.get("account")
+                backed_by_account[code] = backed_by_account.get(code, _Dec("0")) + net
 
     gap = catalog_total - je_backed
     base_currency = settings.get("currency", "USD")
 
-    # Current OB JE amount (0 if not posted): its opening-inventory debit
-    current_amount = 0.0
+    # Current OB JE split (empty if not posted): its opening-inventory debits, per account
+    current: dict[str, _Dec] = {}
     if ob_proj and ob_proj.state.get("status") == "posted":
         for entry in ob_proj.state.get("entries", []):
             if float(entry.get("debit") or 0) and line_has_role(settings, entry, R.INVENTORY_OPENING):
-                current_amount = float(entry.get("debit") or 0)
-                break
+                current[entry["account"]] = round_money(entry["debit"], base_currency)
 
     needed_d = round_money(gap, base_currency)
     if needed_d < 0:
         needed_d = _Dec("0")
-    current_d = round_money(current_amount, base_currency)
     needed = to_stored_float(needed_d)
 
-    if needed_d == current_d:
-        # Amount is correct - but also void+repost if the JE is missing a ts (dateless legacy)
+    # An opening-inventory or retained-earnings role that is unmapped leaves the books as
+    # they are; the posting accounts panel and the books check report the unmapped role.
+    split: dict[str, _Dec] = {}
+    if needed_d > 0:
+        try:
+            acc = await resolve_many(session, company_id, [R.INVENTORY_OPENING, R.RETAINED_EARNINGS])
+        except PostingRoleError:
+            return
+        left = needed_d
+        opening = scope_codes(settings, R.INVENTORY_OPENING)
+        for code in sorted(c for c in {*by_lot_account, *backed_by_account} if c in opening):
+            share = min(round_money(by_lot_account.get(code, _Dec("0")) - backed_by_account.get(code, _Dec("0")),
+                                    base_currency), left)
+            if share > 0:
+                split[code] = share
+                left -= share
+        if left > 0:
+            target = acc[R.INVENTORY_OPENING]
+            split[target] = split.get(target, _Dec("0")) + left
+
+    def _signature(amounts: dict[str, _Dec]) -> str:
+        return ",".join(f"{code}={to_stored_float(v)}" for code, v in sorted(amounts.items()))
+
+    if split == current:
+        # Split is correct - but also void+repost if the JE is missing a ts (dateless legacy)
         if not (ob_proj and ob_proj.state.get("status") == "posted" and not ob_proj.state.get("ts")):
             return  # already correct and has a date, nothing to do
 
@@ -2232,14 +2284,6 @@ async def upsert_opening_inventory_je(
         if exc.status_code == 422 and "locked" in str(exc.detail).lower():
             return
         raise
-    # Likewise an opening-inventory or retained-earnings role that is unmapped leaves the books
-    # as they are; the posting accounts panel and the books check report the unmapped role.
-    if needed_d > 0:
-        try:
-            acc = await resolve_many(session, company_id, [R.INVENTORY_OPENING, R.RETAINED_EARNINGS])
-        except PostingRoleError:
-            return
-
     # Void the existing OB JE if posted (amount changed or gap closed)
     if ob_proj and ob_proj.state.get("status") == "posted":
         from celerp.events.engine import emit_event as _emit
@@ -2253,7 +2297,7 @@ async def upsert_opening_inventory_je(
             actor_id=user_id,
             location_id=None,
             source="auto_je",
-            idempotency_key=f"opening-inv:{company_id}:void:{current_amount}",
+            idempotency_key=f"opening-inv:{company_id}:void:{_signature(current)}",
             metadata_={"trigger": "opening_inventory.auto"},
         )
 
@@ -2265,11 +2309,11 @@ async def upsert_opening_inventory_je(
         company_id=company_id,
         user_id=user_id,
         je_id=ob_je_id,
-        idem_create=f"opening-inv:{company_id}:c:{needed}:{today}",
-        idem_posted=f"opening-inv:{company_id}:p:{needed}:{today}",
+        idem_create=f"opening-inv:{company_id}:c:{_signature(split)}:{today}",
+        idem_posted=f"opening-inv:{company_id}:p:{_signature(split)}:{today}",
         memo="Opening inventory balance (pre-system stock)",
         entries=[
-            _line(acc[R.INVENTORY_OPENING], R.INVENTORY_OPENING, debit=needed),
+            *(_line(code, R.INVENTORY_OPENING, debit=to_stored_float(v)) for code, v in sorted(split.items())),
             _line(acc[R.RETAINED_EARNINGS], R.RETAINED_EARNINGS, credit=needed),
         ],
         metadata_={"trigger": "opening_inventory.auto"},

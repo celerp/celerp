@@ -192,7 +192,7 @@ async def test_kwd_basis_sale_and_restatement_keep_fils(client, session):
     assert (await _set_cost(client, auth, item_id, 10.1274)).status_code == 200
     adjustments = (await _cogs_adjustments(session, auth, doc)).values()
     assert [[(e["account"], e["debit"], e["credit"]) for e in s["entries"]] for s in adjustments] == [
-        [("5100", 0.004, 0.0), ("1130-P", 0.0, 0.004)]
+        [("5100", 0.004, 0.0), ("1130-OB", 0.0, 0.004)]
     ]
 
 

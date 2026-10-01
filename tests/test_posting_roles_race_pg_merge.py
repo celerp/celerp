@@ -40,7 +40,7 @@ async def _books(engine, client):
     a = await _lot(client, tok, "A", 600.0)
     await _post(client, tok, "/accounting/accounts", {"code": "1131", "name": "Stock 1131",
                                                      "account_type": "asset", "parent_code": "1130"})
-    r = await client.put("/accounting/posting-accounts/inventory_purchased", headers=auth(tok), json={"code": "1131"})
+    r = await client.put("/accounting/posting-accounts/inventory_opening", headers=auth(tok), json={"code": "1131"})
     assert r.status_code == 200, r.text
     b = await _lot(client, tok, "B", 400.0)
     return cid, tok, a, b
@@ -124,7 +124,7 @@ async def test_a_cost_correction_and_a_merge_serialize(real_engine, real_client,
                               > await _seq(real_engine, cid, "item.updated", b))
     assert corrected_before_merge is correction_first
     moved = 450.0 if correction_first else 400.0
-    assert lines == {"1130-P": (moved, 0), "1131": (0, moved)}
+    assert lines == {"1130-OB": (moved, 0), "1131": (0, moved)}
     assert (await _state(real_engine, cid, merged_id))["cost_total"] == 1050.0
 
 
@@ -144,7 +144,7 @@ async def test_two_deliveries_of_one_merge_move_the_value_once(real_engine, real
     assert r1.json() == r2.json()
     merged_id = r1.json()["id"]
     assert await _reclass_entries(real_engine, cid) == {
-        f"je:auto:{merged_id}:merge-reclass": {"1130-P": (400.0, 0), "1131": (0, 400.0)}}
+        f"je:auto:{merged_id}:merge-reclass": {"1130-OB": (400.0, 0), "1131": (0, 400.0)}}
     items = await _rows(real_engine, cid, "SELECT entity_id FROM projections WHERE company_id = :c "
                                           "AND entity_type = 'item' AND state ->> 'sku' = 'A'")
     assert sorted(i for (i,) in items) == sorted([a, merged_id])

@@ -113,7 +113,7 @@ async def test_a_restored_copy_keeps_posting_accounts_and_every_origin(real_engi
                              "WHERE company_id = :c AND entity_id = :e"), {"c": source, "e": older_lot})
         await s.commit()
     await _remap(real_client, tok, "receivable", "1121", "1100")
-    await _remap(real_client, tok, "inventory_purchased", "1131", "1130")
+    await _remap(real_client, tok, "inventory_opening", "1131", "1130")
     new_invoice = await _invoice(real_client, tok, 40.0)
     await _lot(real_client, tok, "LOT-NEW", 20.0)
     await _remap(real_client, tok, "receivable", "1122", "1100")
@@ -121,7 +121,7 @@ async def test_a_restored_copy_keeps_posting_accounts_and_every_origin(real_engi
     before = (await _settings(real_engine, source), await _journal(real_engine, source),
               await _lots(real_engine, source), await _accounts(real_engine, source))
     assert before[0]["posting_role_scopes"]["receivable"] == ["1120", "1121", "1122"]
-    assert before[2] == {"LOT-OLD": "1130-P", "LOT-OLDER": None, "LOT-NEW": "1131"}
+    assert before[2] == {"LOT-OLD": "1130-OB", "LOT-OLDER": None, "LOT-NEW": "1131"}
 
     r = await restore(real_client, tok, await download(real_client, tok), mode="new_company")
     assert r.status_code == 201, r.text
@@ -144,7 +144,7 @@ async def test_a_restored_copy_keeps_posting_accounts_and_every_origin(real_engi
     sale = await _invoice(real_client, copy_tok, 50.0, (lot_ids["LOT-OLD"], lot_ids["LOT-OLDER"], lot_ids["LOT-NEW"]))
     sold = await _entry(real_engine, copy, f"je:auto:{sale}:fin")
     assert {code: amounts[1] for code, amounts in sold.items() if code.startswith("113")} == {
-        "1130-P": 55.0, "1131": 20.0}
+        "1130-OB": 30.0, "1130-P": 25.0, "1131": 20.0}
     assert sold["1122"] == (150.0, 0)
     await _lot(real_client, copy_tok, "LOT-COPY", 5.0)
     assert (await _lots(real_engine, copy))["LOT-COPY"] == "1131"
@@ -168,21 +168,21 @@ async def test_a_restored_copy_keeps_a_merge_across_inventory_accounts(real_engi
     tok = await token(real_engine, user, source)
 
     a = await _lot(real_client, tok, "LOT-A", 600.0)
-    await _remap(real_client, tok, "inventory_purchased", "1131", "1130")
+    await _remap(real_client, tok, "inventory_opening", "1131", "1130")
     b = await _lot(real_client, tok, "LOT-B", 400.0)
     merged = (await _post(real_client, tok, "/items/merge", {"source_entity_ids": [a, b], "target_sku_from": a}))["id"]
     reclass = f"je:auto:{merged}:merge-reclass"
-    assert await _entry(real_engine, source, reclass) == {"1130-P": (400.0, 0), "1131": (0, 400.0)}
+    assert await _entry(real_engine, source, reclass) == {"1130-OB": (400.0, 0), "1131": (0, 400.0)}
 
     before = (await _journal(real_engine, source), await _lots(real_engine, source))
     r = await restore(real_client, tok, await download(real_client, tok), mode="new_company")
     assert r.status_code == 201, r.text
     copy, copy_tok = r.json()["company_id"], r.json()["access_token"]
     assert (await _journal(real_engine, copy), await _lots(real_engine, copy)) == before
-    assert await _entry(real_engine, copy, reclass) == {"1130-P": (400.0, 0), "1131": (0, 400.0)}
+    assert await _entry(real_engine, copy, reclass) == {"1130-OB": (400.0, 0), "1131": (0, 400.0)}
     (merged_state,) = await _rows(real_engine, copy, "SELECT state FROM projections WHERE company_id = :c "
                                                      "AND entity_id = :e", e=merged)
-    assert (merged_state[0]["inventory_account_code"], merged_state[0]["cost_total"]) == ("1130-P", 1000.0)
+    assert (merged_state[0]["inventory_account_code"], merged_state[0]["cost_total"]) == ("1130-OB", 1000.0)
 
     # The copy can undo the merge exactly as the original could.
     await _post(real_client, copy_tok, f"/items/{merged}/undo-merge")
@@ -190,4 +190,4 @@ async def test_a_restored_copy_keeps_a_merge_across_inventory_accounts(real_engi
                                             "AND entity_id = :e", e=reclass)
     assert row[0] == "void"
     assert (await _lots(real_engine, copy))["LOT-B"] == "1131"
-    assert await _entry(real_engine, source, reclass) == {"1130-P": (400.0, 0), "1131": (0, 400.0)}
+    assert await _entry(real_engine, source, reclass) == {"1130-OB": (400.0, 0), "1131": (0, 400.0)}

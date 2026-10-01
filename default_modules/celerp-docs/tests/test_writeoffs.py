@@ -182,7 +182,7 @@ async def test_writeoff_full_row_disposes_and_posts_je(client):
     debit = {x["account"]: float(x.get("debit", 0) or 0) for x in entries if float(x.get("debit", 0) or 0)}
     credit = {x["account"]: float(x.get("credit", 0) or 0) for x in entries if float(x.get("credit", 0) or 0)}
     assert debit == {EXP_A: 40.0}
-    assert credit == {"1130-P": 40.0}
+    assert credit == {"1130-OB": 40.0}
 
 
 @pytest.mark.asyncio
@@ -206,7 +206,7 @@ async def test_writeoff_partial_splits_child(client):
     je = await _je_for(client, t, wo)
     entries = je["data"]["entries"]
     assert {x["account"] for x in entries if float(x.get("debit", 0) or 0)} == {EXP_A}
-    assert {x["account"] for x in entries if float(x.get("credit", 0) or 0)} == {"1130-P"}
+    assert {x["account"] for x in entries if float(x.get("credit", 0) or 0)} == {"1130-OB"}
 
 
 @pytest.mark.asyncio
@@ -232,7 +232,7 @@ async def test_writeoff_two_lines_same_item_one_balanced_je(client):
     debit = {x["account"]: float(x.get("debit", 0) or 0) for x in entries if float(x.get("debit", 0) or 0)}
     credit = {x["account"]: float(x.get("credit", 0) or 0) for x in entries if float(x.get("credit", 0) or 0)}
     assert debit == {EXP_A: 20.0, EXP_B: 30.0}
-    assert credit == {"1130-P": 50.0}  # one summed inventory credit
+    assert credit == {"1130-OB": 50.0}  # one summed inventory credit
     assert abs(sum(debit.values()) - sum(credit.values())) < 1e-6
 
 
@@ -285,7 +285,7 @@ async def test_writeoff_exact_exhaustion_disposes_parent_no_phantom(client, firs
     assert je is not None
     credit = {x["account"]: float(x.get("credit", 0) or 0) for x in je["data"]["entries"]
               if float(x.get("credit", 0) or 0)}
-    assert credit == {"1130-P": 50.0}
+    assert credit == {"1130-OB": 50.0}
 
 
 # --- validation (function level) -------------------------------------------
@@ -496,7 +496,7 @@ async def test_audit_adjustment_still_posts_after_refactor(client):
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(t))).json()["items"]
     je = next(e for e in ledger if audit in (e["data"].get("memo") or ""))
     entries = je["data"]["entries"]
-    assert {"6970", "1130-P"} <= {x["account"] for x in entries}
+    assert {"6970", "1130-OB"} <= {x["account"] for x in entries}
     assert abs(sum(float(x.get("debit", 0) or 0) for x in entries)
                - sum(float(x.get("credit", 0) or 0) for x in entries)) < 1e-6
 

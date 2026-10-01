@@ -257,7 +257,7 @@ async def test_writeoff_concurrent_same_item_two_lists_one_wins(_db_engine):
             for je in jes:
                 for e in je.state.get("entries") or []:
                     c = float(e.get("credit", 0) or 0)
-                    if e.get("account") == "1130-P" and c:
+                    if e.get("account") == "1130-OB" and c:
                         credits.append(c)
             assert credits == [50.0], f"expected one 50.0 Inventory credit, got {credits}"
 

@@ -213,21 +213,23 @@ def lot_account(settings: dict | None, state: dict) -> str:
     return code
 
 
-async def new_lot_account(session: AsyncSession, company_id) -> str | None:
-    """The inventory account a new lot's value is booked into: the company's current
-    inventory-purchased account. A company being migrated, which has no posting
-    accounts yet, books its stock where the source books kept inventory, when they
-    name exactly one account. Otherwise None, and the lot then moves cost only where
-    its history proves the account (``lot_account``)."""
+async def new_lot_account(session: AsyncSession, company_id,
+                          role: AccountRole = AccountRole.INVENTORY_OPENING) -> str | None:
+    """The inventory account a new lot's value is booked into: the account of ``role``.
+    Stock entered with no purchase behind it is carried by the opening inventory entry,
+    so it takes the opening inventory account; a writer that books the stock itself
+    names the role it debits. A company being migrated, which has no posting accounts
+    yet, books its stock where the source books kept inventory, when they name exactly
+    one account. Otherwise None, and the lot then moves cost only where its history
+    proves the account (``lot_account``)."""
     from sqlalchemy import select
 
     settings = (await session.execute(
         select(Company.settings).where(Company.id == company_id))).scalar_one_or_none() or {}
-    role = AccountRole.INVENTORY_PURCHASED.value
     if SCHEMA_KEY not in settings:
-        codes = source_controls(settings, role)
+        codes = source_controls(settings, AccountRole.INVENTORY_PURCHASED.value)
         return codes[0] if len(codes) == 1 else None
-    return role_map(settings).get(role) or None
+    return role_map(settings).get(role.value) or None
 
 
 async def current_settings(session: AsyncSession, company_id) -> dict:

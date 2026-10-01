@@ -30,7 +30,8 @@ from celerp.models.company import Company, User, WorkCenter
 from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
 from celerp.services import auto_je, migrations
-from celerp.services.account_roles import current_settings, lot_account
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, AccountRole
+from celerp.services.account_roles import current_settings, lot_account, new_lot_account
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_basis
 from celerp.services.auth import get_current_company_id, get_current_user
@@ -1480,6 +1481,8 @@ async def _receive(session: AsyncSession, company_id, user, order_id: str, run_s
                 "quantity": 0, "location_id": loc, "parent_item_id": out_id, "lot": True,
                 "barcode": lot_barcode,
                 "manufacturing_order_id": order_id, "cost_total": round_basis(unit_cost * qty),
+                # The run books its output as purchased inventory, so the lot records that account.
+                LOT_ACCOUNT_FIELD: await new_lot_account(session, company_id, AccountRole.INVENTORY_PURCHASED),
             },
             actor_id=user.id, location_id=loc, source="api",
             idempotency_key=f"mfg:{order_id}:receive:{rk}:created",

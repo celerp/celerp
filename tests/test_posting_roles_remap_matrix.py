@@ -22,7 +22,7 @@ from celerp.services.account_roles import set_role
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_money_stock_and_contact_invariants import _account_net
 from test_posting_roles_lots import _credits, _lot, _new_inventory_account, _sell
-from test_posting_roles_lots import _remap as _remap_inventory_purchased
+from test_posting_roles_lots import _remap as _remap_inventory_opening
 
 
 async def _account(client, auth, code: str, account_type: str, parent_code: str | None = None) -> None:
@@ -180,34 +180,34 @@ async def test_a_payable_settles_and_resettles_on_each_eras_own_account_through_
 
 @pytest.mark.asyncio
 async def test_a_lot_relieves_and_rebuys_on_each_eras_own_inventory_account_through_two_remaps(session, client, auth):
-    # 1. A lot bought on A (the seeded inventory_purchased account, 1130-P).
+    # 1. A lot entered on A (the seeded inventory_opening account, 1130-OB).
     lot_a = await _lot(client, auth, 30.0)
-    assert (await _state(session, auth, lot_a))["inventory_account_code"] == "1130-P"
+    assert (await _state(session, auth, lot_a))["inventory_account_code"] == "1130-OB"
 
-    # 2. Remap inventory_purchased to B.
-    await _remap_inventory_purchased(session, auth, await _new_inventory_account(client, auth, "1131"))
+    # 2. Remap inventory_opening to B.
+    await _remap_inventory_opening(session, auth, await _new_inventory_account(client, auth, "1131"))
 
     # 3. Selling the A-era lot relieves it on A, not B.
     inv1 = await _sell(client, auth, (lot_a, 1))
     je1 = await _state(session, auth, f"je:auto:{inv1}:fin")
-    assert _credits(je1) == {"1130-P": 30.0}
+    assert _credits(je1) == {"1130-OB": 30.0}
 
-    # 4. A new lot bought now is booked on B.
+    # 4. A new lot entered now is booked on B.
     lot_b = await _lot(client, auth, 12.0)
     assert (await _state(session, auth, lot_b))["inventory_account_code"] == "1131"
 
     # 5. Both eras' lots keep their own account.
-    assert (await _state(session, auth, lot_a))["inventory_account_code"] == "1130-P"
+    assert (await _state(session, auth, lot_a))["inventory_account_code"] == "1130-OB"
     assert (await _state(session, auth, lot_b))["inventory_account_code"] == "1131"
 
     # 6. Remap back to A. Selling the B-era lot still relieves it on B.
-    await _remap_inventory_purchased(session, auth, "1130-P")
+    await _remap_inventory_opening(session, auth, "1130-OB")
     inv2 = await _sell(client, auth, (lot_b, 1))
     je2 = await _state(session, auth, f"je:auto:{inv2}:fin")
     assert _credits(je2) == {"1131": 12.0}
-    # A lot bought after the remap back is booked on A again.
+    # A lot entered after the remap back is booked on A again.
     lot_c = await _lot(client, auth, 8.0)
-    assert (await _state(session, auth, lot_c))["inventory_account_code"] == "1130-P"
+    assert (await _state(session, auth, lot_c))["inventory_account_code"] == "1130-OB"
 
 
 @pytest.mark.asyncio

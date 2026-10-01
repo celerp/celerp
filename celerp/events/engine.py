@@ -234,9 +234,11 @@ def _touches_physical_codes(state: dict, event_type: str, data: dict) -> bool:
 
 
 async def _record_lot_account(session, kwargs: dict, previous_state: dict | None) -> None:
-    """A new lot records the inventory account its value is booked into, unless its
-    writer names one (a part of a lot keeps the lot's). No later event may change it:
-    the lot's value stays on that account for as long as the lot holds stock."""
+    """A new lot records the inventory account its value is booked into: the opening
+    inventory account, which carries stock entered with no purchase behind it, unless
+    its writer names one (a receipt or a production run names the account it books, a
+    part of a lot keeps the lot's). No later event may change it: the lot's value stays
+    on that account for as long as the lot holds stock."""
     from celerp.accounting_roles import LOT_ACCOUNT_FIELD
     from celerp.services.account_roles import new_lot_account
 

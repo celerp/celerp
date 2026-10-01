@@ -24,7 +24,7 @@ from test_posting_roles_landed import _freight_bill
 from test_receipt_accounting import _finalize, _receive
 
 _FIELD = "inventory_account_code"
-_A_TO_B = {"destination": "1130-P", "destination_name": "Inventory - Purchased", "currency": "USD",
+_A_TO_B = {"destination": "1130-OB", "destination_name": "Inventory - Opening Balance", "currency": "USD",
            "moves": [{"account": "1131", "name": "Stock 1131", "amount": 400.0}]}
 
 
@@ -35,10 +35,11 @@ async def _account(client, auth, code: str) -> str:
     return code
 
 
-async def _remap(session, client, auth, code: str, *, create: bool = True) -> None:
+async def _remap(session, client, auth, code: str, *, create: bool = True, role: str = "inventory_opening") -> None:
+    """Point the inventory account that new lots of the kind ``role`` record at ``code``."""
     if create:
         await _account(client, auth, code)
-    await set_role(session, auth["company_id"], "inventory_purchased", code)
+    await set_role(session, auth["company_id"], role, code)
     await session.commit()
 
 
@@ -97,7 +98,7 @@ async def _sell(client, auth, lot: str, qty: float) -> str:
 
 
 async def _two_accounts(session, client, auth, a_cost: float = 600.0, b_cost: float = 400.0):
-    """Lot A booked to 1130-P and lot B booked to 1131 (the worked example)."""
+    """Lot A booked to 1130-OB and lot B booked to 1131 (the worked example)."""
     a = await _lot(client, auth, a_cost, sku="A")
     await _remap(session, client, auth, "1131")
     b = await _lot(client, auth, b_cost, sku="B")
@@ -113,7 +114,7 @@ async def test_lots_in_one_account_merge_with_no_reclassification(session, clien
     assert await _reclass(session, auth, out["id"]) is None
     assert set(await _entries(session, auth)) == set(before)
     merged = await _state(session, auth, out["id"])
-    assert (merged[_FIELD], merged["cost_total"]) == ("1130-P", 1000.0)
+    assert (merged[_FIELD], merged["cost_total"]) == ("1130-OB", 1000.0)
 
 
 @pytest.mark.asyncio
@@ -121,10 +122,10 @@ async def test_lots_in_two_accounts_move_the_other_value_into_the_surviving_acco
     a, b = await _two_accounts(session, client, auth)
     out = await _merged(client, auth, [a, b])
     merged = await _state(session, auth, out["id"])
-    assert (merged[_FIELD], merged["cost_total"]) == ("1130-P", 1000.0)
+    assert (merged[_FIELD], merged["cost_total"]) == ("1130-OB", 1000.0)
     je = await _reclass(session, auth, out["id"])
     assert je["status"] == "posted"
-    assert _lines(je) == {"1130-P": (400.0, 0), "1131": (0, 400.0)}
+    assert _lines(je) == {"1130-OB": (400.0, 0), "1131": (0, 400.0)}
     assert out["inventory_reclassification"] == _A_TO_B
     # Traceable to the merge it belongs to.
     row = (await session.execute(select(Projection).where(
@@ -139,7 +140,7 @@ async def test_the_surviving_lot_keeps_its_own_account_not_the_current_one(sessi
     await _remap(session, client, auth, "1132")
     out = await _merged(client, auth, [b, a])  # B survives
     assert (await _state(session, auth, out["id"]))[_FIELD] == "1131"
-    assert _lines(await _reclass(session, auth, out["id"])) == {"1131": (600.0, 0), "1130-P": (0, 600.0)}
+    assert _lines(await _reclass(session, auth, out["id"])) == {"1131": (600.0, 0), "1130-OB": (0, 600.0)}
 
 
 @pytest.mark.asyncio
@@ -151,7 +152,7 @@ async def test_three_accounts_post_one_credit_per_account_for_the_exact_total(se
     c = await _lot(client, auth, 75.5, sku="C")
     out = await _merged(client, auth, [a, b1, c, b2])
     je = await _reclass(session, auth, out["id"])
-    assert _lines(je) == {"1130-P": (325.5, 0), "1131": (0, 250.0), "1132": (0, 75.5)}
+    assert _lines(je) == {"1130-OB": (325.5, 0), "1131": (0, 250.0), "1132": (0, 75.5)}
     assert len(je["entries"]) == 3
     assert out["inventory_reclassification"]["moves"] == [
         {"account": "1131", "name": "Stock 1131", "amount": 250.0},
@@ -168,13 +169,13 @@ async def test_a_partly_sold_lot_moves_only_the_value_it_still_carries(session, 
     state = await _state(session, auth, b)
     assert (state["quantity"], state["cost_total"]) == (3, 300.0)
     out = await _merged(client, auth, [a, b])
-    assert _lines(await _reclass(session, auth, out["id"])) == {"1130-P": (300.0, 0), "1131": (0, 300.0)}
+    assert _lines(await _reclass(session, auth, out["id"])) == {"1130-OB": (300.0, 0), "1131": (0, 300.0)}
 
 
 @pytest.mark.asyncio
 async def test_a_lot_carrying_landed_cost_moves_its_full_carrying_value(session, client, auth):
     a = await _lot(client, auth, 600.0, sku="A")
-    await _remap(session, client, auth, "1131")
+    await _remap(session, client, auth, "1131", role="inventory_purchased")
     bill = await _freight_bill(client, auth)
     await _finalize(client, auth, bill)
     r = await _receive(client, auth, bill, {"po_line_index": 0, "sku": "GOODS", "name": "Goods",
@@ -184,7 +185,7 @@ async def test_a_lot_carrying_landed_cost_moves_its_full_carrying_value(session,
     state = await _state(session, auth, parcel)
     assert (state[_FIELD], state["cost_total"]) == ("1131", 40.0)  # 30 goods + 10 freight
     out = await _merged(client, auth, [a, parcel], resolved_attributes={})
-    assert _lines(await _reclass(session, auth, out["id"])) == {"1130-P": (40.0, 0), "1131": (0, 40.0)}
+    assert _lines(await _reclass(session, auth, out["id"])) == {"1130-OB": (40.0, 0), "1131": (0, 40.0)}
 
 
 @pytest.mark.asyncio
@@ -198,7 +199,7 @@ async def test_a_merged_lot_sold_relieves_its_whole_cost_from_the_surviving_acco
             for e in je["entries"]:
                 if e["account"].startswith("113"):
                     relief[e["account"]] = relief.get(e["account"], 0) + (e.get("credit") or 0) - (e.get("debit") or 0)
-    assert relief == {"1130-P": 1000.0}
+    assert relief == {"1130-OB": 1000.0}
 
 
 @pytest.mark.asyncio
@@ -210,8 +211,8 @@ async def test_undoing_a_merge_reverses_the_exact_entry_and_restores_every_lot(s
     assert r.status_code == 200, r.text
     je = await _reclass(session, auth, out["id"])
     assert je["status"] == "void"
-    assert _lines(je) == {"1130-P": (400.0, 0), "1131": (0, 400.0)}
-    for lot, account, cost in ((a, "1130-P", 600.0), (b, "1131", 400.0)):
+    assert _lines(je) == {"1130-OB": (400.0, 0), "1131": (0, 400.0)}
+    for lot, account, cost in ((a, "1130-OB", 600.0), (b, "1131", 400.0)):
         state = await _state(session, auth, lot)
         assert (state["status"], state.get("merged_into"), state[_FIELD], state["cost_total"]) == (
             "available", None, account, cost)
@@ -307,4 +308,4 @@ async def test_a_role_that_cannot_see_cost_is_told_the_accounts_but_not_the_amou
     r = await client.post("/items/merge", headers=op, json={"source_entity_ids": [a, b], "target_sku_from": a})
     assert r.status_code == 200, r.text
     assert r.json()["inventory_reclassification"] == hidden
-    assert _lines(await _reclass(session, auth, r.json()["id"])) == {"1130-P": (400.0, 0), "1131": (0, 400.0)}
+    assert _lines(await _reclass(session, auth, r.json()["id"])) == {"1130-OB": (400.0, 0), "1131": (0, 400.0)}

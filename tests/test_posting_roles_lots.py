@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Every inventory lot keeps the inventory account its value was booked into.
 
-A new lot takes the company's current inventory account; selling, fulfilling,
-returning or splitting a lot moves its value on that same account whatever the
+A lot entered by hand takes the company's current opening inventory account, and
+stock received or produced takes the current purchased inventory account; selling,
+fulfilling, returning or splitting a lot moves its value on that same account whatever the
 account is set to by then. A lot from before lots recorded their account uses
 the account the company's history proves, and one with no provable account
 refuses to move its cost rather than guess.
@@ -31,8 +32,8 @@ async def _new_inventory_account(client, auth, code: str = "1131") -> str:
     return code
 
 
-async def _remap(session, auth, code: str) -> None:
-    await set_role(session, auth["company_id"], "inventory_purchased", code)
+async def _remap(session, auth, code: str, role: str = "inventory_opening") -> None:
+    await set_role(session, auth["company_id"], role, code)
     await session.commit()
 
 
@@ -77,7 +78,7 @@ async def test_a_new_lot_records_the_inventory_account_it_is_booked_into(session
     first = await _lot(client, auth, 10.0)
     await _remap(session, auth, await _new_inventory_account(client, auth))
     second = await _lot(client, auth, 10.0)
-    assert (await _state(session, auth, first))[_FIELD] == "1130-P"
+    assert (await _state(session, auth, first))[_FIELD] == "1130-OB"
     assert (await _state(session, auth, second))[_FIELD] == "1131"
 
 
@@ -88,9 +89,9 @@ async def test_a_sale_relieves_each_lot_on_the_account_it_was_booked_into(sessio
     new = await _lot(client, auth, 12.0)
     inv = await _sell(client, auth, (old, 1), (new, 1))
     je = await _state(session, auth, f"je:auto:{inv}:fin")
-    assert _credits(je)["1130-P"] == 30.0 and _credits(je)["1131"] == 12.0
+    assert _credits(je)["1130-OB"] == 30.0 and _credits(je)["1131"] == 12.0
     roles = {e["account"]: e.get("account_roles") for e in je["entries"]}
-    assert roles["1130-P"] == ["inventory_purchased"] and roles["1131"] == ["inventory_purchased"]
+    assert roles["1130-OB"] == ["inventory_opening"] and roles["1131"] == ["inventory_opening"]
     assert {e["account"]: e["debit"] for e in je["entries"] if e.get("debit")}["5100"] == 42.0
 
 
@@ -119,14 +120,14 @@ async def test_a_split_lot_keeps_its_account_in_every_part(session, client, auth
     parts = [p.state for p in rows if p.entity_id == lot or p.state.get("split_from") == lot
              or p.state.get("parent_id") == lot]
     assert len(parts) >= 2
-    assert {s.get(_FIELD) for s in parts} == {"1130-P"}
+    assert {s.get(_FIELD) for s in parts} == {"1130-OB"}
 
 
 @pytest.mark.asyncio
 async def test_an_older_lot_relieves_the_account_the_company_history_proves(session, client, auth):
     lot = await _lot(client, auth, 30.0)
     await _forget_origin(session, auth, lot)
-    await _remap(session, auth, await _new_inventory_account(client, auth))
+    await _remap(session, auth, await _new_inventory_account(client, auth), "inventory_purchased")
     inv = await _sell(client, auth, (lot, 1))
     assert _credits(await _state(session, auth, f"je:auto:{inv}:fin")) == {"1130-P": 30.0}
 
@@ -152,9 +153,9 @@ async def test_an_older_lot_with_no_provable_account_refuses_to_move_its_cost(se
 async def test_a_lot_account_is_not_editable(session, client, auth):
     lot = await _lot(client, auth, 30.0)
     r = await client.patch(f"/items/{lot}", headers=auth["headers"], json={
-        "fields_changed": {_FIELD: {"old": "1130-P", "new": "1131"}}})
+        "fields_changed": {_FIELD: {"old": "1130-OB", "new": "1131"}}})
     assert r.status_code == 422, r.text
-    assert (await _state(session, auth, lot))[_FIELD] == "1130-P"
+    assert (await _state(session, auth, lot))[_FIELD] == "1130-OB"
 
 
 @pytest.mark.asyncio
@@ -187,10 +188,10 @@ async def test_a_top_up_after_a_remap_adds_to_the_lot_on_its_own_account(session
                     [{"item_id": lot, "name": "Lot", "quantity": 5, "unit_price": 14.0}])
     r = await _receive(client, auth, po, {"po_line_index": 0, "item_id": lot, "quantity_received": 5})
     assert r.status_code == 200, r.text
-    assert await _books(session, auth, "1130-P", "1131") == {"1130-P": 70.0, "1131": 0.0}
+    assert await _books(session, auth, "1130-OB", "1131") == {"1130-OB": 70.0, "1131": 0.0}
     # Billing the order later moves nothing between inventory accounts.
     await _finalize(client, auth, po)
-    assert await _books(session, auth, "1130-P", "1131", "2110") == {"1130-P": 70.0, "1131": 0.0, "2110": -70.0}
+    assert await _books(session, auth, "1130-OB", "1131", "2110") == {"1130-OB": 70.0, "1131": 0.0, "2110": -70.0}
 
 
 @pytest.mark.asyncio
@@ -203,7 +204,7 @@ async def test_goods_sent_back_after_a_remap_leave_the_account_they_came_in_on(s
     await _remap(session, auth, await _new_inventory_account(client, auth))
     r = await _return(client, auth, po, lot, 5)
     assert r.status_code == 200, r.text
-    assert await _books(session, auth, "1130-P", "1131") == {"1130-P": 0.0, "1131": 0.0}
+    assert await _books(session, auth, "1130-OB", "1131") == {"1130-OB": 0.0, "1131": 0.0}
 
 
 @pytest.mark.asyncio
@@ -220,7 +221,7 @@ async def test_landed_cost_sent_back_after_a_remap_leaves_the_lot_account(sessio
     r = await _receive(client, auth, bill, {"po_line_index": 0, "sku": "GOODS", "name": "Goods", "quantity_received": 2})
     assert r.status_code == 200, r.text
     [parcel] = (await _state(session, auth, bill))["received_item_ids"]
-    await _remap(session, auth, await _new_inventory_account(client, auth))
+    await _remap(session, auth, await _new_inventory_account(client, auth), "inventory_purchased")
     r = await _return(client, auth, bill, parcel, 1)
     assert r.status_code == 200, r.text
     assert await _books(session, auth, "1130-P", "1131", "1130-FRT") == {
@@ -251,7 +252,7 @@ async def test_an_audit_after_a_remap_adjusts_each_lot_on_its_own_account(sessio
         assert r.status_code == 200, r.text
     r = await client.post(f"/lists/{audit}/adjust", headers=h)
     assert r.status_code == 200, r.text
-    assert await _books(session, auth, "1130-P", "1131") == {"1130-P": -20.0, "1131": 10.0}
+    assert await _books(session, auth, "1130-OB", "1131") == {"1130-OB": -20.0, "1131": 10.0}
 
 
 @pytest.mark.asyncio
@@ -263,12 +264,12 @@ async def test_manufacturing_relieves_inputs_on_their_account_and_books_output_w
     r = await client.put(f"/manufacturing/items/{product}/recipe", headers=h, json={
         "output_qty": 2, "components": [{"item_id": raw, "quantity": 5}], "labor": [], "overhead": []})
     assert r.status_code == 200, r.text
-    await _remap(session, auth, await _new_inventory_account(client, auth))
+    await _remap(session, auth, await _new_inventory_account(client, auth), "inventory_purchased")
     order = (await client.post(f"/manufacturing/items/{product}/build", headers=h, json={"quantity": 2})).json()["id"]
     assert (await client.post(f"/manufacturing/{order}/issue", headers=h)).status_code == 200
     r = await client.post(f"/manufacturing/{order}/complete", headers=h, json={})
     assert r.status_code == 200, r.text
-    assert await _books(session, auth, "1130-P", "1131") == {"1130-P": -10.0, "1131": 10.0}
+    assert await _books(session, auth, "1130-OB", "1131") == {"1130-OB": -10.0, "1131": 10.0}
     run = await _state(session, auth, order)
     for out in run.get("received_lots") or []:
         assert (await _state(session, auth, out))[_FIELD] == "1131"
@@ -278,7 +279,7 @@ async def test_manufacturing_relieves_inputs_on_their_account_and_books_output_w
 async def test_an_older_lot_whose_stock_sat_in_more_than_one_account_waits_for_a_choice(session, client, auth):
     lot = await _lot(client, auth, 30.0, sku="OLD-2")
     await _forget_origin(session, auth, lot)
-    await _remap(session, auth, await _new_inventory_account(client, auth))
+    await _remap(session, auth, await _new_inventory_account(client, auth), "inventory_purchased")
     company = await locked_company(session, auth["company_id"])
     company.settings = {k: v for k, v in company.settings.items() if k != "posting_legacy_lot_account"}
     await session.commit()

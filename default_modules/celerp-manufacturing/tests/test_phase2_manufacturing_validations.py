@@ -61,7 +61,7 @@ async def test_complete_with_waste_posts_balanced_je(client):
     je = next(e for e in ledger if run in (e["data"].get("memo") or ""))
     entries = je["data"]["entries"]
     accounts = [x["account"] for x in entries]
-    assert accounts.count("1130-P") == 2 and "5100" in accounts
+    assert {"1130-OB", "1130-P", "5100"} <= set(accounts)
     assert any(x["account"] == "5100" and float(x.get("debit", 0) or 0) > 0 for x in entries)  # waste posted
     debit = sum(float(x.get("debit", 0) or 0) for x in entries)
     credit = sum(float(x.get("credit", 0) or 0) for x in entries)

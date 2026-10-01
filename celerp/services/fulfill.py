@@ -16,6 +16,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.models.projections import Projection
@@ -119,6 +120,8 @@ async def execute_fulfill(
             })
         elif pick.action == "split":
             child_eid = f"item:{_uuid.uuid4()}"
+            parent = await session.get(Projection, {"company_id": cid, "entity_id": pick.item_id})
+            parent_state = parent.state if parent else {}
             await emit_event(
                 session,
                 company_id=cid,
@@ -130,6 +133,10 @@ async def execute_fulfill(
                     "name": pick.sku,
                     "quantity": pick.pick_qty,
                     "barcode": next(split_barcodes),   # fresh per-lot barcode from the injected allocator
+                    # The part carries its share of the lot's cost on the lot's account,
+                    # recorded or not, so a return puts it back where its value sits.
+                    "cost_total": pick.pick_qty * pick.cost_price,
+                    LOT_ACCOUNT_FIELD: parent_state.get(LOT_ACCOUNT_FIELD),
                 },
                 actor_id=uid,
                 location_id=None,
@@ -138,7 +145,6 @@ async def execute_fulfill(
                 metadata_={"parent_id": pick.item_id, "split_for_fulfillment": True},
             )
             # Reduce parent quantity
-            parent = await session.get(Projection, {"company_id": cid, "entity_id": pick.item_id})
             parent_qty = float(parent.state.get("quantity", 0)) if parent else 0
             new_parent_qty = max(0.0, parent_qty - pick.pick_qty)
             await emit_event(

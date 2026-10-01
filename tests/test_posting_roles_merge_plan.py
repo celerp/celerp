@@ -102,7 +102,7 @@ async def test_an_exact_retry_of_a_merge_returns_the_first_result(session, clien
 
 async def test_older_stock_with_no_provable_account_is_refused_before_anything_changes(session, client, auth):
     a, b = await _lot(client, auth, 600.0, sku="OLD-A"), await _lot(client, auth, 400.0, sku="OLD-B")
-    await _remap(session, client, auth, "1131")
+    await _remap(session, client, auth, "1131", role="inventory_purchased")
     await _forget_origin(session, auth, a, b)
     await _no_older_stock_account(session, auth)
     items, before = await _items(session, auth), await _ledger_count(session, auth)
@@ -121,7 +121,7 @@ async def test_older_stock_with_no_provable_account_is_refused_before_anything_c
 
 async def test_older_stock_with_a_proven_account_merges_and_the_result_records_it(session, client, auth):
     a, b = await _lot(client, auth, 600.0, sku="OLD-A"), await _lot(client, auth, 400.0, sku="OLD-B")
-    await _remap(session, client, auth, "1131")
+    await _remap(session, client, auth, "1131", role="inventory_purchased")
     await _forget_origin(session, auth, a, b)
     r = await _merge(client, auth, [a, b])
     assert r.status_code == 200, r.text

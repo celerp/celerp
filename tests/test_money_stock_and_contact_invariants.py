@@ -79,7 +79,7 @@ async def test_kwd_fulfillment_true_up_keeps_fils(client, session):
     assert adj is not None and adj.state.get("status") == "posted"
     by_account = {e["account"]: (e["debit"], e["credit"]) for e in adj.state["entries"]}
     assert by_account["5100"] == (0.004, 0.0)
-    assert by_account["1130-P"] == (0.0, 0.004)
+    assert by_account["1130-OB"] == (0.0, 0.004)
 
 
 @pytest.mark.asyncio
@@ -231,7 +231,7 @@ async def test_audit_adjust_uses_fresh_locked_item_state(_db_engine):
             assert item.state["quantity"] == 5
             by_account = {e["account"]: (e["debit"], e["credit"]) for e in je.state["entries"]}
             assert by_account["6970"] == (30.0, 0.0)
-            assert by_account["1130-P"] == (0.0, 30.0)
+            assert by_account["1130-OB"] == (0.0, 30.0)
     finally:
         await stock.close()
         await audit.close()

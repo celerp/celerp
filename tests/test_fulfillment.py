@@ -2896,7 +2896,7 @@ async def test_invoice_line_legacy_item_splittable():
 
 @pytest.mark.asyncio
 async def test_cogs_posts_at_finalize(client, session, auth, _setup_ids):
-    """Finalizing an invoice posts COGS (Dr 5100 / Cr 1130-P), not only revenue. At
+    """Finalizing an invoice posts COGS (Dr 5100 / Cr 1130-OB), not only revenue. At
     merge-base finalize posts revenue only; COGS waits until fulfillment."""
     sku = f"COGSFIN-{uuid.uuid4().hex[:6]}"
     item_id = await _create_item(client, auth, sku, 10, cost_price=5.0)  # unit cost 5
@@ -2905,7 +2905,7 @@ async def test_cogs_posts_at_finalize(client, session, auth, _setup_ids):
     ])
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 10.0, f"finalize must debit COGS 5100 = 2*5, got {nets.get('5100')} (nets={nets})"
-    assert nets.get("1130-P") == -10.0, f"finalize must credit inventory 1130-P, got {nets.get('1130-P')} (nets={nets})"
+    assert nets.get("1130-OB") == -10.0, f"finalize must credit inventory 1130-OB, got {nets.get('1130-OB')} (nets={nets})"
 
 
 @pytest.mark.asyncio
@@ -3103,8 +3103,8 @@ async def test_cogs_finalize_spans_sibling_lots(client, session, auth, _setup_id
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 110.0, (
         f"cross-lot finalize COGS must be 2*10 + 3*30 = 110, got {nets.get('5100')} (nets={nets})")
-    assert nets.get("1130-P") == -110.0, (
-        f"inventory relief must match at -110, got {nets.get('1130-P')} (nets={nets})")
+    assert nets.get("1130-OB") == -110.0, (
+        f"inventory relief must match at -110, got {nets.get('1130-OB')} (nets={nets})")
 
 
 @pytest.mark.asyncio
@@ -3122,8 +3122,8 @@ async def test_cogs_finalize_oversell_prices_shortfall_at_bound_cost(client, ses
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 90.0, (
         f"oversold line must post 2*10 + 2*30 + 1*10 = 90, got {nets.get('5100')} (nets={nets})")
-    assert nets.get("1130-P") == -90.0, (
-        f"inventory relief must match at -90, got {nets.get('1130-P')} (nets={nets})")
+    assert nets.get("1130-OB") == -90.0, (
+        f"inventory relief must match at -90, got {nets.get('1130-OB')} (nets={nets})")
 
 
 @pytest.mark.asyncio
@@ -3174,8 +3174,8 @@ async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup
                for e in adj.state.get("entries", [])}
     assert by_acct.get("5100") == (60.0, 0.0), (
         f"adjustment must debit 5100 by exactly 60, got {by_acct.get('5100')}")
-    assert by_acct.get("1130-P") == (0.0, 60.0), (
-        f"adjustment must credit 1130-P by exactly 60, got {by_acct.get('1130-P')}")
+    assert by_acct.get("1130-OB") == (0.0, 60.0), (
+        f"adjustment must credit 1130-OB by exactly 60, got {by_acct.get('1130-OB')}")
 
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 260.0, (
@@ -3316,8 +3316,8 @@ async def test_cogs_finalize_skips_service_and_freight_lines(client, session, au
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 8.0, (
         f"service/freight lines must post no COGS; only stock 2*4=8, got {nets.get('5100')} (nets={nets})")
-    assert nets.get("1130-P") == -8.0, (
-        f"service/freight lines must not relieve inventory; expected -8, got {nets.get('1130-P')} (nets={nets})")
+    assert nets.get("1130-OB") == -8.0, (
+        f"service/freight lines must not relieve inventory; expected -8, got {nets.get('1130-OB')} (nets={nets})")
 
 
 @pytest.mark.asyncio
@@ -3590,7 +3590,7 @@ async def test_finalize_cogs_keeps_another_lines_bound_lot_for_that_line(client,
     await _two_bound_lots_invoice(client, auth)
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 260.0, nets
-    assert nets.get("1130-P") == -260.0, nets
+    assert nets.get("1130-OB") == -260.0, nets
 
 
 @pytest.mark.asyncio

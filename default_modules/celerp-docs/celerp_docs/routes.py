@@ -31,7 +31,7 @@ from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, AccountRole
-from celerp.services.account_roles import current_settings, lot_account, role_map
+from celerp.services.account_roles import current_settings, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.pick import doc_bound_lots
@@ -3747,6 +3747,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     added_to_lot: dict[int, dict] = {}  # line -> what it added to a lot already on hand
     line_lot_account: dict[int, str] = {}  # line -> inventory account of the lot it added stock to
     landed_by_account: dict[str, float] = {}  # landed cost capitalised, per receiving lot's account
+    purchased_account = await new_lot_account(session, company_id, AccountRole.INVENTORY_PURCHASED)
 
     for line_no, (it, (conversion, stock_qty_received, received_cost)) in enumerate(zip(payload.received_items, priced)):
         if it.item_id and not is_inbound and it.receive_as == "stock":
@@ -3861,6 +3862,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 item_data["landed_contributions"] = {f"{entity_id}::{k}": u for k, u in _landed.items()}
                 for _k, _u in _landed.items():
                     landed_drawdown[_k] = round_basis(landed_drawdown.get(_k, 0.0) + _u * stock_qty_received)
+            if not is_consignment:
+                # Received goods are booked as purchased inventory, so the lot records that account.
+                item_data[LOT_ACCOUNT_FIELD] = purchased_account
             if is_consignment:
                 item_data["consignment_flag"] = "in"
                 # Pair the new parcel with the consignment doc: inventory renders the

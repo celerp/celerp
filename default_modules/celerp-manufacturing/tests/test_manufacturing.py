@@ -82,7 +82,9 @@ async def test_build_issue_receive_restocks_product_and_posts_je(client, session
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
     je = next(e for e in ledger if run in (e["data"].get("memo") or ""))
     entries = je["data"]["entries"]
-    assert [x["account"] for x in entries].count("1130-P") == 2
+    # Components entered by hand leave opening inventory; the output is produced stock.
+    assert {x["account"]: (x["debit"] > 0, x["credit"] > 0) for x in entries if x["account"].startswith("1130")} == {
+        "1130-OB": (False, True), "1130-P": (True, False)}
     _balanced(entries)
     je_row = (await session.execute(select(LedgerEntry).where(LedgerEntry.id == je["id"]))).scalar_one()
     assert je_row.metadata_["trigger"] == "mfg.order.completed" and je_row.metadata_["order_id"] == run

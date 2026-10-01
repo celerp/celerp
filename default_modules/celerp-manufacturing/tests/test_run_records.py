@@ -68,7 +68,8 @@ async def _completion_entries(client, token, run) -> list[dict]:
 
 
 def _input_relief(entries: list[dict]) -> float:
-    return next(float(x["credit"]) for x in entries if x["account"] == "1130-P" and float(x.get("credit") or 0) > 0)
+    """Components here are entered by hand, so they leave opening inventory."""
+    return next(float(x["credit"]) for x in entries if x["account"] == "1130-OB" and float(x.get("credit") or 0) > 0)
 
 
 def _output_cap(entries: list[dict]) -> float:
