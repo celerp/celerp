@@ -286,7 +286,7 @@ async def test_export_file_is_private(real_engine, _data_dir):
     from celerp.services import company_backup as cb
     from celerp.services import company_backup_files as files
     _, cid, _ = await _setup(real_engine)
-    out = files.export_path()
+    out = files.export_path(cid)
     await cb.export_company_snapshot(cid, out)
     assert _mode(out) == 0o600 and _mode(out.parent) == 0o700
 
@@ -306,7 +306,7 @@ async def test_startup_sweep_clears_orphans_and_keeps_live_uploads(real_client, 
     past = time.time() - 2 * 24 * 3600
     for p in (old, old.with_suffix(".json")):
         os.utime(p, (past, past))
-    exports = files.export_path().parent
+    exports = files.export_path(uuid.uuid4()).parent
     orphan = exports / "crashed.export"
     orphan.write_bytes(b"x")
     files.sweep_transient_files()

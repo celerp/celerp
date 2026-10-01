@@ -21,21 +21,16 @@ from __future__ import annotations
 import base64
 import binascii
 import csv
-import fcntl
 import io
 import json
 import logging
-import os
-import re
-import time
 import uuid
-from pathlib import Path
 from typing import Any
 
 from fasthtml.common import *
 from starlette.responses import StreamingResponse
 import ui.api_client as api
-from celerp.config import settings
+from celerp.services import import_stage
 from ui.i18n import t, get_lang
 from ui.components.table import searchable_select
 
@@ -60,208 +55,45 @@ from celerp.importers.tabular import (  # re-exported for the existing CSV impor
 
 logger = logging.getLogger(__name__)
 
-# Server-side import staging: uploaded CSV data lives in a company-scoped stage
-# on disk, keyed by an opaque random reference. Avoids round-tripping large CSV
-# data through hidden form fields (Starlette enforces a 1 MB multipart field
-# limit that breaks large imports). A reference is only ever matched against
-# _IMPORT_REF_RE and never used as a path fragment until it has matched.
-# Stages can hold customer, cost and tax data, so the directory and every file
-# in it are readable by the server's own user only, whatever the process umask.
-_IMPORT_REF_RE = re.compile(r"^imp_[0-9a-f]{32}$")
-_IMPORT_STAGE_MAX_AGE_SECONDS = 24 * 3600
-_STAGE_DIR_MODE = 0o700
-_STAGE_FILE_MODE = 0o600
-
-
-def _stage_dir() -> Path:
-    return Path(settings.data_dir) / "import_staging"
-
-
-def _stage_paths(ref: str) -> tuple[Path, Path] | None:
-    """Return the (csv, meta) paths for a well-formed reference, else None."""
-    if not isinstance(ref, str) or not _IMPORT_REF_RE.fullmatch(ref):
-        return None
-    base = _stage_dir()
-    return base / f"{ref}.csv", base / f"{ref}.meta"
-
-
-def _write_private(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` atomically with owner-only permissions.
-
-    The content goes to a temporary sibling first and replaces ``path`` in one
-    step, so a reader never sees a partial file. The temporary name starts with
-    the stage reference, so cleanup treats a leftover one as part of that stage.
-    """
-    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _STAGE_FILE_MODE)
-    try:
-        os.fchmod(fd, _STAGE_FILE_MODE)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-
-
-def _write_stage(company_id: str, csv_text: str, draft: dict | None = None, *, kind: str = "table") -> str:
-    """Stage ``csv_text`` for ``company_id`` and return its reference.
-
-    A ``table`` stage holds the rows of an import as CSV; a ``source`` stage
-    holds an uploaded file (base64) while the user chooses its sheet or header
-    row. Each kind is only ever read as itself.
-    """
-    if not company_id:
-        raise ValueError("import staging requires a company")
-    base = _stage_dir()
-    base.mkdir(mode=_STAGE_DIR_MODE, parents=True, exist_ok=True)
-    os.chmod(base, _STAGE_DIR_MODE)
-    cleanup_expired_import_refs()
-    ref = f"imp_{uuid.uuid4().hex}"
-    csv_path, meta_path = _stage_paths(ref)
-    try:
-        _write_private(csv_path, csv_text)
-        _write_private(meta_path, json.dumps({
-            "company_id": str(company_id), "created_at": time.time(), "draft": draft or {}, "revision": 1,
-            "kind": kind,
-        }))
-    except BaseException:
-        delete_import_ref(ref)
-        raise
-    return ref
-
-
-def _stage_meta(company_id: str, ref: str, kind: str = "table") -> dict | None:
-    """Metadata of the stage ``ref`` if it is a ``kind`` stage, belongs to ``company_id`` and is fresh."""
-    paths = _stage_paths(ref)
-    if paths is None or not company_id:
-        return None
-    try:
-        meta = json.loads(paths[1].read_text(encoding="utf-8"))
-        created_at = float(meta["created_at"])
-        owner = str(meta["company_id"])
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
-    if time.time() - created_at > _IMPORT_STAGE_MAX_AGE_SECONDS:
-        delete_import_ref(ref)
-        return None
-    return meta if owner == str(company_id) and meta.get("kind", "table") == kind else None
-
-
-def _read_stage(company_id: str, ref: str) -> str | None:
-    """Stage content for ``ref`` if it belongs to ``company_id`` and is fresh."""
-    draft = _read_draft(company_id, ref)
-    return draft[0] if draft else None
-
-
-def _read_draft(company_id: str, ref: str, kind: str = "table") -> tuple[str, dict, int] | None:
-    """``(content, draft, revision)`` of a fresh ``kind`` stage owned by ``company_id``."""
-    meta = _stage_meta(company_id, ref, kind)
-    if meta is None:
-        return None
-    try:
-        content = _stage_paths(ref)[0].read_text(encoding="utf-8")
-    except OSError:
-        return None
-    return content, dict(meta.get("draft") or {}), int(meta.get("revision") or 1)
-
-
-def _update_draft(company_id: str, ref: str, csv_text: str, draft: dict, revision: int) -> int | None:
-    """Replace a stage's content and draft if it is still at ``revision``; return the new revision.
-
-    The check and both writes happen under an exclusive lock on the stage, so of
-    two edits made from the same revision exactly one lands and the other gets
-    None (it was made against a draft that has since changed).
-    """
-    paths = _stage_paths(ref)
-    if paths is None:
-        return None
-    csv_path, meta_path = paths
-    fd = os.open(_stage_dir() / f"{ref}.lock", os.O_RDWR | os.O_CREAT, _STAGE_FILE_MODE)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        meta = _stage_meta(company_id, ref)
-        if meta is None or int(meta.get("revision") or 1) != revision:
-            return None
-        _write_private(csv_path, csv_text)
-        _write_private(meta_path, json.dumps({**meta, "draft": draft, "revision": revision + 1}))
-        return revision + 1
-    finally:
-        os.close(fd)
-
-
-def delete_import_ref(ref: str) -> None:
-    """Remove a stage and its lock. Malformed references are ignored."""
-    paths = _stage_paths(ref)
-    if paths is None:
-        return
-    for path in (*paths, _stage_dir() / f"{ref}.lock"):
-        path.unlink(missing_ok=True)
-
-
-def _stage_created_at(meta_path: Path, files: list[Path]) -> float:
-    """When a stage was written: its metadata timestamp, or for a stage whose
-    metadata is missing or unreadable, the newest modification time of its files."""
-    try:
-        return float(json.loads(meta_path.read_text(encoding="utf-8"))["created_at"])
-    except (OSError, ValueError, KeyError, TypeError):
-        mtimes = []
-        for path in files:
-            try:
-                mtimes.append(path.stat().st_mtime)
-            except OSError:
-                continue
-        return max(mtimes, default=0.0)
-
-
-def cleanup_expired_import_refs() -> int:
-    """Delete stages older than the retention window and return how many.
-
-    Files are grouped by stage reference, so a lone ``.csv`` or ``.meta`` left
-    by an interrupted write expires like a complete stage. Every stage file
-    that is kept is set to owner-only permissions.
-    """
-    base = _stage_dir()
-    if not base.is_dir():
-        return 0
-    stages: dict[str, list[Path]] = {}
-    for path in base.glob("imp_*"):
-        ref = path.name.split(".", 1)[0]
-        if _IMPORT_REF_RE.fullmatch(ref):
-            stages.setdefault(ref, []).append(path)
-    removed = 0
-    cutoff = time.time() - _IMPORT_STAGE_MAX_AGE_SECONDS
-    for ref, files in stages.items():
-        if _stage_created_at(base / f"{ref}.meta", files) < cutoff:
-            for path in files:
-                path.unlink(missing_ok=True)
-            removed += 1
-            continue
-        for path in files:
-            try:
-                os.chmod(path, _STAGE_FILE_MODE)
-            except OSError:
-                logger.warning("Could not restrict permissions of staged import %s", ref)
-    return removed
-
-
 async def _company_id(token: str) -> str:
     return str((await api.get_company(token)).get("id") or "")
 
 
+async def _staged_for(token: str, company_id: str, ref: str) -> str:
+    """Keep ``ref`` only if the caller still works in ``company_id`` once it is written.
+
+    A company reset that committed meanwhile has already run its cleanup, so the
+    stage removes itself rather than outlive the company. A reset committing after
+    the check finds the stage on disk and removes it with the company's other files."""
+    try:
+        still = await _company_id(token)
+    except BaseException:
+        import_stage.delete_ref(ref)
+        raise
+    if still != company_id:
+        import_stage.delete_ref(ref)
+        raise api.APIError(401, "Session expired")
+    return ref
+
+
 async def stash_import_csv(token: str, csv_text: str, draft: dict | None = None) -> str:
     """Stage CSV text, and the draft state of its import, for the authenticated company; return its reference."""
-    return _write_stage(await _company_id(token), csv_text, draft)
+    company_id = await _company_id(token)
+    return await _staged_for(token, company_id, import_stage.write_stage(company_id, csv_text, draft))
 
 
 async def load_import_draft(token: str, ref: str) -> tuple[str, dict, int] | None:
     """``(csv_text, draft, revision)`` of the caller's own import draft; None if invalid, foreign, or expired."""
-    return _read_draft(await _company_id(token), ref)
+    return import_stage.read_draft(await _company_id(token), ref)
 
 
 async def save_import_draft(token: str, ref: str, csv_text: str, draft: dict, revision: int) -> int | None:
     """Save an edit made from ``revision`` of the caller's draft; None when the draft changed since."""
-    return _update_draft(await _company_id(token), ref, csv_text, draft, revision)
+    company_id = await _company_id(token)
+    saved = import_stage.update_draft(company_id, ref, csv_text, draft, revision)
+    if saved is not None:
+        await _staged_for(token, company_id, ref)
+    return saved
 
 
 async def stage_tabular_upload(
@@ -304,19 +136,20 @@ async def stage_tabular_upload(
         logger.exception("Could not stage an uploaded import file")
         return [], "", t("import.err_stage_unavailable")
     if source_ref:
-        delete_import_ref(source_ref)
+        import_stage.delete_ref(source_ref)
     return rows, csv_ref, None
 
 
 async def _stage_upload_source(token: str, content: bytes, filename: str) -> str:
-    return _write_stage(
-        await _company_id(token), base64.b64encode(content).decode("ascii"), {"filename": filename}, kind="source",
-    )
+    company_id = await _company_id(token)
+    return await _staged_for(token, company_id, import_stage.write_stage(
+        company_id, base64.b64encode(content).decode("ascii"), {"filename": filename}, kind="source",
+    ))
 
 
 async def _load_upload_source(token: str, ref: str) -> tuple[bytes, str] | None:
     """``(content, filename)`` of the caller's own staged upload; None if invalid, foreign, or expired."""
-    staged = _read_draft(await _company_id(token), ref, kind="source")
+    staged = import_stage.read_draft(await _company_id(token), ref, kind="source")
     if staged is None:
         return None
     text, draft, _revision = staged
@@ -338,9 +171,9 @@ def _source_choice(form: Any) -> tuple[str | None, int | None]:
 
 async def load_import_csv(token: str, ref: str) -> str | None:
     """Load a stage for the authenticated company. None if invalid, foreign, or expired."""
-    if _stage_paths(ref) is None:
+    if import_stage.stage_paths(ref) is None:
         return None
-    return _read_stage(await _company_id(token), ref)
+    return import_stage.read_stage(await _company_id(token), ref)
 
 
 def import_result_errors(result: dict) -> list[str]:
@@ -369,7 +202,7 @@ async def discard_import_csv(token: str, form, result: dict) -> None:
         return
     ref = str(form.get("csv_ref", "") or "")
     if await load_import_csv(token, ref) is not None:
-        delete_import_ref(ref)
+        import_stage.delete_ref(ref)
 
 
 async def resolve_import_csv(token: str, form) -> str:

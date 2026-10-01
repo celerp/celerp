@@ -812,8 +812,8 @@ class GatewayClient:
         first '?', percent-decodes the path once, and routes on the result; a browser
         never sends a fragment. Classification and the local-only guard must run on
         that same canonical value, not the raw wire string, or an encoded
-        ('/settings/%66actory-reset'), dot-segment ('/x/../settings/factory-reset'),
-        or fragmented ('/settings/factory-reset#x') variant would slip past a raw
+        ('/settings/company/%72eset'), dot-segment ('/x/../settings/company/reset'),
+        or fragmented ('/settings/company/reset#x') variant would slip past a raw
         match yet still route to the blocked handler locally. The canonical path is
         derived from httpx itself so it can never diverge from what httpx transmits.
         Returns None for any path that cannot address a local route (non-string,
@@ -931,11 +931,11 @@ class GatewayClient:
             return
 
         # Never proxy a remote request to destructive local-only operations. Remote access
-        # serves the normal authenticated UI, but a wipe must require genuine local origin so
+        # serves the normal authenticated UI, but a company reset must require genuine local origin so
         # a compromised broker (even replaying a captured session) cannot trigger it. Account
         # setup is intentionally NOT blocked here - a headless cloud instance is provisioned
         # through this same proxy, so blocking it would break cloud onboarding.
-        _local_only_paths = ("/settings/factory-reset",)
+        _local_only_paths = ("/settings/company/reset",)
         if any(policy_path == p or policy_path.startswith(p + "/") for p in _local_only_paths):
             await self._send(self._ws, {
                 "type": "http.response",

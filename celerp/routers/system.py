@@ -1,12 +1,11 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""System administration endpoints: restart, factory reset and updates."""
+"""System administration endpoints: restart and updates."""
 
 from __future__ import annotations
 
 import asyncio
-import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -16,11 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.company import User
 from celerp.services.auth import (
-    get_current_company_id, get_current_user, is_install_owner, require_install_owner,
+    get_current_user, is_install_owner, require_install_owner,
 )
 from celerp.services.permissions import require_permission
-
-_ATTACHMENT_ROOT = Path("static/attachments")
 
 router = APIRouter(dependencies=[require_permission("manage_company_settings")])
 
@@ -58,58 +55,6 @@ async def restart_server(
     """
     background_tasks.add_task(_send_sigterm)
     return {"ok": True, "restarting": True}
-
-
-# ── Factory reset ─────────────────────────────────────────────────────────────
-
-_TRUNCATE_TABLES = [
-    "ledger", "projections", "notifications", "import_batches", "sync_runs",
-    "doc_share_tokens", "ai_conversations", "ai_messages", "ai_batch_jobs",
-    "outbound_queue", "connector_configs", "connector_sources",
-    "accounts", "bank_accounts", "bank_statement_lines",
-    "label_templates", "reconciliation_rules", "reconciliation_sessions",
-    "marketplace_configs", "session_registry", "user_auth_state",
-]
-
-
-@router.post("/factory-reset")
-async def factory_reset(
-    _: None = require_permission("manage_company_lifecycle"),
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Wipe all company data and return the system to a fresh-install state."""
-    from sqlalchemy import text
-    from celerp.connectors.ownership import lock_connector_maintenance
-
-    async with session.begin():
-        await lock_connector_maintenance(session)
-        for table in _TRUNCATE_TABLES:
-            await session.execute(text(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE"))
-        await session.execute(
-            text("DELETE FROM user_companies WHERE company_id = :cid"),
-            {"cid": str(company_id)},
-        )
-        await session.execute(
-            text("DELETE FROM locations WHERE company_id = :cid"),
-            {"cid": str(company_id)},
-        )
-        await session.execute(text("DELETE FROM users"))
-        await session.execute(
-            text("DELETE FROM companies WHERE id = :cid"),
-            {"cid": str(company_id)},
-        )
-
-    # Bust in-process nonce cache — all users deleted, stale tokens must not auto-create rows
-    from celerp.services.session_tracker import _nonce_cache_bust_all
-    _nonce_cache_bust_all()
-
-    att_dir = _ATTACHMENT_ROOT / str(company_id)
-    if att_dir.exists():
-        import shutil
-        shutil.rmtree(att_dir, ignore_errors=True)
-
-    return {"ok": True}
 
 
 # ── Updates ───────────────────────────────────────────────────────────────────

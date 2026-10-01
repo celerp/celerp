@@ -20,6 +20,7 @@ from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.services.auth import (
     AuthContext,
+    first_usable_company_link,
     get_auth_context,
     get_current_company_id,
     get_current_user,
@@ -48,7 +49,7 @@ from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
 from celerp.services.business_time import business_timezone
-from celerp.services.company_lock import lock_company, locked_company
+from celerp.services.company_lock import lock_company, lock_company_for_deletion, locked_company
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -252,9 +253,7 @@ async def create_company(
         raise HTTPException(status_code=400, detail=f"Could not create company: {e}") from e
     # Creating a company is a continuation of the current owner session: pass the
     # snonce it authenticated on so a concurrent revocation cannot be jumped over.
-    return await issue_token_pair(
-        session, user=user, company=company, role="owner", expected_snonce=ctx.snonce
-    )
+    return await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=ctx.snonce)
 
 
 @router.get("/me")
@@ -2257,6 +2256,54 @@ async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     staged.unlink(missing_ok=True)
     staged.with_suffix(".json").unlink(missing_ok=True)
     return {"ok": True, **info}
+
+
+class CompanyReset(BaseModel):
+    company_name: str
+
+
+@router.post("/me/reset", dependencies=[require_permission("manage_company_lifecycle")])
+async def reset_company(
+    payload: CompanyReset,
+    ctx: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Remove the current company: its records, settings, chart of accounts, attachments
+    and memberships. Logins and other companies stay.
+
+    The typed name must equal the company's name exactly. All or nothing: files go only
+    after the commit. Returns a token pair for another of the caller's companies, or
+    ``{"next": "start_company"}`` when this was their last one."""
+    from celerp.connectors.ownership import lock_connector_maintenance
+    from celerp.services import company_reset
+    from celerp.services.migrations import run_cleanup_task
+
+    await lock_connector_maintenance(session)
+    await lock_company_for_deletion(session, ctx.company_id)
+    await locked_authority(session, ctx.company_id, ctx.user.id, ("manage_company_lifecycle",))
+    company = await session.get(Company, ctx.company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    try:
+        task_id = await company_reset.reset(session, company, payload.company_name)
+    except company_reset.ResetRefused as exc:
+        await session.rollback()
+        if exc.__cause__ is not None:
+            logger.error("Company reset failed: %s", type(exc.__cause__).__name__)
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    link = await first_usable_company_link(session, ctx.user.id)
+    if link is None:
+        await session.commit()
+        result = {"next": "start_company"}
+    else:
+        # The new session continues this one, so it cannot jump a concurrent sign-out.
+        result = await issue_token_pair(
+            session, user=ctx.user, company_id=link.company_id,
+            expected_snonce=ctx.snonce,
+        )
+    session.expunge_all()
+    await run_cleanup_task(session, task_id)
+    return result
 
 
 @router.delete("/me", dependencies=[require_permission("manage_company_lifecycle")])

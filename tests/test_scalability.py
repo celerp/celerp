@@ -93,14 +93,15 @@ class TestSessionTracker:
         })
         assert r.status_code == 200
         import base64, json as _j
-        user_id = _j.loads(base64.b64decode(r.json()["access_token"].split(".")[1] + "=="))["sub"]
+        claims = _j.loads(base64.b64decode(r.json()["access_token"].split(".")[1] + "=="))
+        user_id, company_id = claims["sub"], claims["company_id"]
 
         await clear(session)
         assert await active_user_ids(session) == set()
 
         # Register a non-expired JTI
         jti = str(uuid.uuid4())
-        await register_token(session, jti, user_id, _future(3600))
+        await register_token(session, jti, user_id, company_id, _future(3600))
         active = await active_user_ids(session)
         assert user_id in active, "register_token must make user appear in active_user_ids"
 
@@ -116,20 +117,21 @@ class TestSessionTracker:
         })
         assert r.status_code == 200
         import base64, json as _j
-        user_id = _j.loads(base64.b64decode(r.json()["access_token"].split(".")[1] + "=="))["sub"]
+        claims = _j.loads(base64.b64decode(r.json()["access_token"].split(".")[1] + "=="))
+        user_id, company_id = claims["sub"], claims["company_id"]
 
         await clear(session)
 
         # Seed an expired JTI
         expired_jti = str(uuid.uuid4())
-        await register_token(session, expired_jti, user_id, _past(10))
+        await register_token(session, expired_jti, user_id, company_id, _past(10))
 
         active = await active_user_ids(session)
         assert user_id not in active, "Expired JTI must not appear in active_user_ids"
 
         # Seed a live JTI - now must appear
         live_jti = str(uuid.uuid4())
-        await register_token(session, live_jti, user_id, _future(3600))
+        await register_token(session, live_jti, user_id, company_id, _future(3600))
         active2 = await active_user_ids(session)
         assert user_id in active2, "Live JTI must appear in active_user_ids"
 
@@ -435,15 +437,16 @@ class TestJtiCleanupLoop:
         assert r.status_code == 200
         import base64, json as _json
         token = r.json()["access_token"]
-        user_id = uuid.UUID(_json.loads(base64.b64decode(token.split(".")[1] + "=="))["sub"])
+        claims = _json.loads(base64.b64decode(token.split(".")[1] + "=="))
+        user_id, company_id = uuid.UUID(claims["sub"]), uuid.UUID(claims["company_id"])
 
         await clear(session)
 
         # Seed: one expired, one live
         expired_jti = str(uuid.uuid4())
         live_jti = str(uuid.uuid4())
-        session.add(SessionRegistry(jti=expired_jti, user_id=user_id, expiry=_past(60)))
-        session.add(SessionRegistry(jti=live_jti, user_id=user_id, expiry=_future(3600)))
+        session.add(SessionRegistry(jti=expired_jti, user_id=user_id, company_id=company_id, expiry=_past(60)))
+        session.add(SessionRegistry(jti=live_jti, user_id=user_id, company_id=company_id, expiry=_future(3600)))
         await session.commit()
 
         # Patch SessionLocal so cleanup loop uses the test session
@@ -573,7 +576,8 @@ class TestLoginForceGlobalEviction:
         })
         assert r_b.status_code == 200
         token_b = r_b.json()["access_token"]
-        user_b_id = _j.loads(base64.b64decode(token_b.split(".")[1] + "=="))["sub"]
+        claims_b = _j.loads(base64.b64decode(token_b.split(".")[1] + "=="))
+        user_b_id = claims_b["sub"]
 
         await _clear(session)
 
@@ -586,7 +590,8 @@ class TestLoginForceGlobalEviction:
         # by giving UserB a second JTI representing "UserA's session"
         jti_b_old = str(uuid.uuid4())
         session.add(SessionRegistry(
-            jti=jti_b_old, user_id=uuid.UUID(user_b_id), expiry=_future(900)
+            jti=jti_b_old, user_id=uuid.UUID(user_b_id), company_id=uuid.UUID(claims_b["company_id"]),
+            expiry=_future(900)
         ))
         await session.commit()
 

@@ -4,7 +4,8 @@
 
 A backup being downloaded and an upload waiting to be restored hold a company's whole
 business, so both live in folders only this process's user can open, as files only it
-can read. A download is deleted once it is sent. An upload is kept only while its
+can read. A download is written in its company's folder, so deleting the company deletes
+it too, and is deleted once it is sent. An upload is kept only while its
 restore can still go on: beside it a small metadata file names the file the owner
 chose, and, once the restore is done, only the company it opened, so a retry whose
 response was lost can be answered without the backup itself.
@@ -23,10 +24,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
 
+from celerp.services.company_files import company_backups_dir
+
 logger = logging.getLogger(__name__)
 
 UPLOAD_TTL_SECONDS = 24 * 3600
-UPLOADS, EXPORTS = "uploads", "exports"
+UPLOADS = "uploads"
 UPLOAD_SUFFIX, EXPORT_SUFFIX, META_SUFFIX = ".upload", ".export", ".json"
 _CHUNK = 1024 * 1024
 
@@ -36,8 +39,7 @@ class UploadTooLarge(Exception):
 
 
 def _private_dir(name: str) -> Path:
-    from celerp.config import settings
-    root = Path(settings.data_dir) / "company_backups"
+    root = company_backups_dir()
     folder = root / name
     folder.mkdir(parents=True, exist_ok=True)
     for f in (root, folder):
@@ -50,9 +52,9 @@ def private_file(path: Path):
     return os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb")
 
 
-def export_path() -> Path:
-    """Where to write a backup that is about to be downloaded."""
-    return _private_dir(EXPORTS) / f"{uuid.uuid4().hex}{EXPORT_SUFFIX}"
+def export_path(company_id) -> Path:
+    """Where to write a backup of ``company_id`` that is about to be downloaded."""
+    return _private_dir(str(uuid.UUID(str(company_id)))) / f"{uuid.uuid4().hex}{EXPORT_SUFFIX}"
 
 
 def stage_path(owner: str, token: str) -> Path | None:
@@ -152,10 +154,6 @@ def sweep_transient_files() -> None:
             stage = f.with_suffix(UPLOAD_SUFFIX)
             if not stage.exists() and restored_company(stage) is None:
                 f.unlink(missing_ok=True)
-    for f in _private_dir(EXPORTS).iterdir():
-        if f.is_file():
-            f.unlink(missing_ok=True)
-    # Downloads were once kept for a day in a folder per company.
-    for f in _private_dir(EXPORTS).parent.iterdir():
-        if f.is_dir() and f.name not in (UPLOADS, EXPORTS) and _is_uuid(f.name):
+    for f in company_backups_dir().iterdir():
+        if f.is_dir() and _is_uuid(f.name):
             shutil.rmtree(f, ignore_errors=True)

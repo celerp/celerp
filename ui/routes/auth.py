@@ -24,6 +24,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError, bootstrap_status
 from ui.api_client import login as api_login, login_force as api_login_force, logout as api_logout, register as api_register
+from ui.api_client import start_company as api_start_company
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.api_client import migration_staged_run as api_migration_staged_run
@@ -33,8 +34,13 @@ from ui.i18n import t, get_lang
 from ui.routes.csv_import import ONBOARDING_MARKER
 from ui.security import is_app_local_path
 from celerp.config import settings as _settings
-from celerp.services.auth import MIN_PASSWORD_LENGTH
+from celerp.services.auth import MIN_PASSWORD_LENGTH, NO_COMPANY
 from celerp.services.permissions import role_has_permission
+
+
+# Where a login with no company left signs in and starts a new one.
+START_COMPANY = "/setup/start-company"
+START_COMPANY_RESTORE = f"{START_COMPANY}/restore-backup"
 
 
 def auth_header(title: str, subtitle: str = "") -> FT:
@@ -171,6 +177,8 @@ def setup_routes(app):
                     _direct_connection_gate(email, password),
                     title=page_title("btn.sign_in"),
                 )
+            if e.status == 401 and e.detail == NO_COMPANY:
+                return RedirectResponse(START_COMPANY, status_code=302)
             return auth_shell(_login_form(email=email, error=e.detail, next_url=nxt), title=page_title("btn.sign_in"))
         except Exception as e:
             return auth_shell(_login_form(email=email, error=t("auth.server_error", e=e), next_url=nxt), title=page_title("btn.sign_in"))
@@ -189,10 +197,41 @@ def setup_routes(app):
         try:
             access_token, refresh_token = await api_login_force(email, password)
         except APIError as e:
+            if e.status == 401 and e.detail == NO_COMPANY:
+                return RedirectResponse(START_COMPANY, status_code=302)
             return auth_shell(_login_form(email=email, error=e.detail, next_url=nxt), title=page_title("btn.sign_in"))
         except Exception as e:
             return auth_shell(_login_form(email=email, error=t("auth.server_error", e=e), next_url=nxt), title=page_title("btn.sign_in"))
         resp = RedirectResponse(nxt, status_code=302)
+        set_session_cookies(resp, access_token, refresh_token, request)
+        return resp
+
+    @app.get(START_COMPANY)
+    async def start_company_page(request: Request):
+        return auth_shell(_start_company_form(), title=page_title("setup.start_company_title"))
+
+    @app.post(START_COMPANY)
+    async def start_company_submit(request: Request):
+        form = await request.form()
+        email = str(form.get("email", "")).strip()
+        password = str(form.get("password", ""))
+        company_name = str(form.get("company_name", "")).strip()
+
+        def _fail(msg):
+            return auth_shell(_start_company_form(email=email, company_name=company_name, error=msg),
+                              title=page_title("setup.start_company_title"))
+
+        if not all([email, password, company_name]):
+            return _fail(t("settings.all_fields_required"))
+        try:
+            access_token, refresh_token = await api_start_company(email, password, company_name)
+        except APIError as e:
+            if e.status == 409 and e.detail == "direct_connection_limit":
+                return _fail(t("auth.direct_connection_gate_body"))
+            return _fail(e.detail if isinstance(e.detail, str) else t("auth.server_error", e=e.detail))
+        except Exception as e:
+            return _fail(t("auth.server_error", e=e))
+        resp = RedirectResponse("/setup/company", status_code=302)
         set_session_cookies(resp, access_token, refresh_token, request)
         return resp
 
@@ -599,6 +638,33 @@ def _login_form(email: str = "", error: str | None = None, notice: str = "", nex
             P(A(t("auth.forgot_password"), href="/forgot-password", hx_get="/forgot-password",
                 hx_swap="none", cls="auth-link"), cls="auth-footer-text"),
             method="post", action="/login", cls="auth-form",
+        ),
+        cls="auth-card",
+    )
+
+
+def _start_company_form(email: str = "", company_name: str = "", error: str | None = None) -> FT:
+    """Sign in and name a new company, or restore a company backup: the way back in for a
+    login whose last company was reset."""
+    return Div(
+        auth_header(t("setup.start_company_title"), t("setup.start_company_subtitle")),
+        Form(
+            flash(error) if error else "",
+            Div(Label(t("label.email"), For="email", cls="form-label"),
+                Input(type="email", id="email", name="email", value=email,
+                      required=True, autofocus=True, cls="form-input"),
+                cls="form-group"),
+            Div(Label(t("label.password"), For="password", cls="form-label"),
+                Input(type="password", id="password", name="password", required=True, cls="form-input"),
+                cls="form-group"),
+            Div(Label(t("label.company_name"), For="company_name", cls="form-label"),
+                Input(type="text", id="company_name", name="company_name", value=company_name,
+                      required=True, cls="form-input"),
+                cls="form-group"),
+            Button(t("setup.start_company_title"), type="submit", cls="btn btn--primary btn--full"),
+            P(A(t("setup.card_restore"), href=START_COMPANY_RESTORE, cls="auth-link"), cls="auth-alt-action"),
+            P(A(t("auth.back_to_login"), href="/login", cls="auth-link"), cls="auth-footer-text"),
+            method="post", action=START_COMPANY, cls="auth-form",
         ),
         cls="auth-card",
     )

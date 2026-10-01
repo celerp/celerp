@@ -11,13 +11,14 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
+from celerp.services.company_lock import hold_company
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
@@ -236,21 +237,16 @@ async def validate_access_token(session: AsyncSession, token: str) -> AuthContex
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    link = await session.scalar(
-        select(UserCompany).where(
-            UserCompany.user_id == user.id,
-            UserCompany.company_id == company_uuid,
-            UserCompany.is_active == True,  # noqa: E712
-        )
-    )
+    link = await usable_company_link(session, user.id, company_uuid)
     if link is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-
-    # Block access to deactivated companies - but owners can still authenticate
-    # so they can create a new company or reactivate the existing one.
+        # Name the deactivated company case; owners still authenticate into it so
+        # they can reactivate it or create a new company.
+        held = await session.scalar(select(UserCompany.id).where(
+            UserCompany.user_id == user.id, UserCompany.company_id == company_uuid,
+            UserCompany.is_active.is_(True)))
+        detail = "Company is deactivated" if held is not None else "Invalid token"
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
     company = await session.get(Company, company_uuid)
-    if company is None or (not company.is_active and link.role != "owner"):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Company is deactivated")
 
     # Nonce equality is mandatory: a token whose snonce no longer matches the
     # current per-user nonce (logout, force-login, or any security-sensitive
@@ -338,18 +334,85 @@ async def get_current_role(ctx: AuthContext = Depends(get_auth_context)) -> str:
     return ctx.role
 
 
+# Sign-in refusal for a login with no active company left.
+NO_COMPANY = "No active company membership"
+HAS_COMPANY = "This login already has a company. Sign in instead."
+
+
+# The one rule for whether a login can work in a company: an active membership in an
+# active company, or an owner's active membership in a deactivated or still-being-moved-in
+# company, so the owner can reactivate it or finish the move.
+USABLE_LINK = and_(UserCompany.is_active.is_(True),
+                   or_(Company.is_active.is_(True), UserCompany.role == "owner"))
+
+
+def _usable_links(user_id):
+    return (select(UserCompany).join(Company, Company.id == UserCompany.company_id)
+            .where(UserCompany.user_id == user_id, USABLE_LINK))
+
+
+async def first_usable_company_link(session: AsyncSession, user_id) -> UserCompany | None:
+    """The company a sign-in lands on: the user's first usable company link, or None when
+    the login has no company it can work in.
+
+    A user in several companies uses /switch-company afterwards. A company still
+    being moved in is picked only when the user has no other company, so a sign-in
+    never lands on a staged company while a working one exists."""
+    return (await session.execute(
+        _usable_links(user_id).order_by(Company.is_migration_staged, UserCompany.id).limit(1)
+    )).scalar_one_or_none()
+
+
+async def hold_companyless_login(session: AsyncSession, user_id) -> bool:
+    """Hold the login until the transaction ends and say whether it has no company, so two
+    requests giving it one cannot both find it without. The hold still lets the same
+    transaction add the login's membership."""
+    await session.execute(select(User.id).where(User.id == user_id).with_for_update(key_share=True))
+    return await first_usable_company_link(session, user_id) is None
+
+
+async def usable_company_link(session: AsyncSession, user_id, company_id) -> UserCompany | None:
+    """The user's link to *company_id* when the login can work in that company, else None."""
+    return (await session.execute(
+        _usable_links(user_id).where(UserCompany.company_id == company_id)
+    )).scalar_one_or_none()
+
+
+class CompanyUnavailable(HTTPException):
+    """The company a session was about to be issued for was removed, or the login can no
+    longer work in it. Nothing was issued."""
+
+    def __init__(self) -> None:
+        super().__init__(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
+
+
+async def lock_issuance_company(session: AsyncSession, user_id, company_id) -> UserCompany:
+    """Hold *company_id* against removal until the transaction ends and return the user's
+    usable link to it, or raise ``CompanyUnavailable``.
+
+    The row is taken FOR KEY SHARE: a company reset takes it FOR UPDATE before deleting
+    anything, so a session issued under this lock either commits before the reset starts
+    (and the reset then ends it) or waits and finds the company gone. Lock order is the
+    company first, then ``UserAuthState``; every issuance path follows it."""
+    link = await usable_company_link(session, user_id, company_id) if await hold_company(session, company_id) else None
+    if link is None:
+        raise CompanyUnavailable()
+    return link
+
+
 async def issue_token_pair(
     session: AsyncSession,
     *,
     user: User,
-    company: Company,
-    role: str,
+    company_id: uuid.UUID,
     jti: str | None = None,
     expected_snonce: str | None = None,
 ) -> dict:
     """The single access+refresh issuance point.
 
-    Locks the per-user ``UserAuthState`` row FOR UPDATE, reads the current nonce
+    First holds *company_id* against removal and re-checks, under that lock, that the
+    user can still work in it (``lock_issuance_company``); the role comes from that
+    link. Then locks the per-user ``UserAuthState`` row FOR UPDATE, reads the current nonce
     under that lock, builds the enabled-module UI hint list, mints a v2 access
     token and a v2 refresh token bound to exactly the locked nonce, registers the
     access JTI + expiry in the same transaction, commits once, and returns
@@ -377,8 +440,10 @@ async def issue_token_pair(
     )
     from celerp.modules.registry import get_enabled as _get_enabled
 
+    role = (await lock_issuance_company(session, user.id, company_id)).role
+    company = await session.get(Company, company_id)
     user_id = str(user.id)
-    company_id = str(company.id)
+    company_id = str(company_id)
     auth_state = await _lock(session, user_id)
     if expected_snonce is not None and expected_snonce != auth_state.nonce:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
@@ -390,7 +455,7 @@ async def issue_token_pair(
     # Cap at 24h to match create_access_token's internal cap so DB expiry = JWT exp.
     capped_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
     expiry_dt = datetime.now(timezone.utc) + timedelta(minutes=capped_minutes)
-    await _register(session, token_jti, user_id, expiry_dt, commit=False)
+    await _register(session, token_jti, user_id, company_id, expiry_dt, commit=False)
     await session.commit()
     _nonce_cache_set(user_id, snonce)
     refresh_token = create_refresh_token(user_id, company_id, snonce=snonce)

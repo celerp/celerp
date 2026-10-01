@@ -9,7 +9,8 @@ the company it was already restored as, and is switched to it; when that company
 deactivated, its owner reactivates it instead of restoring a copy. A fresh
 installation with no user yet restores one through the bootstrap routes, which create
 the first owner, are gated by the setup code where one is configured, and close once
-any user exists.
+any user exists. A login left with no company, after its last company was reset,
+restores one through the start-company routes with its email and password.
 """
 
 from __future__ import annotations
@@ -24,22 +25,20 @@ from typing import Literal
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 
 from celerp.db import get_session
-from celerp.models.accounting import UserCompany
-from celerp.models.company import Company, User
+from celerp.models.company import User
 from celerp.models.migration import MigrationRun, MigrationStatus
 from celerp.modules import requirements
 from celerp.modules.importer import MAX_ARCHIVE_BYTES, ModuleImportError, install_from_zip
-from celerp.routers.auth import limiter
+from celerp.routers.auth import authenticate, hold_direct_slot, limiter
 from celerp.routers.migrations import ensure_not_bootstrapped, owner_account, user_owner
 from celerp.services import bootstrap
 from celerp.services import company_backup as cb
 from celerp.services import company_backup_files as files
-from celerp.services.auth import AuthContext, issue_token_pair
+from celerp.services.auth import HAS_COMPANY, AuthContext, first_usable_company_link, issue_token_pair
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +54,7 @@ CONSENT_NEEDED = ("These modules come from outside Celerp. Confirm that you want
 MODULES_NOT_SAVED = "Celerp could not turn on the modules this backup needs. Nothing was restored."
 MODULE_TOO_LARGE = "This module file is too large (limit 50 MB)."
 _BOOTSTRAP = "bootstrap"
+_START_COMPANY = "start_company"
 
 
 def _error(exc: cb.BackupError, stage: Path | None = None) -> JSONResponse:
@@ -88,7 +88,7 @@ async def download_backup(run_id: uuid.UUID | None = None, ctx: AuthContext = De
                           session: AsyncSession = Depends(get_session)):
     """Back up the company the session is on and serve the file, deleted once sent."""
     provenance = await _provenance(session, ctx, run_id) if run_id is not None else None
-    dest = files.export_path()
+    dest = files.export_path(ctx.company_id)
     try:
         await cb.export_company_snapshot(ctx.company_id, dest, provenance=provenance)
     except cb.BackupError as exc:
@@ -113,8 +113,9 @@ def _uploaded(owner: str, token: str) -> Path:
     return path
 
 
-async def _preview(session: AsyncSession, stage: Path, token: str, ctx: AuthContext | None, mode: str) -> dict:
-    """The staged backup checked, with what restoring it does: for a signed-in owner the
+async def _preview(session: AsyncSession, stage: Path, token: str, mode: str, user_id=None,
+                   current_company_id=None) -> dict:
+    """The staged backup checked, with what restoring it does: for a login the
     plan for restoring it in ``mode``, refused when it was already restored as a company
     they may not open. A backup whose modules are not ready is previewed with what each
     needs; its records are checked once they are."""
@@ -123,18 +124,18 @@ async def _preview(session: AsyncSession, stage: Path, token: str, ctx: AuthCont
         await cb.check_backup(session, backup)
     except cb.ModulesRequired:
         pass
-    if ctx is None:
+    if user_id is None:
         plan = cb.plan_bootstrap_restore(backup)
     else:
-        plan = await cb.plan_existing_restore(session, backup, mode, ctx.user.id, ctx.company_id)
+        plan = await cb.plan_existing_restore(session, backup, mode, user_id, current_company_id)
         if plan.action == cb.REFUSE:
             raise cb.BackupError(409, cb.NOT_A_MEMBER)
     return {"upload_token": token, "file_name": files.stage_facts(stage).get("file_name", ""),
             **backup.summary(), **plan.public()}
 
 
-async def _read(file: UploadFile, owner: str, session: AsyncSession, ctx: AuthContext | None = None,
-                mode: str = _BOOTSTRAP) -> dict:
+async def _read(file: UploadFile, owner: str, session: AsyncSession, mode: str = _BOOTSTRAP,
+                user_id=None, current_company_id=None) -> dict:
     """Stage an uploaded backup privately and return its preview with the upload token."""
     await asyncio.to_thread(files.purge_expired_uploads)
     token = secrets.token_hex(16)
@@ -145,7 +146,7 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession, ctx: AuthCo
                                     mode=mode, file_name=file.filename)
         except files.UploadTooLarge:
             raise cb.BackupError(413, cb.TOO_LARGE_UPLOAD) from None
-        return await _preview(session, stage, token, ctx, mode)
+        return await _preview(session, stage, token, mode, user_id, current_company_id)
     except BaseException:
         files.discard_stage(stage)
         raise
@@ -154,8 +155,9 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession, ctx: AuthCo
 async def _staged(session: AsyncSession, owner: str, token: str, ctx: AuthContext | None, mode: str):
     """The preview of an upload already staged, checked again."""
     stage = _uploaded(owner, token)
+    user_id, company_id = (ctx.user.id, ctx.company_id) if ctx is not None else (None, None)
     try:
-        return await _preview(session, stage, token, ctx, mode)
+        return await _preview(session, stage, token, mode, user_id, company_id)
     except cb.BackupError as exc:
         return _error(exc, stage)
 
@@ -203,10 +205,7 @@ async def _import_module(file: UploadFile, session: AsyncSession, owner: str, to
 async def _tokens(session: AsyncSession, user_id, company_id) -> dict:
     """A session for the user on the company, with their active role there."""
     user = await session.get(User, uuid.UUID(str(user_id)))
-    company = await session.get(Company, uuid.UUID(str(company_id)))
-    role = await session.scalar(select(UserCompany.role).where(
-        UserCompany.user_id == user.id, UserCompany.company_id == company.id, UserCompany.is_active.is_(True)))
-    return await issue_token_pair(session, user=user, company=company, role=role)
+    return await issue_token_pair(session, user=user, company_id=uuid.UUID(str(company_id)))
 
 
 async def _signed_in(session: AsyncSession, result: cb.RestoreResult) -> JSONResponse:
@@ -239,7 +238,7 @@ class RestoreIn(UploadIn):
 async def read_backup(file: UploadFile = File(...), mode: RestoreMode = Form("settings"),
                       ctx: AuthContext = Depends(user_owner), session: AsyncSession = Depends(get_session)):
     try:
-        return await _read(file, str(ctx.user.id), session, ctx, mode)
+        return await _read(file, str(ctx.user.id), session, mode, ctx.user.id, ctx.company_id)
     except cb.BackupError as exc:
         return _error(exc)
 
@@ -408,3 +407,49 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
         except Exception:
             logger.warning("Setup-code cleanup failed after restoring a company backup", exc_info=True)
     return response
+
+
+async def _companyless(session: AsyncSession, email: str, password: str) -> User:
+    """The login these credentials belong to, when it has no company left."""
+    user = await authenticate(session, email, password)
+    if await first_usable_company_link(session, user.id) is not None:
+        raise HTTPException(status_code=409, detail=HAS_COMPANY)
+    return user
+
+
+@router.post("/start-company/read")
+@limiter.limit("5/minute")
+async def start_company_read(request: Request, file: UploadFile = File(...), email: str = Form(...),
+                             password: str = Form(...), session: AsyncSession = Depends(get_session)):
+    user = await _companyless(session, email, password)
+    try:
+        return await _read(file, str(user.id), session, _START_COMPANY, user.id)
+    except cb.BackupError as exc:
+        return _error(exc)
+
+
+class StartCompanyRestoreIn(BaseModel):
+    email: str
+    password: str
+    upload_token: str
+    plan_fingerprint: str
+    company_name: str | None = None
+
+
+@router.post("/start-company/restore")
+@limiter.limit("5/minute")
+async def start_company_restore(request: Request, payload: StartCompanyRestoreIn,
+                                session: AsyncSession = Depends(get_session)):
+    """Restore a staged backup as the company of a login that has none left, as the preview
+    showed it, and sign it in to that company."""
+    user = await _companyless(session, payload.email, payload.password)
+    stage = _uploaded(str(user.id), payload.upload_token)
+    await hold_direct_slot(session)
+    try:
+        result = await cb.restore_company(stage, mode=_START_COMPANY, user_id=user.id,
+                                          plan_fingerprint=payload.plan_fingerprint,
+                                          company_name=payload.company_name)
+    except cb.BackupError as exc:
+        return _error(exc, stage)
+    files.finish_stage(stage, result.company_id)
+    return await _signed_in(session, result)

@@ -84,10 +84,8 @@ def _token_for(user_id: str, company_id: str) -> str:
     out: dict = {}
 
     async def issue():
-        from sqlalchemy import select
         from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-        from celerp.models.accounting import UserCompany
         from celerp.models.company import Company, User
         from celerp.services.auth import issue_token_pair
         engine = create_async_engine(os.environ["DATABASE_URL"])
@@ -95,9 +93,7 @@ def _token_for(user_id: str, company_id: str) -> str:
             async with AsyncSession(engine, expire_on_commit=False) as s:
                 user = await s.get(User, uuid.UUID(user_id))
                 company = await s.get(Company, uuid.UUID(company_id))
-                role = await s.scalar(select(UserCompany.role).where(
-                    UserCompany.user_id == user.id, UserCompany.company_id == company.id))
-                out["token"] = (await issue_token_pair(s, user=user, company=company, role=role))["access_token"]
+                out["token"] = (await issue_token_pair(s, user=user, company_id=company.id))["access_token"]
         finally:
             await engine.dispose()
 

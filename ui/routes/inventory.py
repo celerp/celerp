@@ -25,6 +25,7 @@ from ui.components.files import files_section as _shared_files_section
 from ui.components.shell import base_shell, minimal_shell, page_header, search_help, toast_header, page_title
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
+from celerp.services import import_stage
 from celerp.services.permissions import role_has_permission
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, builtin_label_keys, cost_columns
@@ -1663,7 +1664,7 @@ def setup_routes(app):
         loaded = await load_import_draft(token, csv_ref)
         back = "/onboarding" if loaded and loaded[1].get("from_onboarding") else "/inventory"
         if loaded is not None:
-            delete_import_ref(csv_ref)
+            import_stage.delete_ref(csv_ref)
         return Response("", headers={"HX-Redirect": back})
 
     @app.post("/inventory/import/confirm")
@@ -7492,7 +7493,6 @@ def _ledger_table(ledger: list[dict], entity_id: str | None = None, currency: st
 
 from ui.routes.csv_import import (
     CsvImportSpec,
-    delete_import_ref,
     discard_import_csv,
     _rows_to_csv,
     stash_import_csv,

@@ -182,6 +182,7 @@ const {
 } = require("./db-mode");
 const { migrateArgs } = require("./migrate_cmd");
 const { writeConfig: writeLockedConfig } = require("./config-writer");
+const { serveUpdateState } = require("./update-state");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -708,9 +709,9 @@ function resolveStorageEnv(cfg) {
  * Guard: only active in packaged builds. Dev mode skips the updater so
  * a missing GitHub release file doesn't throw noise at the developer.
  *
- * State machine (matches doc section 10):
- *   IDLE -> CHECKING -> DOWNLOADING -> READY -> [admin clicks] -> INSTALLING
- *   Any state -> ERROR on failure (always surfaced to renderer)
+ * State machine (update-state.js):
+ *   idle -> downloading -> downloaded -> [admin clicks] -> install
+ *   idle/downloading -> error on failure; downloaded is final until relaunch
  *
  * autoInstallOnAppQuit = false: Squirrel/NSIS never install on normal quit.
  * The ONLY install trigger is an explicit admin action (installUpdate IPC).
@@ -718,7 +719,14 @@ function resolveStorageEnv(cfg) {
  *
  * Periodic re-check: every 4 hours while the app is running, in case a new
  * version is released while the user has the app open.
+ *
+ * The updater state (update-state.js) lives here, not in the page, so a page
+ * that loads or is restored later replays it via get-update-state.
  */
+// get-update-state answers idle until the updater checks (dev builds never check);
+// check-for-updates runs the check the user asks for.
+serveUpdateState(ipcMain, () => mainWindow, autoUpdater, app.isPackaged);
+
 function setupAutoUpdater() {
   if (!app.isPackaged) return;
 
@@ -726,52 +734,10 @@ function setupAutoUpdater() {
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.allowPrerelease = false;
 
-  function sendLog(msg) {
-    if (mainWindow) mainWindow.webContents.send("update-log", String(msg));
-  }
-
-  autoUpdater.on("checking-for-update", () => {
-    sendLog("Checking for update...");
-  });
-
-  autoUpdater.on("update-available", (info) => {
-    sendLog("Found v" + info.version + " — downloading...");
-    if (mainWindow) mainWindow.webContents.send("update-available", info);
-  });
-
-  autoUpdater.on("update-not-available", () => {
-    if (mainWindow) mainWindow.webContents.send("update-not-available");
-  });
-
-  autoUpdater.on("download-progress", (progress) => {
-    // Throttle log output to at most once per second to avoid flooding IPC/DOM.
-    // Progress bar updates are sent every tick (just a width change, cheap).
-    const now = Date.now();
-    if (!autoUpdater._lastProgressLog || now - autoUpdater._lastProgressLog >= 1000) {
-      autoUpdater._lastProgressLog = now;
-      sendLog(
-        "Downloading: " +
-          Math.round(progress.percent) +
-          "% (" +
-          Math.round(progress.bytesPerSecond / 1024) +
-          " KB/s)"
-      );
-    }
-    if (mainWindow) mainWindow.webContents.send("download-progress", progress);
-  });
-
-  autoUpdater.on("update-downloaded", (info) => {
-    sendLog("v" + info.version + " ready — click 'Restart to Install'");
-    if (mainWindow) mainWindow.webContents.send("update-downloaded", info);
-  });
-
   autoUpdater.on("error", (err) => {
-    // Always surface errors to the renderer — never silently swallow them.
-    // Update failures must never interrupt work, but must be visible.
-    const msg = err?.message ?? String(err);
-    console.error("[updater] error:", msg);
-    sendLog("Update error: " + msg);
-    if (mainWindow) mainWindow.webContents.send("update-error", { message: msg });
+    // Update failures must never interrupt work, but must be visible: the
+    // update card shows them, and the console keeps them.
+    console.error("[updater] error:", err?.message ?? String(err));
   });
 
   // Delay initial check until the renderer has loaded and registered its IPC handlers.
@@ -1080,11 +1046,6 @@ function createWindow() {
 }
 
 // ── IPC handlers ─────────────────────────────────────────────────────────────
-
-// check-for-updates: renderer triggers a manual update check via window.celerp.checkForUpdates()
-ipcMain.handle("check-for-updates", () => {
-  if (app.isPackaged) autoUpdater.checkForUpdates().catch(() => {}); // errors handled by the "error" event
-});
 
 // install-update: renderer triggers quit-and-install via window.celerp.installUpdate()
 // ShipIt (Squirrel.Mac) aborts if ANY instance of the app is running when it tries to

@@ -49,6 +49,7 @@
       "db-mode.js",
       "config-writer.js",
       "migrate_cmd.js",
+      "update-state.js",
       "preload.js",
       "assets/**"
     ],

@@ -21,7 +21,7 @@ from starlette.responses import FileResponse
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.projections import Projection
-from celerp.services.attachments import attach_file, local_attachment_url_path, remove_attachment, store_upload
+from celerp.services.attachments import attach_file, local_attachment_url_path, remove_attachment, storing
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.currencies import require_currency_code
 from celerp.services.permissions import require_permission
@@ -258,13 +258,12 @@ async def upload_contact_file(
     if row is None or row.entity_type != "contact":
         raise HTTPException(status_code=404, detail="Not found")
 
-    try:
-        meta = await store_upload(company_id, file)
-    except ValueError as exc:
-        raise HTTPException(status_code=413, detail=str(exc))
-
-    entry = await attach_file(session, company_id, "contact", contact_id, meta, user.id)
-    await session.commit()
+    async with storing(session, company_id) as store:
+        try:
+            meta = await store.upload(file)
+        except ValueError as exc:
+            raise HTTPException(status_code=413, detail=str(exc))
+        entry = await attach_file(session, company_id, "contact", contact_id, meta, user.id)
     return {"event_id": entry.id, **meta}
 
 

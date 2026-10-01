@@ -184,12 +184,6 @@ async def test_cloud_summary_links_to_system_recovery():
     assert 'href="/settings/general?tab=backup"' not in html
 
 
-async def test_factory_reset_backup_link_unchanged():
-    """The factory reset card still offers the whole-installation export first."""
-    from ui.routes.settings import _factory_reset_card
-    assert 'href="/backup/export"' in to_xml(_factory_reset_card())
-
-
 async def test_legacy_import_on_fresh_install_is_system_recovery(ui, real_engine):
     """On a fresh install the whole-installation restore is a small link and its page states it replaces everything."""
     page = _page(await ui.get("/setup"))

@@ -26,27 +26,32 @@ contextBridge.exposeInMainWorld("celerp", {
   // Modules page: native folder picker; resolves to a path string or null.
   pickModuleFolder: () => ipcRenderer.invoke("pick-module-folder"),
 
-  // Register a callback for when an update is available.
-  onUpdateAvailable: (cb) => ipcRenderer.on("update-available", (_event, info) => cb(info)),
+  // Updater state ({ status, version, percent, message, checking, downloadFailed, log, revision }),
+  // read-only.
+  // Every page load replays it; the update callbacks below receive the same shape.
+  getUpdateState: () => ipcRenderer.invoke("get-update-state"),
+
+  // Register a callback for when an update is found (state: downloading).
+  onUpdateAvailable: (cb) => ipcRenderer.on("update-available", (_event, state) => cb(state)),
 
   // Register a callback for when an update has been downloaded and is ready to install.
-  onUpdateDownloaded: (cb) => ipcRenderer.on("update-downloaded", (_event, info) => cb(info)),
+  onUpdateDownloaded: (cb) => ipcRenderer.on("update-downloaded", (_event, state) => cb(state)),
 
-  // Register a callback for when no update is available (or an error occurred).
-  onUpdateNotAvailable: (cb) => ipcRenderer.on("update-not-available", () => cb()),
+  // Register a callback for when a check finds no update (state: idle).
+  onUpdateNotAvailable: (cb) => ipcRenderer.on("update-not-available", (_event, state) => cb(state)),
 
-  // Register a callback for download progress events ({ percent, bytesPerSecond, transferred, total }).
-  onDownloadProgress: (cb) => ipcRenderer.on("download-progress", (_event, progress) => cb(progress)),
+  // Register a callback for download progress (state: downloading, with percent).
+  onDownloadProgress: (cb) => ipcRenderer.on("download-progress", (_event, state) => cb(state)),
 
-  // Register a callback for updater log lines (string).
-  onUpdateLog: (cb) => ipcRenderer.on("update-log", (_event, msg) => cb(msg)),
+  // Register a callback for a new updater log line (the state, with its log).
+  onUpdateLog: (cb) => ipcRenderer.on("update-log", (_event, state) => cb(state)),
 
-  // Trigger a manual update check.
+  // Trigger a manual update check. It also dismisses a failed download.
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
 
-  // Register a callback for update errors ({ message }).
-  // Always fired on any update error — never silently dropped.
-  onUpdateError: (cb) => ipcRenderer.on("update-error", (_event, info) => cb(info)),
+  // Register a callback for update errors (state: error, with message). Once
+  // an update is downloaded the state stays downloaded; the error is only logged.
+  onUpdateError: (cb) => ipcRenderer.on("update-error", (_event, state) => cb(state)),
 
   // Uninstall: quit and keep data (shows instructions to remove .app manually)
   uninstallKeepData: () => ipcRenderer.invoke("uninstall-keep-data"),

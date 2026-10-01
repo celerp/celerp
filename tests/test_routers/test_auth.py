@@ -205,8 +205,9 @@ async def _seed_foreign_session(session, user_id: str, expiry_offset_s: float = 
     if await session.get(User, uid) is None:
         session.add(User(id=uid, email=f"foreign-{uid}@test.example", name="Foreign User"))
         await session.flush()
+    from test_helpers import ensure_company
     expiry = datetime.now(timezone.utc) + timedelta(seconds=expiry_offset_s)
-    await _reg(session, str(_uuid.uuid4()), user_id, expiry)
+    await _reg(session, str(_uuid.uuid4()), user_id, await ensure_company(session), expiry)
 
 
 @pytest.mark.asyncio

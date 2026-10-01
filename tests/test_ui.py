@@ -33,7 +33,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from ui.routes.csv_import import _read_stage, _write_stage, MAPPING_ATTRIBUTE, MAPPING_SKIP
+from celerp.services.import_stage import read_stage, write_stage
+from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
 from test_helpers import make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
@@ -91,7 +92,7 @@ async def _inventory_import_with_mapping(ui_client, csv_bytes: bytes, plan: dict
     m = re.search(r'name="csv_ref"\s+value="([^"]+)"', html)
     assert m, "csv_ref hidden field not found"
     csv_ref = m.group(1)
-    csv_text = _read_stage(_TEST_COMPANY_ID, csv_ref)
+    csv_text = read_stage(_TEST_COMPANY_ID, csv_ref)
     assert csv_text, "stashed CSV missing"
 
     # Build mapping: map known core columns to themselves, others as attributes
@@ -137,7 +138,7 @@ async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url:
     m = re.search(r'name="csv_ref"\s+value="([^"]+)"', html)
     assert m, f"csv_ref hidden field not found in {preview_url} response"
     csv_ref = m.group(1)
-    csv_text = _read_stage(_TEST_COMPANY_ID, csv_ref)
+    csv_text = read_stage(_TEST_COMPANY_ID, csv_ref)
     assert csv_text, "stashed CSV missing"
 
     import csv as _csv, io as _io
@@ -162,7 +163,7 @@ _TEST_COMPANY_ID = "00000000-0000-0000-0000-00000000c0de"
 
 def _stage_csv(csv_text: str) -> str:
     """Stage CSV text under this file's test company and return its csv_ref."""
-    return _write_stage(_TEST_COMPANY_ID, csv_text)
+    return write_stage(_TEST_COMPANY_ID, csv_text)
 
 
 def _role_from_token(token: str | None) -> str:
@@ -14679,16 +14680,6 @@ class TestBuildWorkflowVersioning:
         assert 'https://github.com/celerp/celerp/releases' in shell
         assert 'Data-Universal-Limited' not in shell
 
-    def test_electron_main_wires_update_not_available(self):
-        from test_helpers import REPO_ROOT
-        main_js = (REPO_ROOT / 'electron/app-main.js').read_text()
-        assert 'update-not-available' in main_js
-
-    def test_preload_exposes_on_update_not_available(self):
-        from test_helpers import REPO_ROOT
-        preload = (REPO_ROOT / 'electron/preload.js').read_text()
-        assert 'onUpdateNotAvailable' in preload
-
 
 class TestInventoryUXFixes:
     """Tests for the 5-fix inventory UX improvements (2026-03-25)."""
@@ -16552,7 +16543,7 @@ class TestInventoryImportDraftReview:
     @staticmethod
     def _draft(rows: list[dict], draft: dict | None = None) -> str:
         from ui.routes.csv_import import _rows_to_csv
-        return _write_stage(_TEST_COMPANY_ID, _rows_to_csv(rows, list(rows[0])), draft)
+        return write_stage(_TEST_COMPANY_ID, _rows_to_csv(rows, list(rows[0])), draft)
 
     @staticmethod
     def _unit_error(row: int = 1) -> dict:
@@ -16570,12 +16561,12 @@ class TestInventoryImportDraftReview:
     @pytest.mark.asyncio
     async def test_fix_is_saved_and_replanned(self, ui_client):
         import json as _json
-        from ui.routes.csv_import import _read_draft
+        from celerp.services.import_stage import read_draft
         ref = self._draft([{"sku": "X1", "name": "Ring", "sell_by": "grams", "quantity": "1"}])
         r, planner = await self._post(ui_client, "/inventory/import/revalidate", {
             "csv_ref": ref, "revision": "1", "fixes_json": _json.dumps({"0__sell_by": "gram"}),
         }, _CLEAN_ROWS_PREVIEW)
-        csv_text, _draft, revision = _read_draft(_TEST_COMPANY_ID, ref)
+        csv_text, _draft, revision = read_draft(_TEST_COMPANY_ID, ref)
         assert "gram" in csv_text and "grams" not in csv_text
         assert revision == 2
         assert planner.await_args.args[1][0]["sell_by"] == "gram"
@@ -16595,16 +16586,16 @@ class TestInventoryImportDraftReview:
 
     @pytest.mark.asyncio
     async def test_review_without_revision_only_renders(self, ui_client):
-        from ui.routes.csv_import import _read_draft
+        from celerp.services.import_stage import read_draft
         ref = self._draft([{"sku": "X5", "name": "Bead", "sell_by": "piece", "quantity": "1"}])
         await self._post(ui_client, "/inventory/import/review", {"csv_ref": ref, "upsert": "1", "exclude": "1"},
                          _CLEAN_ROWS_PREVIEW)
-        _csv_text, draft, revision = _read_draft(_TEST_COMPANY_ID, ref)
+        _csv_text, draft, revision = read_draft(_TEST_COMPANY_ID, ref)
         assert (draft, revision) == ({}, 1)
 
     @pytest.mark.asyncio
     async def test_decisions_and_update_choice_are_saved_and_planned(self, ui_client):
-        from ui.routes.csv_import import _read_draft
+        from celerp.services.import_stage import read_draft
         rows = [{"sku": "L1", "name": "Lot A", "sell_by": "piece", "quantity": "1"},
                 {"sku": "L1", "name": "Lot B", "sell_by": "piece", "quantity": "2"},
                 {"sku": "", "name": "Total", "sell_by": "", "quantity": "3"}]
@@ -16612,7 +16603,7 @@ class TestInventoryImportDraftReview:
         _r, planner = await self._post(ui_client, "/inventory/import/review", {
             "csv_ref": ref, "revision": "1", "upsert": "1", "exclude": "3", "separate_lots": "L1",
         }, _CLEAN_ROWS_PREVIEW)
-        _csv_text, draft, _revision = _read_draft(_TEST_COMPANY_ID, ref)
+        _csv_text, draft, _revision = read_draft(_TEST_COMPANY_ID, ref)
         assert draft["upsert"] is True
         assert draft["decisions"] == {"exclude": ["3"], "import_summary": [], "separate_lots": ["L1"]}
         assert planner.await_args.kwargs["upsert"] is True
@@ -16621,14 +16612,14 @@ class TestInventoryImportDraftReview:
     @pytest.mark.asyncio
     async def test_edit_from_a_stale_revision_is_not_saved(self, ui_client):
         import json as _json
-        from ui.routes.csv_import import _read_draft, _update_draft
+        from celerp.services.import_stage import read_draft, update_draft
         ref = self._draft([{"sku": "X6", "name": "Ring", "sell_by": "grams", "quantity": "1"}])
-        csv_text, draft, _rev = _read_draft(_TEST_COMPANY_ID, ref)
-        assert _update_draft(_TEST_COMPANY_ID, ref, csv_text, {"upsert": True}, 1) == 2  # another tab saved first
+        csv_text, draft, _rev = read_draft(_TEST_COMPANY_ID, ref)
+        assert update_draft(_TEST_COMPANY_ID, ref, csv_text, {"upsert": True}, 1) == 2  # another tab saved first
         r, _ = await self._post(ui_client, "/inventory/import/revalidate", {
             "csv_ref": ref, "revision": "1", "fixes_json": _json.dumps({"0__sell_by": "gram"}),
         }, _CLEAN_ROWS_PREVIEW)
-        csv_after, draft_after, revision = _read_draft(_TEST_COMPANY_ID, ref)
+        csv_after, draft_after, revision = read_draft(_TEST_COMPANY_ID, ref)
         assert (csv_after, draft_after, revision) == (csv_text, {"upsert": True}, 2)
         from ui.i18n import t
         assert t("inventory.import_draft_changed") in r.text
@@ -16652,11 +16643,11 @@ class TestInventoryImportDraftReview:
 
     @pytest.mark.asyncio
     async def test_cancel_deletes_the_draft(self, ui_client):
-        from ui.routes.csv_import import _read_draft
+        from celerp.services.import_stage import read_draft
         ref = self._draft([{"sku": "X8", "name": "Ring", "sell_by": "piece", "quantity": "1"}], {"from_onboarding": True})
         r = await ui_client.post("/inventory/import/cancel", data={"csv_ref": ref}, cookies=_authed())
         assert r.headers.get("HX-Redirect") == "/onboarding"
-        assert _read_draft(_TEST_COMPANY_ID, ref) is None
+        assert read_draft(_TEST_COMPANY_ID, ref) is None
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("reversible", [True, False])
@@ -16675,18 +16666,18 @@ class TestInventoryImportDraftReview:
         ({"created": 0, "skipped": 0, "updated": 0, "errors": [{"row": 1, "error": "Write failed"}]}, True),
     ])
     async def test_confirm_keeps_the_draft_unless_the_import_finished_cleanly(self, ui_client, result, kept):
-        from ui.routes.csv_import import _read_draft
+        from celerp.services.import_stage import read_draft
         ref = self._draft([{"sku": "X11", "name": "Ring", "sell_by": "piece", "quantity": "1"}])
         with patch("ui.api_client.import_rows", new=AsyncMock(return_value=result)):
             await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": _PREVIEW_HASH},
                                  cookies=_authed())
-        assert (_read_draft(_TEST_COMPANY_ID, ref) is not None) is kept
+        assert (read_draft(_TEST_COMPANY_ID, ref) is not None) is kept
 
     @pytest.mark.asyncio
     async def test_confirm_refused_as_changed_reopens_the_review_with_the_draft(self, ui_client):
         from ui.api_client import APIError
         from ui.i18n import t
-        from ui.routes.csv_import import _read_draft
+        from celerp.services.import_stage import read_draft
         ref = self._draft([{"sku": "X12", "name": "Ring", "sell_by": "piece", "quantity": "1"}])
         with patch("ui.api_client.import_rows", new=AsyncMock(side_effect=APIError(409, "stale"))), \
              patch("ui.api_client.plan_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)), \
@@ -16694,7 +16685,7 @@ class TestInventoryImportDraftReview:
             r = await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": "f" * 64},
                                      cookies=_authed())
         assert t("inventory.import_review_changed") in r.text
-        assert _read_draft(_TEST_COMPANY_ID, ref) is not None
+        assert read_draft(_TEST_COMPANY_ID, ref) is not None
 
     @pytest.mark.asyncio
     async def test_repeat_import_says_nothing_was_duplicated(self, ui_client):
@@ -17154,7 +17145,7 @@ class TestDraftStatusColumn:
         assert "badge--reserved" in r.text, "finalized list must show the item's real status"
 
 
-# ── Factory Reset danger zone UI tests ───────────────────────────────────────
+# ── Danger zone UI tests ───────────────────────────────────────
 
 class TestDangerZoneUI:
     @pytest.mark.asyncio
@@ -17166,7 +17157,7 @@ class TestDangerZoneUI:
              patch("ui.api_client.get_locations", new_callable=AsyncMock, return_value={"items": []}):
             r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="owner"))
         assert r.status_code == 200
-        assert "Reset All Data" in r.text
+        assert "Reset this company" in r.text
 
     @pytest.mark.asyncio
     async def test_danger_zone_hidden_for_admin(self, ui_client):
@@ -17177,7 +17168,7 @@ class TestDangerZoneUI:
              patch("ui.api_client.get_locations", new_callable=AsyncMock, return_value={"items": []}):
             r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="admin"))
         assert r.status_code == 200
-        assert "Reset All Data" not in r.text
+        assert "Reset this company" not in r.text
 
 
 @pytest.mark.asyncio

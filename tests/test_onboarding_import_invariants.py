@@ -19,6 +19,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from celerp.services import import_stage
 from httpx import ASGITransport, AsyncClient
 
 from fasthtml.common import to_xml
@@ -45,10 +47,10 @@ def stage_dir(tmp_path, monkeypatch):
 
 class TestImportStageInvariant:
     def test_import_ref_accepts_only_canonical_token(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "sku\nA\n")
-        assert ci._IMPORT_REF_RE.fullmatch(ref)
-        assert ci._stage_paths(ref) is not None
-        assert ci._stage_paths(ref.upper()) is None
+        ref = import_stage.write_stage(_COMPANY_A, "sku\nA\n")
+        assert import_stage.REF_RE.fullmatch(ref)
+        assert import_stage.stage_paths(ref) is not None
+        assert import_stage.stage_paths(ref.upper()) is None
 
     @pytest.mark.parametrize("bad", [
         "../etc/passwd", "imp_../../x", "..", "imp_" + "0" * 30 + "/..",
@@ -56,49 +58,49 @@ class TestImportStageInvariant:
     def test_import_ref_rejects_path_traversal_before_filesystem_access(self, bad, monkeypatch):
         def _boom():
             raise AssertionError("filesystem resolver reached for an invalid ref")
-        monkeypatch.setattr(ci, "_stage_dir", _boom)
-        assert ci._stage_paths(bad) is None
-        assert ci._read_stage(_COMPANY_A, bad) is None
-        ci.delete_import_ref(bad)
+        monkeypatch.setattr(import_stage, "stage_dir", _boom)
+        assert import_stage.stage_paths(bad) is None
+        assert import_stage.read_stage(_COMPANY_A, bad) is None
+        import_stage.delete_ref(bad)
 
     @pytest.mark.parametrize("bad", [
         "/tmp/imp_" + "0" * 32, "imp_" + "0" * 31 + "\\", "C:\\imp_" + "0" * 32,
     ])
     def test_import_ref_rejects_absolute_and_backslash_paths(self, bad):
-        assert ci._stage_paths(bad) is None
+        assert import_stage.stage_paths(bad) is None
 
     @pytest.mark.parametrize("bad", [
         "", "0" * 32, "imp_" + "0" * 31, "imp_" + "0" * 33, "xmp_" + "0" * 32,
         "imp_" + "0" * 32 + "\n", " imp_" + "0" * 32, "imp_" + "g" * 32, "imp_" + "0" * 4096,
     ])
     def test_import_ref_rejects_prefix_suffix_and_oversize_tokens(self, bad):
-        assert ci._stage_paths(bad) is None
+        assert import_stage.stage_paths(bad) is None
 
     def test_import_refs_do_not_collide(self, stage_dir):
-        refs = {ci._write_stage(_COMPANY_A, "x") for _ in range(500)}
+        refs = {import_stage.write_stage(_COMPANY_A, "x") for _ in range(500)}
         assert len(refs) == 500
 
     def test_import_stage_same_company_loads(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "sku\nA\n")
-        assert ci._read_stage(_COMPANY_A, ref) == "sku\nA\n"
+        ref = import_stage.write_stage(_COMPANY_A, "sku\nA\n")
+        assert import_stage.read_stage(_COMPANY_A, ref) == "sku\nA\n"
 
     def test_import_stage_wrong_company_fails_closed(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "sku\nA\n")
-        assert ci._read_stage(_COMPANY_B, ref) is None
-        assert ci._read_stage("", ref) is None
+        ref = import_stage.write_stage(_COMPANY_A, "sku\nA\n")
+        assert import_stage.read_stage(_COMPANY_B, ref) is None
+        assert import_stage.read_stage("", ref) is None
 
     def test_import_stage_missing_metadata_fails_closed(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "sku\nA\n")
+        ref = import_stage.write_stage(_COMPANY_A, "sku\nA\n")
         (stage_dir / f"{ref}.meta").unlink()
-        assert ci._read_stage(_COMPANY_A, ref) is None
+        assert import_stage.read_stage(_COMPANY_A, ref) is None
 
     def test_import_stage_requires_company(self, stage_dir):
         with pytest.raises(ValueError):
-            ci._write_stage("", "sku\nA\n")
+            import_stage.write_stage("", "sku\nA\n")
 
     @pytest.mark.asyncio
     async def test_authenticated_load_uses_the_callers_company(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "sku\nA\n")
+        ref = import_stage.write_stage(_COMPANY_A, "sku\nA\n")
         with patch("ui.api_client.get_company", new=AsyncMock(return_value={"id": _COMPANY_B})):
             assert await ci.load_import_csv("tok", ref) is None
             assert await ci.resolve_import_csv("tok", {"csv_ref": ref}) == ""
@@ -106,40 +108,38 @@ class TestImportStageInvariant:
             assert await ci.resolve_import_csv("tok", {"csv_ref": ref}) == "sku\nA\n"
 
     def test_expired_stage_is_rejected_and_removed(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "sku\nA\n")
+        ref = import_stage.write_stage(_COMPANY_A, "sku\nA\n")
         meta = stage_dir / f"{ref}.meta"
-        stale = time.time() - ci._IMPORT_STAGE_MAX_AGE_SECONDS - 1
+        stale = time.time() - import_stage.MAX_AGE_SECONDS - 1
         meta.write_text(json.dumps({"company_id": _COMPANY_A, "created_at": stale}))
-        assert ci._read_stage(_COMPANY_A, ref) is None
+        assert import_stage.read_stage(_COMPANY_A, ref) is None
         assert not meta.exists() and not (stage_dir / f"{ref}.csv").exists()
 
     def test_cleanup_never_removes_recent_stage(self, stage_dir):
-        fresh = ci._write_stage(_COMPANY_A, "fresh")
-        old = ci._write_stage(_COMPANY_A, "old")
-        stale = time.time() - ci._IMPORT_STAGE_MAX_AGE_SECONDS - 1
+        fresh = import_stage.write_stage(_COMPANY_A, "fresh")
+        old = import_stage.write_stage(_COMPANY_A, "old")
+        stale = time.time() - import_stage.MAX_AGE_SECONDS - 1
         (stage_dir / f"{old}.meta").write_text(json.dumps({"company_id": _COMPANY_A, "created_at": stale}))
-        assert ci.cleanup_expired_import_refs() == 1
-        assert ci._read_stage(_COMPANY_A, fresh) == "fresh"
+        assert import_stage.cleanup_expired() == 1
+        assert import_stage.read_stage(_COMPANY_A, fresh) == "fresh"
 
     def test_no_route_constructs_a_staging_path(self):
-        """Only the staging helper may name the stage directory or its private resolvers."""
-        private = {"_stage_dir", "_stage_paths", "_write_stage", "_read_stage"}
+        """Only the staging service names the stage directory or resolves stage paths."""
         offenders = []
-        for path in (_REPO / "ui").rglob("*.py"):
-            if path.name == "csv_import.py":
+        for path in [*(_REPO / "ui").rglob("*.py"), *(_REPO / "celerp").rglob("*.py")]:
+            if path.name == "import_stage.py":
                 continue
             src = path.read_text(encoding="utf-8")
             if "import_staging" in src:
                 offenders.append(f"{path}: import_staging")
             for node in ast.walk(ast.parse(src)):
-                name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
-                if name in private:
-                    offenders.append(f"{path}:{node.lineno}: {name}")
+                if isinstance(node, ast.Attribute) and node.attr == "stage_dir":
+                    offenders.append(f"{path}:{node.lineno}: stage_dir")
         assert not offenders, offenders
 
     async def _confirm(self, stage_dir, import_rows):
         from ui.app import app as ui_app
-        ref = ci._write_stage(_COMPANY_A, "sku,name,sell_by\nA-1,Ruby,piece\n")
+        ref = import_stage.write_stage(_COMPANY_A, "sku,name,sell_by\nA-1,Ruby,piece\n")
         company = {"id": _COMPANY_A, "current_role": "owner", "settings": {}}
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
              patch("ui.api_client.import_rows", new=import_rows):
@@ -157,14 +157,14 @@ class TestImportStageInvariant:
         ok = AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})
         ref = await self._confirm(stage_dir, ok)
         assert ok.await_count == 1
-        assert ci._read_stage(_COMPANY_A, ref) is None
+        assert import_stage.read_stage(_COMPANY_A, ref) is None
 
     @pytest.mark.asyncio
     async def test_failed_commit_keeps_stage_for_retry(self, stage_dir):
         from ui.api_client import APIError
         failing = AsyncMock(side_effect=APIError(500, "boom"))
         ref = await self._confirm(stage_dir, failing)
-        assert ci._read_stage(_COMPANY_A, ref) is not None
+        assert import_stage.read_stage(_COMPANY_A, ref) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1243,7 +1243,7 @@ class TestPreviewCommitInvariant:
 
     @pytest.mark.asyncio
     async def test_review_with_row_errors_offers_no_import(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "name,quantity\nWidget,1\n")
+        ref = import_stage.write_stage(_COMPANY_A, "name,quantity\nWidget,1\n")
         preview = AsyncMock(return_value={"errors": [{"row": 1, "field": "sell_by", "code": "sell_by_unresolved", "message": "No selling unit"}],
                                           "locations_to_create": [], "preview_hash": "d" * 64})
         html, _ = await self._ui_post("/inventory/import/review", {"csv_ref": ref}, preview=preview)
@@ -1253,7 +1253,7 @@ class TestPreviewCommitInvariant:
 
     @pytest.mark.asyncio
     async def test_changing_update_existing_reruns_review(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "name,sku,sell_by\nWidget,W-1,piece\n")
+        ref = import_stage.write_stage(_COMPANY_A, "name,sku,sell_by\nWidget,W-1,piece\n")
         preview = AsyncMock(return_value={"errors": [], "locations_to_create": [], "preview_hash": "e" * 64})
         html, _ = await self._ui_post("/inventory/import/review", {"csv_ref": ref, "revision": "1", "upsert": "1"},
                                       preview=preview)
@@ -1263,7 +1263,7 @@ class TestPreviewCommitInvariant:
 
     @pytest.mark.asyncio
     async def test_confirm_without_reviewed_hash_never_imports(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "name,sell_by\nWidget,piece\n")
+        ref = import_stage.write_stage(_COMPANY_A, "name,sell_by\nWidget,piece\n")
         preview = AsyncMock(return_value={"errors": [], "locations_to_create": [], "preview_hash": "f" * 64})
         html, writer = await self._ui_post("/inventory/import/confirm", {"csv_ref": ref}, preview=preview)
         writer.assert_not_awaited()
@@ -1272,13 +1272,13 @@ class TestPreviewCommitInvariant:
     @pytest.mark.asyncio
     async def test_stale_confirm_returns_to_review(self, stage_dir):
         from ui.api_client import APIError
-        ref = ci._write_stage(_COMPANY_A, "name,sell_by\nWidget,piece\n")
+        ref = import_stage.write_stage(_COMPANY_A, "name,sell_by\nWidget,piece\n")
         preview = AsyncMock(return_value={"errors": [], "locations_to_create": [], "preview_hash": "a" * 64})
         stale = AsyncMock(side_effect=APIError(409, {"code": "preview_stale"}))
         html, _ = await self._ui_post("/inventory/import/confirm", {"csv_ref": ref, "preview_hash": "b" * 64},
                                       preview=preview, import_rows=stale)
         assert "a" * 64 in html
-        assert ci._read_stage(_COMPANY_A, ref) is not None
+        assert import_stage.read_stage(_COMPANY_A, ref) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1539,7 +1539,7 @@ class TestUnitAndPriceInvariant:
     @pytest.mark.asyncio
     async def test_browser_mapping_blocks_a_foreign_currency_price_column(self, stage_dir):
         from ui.app import app as ui_app
-        ref = ci._write_stage(_COMPANY_A, "name,sell_by,Price (USD)\nWidget,piece,10\n")
+        ref = import_stage.write_stage(_COMPANY_A, "name,sell_by,Price (USD)\nWidget,piece,10\n")
         company = {"id": _COMPANY_A, "currency": "THB", "current_role": "owner", "settings": {}}
         form = {"csv_ref": ref, "map__name": "name", "map__sell_by": "sell_by", "map__Price (USD)": "retail_price"}
         preview = AsyncMock()
@@ -2197,7 +2197,7 @@ async def _run_import_scenario(importer: str, aspect: str, *, from_hub: bool) ->
 
             async def submit(path: str, with_hash: bool = True):
                 company = _COMPANY_B if aspect == "cross_company_stage" else _COMPANY_A
-                data = {"csv_ref": ci._write_stage(company, spec["csv"])}
+                data = {"csv_ref": import_stage.write_stage(company, spec["csv"])}
                 if with_hash and importer == "inventory":
                     data["preview_hash"] = "reviewed"
                 return await c.post(path, data=data, cookies=cookies)
