@@ -594,6 +594,19 @@ document.addEventListener('click', function(e) {
     }
   });
 });
+// A tab strip wider than the screen scrolls sideways inside itself; bring its current
+// tab into view whenever the strip is drawn, without moving the page.
+function revealActiveTabs() {
+  document.querySelectorAll('.category-tabs').forEach(function(strip) {
+    var tab = strip.querySelector('.category-tab--active');
+    if (!tab || strip.scrollWidth <= strip.clientWidth) return;
+    var left = tab.offsetLeft - strip.offsetLeft;
+    if (left < strip.scrollLeft || left + tab.offsetWidth > strip.scrollLeft + strip.clientWidth)
+      strip.scrollLeft = left - (strip.clientWidth - tab.offsetWidth) / 2;
+  });
+}
+document.addEventListener('DOMContentLoaded', revealActiveTabs);
+document.addEventListener('htmx:afterSettle', revealActiveTabs);
 """
 
 

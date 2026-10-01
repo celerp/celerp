@@ -231,7 +231,20 @@ a:hover { text-decoration: underline; }
 }
 
 /* ─── Main content ────────────────────────────────────────────────────── */
-.main-content { flex: 1; min-width: 0; padding: 24px 28px; overflow-x: auto; }
+/* The page never scrolls sideways, here or on the document. A part whose content needs
+   more width scrolls inside its own box (.table-scroll-wrap, the .category-tabs strip). */
+.main-content { flex: 1; min-width: 0; padding: 24px 28px; }
+@media (max-width: 768px) {
+  .main-content { padding: 16px 12px; }
+  /* Phone top bar: menu, company, language, alerts and account on the first row, the
+     global search on its own row below. Nothing is pushed off either edge. */
+  .topbar { flex-wrap: wrap; height: auto; padding: 8px 12px; gap: 8px; justify-content: flex-start; }
+  .topbar > * { min-width: 0; }
+  .topbar .global-search-wrap { order: 1; flex: 1 0 100%; max-width: none; margin: 0; }
+  .company-switcher-select { max-width: 9rem; }
+  .user-menu { flex-shrink: 1; }
+  .user-menu__trigger { max-width: 8rem; }
+}
 
 /* ─── Page header ─────────────────────────────────────────────────────── */
 .page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
@@ -518,7 +531,7 @@ a:hover { text-decoration: underline; }
 /* ─── Search & filter ─────────────────────────────────────────────────── */
 .search-input {
   background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text);
-  border-radius: var(--radius); padding: 6px 10px; font-size: 12px; width: 220px;
+  border-radius: var(--radius); padding: 6px 10px; font-size: 12px; width: 220px; max-width: 100%;
 }
 .search-input:focus { outline: none; border-color: var(--c-accent); }
 .table-toolbar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
@@ -949,8 +962,9 @@ a:hover { text-decoration: underline; }
 .row-menu-item--danger:hover { background: rgba(239,68,68,0.1); }
 
 /* ─── Category tabs (inventory) ───────────────────────────────────────── */
-.category-tabs { display: flex; gap: 0; margin-bottom: 12px; border: 1px solid var(--c-border); border-radius: var(--radius); overflow: hidden; }
-.category-tab { flex: 1; text-align: center; padding: 10px 16px; font-size: 13px; font-weight: 500; color: var(--c-text2); background: var(--c-bg2); border-right: 1px solid var(--c-border); cursor: pointer; text-decoration: none; white-space: nowrap; transition: background 0.1s, color 0.1s; }
+/* A strip of tabs wider than the screen scrolls sideways inside itself; no tab is cut off. */
+.category-tabs { display: flex; gap: 0; margin-bottom: 12px; border: 1px solid var(--c-border); border-radius: var(--radius); overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: thin; }
+.category-tab { flex: 1 0 auto; text-align: center; padding: 10px 16px; font-size: 13px; font-weight: 500; color: var(--c-text2); background: var(--c-bg2); border-right: 1px solid var(--c-border); cursor: pointer; text-decoration: none; white-space: nowrap; transition: background 0.1s, color 0.1s; }
 .category-tab:last-child { border-right: none; }
 .category-tab:hover { background: var(--c-bg3); color: var(--c-text); text-decoration: none; }
 .category-tab--active { background: var(--c-bg3); color: var(--c-text); font-weight: 600; border-bottom: 2px solid var(--c-accent); }
@@ -1132,6 +1146,11 @@ a:hover { text-decoration: underline; }
    so the wrapper provides the positioning context and the input clears it. */
 .page-search-wrap { position: relative; display: inline-block; }
 .page-search-wrap .search-input { padding-right: 30px; }
+/* On a phone the page search takes its own full row; its scope label stays centred over it. */
+@media (max-width: 768px) {
+  .search-scope, .page-search-wrap { display: block; flex: 1 1 100%; }
+  .search-scope .search-input, .page-search-wrap .search-input { width: 100%; }
+}
 .global-search-help {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; padding: 0; font-size: 11px; font-weight: 600;
@@ -1581,7 +1600,10 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   margin-bottom: 8px;
 }
 .bulk-toolbar.is-active { display: flex; }
-.bulk-context { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bulk-context { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; overflow-wrap: anywhere; }
+/* What an action will do (a merge naming its accounts) wraps within the screen, and a
+   choice list is never wider than the toolbar, however long an item or account name. */
+.bulk-context, .bulk-context * { min-width: 0; max-width: 100%; }
 #bulk-action-result { margin-top: 6px; }
 .bulk-count { font-size: 14px; font-weight: 600; color: var(--c-accent); min-width: 72px; }
 .form-input--sm { padding: 4px 8px; font-size: 14px; height: 30px; }
@@ -3205,11 +3227,12 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 @media (max-width: 640px) { .action-card--wide { grid-column: span 1; } }
 
 /* --- Toast notifications --- */
-.toast-container { position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999; display: flex; flex-direction: column; gap: 0.5rem; pointer-events: none; }
-.toast { pointer-events: all; display: flex; align-items: flex-start; gap: 0.75rem; padding: 0.75rem 1rem; border-radius: var(--radius); box-shadow: 0 4px 16px rgba(0,0,0,0.15); font-size: 0.875rem; max-width: 360px; opacity: 0; transform: translateY(8px); transition: opacity 0.2s ease, transform 0.2s ease; }
+/* A toast stays inside the screen on any width; a long account name or code wraps. */
+.toast-container { position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999; display: flex; flex-direction: column; gap: 0.5rem; pointer-events: none; max-width: calc(100vw - 3rem); }
+.toast { pointer-events: all; display: flex; align-items: flex-start; gap: 0.75rem; padding: 0.75rem 1rem; border-radius: var(--radius); box-shadow: 0 4px 16px rgba(0,0,0,0.15); font-size: 0.875rem; max-width: min(360px, 100%); opacity: 0; transform: translateY(8px); transition: opacity 0.2s ease, transform 0.2s ease; }
 .toast--visible { opacity: 1; transform: translateY(0); }
 /* A multi-line toast (a summary of changes) keeps its line breaks. */
-.toast__msg { white-space: pre-line; }
+.toast__msg { white-space: pre-line; min-width: 0; overflow-wrap: anywhere; }
 .toast--error { background: #fef2f2; border: 1px solid rgba(239,68,68,0.4); color: #b91c1c; }
 .toast--success { background: #f0fdf4; border: 1px solid rgba(34,197,94,0.4); color: #15803d; }
 .toast--info { background: var(--c-bg-alt, #f8f9fa); border: 1px solid var(--c-border); color: var(--c-text); }

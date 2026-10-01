@@ -26,7 +26,9 @@ def test_merge_across_inventory_accounts_is_disclosed_and_can_be_undone(page, ui
     r = api.post("/accounting/accounts", json={"code": "1131", "name": "Stock Room B",
                                                "account_type": "asset", "parent_code": "1130"})
     assert r.status_code == 200, r.text
-    r = api.put("/accounting/posting-accounts/inventory_purchased", json={"code": "1131"})
+    # Stock entered with no purchase records the opening inventory account; point new
+    # opening stock at Stock Room B so the two lots sit in different accounts.
+    r = api.put("/accounting/posting-accounts/inventory_opening", json={"code": "1131"})
     assert r.status_code == 200, r.text
     b = _lot(api, f"MRC-{tag}-B", 400.0)
 
@@ -43,12 +45,12 @@ def test_merge_across_inventory_accounts_is_disclosed_and_can_be_undone(page, ui
     note = page.locator("#merge-reclass-note")
     note.wait_for(state="visible", timeout=8000)
     assert note.inner_text() == ("These items are held in different inventory accounts. "
-                                 "Merging will move $400.00 from Stock Room B to Inventory - Purchased.")
+                                 "Merging will move $400.00 from Stock Room B to Inventory - Opening Balance.")
 
     page.click("#merge-confirm button:has-text('Confirm')")
     result = page.locator(".toast-container .toast--success")
     result.wait_for(timeout=8000)
-    assert "$400.00 from Stock Room B moved to Inventory - Purchased." in result.inner_text()
+    assert "$400.00 from Stock Room B moved to Inventory - Opening Balance." in result.inner_text()
 
     items = api.get("/items", params={"q": f"MRC-{tag}", "status": "all"}).json()["items"]
     [merged] = [i["id"] for i in items if i["id"] not in {a, b}]
