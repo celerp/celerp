@@ -530,7 +530,7 @@ async def test_proxy_response_preserves_multiple_set_cookie(client, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_proxy_blocks_destructive_local_only_route(client, monkeypatch):
-    """A remote-proxied request to a destructive local-only route (factory reset) is
+    """A remote-proxied request to a destructive local-only route (company reset) is
     refused with 403 and nothing is forwarded to the UI server - a compromised broker
     (even replaying a captured session) cannot trigger a wipe."""
     import base64 as _b64
@@ -542,7 +542,7 @@ async def test_proxy_blocks_destructive_local_only_route(client, monkeypatch):
     monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
     client._ws = object()  # non-None sentinel; the forward path is never reached
 
-    for path in ("/settings/factory-reset", "/settings/factory-reset/confirm"):
+    for path in ("/settings/company/reset", "/settings/company/reset/confirm"):
         sent.clear()
         await client._handle_proxy_request(
             {"id": "r1", "method": "POST", "path": path, "query": "", "headers": {}, "body_b64": ""}
@@ -653,13 +653,13 @@ async def test_proxy_rejects_absent_path(client, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("encoded_path", [
-    "/settings/%66actory-reset",           # %66 == 'f' -> decodes to the blocked route
-    "/settings/factory-reset%2Fconfirm",   # %2F == '/' -> decodes into the blocked subtree
+    "/settings/company/%72eset",          # %72 == 'r' -> decodes to the blocked route
+    "/settings/company/reset%2Fconfirm",  # %2F == '/' -> decodes into the blocked subtree
 ])
 async def test_proxy_blocks_percent_encoded_local_only_route(client, monkeypatch, encoded_path):
     """A percent-encoded variant of a destructive local-only route is blocked with
     403 and never forwarded. The local server decodes the path once before routing,
-    so classifying the raw wire string alone would let an encoded factory-reset
+    so classifying the raw wire string alone would let an encoded company reset
     through to a wipe. The canonical (decoded) path is what the guard must see."""
     import base64 as _b64
     sent = []
@@ -688,14 +688,14 @@ async def test_proxy_blocks_percent_encoded_local_only_route(client, monkeypatch
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("dotted_path", [
-    "/x/../settings/factory-reset",               # dot segment hops into the blocked route
-    "/settings/foo/../../settings/factory-reset",  # deeper traversal back to the blocked route
-    "/./settings/factory-reset",                   # single-dot no-op segment
+    "/x/../settings/company/reset",               # dot segment hops into the blocked route
+    "/settings/foo/../../settings/company/reset",  # deeper traversal back to the blocked route
+    "/./settings/company/reset",                   # single-dot no-op segment
 ])
 async def test_proxy_blocks_dot_segment_local_only_route(client, monkeypatch, dotted_path):
     """A dot-segment variant of a destructive local-only route is blocked with 403 and
     never forwarded. httpx removes dot segments before transmitting, so the local server
-    receives '/settings/factory-reset' and would wipe; classifying the raw wire string
+    receives '/settings/company/reset' and would wipe; classifying the raw wire string
     alone lets the traversal through. The guard must see the same canonical path httpx
     sends."""
     import base64 as _b64
@@ -758,7 +758,7 @@ async def test_proxy_classifies_dot_segment_events_stream_as_sse(client, monkeyp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad_path", [
-    "/settings/factory-reset#x",   # fragment suffix on a blocked route
+    "/settings/company/reset#x",   # fragment suffix on a blocked route
     "/items#/../settings",          # fragment anywhere
     "/items\x00",                   # embedded control character
     "/items%00",                    # encoded control character
@@ -767,7 +767,7 @@ async def test_proxy_classifies_dot_segment_events_stream_as_sse(client, monkeyp
 async def test_proxy_rejects_fragment_control_and_malformed_paths(client, monkeypatch, bad_path):
     """Fragments, control characters, and undecodable percent escapes cannot address
     a local route; each is refused with a neutral 400 before any forwarding, so a
-    fragmented factory-reset never reaches the local server that would strip the
+    fragmented company reset never reaches the local server that would strip the
     fragment and route to the wipe."""
     import base64 as _b64
     sent = []
