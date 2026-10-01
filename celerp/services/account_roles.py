@@ -27,6 +27,7 @@ from celerp.accounting_roles import (
     SCHEMA_KEY,
     SCOPES_KEY,
     SEEDED_TARGETS,
+    SOURCE_CONTROLS_KEY,
     AccountRole,
     is_role,
     target_problem,
@@ -131,6 +132,37 @@ async def reconcile_company(session: AsyncSession, company_id) -> list[str]:
     return unmapped_roles(after)
 
 
+def source_controls(settings: dict | None, role) -> list[str]:
+    """The accounts a migration's source books marked as ``role``'s control."""
+    return list(((settings or {}).get(SOURCE_CONTROLS_KEY) or {}).get(str(role)) or ())
+
+
+def source_control(settings: dict | None, role) -> str:
+    """The one account the source books kept ``role``'s balances on; a missing or
+    ambiguous control is refused rather than guessed."""
+    codes = source_controls(settings, role)
+    label = ROLE_LABELS[AccountRole(role)].lower().removeprefix("accounts ")
+    if not codes:
+        raise ValueError(f"the source books mark no {label} account.")
+    if len(codes) > 1:
+        raise ValueError(f"the source books mark more than one {label} account ({', '.join(codes)}).")
+    return codes[0]
+
+
+async def record_source_control(session: AsyncSession, company_id, role, code: str) -> None:
+    """Note that the source books kept ``role``'s balances on ``code``; recording it again changes nothing."""
+    from celerp.services.company_lock import locked_company
+
+    company = await locked_company(session, company_id)
+    settings = dict(company.settings or {})
+    controls = {k: list(v) for k, v in (settings.get(SOURCE_CONTROLS_KEY) or {}).items()}
+    if code in controls.setdefault(str(role), []):
+        return
+    controls[str(role)].append(code)
+    company.settings = {**settings, SOURCE_CONTROLS_KEY: controls}
+    await session.flush()
+
+
 class LotOriginError(HTTPException):
     """A lot's inventory account cannot be proven, so its cost cannot move."""
 
@@ -169,15 +201,19 @@ def lot_account(settings: dict | None, state: dict) -> str:
 
 async def new_lot_account(session: AsyncSession, company_id) -> str | None:
     """The inventory account a new lot's value is booked into: the company's current
-    inventory-purchased account. None for a company without posting accounts, whose
-    lots then move cost only where its history proves the account (``lot_account``)."""
+    inventory-purchased account. A company being migrated, which has no posting
+    accounts yet, books its stock where the source books kept inventory, when they
+    name exactly one account. Otherwise None, and the lot then moves cost only where
+    its history proves the account (``lot_account``)."""
     from sqlalchemy import select
 
     settings = (await session.execute(
         select(Company.settings).where(Company.id == company_id))).scalar_one_or_none() or {}
+    role = AccountRole.INVENTORY_PURCHASED.value
     if SCHEMA_KEY not in settings:
-        return None
-    return role_map(settings).get(AccountRole.INVENTORY_PURCHASED.value) or None
+        codes = source_controls(settings, role)
+        return codes[0] if len(codes) == 1 else None
+    return role_map(settings).get(role) or None
 
 
 async def current_settings(session: AsyncSession, company_id) -> dict:

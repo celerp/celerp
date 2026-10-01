@@ -36,6 +36,9 @@ SCHEMA_KEY = "posting_roles_schema"
 # every automatic goods movement posted to the seeded inventory leaf.
 LEGACY_LOT_ACCOUNT_KEY = "posting_legacy_lot_account"
 LEGACY_LOT_ACCOUNT = "1130-P"
+# The accounts a migrated company's source books marked as its controls, per role,
+# in import order. A migration fills it; finishing the migration maps the roles from it.
+SOURCE_CONTROLS_KEY = "posting_source_controls"
 
 # The item-state field holding the inventory account a lot's value sits in.
 LOT_ACCOUNT_FIELD = "inventory_account_code"
