@@ -4,10 +4,10 @@
 
 from __future__ import annotations
 
-import csv
-import io
 from decimal import Decimal, InvalidOperation
 from typing import Any
+
+from celerp.importers.tabular import read_csv
 
 # Known header aliases → canonical field names
 _FIELD_ALIASES: dict[str, str] = {
@@ -116,6 +116,8 @@ def parse_bank_csv(content: bytes, column_map: dict[str, str] | None = None) -> 
         column_map: optional {canonical_field: csv_header} mapping.
                     If None, auto-detection is attempted.
 
+    Raises TabularError for a file whose header would lose values.
+
     Returns:
         {
             "needs_mapping": bool,
@@ -129,9 +131,9 @@ def parse_bank_csv(content: bytes, column_map: dict[str, str] | None = None) -> 
     except UnicodeDecodeError:
         text = content.decode("latin-1")
 
-    reader = csv.DictReader(io.StringIO(text))
-    headers = list(reader.fieldnames or [])
-    rows = list(reader)
+    # The shared table reader refuses a header that would lose values (two
+    # columns with one name, a filled column with none) instead of collapsing it.
+    headers, rows = read_csv(text)
 
     preview = [dict(r) for r in rows[:5]]
 

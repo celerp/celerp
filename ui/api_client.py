@@ -352,16 +352,36 @@ async def batch_import(token: str, path: str, records: list[dict], upsert: bool 
         return r.json()
 
 
-async def import_rows(token: str, rows: list[dict], upsert: bool = False, idempotency_key: str | None = None) -> dict:
+async def preview_import_rows(token: str, rows: list[dict], *, upsert: bool, idempotency_key: str) -> dict:
+    """Semantic preview of mapped inventory rows: row errors, locations that would
+    be created, and the hash a commit of exactly these rows must echo."""
+    async with _bulk_api_client(token, timeout=300.0) as c:
+        r = _raise(await c.post(
+            "/items/import/rows/preview",
+            json={"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key},
+        ))
+        return r.json()
+
+
+async def import_rows(
+    token: str, rows: list[dict], upsert: bool = False, idempotency_key: str | None = None,
+    preview_hash: str | None = None,
+) -> dict:
     """POST mapped inventory CSV rows to the shared import committer.
 
     Rows are raw column-to-value dicts; the server owns location resolution and
     creation, unit and quantity derivation, monetary conversion, command
-    idempotency, and the category-schema follow-up. Rides the bulk pool for the
-    same reason batch_import does: a large import holds its write connection.
+    idempotency, and the category-schema follow-up. Rows the server would reject
+    raise APIError 422 whose detail is ``{"code": "validation_failed", "errors":
+    [{"row", "field", "code", "message"}]}``, and nothing is written. With
+    ``preview_hash`` the server also refuses, with 409 ``preview_stale``, a
+    commit that no longer matches its own preview. Rides the
+    bulk pool for the same reason batch_import does: a large import holds its
+    write connection.
     """
+    body = {"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key, "preview_hash": preview_hash}
     async with _bulk_api_client(token, timeout=300.0) as c:
-        r = _raise(await c.post("/items/import/rows", json={"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key}))
+        r = _raise(await c.post("/items/import/rows", json=body))
         return r.json()
 
 
@@ -735,7 +755,7 @@ async def patch_company(token: str, data: dict) -> dict:
     top-level fields (name, slug) are patched directly."""
     _SETTINGS_FIELDS = {"currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "email",
                         "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account", "woocommerce_deposit_account",
-                        "line_item_identifier"}
+                        "line_item_identifier", "onboarding_pending"}
     _DASHBOARD_FIELDS = {"docs_default_preset", "default_per_page"}
     settings_patch = {k: v for k, v in data.items() if k in _SETTINGS_FIELDS}
     dashboard_patch = {}

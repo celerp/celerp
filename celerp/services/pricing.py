@@ -57,6 +57,25 @@ def price_key(name: str) -> str:
     return f"{name.lower()}_price"
 
 
+def is_price_item_key(key: str, price_lists: list[dict] = ()) -> bool:
+    """True when writing *key* on an item sets a price: any ``*_price`` or ``*_price_total``
+    key, the goods cost total, or a raw price list name (stored_price reads it directly).
+    Every item writer gates these keys on the set_inventory_prices permission."""
+    return (
+        key == "cost_total" or key.endswith(("_price", "_price_total"))
+        or any(key == pl.get("name") for pl in price_lists)
+    )
+
+
+def price_keys_in(values: dict, price_lists: list[dict] = ()) -> set[str]:
+    """The price keys a write sets with a value: its own keys and those nested in
+    ``attributes``, which the item read model lifts to the top level (so a price
+    written inside ``attributes`` is a price). Every item writer gates this set."""
+    nested = values.get("attributes")
+    items = list(values.items()) + (list(nested.items()) if isinstance(nested, dict) else [])
+    return {k for k, v in items if v is not None and is_price_item_key(k, price_lists)}
+
+
 def is_cost_list_name(name: str) -> bool:
     return name.lower() in COST_PRICE_LIST_NAMES
 
@@ -243,6 +262,11 @@ def normalized_price_lists(price_lists: list[dict]) -> list[dict]:
     return out
 
 
+def price_lists_in(settings: dict) -> list[dict]:
+    """The company's price lists from its settings, or the fallback lists."""
+    return settings.get("price_lists") or PRICE_LISTS_FALLBACK
+
+
 async def get_price_config(session: AsyncSession, company_id) -> tuple[list[dict], str, str]:
     """The company's ``(price_lists, base_price_list, currency)`` in one settings read.
 
@@ -258,7 +282,7 @@ async def get_price_config(session: AsyncSession, company_id) -> tuple[list[dict
             return PRICE_LISTS_FALLBACK, DEFAULT_PRICE_LIST_NAME, "USD"
     co = await session.get(Company, company_id)
     settings = (co.settings if co else {}) or {}
-    price_lists = settings.get("price_lists") or PRICE_LISTS_FALLBACK
+    price_lists = price_lists_in(settings)
     base_name = settings.get("base_price_list") or DEFAULT_PRICE_LIST_NAME
     currency = settings.get("currency") or "USD"
     return price_lists, base_name, currency

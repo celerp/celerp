@@ -18,6 +18,7 @@ from fasthtml.common import to_xml, Div, Span
 
 from ui import i18n
 from ui.routes import subscriptions_import as si
+from ui.routes.csv_import import stash_import_csv
 
 
 # Sentinel catalog: unmistakable values for the keys these routes render.
@@ -100,15 +101,23 @@ async def test_import_page_header_and_title_translate(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_result_panel_entity_label_translates(monkeypatch):
+async def _company(token):
+    return {"id": "company-a"}
+
+
+@pytest.mark.asyncio
+async def test_result_panel_entity_label_translates(monkeypatch, tmp_path):
     async def _fake_create(token, payload):
         return {"id": 1}
 
     monkeypatch.setattr(si, "_token", lambda request: "tok")
     monkeypatch.setattr(si.api, "create_subscription", _fake_create)
+    monkeypatch.setattr("ui.api_client.get_company", _company)
+    monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
 
     handler = _routes()[("POST", "/subscriptions/import/confirm")]
-    req = _FormReq({"csv_data": "name,frequency,start_date\nMonthly,monthly,2026-01-01\n"})
+    csv_ref = await stash_import_csv("tok", "name,frequency,start_date\nMonthly,monthly,2026-01-01\n")
+    req = _FormReq({"csv_ref": csv_ref})
     html = to_xml(await handler(req))
 
     # entity_label=t("nav.subscriptions"), title-cased inside the panel.
@@ -116,11 +125,14 @@ async def test_result_panel_entity_label_translates(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_revalidate_upsert_label_translates(monkeypatch):
+async def test_revalidate_upsert_label_translates(monkeypatch, tmp_path):
     monkeypatch.setattr(si, "_token", lambda request: "tok")
+    monkeypatch.setattr("ui.api_client.get_company", _company)
+    monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
 
     handler = _routes()[("POST", "/subscriptions/import/revalidate")]
-    req = _FormReq({"csv_data": "name,frequency,start_date\nMonthly,monthly,2026-01-01\n"})
+    csv_ref = await stash_import_csv("tok", "name,frequency,start_date\nMonthly,monthly,2026-01-01\n")
+    req = _FormReq({"csv_ref": csv_ref})
     html = to_xml(await handler(req))
 
     # upsert_label=t("subscriptions_import.upsert_label") flows into the upsert hint.

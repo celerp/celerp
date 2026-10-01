@@ -12,12 +12,15 @@ They are red against a tree that hardcodes the English literals in
 ``ui/routes/settings_import.py``.
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from fasthtml.common import to_xml, Div, Span
 
 from ui import i18n
 from ui.routes import settings_import as si
+from ui.routes.csv_import import stash_import_csv
 
 
 # Sentinel catalog: unmistakable values for the keys these routes render.
@@ -108,9 +111,11 @@ async def test_import_result_panel_labels_translate(monkeypatch):
 
     monkeypatch.setattr(si, "_token", lambda request: "tok")
     monkeypatch.setattr(si.api, "batch_import", _fake_batch)
+    monkeypatch.setattr(si.api, "get_company", AsyncMock(return_value={"id": "xx-company"}))
 
     handler = _routes()[("POST", "/settings/import/locations/confirm")]
-    req = _FormReq({"csv_data": "name,type\nMain,store\n"})
+    csv_ref = await stash_import_csv("tok", "name,type\nMain,store\n")
+    req = _FormReq({"csv_ref": csv_ref})
     html = to_xml(await handler(req))
 
     # errors=[t("settings_import.records_failed", n=failed)] with {n} interpolation.

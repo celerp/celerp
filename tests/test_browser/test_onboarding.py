@@ -6,7 +6,7 @@ Group 11: Onboarding flows.
 
 Covers:
   - /onboarding landing page renders for authenticated user
-  - Upload redirect routes redirect to correct import pages
+  - Every hub action opens a page that renders
   - Unauthenticated access redirects to /login
 """
 import pytest
@@ -31,31 +31,17 @@ def test_onboarding_landing_renders(page, ui_server):
     _assert_no_crash(page, "/onboarding")
 
 
-# ── ONB-02: Upload redirects ──────────────────────────────────────────────────
+# ── ONB-02: Every hub action opens its page ─────────────────────────────────
 
-@pytest.mark.parametrize("upload_path,expected_dest", [
-    ("/onboarding/upload/items", "/inventory/import"),
-    ("/onboarding/upload/contacts", "/crm/import/contacts"),
-    ("/onboarding/upload/invoices", "/docs/import"),
-])
-def test_onboarding_upload_redirect(page, ui_server, upload_path, expected_dest):
-    """ONB-02..04: Upload shortcut routes redirect to correct import pages."""
-    page.goto(f"{ui_server}{upload_path}", wait_until="domcontentloaded")
-    assert expected_dest in page.url, (
-        f"{upload_path} should redirect to {expected_dest}, got {page.url}"
-    )
-    _assert_no_crash(page, upload_path)
-
-
-# ── ONB-05: CIF upload redirects back to onboarding ──────────────────────────
-
-def test_onboarding_cif_redirect(page, ui_server):
-    """ONB-05: /onboarding/upload/cif redirects back to /onboarding."""
-    page.goto(f"{ui_server}/onboarding/upload/cif", wait_until="domcontentloaded")
-    assert "/onboarding" in page.url, (
-        f"/onboarding/upload/cif should redirect to /onboarding, got {page.url}"
-    )
-    _assert_no_crash(page, "/onboarding/upload/cif")
+def test_onboarding_actions_open_their_pages(page, ui_server):
+    """ONB-02: each getting-started card leads to a page that renders."""
+    page.goto(f"{ui_server}/onboarding", wait_until="domcontentloaded")
+    hrefs = page.locator(".quick-link-card").evaluate_all("els => els.map(e => e.getAttribute('href'))")
+    assert hrefs, "the hub offers no actions"
+    for href in hrefs:
+        resp = page.goto(f"{ui_server}{href}", wait_until="domcontentloaded")
+        assert resp.status < 400, f"{href} returned HTTP {resp.status}"
+        _assert_no_crash(page, href)
 
 
 # ── ONB-06: Unauthenticated redirect ─────────────────────────────────────────

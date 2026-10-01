@@ -18,15 +18,17 @@ from ui.i18n import t
 from ui.routes.settings import _check_permission
 from ui.routes.csv_import import (
     CsvImportSpec,
-    _resolve_csv_text,
+    discard_import_csv,
+    resolve_import_csv,
     _rows_to_csv,
-    _stash_csv,
+    stash_import_csv,
     apply_column_mapping,
     apply_fixes_to_rows,
     column_mapping_form,
     error_report_response,
+    import_result_errors,
     import_result_panel,
-    read_csv_upload,
+    stage_tabular_upload,
     upload_form,
     validate_cell,
     validate_column_mapping,
@@ -75,7 +77,8 @@ def setup_routes(app):
 
     @app.get("/settings/import/locations")
     async def import_locations_page(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         if (r := await _check_permission(request, "import_export_data")):
             return r
@@ -101,10 +104,11 @@ def setup_routes(app):
     @app.post("/settings/import/locations/preview")
     async def import_locations_preview(request: Request):
         """Step 1: Upload CSV -> show column mapping form."""
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        rows, err = await read_csv_upload(form)
+        rows, csv_ref, err = await stage_tabular_upload(token, form)
         if err:
             return await base_shell(
                 page_header(t("settings_import.hdr_locations")),
@@ -119,8 +123,6 @@ def setup_routes(app):
                 request=request,
             )
         cols = list(rows[0].keys()) if rows else []
-        csv_text = _rows_to_csv(rows, cols)
-        csv_ref = _stash_csv(csv_text)
         return await base_shell(
             page_header(t("settings_import.hdr_locations")),
             column_mapping_form(
@@ -139,10 +141,11 @@ def setup_routes(app):
     @app.post("/settings/import/locations/mapped")
     async def import_locations_mapped(request: Request):
         """Step 2: Apply column mapping -> validate -> show preview."""
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        csv_text = _resolve_csv_text(form)
+        csv_text = await resolve_import_csv(token, form)
         if not csv_text:
             return await base_shell(
                 page_header(t("settings_import.hdr_locations")),
@@ -158,9 +161,9 @@ def setup_routes(app):
             )
 
         original_cols = list(csv.DictReader(io.StringIO(csv_text)).fieldnames or [])
-        mapping_errors = validate_column_mapping(form, original_cols, core_fields=set(_LOCATION_SPEC.cols))
+        mapping_errors = validate_column_mapping(form, original_cols, core_fields=set(_LOCATION_SPEC.cols), required_targets=_LOCATION_SPEC.required)
         if mapping_errors:
-            csv_ref = _stash_csv(csv_text)
+            csv_ref = await stash_import_csv(token, csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             return await base_shell(
                 page_header(t("settings_import.hdr_locations")),
@@ -180,13 +183,14 @@ def setup_routes(app):
             )
 
         remapped_csv, remapped_cols = apply_column_mapping(form, csv_text)
-        csv_ref = _stash_csv(remapped_csv)
+        csv_ref = await stash_import_csv(token, remapped_csv)
         rows = list(csv.DictReader(io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else _LOCATION_SPEC.cols)
 
         return await base_shell(
             page_header(t("settings_import.hdr_locations")),
             validation_result(
+                csv_ref=csv_ref,
                 rows=rows, cols=cols, validate=_loc_validate,
                 confirm_action="/settings/import/locations/confirm",
                 error_report_action="/settings/import/locations/errors",
@@ -200,16 +204,18 @@ def setup_routes(app):
 
     @app.post("/settings/import/locations/revalidate")
     async def import_locations_revalidate(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         if not csv_data:
             return RedirectResponse("/settings/import/locations", status_code=302)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         rows = apply_fixes_to_rows(form, rows, _LOCATION_SPEC.cols)
-        _stash_csv(_rows_to_csv(rows, _LOCATION_SPEC.cols))
+        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, _LOCATION_SPEC.cols))
         return validation_result(
+            csv_ref=csv_ref,
             rows=rows, cols=_LOCATION_SPEC.cols, validate=_loc_validate,
             confirm_action="/settings/import/locations/confirm",
             error_report_action="/settings/import/locations/errors",
@@ -220,20 +226,22 @@ def setup_routes(app):
 
     @app.post("/settings/import/locations/errors")
     async def import_locations_errors(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         return error_report_response(rows, _LOCATION_SPEC.cols, _loc_validate, "locations_errors.csv")
 
     @app.post("/settings/import/locations/confirm")
     async def import_locations_confirm(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         token = _token(request)
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         if not csv_data:
             return RedirectResponse("/settings/import/locations", status_code=302)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
@@ -250,8 +258,8 @@ def setup_routes(app):
             )
         created = int(result.get("created", 0) or 0)
         skipped = int(result.get("skipped", 0) or 0)
-        failed = int(result.get("failed", 0) or 0)
-        errors = [t("settings_import.records_failed", n=failed)] if failed else []
+        errors = import_result_errors(result)
+        await discard_import_csv(token, form, result)
         return import_result_panel(
             created=created, skipped=skipped, errors=errors,
             entity_label=t("settings.tab_locations"),
@@ -264,7 +272,8 @@ def setup_routes(app):
 
     @app.get("/settings/import/taxes")
     async def import_taxes_page(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         if (r := await _check_permission(request, "import_export_data")):
             return r
@@ -289,10 +298,11 @@ def setup_routes(app):
     @app.post("/settings/import/taxes/preview")
     async def import_taxes_preview(request: Request):
         """Step 1: Upload CSV -> show column mapping form."""
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        rows, err = await read_csv_upload(form)
+        rows, csv_ref, err = await stage_tabular_upload(token, form)
         if err:
             return await base_shell(
                 page_header(t("settings_import.hdr_taxes")),
@@ -307,8 +317,6 @@ def setup_routes(app):
                 request=request,
             )
         cols = list(rows[0].keys()) if rows else []
-        csv_text = _rows_to_csv(rows, cols)
-        csv_ref = _stash_csv(csv_text)
         return await base_shell(
             page_header(t("settings_import.hdr_taxes")),
             column_mapping_form(
@@ -327,10 +335,11 @@ def setup_routes(app):
     @app.post("/settings/import/taxes/mapped")
     async def import_taxes_mapped(request: Request):
         """Step 2: Apply column mapping -> validate -> show preview."""
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        csv_text = _resolve_csv_text(form)
+        csv_text = await resolve_import_csv(token, form)
         if not csv_text:
             return await base_shell(
                 page_header(t("settings_import.hdr_taxes")),
@@ -346,9 +355,9 @@ def setup_routes(app):
             )
 
         original_cols = list(csv.DictReader(io.StringIO(csv_text)).fieldnames or [])
-        mapping_errors = validate_column_mapping(form, original_cols, core_fields=set(_TAX_SPEC.cols))
+        mapping_errors = validate_column_mapping(form, original_cols, core_fields=set(_TAX_SPEC.cols), required_targets=_TAX_SPEC.required)
         if mapping_errors:
-            csv_ref = _stash_csv(csv_text)
+            csv_ref = await stash_import_csv(token, csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             return await base_shell(
                 page_header(t("settings_import.hdr_taxes")),
@@ -368,13 +377,14 @@ def setup_routes(app):
             )
 
         remapped_csv, remapped_cols = apply_column_mapping(form, csv_text)
-        csv_ref = _stash_csv(remapped_csv)
+        csv_ref = await stash_import_csv(token, remapped_csv)
         rows = list(csv.DictReader(io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else _TAX_SPEC.cols)
 
         return await base_shell(
             page_header(t("settings_import.hdr_taxes")),
             validation_result(
+                csv_ref=csv_ref,
                 rows=rows, cols=cols, validate=_tax_validate,
                 confirm_action="/settings/import/taxes/confirm",
                 error_report_action="/settings/import/taxes/errors",
@@ -388,16 +398,18 @@ def setup_routes(app):
 
     @app.post("/settings/import/taxes/revalidate")
     async def import_taxes_revalidate(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         if not csv_data:
             return RedirectResponse("/settings/import/taxes", status_code=302)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         rows = apply_fixes_to_rows(form, rows, _TAX_SPEC.cols)
-        _stash_csv(_rows_to_csv(rows, _TAX_SPEC.cols))
+        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, _TAX_SPEC.cols))
         return validation_result(
+            csv_ref=csv_ref,
             rows=rows, cols=_TAX_SPEC.cols, validate=_tax_validate,
             confirm_action="/settings/import/taxes/confirm",
             error_report_action="/settings/import/taxes/errors",
@@ -408,19 +420,21 @@ def setup_routes(app):
 
     @app.post("/settings/import/taxes/errors")
     async def import_taxes_errors(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        rows = list(csv.DictReader(io.StringIO(_resolve_csv_text(form))))
+        rows = list(csv.DictReader(io.StringIO(await resolve_import_csv(token, form))))
         return error_report_response(rows, _TAX_SPEC.cols, _tax_validate, "taxes_errors.csv")
 
     @app.post("/settings/import/taxes/confirm")
     async def import_taxes_confirm(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         token = _token(request)
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         if not csv_data:
             return RedirectResponse("/settings/import/taxes", status_code=302)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
@@ -443,8 +457,8 @@ def setup_routes(app):
             )
         created = int(result.get("created", 0) or 0)
         skipped = int(result.get("skipped", 0) or 0)
-        failed = int(result.get("failed", 0) or 0)
-        errors = [t("settings_import.records_failed", n=failed)] if failed else []
+        errors = import_result_errors(result)
+        await discard_import_csv(token, form, result)
         return import_result_panel(
             created=created, skipped=skipped, errors=errors,
             entity_label=t("settings.tab_taxes"),
@@ -457,7 +471,8 @@ def setup_routes(app):
 
     @app.get("/settings/import/payment-terms")
     async def import_terms_page(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         if (r := await _check_permission(request, "import_export_data")):
             return r
@@ -482,10 +497,11 @@ def setup_routes(app):
     @app.post("/settings/import/payment-terms/preview")
     async def import_terms_preview(request: Request):
         """Step 1: Upload CSV -> show column mapping form."""
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        rows, err = await read_csv_upload(form)
+        rows, csv_ref, err = await stage_tabular_upload(token, form)
         if err:
             return await base_shell(
                 page_header(t("settings_import.hdr_payment_terms")),
@@ -500,8 +516,6 @@ def setup_routes(app):
                 request=request,
             )
         cols = list(rows[0].keys()) if rows else []
-        csv_text = _rows_to_csv(rows, cols)
-        csv_ref = _stash_csv(csv_text)
         return await base_shell(
             page_header(t("settings_import.hdr_payment_terms")),
             column_mapping_form(
@@ -520,10 +534,11 @@ def setup_routes(app):
     @app.post("/settings/import/payment-terms/mapped")
     async def import_terms_mapped(request: Request):
         """Step 2: Apply column mapping -> validate -> show preview."""
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        csv_text = _resolve_csv_text(form)
+        csv_text = await resolve_import_csv(token, form)
         if not csv_text:
             return await base_shell(
                 page_header(t("settings_import.hdr_payment_terms")),
@@ -539,9 +554,9 @@ def setup_routes(app):
             )
 
         original_cols = list(csv.DictReader(io.StringIO(csv_text)).fieldnames or [])
-        mapping_errors = validate_column_mapping(form, original_cols, core_fields=set(_TERMS_SPEC.cols))
+        mapping_errors = validate_column_mapping(form, original_cols, core_fields=set(_TERMS_SPEC.cols), required_targets=_TERMS_SPEC.required)
         if mapping_errors:
-            csv_ref = _stash_csv(csv_text)
+            csv_ref = await stash_import_csv(token, csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             return await base_shell(
                 page_header(t("settings_import.hdr_payment_terms")),
@@ -561,13 +576,14 @@ def setup_routes(app):
             )
 
         remapped_csv, remapped_cols = apply_column_mapping(form, csv_text)
-        csv_ref = _stash_csv(remapped_csv)
+        csv_ref = await stash_import_csv(token, remapped_csv)
         rows = list(csv.DictReader(io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else _TERMS_SPEC.cols)
 
         return await base_shell(
             page_header(t("settings_import.hdr_payment_terms")),
             validation_result(
+                csv_ref=csv_ref,
                 rows=rows, cols=cols, validate=_terms_validate,
                 confirm_action="/settings/import/payment-terms/confirm",
                 error_report_action="/settings/import/payment-terms/errors",
@@ -581,16 +597,18 @@ def setup_routes(app):
 
     @app.post("/settings/import/payment-terms/revalidate")
     async def import_terms_revalidate(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         if not csv_data:
             return RedirectResponse("/settings/import/payment-terms", status_code=302)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         rows = apply_fixes_to_rows(form, rows, _TERMS_SPEC.cols)
-        _stash_csv(_rows_to_csv(rows, _TERMS_SPEC.cols))
+        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, _TERMS_SPEC.cols))
         return validation_result(
+            csv_ref=csv_ref,
             rows=rows, cols=_TERMS_SPEC.cols, validate=_terms_validate,
             confirm_action="/settings/import/payment-terms/confirm",
             error_report_action="/settings/import/payment-terms/errors",
@@ -601,19 +619,21 @@ def setup_routes(app):
 
     @app.post("/settings/import/payment-terms/errors")
     async def import_terms_errors(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        rows = list(csv.DictReader(io.StringIO(_resolve_csv_text(form))))
+        rows = list(csv.DictReader(io.StringIO(await resolve_import_csv(token, form))))
         return error_report_response(rows, _TERMS_SPEC.cols, _terms_validate, "payment_terms_errors.csv")
 
     @app.post("/settings/import/payment-terms/confirm")
     async def import_terms_confirm(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         token = _token(request)
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         if not csv_data:
             return RedirectResponse("/settings/import/payment-terms", status_code=302)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
@@ -634,8 +654,8 @@ def setup_routes(app):
             )
         created = int(result.get("created", 0) or 0)
         skipped = int(result.get("skipped", 0) or 0)
-        failed = int(result.get("failed", 0) or 0)
-        errors = [t("settings_import.records_failed", n=failed)] if failed else []
+        errors = import_result_errors(result)
+        await discard_import_csv(token, form, result)
         return import_result_panel(
             created=created, skipped=skipped, errors=errors,
             entity_label=t("settings.tab_terms"),

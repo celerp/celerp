@@ -2147,14 +2147,16 @@ def setup_routes(app):
     # ── CSV import (kept at original URL for backward compat) ─────────────
 
     from ui.routes.csv_import import (
-        CsvImportSpec, _resolve_csv_text, _rows_to_csv, _stash_csv,
+        CsvImportSpec, discard_import_csv, resolve_import_csv, _rows_to_csv, stash_import_csv,
         upload_form as _csv_upload_form, validate_cell as _csv_validate_cell,
-        read_csv_upload as _csv_read_upload, validation_result as _csv_validation_result,
+        stage_tabular_upload, validation_result as _csv_validation_result,
         error_report_response as _csv_error_report, apply_fixes_to_rows as _csv_apply_fixes,
         column_mapping_form as _csv_column_mapping_form,
         validate_column_mapping as _csv_validate_column_mapping,
         apply_column_mapping as _csv_apply_column_mapping,
         import_result_panel as _csv_import_result_panel,
+        entered_from_onboarding as _csv_entered_from_onboarding,
+        onboarding_entry_cookie as _csv_onboarding_entry_cookie,
     )
 
     _CONTACT_IMPORT_SPEC = CsvImportSpec(
@@ -2179,7 +2181,7 @@ def setup_routes(app):
             title=page_title("contacts.import_contacts"),
             nav_active="customers",
             request=request,
-        )
+        ), _csv_onboarding_entry_cookie(request)
 
     @app.get("/crm/import/contacts/template")
     async def crm_import_contacts_template(request: Request):
@@ -2205,7 +2207,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        rows, err = await _csv_read_upload(form)
+        rows, csv_ref, err = await stage_tabular_upload(token, form)
         if err:
             return await base_shell(
                 page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
@@ -2222,8 +2224,6 @@ def setup_routes(app):
             )
         import csv as _csv_mod, io as _io
         cols = list(rows[0].keys()) if rows else []
-        csv_text = _rows_to_csv(rows, cols)
-        csv_ref = _stash_csv(csv_text)
         return await base_shell(
             page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
             _csv_column_mapping_form(
@@ -2248,7 +2248,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         import csv as _csv_mod, io as _io
         form = await request.form()
-        csv_text = _resolve_csv_text(form)
+        csv_text = await resolve_import_csv(token, form)
         if not csv_text:
             return await base_shell(
                 page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
@@ -2265,9 +2265,9 @@ def setup_routes(app):
             )
 
         original_cols = list(_csv_mod.DictReader(_io.StringIO(csv_text)).fieldnames or [])
-        mapping_errors = _csv_validate_column_mapping(form, original_cols, core_fields=set(_CONTACT_IMPORT_SPEC.cols))
+        mapping_errors = _csv_validate_column_mapping(form, original_cols, core_fields=set(_CONTACT_IMPORT_SPEC.cols), required_targets=_CONTACT_IMPORT_SPEC.required)
         if mapping_errors:
-            csv_ref = _stash_csv(csv_text)
+            csv_ref = await stash_import_csv(token, csv_text)
             rows = list(_csv_mod.DictReader(_io.StringIO(csv_text)))
             return await base_shell(
                 page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
@@ -2288,13 +2288,14 @@ def setup_routes(app):
             )
 
         remapped_csv, remapped_cols = _csv_apply_column_mapping(form, csv_text)
-        csv_ref = _stash_csv(remapped_csv)
+        csv_ref = await stash_import_csv(token, remapped_csv)
         rows = list(_csv_mod.DictReader(_io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else _CONTACT_IMPORT_SPEC.cols)
 
         return await base_shell(
             page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
             _csv_validation_result(
+                csv_ref=csv_ref,
                 rows=rows,
                 cols=cols,
                 validate=lambda c, v, r: _csv_validate_cell(_CONTACT_IMPORT_SPEC, c, v),
@@ -2311,11 +2312,12 @@ def setup_routes(app):
 
     @app.post("/crm/import/contacts/revalidate")
     async def crm_import_contacts_revalidate(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         import csv as _csv_mod, io as _io
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         if not csv_data:
             return _csv_upload_form(
                 cols=_CONTACT_IMPORT_SPEC.cols, template_href="/crm/import/contacts/template",
@@ -2326,8 +2328,9 @@ def setup_routes(app):
         rows = list(_csv_mod.DictReader(_io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _CONTACT_IMPORT_SPEC.cols
         rows = _csv_apply_fixes(form, rows, cols)
-        _stash_csv(_rows_to_csv(rows, cols))
+        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols))
         return _csv_validation_result(
+            csv_ref=csv_ref,
             rows=rows, cols=cols,
             validate=lambda c, v, r: _csv_validate_cell(_CONTACT_IMPORT_SPEC, c, v),
             confirm_action="/crm/import/contacts/confirm",
@@ -2339,11 +2342,12 @@ def setup_routes(app):
 
     @app.post("/crm/import/contacts/errors")
     async def crm_import_contacts_errors(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         import csv as _csv_mod, io as _io
         form = await request.form()
-        rows = list(_csv_mod.DictReader(_io.StringIO(_resolve_csv_text(form))))
+        rows = list(_csv_mod.DictReader(_io.StringIO(await resolve_import_csv(token, form))))
         cols = list(rows[0].keys()) if rows else _CONTACT_IMPORT_SPEC.cols
         return _csv_error_report(rows, cols, lambda c, v: _csv_validate_cell(_CONTACT_IMPORT_SPEC, c, v), "contacts_errors.csv")
 
@@ -2356,7 +2360,7 @@ def setup_routes(app):
         import csv, io, uuid
 
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
 
         records: list[dict] = []
@@ -2407,6 +2411,7 @@ def setup_routes(app):
         skipped = int(result.get("skipped", 0) or 0)
         errors = list(result.get("errors", []) or [])
 
+        await discard_import_csv(token, form, result)
         return _csv_import_result_panel(
             created=created,
             skipped=skipped,
@@ -2415,6 +2420,7 @@ def setup_routes(app):
             back_href="/contacts/customers",
             import_more_href="/crm/import/contacts",
             has_mapping=True,
+            from_onboarding=_csv_entered_from_onboarding(request),
         )
 
     # ── Backward compat: /crm/{contact_id:path} → /contacts/{contact_id} ──

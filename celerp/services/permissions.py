@@ -16,11 +16,14 @@ import uuid
 from typing import NamedTuple
 
 from fastapi import Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
+from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
-from celerp.services.auth import ROLE_LEVELS, get_current_company_id, get_current_role
+from celerp.services.auth import ROLE_LEVELS, get_current_company_id, get_current_role, normalize_role
+from celerp.services.company_lock import locked_company
 
 
 class Role(NamedTuple):
@@ -137,6 +140,42 @@ def assert_role_permission(settings: dict | None, role: str, key: str) -> None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Requires the {key} permission",
+        )
+
+
+async def locked_authority(session: AsyncSession, company_id, user_id, keys: tuple[str, ...]) -> tuple[str, dict]:
+    """Take the company lock, read the caller's role and the company settings
+    under it, and 403 unless that role still holds every key.
+
+    A request is authorized before its handler runs, but a role or grant change
+    commits under the same lock, so a mutation that waits for the lock may wake
+    to authority it no longer has. Calling this first, instead of lock_company,
+    judges the write by what is true once nothing else can change it. The
+    membership row is held too, so the role cannot change until the caller
+    commits. A membership that is gone reads as no role.
+    """
+    company = await locked_company(session, company_id)
+    link = (await session.execute(
+        select(UserCompany).where(
+            UserCompany.user_id == user_id, UserCompany.company_id == company_id,
+            UserCompany.is_active == True,  # noqa: E712
+        ).with_for_update(read=True).execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    role = normalize_role(link.role) if link is not None else ""
+    settings = dict((company.settings if company else None) or {})
+    for key in keys:
+        assert_role_permission(settings, role, key)
+    return role, settings
+
+
+def reject_price_change(price_keys: set[str], role: str, settings: dict | None) -> None:
+    """403 for the whole request when it sets a price without set_inventory_prices.
+    The one price gate every item writer applies (inventory and document routes
+    alike), so no surface can set a price the Pricing tab would refuse."""
+    if price_keys and not role_has_permission(settings, role, "set_inventory_prices"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Setting inventory prices requires the 'set_inventory_prices' permission",
         )
 
 

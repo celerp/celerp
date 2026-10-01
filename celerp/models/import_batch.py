@@ -16,10 +16,19 @@ from celerp.models.base import Base
 
 
 class ImportBatch(Base):
-    """Records each successful CSV import for history and undo support."""
+    """One item import that created items, for Import History and Undo.
+
+    A semantic import is written in bounded chunks; ``operation_key`` names the
+    logical import so every chunk adds to this one row. It is unique per company
+    and cleared on Undo, so the same source can later be imported as a new row.
+    A raw event batch has no operation key and records one row per call.
+    """
 
     __tablename__ = "import_batches"
-    __table_args__ = (Index("idx_import_batch_company", "company_id"),)
+    __table_args__ = (
+        Index("idx_import_batch_company", "company_id"),
+        Index("uq_import_batch_company_operation", "company_id", "operation_key", unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), ForeignKey("companies.id"), nullable=False)
@@ -28,6 +37,7 @@ class ImportBatch(Base):
     row_count: Mapped[int] = mapped_column(Integer, nullable=False)
     entity_ids: Mapped[list] = mapped_column(sa.JSON, nullable=False)
     idempotency_keys: Mapped[list] = mapped_column(sa.JSON, nullable=False)
+    operation_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     imported_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

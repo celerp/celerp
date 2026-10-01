@@ -12,13 +12,14 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.events.schemas import reject_comma_sku
+from celerp.importers.tabular import MAX_CELLS, MAX_ROWS
 from celerp.inventory_codes import (
     PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
     normalize_rfid_epc,
@@ -28,15 +29,22 @@ from celerp.inventory_codes import (
 )
 from celerp.models.projections import Projection
 from .services import (
+    VALID_INVENTORY_TYPES,
     BatchImportRequest,
     BatchImportResult,
     adjust_item_quantity,
+    ImportRejected,
     allocate_internal_codes,
-    build_import_records,
+    apply_source_semantics,
     build_item_import_spec,
     commit_import_batch,
     import_items,
     lot_fields,
+    import_preview_hash,
+    is_item_field_key,
+    item_price_mutex_groups,
+    preview_import_rows,
+    source_header_semantics,
 )
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
@@ -48,6 +56,8 @@ from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEY
 from celerp.services.permissions import (
     assert_role_permission,
     get_current_company_settings,
+    locked_authority,
+    reject_price_change,
     require_permission,
     role_has_permission,
 )
@@ -57,15 +67,17 @@ from celerp.services.pricing import (
     get_price_config,
     inject_derived_prices,
     is_cost_list_name,
+    is_price_item_key,
     price_key,
+    price_keys_in,
     stored_price,
 )
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
-from celerp.services.vertical_presets import load_category
+from celerp.services.vertical_presets import category_item_defaults
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_basis, round_money, to_decimal, to_stored_float
 from celerp.schemas.numbers import FiniteFloat
-from celerp_inventory.projections import _is_core_key, _is_image_mime, is_item_available, thumbnail_file_id
+from celerp_inventory.projections import _is_image_mime, is_core_item_key, is_item_available, thumbnail_file_id
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -73,8 +85,6 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
-
-VALID_INVENTORY_TYPES: frozenset[str] = frozenset({"stocked", "component", "non_stocked", "service", "freight"})
 
 # Company units config lives in celerp.services.units (shared with labels + CSV export).
 _get_company_units = get_company_units
@@ -260,7 +270,7 @@ class ItemCreate(BaseModel):
 
     sku: str | None = None
     name: str
-    sell_by: str                           # required - must be a valid unit name from company settings
+    sell_by: str | None = None             # a company unit; omitted only when the category supplies one
     quantity: FiniteFloat = 0
     category: str | None = None
     location_id: uuid.UUID | None = None
@@ -283,7 +293,9 @@ class ItemCreate(BaseModel):
     allow_splitting: bool = True
     attributes: dict = Field(default_factory=dict)
     idempotency_key: str | None = None
-    inventory_type: str = "stocked"  # stocked | component | non_stocked | service | freight
+    # stocked | component | non_stocked | service | freight; omitted means the
+    # category's default, else stocked
+    inventory_type: str | None = None
     # Landed-cost charge lines (inventory_type=freight): refines reporting/GL routing.
     landed_cost_kind: str | None = None      # freight | insurance | duty | import_vat
     recoverable: bool | None = None          # import_vat only: recoverable VAT does not capitalise
@@ -335,7 +347,7 @@ class TransformBody(BaseModel):
     child_weight: FiniteFloat | None = None
     child_weight_unit: str | None = None
     child_pieces: int | None = None
-    child_cost_total: FiniteFloat | None = None  # final cost (permitted override); None or a restricted caller preserves parent cost
+    child_cost_total: FiniteFloat | None = None  # final cost override (needs set_inventory_prices); None preserves parent cost
     idempotency_key: str | None = None
 
 
@@ -560,11 +572,6 @@ _FIELD_ALIASES = {
 }
 
 
-def _is_cost_or_price_key(key: str) -> bool:
-    """True for a cost/price column, which must never become scope-searchable."""
-    return key in COST_ITEM_KEYS or key.endswith("_price") or key.endswith("_price_total")
-
-
 def searchable_field_sets(schema: list[dict]) -> tuple[frozenset[str], frozenset[str]]:
     """Derive (numeric, text) scoped-search field sets from an effective field schema.
 
@@ -580,15 +587,15 @@ def searchable_field_sets(schema: list[dict]) -> tuple[frozenset[str], frozenset
     text = set(_SEARCH_FIELDS)
     for f in schema:
         key = f.get("key")
-        if not key or _is_cost_or_price_key(key):
+        if not key or is_price_item_key(key):
             continue
         if f.get("type") in NUMERIC_SCHEMA_TYPES:
             numeric.add(key)
         else:
             text.add(key)
-    numeric -= {k for k in numeric if _is_cost_or_price_key(k)}
+    numeric -= {k for k in numeric if is_price_item_key(k)}
     text -= numeric
-    text -= {k for k in text if _is_cost_or_price_key(k)}
+    text -= {k for k in text if is_price_item_key(k)}
     return frozenset(numeric), frozenset(text)
 
 
@@ -622,12 +629,12 @@ def _text_match(record: dict, term: str) -> str | None:
             return field
     # Named fields aside, the only other searchable values are DYNAMIC category
     # attributes, which flatten to the top level. Skipping every core key
-    # (projections._is_core_key marks the closed core set) is what keeps internal
+    # (projections.is_core_item_key marks the closed core set) is what keeps internal
     # bookkeeping (idempotency_key, id/lineage refs) out of search (#306) while still
     # matching user-defined attribute values; numeric columns match only via the
     # explicit numeric path, never by substring.
     for k, v in record.items():
-        if _is_core_key(k) or k in _NUMERIC_FIELDS:
+        if is_core_item_key(k) or k in _NUMERIC_FIELDS:
             continue
         if isinstance(v, str) and term in v.lower():
             return k
@@ -676,7 +683,7 @@ def _term_match_reason(
             raw in _FIELD_ALIASES
             or field in numeric_fields
             or field in text_fields
-            or (field in record and not _is_core_key(field))
+            or (field in record and not is_core_item_key(field))
         )
         if resolved:
             # Textual identifier fields (sku, barcode, hs_code, batch_no, lot...) are
@@ -1029,7 +1036,7 @@ async def query_items(
     facet_sets: dict[str, set] = {}
     for r in result:
         for akey, aval in r.items():
-            if _is_core_key(akey) or akey in _NUMERIC_MEASURE_KEYS or aval in (None, ""):
+            if is_core_item_key(akey) or akey in _NUMERIC_MEASURE_KEYS or aval in (None, ""):
                 continue
             s = facet_sets.setdefault(akey, set())
             if len(s) < _FACET_MAX:
@@ -1506,16 +1513,109 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
 
 # ── Import routes ─────────────────────────────────────────────────────────────
 # Declared before GET /{entity_id} so "import" is never captured as an entity id.
-# One committer (services.commit_import_batch), three transports: the browser
-# importer (/import/rows), the agent commit (/import/commit), and the raw event
-# batch (/import/batch). All converge on services.import_items / commit_import_batch.
+# One writer (services.write_import_batch), three transports: the browser
+# importer (/import/rows) and the agent commit (/import/commit) through
+# services.import_items, and the raw event batch (/import/batch) through
+# services.commit_import_batch.
+
+
+def _bounded_rows(rows: list[dict]) -> list[dict]:
+    """Hold mapped rows to the same cell budget as a parsed upload."""
+    if sum(len(r) for r in rows) > MAX_CELLS:
+        raise ValueError(f"Too many cells: the limit is {MAX_CELLS}")
+    return rows
+
+
+def _rows_preview_hash(rows: list[dict], upsert: bool, idempotency_key: str | None, semantic_fingerprint: str) -> str:
+    """Binds the rows, the update-existing choice, the operation key, and what
+    the rows meant when previewed."""
+    return import_preview_hash({
+        "rows": rows, "upsert": upsert, "idempotency_key": idempotency_key,
+        "semantic_fingerprint": semantic_fingerprint,
+    })
+
+
+def _validation_failed(errors: list[dict]) -> HTTPException:
+    return HTTPException(status_code=422, detail={"code": "validation_failed", "errors": errors})
+
+
+def _preview_stale() -> HTTPException:
+    return HTTPException(status_code=409, detail={"code": "preview_stale"})
+
+
+async def _import_authority(session, company_id, user_id) -> tuple[str, dict]:
+    """The importer's role and the company settings, read and held under the
+    company lock before an import commit plans anything; a permission lost since
+    the request was authorized is refused here."""
+    return await locked_authority(session, company_id, user_id, ("import_export_data", "edit_inventory"))
+
+
+async def _write_import(session, company_id, user_id, role: str, settings: dict, rows: list[dict], **kwargs) -> BatchImportResult:
+    """Run import_items, answering its row rejections as 422 validation_failed."""
+    try:
+        return await import_items(session, company_id, user_id, role, settings, rows, **kwargs)
+    except ImportRejected as exc:
+        raise _validation_failed(exc.errors)
 
 
 class InventoryImportRows(BaseModel):
-    rows: list[dict] = Field(..., max_length=500)
+    # The writer commits in batches of 500 internally; the envelope carries the
+    # whole import so it is previewed and committed as one operation.
+    rows: list[dict] = Field(..., max_length=MAX_ROWS)
     upsert: bool = False
     filename: str | None = None
     idempotency_key: str | None = None
+    preview_hash: str | None = Field(None, min_length=64, max_length=64)
+
+    @field_validator("rows")
+    @classmethod
+    def _check_rows(cls, rows: list[dict]) -> list[dict]:
+        return _bounded_rows(rows)
+
+
+class InventoryImportRowsPreviewRequest(BaseModel):
+    rows: list[dict] = Field(..., max_length=MAX_ROWS)
+    upsert: bool = False
+    idempotency_key: str | None = None
+
+    @field_validator("rows")
+    @classmethod
+    def _check_rows(cls, rows: list[dict]) -> list[dict]:
+        return _bounded_rows(rows)
+
+
+class InventoryImportRowsPreview(BaseModel):
+    errors: list[dict]
+    locations_to_create: list[str]
+    preview_hash: str
+
+
+@router.post(
+    "/import/rows/preview", response_model=InventoryImportRowsPreview,
+    dependencies=[require_permission("import_export_data")],
+)
+async def import_rows_preview(
+    body: InventoryImportRowsPreviewRequest,
+    company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    session: AsyncSession = Depends(get_session),
+) -> InventoryImportRowsPreview:
+    """Semantic preview of mapped browser rows; nothing is written.
+
+    The returned hash binds the rows, the update-existing choice, the operation
+    key, and what the rows mean now, and /import/rows refuses a commit whose
+    hash no longer matches.
+    """
+    plan = await preview_import_rows(
+        session, company_id, role, settings, body.rows,
+        upsert=body.upsert, idempotency_key=body.idempotency_key,
+    )
+    return InventoryImportRowsPreview(
+        errors=plan.errors,
+        locations_to_create=plan.locations_to_create,
+        preview_hash=_rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan.semantic_fingerprint),
+    )
 
 
 @router.post(
@@ -1536,10 +1636,29 @@ async def import_rows(
     resolution and creation, unit and quantity derivation, monetary conversion,
     idempotency, and the category-schema follow-up. Unmarked: this is the browser
     transport, not an agent capability (the agent commits through /import/commit).
+
+    Every commit runs the semantic preflight once, and any row error is refused
+    with 422 before anything is written. With ``preview_hash`` the commit is also
+    bound to /import/rows/preview: the preview is recomputed, a changed hash,
+    including rows that now mean something else, is refused with 409, and the
+    rows are written from that recomputed plan. The company lock is taken before
+    that preview and held through the write.
     """
-    return await import_items(
+    role, settings = await _import_authority(session, company_id, user.id)
+    plan = None
+    if body.preview_hash is not None:
+        plan = await preview_import_rows(
+            session, company_id, role, settings, body.rows,
+            upsert=body.upsert, idempotency_key=body.idempotency_key,
+        )
+        if _rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan.semantic_fingerprint) != body.preview_hash:
+            raise _preview_stale()
+        if plan.errors:
+            raise _validation_failed(plan.errors)
+    return await _write_import(
         session, company_id, user.id, role, settings, body.rows,
         upsert=body.upsert, filename=body.filename, idempotency_key=body.idempotency_key,
+        plan=plan,
     )
 
 
@@ -1575,27 +1694,30 @@ class InventoryImportPreviewRequest(BaseModel):
 async def _build_item_preview(
     session, company_id, user_id, role: str, settings: dict, *,
     file_id: str, sheet: str | None, upsert: bool, mapping: dict[str, str] | None = None,
+    idempotency_key: str | None = None,
 ) -> dict:
-    """Load an uploaded file, map and validate it, and dry-run the importer.
+    """Load an uploaded file, map and validate it, and run the import preflight.
 
     Returns the preview payload plus the mapped rows, the flat error list, the
-    original filename, and the preview hash. Recomputed identically by preview
-    and commit so the hash pins the exact bytes, sheet, mapping, and row count.
+    original filename, the preview hash, and the semantic fingerprint.
+    Recomputed identically by preview and commit so the hash pins the exact
+    bytes, sheet, mapping, row count, and what the rows would write.
+    ``idempotency_key`` is the commit's operation key (None when previewing).
 
     Raises 404 when the file id is malformed, missing, or owned by another
     company; 422 when the bytes cannot be read as a table.
     """
     import hashlib
-    import json
 
     from celerp.ai.files import load_file
     from celerp.importers.tabular import (
         TabularError,
+        normalize_and_validate_mapping,
         read_table,
         remap_rows,
         suggest_mapping,
-        validate_cell,
     )
+    from celerp.services.field_schema import all_category_schemas, union_category_attr_keys
 
     if not _AI_FILE_ID_RE.match(file_id):
         raise HTTPException(status_code=404, detail="File not found")
@@ -1615,51 +1737,57 @@ async def _build_item_preview(
 
     price_lists, _default_list, _currency = await get_price_config(session, company_id)
     spec = build_item_import_spec(price_lists)
-    mapping = dict(mapping) if mapping is not None else suggest_mapping(cols, spec.cols)
-    # Ignore mapping keys for columns the file does not contain; reject duplicate
-    # target claims below through the existing required-field validation.
-    mapping = {col: mapping.get(col, "__attr__") for col in cols}
-    new_cols, mapped_rows = remap_rows(cols, rows, mapping)
-
-    errors: list[dict] = []
-    for i, mapped in enumerate(mapped_rows):
-        for col in spec.cols:
-            if not validate_cell(spec, col, str(mapped.get(col, "")), mapped):
-                errors.append({"row": i + 1, "field": col, "message": f"Invalid or missing {col}"})
-    build = await build_import_records(
-        session, company_id, mapped_rows, upsert=upsert, dry_run=True,
-        create_missing_locations=role_has_permission(settings, role, "manage_company_settings"),
+    # The same suggestion the browser mapper renders; the caller's mapping
+    # overrides it column by column.
+    category_attrs = union_category_attr_keys(all_category_schemas(settings))
+    resolved = normalize_and_validate_mapping(
+        cols, suggest_mapping(cols, spec.cols, category_attrs), mapping,
+        allowed_targets=spec.cols,
+        required_targets=spec.required,
+        allowed_category_attrs=category_attrs,
+        is_reserved_field=is_item_field_key,
+        mutex_groups=item_price_mutex_groups(price_lists),
     )
-    errors.extend(build.errors)
+    mapping = resolved.mapping
+    semantics = source_header_semantics(mapping, settings.get("currency") or "USD")
+    # Rows are only previewed under a mapping that can be applied.
+    mapped_rows: list[dict] = []
+    plan = None
+    errors = resolved.errors + semantics.errors
+    if resolved.applicable:
+        _new_cols, mapped_rows = remap_rows(cols, rows, mapping)
+        mapped_rows = apply_source_semantics(mapped_rows, semantics)
+        plan = await preview_import_rows(
+            session, company_id, role, settings, mapped_rows,
+            upsert=upsert, idempotency_key=idempotency_key,
+        )
+        errors += plan.errors
     errors = errors[:50]
 
-    unmapped_required = sorted(r for r in spec.required if r not in set(new_cols))
+    unmapped_required = sorted(r for r in spec.required if r not in set(mapping.values()))
     row_count = len(rows)
-    canonical = json.dumps(
-        {
-            "file_id": file_id,
-            "sheet": sheet,
-            "upsert": upsert,
-            "mapping": mapping,
-            "row_count": row_count,
-            "file_sha256": hashlib.sha256(data).hexdigest(),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    preview_hash = hashlib.sha256(canonical.encode()).hexdigest()
+    preview_hash = import_preview_hash({
+        "file_id": file_id,
+        "sheet": sheet,
+        "upsert": upsert,
+        "mapping": mapping,
+        "row_count": row_count,
+        "file_sha256": hashlib.sha256(data).hexdigest(),
+        "semantic_fingerprint": plan.semantic_fingerprint if plan else None,
+    })
 
     return {
         "payload": InventoryImportPreview(
             file_id=file_id, sheet=sheet, upsert=upsert, columns=cols,
             mapping=mapping, unmapped_required=unmapped_required, row_count=row_count,
             sample=mapped_rows[:5], errors=errors,
-            locations_to_create=build.locations_to_create, preview_hash=preview_hash,
+            locations_to_create=plan.locations_to_create if plan else [], preview_hash=preview_hash,
         ),
         "errors": errors,
         "mapped_rows": mapped_rows,
         "filename": filename,
         "preview_hash": preview_hash,
+        "plan": plan,
     }
 
 
@@ -1729,23 +1857,28 @@ async def import_commit(
 ) -> BatchImportResult:
     """Commit an item import previewed via /import/preview.
 
-    Recomputes the preview from the stored bytes; a hash mismatch means the file
-    or its mapping changed since the preview, refused with 409 rather than
-    imported under stale assumptions. Any row validation error is refused with
-    422 and the error list; otherwise the rows go through the shared committer.
+    Recomputes the preview from the stored bytes; a hash mismatch means the file,
+    its mapping, or what its rows would write changed since the preview, refused
+    with 409 rather than imported under stale assumptions. Any row validation
+    error is refused with 422 and the error list; otherwise the shared committer
+    writes the rows from that recomputed plan. The company lock is taken before
+    that preview and held through the write.
     """
+    role, settings = await _import_authority(session, company_id, user.id)
+    operation_key = f"preview:{body.preview_hash}"
     result = await _build_item_preview(
         session, company_id, user.id, role, settings, file_id=body.file_id,
         sheet=body.sheet, upsert=body.upsert, mapping=body.mapping,
+        idempotency_key=operation_key,
     )
     if result["preview_hash"] != body.preview_hash:
-        raise HTTPException(status_code=409, detail={"code": "preview_stale"})
+        raise _preview_stale()
     if result["errors"]:
-        raise HTTPException(status_code=422, detail={"code": "validation_failed", "errors": result["errors"]})
-    return await import_items(
+        raise _validation_failed(result["errors"])
+    return await _write_import(
         session, company_id, user.id, role, settings, result["mapped_rows"],
-        upsert=body.upsert, filename=result["filename"],
-        idempotency_key=f"preview:{body.preview_hash}",
+        upsert=body.upsert, filename=result["filename"], idempotency_key=operation_key,
+        plan=result["plan"],
     )
 
 
@@ -2063,16 +2196,29 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
                 raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
             return {"event_id": replay.id, "id": replay.entity_id}
 
-    # Guard: setting cost fields on creation requires set_inventory_prices, except that a
+    # Guard: setting a price on creation requires set_inventory_prices, except that a
     # draft's creator authors cost with edit_inventory alone (the gate re-arms at commit) -
     # the same draft_cost_carveout the pricing surfaces use, so the three stay in lockstep.
-    if payload.cost_price is not None or payload.cost_total is not None:
-        _create_draft = str((payload.model_extra or {}).get("status") or "draft").lower() == "draft"
-        if not draft_cost_carveout(_create_draft, role, settings):
-            assert_role_permission(settings, role, "set_inventory_prices")
+    _create_draft = str((payload.model_extra or {}).get("status") or "draft").lower() == "draft"
+    _price_lists = (await get_price_config(session, company_id))[0]
+    _gated = price_keys_in(payload.model_dump(exclude_none=True), _price_lists)
+    if draft_cost_carveout(_create_draft, role, settings):
+        _gated -= COST_ITEM_KEYS
+    reject_price_change(_gated, role, settings)
 
+    # The category's defaults fill what the payload leaves out; an explicit value wins.
+    category_defaults = category_item_defaults(payload.category)
+    payload = payload.model_copy(update={
+        "sell_by": payload.sell_by or category_defaults.get("sell_by"),
+        "inventory_type": (
+            payload.inventory_type if payload.inventory_type is not None
+            else category_defaults.get("inventory_type", "stocked")
+        ),
+    })
     if payload.inventory_type not in VALID_INVENTORY_TYPES:
         raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
+    if not payload.sell_by:
+        raise HTTPException(status_code=422, detail="sell_by is required unless the category has a default unit")
 
     if payload.landed_cost_kind is not None and payload.landed_cost_kind not in LANDED_COST_KINDS:
         raise HTTPException(status_code=422, detail=f"landed_cost_kind must be one of {sorted(LANDED_COST_KINDS)}")
@@ -2152,15 +2298,9 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         if _amt_val is not None and float(_amt_val) < 0:
             raise HTTPException(status_code=422, detail=f"{_amt} cannot be negative")
 
-    # Apply category defaults for purchase_unit and weight_unit if not explicitly provided
-    _cat = load_category(payload.category) if payload.category else None
-    if _cat:
-        if payload.purchase_unit is None and _cat.get("default_purchase_unit"):
-            data["purchase_unit"] = _cat["default_purchase_unit"]
-        if payload.purchase_conversion_factor is None:
-            data["purchase_conversion_factor"] = 1
-        if data.get("weight_unit") is None and _cat.get("default_weight_unit"):
-            data["weight_unit"] = _cat["default_weight_unit"]
+    for field in ("purchase_unit", "weight_unit"):
+        if data.get(field) is None and field in category_defaults:
+            data[field] = category_defaults[field]
 
     # Ensure status is set (not part of ItemCreate model but required for projections).
     # Manual creation starts as draft: the item stays authorable (amounts and costs
@@ -2221,6 +2361,17 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     return {"event_id": entry.id, "id": entry.entity_id}
 
 
+def _changed_attribute_keys(state: dict | None, fields_changed: dict) -> set[str]:
+    """Keys a patch changes inside ``attributes``: the read model lifts them to the
+    top level, so a price there is gated like a top-level price."""
+    change = fields_changed.get("attributes")
+    new = change.get("new") if isinstance(change, dict) else None
+    if not isinstance(new, dict):
+        return set()
+    old = (state or {}).get("attributes") or {}
+    return {k for k in set(new) | set(old) if new.get(k) != old.get(k)}
+
+
 def draft_cost_carveout(is_draft: bool, role: str, settings: dict) -> bool:
     """While an item is draft, its creator authors cost with edit_inventory alone;
     the set_inventory_prices gate re-arms at commit. Shared by the three cost surfaces
@@ -2261,8 +2412,12 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # Cost fields are gated by set_inventory_prices, not by the schema role floor:
     # a granted operator edits cost, an ungranted manager still cannot.
     restricted -= COST_ITEM_KEYS
-    if not draft_cost_carveout(_is_draft, role, settings) and not role_has_permission(settings, role, "set_inventory_prices"):
-        restricted |= COST_ITEM_KEYS
+    changed_keys = set(payload.fields_changed.keys())
+    _price_lists, _base_name, _ = await get_price_config(session, company_id)
+    _price_changes = {k for k in changed_keys | _changed_attribute_keys(_proj.state, payload.fields_changed) if is_price_item_key(k, _price_lists)}
+    if draft_cost_carveout(_is_draft, role, settings):
+        _price_changes -= COST_ITEM_KEYS
+    reject_price_change(_price_changes, role, settings)
     # Amount fields (quantity/weight/pieces/gross_weight) and the sell unit are
     # gated by edit_inventory_amounts, mirroring the cost gate above. sell_by is
     # included because changing it rewrites quantity, so it carries the same
@@ -2270,7 +2425,6 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     restricted -= AMOUNT_EDIT_GATED_KEYS
     if not _is_draft and not role_has_permission(settings, role, "edit_inventory_amounts"):
         restricted |= AMOUNT_EDIT_GATED_KEYS
-    changed_keys = set(payload.fields_changed.keys())
     if "status" in changed_keys:
         _new_status = (payload.fields_changed["status"] or {}).get("new")
         await reject_draft_status_change_via_generic_path(session, company_id, entity_id, _new_status)
@@ -2282,7 +2436,6 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # Derived price lists are computed from the base price list; their keys are never stored.
     # Both the conventional key ("trade_price") and the raw list name ("Trade") are blocked:
     # resolve_price honors a direct-name key first, so storing one would shadow the formula.
-    _price_lists, _base_name, _ = await get_price_config(session, company_id)
     _derived = derived_price_keys(_price_lists)
     derived_blocked = {k for k in changed_keys if k in _derived or price_key(k) in _derived}
     if derived_blocked:
@@ -2305,7 +2458,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # make every derived read treat that item as unpriced, and NaN/Infinity break the
     # Decimal arithmetic downstream.
     for _f, _fc in payload.fields_changed.items():
-        if (_f.endswith("_price") or _f == "cost_total") and isinstance(_fc, dict):
+        if is_price_item_key(_f, _price_lists) and isinstance(_fc, dict):
             _new = _fc.get("new")
             if _new is not None and coerce_price(_new) is None:
                 raise HTTPException(status_code=422, detail=f"'{_f}' must be a number")
@@ -2785,8 +2938,10 @@ async def split_preview(
 
 @router.post("/{entity_id}/split")
 async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    _price_lists = (await get_price_config(session, company_id))[0]
     for _child in payload.children:
         _validate_sku(_child.sku)
+        reject_price_change(price_keys_in({"attributes": _child.attributes}, _price_lists), role, settings)
     parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
@@ -3433,14 +3588,12 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     parent_cost_total = float(parent.state.get("cost_total") or 0) or (
         float(parent.state.get("cost_price") or 0) * parent_qty
     )
-    # Cost is gated by view_inventory_costs (the endpoint is the trust boundary, not the
-    # hidden UI field): only a permitted caller who actually submitted a cost may override
-    # it. Everyone else - restricted role, or no cost sent - preserves the parent's cost.
-    effective_cost = (
-        payload.child_cost_total
-        if (role_has_permission(settings, role, "view_inventory_costs") and payload.child_cost_total is not None)
-        else parent_cost_total
-    )
+    # A cost that differs from the parent's is a price write, so it takes the same
+    # set_inventory_prices gate as PATCH; with no cost sent (or the parent's cost sent
+    # back) the child keeps the parent's cost.
+    if payload.child_cost_total is not None and payload.child_cost_total != parent_cost_total:
+        reject_price_change({"cost_total"}, role, settings)
+    effective_cost = payload.child_cost_total if payload.child_cost_total is not None else parent_cost_total
     parent_location_id = parent.state.get("location_id")
 
     child_eid = f"item:{uuid.uuid4()}"
@@ -3612,6 +3765,10 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             detail="target_sku_from must identify one of the merge sources.",
         )
 
+    reject_price_change(
+        price_keys_in({"attributes": payload.resolved_attributes or {}}, (await get_price_config(session, company_id))[0]),
+        role, settings,
+    )
     locked_sources = await _lock_items_for_physical_mutation(session, company_id, payload.source_entity_ids)
     source_projections: list[Projection] = []
     for sid in payload.source_entity_ids:
@@ -3858,6 +4015,10 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         _natural_qty = round(float(total_qty), _qty_dp) if _qty_dp is not None else float(total_qty)
         if resulting_qty != _natural_qty and not role_has_permission(settings, role, "edit_inventory_amounts"):
             raise HTTPException(status_code=403, detail=f"Role '{role}' cannot hand-set the merged quantity: requires the edit_inventory_amounts permission")
+    # A cost that differs from the sources' sum is a price write, so it takes the same
+    # set_inventory_prices gate as PATCH; sending the computed sum back is not a change.
+    if payload.resulting_cost_total is not None and payload.resulting_cost_total != merged_cost_total:
+        reject_price_change({"cost_total"}, role, settings)
     resulting_cost = payload.resulting_cost_total if payload.resulting_cost_total is not None else merged_cost_total
     resulting_name = payload.resulting_name if payload.resulting_name is not None else str(target_proj.state.get("name") or "")
 
@@ -4081,11 +4242,7 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
     _proj = await get_item_projection(session, company_id, entity_id)
     _is_draft = str((_proj.state or {}).get("status") or "").lower() == "draft"
     if not (is_cost_price_type(payload.price_type) and draft_cost_carveout(_is_draft, role, settings)):
-        if not role_has_permission(settings, role, "set_inventory_prices"):
-            raise HTTPException(
-                status_code=403,
-                detail="Setting inventory prices requires the 'set_inventory_prices' permission",
-            )
+        reject_price_change({payload.price_type}, role, settings)
     event = dict(
         entity_id=entity_id,
         event_type="item.pricing.set",
@@ -4193,17 +4350,16 @@ async def batch_import_items(
     company_id=Depends(get_current_company_id),
     _: None = require_permission("import_export_data"),
     __: None = require_permission("edit_inventory"),
-    role: str = Depends(get_current_role),
-    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
     """Batch-import CIF item records. Idempotent on idempotency_key. Max 500 per call.
 
     The raw-event-batch transport: records arrive already shaped by the caller.
-    The committer lives in services.commit_import_batch, shared with /import/rows
-    and the agent /import/commit.
+    The writer is services.write_import_batch, shared with /import/rows and the
+    agent /import/commit.
     """
+    role, settings = await _import_authority(session, company_id, user.id)
     return await commit_import_batch(session, company_id, user, role, settings, body)
 
 
@@ -4319,6 +4475,8 @@ async def undo_import_batch(
             )
 
     batch.status = "undone"
+    # Release the operation so the same source can be imported again as a new entry.
+    batch.operation_key = None
     batch.undone_at = datetime.now(_tz.utc)
     batch.undone_by = user.id
     await session.commit()

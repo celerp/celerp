@@ -25,13 +25,13 @@ _ACTIVE_STATUSES: frozenset[str] = frozenset({"available", "active"})
 # Keys that live at the TOP LEVEL of item state: identity, quantities, cost bases, lifecycle markers,
 # relationships, files, and system fields. EVERYTHING ELSE is a category attribute and belongs under
 # state["attributes"] — including `pieces`. Per-price-list fields (`*_price` / `*_price_total`) also
-# stay top-level and are matched by suffix in `_is_core_key`.
+# stay top-level and are matched by suffix in `is_core_item_key`.
 #
 # Reads flatten both locations, so top-level vs nested is invisible to normal consumers; only raw-state
 # readers (e.g. merge conflict resolution) care. Normalizing on write keeps storage canonical so those
 # readers stay correct. If a NEW top-level state key is ever added to the projection, add it here too —
 # otherwise it would be misclassified as an attribute and relocated.
-_CORE_ITEM_KEYS: frozenset[str] = frozenset({
+CORE_ITEM_KEYS: frozenset[str] = frozenset({
     # the attributes container itself is top-level (holds all category attributes); a field edit may
     # replace it wholesale via fields_changed["attributes"], so it must NOT be treated as an attribute
     "attributes",
@@ -67,9 +67,9 @@ _CORE_ITEM_KEYS: frozenset[str] = frozenset({
 })
 
 
-def _is_core_key(key: str) -> bool:
+def is_core_item_key(key: str) -> bool:
     """True if `key` stays at the top level of item state (core field or a per-list price field)."""
-    return key in _CORE_ITEM_KEYS or key.endswith("_price") or key.endswith("_price_total")
+    return key in CORE_ITEM_KEYS or key.endswith("_price") or key.endswith("_price_total")
 
 
 def _normalize_attributes(current: dict) -> None:
@@ -80,7 +80,7 @@ def _normalize_attributes(current: dict) -> None:
     top-level (a field edit, `POST /items` extra fields), which this heals so storage is canonical.
     A top-level value takes precedence over an existing nested one — it is the freshly written value.
     """
-    movable = [k for k in current if k != "attributes" and not _is_core_key(k)]
+    movable = [k for k in current if k != "attributes" and not is_core_item_key(k)]
     if not movable:
         return
     attrs = dict(current.get("attributes") or {})
@@ -352,7 +352,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
                 # Applied after the other fields, so a unit cost normalizes against the
                 # quantity this same edit sets.
                 cost_changes.append((field, change.get("new")))
-            elif _is_core_key(field):
+            elif is_core_item_key(field):
                 # Core / price field — stays TOP-LEVEL. Clearing (None/"") unsets it — remove the key
                 # rather than storing an empty string or null, so it reads as truly absent (issue #202).
                 new_val = change.get("new")

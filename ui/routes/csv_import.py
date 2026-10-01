@@ -19,10 +19,11 @@ columns default to "Import as attribute"; the user can also pick "Skip".
 from __future__ import annotations
 
 import csv
-import hashlib
-import io
 import json
-import tempfile
+import logging
+import os
+import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -30,7 +31,9 @@ from typing import Any, Callable
 from fasthtml.common import *
 from starlette.responses import StreamingResponse
 import ui.api_client as api
+from celerp.config import settings
 from ui.i18n import t, get_lang
+from ui.components.table import searchable_select
 
 from celerp.importers import tabular
 from celerp.importers.tabular import (  # re-exported for the existing CSV importers
@@ -45,59 +48,248 @@ from celerp.importers.tabular import (  # re-exported for the existing CSV impor
     apply_column_mapping,
     apply_fixes_to_rows,
     error_report_csv,
+    form_mapping,
     suggest_mapping,
     validate_cell,
     validate_column_mapping,
 )
 
-# Server-side CSV stash: store uploaded CSV data in temp files, keyed by hash.
-# Avoids round-tripping large CSV data through hidden form fields (Starlette
-# enforces a 1 MB multipart field limit that breaks large imports).
-_CSV_STASH_DIR = Path(tempfile.gettempdir()) / "celerp_csv_stash"
+logger = logging.getLogger(__name__)
+
+# Server-side import staging: uploaded CSV data lives in a company-scoped stage
+# on disk, keyed by an opaque random reference. Avoids round-tripping large CSV
+# data through hidden form fields (Starlette enforces a 1 MB multipart field
+# limit that breaks large imports). A reference is only ever matched against
+# _IMPORT_REF_RE and never used as a path fragment until it has matched.
+# Stages can hold customer, cost and tax data, so the directory and every file
+# in it are readable by the server's own user only, whatever the process umask.
+_IMPORT_REF_RE = re.compile(r"^imp_[0-9a-f]{32}$")
+_IMPORT_STAGE_MAX_AGE_SECONDS = 24 * 3600
+_STAGE_DIR_MODE = 0o700
+_STAGE_FILE_MODE = 0o600
 
 
-def _stash_csv(csv_text: str) -> str:
-    """Write CSV text to a temp file and return a short reference token."""
-    _CSV_STASH_DIR.mkdir(parents=True, exist_ok=True)
-    token = hashlib.sha256(csv_text.encode()).hexdigest()[:16]
-    (_CSV_STASH_DIR / token).write_text(csv_text, encoding="utf-8")
-    return token
+def _stage_dir() -> Path:
+    return Path(settings.data_dir) / "import_staging"
 
 
-def _load_csv(token: str) -> str | None:
-    """Load stashed CSV text by token. Returns None if expired/missing."""
-    path = _CSV_STASH_DIR / token
-    if not path.exists():
+def _stage_paths(ref: str) -> tuple[Path, Path] | None:
+    """Return the (csv, meta) paths for a well-formed reference, else None."""
+    if not isinstance(ref, str) or not _IMPORT_REF_RE.fullmatch(ref):
         return None
-    return path.read_text(encoding="utf-8")
+    base = _stage_dir()
+    return base / f"{ref}.csv", base / f"{ref}.meta"
 
 
-def parse_csv_from_stash_or_field(form: dict) -> tuple[list[dict], list[str]] | None:
-    """Retrieve CSV rows+cols from a stash token or inline csv_data field.
+def _write_private(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically with owner-only permissions.
 
-    Returns (rows, cols) or None if neither source is available.
+    The content goes to a temporary sibling first and replaces ``path`` in one
+    step, so a reader never sees a partial file. The temporary name starts with
+    the stage reference, so cleanup treats a leftover one as part of that stage.
     """
-    csv_text = _resolve_csv_text(form)
-    if not csv_text:
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _STAGE_FILE_MODE)
+    try:
+        os.fchmod(fd, _STAGE_FILE_MODE)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _write_stage(company_id: str, csv_text: str) -> str:
+    if not company_id:
+        raise ValueError("import staging requires a company")
+    base = _stage_dir()
+    base.mkdir(mode=_STAGE_DIR_MODE, parents=True, exist_ok=True)
+    os.chmod(base, _STAGE_DIR_MODE)
+    cleanup_expired_import_refs()
+    ref = f"imp_{uuid.uuid4().hex}"
+    csv_path, meta_path = _stage_paths(ref)
+    try:
+        _write_private(csv_path, csv_text)
+        _write_private(meta_path, json.dumps({"company_id": str(company_id), "created_at": time.time()}))
+    except BaseException:
+        delete_import_ref(ref)
+        raise
+    return ref
+
+
+def _read_stage(company_id: str, ref: str) -> str | None:
+    """Stage content for ``ref`` if it belongs to ``company_id`` and is fresh."""
+    paths = _stage_paths(ref)
+    if paths is None or not company_id:
         return None
-    reader = csv.DictReader(io.StringIO(csv_text))
-    cols = reader.fieldnames or []
-    rows = list(reader)
-    return rows, list(cols)
+    csv_path, meta_path = paths
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        created_at = float(meta["created_at"])
+        owner = str(meta["company_id"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if time.time() - created_at > _IMPORT_STAGE_MAX_AGE_SECONDS:
+        delete_import_ref(ref)
+        return None
+    if owner != str(company_id):
+        return None
+    try:
+        return csv_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
-def _resolve_csv_text(form: dict) -> str:
-    """Get CSV text from stash token (csv_ref) or inline field (csv_data)."""
+def delete_import_ref(ref: str) -> None:
+    """Remove a stage pair. Malformed references are ignored."""
+    paths = _stage_paths(ref)
+    if paths is None:
+        return
+    for path in paths:
+        path.unlink(missing_ok=True)
+
+
+def _stage_created_at(meta_path: Path, files: list[Path]) -> float:
+    """When a stage was written: its metadata timestamp, or for a stage whose
+    metadata is missing or unreadable, the newest modification time of its files."""
+    try:
+        return float(json.loads(meta_path.read_text(encoding="utf-8"))["created_at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        mtimes = []
+        for path in files:
+            try:
+                mtimes.append(path.stat().st_mtime)
+            except OSError:
+                continue
+        return max(mtimes, default=0.0)
+
+
+def cleanup_expired_import_refs() -> int:
+    """Delete stages older than the retention window and return how many.
+
+    Files are grouped by stage reference, so a lone ``.csv`` or ``.meta`` left
+    by an interrupted write expires like a complete stage. Every stage file
+    that is kept is set to owner-only permissions.
+    """
+    base = _stage_dir()
+    if not base.is_dir():
+        return 0
+    stages: dict[str, list[Path]] = {}
+    for path in base.glob("imp_*"):
+        ref = path.name.split(".", 1)[0]
+        if _IMPORT_REF_RE.fullmatch(ref):
+            stages.setdefault(ref, []).append(path)
+    removed = 0
+    cutoff = time.time() - _IMPORT_STAGE_MAX_AGE_SECONDS
+    for ref, files in stages.items():
+        if _stage_created_at(base / f"{ref}.meta", files) < cutoff:
+            for path in files:
+                path.unlink(missing_ok=True)
+            removed += 1
+            continue
+        for path in files:
+            try:
+                os.chmod(path, _STAGE_FILE_MODE)
+            except OSError:
+                logger.warning("Could not restrict permissions of staged import %s", ref)
+    return removed
+
+
+async def _company_id(token: str) -> str:
+    return str((await api.get_company(token)).get("id") or "")
+
+
+async def stash_import_csv(token: str, csv_text: str) -> str:
+    """Stage CSV text for the authenticated company; return its reference."""
+    return _write_stage(await _company_id(token), csv_text)
+
+
+async def stage_tabular_upload(token: str, form: Any) -> tuple[list[dict], str, str | None]:
+    """Read the uploaded file and stage it for the authenticated company.
+
+    Returns (rows, csv_ref, error). When the stage cannot be written the error
+    is a generic message; where staged files live stays in the server log.
+    """
+    rows, err = await read_tabular_upload(form)
+    if err:
+        return rows, "", err
+    cols = list(rows[0].keys()) if rows else []
+    try:
+        return rows, await stash_import_csv(token, _rows_to_csv(rows, cols)), None
+    except OSError:
+        logger.exception("Could not stage an uploaded import file")
+        return [], "", t("import.err_stage_unavailable")
+
+
+async def load_import_csv(token: str, ref: str) -> str | None:
+    """Load a stage for the authenticated company. None if invalid, foreign, or expired."""
+    if _stage_paths(ref) is None:
+        return None
+    return _read_stage(await _company_id(token), ref)
+
+
+def import_result_errors(result: dict) -> list[str]:
+    """The messages an import result page shows for rows that were not imported.
+
+    Batch endpoints report incomplete success one of two ways: a list of error
+    messages, or only a count of failed rows. The messages are shown whenever
+    there are any; the count is shown only when it is all the endpoint said.
+    """
+    errors = [str(e) for e in result.get("errors") or []]
+    if errors:
+        return errors
+    failed = int(result.get("failed", 0) or 0)
+    return [t("settings_import.records_failed", n=failed)] if failed else []
+
+
+async def discard_import_csv(token: str, form, result: dict) -> None:
+    """Remove the caller's own stage once its import finished cleanly.
+
+    ``result`` is the terminal import result. A result carrying errors (including
+    an API or connection error, whose outcome on the server is unknown) or
+    failed rows keeps the stage until it expires, so the user can go back and
+    retry the same file.
+    """
+    if import_result_errors(result):
+        return
+    ref = str(form.get("csv_ref", "") or "")
+    if await load_import_csv(token, ref) is not None:
+        delete_import_ref(ref)
+
+
+async def resolve_import_csv(token: str, form) -> str:
+    """CSV text from the staged reference (csv_ref). Empty if missing, invalid, expired, or foreign."""
     csv_ref = str(form.get("csv_ref", "") or "")
-    if csv_ref:
-        text = _load_csv(csv_ref)
-        if text:
-            return text
-    return str(form.get("csv_data", "") or "")
+    if not csv_ref:
+        return ""
+    return await load_import_csv(token, csv_ref) or ""
+
 
 # ---------------------------------------------------------------------------
 # Column mapping
 # ---------------------------------------------------------------------------
+
+
+# ── Onboarding entry marker ──────────────────────────────────────────────────
+# An import opened from the getting-started hub carries ``?from_onboarding=1``.
+# The import page records that in a short-lived cookie (and clears it when opened
+# any other way), so the result can offer "Back to setup". The destination is
+# always /onboarding; nothing the user supplies becomes a redirect target.
+
+ONBOARDING_MARKER = "from_onboarding"
+_ONBOARDING_COOKIE = "celerp_import_from_onboarding"
+
+
+def onboarding_entry_cookie(request) -> Any:
+    """Set-Cookie header recording whether this import page was opened from onboarding."""
+    if request.query_params.get(ONBOARDING_MARKER) == "1":
+        return cookie(_ONBOARDING_COOKIE, "1", max_age=3600, httponly=True, samesite="lax", path="/")
+    return cookie(_ONBOARDING_COOKIE, "", max_age=0, httponly=True, samesite="lax", path="/")
+
+
+def entered_from_onboarding(request) -> bool:
+    return request.cookies.get(_ONBOARDING_COOKIE) == "1"
 
 
 def _mapping_js_labels() -> dict[str, str]:
@@ -656,6 +848,17 @@ _DROPZONE_JS = """
 """
 
 
+def _sheet_picker(sheets: list[str] | None) -> FT | str:
+    if not sheets:
+        return ""
+    return Label(
+        t("import.sheet_label"),
+        searchable_select("sheet", sheets, aria_label=t("import.sheet_label")),
+        cls="form-label",
+        style="display:block; margin-bottom: 12px;",
+    )
+
+
 def upload_form(
     *,
     cols: list[str] | None = None,
@@ -668,13 +871,15 @@ def upload_form(
     return Div(
         _step_indicator(1, has_mapping=has_mapping),
         P(error, cls="flash flash--error") if error else "",
+        P(hint, cls="form-hint", style="margin:0 0 8px") if hint else "",
         Form(
-            Input(type="file", id="csv_file", name="csv_file", accept=".csv",
+            Input(type="file", id="csv_file", name="csv_file", accept=".csv,.xlsx",
                   required=True, style="display:none"),
+            _sheet_picker(getattr(error, "sheets", None)),
             Div(
                 Div("📄", cls="import-dropzone-icon"),
-                Div(t("msg.drag_your_csv_here_or_click_to_browse"), cls="import-dropzone-text"),
-                Div(t("msg.accepted_formats_csv_utf8"), cls="import-dropzone-hint"),
+                Div(t("msg.drag_your_file_here_or_click_to_browse"), cls="import-dropzone-text"),
+                Div(t("msg.accepted_formats_import"), cls="import-dropzone-hint"),
                 Span(id="dropzone-file-info", cls="import-dropzone-file", style="display:none"),
                 Div(
                     A(t("btn.download_template"), href=template_href, cls="link",
@@ -694,34 +899,49 @@ def upload_form(
     )
 
 
-async def read_csv_upload(form: Any) -> tuple[list[dict], str | None]:
-    """Return (rows, error).
+class UploadError(str):
+    """An upload error message. ``sheets`` lists the workbook sheets to choose
+    from when the file had more than one sheet with data."""
 
-    Handles four failure classes explicitly:
-    1. Encoding errors  → "Could not decode file. Use UTF-8 encoding."
-    2. Structurally malformed CSV (csv.Error, e.g. unbalanced quotes, NUL bytes)
-       → "Could not parse file. Please check it is a valid CSV."
-    3. Empty or header-only / None-fieldname output from DictReader
-       → "CSV file is empty or has no valid header row."
-    4. Header-only file (valid header, zero data rows)
-       → "CSV file is empty or invalid."
+    sheets: list[str]
+
+    def __new__(cls, message: str, sheets: list[str] | None = None) -> "UploadError":
+        obj = super().__new__(cls, message)
+        obj.sheets = list(sheets or [])
+        return obj
+
+
+async def read_tabular_upload(form: Any) -> tuple[list[dict], str | None]:
+    """Return (rows, error) for an uploaded .csv or .xlsx file.
+
+    Both formats go through ``tabular.read_table``, so a workbook and the same
+    data saved as CSV yield identical rows. A workbook with several sheets that
+    hold data is never read until the user picks one (``sheet`` form field); the
+    error then carries the sheet names so the upload form can offer them.
     """
     file_obj = form.get("csv_file")
     if not file_obj or not hasattr(file_obj, "read"):
         return [], t("import.err_select_file")
-    content = await file_obj.read()
+    filename = getattr(file_obj, "filename", None) or "upload.csv"
+    sheet = (form.get("sheet") or "").strip() or None
     try:
-        text = content.decode("utf-8-sig")
-    except Exception:
+        content = await tabular.read_upload_bytes(file_obj)
+        fieldnames, rows = tabular.read_table(content, filename, sheet=sheet)
+    except UnicodeDecodeError:
         return [], t("import.err_decode")
-    try:
-        fieldnames, rows = tabular.read_csv(text)
-    except (csv.Error, tabular.TabularError):
+    except csv.Error:
         return [], t("import.err_parse")
-    if not fieldnames or any(f is None for f in fieldnames):
+    except tabular.TabularError as exc:
+        if exc.sheets:
+            return [], UploadError(t("import.err_choose_sheet"), sheets=exc.sheets)
+        if exc.code == "extra_columns":
+            return [], t("import.err_extra_columns")
+        if exc.code == "no_header":
+            return [], t("import.err_no_header")
+        return [], t("import.err_read_file", detail=str(exc))
+    names = [str(f or "").strip() for f in fieldnames]
+    if not names or "" in names:
         return [], t("import.err_no_header")
-    if rows and any(None in row for row in rows):
-        return [], t("import.err_extra_columns")
     if not rows:
         return [], t("import.err_empty")
     return rows, None
@@ -1036,11 +1256,17 @@ def _fix_errors_panel(
     )
 
 
+def rows_have_errors(rows: list[dict], cols: list[str], validate: ValidateFn) -> bool:
+    """True when any cell fails ``validate`` (the fix-errors panel would show)."""
+    return any(_row_errors(row, cols, validate) for row in rows)
+
+
 def validation_result(
     *,
     rows: list[dict],
     cols: list[str],
     validate: ValidateFn,
+    csv_ref: str,
     confirm_action: str,
     error_report_action: str,
     back_href: str,
@@ -1048,6 +1274,8 @@ def validation_result(
     has_mapping: bool = False,
     upsert_label: str | None = None,
     cell_renderers: dict[str, "Callable[[str, int, dict, bool], FT]"] | None = None,
+    notes: Any = "",
+    ready: int | None = None,
 ) -> FT:
     """Return the post-upload panel: inline-fix error panel or clean confirm panel.
 
@@ -1056,15 +1284,15 @@ def validation_result(
     download-only error report.
 
     If ``upsert_label`` is provided, a checkbox is shown above the import
-    button letting users opt-in to updating existing records.
+    button letting users opt-in to updating existing records. ``notes`` are shown
+    on the confirm panel above the preview table; ``ready`` is how many rows the
+    import will add, when the server's preview says fewer than every row.
     """
     error_pairs = [(i, _row_errors(row, cols, validate)) for i, row in enumerate(rows)]
     error_row_indices = [i for i, errs in error_pairs if errs]
     total_errors = sum(len(errs) for _, errs in error_pairs)
     error_cols: set[str] = {col for _, errs in error_pairs for col in errs}
 
-    csv_data = _rows_to_csv(rows, cols)
-    csv_ref = _stash_csv(csv_data)
 
     if error_row_indices:
         return _fix_errors_panel(
@@ -1083,36 +1311,78 @@ def validation_result(
         )
 
     # Clean - confirm panel with preview table
-    review_step = 3 if has_mapping else 2
+    return _confirm_panel(
+        rows=rows,
+        cols=cols,
+        hidden={"csv_ref": csv_ref},
+        confirm_action=confirm_action,
+        back_href=back_href,
+        has_mapping=has_mapping,
+        upsert_control=_upsert_control(upsert_label) if upsert_label else "",
+        notes=notes,
+        ready=ready,
+    )
+
+
+def _preview_table(rows: list[dict], cols: list[str]) -> FT:
+    """First 5 rows, values truncated to 40 chars, with a 'showing n of total' note."""
     n = len(rows)
-
-    # Preview table: first 5 rows, values truncated to 40 chars
     preview_rows = rows[:5]
-    preview_header = [Th(c.replace("_", " ").title()) for c in cols]
-    preview_body = []
-    for row in preview_rows:
-        cells = [Td(str(row.get(c, ""))[:40]) for c in cols]
-        preview_body.append(Tr(*cells))
+    if not preview_rows:
+        return ""
+    return Div(
+        Table(
+            Thead(Tr(*[Th(c.replace("_", " ").title()) for c in cols])),
+            Tbody(*[Tr(*[Td(str(row.get(c, ""))[:40]) for c in cols]) for row in preview_rows]),
+            cls="data-table import-preview-table",
+        ),
+        P(t("import.showing_rows", n=len(preview_rows), total=n), cls="import-hint") if n > 5 else "",
+    )
 
-    # Optional upsert checkbox + info badge
-    upsert_control: Any = ""
-    if upsert_label:
-        upsert_control = Div(
-            Label(
-                Input(type="checkbox", name="upsert", value="1"),
-                " ",
-                t("import.update_existing_records"),
-                cls="flex-row gap-sm",
-                style="align-items:center;cursor:pointer;",
-            ),
-            Span(
-                t("import.upsert_hint", label=upsert_label),
-                cls="import-hint",
-                style="display:block;margin-top:4px;",
-            ),
-            cls="mt-sm mb-sm",
-        )
 
+def _upsert_control(upsert_label: str, *, checked: bool = False, review_action: str = "") -> FT:
+    """The 'Update existing records' checkbox and its matching hint.
+
+    With ``review_action`` a change re-runs the review for the new choice, so the
+    confirmation always matches what will be imported.
+    """
+    review_attrs = (
+        {"hx_post": review_action, "hx_trigger": "change", "hx_include": "closest form",
+         "hx_target": "#import-preview", "hx_swap": "outerHTML"}
+        if review_action else {}
+    )
+    return Div(
+        Label(
+            Input(type="checkbox", name="upsert", value="1", checked=checked, **review_attrs),
+            " ",
+            t("import.update_existing_records"),
+            cls="flex-row gap-sm",
+            style="align-items:center;cursor:pointer;",
+        ),
+        Span(
+            t("import.upsert_hint", label=upsert_label),
+            cls="import-hint",
+            style="display:block;margin-top:4px;",
+        ),
+        cls="mt-sm mb-sm",
+    )
+
+
+def _confirm_panel(
+    *,
+    rows: list[dict],
+    cols: list[str],
+    hidden: dict[str, str],
+    confirm_action: str,
+    back_href: str,
+    has_mapping: bool,
+    upsert_control: Any = "",
+    notes: Any = "",
+    ready: int | None = None,
+) -> FT:
+    """Rows-ready summary, preview table, and the single import button."""
+    review_step = 3 if has_mapping else 2
+    n = len(rows) if ready is None else ready
     return Div(
         _step_indicator(review_step, has_mapping=has_mapping),
         Div(
@@ -1124,14 +1394,10 @@ def validation_result(
                 ),
                 cls="import-summary-cards",
             ),
-            Table(
-                Thead(Tr(*preview_header)),
-                Tbody(*preview_body),
-                cls="data-table import-preview-table",
-            ) if preview_rows else "",
-            P(t("import.showing_rows", n=len(preview_rows), total=n), cls="import-hint") if n > 5 else "",
+            notes,
+            _preview_table(rows, cols),
             Form(
-                Input(type="hidden", name="csv_ref", value=csv_ref),
+                *[Input(type="hidden", name=k, value=v) for k, v in hidden.items()],
                 upsert_control,
                 Button(
                     t("import.import_all_rows", n=n),
@@ -1152,6 +1418,85 @@ def validation_result(
                 ),
                 A(t("btn.cancel"), href=back_href, cls="btn btn--secondary"),
                 cls="flex-row gap-sm mt-md",
+            ),
+            cls="import-panel",
+        ),
+        id="import-preview",
+    )
+
+
+_REVIEW_ERROR_LIMIT = 50
+
+
+def semantic_review_panel(
+    *,
+    rows: list[dict],
+    cols: list[str],
+    csv_ref: str,
+    upsert: bool,
+    upsert_label: str,
+    errors: list[dict],
+    locations_to_create: list[str],
+    preview_hash: str,
+    review_action: str,
+    confirm_action: str,
+    upload_href: str,
+    back_href: str,
+    notice: str = "",
+) -> FT:
+    """Final review of rows that passed the cell checks, from the server's preview.
+
+    Row errors (``{"row", "field", "message"}``) block the import and are listed;
+    a clean preview shows the import button carrying ``preview_hash``, so the
+    server imports exactly what was reviewed. Changing 'Update existing records'
+    re-runs the review.
+    """
+    upsert_control = _upsert_control(upsert_label, checked=upsert, review_action=review_action)
+    notice_el = P(notice, cls="flash flash--warning") if notice else ""
+    if not errors:
+        hidden = {"csv_ref": csv_ref, "preview_hash": preview_hash}
+        notes = Div(
+            notice_el,
+            P(t("import.locations_to_create", names=", ".join(locations_to_create)), cls="import-hint")
+            if locations_to_create else "",
+        )
+        return _confirm_panel(
+            rows=rows, cols=cols, hidden=hidden, confirm_action=confirm_action,
+            back_href=back_href, has_mapping=True, upsert_control=upsert_control, notes=notes,
+        )
+
+    shown = errors[:_REVIEW_ERROR_LIMIT]
+    return Div(
+        _step_indicator(3, has_mapping=True),
+        Div(
+            notice_el,
+            Div(
+                Div(
+                    Div(str(len({e.get("row") for e in errors})), cls="import-card-value"),
+                    Div(t("import.rows_need_changes"), cls="import-card-label"),
+                    cls="import-card import-card--error",
+                ),
+                cls="import-summary-cards",
+            ),
+            P(t("import.review_fix_in_file"), cls="import-hint"),
+            Table(
+                Thead(Tr(Th(t("import.col_row")), Th(t("import.col_field")), Th(t("import.col_problem")))),
+                Tbody(*[
+                    Tr(Td(str(e.get("row", ""))), Td(str(e.get("field", ""))), Td(str(e.get("message", ""))))
+                    for e in shown
+                ]),
+                cls="data-table import-preview-table",
+            ),
+            P(t("import.showing_errors", n=len(shown), total=len(errors)), cls="import-hint")
+            if len(errors) > len(shown) else "",
+            Form(
+                Input(type="hidden", name="csv_ref", value=csv_ref),
+                upsert_control,
+                Div(
+                    A(t("import.upload_corrected_file"), href=upload_href, cls="btn btn--primary"),
+                    A(t("btn.cancel"), href=back_href, cls="btn btn--secondary"),
+                    cls="flex-row gap-sm mt-md",
+                ),
             ),
             cls="import-panel",
         ),
@@ -1232,12 +1577,14 @@ def import_result_panel(
     has_mapping: bool = False,
     extra: Any = "",
     updated: int = 0,
+    from_onboarding: bool = False,
 ) -> FT:
     """Shared import result panel with summary cards.
 
     ``extra`` is an optional FT element inserted after the summary cards
     (e.g. schema-merge info for inventory).
     ``updated`` shows a blue "Updated" card when > 0 (upsert mode).
+    ``from_onboarding`` adds "Back to setup" and keeps "Import more" in onboarding.
     """
     cards = [
         Div(
@@ -1281,7 +1628,10 @@ def import_result_panel(
         error_block,
         Div(
             A(t("import.view_entity", label=label_title), href=back_href, cls="btn btn--primary"),
-            A(t("msg.import_more"), href=import_more_href, cls="btn btn--secondary"),
+            A(t("import.back_to_setup"), href="/onboarding", cls="btn btn--secondary") if from_onboarding else "",
+            A(t("msg.import_more"),
+              href=f"{import_more_href}?{ONBOARDING_MARKER}=1" if from_onboarding else import_more_href,
+              cls="btn btn--secondary"),
             cls="flex-row gap-sm mt-md",
         ),
         id="import-preview",

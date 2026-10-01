@@ -12,12 +12,15 @@ active language. They are red against a tree that hardcodes the English literals
 in ``ui/routes/accounting_import.py``.
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from fasthtml.common import to_xml, Div, Span
 
 from ui import i18n
 from ui.routes import accounting_import as ai
+from ui.routes.csv_import import stash_import_csv
 
 
 # Sentinel catalog: unmistakable values for the keys these routes render.
@@ -105,7 +108,7 @@ async def test_expired_csv_error_translates(monkeypatch):
     monkeypatch.setattr(ai, "base_shell", _fake_base_shell)
     monkeypatch.setattr(ai, "_token", lambda request: "tok")
 
-    # No csv_ref / csv_data in the form -> the "expired" branch renders
+    # No csv_ref in the form -> the "expired" branch renders
     # upload_form(error=t("import.csv_expired")).
     handler = _routes()[("POST", "/accounting/import/chart/mapped")]
     html = to_xml(await handler(_FormReq({})))
@@ -120,12 +123,14 @@ async def test_result_panel_entity_label_and_errors_translate(monkeypatch):
 
     monkeypatch.setattr(ai, "_token", lambda request: "tok")
     monkeypatch.setattr(ai.api, "batch_import", _fake_batch)
+    monkeypatch.setattr(ai.api, "get_company", AsyncMock(return_value={"id": "xx-company"}))
 
     # entity_label=t("accounting_import.entity_accounts"), title-cased inside the
     # result panel's "View {label}" button; the failed count flows through
     # t("settings_import.records_failed", n=failed).
     handler = _routes()[("POST", "/accounting/import/chart/confirm")]
-    req = _FormReq({"csv_data": "code,name,account_type\n1000,Assets,asset\n"})
+    csv_ref = await stash_import_csv("tok", "code,name,account_type\n1000,Assets,asset\n")
+    req = _FormReq({"csv_ref": csv_ref})
     html = to_xml(await handler(req))
 
     assert "Zzaccounts" in html

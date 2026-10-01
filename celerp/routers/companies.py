@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import uuid
 
@@ -35,6 +36,7 @@ from celerp.services.permissions import (
     PERMISSIONS,
     ROLES,
     get_current_company_settings,
+    locked_authority,
     require_permission,
     resolved_grant_roles,
     role_has_permission,
@@ -45,7 +47,7 @@ from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
 from celerp.services.business_time import business_timezone
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import lock_company, locked_company
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -550,6 +552,9 @@ async def patch_location(
         loc_uuid = uuid.UUID(location_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid location id")
+    # Company first, then the location: the order an import commit takes them in (and the
+    # tax re-seed below needs the company lock), so the two wait instead of deadlocking.
+    await lock_company(session, company_id)
     loc = await session.get(Location, loc_uuid)
     if loc is None or loc.company_id != company_id:
         raise HTTPException(status_code=404, detail="Location not found")
@@ -590,7 +595,9 @@ async def delete_location(
         loc_uuid = uuid.UUID(location_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid location id")
-    loc = await session.get(Location, loc_uuid)
+    # Locked before the item count: an import naming this location holds it until
+    # the import commits, so the count below includes the items it placed here.
+    loc = await session.get(Location, loc_uuid, with_for_update=True, populate_existing=True)
     if loc is None or loc.company_id != company_id:
         raise HTTPException(status_code=404, detail="Location not found")
     if loc.is_default:
@@ -936,24 +943,12 @@ async def get_category_display_names(company_id=Depends(get_current_company_id),
 
 @router.get("/me/category-schemas")
 async def get_all_category_schemas(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    """Return all category schemas keyed by category name.
-
-    Merges module-contributed defaults (category_schema slot) with company overrides.
-    Company overrides take precedence.
-    """
-    from celerp.modules.slots import get as get_slot
+    """Return all category schemas keyed by category name (module defaults plus company overrides)."""
+    from celerp.services.field_schema import all_category_schemas
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
-    # Start with module defaults
-    merged: dict = {}
-    for contrib in get_slot("category_schema"):
-        cat = contrib.get("category")
-        if cat and cat not in merged:
-            merged[cat] = contrib.get("fields") or []
-    # Company overrides win
-    merged.update(company.settings.get("category_schemas") or {})
-    return merged
+    return all_category_schemas(company.settings)
 
 
 # ---------------------------------------------------------------------------
@@ -1156,6 +1151,7 @@ async def patch_taxes(
 async def import_taxes_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
@@ -1169,10 +1165,8 @@ async def import_taxes_batch(
 
     NOTE: This remains the legacy settings-import format (records are raw dicts).
     """
-    company = await locked_company(session, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
-
+    await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
+    company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
 
     settings = dict(company.settings)
@@ -1260,6 +1254,7 @@ async def patch_payment_terms(
 async def import_payment_terms_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
@@ -1271,10 +1266,8 @@ async def import_payment_terms_batch(
     - If name exists (case-insensitive): skipped
     - Else: created
     """
-    company = await locked_company(session, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
-
+    await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
+    company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
 
     settings = dict(company.settings)
@@ -1413,6 +1406,14 @@ async def patch_terms_conditions(
 # Purchasing taxes & payment terms (independent copies, seeded from sales)
 # ---------------------------------------------------------------------------
 
+def _purchasing_list(settings: dict, key: str, sales_key: str, default: list[dict]) -> list[dict]:
+    """Purchasing data as stored, or a copy of the sales data it is seeded from."""
+    existing = settings.get(key)
+    if existing is not None:
+        return existing
+    return copy.deepcopy(settings.get(sales_key) or default)
+
+
 async def _seed_purchasing_key(
     session: AsyncSession, company: Company, key: str, sales_key: str, default: list[dict],
 ) -> list[dict]:
@@ -1425,9 +1426,7 @@ async def _seed_purchasing_key(
     if existing is not None:
         await session.commit()
         return existing
-    import copy
-    source = company.settings.get(sales_key) or default
-    seeded = copy.deepcopy(source)
+    seeded = _purchasing_list(company.settings, key, sales_key, default)
     settings = dict(company.settings)
     settings[key] = seeded
     company.settings = settings
@@ -1467,15 +1466,15 @@ async def patch_purchasing_taxes(
 async def import_purchasing_taxes_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    company = await locked_company(session, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+    await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
+    company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
-    taxes = list(await _seed_purchasing_key(session, company, "purchasing_taxes", "taxes", DEFAULT_TAX_RATES))
+    taxes = list(_purchasing_list(company.settings, "purchasing_taxes", "taxes", DEFAULT_TAX_RATES))
     existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
     for i, r in enumerate(rec.data for rec in (payload.records or [])):
         name = str(r.get("name", "") or "").strip()
@@ -1538,15 +1537,15 @@ async def patch_purchasing_payment_terms(
 async def import_purchasing_payment_terms_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    company = await locked_company(session, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+    await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
+    company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
-    terms = list(await _seed_purchasing_key(session, company, "purchasing_payment_terms", "payment_terms", DEFAULT_PAYMENT_TERMS))
+    terms = list(_purchasing_list(company.settings, "purchasing_payment_terms", "payment_terms", DEFAULT_PAYMENT_TERMS))
     existing_names = {str(t.get("name", "")).strip().lower() for t in terms if t.get("name")}
     for i, r in enumerate(rec.data for rec in (payload.records or [])):
         name = str(r.get("name", "") or "").strip()

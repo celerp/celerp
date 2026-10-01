@@ -15,10 +15,11 @@ from __future__ import annotations
 import csv
 import datetime
 import io
+import math
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Collection
 
 import openpyxl
 from openpyxl.utils.exceptions import InvalidFileException
@@ -28,11 +29,12 @@ from ui.i18n import t
 
 ValidateFn = Callable[[str, str, dict], bool]
 
-# Size guards. MAX_XLSX_BYTES matches the upload bound; the uncompressed and
-# entry-count guards stop a zip bomb before openpyxl ever parses the workbook.
+# Size guards. MAX_TABLE_BYTES bounds every uploaded table, CSV or workbook,
+# before it is read into memory; the uncompressed and entry-count guards stop a
+# zip bomb before openpyxl ever parses the workbook.
 MAX_ROWS = 10_000
 MAX_CELLS = 200_000
-MAX_XLSX_BYTES = 10 * 1024 * 1024
+MAX_TABLE_BYTES = 10 * 1024 * 1024
 MAX_XLSX_UNCOMPRESSED = 50 * 1024 * 1024
 MAX_XLSX_ENTRIES = 4096
 
@@ -40,7 +42,9 @@ MAX_XLSX_ENTRIES = 4096
 class TabularError(ValueError):
     """A file that cannot be turned into a table. Carries the offending cell
     position (``row``/``column``) for formula errors and the available sheet
-    names (``sheets``) when the caller must choose one."""
+    names (``sheets``) when the caller must choose one, and for a header that
+    would lose values a ``code``: ``no_header``, ``extra_columns`` or
+    ``duplicate_header``."""
 
     def __init__(
         self,
@@ -49,11 +53,13 @@ class TabularError(ValueError):
         row: int | None = None,
         column: str | None = None,
         sheets: list[str] | None = None,
+        code: str | None = None,
     ) -> None:
         super().__init__(message)
         self.row = row
         self.column = column
         self.sheets = sheets
+        self.code = code
 
 
 # Columns always shown in the error table (identifiers), even if they have no errors.
@@ -67,16 +73,36 @@ class CsvImportSpec:
     type_map: dict[str, Callable[[str], Any]]
 
 
-def validate_cell(spec: CsvImportSpec, col: str, value: str, row: dict | None = None) -> bool:
+def finite_float(value: str) -> float:
+    """The number a cell holds. NaN and infinities are refused like any non-number."""
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{value!r} is not a finite number")
+    return number
+
+
+def cell_error_code(spec: CsvImportSpec, col: str, value: str) -> str | None:
+    """Why a cell is invalid under ``spec``, or None when it is valid.
+
+    ``required`` for a blank required cell, ``not_finite`` for a number that is
+    NaN or infinite, ``invalid_value`` for anything else the column's type refuses.
+    """
     if col in spec.required and not value.strip():
-        return False
+        return "required"
     cast = spec.type_map.get(col)
     if cast and value.strip():
         try:
             cast(value)
         except (ValueError, TypeError):
-            return False
-    return True
+            try:
+                return "invalid_value" if math.isfinite(float(value)) else "not_finite"
+            except ValueError:
+                return "invalid_value"
+    return None
+
+
+def validate_cell(spec: CsvImportSpec, col: str, value: str, row: dict | None = None) -> bool:
+    return cell_error_code(spec, col, value) is None
 
 
 # ---------------------------------------------------------------------------
@@ -233,67 +259,156 @@ def suggest_mapping(
     return mapping
 
 
+@dataclass(frozen=True)
+class MappingResult:
+    """The effective ``{source column: target}`` mapping and its mapping errors.
+
+    Each error is ``{"row": None, "field", "code", "message"}``: a mapping error
+    belongs to the file as a whole, never to one row.
+    """
+    mapping: dict[str, str]
+    errors: list[dict]
+
+    @property
+    def applicable(self) -> bool:
+        """True when rows can still be read under the mapping, so they can be
+        checked row by row. A unit price and a total mapped for one list only
+        make the mapping unimportable; every column still has one target."""
+        return all(e["code"] == "price_target_conflict" for e in self.errors)
+
+
+def _target_label(target: str) -> str:
+    return target.replace("_", " ").title()
+
+
+def _quoted_cols(cols: list[str]) -> str:
+    return " and ".join(f'"{c}"' for c in cols)
+
+
+def normalize_and_validate_mapping(
+    source_cols: list[str],
+    suggested: dict[str, str],
+    overrides: dict[str, str] | None,
+    *,
+    allowed_targets: Collection[str],
+    required_targets: Collection[str],
+    allowed_category_attrs: Collection[str] | None,
+    is_reserved_field: Callable[[str], bool] | None,
+    mutex_groups: Collection[Collection[str]],
+    attr_names: dict[str, str] | None = None,
+) -> MappingResult:
+    """Resolve the effective column mapping and every reason it cannot be applied.
+
+    The one mapping check for every import transport. The caller's ``overrides``
+    are applied on top of ``suggested``, so a column the caller does not mention
+    keeps its suggestion. The mapping is refused when:
+
+    - an override names a column the file does not have;
+    - a target is neither a sentinel nor one of ``allowed_targets``;
+    - a category attribute key is empty or not in ``allowed_category_attrs``
+      (``None`` when the importer has no category schema to check against);
+    - a custom or category attribute is named like an allowed target
+      (``reserved_field_conflict``) or like any other key ``is_reserved_field``
+      says the importer reads as a field (``reserved_field_unsupported``),
+      case-insensitive; ``None`` when no other key is reserved;
+    - two columns resolve to the same destination after the sentinels are
+      normalized (``attr_names`` holds the custom attribute names chosen for
+      ``MAPPING_ATTRIBUTE`` columns);
+    - a required target has no column;
+    - more than one target of a ``mutex_groups`` group is mapped.
+
+    ``required_targets`` is keyword-only and has no default so every importer
+    states which targets it cannot work without (an empty set when none).
+    """
+    attr_names = attr_names or {}
+    overrides = overrides or {}
+    errors: list[dict] = []
+
+    def _error(field: str, code: str, message: str) -> None:
+        errors.append({"row": None, "field": field, "code": code, "message": message})
+
+    for key in overrides:
+        if key not in source_cols:
+            _error(key, "unknown_source_column", t("import.err_unknown_source_column", col=key))
+
+    mapping = {col: str(overrides.get(col, suggested.get(col, MAPPING_ATTRIBUTE))) for col in source_cols}
+    allowed = set(allowed_targets)
+    allowed_folded = {f.casefold() for f in allowed}
+
+    core_sources: dict[str, list[str]] = {}
+    attr_sources: dict[str, list[str]] = {}
+    for col, target in mapping.items():
+        dest = mapped_field_name(col, target, attr_names.get(col))
+        if dest is None:
+            continue
+        if target == MAPPING_ATTRIBUTE or target.startswith(MAPPING_ATTR_PREFIX):
+            if target.startswith(MAPPING_ATTR_PREFIX) and (
+                not dest or (allowed_category_attrs is not None and dest not in allowed_category_attrs)
+            ):
+                _error(col, "invalid_category_attribute",
+                       t("import.err_invalid_category_attribute", col=col, name=dest))
+                continue
+            if dest.casefold() in allowed_folded:
+                _error(col, "reserved_field_conflict", t("import.err_custom_name_conflict", name=dest, col=col))
+                continue
+            if is_reserved_field is not None and is_reserved_field(dest.casefold()):
+                _error(col, "reserved_field_unsupported",
+                       t("import.err_reserved_field_unsupported", name=dest, col=col))
+                continue
+            attr_sources.setdefault(dest, []).append(col)
+        else:
+            if target not in allowed:
+                _error(col, "unknown_target", t("import.err_unknown_target", col=col, target=target))
+            core_sources.setdefault(target, []).append(col)
+
+    for target in sorted(required_targets):
+        if target not in core_sources:
+            _error(target, "required_target_missing", t("import.err_required_target", target=_target_label(target)))
+
+    for target, sources in core_sources.items():
+        if len(sources) > 1:
+            _error(target, "duplicate_target",
+                   t("import.err_duplicate_target", cols=_quoted_cols(sources), target=_target_label(target)))
+    for name, sources in attr_sources.items():
+        if len(sources) > 1:
+            _error(name, "duplicate_target", t("import.err_duplicate_attr", cols=_quoted_cols(sources), name=name))
+
+    for group in mutex_groups:
+        mapped = [target for target in group if target in core_sources]
+        if len(mapped) > 1:
+            sources = [col for target in mapped for col in core_sources[target]]
+            _error(mapped[0], "price_target_conflict",
+                   t("import.err_price_target_conflict", cols=_quoted_cols(sources)))
+
+    return MappingResult(mapping=mapping, errors=errors)
+
+
 def validate_column_mapping(
     form: dict,
     csv_cols: list[str],
-    core_fields: set[str] | None = None,
+    *,
+    core_fields: Collection[str],
+    required_targets: Collection[str],
+    is_reserved_field: Callable[[str], bool] | None = None,
+    allowed_category_attrs: Collection[str] | None = None,
+    mutex_groups: Collection[Collection[str]] = (),
 ) -> list[str]:
-    """Validate the user's column mapping choices. Returns list of error messages (empty = valid).
+    """Check a browser mapping form. Returns the error messages (empty = valid).
 
-    Checks:
-    1. Two CSV columns mapped to the same target field (duplicate targets).
-    2. Attribute names that collide with core/built-in field names.
-    3. Two attribute columns with the same custom name.
+    Adapts the submitted form into :func:`normalize_and_validate_mapping`, the
+    same check the file import runs: ``core_fields`` are the targets the form
+    offers, and every column is submitted, so the form is the whole mapping.
     """
-    errors: list[str] = []
-    core = core_fields or set()
-
-    # Collect all mappings
-    target_sources: dict[str, list[str]] = {}  # target -> [csv_col, ...]
-    attr_names: dict[str, list[str]] = {}  # attr_name -> [csv_col, ...]
-
-    for col in csv_cols:
-        target = str(form.get(f"map__{col}", MAPPING_ATTRIBUTE) or MAPPING_ATTRIBUTE)
-        if target == MAPPING_SKIP:
-            continue
-
-        if target == MAPPING_ATTRIBUTE:
-            # Custom field name (from text input) or original col name
-            attr_name = str(form.get(f"attr_name__{col}", "") or "").strip() or col
-            attr_names.setdefault(attr_name, []).append(col)
-            # Check collision with core field names
-            if attr_name.lower() in {c.lower() for c in core}:
-                errors.append(
-                    t("import.err_custom_name_conflict", name=attr_name, col=col)
-                )
-        elif target.startswith(MAPPING_ATTR_PREFIX):
-            # Category attribute - use the attr key as the attribute name
-            attr_key = target[len(MAPPING_ATTR_PREFIX):]
-            attr_names.setdefault(attr_key, []).append(col)
-        else:
-            target_sources.setdefault(target, []).append(col)
-
-    # Check duplicate target fields
-    for target, sources in target_sources.items():
-        if len(sources) > 1:
-            names = " and ".join(f'"{s}"' for s in sources)
-            errors.append(
-                t(
-                    "import.err_duplicate_target",
-                    cols=names,
-                    target=target.replace("_", " ").title(),
-                )
-            )
-
-    # Check duplicate attribute names
-    for attr_name, sources in attr_names.items():
-        if len(sources) > 1:
-            names = " and ".join(f'"{s}"' for s in sources)
-            errors.append(
-                t("import.err_duplicate_attr", cols=names, name=attr_name)
-            )
-
-    return errors
+    result = normalize_and_validate_mapping(
+        csv_cols, form_mapping(form, csv_cols), None,
+        allowed_targets=core_fields,
+        required_targets=required_targets,
+        allowed_category_attrs=allowed_category_attrs,
+        is_reserved_field=is_reserved_field,
+        mutex_groups=mutex_groups,
+        attr_names=form_attr_names(form, csv_cols),
+    )
+    return [e["message"] for e in result.errors]
 
 
 def mapped_field_name(col: str, target: str, attr_name: str | None = None) -> str | None:
@@ -325,6 +440,9 @@ def remap_rows(
 
     Preserves the original column order, drops ``MAPPING_SKIP`` columns, and
     renames the rest via :func:`mapped_field_name`. Returns ``(new_cols, rows)``.
+
+    Raises ``ValueError`` when two columns resolve to the same destination, so
+    one column's values can never silently overwrite another's.
     """
     attr_names = attr_names or {}
     new_cols: list[str] = []
@@ -333,10 +451,24 @@ def remap_rows(
         dest = mapped_field_name(col, mapping.get(col, MAPPING_ATTRIBUTE), attr_names.get(col))
         if dest is None:
             continue
+        if dest in new_cols:
+            raise ValueError(f"Columns {_quoted_cols([c for c in rename if rename[c] == dest] + [col])} "
+                             f"are all mapped to '{dest}'")
         new_cols.append(dest)
         rename[col] = dest
     remapped = [{rename[c]: row.get(c, "") for c in rename} for row in rows]
     return new_cols, remapped
+
+
+def form_mapping(form: dict, cols: list[str]) -> dict[str, str]:
+    """The ``{column: target}`` mapping a mapping form submitted for ``cols``."""
+    return {col: str(form.get(f"map__{col}", MAPPING_ATTRIBUTE) or MAPPING_ATTRIBUTE) for col in cols}
+
+
+def form_attr_names(form: dict, cols: list[str]) -> dict[str, str]:
+    """The custom attribute names a mapping form chose, for the columns that have one."""
+    names = {col: str(form.get(f"attr_name__{col}", "") or "").strip() for col in cols}
+    return {col: name for col, name in names.items() if name}
 
 
 def apply_column_mapping(form: dict, csv_text: str) -> tuple[str, list[str]]:
@@ -351,37 +483,14 @@ def apply_column_mapping(form: dict, csv_text: str) -> tuple[str, list[str]]:
     """
     reader = csv.DictReader(io.StringIO(csv_text))
     original_cols = list(reader.fieldnames or [])
-    rows = list(reader)
-
-    # Parse mapping from form
-    mapping: dict[str, str] = {}
-    for col in original_cols:
-        target = str(form.get(f"map__{col}", MAPPING_ATTRIBUTE) or MAPPING_ATTRIBUTE)
-        mapping[col] = target
-
-    # Build new column list and rename map
-    new_cols: list[str] = []
-    rename: dict[str, str] = {}  # original -> new name
-    for col in original_cols:
-        attr_name = str(form.get(f"attr_name__{col}", "") or "").strip() or None
-        dest = mapped_field_name(col, mapping[col], attr_name)
-        if dest is None:
-            continue
-        new_cols.append(dest)
-        rename[col] = dest
-
-    # Write remapped CSV
+    new_cols, rows = remap_rows(
+        original_cols, list(reader),
+        form_mapping(form, original_cols), form_attr_names(form, original_cols),
+    )
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=new_cols, extrasaction="ignore")
     writer.writeheader()
-    for row in rows:
-        new_row = {}
-        for col in original_cols:
-            if col not in rename:
-                continue
-            new_row[rename[col]] = row.get(col, "")
-        writer.writerow(new_row)
-
+    writer.writerows(rows)
     return output.getvalue(), new_cols
 
 
@@ -452,23 +561,97 @@ def _rows_to_csv(rows: list[dict], cols: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _enforce_bounds(cols: list[str], rows: list[dict]) -> None:
-    if len(rows) > MAX_ROWS:
-        raise TabularError(f"Too many rows: {len(rows)} exceeds the {MAX_ROWS} limit.")
-    cells = len(rows) * max(len(cols), 1)
+def _enforce_bounds(n_cols: int, n_rows: int) -> None:
+    if n_rows > MAX_ROWS:
+        raise TabularError(f"Too many rows: {n_rows} exceeds the {MAX_ROWS} limit.")
+    cells = n_rows * max(n_cols, 1)
     if cells > MAX_CELLS:
         raise TabularError(f"Too many cells: {cells} exceeds the {MAX_CELLS} limit.")
 
 
+def _filled_width(line: list[str]) -> int:
+    """Columns up to the last filled cell of a line: the width it adds to the grid."""
+    return max((i + 1 for i, v in enumerate(line) if v), default=0)
+
+
+async def read_upload_bytes(upload: Any, limit: int = MAX_TABLE_BYTES) -> bytes:
+    """Read an uploaded file, refusing it once it passes ``limit`` bytes.
+
+    Reads in chunks, so a file over the limit is never held in memory whole.
+    Every table upload reads its bytes here before parsing.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := await upload.read(1024 * 1024):
+        size += len(chunk)
+        if size > limit:
+            raise TabularError(f"File is too large: the limit is {limit // (1024 * 1024)} MB.")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def read_csv(text: str) -> tuple[list[str], list[dict]]:
-    """Parse CSV text into (header, rows) via csv.DictReader, BOM stripped and
-    row/cell bounds enforced."""
-    if text.startswith("﻿"):
+    """Parse CSV text into (header, rows), BOM stripped and row/cell bounds enforced.
+
+    Rows form the same grid a workbook sheet does (``_grid``). The first line is
+    the header, even when blank; lines after it with no filled cell are skipped,
+    as empty sheet rows are.
+    """
+    if text.startswith("\ufeff"):
         text = text[1:]
-    reader = csv.DictReader(io.StringIO(text))
-    cols = list(reader.fieldnames or [])
-    rows = list(reader)
-    _enforce_bounds(cols, rows)
+    reader = csv.reader(io.StringIO(text))
+    header = next(reader, [])
+    lines = [line for line in reader if any(line)]
+    _enforce_bounds(max(_filled_width(line) for line in [header, *lines]), len(lines))
+    return _grid(header, lines)
+
+
+def _column_letter(index: int) -> str:
+    letters = ""
+    index += 1
+    while index:
+        index, rem = divmod(index - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
+def _grid(header: list[str], lines: list[list[str]]) -> tuple[list[str], list[dict]]:
+    """(columns, rows) for a header and its data lines, shared by CSV and XLSX.
+
+    The grid ends at the last column holding any value, so trailing columns that
+    are empty everywhere (a workbook's formatted but unused cells) are dropped.
+    A missing cell is empty.
+
+    Rows are keyed by header text, so every column that holds a value must have
+    a header of its own: a filled column with a blank header, or two columns
+    with the same header, would lose values when the row is built. Either is
+    refused here, before any row exists, naming the column.
+    """
+    width = max((_filled_width(line) for line in [header, *lines]), default=0)
+    cols = header[:width] + [""] * (width - len(header))
+    last_named = max((i for i, c in enumerate(cols) if c.strip()), default=-1)
+    seen: dict[str, int] = {}
+    for i, col in enumerate(cols):
+        name = col.strip()
+        if name:
+            if name in seen:
+                raise TabularError(
+                    f"Columns {_column_letter(seen[name])} and {_column_letter(i)} have the same "
+                    f"header {name!r}; give each column its own header.",
+                    column=_column_letter(i), code="duplicate_header",
+                )
+            seen[name] = i
+        elif any(i < len(line) and line[i] for line in lines):
+            if i > last_named:
+                raise TabularError(
+                    f"Column {_column_letter(i)} has values but is past the last header.",
+                    column=_column_letter(i), code="extra_columns",
+                )
+            raise TabularError(
+                f"Column {_column_letter(i)} has values but no header.",
+                column=_column_letter(i), code="no_header",
+            )
+    rows = [{cols[i]: (line[i] if i < len(line) else "") for i in range(width)} for line in lines]
     return cols, rows
 
 
@@ -493,6 +676,7 @@ def _stringify(value: Any) -> str:
 
 
 def _sheet_is_empty(ws) -> bool:
+    ws.reset_dimensions()
     for row in ws.iter_rows(values_only=True):
         if any(c is not None and str(c).strip() != "" for c in row):
             return False
@@ -507,7 +691,7 @@ def read_xlsx(data: bytes, *, sheet: str | None) -> tuple[list[str], list[dict]]
     one non-empty sheet auto-selects; several with no chosen sheet raise with the
     available names. A formula cell raises with its position.
     """
-    if len(data) > MAX_XLSX_BYTES:
+    if len(data) > MAX_TABLE_BYTES:
         raise TabularError("File is too large.")
 
     try:
@@ -539,9 +723,12 @@ def read_xlsx(data: bytes, *, sheet: str | None) -> tuple[list[str], list[dict]]
                 raise TabularError("Choose a sheet.", sheets=non_empty)
             worksheet = workbook[non_empty[0]]
 
+        # The stored sheet dimension is written by whatever produced the file;
+        # read every cell present rather than trusting it to size the rows.
+        worksheet.reset_dimensions()
         header: list[str] = []
-        rows: list[dict] = []
-        n_cols = 0
+        lines: list[list[str]] = []
+        width = 0
         for cells in worksheet.iter_rows():
             values: list[str] = []
             for cell in cells:
@@ -557,15 +744,16 @@ def read_xlsx(data: bytes, *, sheet: str | None) -> tuple[list[str], list[dict]]
                 values.append(_stringify(value))
             if not header:
                 header = values
-                n_cols = len(header)
+                width = _filled_width(header)
                 continue
-            if len(rows) >= MAX_ROWS:
-                raise TabularError(f"Too many rows: exceeds the {MAX_ROWS} limit.")
-            if (len(rows) + 1) * max(n_cols, 1) > MAX_CELLS:
-                raise TabularError(f"Too many cells: exceeds the {MAX_CELLS} limit.")
-            row = {header[i]: (values[i] if i < len(values) else "") for i in range(n_cols)}
-            rows.append(row)
-        return header, rows
+            if not any(values):
+                continue
+            # The same bounds as CSV, counted on the widest row actually read,
+            # so a ragged row wider than the header counts in full.
+            width = max(width, _filled_width(values))
+            _enforce_bounds(width, len(lines) + 1)
+            lines.append(values)
+        return _grid(header, lines)
     finally:
         workbook.close()
 
@@ -578,6 +766,8 @@ def read_table(
 ) -> tuple[list[str], list[dict]]:
     """Dispatch on the file suffix. CSV and .xlsx are supported; .xlsm/.xls and
     everything else raise."""
+    if len(data) > MAX_TABLE_BYTES:
+        raise TabularError("File is too large.")
     suffix = Path(filename).suffix.lower()
     if suffix == ".csv":
         return read_csv(data.decode("utf-8-sig"))

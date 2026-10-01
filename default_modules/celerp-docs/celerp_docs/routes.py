@@ -41,12 +41,12 @@ from celerp.services.attachments import attach_file, store_upload
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
-from celerp.services.permissions import assert_role_permission, get_current_company_settings, require_permission, role_has_permission
+from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
-from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, resolve_price
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
@@ -3582,7 +3582,7 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
 
 
 @router.post("/{entity_id}/receive")
-async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("fulfill_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("fulfill_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # A receipt adds to the quantity and cost of the lots it reads, so it waits for any
     # receipt or cost change in flight and reads what that one committed.
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -3632,6 +3632,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     item_skus = {r.entity_id: str(r.state.get("sku") or "").strip() for r in all_item_rows}
     for it in payload.received_items:
         _resolve_inbound_line(row.state, it, item_skus)
+    _recv_price_lists = (await get_price_config(session, company_id))[0]
     item_conversion_map: dict[str, float] = {
         r.entity_id: float(r.state.get("purchase_conversion_factor") or 1)
         for r in all_item_rows
@@ -3713,8 +3714,22 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         stock_qty = float(it.quantity_received) * conversion
         cost: float | None = None
         if is_consignment:
-            # Consigned goods are not bought, so only a cost given on the receipt applies.
-            cost = float(it.cost_price) * stock_qty if it.cost_price is not None else None
+            # Consigned goods are costed from their consignment line. A foreign-currency
+            # consignment may have no rate until it is invoiced, and its goods carry no cost
+            # until then. A different cost on the receipt is a price edit, so only a role that
+            # sets prices may give one.
+            base_currency = settings.get("currency", "USD")
+            try:
+                rate_known = doc_rate(row.state, base_currency) is not None
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if rate_known:
+                cost = await _received_goods_cost(session, company_id, row.state, it.model_copy(update={"cost_price": None}), stock_qty)
+            if it.cost_price is not None:
+                given = float(it.cost_price) * stock_qty
+                if cost is None or round_money(given, base_currency) != round_money(cost, base_currency):
+                    reject_price_change({"cost_price"}, role, settings)
+                    cost = given
         elif doc_type == "purchase_order" or it.receive_as == "stock":
             cost = await _received_goods_cost(session, company_id, row.state, it, stock_qty)
             if cost is None:
@@ -3815,6 +3830,12 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 _v = _doc_val or _payload_val
                 if _v:
                     item_data[_f] = _v
+            # Attributes from the bill line or the request are caller-authored, so a price
+            # among them (other than one carried over unchanged from the item) takes the
+            # same set_inventory_prices gate as every inventory writer.
+            _inherited = (sku_ref.get("attributes") or {}) | {k: sku_ref.get(k) for k in _INHERIT}
+            _authored = {k: v for k, v in (item_data.get("attributes") or {}).items() if _inherited.get(k) != v}
+            reject_price_change(price_keys_in({"attributes": _authored}, _recv_price_lists), role, settings)
             # Payload values always take precedence for the fields below
             item_data.update({
                 "sku": _sku,
@@ -4673,8 +4694,6 @@ async def import_doc(
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
     __: None = require_permission("import_export_data"),
-    role: str = Depends(get_current_role),
-    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4682,6 +4701,7 @@ async def import_doc(
     # Updates go through PATCH and state transitions through their dedicated endpoints.
     if body.event_type != "doc.created":
         raise HTTPException(status_code=422, detail=f"Event type {body.event_type!r} is not import-safe")
+    role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     _assert_doc_import_permissions(settings, role, body.data)
 
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
@@ -4808,13 +4828,12 @@ async def batch_import_docs(
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
     __: None = require_permission("import_export_data"),
-    role: str = Depends(get_current_role),
-    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
     from celerp_docs import import_service
 
+    role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     outcome = await import_service.import_doc_records(
         session, company_id, user, role, settings, body.records, upsert=body.upsert,
     )
@@ -6325,13 +6344,12 @@ async def import_list(
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
     __: None = require_permission("import_export_data"),
-    role: str = Depends(get_current_role),
-    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     if body.event_type != "list.created":
         raise HTTPException(status_code=422, detail=f"Event type {body.event_type!r} is not import-safe")
+    role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     _assert_list_import_permissions(settings, role, body.data)
 
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
@@ -6372,11 +6390,10 @@ async def batch_import_lists(
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
     __: None = require_permission("import_export_data"),
-    role: str = Depends(get_current_role),
-    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
+    role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     from sqlalchemy import select as _select
     from celerp.models.ledger import LedgerEntry
 

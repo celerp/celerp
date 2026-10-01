@@ -82,18 +82,22 @@ def is_pieces_unit(unit_name: str | None, unit_map: dict[str, dict]) -> bool:
     return unit_map.get(unit_name, {}).get("unit_type") == "pieces"
 
 
-def validate_quantity(qty: float, decimals: int, *, label: str = "Quantity") -> None:
-    """Raise HTTP 422 if *qty* has more decimal places than *decimals* allows.
+def exceeds_precision(qty: float, decimals: int) -> bool:
+    """True if *qty* has more decimal places than *decimals* allows.
 
     Uses Decimal round-trip to avoid float arithmetic artifacts
     (e.g. 2.55 * 100 = 254.999...).
+    """
+    d = Decimal(str(qty))
+    return d != d.quantize(Decimal(10) ** -decimals, rounding=ROUND_HALF_UP)
+
+
+def validate_quantity(qty: float, decimals: int, *, label: str = "Quantity") -> None:
+    """Raise HTTP 422 if *qty* has more decimal places than *decimals* allows.
 
     label: human-readable name included in the error message (e.g. item name).
     """
-    d = Decimal(str(qty))
-    quantizer = Decimal(10) ** -decimals
-    rounded = d.quantize(quantizer, rounding=ROUND_HALF_UP)
-    if d != rounded:
+    if exceeds_precision(qty, decimals):
         raise HTTPException(
             status_code=422,
             detail=f"{label}: quantity {qty} exceeds allowed precision ({decimals} decimal places for this unit)",

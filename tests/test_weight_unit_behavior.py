@@ -514,12 +514,18 @@ class TestItemCreateModel:
             assert forbidden not in ItemCreate.model_fields, \
                 f"Field '{forbidden}' is industry-specific and must not be top-level"
 
-    def test_item_create_sell_by_required(self) -> None:
-        """sell_by is now required (no default)."""
-        import pydantic
-        from celerp_inventory.routes import ItemCreate
-        with pytest.raises(pydantic.ValidationError):
-            ItemCreate(sku="S001", name="Widget")
+    @pytest.mark.asyncio
+    async def test_item_create_sell_by_required(self, client) -> None:
+        """sell_by is required unless the category supplies a default unit."""
+        import uuid
+        r = await client.post("/auth/register", json={
+            "company_name": "Sell By Co", "email": f"sb-{uuid.uuid4().hex[:8]}@sb.test",
+            "name": "Admin", "password": "pwvalid1",
+        })
+        headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
+        r = await client.post("/items", json={"sku": "S001", "name": "Widget"}, headers=headers)
+        assert r.status_code == 422, r.text
+        assert "sell_by" in r.text
 
     def test_item_create_with_sell_by(self) -> None:
         from celerp_inventory.routes import ItemCreate

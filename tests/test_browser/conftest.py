@@ -261,8 +261,10 @@ def page(browser_context, request):
 
 
 @pytest.fixture(scope="session")
-def unauthed_context(playwright, ui_server):
-    """Browser context WITHOUT any auth cookie (for auth-wall tests)."""
+def unauthed_context(playwright, ui_server, seeded_user):
+    """Browser context WITHOUT any auth cookie (for auth-wall tests), against an
+    installation that already has its first user, so a signed-out visitor is sent
+    to login rather than first-run setup whatever test runs first."""
     browser = playwright.chromium.launch(headless=True)
     ctx = browser.new_context(base_url=ui_server)
     yield ctx
