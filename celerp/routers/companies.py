@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import uuid
 
@@ -35,6 +36,7 @@ from celerp.services.permissions import (
     PERMISSIONS,
     ROLES,
     get_current_company_settings,
+    locked_authority,
     require_permission,
     resolved_grant_roles,
     role_has_permission,
@@ -1159,6 +1161,7 @@ async def patch_taxes(
 async def import_taxes_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
@@ -1172,10 +1175,8 @@ async def import_taxes_batch(
 
     NOTE: This remains the legacy settings-import format (records are raw dicts).
     """
-    company = await locked_company(session, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
-
+    await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
+    company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
 
     settings = dict(company.settings)
@@ -1263,6 +1264,7 @@ async def patch_payment_terms(
 async def import_payment_terms_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
@@ -1274,10 +1276,8 @@ async def import_payment_terms_batch(
     - If name exists (case-insensitive): skipped
     - Else: created
     """
-    company = await locked_company(session, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
-
+    await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
+    company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
 
     settings = dict(company.settings)
@@ -1416,6 +1416,14 @@ async def patch_terms_conditions(
 # Purchasing taxes & payment terms (independent copies, seeded from sales)
 # ---------------------------------------------------------------------------
 
+def _purchasing_list(settings: dict, key: str, sales_key: str, default: list[dict]) -> list[dict]:
+    """Purchasing data as stored, or a copy of the sales data it is seeded from."""
+    existing = settings.get(key)
+    if existing is not None:
+        return existing
+    return copy.deepcopy(settings.get(sales_key) or default)
+
+
 async def _seed_purchasing_key(
     session: AsyncSession, company: Company, key: str, sales_key: str, default: list[dict],
 ) -> list[dict]:
@@ -1428,9 +1436,7 @@ async def _seed_purchasing_key(
     if existing is not None:
         await session.commit()
         return existing
-    import copy
-    source = company.settings.get(sales_key) or default
-    seeded = copy.deepcopy(source)
+    seeded = _purchasing_list(company.settings, key, sales_key, default)
     settings = dict(company.settings)
     settings[key] = seeded
     company.settings = settings
@@ -1470,15 +1476,15 @@ async def patch_purchasing_taxes(
 async def import_purchasing_taxes_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    company = await locked_company(session, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+    await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
+    company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
-    taxes = list(await _seed_purchasing_key(session, company, "purchasing_taxes", "taxes", DEFAULT_TAX_RATES))
+    taxes = list(_purchasing_list(company.settings, "purchasing_taxes", "taxes", DEFAULT_TAX_RATES))
     existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
     for i, r in enumerate(rec.data for rec in (payload.records or [])):
         name = str(r.get("name", "") or "").strip()
@@ -1541,15 +1547,15 @@ async def patch_purchasing_payment_terms(
 async def import_purchasing_payment_terms_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    company = await locked_company(session, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+    await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
+    company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
-    terms = list(await _seed_purchasing_key(session, company, "purchasing_payment_terms", "payment_terms", DEFAULT_PAYMENT_TERMS))
+    terms = list(_purchasing_list(company.settings, "purchasing_payment_terms", "payment_terms", DEFAULT_PAYMENT_TERMS))
     existing_names = {str(t.get("name", "")).strip().lower() for t in terms if t.get("name")}
     for i, r in enumerate(rec.data for rec in (payload.records or [])):
         name = str(r.get("name", "") or "").strip()

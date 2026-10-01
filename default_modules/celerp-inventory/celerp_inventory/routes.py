@@ -4364,8 +4364,6 @@ async def batch_import_items(
     company_id=Depends(get_current_company_id),
     _: None = require_permission("import_export_data"),
     __: None = require_permission("edit_inventory"),
-    role: str = Depends(get_current_role),
-    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
@@ -4375,6 +4373,7 @@ async def batch_import_items(
     The writer is services.write_import_batch, shared with /import/rows and the
     agent /import/commit.
     """
+    role, settings = await _import_authority(session, company_id, user.id)
     return await commit_import_batch(session, company_id, user, role, settings, body)
 
 
