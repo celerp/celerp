@@ -119,15 +119,15 @@ async def test_read_back_refusal_names_no_table(real_engine, real_client, tmp_pa
 # ── Records must agree with their history ────────────────────────────────────
 
 async def test_record_disagreeing_with_history_refused(real_engine, real_client, tmp_path, monkeypatch):
-    """A backup whose record was edited (with its hashes made to match) so it no longer
-    agrees with the events that produced it is refused, and nothing is written."""
+    """A backup whose record no longer agrees with the events that produced it is
+    refused, and nothing is written."""
     _r_env(tmp_path, monkeypatch)
     _, cid, tok = await _r_source(real_engine)
     data = await download(real_client, tok)
-    forged = _r_with_rows(data, "projections",
-                          lambda row: {**row, "state": {**row["state"], "name": "forged total"}})
+    edited = _r_with_rows(data, "projections",
+                          lambda row: {**row, "state": {**row["state"], "name": "edited total"}})
     before = await snapshot(real_engine)
-    r = await restore(real_client, tok, forged, mode="new_company")
+    r = await restore(real_client, tok, edited, mode="new_company")
     _r_refused(r)
     assert r.json()["detail"] == _cb().DISAGREE
     assert await snapshot(real_engine) == before
