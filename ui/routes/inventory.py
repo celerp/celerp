@@ -31,6 +31,7 @@ from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEY
 from celerp.services.field_schema import union_category_attr_keys as _union_category_attr_keys
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, is_price_item_key, price_key, price_lists_in, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
+from celerp.importers.tabular import known_headers
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
 from ui.i18n import t, get_lang, is_rtl, field_label
 from celerp.services.units import is_weight_unit, is_pieces_unit
@@ -1452,7 +1453,12 @@ def setup_routes(app):
             return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
         form = await request.form()
-        rows, csv_ref, err = await stage_tabular_upload(token, form)
+        try:
+            price_lists = await api.get_price_lists(token)
+        except Exception:
+            price_lists = PRICE_LISTS_FALLBACK
+        spec = _build_import_spec(price_lists)
+        rows, csv_ref, err = await stage_tabular_upload(token, form, known=known_headers(spec.cols))
         if err:
             return await base_shell(
                 page_header(t("page.import_inventory", lang)),
@@ -1474,12 +1480,6 @@ def setup_routes(app):
                 request=request,
             )
 
-        # Fetch price lists + category attribute keys
-        try:
-            price_lists = await api.get_price_lists(token)
-        except Exception:
-            price_lists = PRICE_LISTS_FALLBACK
-        spec = _build_import_spec(price_lists)
         cat_schemas = await api.get_all_category_schemas(token)
         cat_attrs = _union_category_attr_keys(cat_schemas)
 
@@ -1513,8 +1513,8 @@ def setup_routes(app):
             return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
         form = await request.form()
-        csv_text = await resolve_import_csv(token, form)
-        if not csv_text:
+        staged = await load_import_draft(token, str(form.get("csv_ref") or ""))
+        if staged is None:
             return await base_shell(
                 page_header(t("page.import_inventory", lang)),
                 _import_upload_form(error=t("inventory.csv_expired")),
@@ -1523,6 +1523,7 @@ def setup_routes(app):
                 lang=lang,
                 request=request,
             )
+        csv_text, uploaded, _revision = staged
 
         try:
             price_lists = await api.get_price_lists(token)
@@ -1545,7 +1546,7 @@ def setup_routes(app):
         mapping_errors += [t(f"import.err_{e['code']}", col=e["field"]) for e in semantics.errors]
         if mapping_errors:
             # Re-render the mapping form with errors and preserved form values
-            csv_ref = await stash_import_csv(token, csv_text)
+            csv_ref = str(form.get("csv_ref") or "")
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             return await base_shell(
                 page_header(t("page.import_inventory", lang)),
@@ -1573,53 +1574,66 @@ def setup_routes(app):
         rows = apply_source_semantics(list(csv.DictReader(io.StringIO(remapped_csv))), semantics)
         cols = list(dict.fromkeys([*(remapped_cols or spec.cols), *(k for row in rows for k in row)]))
 
-        # Re-stash the remapped rows for downstream steps
-        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols))
+        # The mapped rows become the import's draft; every later step reads it.
+        draft = {"upsert": False, "decisions": {}, "from_onboarding": entered_from_onboarding(request),
+                 "source": uploaded.get("source") or {}}
+        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols), draft)
+        return RedirectResponse(f"/inventory/import/draft/{csv_ref}", status_code=303)
 
+    @app.get("/inventory/import/draft/{csv_ref}")
+    async def inventory_import_draft(request: Request, csv_ref: str):
+        """The current review of an import draft, so refresh, Back and a language change keep it."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if not await _import_export_allowed(request, token):
+            return RedirectResponse("/inventory", status_code=302)
         return await base_shell(
-            page_header(t("page.import_inventory", lang)),
-            await _item_import_check(token, csv_ref, rows, cols),
+            page_header(t("page.import_inventory")),
+            await _item_import_review(token, csv_ref),
             title=page_title("page.import_inventory"),
             nav_active="inventory",
-            lang=lang,
+            lang=get_lang(request),
             request=request,
         )
 
     @app.post("/inventory/import/revalidate")
     async def inventory_import_revalidate(request: Request):
-        """Apply inline fixes and re-validate; import if clean."""
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        if not await _import_export_allowed(request, token):
-            return RedirectResponse("/inventory", status_code=302)
-        form = await request.form()
-        csv_data = await resolve_import_csv(token, form)
-        if not csv_data:
-            return _import_upload_form(error=t("inventory.csv_expired"))
-        rows = list(csv.DictReader(io.StringIO(csv_data)))
-        cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
-        rows = _apply_fixes(form, rows, cols)
-        # Re-stash the patched CSV so downstream confirm/errors can read it
-        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols))
-        return await _item_import_check(token, csv_ref, rows, cols)
+        return await _save_and_review(request)
 
     @app.post("/inventory/import/review")
     async def inventory_import_review(request: Request):
-        """Re-run the final review, e.g. after 'Update existing records' changes."""
+        return await _save_and_review(request)
+
+    async def _save_and_review(request: Request):
+        """Save the user's cell fixes, exclusions, decisions and update choice; review again."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
         form = await request.form()
-        csv_data = await resolve_import_csv(token, form)
-        if not csv_data:
+        csv_ref = str(form.get("csv_ref") or "")
+        loaded = await load_import_draft(token, csv_ref)
+        if loaded is None:
             return _import_upload_form(error=t("inventory.csv_expired"))
-        rows = list(csv.DictReader(io.StringIO(csv_data)))
-        cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
-        csv_ref = str(form.get("csv_ref") or "") or await stash_import_csv(token, csv_data)
-        return await _item_import_review(token, csv_ref, rows, cols, upsert=form.get("upsert") == "1")
+        if "revision" not in form:
+            return await _item_import_review(token, csv_ref)
+        rows, cols, draft, _revision = _draft_rows(loaded)
+        rows = _apply_fixes(form, rows, cols)
+        draft = {**draft, "upsert": form.get("upsert") == "1", "decisions": {
+            "exclude": form.getlist("exclude"),
+            "import_summary": form.getlist("import_summary"),
+            "separate_lots": form.getlist("separate_lots"),
+        }}
+        try:
+            submitted = int(str(form.get("revision") or ""))
+        except ValueError:
+            submitted = -1
+        saved = await save_import_draft(token, csv_ref, _rows_to_csv(rows, cols), draft, submitted)
+        return await _item_import_review(
+            token, csv_ref, notice="" if saved else t("inventory.import_draft_changed"),
+        )
 
     @app.post("/inventory/import/errors")
     async def inventory_import_errors(request: Request):
@@ -1629,11 +1643,29 @@ def setup_routes(app):
         if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
         form = await request.form()
-        csv_data = await resolve_import_csv(token, form)
-        rows = list(csv.DictReader(io.StringIO(csv_data)))
-        cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
-        validate, _ = await _build_item_validator(token)
-        return error_report_response(rows, cols, validate, "inventory_errors.csv")
+        loaded = await load_import_draft(token, str(form.get("csv_ref") or ""))
+        if loaded is None:
+            return _import_upload_form(error=t("inventory.csv_expired"))
+        rows, cols, draft, _revision = _draft_rows(loaded)
+        try:
+            plan = await _item_import_plan(token, rows, draft)
+        except APIError as e:
+            return _item_import_api_error(e)
+        return plan_error_report_response(rows, cols, list(plan.get("errors") or []), "inventory_errors.csv")
+
+    @app.post("/inventory/import/cancel")
+    async def inventory_import_cancel(request: Request):
+        """Discard the caller's import draft and leave the import."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        csv_ref = str(form.get("csv_ref") or "")
+        loaded = await load_import_draft(token, csv_ref)
+        back = "/onboarding" if loaded and loaded[1].get("from_onboarding") else "/inventory"
+        if loaded is not None:
+            delete_import_ref(csv_ref)
+        return Response("", headers={"HX-Redirect": back})
 
     @app.post("/inventory/import/confirm")
     async def inventory_import_confirm(request: Request):
@@ -1644,45 +1676,58 @@ def setup_routes(app):
             return RedirectResponse("/inventory", status_code=302)
 
         form = await request.form()
-        upsert = form.get("upsert") == "1"
-        csv_data = await resolve_import_csv(token, form)
-        if not csv_data:
+        csv_ref = str(form.get("csv_ref") or "")
+        loaded = await load_import_draft(token, csv_ref)
+        if loaded is None:
             return _import_upload_form(error=t("inventory.csv_expired"))
-        rows = list(csv.DictReader(io.StringIO(csv_data)))
-        cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
-        csv_ref = str(form.get("csv_ref") or "") or await stash_import_csv(token, csv_data)
+        rows, _cols, draft, _revision = _draft_rows(loaded)
         preview_hash = str(form.get("preview_hash") or "")
         if not preview_hash:
-            return await _item_import_review(token, csv_ref, rows, cols, upsert=upsert)
+            return await _item_import_review(token, csv_ref)
 
-        # The server recomputes its preview of exactly these rows and this choice
-        # and refuses the import if it no longer matches what was reviewed. It owns
-        # location resolution and creation, unit and quantity derivation, monetary
-        # conversion, idempotency, and the category-schema follow-up.
+        # The import is exactly the saved draft: its rows, decisions and update
+        # choice. The server re-plans them and refuses the import when the plan
+        # no longer matches the reviewed hash, as after a change in another tab.
+        upsert = bool(draft.get("upsert"))
+        decisions = dict(draft.get("decisions") or {})
         try:
             result = await api.import_rows(
-                token, rows, upsert=upsert,
-                idempotency_key=_import_operation_key(rows, upsert), preview_hash=preview_hash,
+                token, rows, upsert=upsert, idempotency_key=_import_operation_key(rows, upsert),
+                preview_hash=preview_hash, decisions=decisions,
             )
         except APIError as e:
             if e.status in (409, 422):
                 return await _item_import_review(
-                    token, csv_ref, rows, cols, upsert=upsert,
-                    notice=t("inventory.import_review_changed") if e.status == 409 else "",
+                    token, csv_ref, notice=t("inventory.import_review_changed") if e.status == 409 else "",
                 )
             return _item_import_api_error(e)
 
         await discard_import_csv(token, form, result)
+        created = int(result.get("created", 0) or 0)
+        updated = int(result.get("updated", 0) or 0)
+        already = int(result.get("already_imported", 0) or 0)
+        batch_id = str(result.get("batch_id") or "")
+        extra = Div(
+            P(t("inventory.import_already_imported"), cls="flash flash--info")
+            if already and not created and not updated else "",
+            Button(t("inventory.import_undo"), cls="btn btn--secondary",
+                   hx_post=f"/settings/import-history/{batch_id}/undo",
+                   hx_confirm=t("settings.confirm_undo_import", n=created),
+                   hx_target="#import-preview", hx_swap="outerHTML")
+            if result.get("reversible") and batch_id else "",
+            cls="flex-col gap-sm mt-sm",
+        )
         return import_result_panel(
-            created=int(result.get("created", 0) or 0),
-            skipped=int(result.get("skipped", 0) or 0),
-            updated=int(result.get("updated", 0) or 0),
+            created=created,
+            skipped=int(result.get("skipped", 0) or 0) - already,
+            updated=updated,
             errors=list(result.get("errors", []) or []),
             entity_label="inventory",
             back_href="/inventory",
             import_more_href="/inventory/import",
             has_mapping=True,
-            from_onboarding=entered_from_onboarding(request),
+            extra=extra,
+            from_onboarding=bool(draft.get("from_onboarding")),
         )
 
     # ── Blank-create: /inventory/create-blank ──────────────────────────────────
@@ -7448,31 +7493,31 @@ def _ledger_table(ledger: list[dict], entity_id: str | None = None, currency: st
 
 from ui.routes.csv_import import (
     CsvImportSpec,
-    ValidateFn,
+    delete_import_ref,
     discard_import_csv,
-    resolve_import_csv,
     _rows_to_csv,
     stash_import_csv,
+    load_import_draft,
+    save_import_draft,
     apply_column_mapping,
     form_mapping,
     apply_fixes_to_rows as _apply_fixes,
     column_mapping_form,
-    error_report_response,
     import_abort_panel,
     import_result_panel,
     entered_from_onboarding,
     onboarding_entry_cookie,
+    plan_error_report_response,
+    plan_review_panel,
     stage_tabular_upload,
-    rows_have_errors,
-    semantic_review_panel,
     upload_form as _csv_upload_form,
-    validate_cell as _csv_validate_cell,
     validate_column_mapping,
-    validation_result as _csv_validation_result,
 )
 
 def _import_operation_key(rows: list[dict], upsert: bool) -> str:
-    """One idempotency key for a whole browser import: same rows and choice, same key."""
+    """One idempotency key for a whole browser import: same rows and choice, same key.
+
+    The server folds the row decisions into the operation it derives from this key."""
     fingerprint = hashlib.sha256(
         json.dumps({"upsert": upsert, "rows": rows}, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -7495,49 +7540,65 @@ def _item_import_api_error(e: APIError):
     )
 
 
-async def _item_import_review(token: str, csv_ref: str, rows: list[dict], cols: list[str], *,
-                              upsert: bool, notice: str = ""):
-    """The server's semantic preview of the mapped rows, rendered as the final review."""
-    try:
-        preview = await api.preview_import_rows(
-            token, rows, upsert=upsert, idempotency_key=_import_operation_key(rows, upsert),
-        )
-    except APIError as e:
-        return _item_import_api_error(e)
-    return semantic_review_panel(
-        rows=rows,
-        cols=cols,
-        csv_ref=csv_ref,
-        upsert=upsert,
-        upsert_label=t("inventory.upsert_sku_barcode"),
-        errors=list(preview.get("errors") or []),
-        locations_to_create=list(preview.get("locations_to_create") or []),
-        preview_hash=str(preview.get("preview_hash") or ""),
-        review_action="/inventory/import/review",
-        confirm_action="/inventory/import/confirm",
-        upload_href="/inventory/import",
-        back_href="/inventory",
-        notice=notice,
+def _draft_rows(loaded: tuple[str, dict, int]) -> tuple[list[dict], list[str], dict, int]:
+    csv_text, draft, revision = loaded
+    reader = csv.DictReader(io.StringIO(csv_text))
+    rows = list(reader)
+    return rows, list(reader.fieldnames or []), draft, revision
+
+
+async def _item_import_plan(token: str, rows: list[dict], draft: dict) -> dict:
+    upsert = bool(draft.get("upsert"))
+    decisions = dict(draft.get("decisions") or {})
+    return await api.plan_import_rows(
+        token, rows, upsert=upsert, decisions=decisions,
+        idempotency_key=_import_operation_key(rows, upsert),
     )
 
 
-async def _item_import_check(token: str, csv_ref: str, rows: list[dict], cols: list[str]):
-    """Cell fixes first; once every cell is valid, the server's final review."""
-    validate, cell_renderers = await _build_item_validator(token)
-    if rows_have_errors(rows, cols, validate):
-        return _csv_validation_result(
-            csv_ref=csv_ref,
-            rows=rows,
-            cols=cols,
-            validate=validate,
-            confirm_action="/inventory/import/confirm",
-            error_report_action="/inventory/import/errors",
-            back_href="/inventory/import",
-            revalidate_action="/inventory/import/revalidate",
-            has_mapping=True,
-            cell_renderers=cell_renderers,
-        )
-    return await _item_import_review(token, csv_ref, rows, cols, upsert=False)
+# The operational columns every review shows, whatever else the file carries.
+_REVIEW_COL_KEYS = {
+    "name": "field.name",
+    "sku": "field.sku",
+    "quantity": "field.quantity",
+    "qty": "th.qty",
+    "sell_by": "th.unit",
+    "cost_price": "label.cost_price",
+}
+
+
+async def _item_import_review(token: str, csv_ref: str, *, notice: str = ""):
+    """The server's plan of the saved draft, rendered as the review."""
+    loaded = await load_import_draft(token, csv_ref)
+    if loaded is None:
+        return _import_upload_form(error=t("inventory.csv_expired"))
+    rows, cols, draft, revision = _draft_rows(loaded)
+    try:
+        plan = await _item_import_plan(token, rows, draft)
+        price_lists = await api.get_price_lists(token)
+    except APIError as e:
+        return _item_import_api_error(e)
+    col_labels = {
+        **{k: t(v) for k, v in _REVIEW_COL_KEYS.items()},
+        "cost_price_total": t("inventory.import_col_total", name=t("label.cost_price")),
+        **_import_price_col_labels(price_lists),
+    }
+    return plan_review_panel(
+        rows=rows,
+        cols=cols,
+        col_labels=col_labels,
+        csv_ref=csv_ref,
+        revision=revision,
+        upsert=bool(draft.get("upsert")),
+        upsert_label=t("inventory.upsert_sku_barcode"),
+        plan=plan,
+        review_action="/inventory/import/review",
+        confirm_action="/inventory/import/confirm",
+        error_report_action="/inventory/import/errors",
+        cancel_action="/inventory/import/cancel",
+        upload_href="/inventory/import",
+        notice=notice,
+    )
 
 
 # The dynamic item import spec (with the company's price columns) is built by
@@ -7571,101 +7632,6 @@ def _import_upload_form(error: str | None = None) -> FT:
         error=error,
         has_mapping=True,
     )
-
-
-def _item_validate(col: str, value: str, row: dict | None = None) -> bool:
-    return _csv_validate_cell(_IMPORT_SPEC, col, value)
-
-
-async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
-    """Build a validator and import fix-table cell renderers for CSV import preview.
-
-    Returns (validate_fn, cell_renderers) where cell_renderers maps column names
-    to callables of signature (val: str, row_index: int, row: dict, is_bad: bool) -> FT.
-
-    location_name is optional - blank or missing means "use default location"
-    (resolved at confirm time). Validates sell_by against company units if present,
-    and requires sell_by when the row's category has no default_sell_by fallback.
-    """
-    try:
-        company_units = await api.get_units(token)
-    except Exception:
-        company_units = []
-
-    try:
-        vert_cats = await api.list_verticals_categories(token)
-        cat_sell_by: dict[str, str] = {
-            c["name"]: c["default_sell_by"]
-            for c in vert_cats
-            if c.get("default_sell_by")
-        }
-    except Exception:
-        cat_sell_by = {}
-
-    valid_unit_names: list[str] = [u["name"] for u in company_units]
-    valid_unit_set: frozenset[str] = frozenset(valid_unit_names)
-    valid_unit_lower: dict[str, str] = {u.lower(): u for u in valid_unit_names}
-    weight_unit_names: list[str] = [u["name"] for u in company_units if u.get("unit_type") == "weight"]
-    weight_unit_lower: dict[str, str] = {u.lower(): u for u in weight_unit_names}
-
-    def _validate(col: str, value: str, row: dict | None = None) -> bool:
-        if col == "sell_by":
-            v = value.strip()
-            # sell_by is required unless the row's category provides a default
-            if not v:
-                category = str((row or {}).get("category", "")).strip()
-                return bool(cat_sell_by.get(category))
-            # If known units are available, validate membership (case-insensitive)
-            return not valid_unit_set or v.lower() in valid_unit_lower
-        if col == "weight_unit":
-            v = value.strip()
-            # weight_unit is optional; if provided it must be a known weight-type unit
-            if not v:
-                return True
-            return not weight_unit_lower or v.lower() in weight_unit_lower
-        if col == "gross_weight_unit":
-            v = value.strip()
-            if not v:
-                return True
-            return not weight_unit_lower or v.lower() in weight_unit_lower
-        return _item_validate(col, value)
-
-    # Build import fix-table cell renderers for constrained columns.
-    # Renderer signature: (val: str, row_index: int, row: dict, is_bad: bool) -> FT
-    cell_renderers: dict = {}
-    if valid_unit_names:
-        def _make_unit_renderer(col: str, _opts: list = valid_unit_names) -> "Callable":
-            def _render(val: str, ri: int, row: dict, is_bad: bool) -> FT:
-                err_cls = "cell-edit  input--error" if is_bad else "cell-edit"
-                val_stripped = val.strip()
-                val_lower = val_stripped.lower()
-                matched = any(u.lower() == val_lower for u in _opts)
-                # When value is unrecognised, inject it as a pre-selected invalid option
-                # so the user can see what they had and choose a replacement.
-                unknown_opt = (
-                    Option(t("inventory.unit_unknown_option", value=val_stripped), value=val_stripped,
-                           selected=True, cls="unit-unknown-option")
-                    if val_stripped and not matched
-                    else None
-                )
-                return Select(
-                    Option(t("inventory.select_unit"), value="", selected=(not val_stripped and not matched)),
-                    *([unknown_opt] if unknown_opt else []),
-                    *[Option(u, value=u, selected=(matched and u.lower() == val_lower)) for u in _opts],
-                    Option(t("inventory.add_new_unit"), value="__add_new__"),
-                    data_col=col,
-                    data_row=str(ri),
-                    cls=err_cls,
-                )
-            return _render
-
-        cell_renderers["sell_by"] = _make_unit_renderer("sell_by")
-        cell_renderers["purchase_unit"] = _make_unit_renderer("purchase_unit")
-        if weight_unit_names:
-            cell_renderers["weight_unit"] = _make_unit_renderer("weight_unit", weight_unit_names)
-            cell_renderers["gross_weight_unit"] = _make_unit_renderer("gross_weight_unit", weight_unit_names)
-
-    return _validate, cell_renderers
 
 
 def _effective_schema(

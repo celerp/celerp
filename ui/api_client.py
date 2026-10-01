@@ -365,22 +365,27 @@ async def batch_import(token: str, path: str, records: list[dict], upsert: bool 
         return r.json()
 
 
-async def preview_import_rows(token: str, rows: list[dict], *, upsert: bool, idempotency_key: str) -> dict:
-    """Semantic preview of mapped inventory rows: row errors, locations that would
-    be created, and the hash a commit of exactly these rows must echo."""
+async def plan_import_rows(
+    token: str, rows: list[dict], *, upsert: bool, idempotency_key: str, decisions: dict | None = None,
+) -> dict:
+    """The import plan of mapped inventory rows under the user's row decisions:
+    every blocker, the locations that would be created, the row counts, rows
+    that read as totals, SKUs shared by several rows, and the hash a commit of
+    exactly these rows and decisions must echo."""
     async with _bulk_api_client(token, timeout=300.0) as c:
         r = _raise(await c.post(
             "/items/import/rows/preview",
-            json={"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key},
+            json={"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key,
+                  "decisions": decisions or {}},
         ))
         return r.json()
 
 
 async def import_rows(
     token: str, rows: list[dict], upsert: bool = False, idempotency_key: str | None = None,
-    preview_hash: str | None = None,
+    preview_hash: str | None = None, decisions: dict | None = None,
 ) -> dict:
-    """POST mapped inventory CSV rows to the shared import committer.
+    """POST mapped inventory CSV rows, with the user's row decisions, to the shared import committer.
 
     Rows are raw column-to-value dicts; the server owns location resolution and
     creation, unit and quantity derivation, monetary conversion, command
@@ -392,7 +397,8 @@ async def import_rows(
     bulk pool for the same reason batch_import does: a large import holds its
     write connection.
     """
-    body = {"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key, "preview_hash": preview_hash}
+    body = {"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key, "preview_hash": preview_hash,
+            "decisions": decisions or {}}
     async with _bulk_api_client(token, timeout=300.0) as c:
         r = _raise(await c.post("/items/import/rows", json=body))
         return r.json()

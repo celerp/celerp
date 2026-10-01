@@ -18,7 +18,11 @@ columns default to "Import as attribute"; the user can also pick "Skip".
 
 from __future__ import annotations
 
+import base64
+import binascii
 import csv
+import fcntl
+import io
 import json
 import logging
 import os
@@ -26,7 +30,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from fasthtml.common import *
 from starlette.responses import StreamingResponse
@@ -100,7 +104,13 @@ def _write_private(path: Path, text: str) -> None:
         raise
 
 
-def _write_stage(company_id: str, csv_text: str) -> str:
+def _write_stage(company_id: str, csv_text: str, draft: dict | None = None, *, kind: str = "table") -> str:
+    """Stage ``csv_text`` for ``company_id`` and return its reference.
+
+    A ``table`` stage holds the rows of an import as CSV; a ``source`` stage
+    holds an uploaded file (base64) while the user chooses its sheet or header
+    row. Each kind is only ever read as itself.
+    """
     if not company_id:
         raise ValueError("import staging requires a company")
     base = _stage_dir()
@@ -111,21 +121,23 @@ def _write_stage(company_id: str, csv_text: str) -> str:
     csv_path, meta_path = _stage_paths(ref)
     try:
         _write_private(csv_path, csv_text)
-        _write_private(meta_path, json.dumps({"company_id": str(company_id), "created_at": time.time()}))
+        _write_private(meta_path, json.dumps({
+            "company_id": str(company_id), "created_at": time.time(), "draft": draft or {}, "revision": 1,
+            "kind": kind,
+        }))
     except BaseException:
         delete_import_ref(ref)
         raise
     return ref
 
 
-def _read_stage(company_id: str, ref: str) -> str | None:
-    """Stage content for ``ref`` if it belongs to ``company_id`` and is fresh."""
+def _stage_meta(company_id: str, ref: str, kind: str = "table") -> dict | None:
+    """Metadata of the stage ``ref`` if it is a ``kind`` stage, belongs to ``company_id`` and is fresh."""
     paths = _stage_paths(ref)
     if paths is None or not company_id:
         return None
-    csv_path, meta_path = paths
     try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta = json.loads(paths[1].read_text(encoding="utf-8"))
         created_at = float(meta["created_at"])
         owner = str(meta["company_id"])
     except (OSError, ValueError, KeyError, TypeError):
@@ -133,20 +145,57 @@ def _read_stage(company_id: str, ref: str) -> str | None:
     if time.time() - created_at > _IMPORT_STAGE_MAX_AGE_SECONDS:
         delete_import_ref(ref)
         return None
-    if owner != str(company_id):
+    return meta if owner == str(company_id) and meta.get("kind", "table") == kind else None
+
+
+def _read_stage(company_id: str, ref: str) -> str | None:
+    """Stage content for ``ref`` if it belongs to ``company_id`` and is fresh."""
+    draft = _read_draft(company_id, ref)
+    return draft[0] if draft else None
+
+
+def _read_draft(company_id: str, ref: str, kind: str = "table") -> tuple[str, dict, int] | None:
+    """``(content, draft, revision)`` of a fresh ``kind`` stage owned by ``company_id``."""
+    meta = _stage_meta(company_id, ref, kind)
+    if meta is None:
         return None
     try:
-        return csv_path.read_text(encoding="utf-8")
+        content = _stage_paths(ref)[0].read_text(encoding="utf-8")
     except OSError:
         return None
+    return content, dict(meta.get("draft") or {}), int(meta.get("revision") or 1)
+
+
+def _update_draft(company_id: str, ref: str, csv_text: str, draft: dict, revision: int) -> int | None:
+    """Replace a stage's content and draft if it is still at ``revision``; return the new revision.
+
+    The check and both writes happen under an exclusive lock on the stage, so of
+    two edits made from the same revision exactly one lands and the other gets
+    None (it was made against a draft that has since changed).
+    """
+    paths = _stage_paths(ref)
+    if paths is None:
+        return None
+    csv_path, meta_path = paths
+    fd = os.open(_stage_dir() / f"{ref}.lock", os.O_RDWR | os.O_CREAT, _STAGE_FILE_MODE)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        meta = _stage_meta(company_id, ref)
+        if meta is None or int(meta.get("revision") or 1) != revision:
+            return None
+        _write_private(csv_path, csv_text)
+        _write_private(meta_path, json.dumps({**meta, "draft": draft, "revision": revision + 1}))
+        return revision + 1
+    finally:
+        os.close(fd)
 
 
 def delete_import_ref(ref: str) -> None:
-    """Remove a stage pair. Malformed references are ignored."""
+    """Remove a stage and its lock. Malformed references are ignored."""
     paths = _stage_paths(ref)
     if paths is None:
         return
-    for path in paths:
+    for path in (*paths, _stage_dir() / f"{ref}.lock"):
         path.unlink(missing_ok=True)
 
 
@@ -200,26 +249,89 @@ async def _company_id(token: str) -> str:
     return str((await api.get_company(token)).get("id") or "")
 
 
-async def stash_import_csv(token: str, csv_text: str) -> str:
-    """Stage CSV text for the authenticated company; return its reference."""
-    return _write_stage(await _company_id(token), csv_text)
+async def stash_import_csv(token: str, csv_text: str, draft: dict | None = None) -> str:
+    """Stage CSV text, and the draft state of its import, for the authenticated company; return its reference."""
+    return _write_stage(await _company_id(token), csv_text, draft)
 
 
-async def stage_tabular_upload(token: str, form: Any) -> tuple[list[dict], str, str | None]:
-    """Read the uploaded file and stage it for the authenticated company.
+async def load_import_draft(token: str, ref: str) -> tuple[str, dict, int] | None:
+    """``(csv_text, draft, revision)`` of the caller's own import draft; None if invalid, foreign, or expired."""
+    return _read_draft(await _company_id(token), ref)
 
-    Returns (rows, csv_ref, error). When the stage cannot be written the error
-    is a generic message; where staged files live stays in the server log.
+
+async def save_import_draft(token: str, ref: str, csv_text: str, draft: dict, revision: int) -> int | None:
+    """Save an edit made from ``revision`` of the caller's draft; None when the draft changed since."""
+    return _update_draft(await _company_id(token), ref, csv_text, draft, revision)
+
+
+async def stage_tabular_upload(
+    token: str, form: Any, known: Any = (),
+) -> tuple[list[dict], str, str | None]:
+    """Read the uploaded file and stage its rows for the authenticated company.
+
+    Returns (rows, csv_ref, error). ``known`` holds the normalized headers the
+    importer recognizes, used to find the header row. When the file needs a
+    choice (its sheet, or which line is the header) the file itself is staged
+    first, so the choice is made on the stored file without uploading it again;
+    the error then carries the staged file's reference. The chosen sheet and
+    header row are kept with the staged rows. When a stage cannot be written the
+    error is a generic message; where staged files live stays in the server log.
     """
-    rows, err = await read_tabular_upload(form)
-    if err:
-        return rows, "", err
-    cols = list(rows[0].keys()) if rows else []
+    source_ref = str(form.get("source_ref") or "")
+    if source_ref:
+        source = await _load_upload_source(token, source_ref)
+        if source is None:
+            return [], "", t("import.csv_expired")
+        content, filename = source
+    else:
+        content, filename, err = await _upload_content(form)
+        if err:
+            return [], "", err
+    sheet, header_row = _source_choice(form)
+    rows, header_row, err = read_tabular_source(content, filename, sheet=sheet, header_row=header_row, known=known)
     try:
-        return rows, await stash_import_csv(token, _rows_to_csv(rows, cols)), None
+        if isinstance(err, UploadError) and err.asks:
+            err.source_ref = source_ref or await _stage_upload_source(token, content, filename)
+            return [], "", err
+        if err:
+            return rows, "", err
+        cols = list(rows[0].keys()) if rows else []
+        source = {"filename": filename, "sheet": sheet, "header_row": header_row}
+        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols), {"source": source})
     except OSError:
         logger.exception("Could not stage an uploaded import file")
         return [], "", t("import.err_stage_unavailable")
+    if source_ref:
+        delete_import_ref(source_ref)
+    return rows, csv_ref, None
+
+
+async def _stage_upload_source(token: str, content: bytes, filename: str) -> str:
+    return _write_stage(
+        await _company_id(token), base64.b64encode(content).decode("ascii"), {"filename": filename}, kind="source",
+    )
+
+
+async def _load_upload_source(token: str, ref: str) -> tuple[bytes, str] | None:
+    """``(content, filename)`` of the caller's own staged upload; None if invalid, foreign, or expired."""
+    staged = _read_draft(await _company_id(token), ref, kind="source")
+    if staged is None:
+        return None
+    text, draft, _revision = staged
+    try:
+        return base64.b64decode(text, validate=True), str(draft.get("filename") or "upload.csv")
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _source_choice(form: Any) -> tuple[str | None, int | None]:
+    """The sheet and header row the user chose, if any."""
+    sheet = str(form.get("sheet") or "").strip() or None
+    try:
+        header_row = int(str(form.get("header_row") or ""))
+    except ValueError:
+        header_row = None
+    return sheet, header_row if header_row is not None and header_row >= 0 else None
 
 
 async def load_import_csv(token: str, ref: str) -> str | None:
@@ -848,14 +960,35 @@ _DROPZONE_JS = """
 """
 
 
-def _sheet_picker(sheets: list[str] | None) -> FT | str:
-    if not sheets:
-        return ""
+def _choice_picker(name: str, label: str, options: list[str | tuple[str, str]]) -> FT:
     return Label(
-        t("import.sheet_label"),
-        searchable_select("sheet", sheets, aria_label=t("import.sheet_label")),
+        label,
+        searchable_select(name, options, aria_label=label),
         cls="form-label",
         style="display:block; margin-bottom: 12px;",
+    )
+
+
+def _header_line_label(index: int, line: list[str]) -> str:
+    cells = " | ".join(c.strip() for c in line if str(c).strip()) or "--"
+    return t("import.header_row_option", n=index + 1, cells=cells[:80] + ("..." if len(cells) > 80 else ""))
+
+
+def _source_choice_form(error: UploadError, preview_action: str) -> FT:
+    """Choose the sheet or header row of the staged file, without uploading it again."""
+    return Form(
+        Input(type="hidden", name="source_ref", value=error.source_ref),
+        Input(type="hidden", name="sheet", value=error.sheet) if error.sheet else "",
+        _choice_picker("sheet", t("import.sheet_label"), error.sheets) if error.sheets else "",
+        _choice_picker(
+            "header_row", t("import.header_row_label"),
+            [(str(i), _header_line_label(i, line)) for i, line in enumerate(error.header_lines)],
+        ) if error.header_lines else "",
+        Button(t("btn.continue"), cls="btn btn--primary", type="submit"),
+        method="post",
+        action=preview_action,
+        enctype="multipart/form-data",
+        cls="import-source-choice",
     )
 
 
@@ -871,11 +1004,11 @@ def upload_form(
     return Div(
         _step_indicator(1, has_mapping=has_mapping),
         P(error, cls="flash flash--error") if error else "",
+        _source_choice_form(error, preview_action) if isinstance(error, UploadError) and error.asks else "",
         P(hint, cls="form-hint", style="margin:0 0 8px") if hint else "",
         Form(
             Input(type="file", id="csv_file", name="csv_file", accept=".csv,.xlsx",
                   required=True, style="display:none"),
-            _sheet_picker(getattr(error, "sheets", None)),
             Div(
                 Div("📄", cls="import-dropzone-icon"),
                 Div(t("msg.drag_your_file_here_or_click_to_browse"), cls="import-dropzone-text"),
@@ -900,51 +1033,91 @@ def upload_form(
 
 
 class UploadError(str):
-    """An upload error message. ``sheets`` lists the workbook sheets to choose
-    from when the file had more than one sheet with data."""
+    """An upload error message that asks the user to choose: a sheet of the
+    workbook (``sheets``) or the line of the file that holds the column names
+    (``header_lines``). ``source_ref`` is the staged file the choice applies to."""
 
     sheets: list[str]
+    header_lines: list[list[str]]
+    filename: str
+    sheet: str | None
+    source_ref: str
 
-    def __new__(cls, message: str, sheets: list[str] | None = None) -> "UploadError":
+    def __new__(
+        cls, message: str, sheets: list[str] | None = None, *,
+        header_lines: list[list[str]] | None = None, filename: str = "", sheet: str | None = None,
+    ) -> "UploadError":
         obj = super().__new__(cls, message)
         obj.sheets = list(sheets or [])
+        obj.header_lines = list(header_lines or [])
+        obj.filename = filename
+        obj.sheet = sheet
+        obj.source_ref = ""
         return obj
 
+    @property
+    def asks(self) -> bool:
+        return bool(self.sheets or self.header_lines)
 
-async def read_tabular_upload(form: Any) -> tuple[list[dict], str | None]:
-    """Return (rows, error) for an uploaded .csv or .xlsx file.
 
-    Both formats go through ``tabular.read_table``, so a workbook and the same
-    data saved as CSV yield identical rows. A workbook with several sheets that
-    hold data is never read until the user picks one (``sheet`` form field); the
-    error then carries the sheet names so the upload form can offer them.
-    """
+async def _upload_content(form: Any) -> tuple[bytes, str, str | None]:
+    """(content, filename, error) of the uploaded file."""
     file_obj = form.get("csv_file")
     if not file_obj or not hasattr(file_obj, "read"):
-        return [], t("import.err_select_file")
+        return b"", "", t("import.err_select_file")
     filename = getattr(file_obj, "filename", None) or "upload.csv"
-    sheet = (form.get("sheet") or "").strip() or None
     try:
-        content = await tabular.read_upload_bytes(file_obj)
-        fieldnames, rows = tabular.read_table(content, filename, sheet=sheet)
+        return await tabular.read_upload_bytes(file_obj), filename, None
+    except tabular.TabularError as exc:
+        return b"", filename, t("import.err_read_file", file=filename, detail=str(exc))
+
+
+def read_tabular_source(
+    content: bytes, filename: str, *, sheet: str | None = None, header_row: int | None = None, known: Any = (),
+) -> tuple[list[dict], int | None, str | None]:
+    """Return (rows, header row, error) for the bytes of a .csv or .xlsx file.
+
+    Both formats go through ``tabular.read_table_at_header``, so a workbook and
+    the same data saved as CSV yield identical rows and choose their header row
+    the same way. A workbook with several sheets that hold data, or a file whose
+    header row is not clear, is never read until the user chooses; the error
+    then carries what to choose from. Every message names the file, and only a
+    CSV file is ever described as CSV.
+    """
+    try:
+        fieldnames, rows, header_row = tabular.read_table_at_header(
+            content, filename, sheet=sheet, header_row=header_row, known=known,
+        )
     except UnicodeDecodeError:
-        return [], t("import.err_decode")
+        return [], None, t("import.err_decode", file=filename)
     except csv.Error:
-        return [], t("import.err_parse")
+        return [], None, t("import.err_parse", file=filename)
     except tabular.TabularError as exc:
         if exc.sheets:
-            return [], UploadError(t("import.err_choose_sheet"), sheets=exc.sheets)
-        if exc.code == "extra_columns":
-            return [], t("import.err_extra_columns")
-        if exc.code == "no_header":
-            return [], t("import.err_no_header")
-        return [], t("import.err_read_file", detail=str(exc))
+            return [], None, UploadError(t("import.err_choose_sheet", file=filename), sheets=exc.sheets,
+                                         filename=filename)
+        if exc.header_lines:
+            return [], None, UploadError(t("import.err_choose_header", file=filename),
+                                         header_lines=exc.header_lines, filename=filename, sheet=sheet)
+        if exc.code in ("extra_columns", "no_header", "empty"):
+            return [], None, t(f"import.err_{exc.code}", file=filename)
+        return [], None, t("import.err_read_file", file=filename, detail=str(exc))
     names = [str(f or "").strip() for f in fieldnames]
     if not names or "" in names:
-        return [], t("import.err_no_header")
+        return [], None, t("import.err_no_header", file=filename)
     if not rows:
-        return [], t("import.err_empty")
-    return rows, None
+        return [], None, t("import.err_empty", file=filename)
+    return rows, header_row, None
+
+
+async def read_tabular_upload(form: Any, known: Any = ()) -> tuple[list[dict], str | None]:
+    """Return (rows, error) for an uploaded .csv or .xlsx file (``read_tabular_source``)."""
+    content, filename, err = await _upload_content(form)
+    if err:
+        return [], err
+    sheet, header_row = _source_choice(form)
+    rows, _header_row, err = read_tabular_source(content, filename, sheet=sheet, header_row=header_row, known=known)
+    return rows, err
 
 
 # ── Inline fix error panel ────────────────────────────────────────────────────
@@ -975,53 +1148,6 @@ _INLINE_FIX_JS = """
     });
     e.detail.parameters['fixes_json'] = JSON.stringify(fixes);
   });
-
-  // "Add new unit" option in unit dropdowns: open settings page and return.
-  // Keep original value in the cell (do not reset to '') so fixes_json preserves
-  // the bad value on revalidate. Auto-revalidate when tab regains visibility so
-  // the freshly added unit appears as a valid option without a manual click.
-  document.addEventListener('change', function(e) {
-    if (e.target.matches('select.cell-edit') && e.target.value === '__add_new__') {
-      var origVal = e.target.getAttribute('data-prev') || '';
-      // Restore original value before opening new tab
-      e.target.value = origVal;
-      window.open('/settings/inventory?tab=units&from_import=1', '_blank');
-      // When user returns to this tab, auto-revalidate so new units appear in dropdowns.
-      var revalidateFired = false;
-      document.addEventListener('visibilitychange', function _onVisible() {
-        if (document.visibilityState !== 'visible' || revalidateFired) return;
-        revalidateFired = true;
-        document.removeEventListener('visibilitychange', _onVisible);
-        var btn = document.querySelector('.csv-fix-actions button[type="submit"]');
-        if (btn) btn.click();
-      });
-    }
-  });
-
-  // Track previous select values so bulk-sync and add-new can reference them.
-  document.addEventListener('focus', function(e) {
-    if (e.target.matches('select.cell-edit')) {
-      e.target.setAttribute('data-prev', e.target.value);
-    }
-  }, true);
-
-  // When a cell-edit select value changes, sync all other cells in the same
-  // column that still hold the same old value (bulk-update identical bad values).
-  document.addEventListener('change', function(e) {
-    if (!e.target.matches('select.cell-edit') || e.target.value === '__add_new__') return;
-    var col = e.target.getAttribute('data-col');
-    var newVal = e.target.value;
-    var oldVal = e.target.getAttribute('data-prev');
-    if (!col || !oldVal || oldVal === newVal) return;
-    document.querySelectorAll('select.cell-edit[data-col="' + col + '"]').forEach(function(el) {
-      if (el !== e.target && el.value === oldVal) {
-        el.value = newVal;
-        el.classList.remove('input--error');
-      }
-    });
-    // Update data-prev to new value after sync
-    e.target.setAttribute('data-prev', newVal);
-  });
 })();
 """
 
@@ -1043,11 +1169,7 @@ _INLINE_FIX_CSS = """
 .csv-fix-table .cell-ro { color: var(--c-text2); font-size: 11px; }
 .csv-fix-table input.cell-edit { width: 100%; box-sizing: border-box; padding: 3px 6px;
   font-size: 12px; border: 1px solid var(--c-border); border-radius: var(--radius); }
-.csv-fix-table select.cell-edit { width: 100%; box-sizing: border-box; padding: 3px 6px;
-  font-size: 12px; border: 1px solid var(--c-border); border-radius: var(--radius); }
 .csv-fix-table input.input--error { border-color: var(--c-red, #ef4444);
-  background: rgba(239,68,68,0.06); }
-.csv-fix-table select.input--error { border-color: var(--c-red, #ef4444);
   background: rgba(239,68,68,0.06); }
 .csv-ok-count { font-size: 12px; color: var(--c-text2); margin-top: 6px; }
 .csv-fix-actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
@@ -1067,7 +1189,6 @@ def _fix_errors_panel(
     error_report_action: str,
     back_href: str,
     has_mapping: bool = False,
-    cell_renderers: dict[str, "Callable[[str, int, dict, bool], FT]"] | None = None,
 ) -> FT:
     """Inline-fix error panel: editable error cells + fill-all bars."""
     ok_count = len(rows) - len(error_row_indices)
@@ -1095,19 +1216,11 @@ def _fix_errors_panel(
         col_error_count = col_error_counts.get(col, 0)
         if col_error_count > 1:
             label = col.replace("_", " ").title()
-            renderer = (cell_renderers or {}).get(col)
-            if renderer:
-                # Reuse the per-cell renderer for the fill widget. ri=-1 marks it as
-                # the fill source (not a target cell). Inject id so csvFillColumn can
-                # read the selected value via document.getElementById('fill-{col}').
-                fill_widget = renderer("", -1, {}, False)
-                fill_widget.attrs["id"] = f"fill-{col}"
-            else:
-                fill_widget = Input(
-                    type="text", id=f"fill-{col}",
-                    placeholder=t("import.fill_placeholder", label=label),
-                    cls="form-input form-input--sm",
-                )
+            fill_widget = Input(
+                type="text", id=f"fill-{col}",
+                placeholder=t("import.fill_placeholder", label=label),
+                cls="form-input form-input--sm",
+            )
             fill_bars.append(Div(
                 Label(f"{label} " + t("import.n_rows_paren", n=col_error_count), _for=f"fill-{col}"),
                 fill_widget,
@@ -1165,17 +1278,13 @@ def _fix_errors_panel(
             if col in error_cols:
                 is_bad = col in bad
                 err_cls = f"cell-edit{'  input--error' if is_bad else ''}"
-                renderer = (cell_renderers or {}).get(col)
-                if renderer:
-                    cells.append(Td(renderer(val, ri, row, is_bad)))
-                else:
-                    cells.append(Td(Input(
-                        type="text",
-                        value=val,
-                        data_col=col,
-                        data_row=str(ri),
-                        cls=err_cls,
-                    )))
+                cells.append(Td(Input(
+                    type="text",
+                    value=val,
+                    data_col=col,
+                    data_row=str(ri),
+                    cls=err_cls,
+                )))
             else:
                 cells.append(Td(val, cls="cell-ro"))
         body_rows.append(Tr(*cells, cls="data-row"))
@@ -1273,7 +1382,6 @@ def validation_result(
     revalidate_action: str = "",
     has_mapping: bool = False,
     upsert_label: str | None = None,
-    cell_renderers: dict[str, "Callable[[str, int, dict, bool], FT]"] | None = None,
     notes: Any = "",
     ready: int | None = None,
 ) -> FT:
@@ -1307,7 +1415,6 @@ def validation_result(
             error_report_action=error_report_action,
             back_href=back_href,
             has_mapping=has_mapping,
-            cell_renderers=cell_renderers,
         )
 
     # Clean - confirm panel with preview table
@@ -1343,14 +1450,11 @@ def _preview_table(rows: list[dict], cols: list[str]) -> FT:
 def _upsert_control(upsert_label: str, *, checked: bool = False, review_action: str = "") -> FT:
     """The 'Update existing records' checkbox and its matching hint.
 
-    With ``review_action`` a change re-runs the review for the new choice, so the
-    confirmation always matches what will be imported.
+    With ``review_action`` a change submits the review form, which saves the
+    choice and re-runs the review, so the confirmation always matches what will
+    be imported.
     """
-    review_attrs = (
-        {"hx_post": review_action, "hx_trigger": "change", "hx_include": "closest form",
-         "hx_target": "#import-preview", "hx_swap": "outerHTML"}
-        if review_action else {}
-    )
+    review_attrs = {"onchange": "htmx.trigger(this.form,'submit')"} if review_action else {}
     return Div(
         Label(
             Input(type="checkbox", name="upsert", value="1", checked=checked, **review_attrs),
@@ -1425,82 +1529,177 @@ def _confirm_panel(
     )
 
 
-_REVIEW_ERROR_LIMIT = 50
+_REVIEW_ROW_LIMIT = 200
+_REVIEW_CLEAN_ROWS = 20
 
 
-def semantic_review_panel(
+def _review_counters(counts: dict) -> FT:
+    cards = [
+        ("create", "import.count_create", "import-card--success"),
+        ("update", "import.count_update", "import-card--info"),
+        ("excluded", "import.count_excluded", "import-card--warning"),
+        ("blocked", "import.count_blocked", "import-card--error"),
+    ]
+    return Div(*[
+        Div(Div(str(int(counts.get(key, 0) or 0)), cls="import-card-value"), Div(t(label), cls="import-card-label"),
+            cls=f"import-card {cls}", data_count=key)
+        for key, label, cls in cards if key in ("create", "blocked") or counts.get(key)
+    ], cls="import-summary-cards")
+
+
+def _review_decisions(plan: dict) -> FT | str:
+    """A checkbox for each decision the plan is waiting on, checked when already made."""
+    decisions = plan.get("decisions") or {}
+    items = [
+        Label(Input(type="checkbox", name="import_summary", value=str(row),
+                    checked=row in (decisions.get("import_summary") or []),
+                    onchange="htmx.trigger(this.form,'submit')"),
+              " ", t("import.summary_decision", row=row), cls="import-decision")
+        for row in plan.get("summary_rows") or []
+    ] + [
+        Label(Input(type="checkbox", name="separate_lots", value=g["sku"],
+                    checked=g["sku"] in (decisions.get("separate_lots") or []),
+                    onchange="htmx.trigger(this.form,'submit')"),
+              " ", t("import.lots_decision", n=len(g["rows"]), sku=g["sku"], qty=f"{float(g['quantity']):g}"),
+              cls="import-decision")
+        for g in plan.get("duplicate_groups") or [] if not g.get("conflict")
+    ]
+    return Div(*items, cls="import-decisions") if items else ""
+
+
+def plan_review_panel(
     *,
     rows: list[dict],
     cols: list[str],
+    col_labels: dict[str, str],
     csv_ref: str,
+    revision: int,
     upsert: bool,
     upsert_label: str,
-    errors: list[dict],
-    locations_to_create: list[str],
-    preview_hash: str,
+    plan: dict,
     review_action: str,
     confirm_action: str,
+    error_report_action: str,
+    cancel_action: str,
     upload_href: str,
-    back_href: str,
     notice: str = "",
 ) -> FT:
-    """Final review of rows that passed the cell checks, from the server's preview.
+    """The review of an import, read entirely from the server's plan of its rows.
 
-    Row errors (``{"row", "field", "message"}``) block the import and are listed;
-    a clean preview shows the import button carrying ``preview_hash``, so the
-    server imports exactly what was reviewed. Changing 'Update existing records'
-    re-runs the review.
+    Every blocker the plan reports is shown against its row and cell: a cell
+    can be corrected in place, a row excluded, and a total row or a SKU shared
+    by several rows settled by the decision offered for it. Any change saves
+    the draft at ``revision`` and checks it again; the import button appears
+    only when the plan has no blocker, and carries the plan's hash.
     """
-    upsert_control = _upsert_control(upsert_label, checked=upsert, review_action=review_action)
-    notice_el = P(notice, cls="flash flash--warning") if notice else ""
-    if not errors:
-        hidden = {"csv_ref": csv_ref, "preview_hash": preview_hash}
-        notes = Div(
-            notice_el,
-            P(t("import.locations_to_create", names=", ".join(locations_to_create)), cls="import-hint")
-            if locations_to_create else "",
-        )
-        return _confirm_panel(
-            rows=rows, cols=cols, hidden=hidden, confirm_action=confirm_action,
-            back_href=back_href, has_mapping=True, upsert_control=upsert_control, notes=notes,
-        )
-
-    shown = errors[:_REVIEW_ERROR_LIMIT]
+    errors = list(plan.get("errors") or [])
+    excluded = set((plan.get("decisions") or {}).get("exclude") or [])
+    by_row: dict[int, list[dict]] = {}
+    for e in errors:
+        by_row.setdefault(int(e.get("row") or 0), []).append(e)
+    shown_cols = list(dict.fromkeys([
+        *(c for c in cols if c in col_labels),
+        *(str(e.get("field")) for e in errors if e.get("row") and str(e.get("field")) in cols),
+    ]))
+    error_rows = [n for n in sorted(by_row) if n][:_REVIEW_ROW_LIMIT]
+    other_rows = [n for n in range(1, len(rows) + 1) if n not in by_row][:_REVIEW_CLEAN_ROWS]
+    body = []
+    for n in sorted({*error_rows, *other_rows}):
+        row = rows[n - 1]
+        bad = {str(e.get("field")): str(e.get("message") or "") for e in by_row.get(n, [])}
+        cells = [
+            Td(str(n), cls="cell-ro"),
+            Td(Input(type="checkbox", name="exclude", value=str(n), checked=n in excluded,
+                     aria_label=t("import.col_exclude"), onchange="htmx.trigger(this.form,'submit')")),
+        ]
+        for col in shown_cols:
+            value = str(row.get(col, "") or "")
+            if col in bad and n not in excluded:
+                cells.append(Td(Input(type="text", value=value, data_col=col, data_row=str(n - 1),
+                                      title=bad[col], aria_label=f"{col_labels.get(col, col)} {n}",
+                                      cls="cell-edit input--error")))
+            else:
+                cells.append(Td(value or "--", cls="cell-ro"))
+        cells.append(Td("; ".join(e["message"] for e in by_row.get(n, [])) if n not in excluded else ""))
+        body.append(Tr(*cells, cls="data-row" + (" import-row--excluded" if n in excluded else "")))
+    file_errors = by_row.get(0, [])
+    counts = plan.get("counts") or {}
+    ready = int(counts.get("create", 0) or 0) + int(counts.get("update", 0) or 0)
+    locations = list(plan.get("locations_to_create") or [])
     return Div(
+        NotStr(_INLINE_FIX_CSS),
         _step_indicator(3, has_mapping=True),
         Div(
-            notice_el,
-            Div(
-                Div(
-                    Div(str(len({e.get("row") for e in errors})), cls="import-card-value"),
-                    Div(t("import.rows_need_changes"), cls="import-card-label"),
-                    cls="import-card import-card--error",
-                ),
-                cls="import-summary-cards",
-            ),
-            P(t("import.review_fix_in_file"), cls="import-hint"),
-            Table(
-                Thead(Tr(Th(t("import.col_row")), Th(t("import.col_field")), Th(t("import.col_problem")))),
-                Tbody(*[
-                    Tr(Td(str(e.get("row", ""))), Td(str(e.get("field", ""))), Td(str(e.get("message", ""))))
-                    for e in shown
-                ]),
-                cls="data-table import-preview-table",
-            ),
-            P(t("import.showing_errors", n=len(shown), total=len(errors)), cls="import-hint")
-            if len(errors) > len(shown) else "",
+            P(notice, cls="flash flash--warning") if notice else "",
+            _review_counters(counts),
+            *[P(e.get("message", ""), cls="flash flash--error") for e in file_errors],
+            P(t("import.review_fix_here"), cls="import-hint") if errors else "",
+            P(t("import.locations_to_create", names=", ".join(locations)), cls="import-hint") if locations else "",
+            P(A(t("import.open_units_settings"), href="/settings/inventory?tab=units&from_import=1",
+                target="_blank", rel="noopener"), cls="import-hint")
+            if any(e.get("code") == "sell_by_invalid" for e in errors) else "",
             Form(
                 Input(type="hidden", name="csv_ref", value=csv_ref),
-                upsert_control,
+                Input(type="hidden", name="revision", value=str(revision)),
+                Input(type="hidden", name="fixes_json", value=""),
+                Input(type="hidden", name="preview_hash", value=str(plan.get("preview_hash") or ""))
+                if not errors else "",
+                _upsert_control(upsert_label, checked=upsert, review_action=review_action),
+                _review_decisions(plan),
+                Div(Table(
+                    Thead(Tr(Th(t("import.col_row")), Th(t("import.col_exclude")),
+                             *[Th(col_labels.get(c, c.replace("_", " ").title())) for c in shown_cols],
+                             Th(t("import.col_problem")))),
+                    Tbody(*body),
+                    cls="csv-fix-table data-table import-preview-table",
+                ), cls="table-scroll"),
+                P(t("import.showing_rows", n=len(body), total=len(rows)), cls="import-hint")
+                if len(body) < len(rows) else "",
                 Div(
-                    A(t("import.upload_corrected_file"), href=upload_href, cls="btn btn--primary"),
-                    A(t("btn.cancel"), href=back_href, cls="btn btn--secondary"),
-                    cls="flex-row gap-sm mt-md",
+                    Button(t("import.btn_recheck"), type="submit", cls="btn btn--secondary", hx_disabled_elt="this")
+                    if errors else "",
+                    Button(t("import.import_all_rows", n=ready), type="button", cls="btn btn--primary",
+                           hx_post=confirm_action, hx_target="#import-preview", hx_swap="outerHTML",
+                           hx_disabled_elt="this", hx_indicator="#import-spinner")
+                    if not errors else "",
+                    Span(Div(cls="spinner"), " ", t("import.importing"), id="import-spinner",
+                         cls="htmx-indicator import-spinner-label"),
+                    A(t("msg.download_error_report"), href="#", cls="btn btn--ghost btn--sm",
+                      onclick="document.getElementById('import-err-dl').submit(); return false")
+                    if errors else "",
+                    A(t("import.upload_corrected_file"), href=upload_href, cls="btn btn--ghost btn--sm"),
+                    Button(t("btn.cancel"), type="button", hx_post=cancel_action, cls="btn btn--ghost btn--sm"),
+                    cls="csv-fix-actions flex-row gap-sm mt-md",
                 ),
+                hx_post=review_action,
+                hx_target="#import-preview",
+                hx_swap="outerHTML",
             ),
+            Form(Input(type="hidden", name="csv_ref", value=csv_ref), id="import-err-dl",
+                 method="post", action=error_report_action, style="display:none"),
             cls="import-panel",
         ),
+        Script(_INLINE_FIX_JS),
         id="import-preview",
+    )
+
+
+def plan_error_report_response(rows: list[dict], cols: list[str], errors: list[dict],
+                               filename: str = "import_errors.csv") -> StreamingResponse:
+    """Download the rows the server's plan blocks, each with its problems in an ``_errors`` column."""
+    by_row: dict[int, list[str]] = {}
+    for e in errors:
+        if e.get("row"):
+            by_row.setdefault(int(e["row"]), []).append(f"{e.get('field')}: {e.get('message')}")
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=[*cols, "_errors"], extrasaction="ignore")
+    writer.writeheader()
+    for n in sorted(by_row):
+        writer.writerow({**rows[n - 1], "_errors": "; ".join(by_row[n])})
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 

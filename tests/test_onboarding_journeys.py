@@ -193,6 +193,10 @@ async def _map(token: str, ref: str, mapping: dict[str, str], *, cookies: dict |
     form = {"csv_ref": ref, **{f"map__{col}": target for col, target in mapping.items()}}
     with _bridged():
         r = await _ui("POST", "/inventory/import/mapped", token, data=form, cookies=cookies)
+        if r.status_code == 303:
+            # A complete mapping saves the import's draft and opens its review.
+            assert r.headers["location"].startswith("/inventory/import/draft/imp_"), r.headers
+            r = await _ui("GET", r.headers["location"], token, cookies=cookies)
     assert r.status_code == 200, r.text
     return r
 
@@ -328,14 +332,15 @@ async def test_inventory_transition_chain_without_browser(client, session, stage
     assert not _offers_confirm(r.text)
     assert await _items(session, cid) == []
 
-    # A complete mapping reaches cell fixes for the bad unit.
+    # A complete mapping reaches the review, with the bad unit to correct in place.
     r = await _map(token, ref, full_map)
-    assert 'hx-post="/inventory/import/revalidate"' in r.text
+    assert 'hx-post="/inventory/import/review"' in r.text
     assert not _offers_confirm(r.text)
     fix_ref = _hidden(r.text, "csv_ref")
     with _bridged():
         r = await _ui("POST", "/inventory/import/revalidate", token,
-                      data={"csv_ref": fix_ref, "fixes_json": json.dumps({"0__sell_by": "piece"})})
+                      data={"csv_ref": fix_ref, "revision": _hidden(r.text, "revision"),
+                            "fixes_json": json.dumps({"0__sell_by": "piece"})})
     # Once every cell is valid, the server's semantic preview is the final review.
     assert _offers_confirm(r.text), r.text
     ref, good_hash = _hidden(r.text, "csv_ref"), _hidden(r.text, "preview_hash")

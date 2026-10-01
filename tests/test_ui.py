@@ -78,8 +78,9 @@ def _list_page_stub(payload: dict) -> AsyncMock:
     return AsyncMock(side_effect=_page)
 
 
-async def _inventory_import_with_mapping(ui_client, csv_bytes: bytes):
-    """Post CSV to preview, then apply default column mapping and return response."""
+async def _inventory_import_with_mapping(ui_client, csv_bytes: bytes, plan: dict | None = None):
+    """Post CSV to preview, apply the default column mapping, and return the review
+    of the saved draft, planned by the server as ``plan`` (a clean plan by default)."""
     r = await ui_client.post(
         "/inventory/import/preview",
         cookies=_authed(),
@@ -104,17 +105,21 @@ async def _inventory_import_with_mapping(ui_client, csv_bytes: bytes):
         else:
             form_data[f"map__{col}"] = MAPPING_ATTRIBUTE
 
-    with patch("ui.api_client.preview_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)):
-        return await ui_client.post(
+    with patch("ui.api_client.plan_import_rows", new=AsyncMock(return_value=plan or _CLEAN_ROWS_PREVIEW)), \
+         patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])):
+        r = await ui_client.post(
             "/inventory/import/mapped",
             cookies=_authed(),
             data=form_data,
         )
+        if r.status_code != 303:
+            return r
+        return await ui_client.get(r.headers["location"], cookies=_authed())
 
 
-# A clean server review of mapped inventory rows, and the hash its import echoes.
+# A clean server plan of one mapped inventory row, and the hash its import echoes.
 _PREVIEW_HASH = "c" * 64
-_CLEAN_ROWS_PREVIEW = {"errors": [], "locations_to_create": [], "preview_hash": _PREVIEW_HASH}
+_CLEAN_ROWS_PREVIEW = {"errors": [], "locations_to_create": [], "counts": {"create": 1}, "preview_hash": _PREVIEW_HASH}
 
 
 async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url: str, mapped_url: str, spec_cols: list):
@@ -7620,10 +7625,9 @@ class TestColumnMappingHTTPFlow:
             cookies=_authed(),
             data=form_data,
         )
-        assert r.status_code == 200
-        # Should proceed to validation - no mapping errors
-        # (will show "Import All" or validation errors from field validation, not mapping errors)
-        assert b"flash--error" not in r.content or b"built-in" not in r.content.lower()
+        # No mapping errors: the mapped rows are saved as a draft for review
+        assert r.status_code == 303, r.text[:800]
+        assert r.headers["location"].startswith("/inventory/import/draft/")
 
     @pytest.mark.asyncio
     async def test_no_500_on_duplicate_mapping(self, ui_client):
@@ -7815,26 +7819,32 @@ class TestInventoryImportFlow:
     async def test_import_preview_errors_shows_download_prompt(self, ui_client):
         """CSV with required field missing → error report prompt, not Import All."""
         csv_bytes = _make_csv([{"sku": "S1", "name": "", "location_name": "Main Office"}])
+        plan = {"errors": [{"row": 1, "field": "name", "code": "required", "message": "Missing name"}],
+                "locations_to_create": [], "counts": {"blocked": 1}, "preview_hash": _PREVIEW_HASH}
         with patch("ui.api_client.get_locations", new=AsyncMock(return_value=_LOCATIONS_RESP)):
-            r = await _inventory_import_with_mapping(ui_client, csv_bytes)
+            r = await _inventory_import_with_mapping(ui_client, csv_bytes, plan=plan)
         assert r.status_code == 200
-        assert b"error" in r.content.lower()
+        assert b"Missing name" in r.content
         assert b"Import All" not in r.content
+        assert _PREVIEW_HASH not in r.text
 
     @pytest.mark.asyncio
     async def test_import_errors_download(self, ui_client):
         """POST /inventory/import/errors must return a CSV file with _errors column."""
         import csv as _csv, io as _io
         csv_ref = _stage_csv("sku,name,location_name\nS1,,Main Office\n")
-        r = await ui_client.post(
-            "/inventory/import/errors",
-            cookies=_authed(),
-            data={"csv_ref": csv_ref},
-        )
+        plan = {"errors": [{"row": 1, "field": "name", "code": "required", "message": "Missing name"}],
+                "locations_to_create": [], "preview_hash": _PREVIEW_HASH}
+        with patch("ui.api_client.plan_import_rows", new=AsyncMock(return_value=plan)):
+            r = await ui_client.post(
+                "/inventory/import/errors",
+                cookies=_authed(),
+                data={"csv_ref": csv_ref},
+            )
         assert r.status_code == 200
         assert "csv" in r.headers.get("content-type", "").lower() or "attachment" in r.headers.get("content-disposition", "")
         reader = list(_csv.DictReader(_io.StringIO(r.text)))
-        assert "_errors" in reader[0]
+        assert "Missing name" in reader[0]["_errors"]
 
     @pytest.mark.asyncio
     async def test_import_template_download(self, ui_client):
@@ -13183,134 +13193,7 @@ class TestCsvImportUxOverhaul:
 
 
 class TestCsvImportSellByValidation:
-    """Phase 6: CSV import sell_by validation using company units."""
-
-    @pytest.mark.asyncio
-    async def test_sell_by_validated_against_company_units(self, ui_client):
-        """CSV preview: sell_by value not in company units fails validation."""
-        from ui.routes.inventory import _build_item_validator
-
-        units = [
-            {"name": "piece", "label": "Piece", "decimals": 0},
-            {"name": "carat", "label": "Carat", "decimals": 2},
-        ]
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
-            validator, _ = await _build_item_validator("fake-token")
-
-        # Known unit → valid
-        assert validator("sell_by", "piece") is True
-        assert validator("sell_by", "carat") is True
-        # Unknown unit → invalid
-        assert validator("sell_by", "bushel") is False
-        assert validator("sell_by", "furlong") is False
-
-    @pytest.mark.asyncio
-    async def test_sell_by_blank_is_invalid(self, ui_client):
-        """CSV preview: blank sell_by is invalid — sell_by is a required field."""
-        from ui.routes.inventory import _build_item_validator
-
-        units = [{"name": "piece", "label": "Piece", "decimals": 0}]
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
-            validator, _ = await _build_item_validator("fake-token")
-
-        # sell_by is required; blank value must be flagged as invalid at preview
-        assert validator("sell_by", "") is False
-        assert validator("sell_by", "   ") is False
-
-    @pytest.mark.asyncio
-    async def test_sell_by_valid_when_units_unavailable(self, ui_client):
-        """If get_units raises, sell_by is not validated (fail-open)."""
-        from ui.routes.inventory import _build_item_validator
-
-        with patch("ui.api_client.get_units", new=AsyncMock(side_effect=Exception("network error"))):
-            validator, _ = await _build_item_validator("fake-token")
-
-        # Any value is accepted when units can't be fetched
-        assert validator("sell_by", "piece") is True
-        assert validator("sell_by", "anything") is True
-
-    @pytest.mark.asyncio
-    async def test_sell_by_cell_renderer_returns_select(self, ui_client):
-        """_build_item_validator returns a sell_by renderer that emits a <select>."""
-        from ui.routes.inventory import _build_item_validator
-        from fasthtml.common import to_xml
-
-        units = [
-            {"name": "piece", "label": "Piece", "decimals": 0},
-            {"name": "kg", "label": "Kilogram", "decimals": 3},
-        ]
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
-            _, renderers = await _build_item_validator("fake-token")
-
-        assert "sell_by" in renderers
-        assert "purchase_unit" in renderers
-
-        # Render with current value "piece" - should be selected
-        html = to_xml(renderers["sell_by"]("piece", 0, {}, False))
-        assert "<select" in html
-        assert 'data-col="sell_by"' in html
-        assert 'data-row="0"' in html
-        assert 'value="piece"' in html
-        assert "selected" in html
-
-        # Render with blank value - first option selected
-        html_blank = to_xml(renderers["sell_by"]("", 0, {}, True))
-        assert "input--error" in html_blank
-
-    @pytest.mark.asyncio
-    async def test_bulk_fill_bar_uses_select_for_renderer_columns(self, ui_client):
-        """_fix_errors_panel must render a <select id='fill-sell_by'> in the bulk fill bar.
-
-        Regression: bulk fill bar hardcoded Input(type='text') for all columns,
-        and csvFillColumn queried 'input[data-col]' — both broken for select cells.
-        """
-        from ui.routes.csv_import import _fix_errors_panel
-        from ui.routes.inventory import _build_item_validator
-        from fasthtml.common import to_xml
-
-        units = [{"name": "piece", "label": "Piece", "decimals": 0},
-                 {"name": "kg", "label": "Kilogram", "decimals": 3}]
-
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
-            validate, renderers = await _build_item_validator("fake-token")
-
-        # 3 rows all missing sell_by (triggers bulk fill bar — requires >1 error row)
-        rows = [
-            {"sku": f"S{i}", "name": f"Item {i}", "sell_by": "", "category": "Test"}
-            for i in range(3)
-        ]
-        cols = ["sku", "name", "sell_by", "category"]
-        error_row_indices = list(range(3))
-        error_cols = {"sell_by"}
-        html = to_xml(_fix_errors_panel(
-            rows=rows,
-            cols=cols,
-            validate=validate,
-            error_row_indices=error_row_indices,
-            error_cols=error_cols,
-            total_errors=3,
-            csv_ref="ref123",
-            revalidate_action="/inventory/import/revalidate",
-            error_report_action="/inventory/import/errors",
-            back_href="/inventory/import",
-            has_mapping=False,
-            cell_renderers=renderers,
-        ))
-
-        # Bulk fill bar must use <select> not <input> for sell_by
-        assert 'id="fill-sell_by"' in html, (
-            "fill-sell_by element missing — bulk fill bar not rendered for sell_by"
-        )
-        assert '<select' in html, "Expected <select> for sell_by fill bar, got plain input"
-        # Must NOT have a plain text input for sell_by in the fill bar
-        assert 'id="fill-sell_by" type="text"' not in html and \
-               'type="text" id="fill-sell_by"' not in html, \
-            "sell_by fill bar must be a <select>, not a text <input>"
-
-        # JS must use generic [data-col] selector, not input[data-col]
-        assert "input[data-col" not in html, (
-            "csvFillColumn JS still uses 'input[data-col]' — must use '[data-col]' to match selects"
-        )
+    """CSV import of the sell_by column: header mapping and a clean review."""
 
     def test_suggest_mapping_sell_by_spaced_header(self):
         """'Sell By' (spaced) must auto-map to 'sell_by' target, not fall to custom."""
@@ -13356,23 +13239,6 @@ class TestCsvImportSellByValidation:
         assert remapped_rows[0]["sell_by"] == "piece"
 
     @pytest.mark.asyncio
-    async def test_sell_by_case_insensitive_validation(self, ui_client):
-        """sell_by 'piece' must pass when company unit is stored as 'Piece' (different case)."""
-        from ui.routes.inventory import _build_item_validator
-
-        # Company stores unit as 'Piece' (capital P) - common real-world setup
-        units = [{"name": "Piece", "label": "Piece", "decimals": 0}]
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
-            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
-                validator, _ = await _build_item_validator("fake-token")
-
-        # 'piece' (lowercase from spreadsheet) must pass against 'Piece' (canonical)
-        assert validator("sell_by", "piece") is True, "case-insensitive match failed"
-        assert validator("sell_by", "PIECE") is True, "uppercase match failed"
-        assert validator("sell_by", "Piece") is True, "exact canonical match failed"
-        assert validator("sell_by", "unknown_unit") is False, "invalid unit must still fail"
-
-    @pytest.mark.asyncio
     async def test_sell_by_piece_full_http_flow_proceeds_to_confirm(self, ui_client):
         """Full HTTP flow: CSV with sell_by=piece must reach confirm page, not fix-errors.
 
@@ -13392,7 +13258,7 @@ class TestCsvImportSellByValidation:
         p_units = patch("ui.api_client.get_units", new=AsyncMock(return_value=units))
         p_vert = patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[]))
 
-        p_review = patch("ui.api_client.preview_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW))
+        p_review = patch("ui.api_client.plan_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW))
 
         with p_price, p_schema, p_units, p_vert, p_review:
             # Step 1: upload CSV
@@ -13419,6 +13285,8 @@ class TestCsvImportSellByValidation:
                     "map__quantity": "quantity",
                 },
             )
+            assert r2.status_code == 303, r2.text[:800]
+            r2 = await ui_client.get(r2.headers["location"], cookies=_authed())
         assert r2.status_code == 200
         # Must NOT show fix-errors panel - sell_by=piece is a valid unit
         assert b"fix-errors" not in r2.content, (
@@ -16677,294 +16545,166 @@ class TestBackupRoutes:
         assert "flash--success" not in r.text, "failed import was reported as success"
 
 
-class TestUnknownUnitRendererInFixTable:
-    """Unit dropdown in fix-table must preserve unrecognised values instead of silently dropping them."""
+class TestInventoryImportDraftReview:
+    """The inventory import review is a saved draft: fixes, exclusions and decisions
+    are saved at the draft's revision and the rows are planned again by the server."""
 
-    _UNITS = [
-        {"name": "piece", "label": "Piece", "decimals": 0},
-        {"name": "kg", "label": "Kilogram", "decimals": 3},
-        {"name": "gram", "label": "Gram", "decimals": 3},
-    ]
-    _WEIGHT_UNITS = [
-        {"name": "gram", "label": "Gram", "decimals": 3, "unit_type": "weight"},
-        {"name": "kg", "label": "Kilogram", "decimals": 3, "unit_type": "weight"},
-    ]
+    @staticmethod
+    def _draft(rows: list[dict], draft: dict | None = None) -> str:
+        from ui.routes.csv_import import _rows_to_csv
+        return _write_stage(_TEST_COMPANY_ID, _rows_to_csv(rows, list(rows[0])), draft)
 
-    # ── renderer unit tests ────────────────────────────────────────────────────
+    @staticmethod
+    def _unit_error(row: int = 1) -> dict:
+        return {"row": row, "field": "sell_by", "code": "sell_by_invalid",
+                "message": "Unknown unit 'fathom'. Add it in Settings > Units, or choose an existing unit"}
 
-    @pytest.mark.asyncio
-    async def test_unknown_sell_by_renders_warning_option(self):
-        """When sell_by value is not in company units, renderer shows ⚠ "val" (unknown)."""
-        from ui.routes.inventory import _build_item_validator
-        from fasthtml.common import to_xml
-
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)):
-            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
-                _, renderers = await _build_item_validator("fake-token")
-
-        html = to_xml(renderers["sell_by"]("grams", 0, {}, True))
-        assert "grams" in html, "Original unknown value must appear in rendered HTML"
-        assert "unknown" in html.lower(), "Unknown-option indicator text missing"
-        assert "unit-unknown-option" in html, "CSS class unit-unknown-option missing"
-        # Must be pre-selected
-        assert "selected" in html, "Unknown option must be pre-selected"
+    async def _post(self, ui_client, path: str, data: dict, plan: dict):
+        planner = AsyncMock(return_value=plan)
+        with patch("ui.api_client.plan_import_rows", new=planner), \
+             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])):
+            r = await ui_client.post(path, data=data, cookies=_authed())
+        assert r.status_code == 200, r.text[:800]
+        return r, planner
 
     @pytest.mark.asyncio
-    async def test_known_sell_by_has_no_warning_option(self):
-        """When sell_by value IS a valid unit, no warning option is injected."""
-        from ui.routes.inventory import _build_item_validator
-        from fasthtml.common import to_xml
-
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)):
-            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
-                _, renderers = await _build_item_validator("fake-token")
-
-        html = to_xml(renderers["sell_by"]("piece", 0, {}, False))
-        assert "unit-unknown-option" not in html, "Warning option must not appear for valid unit"
-        assert "unknown" not in html.lower(), "No 'unknown' text for valid unit"
-        # 'piece' option must be selected
-        assert 'value="piece"' in html
-        assert "selected" in html
-
-    @pytest.mark.asyncio
-    async def test_blank_sell_by_has_no_warning_option(self):
-        """Blank value shows '-- select unit --' prompt, no warning option."""
-        from ui.routes.inventory import _build_item_validator
-        from fasthtml.common import to_xml
-
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)):
-            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
-                _, renderers = await _build_item_validator("fake-token")
-
-        html = to_xml(renderers["sell_by"]("", 0, {}, True))
-        assert "unit-unknown-option" not in html
-        assert "-- select unit --" in html
-
-    @pytest.mark.asyncio
-    async def test_unknown_weight_unit_renders_warning_option(self):
-        """Weight unit renderer also shows warning for unrecognised values."""
-        from ui.routes.inventory import _build_item_validator
-        from fasthtml.common import to_xml
-
-        units = self._UNITS + self._WEIGHT_UNITS
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
-            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
-                _, renderers = await _build_item_validator("fake-token")
-
-        assert "weight_unit" in renderers, "weight_unit renderer must exist"
-        assert "gross_weight_unit" in renderers, "gross_weight_unit renderer must exist"
-
-        html_w = to_xml(renderers["weight_unit"]("grams", 0, {}, True))
-        assert "grams" in html_w
-        assert "unit-unknown-option" in html_w
-
-        html_gw = to_xml(renderers["gross_weight_unit"]("lbs", 0, {}, True))
-        assert "lbs" in html_gw
-        assert "unit-unknown-option" in html_gw
-
-    @pytest.mark.asyncio
-    async def test_case_insensitive_match_suppresses_warning(self):
-        """Case-insensitive match (e.g. 'Piece' vs 'piece') must not show warning."""
-        from ui.routes.inventory import _build_item_validator
-        from fasthtml.common import to_xml
-
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)):
-            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
-                _, renderers = await _build_item_validator("fake-token")
-
-        # 'Piece' (capital P) against unit 'piece' → should match, no warning
-        html = to_xml(renderers["sell_by"]("Piece", 0, {}, False))
-        assert "unit-unknown-option" not in html, "Case-insensitive match must not show warning"
-
-    # ── fix-table integration ──────────────────────────────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_fix_table_shows_unknown_value_in_cell(self):
-        """_fix_errors_panel must preserve unknown unit values in table cells, not blank them."""
-        from ui.routes.csv_import import _fix_errors_panel
-        from ui.routes.inventory import _build_item_validator
-        from fasthtml.common import to_xml
-
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)):
-            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
-                validate, renderers = await _build_item_validator("fake-token")
-
-        rows = [
-            {"sku": "A1", "name": "Item A", "sell_by": "grams", "category": ""},
-            {"sku": "A2", "name": "Item B", "sell_by": "piece", "category": ""},
-        ]
-        cols = ["sku", "name", "sell_by", "category"]
-        html = to_xml(_fix_errors_panel(
-            rows=rows,
-            cols=cols,
-            validate=validate,
-            error_row_indices=[0],
-            error_cols={"sell_by"},
-            total_errors=1,
-            csv_ref="ref123",
-            revalidate_action="/inventory/import/revalidate",
-            error_report_action="/inventory/import/errors",
-            back_href="/inventory/import",
-            has_mapping=True,
-            cell_renderers=renderers,
-        ))
-        # Unknown value "grams" must appear in the rendered fix table
-        assert "grams" in html, "Unknown sell_by value 'grams' must be visible in fix table"
-        assert "unit-unknown-option" in html, "Warning CSS class must be present for bad unit"
-
-    @pytest.mark.asyncio
-    async def test_fix_table_bulk_fill_bar_shows_unknown_option_for_multi_error(self):
-        """When >1 row has bad sell_by, bulk fill bar must also use the select renderer."""
-        from ui.routes.csv_import import _fix_errors_panel
-        from ui.routes.inventory import _build_item_validator
-        from fasthtml.common import to_xml
-
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)):
-            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
-                validate, renderers = await _build_item_validator("fake-token")
-
-        rows = [
-            {"sku": f"S{i}", "name": f"Item {i}", "sell_by": "grams", "category": ""}
-            for i in range(3)
-        ]
-        cols = ["sku", "name", "sell_by", "category"]
-        html = to_xml(_fix_errors_panel(
-            rows=rows,
-            cols=cols,
-            validate=validate,
-            error_row_indices=list(range(3)),
-            error_cols={"sell_by"},
-            total_errors=3,
-            csv_ref="ref",
-            revalidate_action="/inventory/import/revalidate",
-            error_report_action="/inventory/import/errors",
-            back_href="/inventory/import",
-            has_mapping=True,
-            cell_renderers=renderers,
-        ))
-        assert 'id="fill-sell_by"' in html, "Bulk fill bar must be present"
-        assert "<select" in html, "Bulk fill bar must be a <select>"
-
-    # ── revalidate: fixing via unit selection ──────────────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_revalidate_with_valid_unit_clears_error(self, ui_client):
-        """After user picks a valid unit in the fix table, revalidate must succeed."""
+    async def test_fix_is_saved_and_replanned(self, ui_client):
         import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
-
-        units = self._UNITS
-        csv_rows = [{"sku": "X1", "name": "Ring", "sell_by": "grams", "category": "", "quantity": "1"}]
-        csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
-        csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
-
-        # User fixes "grams" → "gram" (valid unit)
-        fixes = {"0__sell_by": "gram"}
-
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)), \
-             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])), \
-             patch("ui.api_client.preview_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)):
-            resp = await ui_client.post(
-                "/inventory/import/revalidate",
-                data={"csv_ref": csv_ref, "fixes_json": _json.dumps(fixes)},
-                cookies=_authed(),
-            )
-
-        assert resp.status_code == 200
-        html = resp.text
-        # Should reach confirm step, not show fix-errors panel
-        assert "csv-fix-panel" not in html, "Fix panel must not show after valid unit is selected"
-        assert _PREVIEW_HASH in html, "Clean rows must reach the reviewed import button"
+        from ui.routes.csv_import import _read_draft
+        ref = self._draft([{"sku": "X1", "name": "Ring", "sell_by": "grams", "quantity": "1"}])
+        r, planner = await self._post(ui_client, "/inventory/import/revalidate", {
+            "csv_ref": ref, "revision": "1", "fixes_json": _json.dumps({"0__sell_by": "gram"}),
+        }, _CLEAN_ROWS_PREVIEW)
+        csv_text, _draft, revision = _read_draft(_TEST_COMPANY_ID, ref)
+        assert "gram" in csv_text and "grams" not in csv_text
+        assert revision == 2
+        assert planner.await_args.args[1][0]["sell_by"] == "gram"
+        assert _PREVIEW_HASH in r.text
 
     @pytest.mark.asyncio
-    async def test_revalidate_after_catalog_unit_added_clears_error(self, ui_client):
-        """If unit is added to catalog between fix-table render and revalidate, error clears.
-
-        _build_item_validator always calls get_units fresh - so adding a unit to the
-        catalog and clicking Fix & Import (without changing the cell) must clear the error.
-        """
-        import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
-
-        csv_rows = [{"sku": "X2", "name": "Stone", "sell_by": "carat", "category": "", "quantity": "1"}]
-        csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
-        csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
-
-        # "carat" is now in the catalog (user added it while fix table was open)
-        units_now = self._UNITS + [{"name": "carat", "label": "Carat", "decimals": 2}]
-
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units_now)), \
-             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])), \
-             patch("ui.api_client.preview_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)):
-            resp = await ui_client.post(
-                "/inventory/import/revalidate",
-                data={"csv_ref": csv_ref, "fixes_json": "{}"},
-                cookies=_authed(),
-            )
-
-        assert resp.status_code == 200
-        html = resp.text
-        assert "csv-fix-panel" not in html, "Error must clear when unit now exists in catalog"
-        assert _PREVIEW_HASH in html, "Clean rows must reach the reviewed import button"
+    async def test_unknown_unit_stays_editable_with_guidance(self, ui_client):
+        ref = self._draft([{"sku": "X3", "name": "Rock", "sell_by": "fathom", "quantity": "1"}])
+        plan = {"errors": [self._unit_error()], "locations_to_create": [], "counts": {"blocked": 1},
+                "preview_hash": _PREVIEW_HASH}
+        r, _ = await self._post(ui_client, "/inventory/import/review", {"csv_ref": ref}, plan)
+        assert 'value="fathom"' in r.text and 'data-col="sell_by"' in r.text
+        assert "Settings &gt; Units" in r.text or "Settings > Units" in r.text
+        assert 'href="/settings/inventory?tab=units&amp;from_import=1"' in r.text
+        assert _PREVIEW_HASH not in r.text
+        assert 'hx-post="/inventory/import/confirm"' not in r.text
 
     @pytest.mark.asyncio
-    async def test_revalidate_still_unknown_unit_keeps_error(self, ui_client):
-        """If unit is still not in catalog after revalidate, error persists and value is preserved."""
-        import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
-
-        csv_rows = [{"sku": "X3", "name": "Rock", "sell_by": "fathom", "category": "", "quantity": "1"}]
-        csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
-        csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
-
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)), \
-             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
-            resp = await ui_client.post(
-                "/inventory/import/revalidate",
-                data={"csv_ref": csv_ref, "fixes_json": "{}"},
-                cookies=_authed(),
-            )
-
-        assert resp.status_code == 200
-        html = resp.text
-        assert "csv-fix-panel" in html, "Fix panel must still show for unresolved unknown unit"
-        # Original value "fathom" must still be visible in the re-rendered fix table
-        assert "fathom" in html, "Original unknown unit value must be preserved in re-rendered fix table"
-        assert "unit-unknown-option" in html, "Warning CSS class must still appear"
-
-    # ── __add_new__ guard ──────────────────────────────────────────────────────
+    async def test_review_without_revision_only_renders(self, ui_client):
+        from ui.routes.csv_import import _read_draft
+        ref = self._draft([{"sku": "X5", "name": "Bead", "sell_by": "piece", "quantity": "1"}])
+        await self._post(ui_client, "/inventory/import/review", {"csv_ref": ref, "upsert": "1", "exclude": "1"},
+                         _CLEAN_ROWS_PREVIEW)
+        _csv_text, draft, revision = _read_draft(_TEST_COMPANY_ID, ref)
+        assert (draft, revision) == ({}, 1)
 
     @pytest.mark.asyncio
-    async def test_add_new_option_not_saved_as_unit_value(self, ui_client):
-        """If __add_new__ somehow reaches revalidate, it must not be stored as a sell_by value."""
+    async def test_decisions_and_update_choice_are_saved_and_planned(self, ui_client):
+        from ui.routes.csv_import import _read_draft
+        rows = [{"sku": "L1", "name": "Lot A", "sell_by": "piece", "quantity": "1"},
+                {"sku": "L1", "name": "Lot B", "sell_by": "piece", "quantity": "2"},
+                {"sku": "", "name": "Total", "sell_by": "", "quantity": "3"}]
+        ref = self._draft(rows)
+        _r, planner = await self._post(ui_client, "/inventory/import/review", {
+            "csv_ref": ref, "revision": "1", "upsert": "1", "exclude": "3", "separate_lots": "L1",
+        }, _CLEAN_ROWS_PREVIEW)
+        _csv_text, draft, _revision = _read_draft(_TEST_COMPANY_ID, ref)
+        assert draft["upsert"] is True
+        assert draft["decisions"] == {"exclude": ["3"], "import_summary": [], "separate_lots": ["L1"]}
+        assert planner.await_args.kwargs["upsert"] is True
+        assert planner.await_args.kwargs["decisions"] == draft["decisions"]
+
+    @pytest.mark.asyncio
+    async def test_edit_from_a_stale_revision_is_not_saved(self, ui_client):
         import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
+        from ui.routes.csv_import import _read_draft, _update_draft
+        ref = self._draft([{"sku": "X6", "name": "Ring", "sell_by": "grams", "quantity": "1"}])
+        csv_text, draft, _rev = _read_draft(_TEST_COMPANY_ID, ref)
+        assert _update_draft(_TEST_COMPANY_ID, ref, csv_text, {"upsert": True}, 1) == 2  # another tab saved first
+        r, _ = await self._post(ui_client, "/inventory/import/revalidate", {
+            "csv_ref": ref, "revision": "1", "fixes_json": _json.dumps({"0__sell_by": "gram"}),
+        }, _CLEAN_ROWS_PREVIEW)
+        csv_after, draft_after, revision = _read_draft(_TEST_COMPANY_ID, ref)
+        assert (csv_after, draft_after, revision) == (csv_text, {"upsert": True}, 2)
+        from ui.i18n import t
+        assert t("inventory.import_draft_changed") in r.text
 
-        csv_rows = [{"sku": "X4", "name": "Bead", "sell_by": "piece", "category": "", "quantity": "1"}]
-        csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
-        csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
+    @pytest.mark.asyncio
+    async def test_draft_page_reopens_the_review(self, ui_client):
+        ref = self._draft([{"sku": "X7", "name": "Ring", "sell_by": "piece", "quantity": "1"}], {"upsert": True})
+        with patch("ui.api_client.plan_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)) as planner, \
+             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])):
+            r = await ui_client.get(f"/inventory/import/draft/{ref}", cookies=_authed())
+        assert r.status_code == 200
+        assert _PREVIEW_HASH in r.text
+        assert planner.await_args.kwargs["upsert"] is True
 
-        # Simulate user somehow submitting __add_new__ as the fix value
-        fixes = {"0__sell_by": "__add_new__"}
+    @pytest.mark.asyncio
+    async def test_foreign_or_expired_draft_page_offers_a_new_upload(self, ui_client):
+        r = await ui_client.get(f"/inventory/import/draft/imp_{'0' * 32}", cookies=_authed())
+        assert r.status_code == 200
+        from ui.i18n import t
+        assert t("inventory.csv_expired") in r.text
 
-        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)), \
-             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
-            resp = await ui_client.post(
-                "/inventory/import/revalidate",
-                data={"csv_ref": csv_ref, "fixes_json": _json.dumps(fixes)},
-                cookies=_authed(),
-            )
+    @pytest.mark.asyncio
+    async def test_cancel_deletes_the_draft(self, ui_client):
+        from ui.routes.csv_import import _read_draft
+        ref = self._draft([{"sku": "X8", "name": "Ring", "sell_by": "piece", "quantity": "1"}], {"from_onboarding": True})
+        r = await ui_client.post("/inventory/import/cancel", data={"csv_ref": ref}, cookies=_authed())
+        assert r.headers.get("HX-Redirect") == "/onboarding"
+        assert _read_draft(_TEST_COMPANY_ID, ref) is None
 
-        assert resp.status_code == 200
-        html = resp.text
-        # __add_new__ is not a valid unit → row must remain in error state
-        assert "csv-fix-panel" in html, "__add_new__ must not be accepted as a valid unit"
-        assert "unit-unknown-option" in html, \
-            "__add_new__ must be shown as an unknown/invalid value, not silently accepted"
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("reversible", [True, False])
+    async def test_undo_is_offered_only_for_a_reversible_import(self, ui_client, reversible):
+        ref = self._draft([{"sku": "X9", "name": "Ring", "sell_by": "piece", "quantity": "1"}])
+        result = {"created": 1, "skipped": 0, "updated": 0, "errors": [], "batch_id": "b-1", "reversible": reversible}
+        with patch("ui.api_client.import_rows", new=AsyncMock(return_value=result)):
+            r = await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": _PREVIEW_HASH},
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert ('hx-post="/settings/import-history/b-1/undo"' in r.text) is reversible
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("result, kept", [
+        ({"created": 1, "skipped": 0, "updated": 0, "errors": []}, False),
+        ({"created": 0, "skipped": 0, "updated": 0, "errors": [{"row": 1, "error": "Write failed"}]}, True),
+    ])
+    async def test_confirm_keeps_the_draft_unless_the_import_finished_cleanly(self, ui_client, result, kept):
+        from ui.routes.csv_import import _read_draft
+        ref = self._draft([{"sku": "X11", "name": "Ring", "sell_by": "piece", "quantity": "1"}])
+        with patch("ui.api_client.import_rows", new=AsyncMock(return_value=result)):
+            await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": _PREVIEW_HASH},
+                                 cookies=_authed())
+        assert (_read_draft(_TEST_COMPANY_ID, ref) is not None) is kept
+
+    @pytest.mark.asyncio
+    async def test_confirm_refused_as_changed_reopens_the_review_with_the_draft(self, ui_client):
+        from ui.api_client import APIError
+        from ui.i18n import t
+        from ui.routes.csv_import import _read_draft
+        ref = self._draft([{"sku": "X12", "name": "Ring", "sell_by": "piece", "quantity": "1"}])
+        with patch("ui.api_client.import_rows", new=AsyncMock(side_effect=APIError(409, "stale"))), \
+             patch("ui.api_client.plan_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)), \
+             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])):
+            r = await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": "f" * 64},
+                                     cookies=_authed())
+        assert t("inventory.import_review_changed") in r.text
+        assert _read_draft(_TEST_COMPANY_ID, ref) is not None
+
+    @pytest.mark.asyncio
+    async def test_repeat_import_says_nothing_was_duplicated(self, ui_client):
+        ref = self._draft([{"sku": "X10", "name": "Ring", "sell_by": "piece", "quantity": "1"}])
+        result = {"created": 0, "skipped": 1, "updated": 0, "errors": [], "already_imported": 1, "reversible": False}
+        with patch("ui.api_client.import_rows", new=AsyncMock(return_value=result)):
+            r = await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": _PREVIEW_HASH},
+                                     cookies=_authed())
+        from ui.i18n import t
+        assert t("inventory.import_already_imported") in r.text
 
 
 class TestItemRowColumnParity:

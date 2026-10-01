@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.events.schemas import reject_comma_sku
-from celerp.importers.tabular import MAX_CELLS, MAX_ROWS
+from celerp.importers.tabular import HEADER_SEARCH_LINES, MAX_CELLS, MAX_ROWS
 from celerp.inventory_codes import (
     PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
     normalize_rfid_epc,
@@ -33,6 +33,7 @@ from .services import (
     BatchImportRequest,
     BatchImportResult,
     adjust_item_quantity,
+    ImportPlan,
     ImportRejected,
     allocate_internal_codes,
     apply_source_semantics,
@@ -43,7 +44,7 @@ from .services import (
     import_preview_hash,
     is_item_field_key,
     item_price_mutex_groups,
-    preview_import_rows,
+    build_import_plan,
     source_header_semantics,
 )
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
@@ -1534,12 +1535,12 @@ def _bounded_rows(rows: list[dict]) -> list[dict]:
     return rows
 
 
-def _rows_preview_hash(rows: list[dict], upsert: bool, idempotency_key: str | None, semantic_fingerprint: str) -> str:
-    """Binds the rows, the update-existing choice, the operation key, and what
-    the rows meant when previewed."""
+def _rows_preview_hash(rows: list[dict], upsert: bool, idempotency_key: str | None, plan: ImportPlan) -> str:
+    """Binds the rows, the update-existing choice, the operation key, the row
+    decisions, and what the rows meant when previewed."""
     return import_preview_hash({
         "rows": rows, "upsert": upsert, "idempotency_key": idempotency_key,
-        "semantic_fingerprint": semantic_fingerprint,
+        "decisions": plan.decisions, "semantic_fingerprint": plan.semantic_fingerprint,
     })
 
 
@@ -1566,6 +1567,14 @@ async def _write_import(session, company_id, user_id, role: str, settings: dict,
         raise _validation_failed(exc.errors)
 
 
+class ImportDecisions(BaseModel):
+    """The user's row decisions: 1-based rows to leave out, rows that read as a
+    total to import as items anyway, and SKUs whose rows are separate lots."""
+    exclude: list[int] = Field(default_factory=list, max_length=MAX_ROWS)
+    import_summary: list[int] = Field(default_factory=list, max_length=MAX_ROWS)
+    separate_lots: list[str] = Field(default_factory=list, max_length=MAX_ROWS)
+
+
 class InventoryImportRows(BaseModel):
     # The writer commits in batches of 500 internally; the envelope carries the
     # whole import so it is previewed and committed as one operation.
@@ -1573,6 +1582,7 @@ class InventoryImportRows(BaseModel):
     upsert: bool = False
     filename: str | None = None
     idempotency_key: str | None = None
+    decisions: ImportDecisions = Field(default_factory=lambda: ImportDecisions())
     preview_hash: str | None = Field(None, min_length=64, max_length=64)
 
     @field_validator("rows")
@@ -1585,6 +1595,7 @@ class InventoryImportRowsPreviewRequest(BaseModel):
     rows: list[dict] = Field(..., max_length=MAX_ROWS)
     upsert: bool = False
     idempotency_key: str | None = None
+    decisions: ImportDecisions = Field(default_factory=lambda: ImportDecisions())
 
     @field_validator("rows")
     @classmethod
@@ -1595,7 +1606,18 @@ class InventoryImportRowsPreviewRequest(BaseModel):
 class InventoryImportRowsPreview(BaseModel):
     errors: list[dict]
     locations_to_create: list[str]
+    counts: dict[str, int]
+    summary_rows: list[int]
+    duplicate_groups: list[dict]
+    decisions: dict
     preview_hash: str
+
+
+async def _rows_plan(session, company_id, role: str, settings: dict, body) -> ImportPlan:
+    return await build_import_plan(
+        session, company_id, role, settings, body.rows, upsert=body.upsert,
+        decisions=body.decisions.model_dump(), idempotency_key=body.idempotency_key,
+    )
 
 
 @router.post(
@@ -1615,14 +1637,13 @@ async def import_rows_preview(
     key, and what the rows mean now, and /import/rows refuses a commit whose
     hash no longer matches.
     """
-    plan = await preview_import_rows(
-        session, company_id, role, settings, body.rows,
-        upsert=body.upsert, idempotency_key=body.idempotency_key,
-    )
+    plan = await _rows_plan(session, company_id, role, settings, body)
     return InventoryImportRowsPreview(
         errors=plan.errors,
         locations_to_create=plan.locations_to_create,
-        preview_hash=_rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan.semantic_fingerprint),
+        counts=plan.counts, summary_rows=plan.summary_rows, duplicate_groups=plan.duplicate_groups,
+        decisions=plan.decisions,
+        preview_hash=_rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan),
     )
 
 
@@ -1655,18 +1676,15 @@ async def import_rows(
     role, settings = await _import_authority(session, company_id, user.id)
     plan = None
     if body.preview_hash is not None:
-        plan = await preview_import_rows(
-            session, company_id, role, settings, body.rows,
-            upsert=body.upsert, idempotency_key=body.idempotency_key,
-        )
-        if _rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan.semantic_fingerprint) != body.preview_hash:
+        plan = await _rows_plan(session, company_id, role, settings, body)
+        if _rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan) != body.preview_hash:
             raise _preview_stale()
         if plan.errors:
             raise _validation_failed(plan.errors)
     return await _write_import(
         session, company_id, user.id, role, settings, body.rows,
         upsert=body.upsert, filename=body.filename, idempotency_key=body.idempotency_key,
-        plan=plan,
+        decisions=body.decisions.model_dump(), plan=plan,
     )
 
 
@@ -1681,6 +1699,7 @@ _AI_FILE_ID_RE = re.compile(r"^ai_up_[0-9a-f]{32}$")
 class InventoryImportPreview(BaseModel):
     file_id: str
     sheet: str | None
+    header_row: int
     upsert: bool
     columns: list[str]
     mapping: dict[str, str]
@@ -1689,39 +1708,46 @@ class InventoryImportPreview(BaseModel):
     sample: list[dict]
     errors: list[dict]
     locations_to_create: list[str] = Field(default_factory=list)
+    counts: dict[str, int] = Field(default_factory=dict)
+    decisions: dict = Field(default_factory=dict)
     preview_hash: str
 
 
 class InventoryImportPreviewRequest(BaseModel):
     file_id: str = Field(..., min_length=1, max_length=64)
     sheet: str | None = Field(None, max_length=64)
+    header_row: int | None = Field(None, ge=0, le=HEADER_SEARCH_LINES - 1)
     upsert: bool = False
     mapping: dict[str, str] | None = None
+    decisions: ImportDecisions = Field(default_factory=lambda: ImportDecisions())
 
 
 async def _build_item_preview(
     session, company_id, user_id, role: str, settings: dict, *,
     file_id: str, sheet: str | None, upsert: bool, mapping: dict[str, str] | None = None,
-    idempotency_key: str | None = None,
+    decisions: dict | None = None, idempotency_key: str | None = None, header_row: int | None = None,
 ) -> dict:
     """Load an uploaded file, map and validate it, and run the import preflight.
 
     Returns the preview payload plus the mapped rows, the flat error list, the
     original filename, the preview hash, and the semantic fingerprint.
     Recomputed identically by preview and commit so the hash pins the exact
-    bytes, sheet, mapping, row count, and what the rows would write.
+    bytes, sheet, header row, mapping, row count, row decisions, and what the rows would write.
     ``idempotency_key`` is the commit's operation key (None when previewing).
 
     Raises 404 when the file id is malformed, missing, or owned by another
-    company; 422 when the bytes cannot be read as a table.
+    company; 422 when the bytes cannot be read as a table, or with code
+    ``header_row_required`` and the file's leading lines when no line is clearly
+    its header (the caller then sends ``header_row``).
     """
     import hashlib
 
     from celerp.ai.files import load_file
     from celerp.importers.tabular import (
         TabularError,
+        known_headers,
         normalize_and_validate_mapping,
-        read_table,
+        read_table_at_header,
         remap_rows,
         suggest_mapping,
     )
@@ -1735,16 +1761,19 @@ async def _build_item_preview(
         raise HTTPException(status_code=404, detail="File not found")
 
     filename = meta.get("filename") or file_id
+    price_lists, _default_list, _currency = await get_price_config(session, company_id)
+    spec = build_item_import_spec(price_lists)
     try:
-        cols, rows = read_table(data, filename, sheet=sheet)
+        cols, rows, header_row = read_table_at_header(
+            data, filename, sheet=sheet, header_row=header_row, known=known_headers(spec.cols),
+        )
     except TabularError as exc:
         detail: dict = {"code": "unreadable_file", "message": str(exc)}
         if exc.sheets:
             detail["sheets"] = exc.sheets
+        if exc.header_lines:
+            detail.update(code="header_row_required", lines=exc.header_lines)
         raise HTTPException(status_code=422, detail=detail)
-
-    price_lists, _default_list, _currency = await get_price_config(session, company_id)
-    spec = build_item_import_spec(price_lists)
     # The same suggestion the browser mapper renders; the caller's mapping
     # overrides it column by column.
     category_attrs = union_category_attr_keys(all_category_schemas(settings))
@@ -1765,9 +1794,9 @@ async def _build_item_preview(
     if resolved.applicable:
         _new_cols, mapped_rows = remap_rows(cols, rows, mapping)
         mapped_rows = apply_source_semantics(mapped_rows, semantics)
-        plan = await preview_import_rows(
+        plan = await build_import_plan(
             session, company_id, role, settings, mapped_rows,
-            upsert=upsert, idempotency_key=idempotency_key,
+            upsert=upsert, decisions=decisions, idempotency_key=idempotency_key,
         )
         errors += plan.errors
     errors = errors[:50]
@@ -1777,19 +1806,23 @@ async def _build_item_preview(
     preview_hash = import_preview_hash({
         "file_id": file_id,
         "sheet": sheet,
+        "header_row": header_row,
         "upsert": upsert,
         "mapping": mapping,
         "row_count": row_count,
+        "decisions": plan.decisions if plan else None,
         "file_sha256": hashlib.sha256(data).hexdigest(),
         "semantic_fingerprint": plan.semantic_fingerprint if plan else None,
     })
 
     return {
         "payload": InventoryImportPreview(
-            file_id=file_id, sheet=sheet, upsert=upsert, columns=cols,
+            file_id=file_id, sheet=sheet, header_row=header_row, upsert=upsert, columns=cols,
             mapping=mapping, unmapped_required=unmapped_required, row_count=row_count,
             sample=mapped_rows[:5], errors=errors,
-            locations_to_create=plan.locations_to_create if plan else [], preview_hash=preview_hash,
+            locations_to_create=plan.locations_to_create if plan else [],
+            counts=plan.counts if plan else {}, decisions=plan.decisions if plan else {},
+            preview_hash=preview_hash,
         ),
         "errors": errors,
         "mapped_rows": mapped_rows,
@@ -1806,6 +1839,7 @@ async def _build_item_preview(
 async def import_preview(
     file_id: str = Query(..., min_length=1, max_length=64),
     sheet: str | None = Query(None, max_length=64),
+    header_row: int | None = Query(None, ge=0, le=HEADER_SEARCH_LINES - 1),
     upsert: bool = Query(False),
     company_id=Depends(get_current_company_id),
     role: str = Depends(get_current_role),
@@ -1816,7 +1850,7 @@ async def import_preview(
     """Preview an uploaded item import for the browser UI."""
     result = await _build_item_preview(
         session, company_id, user.id, role, settings,
-        file_id=file_id, sheet=sheet, upsert=upsert,
+        file_id=file_id, sheet=sheet, upsert=upsert, header_row=header_row,
     )
     return result["payload"]
 
@@ -1837,7 +1871,8 @@ async def import_preview_agent(
     """Preview an uploaded catalog with an optional caller-corrected mapping."""
     result = await _build_item_preview(
         session, company_id, user.id, role, settings, file_id=body.file_id,
-        sheet=body.sheet, upsert=body.upsert, mapping=body.mapping,
+        sheet=body.sheet, header_row=body.header_row, upsert=body.upsert, mapping=body.mapping,
+        decisions=body.decisions.model_dump(),
     )
     return result["payload"]
 
@@ -1845,8 +1880,10 @@ async def import_preview_agent(
 class InventoryImportCommit(BaseModel):
     file_id: str = Field(..., min_length=1, max_length=64)
     sheet: str | None = Field(None, max_length=64)
+    header_row: int | None = Field(None, ge=0, le=HEADER_SEARCH_LINES - 1)
     upsert: bool = False
     mapping: dict[str, str] | None = None
+    decisions: ImportDecisions = Field(default_factory=lambda: ImportDecisions())
     preview_hash: str = Field(..., min_length=64, max_length=64)
 
 
@@ -1876,7 +1913,8 @@ async def import_commit(
     operation_key = f"preview:{body.preview_hash}"
     result = await _build_item_preview(
         session, company_id, user.id, role, settings, file_id=body.file_id,
-        sheet=body.sheet, upsert=body.upsert, mapping=body.mapping,
+        sheet=body.sheet, header_row=body.header_row, upsert=body.upsert, mapping=body.mapping,
+        decisions=body.decisions.model_dump(),
         idempotency_key=operation_key,
     )
     if result["preview_hash"] != body.preview_hash:
