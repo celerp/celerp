@@ -1194,6 +1194,7 @@
   "pay.send_hint_off": "Möchten Sie eine Bezahlen-Schaltfläche in dieser E-Mail?",
   "pay.send_includes_button": "Enthält eine Bezahlen-Schaltfläche ({amount}).",
   "pay.settings_connected": "✓ Verbunden. Die Schaltfläche „Bezahlen“ erscheint jetzt auf geteilten Rechnungen und in der Versand-E-Mail, sodass Kunden Sie online bezahlen können.",
+  "pay.settings_disconnecting": "Stripe wird getrennt, während bestehende Zahlungen abgeschlossen werden",
   "pay.upgrade_desc": "Lassen Sie Kunden Rechnungen online per Karte bezahlen. Verbinden Sie diese Instanz zuerst mit Celerp Connect und verknüpfen Sie dann ein Stripe-Konto.",
   "perm.page_no_access": "Sie haben keinen Zugriff auf diese Seite.",
   "reason_export.gift": "Geschenk",

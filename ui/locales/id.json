@@ -1194,6 +1194,7 @@
   "pay.send_hint_off": "Ingin tombol Bayar di email ini?",
   "pay.send_includes_button": "Menyertakan tombol Bayar ({amount}).",
   "pay.settings_connected": "✓ Terhubung. Tombol Bayar kini muncul di faktur yang dibagikan dan di email pengiriman, sehingga pelanggan dapat membayar Anda secara online.",
+  "pay.settings_disconnecting": "Stripe sedang diputus sementara pembayaran yang ada diselesaikan",
   "pay.upgrade_desc": "Izinkan pelanggan membayar faktur secara online dengan kartu. Hubungkan instans ini ke Celerp Connect terlebih dahulu, lalu tautkan akun Stripe.",
   "perm.page_no_access": "Anda tidak memiliki akses ke halaman ini.",
   "reason_export.gift": "Hadiah",

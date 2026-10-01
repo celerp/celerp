@@ -1194,6 +1194,7 @@
   "pay.send_hint_off": "Muốn có nút Thanh toán trong email này?",
   "pay.send_includes_button": "Bao gồm nút Thanh toán ({amount}).",
   "pay.settings_connected": "✓ Đã kết nối. Nút Thanh toán giờ hiển thị trên hóa đơn được chia sẻ và trong email gửi, để khách hàng có thể thanh toán cho bạn trực tuyến.",
+  "pay.settings_disconnecting": "Stripe đang ngắt kết nối trong khi các khoản thanh toán hiện có hoàn tất",
   "pay.upgrade_desc": "Cho phép khách hàng thanh toán hóa đơn trực tuyến bằng thẻ. Kết nối phiên bản này với Celerp Connect trước, sau đó liên kết tài khoản Stripe.",
   "perm.page_no_access": "Bạn không có quyền truy cập trang này.",
   "reason_export.gift": "Quà tặng",

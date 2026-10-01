@@ -11057,12 +11057,12 @@ class TestPaymentsSettingsPage:
     no relay = Web Access upsell; relay without Stripe = a single-CTA sales
     pitch with no admin controls; connected = deposit selector + disconnect."""
 
-    def _mocks(self, relay=True, enabled=False, banks=None, deposit=""):
+    def _mocks(self, relay=True, enabled=False, banks=None, deposit="", state=None):
         from contextlib import ExitStack
         stack = ExitStack()
         for name, val in (
             ("get_relay_status", {"connected": relay}),
-            ("get_payments_status", {"enabled": enabled}),
+            ("get_payments_status", {"enabled": enabled, "state": state}),
             ("get_company", {"stripe_deposit_account": deposit, "current_role": "admin"}),
             ("get_bank_accounts", {"items": banks or []}),
         ):
@@ -11107,6 +11107,28 @@ class TestPaymentsSettingsPage:
     async def test_non_admin_cannot_open(self, ui_client):
         r = await ui_client.get("/settings/payments", cookies=_authed(role="staff"))
         assert r.status_code in (302, 303)
+
+    @pytest.mark.asyncio
+    async def test_disconnecting_state_says_existing_payments_finish(self, ui_client):
+        with self._mocks(relay=True, enabled=False, state="disconnecting"):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Stripe is disconnecting while existing payments finish" in r.text
+        # Neither connect (Cloud refuses it until the disconnect finishes) nor disconnect again.
+        assert "/settings/payments/connect" not in r.text
+        assert "/settings/payments/disconnect" not in r.text
+        assert "stripe_deposit_account" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_failed_disconnect_is_shown(self, ui_client):
+        from ui.api_client import APIError
+        with self._mocks(relay=True, enabled=True), \
+                patch("ui.api_client.disconnect_payments",
+                      new=AsyncMock(side_effect=APIError(503, "Payments are not configured"))):
+            r = await ui_client.post("/settings/payments/disconnect", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Payments are not configured" in r.text
+        assert "/settings/payments/disconnect" in r.text
 
 
 class TestCompanyAllFilesView:

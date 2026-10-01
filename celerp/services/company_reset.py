@@ -39,6 +39,7 @@ INSTALL_WIDE = {
     "alembic_version": "the database schema version",
     "instance_meta": "the installation's upgrade markers, created at runtime",
     "payment_closures": "requests to close a company's online payments, which outlive the company",
+    "payment_recoveries": "the installation's System Recovery restores, as Celerp Cloud must learn of them",
 }
 
 NAME_MISMATCH = "The name you typed does not match this company's name. Nothing was deleted."
@@ -128,7 +129,7 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
     transaction; then, whether it committed or rolled back, settles the payment closure
     (also when this raises ResetRefused carrying one) and, after a commit, runs the
     cleanup task. Nothing is written unless every check passes, and a company connected
-    to Celerp Cloud has its online payments frozen there first; a database failure part
+    to Celerp Cloud has its online payments closed there first; a database failure part
     way leaves the transaction to roll back."""
     if typed_name != company.name:
         raise ResetRefused(422, NAME_MISMATCH)
@@ -152,7 +153,7 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all()]
     members = set((await session.scalars(
         select(UserCompany.user_id).where(UserCompany.company_id == company.id))).all())
-    # Last, so a refusal above never freezes the payments of a company that stays. They
+    # Last, so a refusal above never closes the payments of a company that stays. They
     # are reopened when the deletion below does not commit.
     try:
         closure = await payments.prepare_company_closure(company.id)

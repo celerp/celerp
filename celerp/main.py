@@ -323,11 +323,12 @@ async def lifespan(_app: FastAPI):
     except Exception:
         logging.getLogger(__name__).exception("Reconciling unfinished company restores failed (non-fatal)")
 
-    # A company reset that stopped after Celerp Cloud froze the company's online payments
-    # is settled in the background: a deleted company's payments close for good, a kept
-    # one's reopen. One that cannot be settled yet stays frozen until a later boot.
-    from celerp.services.payments import settle_company_closures
-    asyncio.create_task(settle_company_closures())
+    # In the background, and again every few minutes: a System Recovery restore Celerp
+    # Cloud has not confirmed is reported, and a company reset that stopped after Cloud
+    # began closing the company's online payments is settled (a deleted company's
+    # payments close for good, a kept one's reopen). Until then they stay closed.
+    from celerp.services.payments import reconcile_payments_loop
+    payments_reconcile_task = asyncio.create_task(reconcile_payments_loop())
 
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links
@@ -462,6 +463,7 @@ async def lifespan(_app: FastAPI):
     outbound_connector_task.cancel()
     reorder_alert_task.cancel()
     update_task.cancel()
+    payments_reconcile_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:

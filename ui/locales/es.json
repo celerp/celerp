@@ -1194,6 +1194,7 @@
   "pay.send_hint_off": "¿Quieres un botón de pago en este correo?",
   "pay.send_includes_button": "Incluye un botón de pago ({amount}).",
   "pay.settings_connected": "✓ Conectado. El botón Pagar ahora aparece en las facturas compartidas y en el correo de envío, para que los clientes puedan pagarte en línea.",
+  "pay.settings_disconnecting": "Stripe se está desconectando mientras terminan los pagos existentes",
   "pay.upgrade_desc": "Permite que los clientes paguen las facturas en línea con tarjeta. Conecta primero esta instancia a Celerp Connect y luego vincula una cuenta de Stripe.",
   "perm.page_no_access": "No tienes acceso a esta página.",
   "reason_export.gift": "Regalo",

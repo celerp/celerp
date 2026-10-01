@@ -12,9 +12,9 @@ from __future__ import annotations
 import logging
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from celerp.models.payment_closure import PaymentClosure
+from celerp.models.payment_closure import PaymentClosure, PaymentRecovery
 
 log = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ async def create_checkout(*, amount_minor: int, currency: str, description: str,
 
 
 class PaymentsNotClosed(Exception):
-    """Celerp Cloud did not confirm that a company's online payments are frozen.
+    """Celerp Cloud did not confirm that a company's online payments are closing.
 
     ``reason`` is "disconnected", "payment_settling", "payment_unrecorded" or "unconfirmed".
     """
@@ -83,8 +83,14 @@ class PaymentsNotClosed(Exception):
 
 
 _CLOSURE = "/billing/connect/companies/retire"
+_RECOVERY = "/billing/connect/recovery"
 _PREPARED = ("prepared", "retired")
 _REFUSED = ("payment_settling", "payment_unrecorded")
+# Answers after which a step can never succeed: the request is forgotten, and Celerp
+# Cloud keeps the company's payments closed.
+_FINAL = {"finalize": ("payment_received", "generation_stale", "cancelled", "not_prepared"),
+          "cancel": ("retired",)}
+RECONCILE_INTERVAL_S = 300
 
 
 def _own_session():
@@ -93,53 +99,91 @@ def _own_session():
     return AsyncSession(bind=celerp.db.engine, expire_on_commit=False)
 
 
-async def _closure_step(step: str, operation_id: uuid.UUID, company_id: uuid.UUID) -> tuple[int, dict] | None:
-    """Ask Celerp Cloud to take one step of a closing request: its status and answer,
-    or None when there is no readable answer."""
+async def _cloud_answer(path: str, payload: dict) -> tuple[int, dict] | None:
+    """Celerp Cloud's status and answer to one payment lifecycle request, or None when
+    there is no readable answer."""
     from celerp.services import cloud_entitlement
     try:
-        response = await cloud_entitlement.authenticated_request(
-            "POST", f"{_CLOSURE}/{step}", total_s=30.0,
-            json={"company_id": str(company_id), "operation_id": str(operation_id)})
+        response = await cloud_entitlement.authenticated_request("POST", path, total_s=30.0, json=payload)
         data = response.json() if response is not None else None
     except Exception as exc:
-        log.warning("Closing company payments (%s) failed: %s", step, type(exc).__name__)
+        log.warning("Celerp Cloud payment request %s failed: %s", path, type(exc).__name__)
         return None
     return (response.status_code, data) if isinstance(data, dict) else None
 
 
-def _reached(answer: tuple[int, dict] | None, operation_id: uuid.UUID, company_id: uuid.UUID,
-             states: tuple[str, ...]) -> bool:
+async def _closure_step(step: str, closure: PaymentClosure) -> tuple[int, dict] | None:
+    return await _cloud_answer(f"{_CLOSURE}/{step}", {
+        "company_id": str(closure.target_company), "operation_id": str(closure.operation_id),
+        "generation": closure.generation})
+
+
+def _reached(answer: tuple[int, dict] | None, closure: PaymentClosure, states: tuple[str, ...]) -> bool:
     return answer is not None and answer[0] == 200 and answer[1] in [
-        {"company_id": str(company_id), "operation_id": str(operation_id), "state": state} for state in states]
+        {"company_id": str(closure.target_company), "operation_id": str(closure.operation_id), "state": state}
+        for state in states]
+
+
+async def report_recoveries(session) -> int | None:
+    """Tell Celerp Cloud of every System Recovery restore it has not confirmed, oldest
+    first, and return the installation's current payment generation. None while a
+    restore is still unconfirmed: no company's payments can be closed until it is."""
+    from celerp.config import settings
+    pending = (await session.scalars(select(PaymentRecovery).where(
+        PaymentRecovery.generation.is_(None)).order_by(PaymentRecovery.created_at))).all()
+    for recovery in pending:
+        if settings.cloud_disconnected:
+            return None
+        answer = await _cloud_answer(_RECOVERY, {
+            "recovery_id": str(recovery.recovery_id), "company_ids": recovery.company_ids})
+        generation = answer[1].get("generation") if answer is not None and answer[0] == 200 else None
+        if (type(generation) is not int or generation < 1
+                or answer[1].get("recovery_id") != str(recovery.recovery_id)):
+            return None
+        recovery.generation = generation
+        await session.commit()
+    return await session.scalar(select(func.max(PaymentRecovery.generation))) or 0
+
+
+def record_recovery(session, company_ids: list) -> None:
+    """Record, in the restore's own transaction, that a System Recovery restore brought
+    back *company_ids*; ``report_recoveries`` tells Celerp Cloud."""
+    session.add(PaymentRecovery(recovery_id=uuid.uuid4(), company_ids=sorted(str(c) for c in company_ids)))
 
 
 async def _settle(session, closure: PaymentClosure, company_exists: bool) -> bool:
     """Tell Celerp Cloud how *closure* ended: a company still here reopens its payments,
-    a deleted one closes them for good. Forgets the closure once Cloud confirms."""
+    a deleted one closes them for good. Forgets the closure once Cloud confirms, or
+    once Cloud answers that the step can never succeed; the company's payments then
+    stay closed at Cloud."""
     from celerp.config import settings
     if settings.cloud_disconnected:
         return False
     step, state = ("cancel", "cancelled") if company_exists else ("finalize", "retired")
-    if not _reached(await _closure_step(step, closure.operation_id, closure.target_company),
-                    closure.operation_id, closure.target_company, (state,)):
-        return False
+    answer = await _closure_step(step, closure)
+    if not _reached(answer, closure, (state,)):
+        if answer is None or answer[0] != 409 or answer[1].get("detail") not in _FINAL[step]:
+            return False
+        log.error("Celerp Cloud refused to %s closing the online payments of company %s (%s); "
+                  "they stay closed", step, closure.target_company, answer[1]["detail"])
     await session.delete(closure)
     await session.commit()
     return True
 
 
 async def prepare_company_closure(company_id: uuid.UUID) -> uuid.UUID | None:
-    """Freeze a company's online invoice payments at Celerp Cloud before it is deleted:
-    its open payment pages are closed, no new one can start, and payments arriving
-    meanwhile wait. The caller holds the company against deletion, and once its
-    transaction has committed or rolled back passes the returned id to
-    ``settle_company_closure``, which closes the payments for good or reopens them.
+    """Close a company's online invoice payments at Celerp Cloud before it is deleted:
+    its open payment pages are closed and no new one can start. A payment already
+    made still reaches the installation, and stops the closing from becoming final.
+    The caller holds the company against deletion, and once its transaction has
+    committed or rolled back passes the returned id to ``settle_company_closure``,
+    which closes the payments for good or reopens them.
 
     An installation without a Celerp Cloud credential never took online payments and
-    returns None at once. Otherwise returns only when Cloud confirms the freeze, and
-    raises PaymentsNotClosed for anything else, after asking Cloud to drop the request.
-    An earlier request for the same company that never settled is reopened first."""
+    returns None at once. Otherwise returns only when Cloud confirms, and raises
+    PaymentsNotClosed for anything else, after asking Cloud to drop the request. A
+    System Recovery restore Cloud has not confirmed, or an earlier request for the
+    same company that cannot be reopened, refuses it."""
     from celerp.config import settings
     from celerp.services import cloud_entitlement
     if not await cloud_entitlement.stored_api_key():
@@ -147,19 +191,22 @@ async def prepare_company_closure(company_id: uuid.UUID) -> uuid.UUID | None:
     if settings.cloud_disconnected:
         raise PaymentsNotClosed("disconnected")
     async with _own_session() as session:
+        generation = await report_recoveries(session)
+        if generation is None:
+            raise PaymentsNotClosed("unconfirmed")
         stale = (await session.scalars(select(PaymentClosure).where(
             PaymentClosure.target_company == company_id))).all()
         for closure in stale:
             if not await _settle(session, closure, company_exists=True):
                 raise PaymentsNotClosed("unconfirmed")
-        closure = PaymentClosure(operation_id=uuid.uuid4(), target_company=company_id)
+        closure = PaymentClosure(operation_id=uuid.uuid4(), target_company=company_id, generation=generation)
         session.add(closure)
         await session.commit()
-        answer = await _closure_step("prepare", closure.operation_id, company_id)
-        if _reached(answer, closure.operation_id, company_id, _PREPARED):
+        answer = await _closure_step("prepare", closure)
+        if _reached(answer, closure, _PREPARED):
             return closure.operation_id
-        # Cloud may have frozen the payments without the answer arriving; until Cloud
-        # confirms they are reopened the request is kept, and the payments stay frozen.
+        # Cloud may have prepared without the answer arriving; until Cloud confirms
+        # the payments are reopened the request is kept, and they stay closed.
         await _settle(session, closure, company_exists=True)
     if answer is not None and answer[0] == 409 and answer[1].get("detail") in _REFUSED:
         raise PaymentsNotClosed(answer[1]["detail"])
@@ -169,9 +216,9 @@ async def prepare_company_closure(company_id: uuid.UUID) -> uuid.UUID | None:
 async def settle_company_closure(operation_id: uuid.UUID | None) -> bool:
     """Settle one closing request once the transaction that asked for it has ended:
     the company gone closes its payments for good, the company still here reopens
-    them. Waits for a deletion of the company still in flight. True once Cloud has
-    confirmed (or there was nothing to settle); False leaves the request, and the
-    payments frozen, for the next attempt."""
+    them. Waits for a deletion of the company still in flight. True once settled (or
+    there was nothing to settle); False leaves the request, and the payments closed,
+    for the next attempt."""
     if operation_id is None:
         return True
     from celerp.models.company import Company
@@ -191,17 +238,28 @@ async def settle_company_closure(operation_id: uuid.UUID | None) -> bool:
         return False
 
 
-async def settle_company_closures() -> None:
-    """Settle every closing request left over, e.g. by a restart part way through a
-    reset. A request that cannot be settled now keeps its company's payments frozen."""
+async def reconcile_payments() -> None:
+    """Tell Celerp Cloud of any System Recovery restore it has not confirmed, then
+    settle every closing request left over, e.g. by a restart part way through a
+    reset. Whatever cannot be done now is tried again by the next call; meanwhile
+    the companies concerned keep their payments closed."""
     try:
         async with _own_session() as session:
+            await report_recoveries(session)
             pending = (await session.scalars(select(PaymentClosure.operation_id))).all()
     except Exception:
-        log.warning("Reading unsettled company payment closures failed", exc_info=True)
+        log.warning("Reconciling online payments with Celerp Cloud failed", exc_info=True)
         return
     for operation_id in pending:
         await settle_company_closure(operation_id)
+
+
+async def reconcile_payments_loop() -> None:
+    """``reconcile_payments`` at start and every RECONCILE_INTERVAL_S after."""
+    import asyncio
+    while True:
+        await reconcile_payments()
+        await asyncio.sleep(RECONCILE_INTERVAL_S)
 
 
 async def checkout_status(session_id: str) -> dict | None:
@@ -222,13 +280,15 @@ async def connect_start() -> dict | None:
 
 
 async def connect_status() -> dict:
-    """Authoritative status for the settings page: {"enabled": bool}. Falls back to
-    the cached feature flag if Cloud is unreachable."""
+    """Authoritative status for the settings page: {"enabled": bool, "state":
+    "connected" | "disconnecting" | "disconnected"}. Falls back to the cached feature
+    flag, with no state, if Cloud is unreachable."""
     return (await _cloud_get("/billing/connect/status")) or {"enabled": payments_enabled()}
 
 
 async def disconnect() -> bool:
-    """Disconnect the merchant's account via Cloud."""
+    """Disconnect the merchant's account via Cloud. New payments stop at once; Cloud
+    finishes the disconnect once every payment already started has been recorded."""
     return bool(await _cloud_post("/billing/connect/disconnect", {}))
 
 

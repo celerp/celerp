@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Web Access > Payments: connect a Stripe account so customers can pay invoices online.
 
-Three states, three jobs:
-  no relay   - upsell Web Access (payments cannot work without it)
-  no Stripe  - a sales page: one benefit-led pitch, one CTA, fee in the fine print
-  connected  - an operating page: status, deposit-account selector, disconnect
+Four states, four jobs:
+  no relay       - upsell Web Access (payments cannot work without it)
+  no Stripe      - a sales page: one benefit-led pitch, one CTA, fee in the fine print
+  connected      - an operating page: status, deposit-account selector, disconnect
+  disconnecting  - a status line: new payments are stopped while existing ones finish
 """
 
 from __future__ import annotations
@@ -81,9 +82,12 @@ def _connected_panel(deposit_account: str, bank_accounts: list[dict], saved: boo
 
 
 def _page(relay_ok: bool, enabled: bool, deposit_account: str,
-          bank_accounts: list[dict], has_team_features: bool, saved: bool = False) -> FT:
+          bank_accounts: list[dict], has_team_features: bool, saved: bool = False,
+          disconnecting: bool = False) -> FT:
     if not relay_ok:
         body = upgrade_banner(t("nav.payments"), t("pay.upgrade_desc"), plan="cloud")
+    elif disconnecting:
+        body = Div(P(t("pay.settings_disconnecting"), cls="form-hint"), cls="settings-card")
     elif not enabled:
         body = _pitch()
     else:
@@ -95,7 +99,7 @@ def _page(relay_ok: bool, enabled: bool, deposit_account: str,
     )
 
 
-async def _load(token: str) -> tuple[bool, bool, str, list[dict]]:
+async def _load(token: str) -> tuple[bool, bool, str, list[dict], bool]:
     relay_ok = False
     try:
         relay_ok = _relay_has_paid_access(await api.get_relay_status(token))
@@ -111,7 +115,16 @@ async def _load(token: str) -> tuple[bool, bool, str, list[dict]]:
             banks = (await api.get_bank_accounts(token)).get("items", [])
         except APIError:
             pass
-    return relay_ok, enabled, deposit, banks
+    return relay_ok, enabled, deposit, banks, status.get("state") == "disconnecting"
+
+
+async def _page_with_error(request: Request, token: str, error: APIError):
+    relay_ok, enabled, deposit, banks, disconnecting = await _load(token)
+    has_team = _has_team_features(await _commercial_state(request))
+    return await base_shell(
+        Div(flash(str(error.detail)),
+            _page(relay_ok, enabled, deposit, banks, has_team, disconnecting=disconnecting)),
+        title=page_title("nav.payments"), nav_active="web-access", request=request)
 
 
 def setup_routes(app):
@@ -124,14 +137,14 @@ def setup_routes(app):
         if redir:
             return redir
         try:
-            relay_ok, enabled, deposit, banks = await _load(token)
+            relay_ok, enabled, deposit, banks, disconnecting = await _load(token)
         except APIError as e:
             return await base_shell(flash(str(e.detail)), title=page_title("nav.payments"),
                                     nav_active="web-access", request=request)
         has_team = _has_team_features(await _commercial_state(request))
         return await base_shell(
             _page(relay_ok, enabled, deposit, banks, has_team,
-                  saved=request.query_params.get("saved") == "1"),
+                  saved=request.query_params.get("saved") == "1", disconnecting=disconnecting),
             title=page_title("nav.payments"), nav_active="web-access", request=request)
 
     @app.post("/settings/payments")
@@ -146,10 +159,7 @@ def setup_routes(app):
         try:
             await api.patch_company(token, {"stripe_deposit_account": str(form.get("stripe_deposit_account", "")).strip()})
         except APIError as e:
-            relay_ok, enabled, deposit, banks = await _load(token)
-            has_team = _has_team_features(await _commercial_state(request))
-            return await base_shell(Div(flash(str(e.detail)), _page(relay_ok, enabled, deposit, banks, has_team)),
-                              title=page_title("nav.payments"), nav_active="web-access", request=request)
+            return await _page_with_error(request, token, e)
         return RedirectResponse("/settings/payments?saved=1", status_code=302)
 
     @app.post("/settings/payments/connect")
@@ -163,10 +173,7 @@ def setup_routes(app):
         try:
             result = await api.start_payments_connect(token)
         except APIError as e:
-            relay_ok, enabled, deposit, banks = await _load(token)
-            has_team = _has_team_features(await _commercial_state(request))
-            return await base_shell(Div(flash(str(e.detail)), _page(relay_ok, enabled, deposit, banks, has_team)),
-                              title=page_title("nav.payments"), nav_active="web-access", request=request)
+            return await _page_with_error(request, token, e)
         return RedirectResponse(result.get("url", "/settings/payments"), status_code=302)
 
     @app.post("/settings/payments/disconnect")
@@ -179,6 +186,6 @@ def setup_routes(app):
             return redir
         try:
             await api.disconnect_payments(token)
-        except APIError:
-            pass
+        except APIError as e:
+            return await _page_with_error(request, token, e)
         return RedirectResponse("/settings/payments", status_code=302)

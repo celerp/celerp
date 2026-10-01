@@ -1280,6 +1280,7 @@
   "pay.send_hint_off": "በዚህ ኢሜይል ውስጥ የክፍያ አዝራር ይፈልጋሉ?",
   "pay.send_includes_button": "የክፍያ አዝራር ያካትታል ({amount})።",
   "pay.settings_connected": "✓ ተገናኝቷል። የክፍያ አዝራር አሁን በተጋሩ የሽያጭ ደረሰኞች ላይ እና በመላኪያ ኢሜይል ውስጥ ይታያል፣ ስለዚህ ደንበኞች በመስመር ላይ ሊከፍሉዎት ይችላሉ።",
+  "pay.settings_disconnecting": "ያሉት ክፍያዎች እስኪጠናቀቁ ድረስ Stripe እየተቋረጠ ነው",
   "pay.upgrade_desc": "ደንበኞች የሽያጭ ደረሰኞችን በካርድ በመስመር ላይ እንዲከፍሉ ያድርጉ። መጀመሪያ ይህን ተከላ ከCelerp Connect ጋር ያገናኙ፣ ከዚያ የStripe መለያ ያገናኙ።",
   "perm.page_no_access": "ወደዚህ ገጽ የመድረስ ፈቃድ የለዎትም።",
   "reason_export.gift": "ስጦታ",
