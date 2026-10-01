@@ -162,9 +162,9 @@ async def test_start_company_explains_when_someone_else_is_signed_in(ui, real_en
     from ui.i18n import t
     monkeypatch.setattr(gw_state, "get_session_token", lambda: "")  # no cloud relay
     shared = await owner(real_engine)
-    await company(real_engine, shared, "Harbor Goods Ltd", "alpha")
+    a = await company(real_engine, shared, "Harbor Goods Ltd", "alpha")
     await owner(real_engine, SOLO_EMAIL, "Solo")
-    await _signed_in(real_engine, shared)
+    await _signed_in(real_engine, (shared, a))
     r = await ui.post(START, data={"email": SOLO_EMAIL, "password": SOLO_PASSWORD, "company_name": "X Ltd"})
     page = _page(r)
     assert r.status_code == 200 and t("auth.direct_connection_gate_body") in page

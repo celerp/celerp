@@ -25,11 +25,9 @@ from typing import BinaryIO, Literal
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.models.migration import MigrationRun, MigrationStatus
 from celerp.routers.auth import limiter
@@ -156,10 +154,7 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession, ctx: AuthCo
 async def _tokens(session: AsyncSession, user_id, company_id) -> dict:
     """A session for the user on the company, with their active role there."""
     user = await session.get(User, uuid.UUID(str(user_id)))
-    company = await session.get(Company, uuid.UUID(str(company_id)))
-    role = await session.scalar(select(UserCompany.role).where(
-        UserCompany.user_id == user.id, UserCompany.company_id == company.id, UserCompany.is_active.is_(True)))
-    return await issue_token_pair(session, user=user, company=company, role=role)
+    return await issue_token_pair(session, user=user, company_id=uuid.UUID(str(company_id)))
 
 
 async def _signed_in(session: AsyncSession, result: cb.RestoreResult) -> dict:

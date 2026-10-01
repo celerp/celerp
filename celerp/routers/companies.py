@@ -253,9 +253,7 @@ async def create_company(
         raise HTTPException(status_code=400, detail=f"Could not create company: {e}") from e
     # Creating a company is a continuation of the current owner session: pass the
     # snonce it authenticated on so a concurrent revocation cannot be jumped over.
-    return await issue_token_pair(
-        session, user=user, company=company, role="owner", expected_snonce=ctx.snonce
-    )
+    return await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=ctx.snonce)
 
 
 @router.get("/me")
@@ -2299,8 +2297,8 @@ async def reset_company(
     else:
         # The new session continues this one, so it cannot jump a concurrent sign-out.
         result = await issue_token_pair(
-            session, user=ctx.user, company=await session.get(Company, link.company_id),
-            role=link.role, expected_snonce=ctx.snonce,
+            session, user=ctx.user, company_id=link.company_id,
+            expected_snonce=ctx.snonce,
         )
     session.expunge_all()
     await run_cleanup_task(session, task_id)

@@ -159,15 +159,17 @@ async def test_a_only_login_keeps_its_login_and_starts_a_new_company(real_engine
     assert await count(real_engine, "companies", "name IN ('Second Ltd', 'Nope Ltd')") == 0
 
 
-async def _signed_in(engine, *users) -> set[str]:
-    """Register a live session for each of *users*, then return everyone counted as signed in."""
+async def _signed_in(engine, *sessions) -> set[str]:
+    """Register a live session for each (user, company) in *sessions*, then return everyone
+    counted as signed in."""
     import uuid
     from datetime import datetime, timedelta, timezone
 
     from celerp.services.session_tracker import active_user_ids, register_token
     async with maker(engine)() as s:
-        for user in users:
-            await register_token(s, uuid.uuid4().hex, str(user), datetime.now(timezone.utc) + timedelta(hours=1))
+        for user, company_id in sessions:
+            await register_token(s, uuid.uuid4().hex, str(user), company_id,
+                                 datetime.now(timezone.utc) + timedelta(hours=1))
         return await active_user_ids(s)
 
 
@@ -177,7 +179,7 @@ async def test_logins_left_without_a_company_no_longer_count_as_signed_in(real_e
     company was reset must stop holding that place, or no one could sign in to start over."""
     _local_files(monkeypatch, tmp_path)
     shared, solo, a, b = await _two_companies(real_engine, tmp_path)
-    assert await _signed_in(real_engine, shared, solo) == {str(shared), str(solo)}
+    assert await _signed_in(real_engine, (shared, a), (solo, a)) == {str(shared), str(solo)}
 
     r = await real_client.post(RESET, json={"company_name": "Harbor Goods Ltd"},
                                headers=auth(await token(real_engine, shared, a)))

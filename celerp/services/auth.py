@@ -368,18 +368,43 @@ async def usable_company_link(session: AsyncSession, user_id, company_id) -> Use
     )).scalar_one_or_none()
 
 
+class CompanyUnavailable(HTTPException):
+    """The company a session was about to be issued for was removed, or the login can no
+    longer work in it. Nothing was issued."""
+
+    def __init__(self) -> None:
+        super().__init__(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
+
+
+async def lock_issuance_company(session: AsyncSession, user_id, company_id) -> UserCompany:
+    """Hold *company_id* against removal until the transaction ends and return the user's
+    usable link to it, or raise ``CompanyUnavailable``.
+
+    The row is taken FOR KEY SHARE: a company reset takes it FOR UPDATE before deleting
+    anything, so a session issued under this lock either commits before the reset starts
+    (and the reset then ends it) or waits and finds the company gone. Lock order is the
+    company first, then ``UserAuthState``; every issuance path follows it."""
+    held = await session.scalar(
+        select(Company.id).where(Company.id == company_id).with_for_update(read=True, key_share=True))
+    link = None if held is None else await usable_company_link(session, user_id, company_id)
+    if link is None:
+        raise CompanyUnavailable()
+    return link
+
+
 async def issue_token_pair(
     session: AsyncSession,
     *,
     user: User,
-    company: Company,
-    role: str,
+    company_id: uuid.UUID,
     jti: str | None = None,
     expected_snonce: str | None = None,
 ) -> dict:
     """The single access+refresh issuance point.
 
-    Locks the per-user ``UserAuthState`` row FOR UPDATE, reads the current nonce
+    First holds *company_id* against removal and re-checks, under that lock, that the
+    user can still work in it (``lock_issuance_company``); the role comes from that
+    link. Then locks the per-user ``UserAuthState`` row FOR UPDATE, reads the current nonce
     under that lock, builds the enabled-module UI hint list, mints a v2 access
     token and a v2 refresh token bound to exactly the locked nonce, registers the
     access JTI + expiry in the same transaction, commits once, and returns
@@ -407,8 +432,10 @@ async def issue_token_pair(
     )
     from celerp.modules.registry import get_enabled as _get_enabled
 
+    role = (await lock_issuance_company(session, user.id, company_id)).role
+    company = await session.get(Company, company_id)
     user_id = str(user.id)
-    company_id = str(company.id)
+    company_id = str(company_id)
     auth_state = await _lock(session, user_id)
     if expected_snonce is not None and expected_snonce != auth_state.nonce:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
@@ -420,7 +447,7 @@ async def issue_token_pair(
     # Cap at 24h to match create_access_token's internal cap so DB expiry = JWT exp.
     capped_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
     expiry_dt = datetime.now(timezone.utc) + timedelta(minutes=capped_minutes)
-    await _register(session, token_jti, user_id, expiry_dt, commit=False)
+    await _register(session, token_jti, user_id, company_id, expiry_dt, commit=False)
     await session.commit()
     _nonce_cache_set(user_id, snonce)
     refresh_token = create_refresh_token(user_id, company_id, snonce=snonce)

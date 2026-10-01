@@ -88,6 +88,7 @@ EXCLUDED_TABLES = {
     "import_batches": "import job state",
     "migration_runs": "migration run state",
     "migration_cleanup_tasks": "migration cleanup state",
+    "session_registry": "sign-in sessions issued by this installation",
 }
 
 # Settings that describe this installation or its people, not the business.

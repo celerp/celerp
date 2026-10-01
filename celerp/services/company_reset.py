@@ -31,7 +31,6 @@ from celerp.services.company_backup import _fk_order, _ident, _schema
 INSTALL_WIDE = {
     "users": "logins outlive any one company",
     "user_auth_state": "each login's session generation",
-    "session_registry": "each login's issued sessions",
     "supporter_badges": "each login's supporter badge",
     "system_runtime_state": "the installation's own runtime state",
     "alembic_version": "the database schema version",
@@ -104,6 +103,10 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> uui
     unless every check passes; a database failure part way leaves the transaction to roll back."""
     if typed_name != company.name:
         raise ResetRefused(422, NAME_MISMATCH)
+    # A session being issued holds the company FOR KEY SHARE until it is saved: the reset
+    # waits for it and then ends it with the company's other sessions, and a later one
+    # waits for the reset and finds the company gone.
+    await session.execute(select(Company.id).where(Company.id == company.id).with_for_update())
     tables = await owned_tables(session)
     cid = str(company.id)
     connected = sorted(set((await session.scalars(
