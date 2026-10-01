@@ -338,6 +338,10 @@ async def get_current_role(ctx: AuthContext = Depends(get_auth_context)) -> str:
     return ctx.role
 
 
+# Sign-in refusal for a login with no active company left.
+NO_COMPANY = "No active company membership"
+
+
 async def first_company_link(session: AsyncSession, user_id) -> UserCompany | None:
     """The company a sign-in lands on: the user's first active company link.
 

@@ -141,14 +141,14 @@ async def get_nonce(session: AsyncSession, user_id: str) -> str:
 
     Auto-creates a ``user_auth_state`` row with a fresh nonce on first call
     (new user, first login).  Returns empty string if the user no longer exists
-    (e.g. after factory-reset) so callers treat it as an eviction (nonce mismatch).
+    (e.g. after it was removed) so callers treat it as an eviction (nonce mismatch).
     """
     uid = _uuid_mod.UUID(user_id)
     row = await session.get(UserAuthState, uid, populate_existing=True)
     if row is not None:
         return row.nonce
     # Check the user exists before creating a new auth-state row.
-    # If the user was deleted (e.g. factory-reset), return "" so the caller
+    # If the user was deleted, return "" so the caller
     # detects a nonce mismatch and treats the session as evicted — no FK insert.
     from celerp.models.company import User as _User
     user_exists = await session.get(_User, uid)

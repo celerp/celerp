@@ -445,6 +445,15 @@ async def login_force(email: str, password: str) -> tuple[str, str]:
         return data["access_token"], data["refresh_token"]
 
 
+async def start_company(email: str, password: str, company_name: str) -> tuple[str, str]:
+    """Create a company for a login that has none. Returns (access_token, refresh_token)."""
+    async with _anon_api_client() as c:
+        r = _raise(await c.post("/auth/start-company",
+                                json={"email": email, "password": password, "company_name": company_name}))
+        data = r.json()
+        return data["access_token"], data["refresh_token"]
+
+
 async def change_password(token: str, current_password: str, new_password: str) -> str:
     """Change password for the authenticated user. Returns detail message."""
     async with _api_client(token) as c:

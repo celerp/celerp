@@ -17404,7 +17404,7 @@ class TestDraftStatusColumn:
         assert "badge--reserved" in r.text, "finalized list must show the item's real status"
 
 
-# ── Factory Reset danger zone UI tests ───────────────────────────────────────
+# ── Danger zone UI tests ───────────────────────────────────────
 
 class TestDangerZoneUI:
     @pytest.mark.asyncio
@@ -17416,7 +17416,7 @@ class TestDangerZoneUI:
              patch("ui.api_client.get_locations", new_callable=AsyncMock, return_value={"items": []}):
             r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="owner"))
         assert r.status_code == 200
-        assert "Reset All Data" in r.text
+        assert "Reset this company" in r.text
 
     @pytest.mark.asyncio
     async def test_danger_zone_hidden_for_admin(self, ui_client):
@@ -17427,7 +17427,7 @@ class TestDangerZoneUI:
              patch("ui.api_client.get_locations", new_callable=AsyncMock, return_value={"items": []}):
             r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="admin"))
         assert r.status_code == 200
-        assert "Reset All Data" not in r.text
+        assert "Reset this company" not in r.text
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,7 @@ from celerp.services.provisioning import provision_additional_company, provision
 from celerp.services.auth import (
     AuthContext,
     decode_refresh_token,
+    NO_COMPANY,
     first_company_link,
     get_auth_context,
     MIN_PASSWORD_LENGTH,
@@ -38,7 +39,6 @@ from celerp.services.auth import (
 
 router = APIRouter()
 
-NO_COMPANY = "No active company membership"
 
 logger = logging.getLogger(__name__)
 
