@@ -23,7 +23,7 @@ import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
 from ui.components.shell import base_shell, minimal_shell, page_header, search_help, toast_header, page_title
-from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
+from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from celerp.services.cost_visibility import COST_ITEM_KEYS
@@ -3165,13 +3165,17 @@ function celerpPrintLabel(entityId, templateId) {
 
     # ── Bulk actions (list-level) ─────────────────────────────────────────────
 
-    def _bulk_destructive_success(message: str, redirect_qs: str = "", cls: str = "flash--success") -> Response:
+    def _bulk_destructive_success(message: str, redirect_qs: str = "", cls: str = "flash--success",
+                                  notice: str = "") -> Response:
         """Return a bulk-action result response that clears the client-side selection.
 
         Sends HX-Trigger: celerpSelectionClear so the JS handler resets CelerpSelection
         and the toolbar before the table reloads.  Used for bulk actions (merge, delete,
         archive, expire, duplicate) that reload the table; `cls` selects the flash
-        variant (success, or warning for a partial-success count).
+        variant (success, or warning for a partial-success count). Clearing the
+        selection hides the toolbar that holds the flash, so a ``notice`` the user must
+        read (what a merge did to the books) is also raised as a toast that stays until
+        dismissed.
         """
         from starlette.responses import HTMLResponse
         content = Div(
@@ -3183,7 +3187,9 @@ function celerpPrintLabel(entityId, templateId) {
             hx_swap="outerHTML",
             **({"hx_push_url": f"/inventory{redirect_qs}"} if redirect_qs else {}),
         )
-        return HTMLResponse(to_xml(content), headers={"HX-Trigger": "celerpSelectionClear"})
+        headers = (toast_header(f"{message} {notice}", persist=True, celerpSelectionClear=True) if notice
+                   else {"HX-Trigger": "celerpSelectionClear"})
+        return HTMLResponse(to_xml(content), headers=headers)
 
     def _bulk_toast_error(msg: str) -> Response:
         """Surface a bulk-action error as the standard lower-right toast (no inline swap), so
@@ -3422,6 +3428,7 @@ function celerpPrintLabel(entityId, templateId) {
         entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
         target_sku_from = str(form.get("target_sku_from", "")).strip()
         resulting_sku = str(form.get("resulting_sku", "")).strip() or None
+        idempotency_key = str(form.get("idempotency_key", "")).strip() or None
         if len(entity_ids) < 2:
             return Div(P(t("inv.select_at_least_2_items_to_merge"), cls="flash flash--warning"), id="bulk-action-result")
         if not target_sku_from:
@@ -3444,6 +3451,7 @@ function celerpPrintLabel(entityId, templateId) {
                 target_sku_from=target_sku_from,
                 resulting_quantity=total_qty,
                 resulting_sku=resulting_sku,
+                idempotency_key=idempotency_key,
             )
         except APIError as e:
             # Surface merge failures (e.g. a weight-unit mismatch) as the standard lower-right toast.
@@ -3453,7 +3461,35 @@ function celerpPrintLabel(entityId, templateId) {
         target_item = next((it for it in items if it.get("entity_id") == target_sku_from or it.get("id") == target_sku_from), None)
         target_sku = resulting_sku or (target_item.get("sku", "") if target_item else "")
         redirect_qs = f"?q={target_sku}" if target_sku else ""
-        return _bulk_destructive_success(t("inv.items_merged_successfully"), redirect_qs)
+        moved = _merge_reclass_sentence(result.get("inventory_reclassification"), done=True)
+        return _bulk_destructive_success(t("inv.items_merged_successfully"), redirect_qs, notice=moved)
+
+    @app.post("/api/items/merge/preview")
+    async def item_merge_preview(request: Request):
+        """The inventory accounts the pending merge moves value between, as one sentence
+        for the merge confirmation; empty when the items share an account."""
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+        target_sku_from = str(form.get("target_sku_from", "")).strip()
+        try:
+            preview = await api.preview_merge(token, entity_ids, target_sku_from)
+        except APIError as e:
+            return JSONResponse({"error": str(e.detail)}, status_code=e.status)
+        return JSONResponse({"message": _merge_reclass_sentence(preview.get("inventory_reclassification"))})
+
+    @app.post("/api/items/{entity_id}/undo-merge")
+    async def item_undo_merge(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            await api.undo_merge(token, entity_id)
+        except APIError as e:
+            return _bulk_toast_error(e.detail)
+        return Div(P(t("inv.merge_undone"), cls="flash flash--success"), id="merge-undo")
 
     async def _next_transform_sku(token: str, parent_sku: str) -> str:
         """Suggest a fresh child SKU for a TRANSFORM (a new, distinct product derived from
@@ -7171,6 +7207,7 @@ def _item_detail_tabs(
         )
     elif active_tab == "activity":
         panel = Div(
+            _undo_merge_block(entity_id, ledger),
             _ledger_table(ledger, entity_id=entity_id, currency=currency),
             cls="detail-grid detail-grid--single",
         )
@@ -7432,6 +7469,35 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str | N
             cls="detail-table",
         ),
         cls="detail-card",
+    )
+
+
+def _merge_reclass_sentence(disclosure: dict | None, *, done: bool = False) -> str:
+    """The merge's inventory reclassification in words: how much moves from which
+    inventory account into the surviving one. A role that cannot see cost is told the
+    accounts without the amounts. Empty when the merge moves nothing."""
+    if not disclosure:
+        return ""
+    moves = disclosure["moves"]
+    to = disclosure["destination_name"]
+    tense = "done" if done else "pending"
+    if any(m["amount"] is None for m in moves):
+        return t(f"inv.merge_reclass_accounts_{tense}", accounts=", ".join(m["name"] for m in moves), to=to)
+    parts = ", ".join(t("inv.merge_reclass_move", amount=fmt_money(m["amount"], disclosure["currency"]),
+                        account=m["name"]) for m in moves)
+    return t(f"inv.merge_reclass_{tense}", moves=parts, to=to)
+
+
+def _undo_merge_block(entity_id: str, ledger: list[dict]) -> FT | str:
+    """Undo for a merge result, offered while the merge is still the item's latest event
+    (the API explains any other reason it cannot be undone)."""
+    if not ledger or ledger[0].get("event_type") != "item.merged":
+        return ""
+    return Div(
+        Button(t("inv.undo_merge"), type="button", cls="btn btn--secondary btn--sm",
+               hx_post=f"/api/items/{entity_id}/undo-merge", hx_target="#merge-undo", hx_swap="outerHTML",
+               hx_confirm=t("inv.undo_merge_confirm")),
+        id="merge-undo", style="margin-bottom:0.75rem",
     )
 
 

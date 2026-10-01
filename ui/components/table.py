@@ -1947,6 +1947,22 @@ function _populateMergeTargets(){
     if(skuInput){skuInput.style.display=isNewSku?'':'none';skuInput.value='';}
     if(skuArrow){skuArrow.style.display=isNewSku?'':'none';}
     if(isNewSku&&skuInput){skuInput.focus();}
+    // Items held in different inventory accounts: say how much value the merge moves
+    // between them before the user confirms.
+    var survivor=isNewSku?CelerpSelection.ids()[0]:sel.value;
+    var note=document.createElement('span');
+    note.id='merge-reclass-note';
+    note.style.fontSize='0.85rem';
+    note.style.display='none';
+    var pf=new FormData();
+    CelerpSelection.ids().forEach(function(id){pf.append('selected',id);});
+    pf.append('target_sku_from',survivor);
+    fetch('/api/items/merge/preview',{method:'POST',body:pf})
+      .then(function(r){return r.json();})
+      .then(function(d){var m=d&&(d.message||d.error);if(m){note.textContent=m;note.style.display='';}})
+      .catch(function(){});
+    // One key per confirmation, so a repeated click merges once.
+    var mergeKey='merge-'+(window.crypto&&crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());
     var btnRow=document.createElement('div');
     btnRow.style.display='flex';
     btnRow.style.gap='0.5rem';
@@ -1966,8 +1982,10 @@ function _populateMergeTargets(){
         form.appendChild(inp);
       });
       var t=document.createElement('input');t.type='hidden';t.name='target_sku_from';
-      t.value=isNewSku?CelerpSelection.ids()[0]:sel.value;
+      t.value=survivor;
       form.appendChild(t);
+      var k=document.createElement('input');k.type='hidden';k.name='idempotency_key';k.value=mergeKey;
+      form.appendChild(k);
       if(isNewSku){
         var sk=document.createElement('input');sk.type='hidden';sk.name='resulting_sku';sk.value=skuEl.value.trim();
         form.appendChild(sk);
@@ -1988,6 +2006,7 @@ function _populateMergeTargets(){
       _clearBulkResult();
     });
     confirmDiv.appendChild(msg);
+    confirmDiv.appendChild(note);
     btnRow.appendChild(btn);
     btnRow.appendChild(cancel);
     confirmDiv.appendChild(btnRow);

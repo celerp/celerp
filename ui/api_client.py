@@ -2496,6 +2496,17 @@ async def merge_items(
         return _raise(await c.post("/items/merge", json=body)).json()
 
 
+async def preview_merge(token: str, source_entity_ids: list[str], target_sku_from: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/items/merge/preview", json={
+            "source_entity_ids": source_entity_ids, "target_sku_from": target_sku_from})).json()
+
+
+async def undo_merge(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/items/{entity_id}/undo-merge")).json()
+
+
 async def bulk_set_status(token: str, entity_ids: list[str], status: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/items/bulk/status", json={"entity_ids": entity_ids, "status": status})).json()

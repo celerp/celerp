@@ -27,6 +27,7 @@ _EVENT_TYPES: tuple[str, ...] = (
     "item.expired", "item.reserved", "item.unreserved", "item.pricing.set",
     "item.status.set", "item.split", "item.split_from", "item.merged",
     "item.transform", "item.transformed_from", "item.source_deactivated",
+    "item.merge_undone", "item.unmerged",
     "item.fulfilled", "item.fulfillment_reversed", "item.consumed", "item.produced",
     "doc.created", "doc.updated", "doc.finalized", "doc.paid", "doc.voided",
     "doc.sent", "doc.marked_sent", "doc.converted", "doc.converted_to_bill",
