@@ -1295,3 +1295,23 @@ async def test_migrate_leaves_a_database_under_unfinished_recovery_to_the_recove
     backup_import._mark_recovery_finished()
     cli._migrate_to_head("postgresql://x/y")
     assert ran == ["postgresql://x/y"] * 3
+
+
+def test_migrate_does_not_report_done_while_the_recovery_is_unfinished(tmp_path, monkeypatch):
+    """`celerp migrate` under an unfinished recovery says the database waits for it and
+    stops there, with no "Done" line. It still exits 0: the desktop launcher runs it
+    before the server, and the server is what finishes the recovery."""
+    from click.testing import CliRunner
+
+    from celerp import cli
+    from celerp.config import settings
+    from celerp.services import backup_import
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    backup_import._mark_recovery_started(tmp_path / "safety.celerp-backup", [])
+    monkeypatch.setattr(cli, "_run_migrations", lambda url: pytest.fail("migrated mid recovery"))
+
+    result = CliRunner().invoke(cli.main, ["migrate", "--db-url", "postgresql://x/y"])
+    assert result.exit_code == 0, result.output
+    assert "System Recovery unfinished" in result.output
+    assert "Done" not in result.output

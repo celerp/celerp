@@ -686,7 +686,7 @@ def _migration_lock(db_url: str):
         engine.dispose()
 
 
-def _migrate_to_head(db_url: str) -> None:
+def _migrate_to_head(db_url: str) -> bool:
     """Apply pending migrations, the grants, then the develop→release reconcile.
 
     Shared by `celerp migrate` and `celerp start` so the steps and their order
@@ -695,7 +695,8 @@ def _migrate_to_head(db_url: str) -> None:
 
     Reports the stamp it moved, and says nothing when it moved nothing, so a
     routine start is as quiet as it was and a start that changed the schema
-    cannot be mistaken for one that did not.
+    cannot be mistaken for one that did not. Returns False when an unfinished
+    System Recovery left the database to the server, so callers do not report it ready.
     """
     from celerp.services.backup_import import recovery_incomplete
     if recovery_incomplete():
@@ -703,7 +704,7 @@ def _migrate_to_head(db_url: str) -> None:
         # it and brings its schema to head, so a migration here would only run on
         # the half-replaced one.
         click.echo("  System Recovery unfinished; the database is migrated when it completes.")
-        return
+        return False
     before = after = None
     with _migration_lock(db_url):
         before = _stamped_revision(db_url)
@@ -716,6 +717,7 @@ def _migrate_to_head(db_url: str) -> None:
         after = _stamped_revision(db_url)
     if after != before:
         click.echo(f"  ✓ Database migrated: {before or 'base'} -> {after}")
+    return True
 
 
 def _reconcile_after_migrate(db_url: str) -> None:
@@ -1035,8 +1037,8 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, wa
     # sequences and tables created by migrations are not covered by the ALTER
     # DEFAULT PRIVILEGES set during provisioning, so they are re-granted after.
     click.echo("Running migrations...")
-    _migrate_to_head(db_url_val)
-    click.echo("  ✓ Database ready")
+    if _migrate_to_head(db_url_val):
+        click.echo("  ✓ Database ready")
 
     # Headless installs (a process manager runs `start`) are network-exposed, so the
     # first-admin page shouldn't be claimable by whoever reaches it first. Mint a
@@ -1394,8 +1396,8 @@ def migrate(db_url):
         ensure_database(cfg)
         url = cfg["database"]["url"]
     click.echo("Running migrations...")
-    _migrate_to_head(url)
-    click.echo("  ✓ Done")
+    if _migrate_to_head(url):
+        click.echo("  ✓ Done")
 
 
 @main.command()
