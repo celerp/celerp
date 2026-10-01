@@ -779,9 +779,9 @@ def _marker_path() -> Path:
 def recovery_incomplete() -> bool:
     """Whether a destructive recovery started and has not finished or been undone.
 
-    While true the installation serves nothing but its health check: its database,
-    files and modules may not agree, and no session from before the replacement may
-    be honoured.
+    While true the installation serves nothing but its liveness and readiness
+    probes: its database, files and modules may not agree, and no session from
+    before the replacement may be honoured.
     """
     return _marker_path().exists()
 

@@ -966,7 +966,7 @@ async def test_partial_connector_revoke_is_a_started_recovery(rec, tmp_path, mon
 
 async def test_recovery_that_cannot_be_undone_keeps_installation_closed(rec, tmp_path, monkeypatch,
                                                                          real_client, real_engine):
-    """When the safety archive cannot be put back either, nothing but the health check is
+    """When the safety archive cannot be put back either, nothing but the health probes are
     served, not even a session from before; the next start puts the installation back."""
     from celerp.services import backup_import
     rec.seed()
