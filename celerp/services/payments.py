@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
 
 from sqlalchemy import func, select
 
@@ -195,7 +196,8 @@ async def report_recoveries(session) -> int | None:
         if settings.cloud_disconnected:
             return None
         answer = await _cloud_answer(_RECOVERY, {
-            "recovery_id": str(recovery.recovery_id), "company_ids": recovery.company_ids})
+            "recovery_id": str(recovery.recovery_id), "company_ids": recovery.company_ids,
+            "payments_since": recovery.payments_since and recovery.payments_since.isoformat()})
         generation = answer[1].get("generation") if answer is not None and answer[0] == 200 else None
         if (type(generation) is not int or generation < 1
                 or answer[1].get("recovery_id") != str(recovery.recovery_id)):
@@ -205,10 +207,12 @@ async def report_recoveries(session) -> int | None:
     return await session.scalar(select(func.max(PaymentRecovery.generation))) or 0
 
 
-def record_recovery(session, company_ids: list) -> None:
+def record_recovery(session, company_ids: list, payments_since: datetime | None) -> None:
     """Record, in the restore's own transaction, that a System Recovery restore brought
-    back *company_ids*; ``report_recoveries`` tells Celerp Cloud."""
-    session.add(PaymentRecovery(recovery_id=uuid.uuid4(), company_ids=sorted(str(c) for c in company_ids)))
+    back *company_ids* from a backup that began at *payments_since* (None when it does
+    not say); ``report_recoveries`` tells Celerp Cloud."""
+    session.add(PaymentRecovery(recovery_id=uuid.uuid4(), company_ids=sorted(str(c) for c in company_ids),
+                                payments_since=payments_since))
 
 
 async def _settle(session, closure: PaymentClosure, company_exists: bool) -> bool:

@@ -8,12 +8,15 @@ settled the same way on the next start or the next reconciliation. A System Reco
 restore is reported to Cloud, which reopens the payments of the companies it brought
 back; until Cloud confirms it, no company can be reset. A payment Celerp Cloud delivers
 for a company or invoice that no longer exists is kept among the unmatched payments, and
-holds the company's closing until it is recorded."""
+holds the company's closing until it is recorded. A restore has Celerp Cloud deliver again
+the payments recorded since its backup started; no new payment opens until they are
+recorded, and none opens while Cloud has not confirmed the restore."""
 
 from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -31,9 +34,13 @@ pytestmark = pytest.mark.asyncio
 RESET = "/companies/me/reset"
 CLOSURE = "/billing/connect/companies/retire/"
 RECOVERY = "/billing/connect/recovery"
+CHECKOUT = "/billing/connect/checkout"
 NAME = "Harbor Goods Ltd"
 LOST = object()  # Cloud takes the step, but its answer never arrives
 NO_ANSWER = object()  # the request returns nothing
+
+
+_PAYMENT = ("company_id", "entity_id", "reference", "amount_minor", "currency", "delivery_id")
 
 
 class _Crash(BaseException):
@@ -43,8 +50,10 @@ class _Crash(BaseException):
 class _Cloud:
     """Celerp Cloud as the installation reaches it: each closing request moves from
     prepared to retired or cancelled, as Cloud does, under the installation's payment
-    generation, which each reported System Recovery restore advances. A scripted
-    answer replaces the next answer to one step."""
+    generation, which each reported System Recovery restore advances. A restore has
+    every payment recorded since its backup started (or within the hour before)
+    delivered again, and no new payment opens for its company until the installation
+    records it. A scripted answer replaces the next answer to one step."""
 
     def __init__(self, monkeypatch, engine, *, credential: str = "cloud-credential") -> None:
         from celerp.services import cloud_entitlement
@@ -53,6 +62,8 @@ class _Cloud:
         self.deliveries: list[dict] = []  # payments delivered to the installation, with "acked"
         self.generation = 0
         self.recoveries: dict[str, tuple[int, list[str]]] = {}
+        self.payments_since: list[str | None] = []  # the backup start each restore reported
+        self.checkouts: list[tuple[str, int]] = []  # (company, status) per payment asked to open
         self.scripted: dict[str, list] = {"prepare": [], "finalize": [], "cancel": [], "recovery": []}
         self.calls: list[tuple[str, str]] = []  # (step, operation or recovery)
         self.generations: list[int] = []  # the generation each closing step carried
@@ -71,11 +82,12 @@ class _Cloud:
     def states(self) -> list[str]:
         return sorted(o["state"] for o in self.ops.values())
 
-    def pay(self, company_id, entity_id: str = "doc:gone", reference: str = "pi_late") -> None:
+    def pay(self, company_id, entity_id: str = "doc:gone", reference: str = "pi_late",
+            amount_minor: int = 107000) -> None:
         """A customer pays: Celerp Cloud delivers the payment until the installation
         acknowledges it."""
         self.deliveries.append({"company_id": str(company_id), "entity_id": entity_id, "reference": reference,
-                                "amount_minor": 107000, "currency": "usd",
+                                "amount_minor": amount_minor, "currency": "usd",
                                 "delivery_id": str(uuid.uuid4()), "acked": False})
 
     async def deliver(self) -> None:
@@ -90,8 +102,9 @@ class _Cloud:
             acked.add(message["payload"]["delivery_id"])
         gateway._send = send
         for d in [d for d in self.deliveries if not d["acked"]]:
-            await gateway._handle_invoice_payment({k: v for k, v in d.items() if k != "acked"})
+            await gateway._handle_invoice_payment({k: v for k, v in d.items() if k in _PAYMENT})
             d["acked"] = d["delivery_id"] in acked
+            d["delivered_at"] = datetime.now(timezone.utc) if d["acked"] else None
 
     def _unrecorded(self, company_id: str) -> bool:
         return any(d["company_id"] == company_id and not d["acked"] for d in self.deliveries)
@@ -131,17 +144,32 @@ class _Cloud:
             row["state"] = "cancelled"
         return httpx.Response(200, json={"company_id": company_id, "operation_id": op, "state": row["state"]})
 
-    def _recover(self, recovery_id: str, company_ids: list[str]) -> httpx.Response:
+    def _recover(self, recovery_id: str, company_ids: list[str], since: str | None) -> httpx.Response:
         if recovery_id not in self.recoveries:
             self.generation += 1
             self.recoveries[recovery_id] = (self.generation, company_ids)
+            self.payments_since.append(since)
             for o in self.ops.values():
                 if o["company"] in company_ids and o["state"] in ("prepared", "retired"):
                     o["state"] = "cancelled"
+            cutoff = since and datetime.fromisoformat(since) - timedelta(hours=1)
+            self.deliveries += [{**d, "delivery_id": str(uuid.uuid4()), "acked": False, "replay": True}
+                                for d in self.deliveries
+                                if d["acked"] and (cutoff is None or d["delivered_at"] >= cutoff)]
         return httpx.Response(200, json={"recovery_id": recovery_id, "generation": self.recoveries[recovery_id][0]})
+
+    def _checkout(self, company_id: str) -> httpx.Response:
+        replaying = any(d.get("replay") and not d["acked"] and d["company_id"] == company_id
+                        for d in self.deliveries)
+        response = (self._refuse("A payment for this company is still being recorded") if replaying
+                    else httpx.Response(200, json={"url": "https://checkout.stripe.test/cs_1"}))
+        self.checkouts.append((company_id, response.status_code))
+        return response
 
     async def _request(self, method, path, *, total_s=None, json=None, params=None, api_key=None):
         assert method == "POST"
+        if path == CHECKOUT:
+            return self._checkout(json["company_id"])
         if path == RECOVERY:
             step, key = "recovery", json["recovery_id"]
         else:
@@ -160,7 +188,7 @@ class _Cloud:
                 raise answer
             return answer
         if step == "recovery":
-            response = self._recover(key, json["company_ids"])
+            response = self._recover(key, json["company_ids"], json.get("payments_since"))
         else:
             response = self._take(step, json["company_id"], key, json["generation"])
         if answer is LOST:
@@ -912,3 +940,122 @@ async def test_a_restore_cloud_cannot_learn_of_yet_is_reported_by_the_next_recon
 
     assert cloud.payments_open(a)
     assert await _recoveries(real_engine) == [(sorted([str(a), str(b)]), 1)]
+
+
+# ── Payments a System Recovery restore lost ──────────────────────────────────
+
+async def _references(engine, entity_id) -> list[str]:
+    async with maker(engine)() as s:
+        state = await s.scalar(text("SELECT state FROM projections WHERE entity_id = :e"), {"e": entity_id})
+    return [p["reference"] for p in state.get("payments", []) if p.get("status") != "deleted"]
+
+
+def _payments_on(monkeypatch) -> None:
+    from celerp.config import settings
+    monkeypatch.setattr(settings, "celerp_public_url", "https://harbor.celerp.com")
+    monkeypatch.setattr("celerp.services.payments.payments_enabled", lambda: True)
+
+
+async def _shared_invoice(client, engine, boss, cid) -> tuple[str, str]:
+    eid = await _invoice(client, engine, boss, cid)
+    r = await client.post(f"/docs/{eid}/share", headers=auth(await token(engine, boss, cid)))
+    return eid, r.json()["token"]
+
+
+async def test_a_payment_a_restore_lost_is_recorded_again_before_a_new_payment_opens(
+        tmp_path, monkeypatch, code_config, real_engine, real_client):
+    from celerp.services import backup, backup_export, backup_import
+    _system_recovery(tmp_path, monkeypatch)
+    _payments_on(monkeypatch)
+    boss, a, b = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    eid, share = await _shared_invoice(real_client, real_engine, boss, a)
+
+    # Saturday: a deposit, recorded before the backup.
+    cloud.pay(a, eid, "pi_saturday", amount_minor=7000)
+    await cloud.deliver()
+    # Sunday: the backup, which records when it started, before the database is read.
+    dumped = []
+    dump_database = backup.dump_database
+
+    def dump(url):
+        dumped.append(datetime.now(timezone.utc))
+        return dump_database(url)
+    monkeypatch.setattr(backup, "dump_database", dump)
+    source = await backup_export.export_full()
+    try:
+        started = datetime.fromisoformat(backup_import.validate_archive(source).snapshot_started_at)
+        assert started <= dumped[0]
+        # Monday: the customer pays half the balance.
+        cloud.pay(a, eid, "pi_monday", amount_minor=50000)
+        await cloud.deliver()
+        assert await _references(real_engine, eid) == ["pi_saturday", "pi_monday"]
+        # Friday: Sunday's backup is restored.
+        result = await backup_import.run_recovery(source)
+    finally:
+        source.unlink(missing_ok=True)
+
+    assert result.ok is True, result.error
+    assert [datetime.fromisoformat(s) for s in cloud.payments_since] == [started]
+    assert await _references(real_engine, eid) == ["pi_saturday"]
+
+    # Until the lost payment is recorded again, no new payment opens.
+    r = await real_client.get(f"/pay/{share}", follow_redirects=False)
+    assert r.status_code == 502 and cloud.checkouts == [(str(a), 409)]
+
+    await cloud.deliver()
+    assert all(d["acked"] for d in cloud.deliveries) and len(cloud.deliveries) == 4
+    assert await _references(real_engine, eid) == ["pi_saturday", "pi_monday"]  # each once
+    assert await _unmatched(real_engine) == []
+
+    r = await real_client.get(f"/pay/{share}", follow_redirects=False)
+    assert r.status_code == 303 and cloud.checkouts[-1] == (str(a), 200)
+
+
+async def test_a_backup_without_a_start_time_has_every_payment_delivered_again(
+        tmp_path, monkeypatch, code_config, real_engine, real_client):
+    from celerp.services import backup_export, backup_import
+    _system_recovery(tmp_path, monkeypatch)
+    boss, a, b = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    eid = await _invoice(real_client, real_engine, boss, a)
+    monkeypatch.setattr(backup_export, "archive_meta", _without_start(backup_export.archive_meta))
+    source = await backup_export.export_full()
+    try:
+        assert backup_import.validate_archive(source).snapshot_started_at is None
+        cloud.pay(a, eid, "pi_monday", amount_minor=50000)
+        await cloud.deliver()
+        result = await backup_import.run_recovery(source)
+    finally:
+        source.unlink(missing_ok=True)
+
+    assert result.ok is True, result.error
+    assert cloud.payments_since == [None]
+    await cloud.deliver()
+    assert await _references(real_engine, eid) == ["pi_monday"]
+
+
+def _without_start(archive_meta):
+    """An archive from before backups recorded when they started."""
+    async def meta(started):
+        return {k: v for k, v in (await archive_meta(started)).items() if k != "snapshot_started_at"}
+    return meta
+
+
+@pytest.mark.parametrize("answer", [httpx.ConnectError("unreachable"), NO_ANSWER],
+                         ids=["unreachable", "no-answer"])
+async def test_new_payments_wait_until_cloud_confirms_a_restore(real_engine, real_client, monkeypatch, answer):
+    _payments_on(monkeypatch)
+    boss, a, b = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    eid, share = await _shared_invoice(real_client, real_engine, boss, a)
+    await _record_restore(real_engine, [a, b])
+    cloud.scripted["recovery"] = [answer]
+
+    r = await real_client.get(f"/pay/{share}", follow_redirects=False)
+
+    assert r.status_code == 409 and "paused" in r.json()["detail"]
+    assert cloud.checkouts == []
+
+    r = await real_client.get(f"/pay/{share}", follow_redirects=False)
+    assert r.status_code == 303 and cloud.checkouts == [(str(a), 200)]

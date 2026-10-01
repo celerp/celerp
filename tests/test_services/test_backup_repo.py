@@ -98,10 +98,10 @@ def fake_repo(monkeypatch, tmp_path):
     monkeypatch.setattr(backup_repo, "_get_blob", fake_get)
     monkeypatch.setattr(backup_repo, "dump_database", lambda url: b"PGDUMP-CUSTOM-FORMAT")
 
-    async def fake_meta():
+    async def fake_meta(started):
         return {"celerp_version": "1.0.0", "pg_version": "16", "created_at": "2026-06-25T00:00:00Z",
-                "company_name": "TestCo", "enabled_modules": []}
-    monkeypatch.setattr(backup_repo, "_build_meta", fake_meta)
+                "snapshot_started_at": started.isoformat(), "company_name": "TestCo", "enabled_modules": []}
+    monkeypatch.setattr("celerp.services.backup_export.archive_meta", fake_meta)
 
     settings.backup_encryption_key = base64.b64encode(secrets.token_bytes(32)).decode()
 
@@ -167,6 +167,27 @@ async def test_snapshot_round_trip_rebuilds_valid_archive(fake_repo):
             assert tar.extractfile("attachments/doc.pdf").read() == b"PDF-BYTES"
     finally:
         path.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_records_that_it_started_before_the_database_was_read(fake_repo, monkeypatch):
+    import datetime
+    from celerp.services.backup_import import validate_archive
+
+    store, snapshots, put_calls, att = fake_repo
+    dumped = []
+
+    def dump(url):
+        dumped.append(datetime.datetime.now(datetime.timezone.utc))
+        return b"PGDUMP-CUSTOM-FORMAT"
+    monkeypatch.setattr(backup_repo, "dump_database", dump)
+    assert (await backup_repo.run_snapshot(label="t")).ok
+    path = await backup_repo.reassemble_snapshot(snapshots[0]["id"])
+    try:
+        started = validate_archive(path).snapshot_started_at
+    finally:
+        path.unlink(missing_ok=True)
+    assert datetime.datetime.fromisoformat(started) <= dumped[0]
 
 
 @pytest.mark.asyncio

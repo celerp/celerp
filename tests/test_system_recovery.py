@@ -372,14 +372,14 @@ async def test_cloud_snapshot_relay_payload_unchanged(tmp_path, monkeypatch):
     (att / "receipt.pdf").write_bytes(b"RECEIPT")
     dump = b"PGDUMP-CUSTOM-FORMAT"
 
-    async def _meta():
+    async def _meta(started):
         return {"celerp_version": "1.0.0", "pg_version": "16", "created_at": "2026-09-29T02:00:00Z",
                 "company_name": "Harbor Goods Ltd", "enabled_modules": []}
 
     monkeypatch.setattr(httpx, "AsyncClient", _client)
     monkeypatch.setattr(backup_repo, "_relay", _relay)
     monkeypatch.setattr(backup_repo, "dump_database", lambda url: dump)
-    monkeypatch.setattr(backup_repo, "_build_meta", _meta)
+    monkeypatch.setattr("celerp.services.backup_export.archive_meta", _meta)
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "backup_encryption_key", _key())
     monkeypatch.setattr(settings, "cloud_disconnected", False)

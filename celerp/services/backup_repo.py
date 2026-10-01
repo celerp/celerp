@@ -17,6 +17,7 @@ and feeds the canonical ``run_recovery`` engine, the same importer as a local re
 from __future__ import annotations
 
 import asyncio
+import datetime
 from contextlib import asynccontextmanager
 import hashlib
 import io
@@ -53,24 +54,6 @@ def _hash_file(path: Path) -> tuple[str, int]:
             h.update(chunk)
             size += len(chunk)
     return h.hexdigest(), size
-
-
-async def _build_meta() -> dict:
-    from celerp.services.backup_export import _pg_version, _version, required_installation_modules
-    import datetime as _dt
-
-    from celerp.config import read_config
-    from celerp.db import get_session_ctx
-    cfg = read_config()
-    async with get_session_ctx() as session:
-        enabled_modules = sorted(await required_installation_modules(session))
-    return {
-        "celerp_version": _version(),
-        "pg_version": _pg_version(),
-        "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
-        "company_name": cfg.get("company", {}).get("name", "unknown"),
-        "enabled_modules": enabled_modules,
-    }
 
 
 # ── Relay API ─────────────────────────────────────────────────────────────────
@@ -129,6 +112,7 @@ async def run_snapshot(label: str | None = None) -> BackupResult:
         return BackupResult(ok=False, size_bytes=0, error="Cloud is explicitly disconnected")
 
     try:
+        from celerp.services import backup_export
         from celerp.services.backup_state import writes_paused
 
         key = _parse_key(settings.backup_encryption_key)
@@ -137,6 +121,7 @@ async def run_snapshot(label: str | None = None) -> BackupResult:
         # reads stay served throughout.
         with writes_paused():
             # Hash every member first (streamed) so we only ever upload what's missing.
+            started = datetime.datetime.now(datetime.timezone.utc)
             dump = await asyncio.to_thread(dump_database, settings.database_url)
             db_hash = hashlib.sha256(dump).hexdigest()
             files = []  # manifest entries
@@ -146,7 +131,7 @@ async def run_snapshot(label: str | None = None) -> BackupResult:
                 files.append({"path": arcname, "hash": fhash, "size": size})
                 by_hash.setdefault(fhash, (arcname, path))
 
-            manifest = {"meta": await _build_meta(), "db_dump": db_hash, "files": files}
+            manifest = {"meta": await backup_export.archive_meta(started), "db_dump": db_hash, "files": files}
             manifest_bytes = json.dumps(manifest, indent=2).encode()
             manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
 

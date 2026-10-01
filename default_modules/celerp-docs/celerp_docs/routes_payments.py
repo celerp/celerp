@@ -139,6 +139,8 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
         raise HTTPException(status_code=503, detail="Online payment is not available")
     if state.get("doc_type") not in _PAYABLE_TYPES or _outstanding(state) <= 0:
         raise HTTPException(status_code=409, detail="This document is not payable")
+    if await pay.checkout_paused():
+        raise HTTPException(status_code=409, detail="Online payment is paused while recent payments are checked. Please try again shortly.")
 
     currency = state.get("currency", "USD")
     ref = state.get("ref_id") or state.get("doc_number") or entity_id.split(":")[-1][:8]
