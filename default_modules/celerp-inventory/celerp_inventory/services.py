@@ -2878,7 +2878,7 @@ async def import_items(
     here.
 
     The company lock is taken before the plan is made (the bound transports take
-    it through lock_import_authority before they re-preview) and held until that
+    it through locked_authority before they re-preview) and held until that
     one commit, so the state the plan read cannot change before it is written,
     and a failure anywhere leaves nothing written for a retry to duplicate.
 
@@ -2933,29 +2933,6 @@ async def import_items(
     await session.commit()
 
     return BatchImportResult(**outcome.route_counts(cap_rejections=False), batch_id=batch_id)
-
-
-async def lock_import_authority(session: AsyncSession, company_id, user_id) -> tuple[str, dict]:
-    """Take the company lock and read the importer's role and the company settings under it.
-
-    A bound import commit calls this before it re-previews, so the plan it
-    accepts and the write that follows see one state: settings, locations,
-    schemas, and every item behind the company lock stay as read until
-    import_items commits, and the membership row is held so the role cannot
-    change underneath the write. A membership that is gone reads as no role.
-    """
-    from celerp.models.accounting import UserCompany
-    from celerp.services.auth import normalize_role
-
-    company = await locked_company(session, company_id)
-    link = (await session.execute(
-        select(UserCompany).where(
-            UserCompany.user_id == user_id, UserCompany.company_id == company_id,
-            UserCompany.is_active == True,  # noqa: E712
-        ).with_for_update(read=True).execution_options(populate_existing=True)
-    )).scalar_one_or_none()
-    role = normalize_role(link.role) if link is not None else ""
-    return role, dict((company.settings if company else None) or {})
 
 
 async def _merge_category_schemas(session: AsyncSession, company_id, incoming: dict[str, list[dict]]) -> None:

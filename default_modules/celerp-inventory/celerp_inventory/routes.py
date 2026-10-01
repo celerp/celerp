@@ -43,7 +43,6 @@ from .services import (
     import_preview_hash,
     is_item_field_key,
     item_price_mutex_groups,
-    lock_import_authority,
     preview_import_rows,
     source_header_semantics,
 )
@@ -57,6 +56,7 @@ from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEY
 from celerp.services.permissions import (
     assert_role_permission,
     get_current_company_settings,
+    locked_authority,
     reject_price_change,
     require_permission,
     role_has_permission,
@@ -1555,10 +1555,7 @@ async def _import_authority(session, company_id, user_id) -> tuple[str, dict]:
     """The importer's role and the company settings, read and held under the
     company lock before an import commit plans anything; a permission lost since
     the request was authorized is refused here."""
-    role, settings = await lock_import_authority(session, company_id, user_id)
-    for key in ("import_export_data", "edit_inventory"):
-        assert_role_permission(settings, role, key)
-    return role, settings
+    return await locked_authority(session, company_id, user_id, ("import_export_data", "edit_inventory"))
 
 
 async def _write_import(session, company_id, user_id, role: str, settings: dict, rows: list[dict], **kwargs) -> BatchImportResult:

@@ -470,3 +470,98 @@ async def test_chart_import_preview_needs_the_same_permissions(client, session):
     await grant_permission(client, s["admin_h"], "import_export_data", "admin")
     r = await client.post(PREVIEW_PATH, headers=s["manager_h"], json={"records": [_row("8100", "Denied")]})
     assert r.status_code == 403, r.text
+
+
+# ---------------------------------------------------------------------------
+# Authority is judged again once the import holds the company lock
+# ---------------------------------------------------------------------------
+
+
+async def _seed_manager(factory) -> tuple[uuid.UUID, uuid.UUID]:
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import Company, User
+
+    company_id, user_id = uuid.uuid4(), uuid.uuid4()
+    async with factory() as s:
+        s.add(Company(id=company_id, name="ChartRace", slug=f"chart-{company_id.hex[:8]}", settings={}))
+        s.add(User(id=user_id, email=f"m-{user_id.hex[:8]}@example.test", name="Manager",
+                   auth_hash="x", is_active=True))
+        await s.flush()
+        s.add(UserCompany(user_id=user_id, company_id=company_id, role="manager", is_active=True))
+        await s.commit()
+    return company_id, user_id
+
+
+async def _revoke_role(s, company_id, user_id):
+    from sqlalchemy import update
+    from celerp.models.accounting import UserCompany
+    await s.execute(update(UserCompany).where(
+        UserCompany.user_id == user_id, UserCompany.company_id == company_id,
+    ).values(role="viewer"))
+
+
+def _revoke_grant(key):
+    async def _revoke(s, company_id, user_id):
+        from celerp.services.company_lock import locked_company
+        company = await locked_company(s, company_id)
+        company.settings = {**(company.settings or {}), "role_grants": {key: ["owner"]}}
+    return _revoke
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "revoke", [_revoke_role, _revoke_grant("manage_accounting"), _revoke_grant("import_export_data")],
+    ids=["role", "manage_accounting", "import_export_data"],
+)
+async def test_chart_import_refuses_authority_revoked_while_it_waited_for_the_lock(
+    committed_engine, monkeypatch, revoke,
+):
+    """The request was authorized, then waited for the company lock while another
+    transaction took the caller's role or a required permission away. Once the
+    import holds the lock it is judged by that committed change: refused, and no
+    account is added."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    from starlette.requests import Request
+
+    import celerp.services.company_lock as company_lock
+    from celerp_accounting import routes
+    from celerp_accounting.models import Account
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id, user_id = await _seed_manager(factory)
+
+    paused, release = asyncio.Event(), asyncio.Event()
+    real_lock = company_lock.lock_company
+
+    async def _held(session, cid):
+        if not paused.is_set():
+            paused.set()
+            await release.wait()
+        return await real_lock(session, cid)
+
+    monkeypatch.setattr(company_lock, "lock_company", _held)
+    monkeypatch.setattr(routes, "lock_company", _held, raising=False)
+
+    request = Request({"type": "http", "query_string": b"", "headers": []})
+    body = routes.ChartImportRequest(records=[_row("8800", "Revoked import")])
+    async with factory() as s:
+        task = asyncio.create_task(routes.import_chart_accounts(
+            request, body, company_id=company_id, user=SimpleNamespace(id=user_id), session=s,
+        ))
+        await asyncio.wait_for(paused.wait(), timeout=10)
+        async with factory() as other:
+            await revoke(other, company_id, user_id)
+            await other.commit()
+        release.set()
+        with pytest.raises(HTTPException) as err:
+            await asyncio.wait_for(task, timeout=30)
+    assert err.value.status_code == 403
+
+    async with factory() as s:
+        codes = (await s.execute(select(Account.code).where(Account.company_id == company_id))).scalars().all()
+    assert "8800" not in codes
