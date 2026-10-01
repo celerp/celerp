@@ -1431,11 +1431,11 @@ async def test_woocommerce_balance_put_right_in_celerp_releases_the_order(use_te
 @pytest.mark.parametrize("settings, expected", [
     ({"woocommerce_deposit_account": "1200", "stripe_deposit_account": "1055"}, "1200"),
     ({"stripe_deposit_account": "1055"}, "1055"),
-    ({}, "1110"),
+    ({}, "1111"),
 ])
 async def test_woocommerce_payment_books_to_the_chosen_deposit_account(use_test_session, settings, expected):
     """Store payments land on the connector's own deposit account, else the
-    company's online-payments default, else Cash."""
+    company's online-payments default, else the default deposit account."""
     session = use_test_session
     cid = await _seed_company(session, "WooDeposit")
     if expected == "1055":

@@ -2695,7 +2695,7 @@ celerpUpdateBulkAlloc();
                     name="value",
                     options=acct_opts,
                     value=current,
-                    placeholder=t("documents.eg_account_code"),
+                    placeholder=t("documents.line_account_default"),
                     cls_extra="cell-input",
                     allow_custom=True,
                     hx_trigger="change",
@@ -6694,14 +6694,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if doc_type in ("purchase_order", "bill"):
                 _acct_list = chart_accounts or []
                 _acct_opts = [(a.get("code", ""), f"{a.get('code','')} – {a.get('name','')}") for a in _acct_list if a.get("code")]
-                _receive_as = li.get("receive_as") or "stock"
-                _default_acct = li.get("account_code") or ("1130" if _receive_as == "stock" else "6950")
+                # Blank posts the line to the company's account for its kind (stock or expense).
                 account_cell = Td(
                     searchable_select(
                         name="account_code",
                         options=_acct_opts,
-                        value=_default_acct,
-                        placeholder=t("documents.eg_account_code"),
+                        value=li.get("account_code") or "",
+                        placeholder=t("documents.line_account_default"),
                         cls_extra="cell-input cell-input--xs",
                         allow_custom=True,
                     ),
@@ -6735,7 +6734,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     Option(t("doc.expense"), value="expense", selected=(_ra_val == "expense")),
                     data_name="receive_as",
                     cls="cell-input cell-input--select cell-input--xs",
-                    onchange="celerpReceiveAsChanged(this); celerpAutoSave()",
+                    onchange="celerpAutoSave()",
                 ), cls="col-type")
             elif _show_receive_as:
                 receive_as_cell = Td(li.get("receive_as", "stock").capitalize(), cls="col-type")
@@ -6964,8 +6963,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if doc_type in ("purchase_order", "bill"):
                 _acct_opts = [(a.get("code", ""), f"{a.get('code','')} – {a.get('name','')}") for a in (chart_accounts or []) if a.get("code")]
                 cells.append(Td(
-                    searchable_select(name="account_code", options=_acct_opts, value="1130",
-                                      placeholder=t("documents.eg_account_code"), cls_extra="cell-input cell-input--xs", allow_custom=True),
+                    searchable_select(name="account_code", options=_acct_opts, value="",
+                                      placeholder=t("documents.line_account_default"), cls_extra="cell-input cell-input--xs", allow_custom=True),
                     cls="col-account",
                 ))
             cells.extend([
@@ -7855,27 +7854,6 @@ function celerpAcKey(e, input) {{
         active.dispatchEvent(new MouseEvent('mousedown'));
     }} else if (e.key === 'Escape') {{
         list.style.display = 'none';
-    }}
-}}
-function celerpReceiveAsChanged(sel) {{
-    const row = sel.closest('tr');
-    if (!row) return;
-    const acctWrap = row.querySelector('.col-account .combobox-wrap');
-    if (!acctWrap) return;
-    const hiddenInput = acctWrap.querySelector('input[type="hidden"]');
-    const displayInput = acctWrap.querySelector('.combobox-input');
-    if (!hiddenInput) return;
-    // Only update if user hasn't already set a non-default value
-    const current = hiddenInput.value;
-    const defaultStock = '1130', defaultExpense = '6950';
-    if (current === '' || current === defaultStock || current === defaultExpense) {{
-        const newDefault = sel.value === 'expense' ? defaultExpense : defaultStock;
-        hiddenInput.value = newDefault;
-        if (displayInput) {{
-            // Update display: find matching option text or show code
-            const opt = acctWrap.querySelector(`.combobox-option[data-value="${{newDefault}}"]`);
-            displayInput.value = opt ? opt.textContent.trim() : newDefault;
-        }}
     }}
 }}
 function celerpLineTotalInput(input) {{

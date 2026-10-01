@@ -209,7 +209,7 @@ async def test_backup_push_records_and_is_idempotent(client, session, payments_o
 
 @pytest.mark.asyncio
 async def test_backup_push_uses_company_deposit_account(client, session, payments_on):
-    """The deposit GL account is the company setting, defaulting to Cash."""
+    """The deposit GL account is the company setting, defaulting to the default deposit account."""
     from celerp.models.projections import Projection
     from celerp_docs.routes_payments import record_stripe_payment
 

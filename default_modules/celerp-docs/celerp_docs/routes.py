@@ -31,7 +31,7 @@ from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, AccountRole
-from celerp.services.account_roles import current_settings, lot_account
+from celerp.services.account_roles import current_settings, lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.pick import doc_bound_lots
@@ -8706,12 +8706,13 @@ async def _validate_writeoff_account(session, company_id, code: str) -> None:
         )
 
 
-def _writeoff_seed_line(item: Projection) -> dict:
-    """One draft write-off line for an item, seeded with its live on-hand and blank entry fields."""
+def _writeoff_seed_line(item: Projection, settings: dict) -> dict:
+    """One draft write-off line for an item, seeded with its live on-hand, the company's shrinkage
+    and write-off account (blank when none is set) and blank entry fields."""
     st = item.state
     return {"line_id": uuid.uuid4().hex, "item_id": item.entity_id, "sku": st.get("sku"),
             "name": st.get("name"), "quantity": float(st.get("quantity") or 0),
-            "qty_out": None, "account": "6970", "comment": ""}
+            "qty_out": None, "account": role_map(settings).get(AccountRole.STOCK_SHRINKAGE.value), "comment": ""}
 
 
 @lists_router.post("/writeoff")
@@ -8735,7 +8736,7 @@ async def create_writeoff_list(
         item = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
         if item is None or item.entity_type != "item":
             continue  # non-item ids in the selection are skipped, never seeded as phantom lines
-        lines.append(_writeoff_seed_line(item))
+        lines.append(_writeoff_seed_line(item, company.settings or {}))
     if not lines:
         raise HTTPException(status_code=422, detail="No inventory items in the selection")
     ref_id = next_doc_ref(company, "writeoff")
@@ -8774,7 +8775,7 @@ async def set_writeoff_line(
         item = await session.get(Projection, {"company_id": company_id, "entity_id": payload.item_id})
         if item is None or item.entity_type != "item":
             raise HTTPException(status_code=404, detail="Item not found")
-        line = _writeoff_seed_line(item)
+        line = _writeoff_seed_line(item, await current_settings(session, company_id))
         lines.insert(0, line)  # newest line to the top (GDR 2n)
     else:
         raise HTTPException(status_code=422, detail="line_id or item_id is required")
