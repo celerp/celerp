@@ -2213,6 +2213,31 @@ async def test_consignment_receive_line_cost_without_permission(client, session,
     assert parcel["cost_price"] == 5
 
 
+@pytest.mark.parametrize("role_h", ["operator_h", "admin_h"])
+async def test_consignment_receive_without_rate(client, session, role_h):
+    """A foreign-currency consignment with no rate yet still receives: the rate is settled
+    when it is invoiced, so the parcel carries no cost until then."""
+    ctx = await perm_setup(client, session)
+    template = (await client.post("/items", headers=ctx["admin_h"], json={
+        "status": "available", "sku": "CSG-FX", "name": "CSG-FX", "quantity": 0, "sell_by": "piece",
+        "location_id": ctx["location_id"], "retail_price": 10,
+    })).json()["id"]
+    doc = (await client.post("/docs", headers=ctx["admin_h"], json={
+        "doc_type": "consignment_in", "currency": "EUR",
+        "line_items": [{"item_id": template, "sku": "CSG-FX", "name": "CSG-FX", "quantity": 2,
+                        "unit_price": 5, "line_total": 10}],
+        "total": 10,
+    })).json()["id"]
+    r = await client.post(f"/docs/{doc}/receive", headers=ctx[role_h], json={
+        "location_id": ctx["location_id"],
+        "received_items": [{"item_id": template, "sku": "CSG-FX", "name": "CSG-FX",
+                            "quantity_received": 2, "receive_as": "stock"}],
+    })
+    assert r.status_code == 200, r.text
+    [parcel] = await _parcels(client, ctx, "CSG-FX", template)
+    assert parcel.get("cost_price") is None
+
+
 async def test_merge_cost_override_denied_without_permission(client, session):
     """A resulting cost that differs from the sources' sum is a price write: refused for
     an operator without set_inventory_prices; sending the computed sum back is allowed."""
