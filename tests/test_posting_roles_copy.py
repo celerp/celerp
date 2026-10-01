@@ -152,3 +152,42 @@ async def test_a_restored_copy_keeps_posting_accounts_and_every_origin(real_engi
     # The original's books did not move.
     assert (await _net(real_engine, source, "1120"), await _net(real_engine, source, "1121")) == (100.0, 40.0)
     assert await _settings(real_engine, source) == before[0]
+
+
+@pytest.mark.asyncio
+async def test_a_restored_copy_keeps_a_merge_across_inventory_accounts(real_engine, real_client, tmp_path,
+                                                                       monkeypatch):
+    from test_helpers import provision_company_books
+
+    _local(monkeypatch, tmp_path)
+    user = await owner(real_engine)
+    source = await company(real_engine, user, "Merge Trading", "merge-marker", settings={"currency": "USD"})
+    async with maker(real_engine)() as s:
+        await provision_company_books(s, source)
+        await s.commit()
+    tok = await token(real_engine, user, source)
+
+    a = await _lot(real_client, tok, "LOT-A", 600.0)
+    await _remap(real_client, tok, "inventory_purchased", "1131", "1130")
+    b = await _lot(real_client, tok, "LOT-B", 400.0)
+    merged = (await _post(real_client, tok, "/items/merge", {"source_entity_ids": [a, b], "target_sku_from": a}))["id"]
+    reclass = f"je:auto:{merged}:merge-reclass"
+    assert await _entry(real_engine, source, reclass) == {"1130-P": (400.0, 0), "1131": (0, 400.0)}
+
+    before = (await _journal(real_engine, source), await _lots(real_engine, source))
+    r = await restore(real_client, tok, await download(real_client, tok), mode="new_company")
+    assert r.status_code == 201, r.text
+    copy, copy_tok = r.json()["company_id"], r.json()["access_token"]
+    assert (await _journal(real_engine, copy), await _lots(real_engine, copy)) == before
+    assert await _entry(real_engine, copy, reclass) == {"1130-P": (400.0, 0), "1131": (0, 400.0)}
+    (merged_state,) = await _rows(real_engine, copy, "SELECT state FROM projections WHERE company_id = :c "
+                                                     "AND entity_id = :e", e=merged)
+    assert (merged_state[0]["inventory_account_code"], merged_state[0]["cost_total"]) == ("1130-P", 1000.0)
+
+    # The copy can undo the merge exactly as the original could.
+    await _post(real_client, copy_tok, f"/items/{merged}/undo-merge")
+    (row,) = await _rows(real_engine, copy, "SELECT state ->> 'status' FROM projections WHERE company_id = :c "
+                                            "AND entity_id = :e", e=reclass)
+    assert row[0] == "void"
+    assert (await _lots(real_engine, copy))["LOT-B"] == "1131"
+    assert await _entry(real_engine, source, reclass) == {"1130-P": (400.0, 0), "1131": (0, 400.0)}
