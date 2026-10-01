@@ -109,7 +109,10 @@ async def test_first_party_sink_registration_rejects_untrusted_module(
                              ":!tests/"], cwd=REPO, capture_output=True, text=True, check=True)
     assert set(listed.stdout.split()) == {"celerp/importers/sinks.py", "celerp/services/migrations.py"}
 
-    # A missing module sink fails the run before any write and names the module.
+    # A module sink that disappears after the start was checked fails the run before any
+    # write; the owner is told plainly, never the package or the exception, and the run
+    # can be discarded. A start whose module is missing is refused before anything is
+    # created (test_migration_preflight).
     fake = migration_env["sink"]
     fake.groups = frozenset({"company", "locations"})
     monkeypatch.setattr(sinks, "_SINKS", {fake.key: fake})
@@ -121,8 +124,7 @@ async def test_first_party_sink_registration_rejects_untrusted_module(
 
     run = await load_run(real_engine, run_id)
     assert run.status == "failed"
-    assert run.error_summary["error_class"] == "MissingSinkError"
-    assert "celerp-accounting" in run.error_summary["message"]
+    assert run.error_summary["message"] == migrations.FEATURE_STOPPED
     assert fake.events == []
     async with maker(real_engine)() as s:
         company = await s.get(Company, company_id)

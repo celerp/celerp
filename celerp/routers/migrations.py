@@ -38,6 +38,7 @@ from celerp.db import get_session
 from celerp.importers.adapters.registry import list_adapters
 from celerp.models.company import Company, User
 from celerp.models.migration import MigrationRun
+from celerp.modules import requirements
 from celerp.routers.auth import limiter
 from celerp.services import bootstrap
 from celerp.services import migration_scan_store as store
@@ -79,6 +80,8 @@ router = APIRouter(prefix="/migrations", tags=["migrations"], route_class=_Migra
 
 OWNER_ONLY = "Only the company owner can move a company into Celerp."
 BOOTSTRAPPED = "System already bootstrapped. Contact your admin."
+MODULES_NOT_SAVED = ("Celerp could not turn on the features this migration needs, so nothing was created. "
+                     "Check that Celerp can save its settings, then try again.")
 BOOTSTRAP: store.ScanOwner = ("bootstrap", None)
 
 
@@ -224,12 +227,24 @@ async def _save_decisions(owner: store.ScanOwner, payload: DecisionsIn) -> dict:
     return {"scan": migrations.scan_view(store.save_decisions(payload.scan_token, owner=owner, decisions=decisions))}
 
 
+async def _turn_on_modules(plan: migrations.StartPlan) -> bool:
+    """Turn on, in the installation's configuration, the bundled modules the migration
+    needs, before anything is created. Returns whether a restart must load them."""
+    try:
+        return await asyncio.to_thread(requirements.prepare, plan.requirements)
+    except OSError:
+        logger.exception("Could not turn on the modules a migration needs")
+        raise HTTPException(status_code=503, detail=MODULES_NOT_SAVED) from None
+
+
 async def _stage(session: AsyncSession, *, user: User, company_name: str, scan: store.ScanSession,
-                 decisions) -> MigrationRun:
+                 plan: migrations.StartPlan, awaiting: bool) -> MigrationRun:
     """Start, phase one: the staged company and a preparing run holding the scan's claim.
     The caller holds the claim lock and commits."""
-    company = await provision_migration_company(session, owner=user, company_name=company_name)
-    return await migrations.create_run(session, company=company, user=user, scan=scan, decisions=decisions)
+    company = await provision_migration_company(session, owner=user, company_name=company_name,
+                                                settings=migrations.staged_settings(plan.modules))
+    return await migrations.create_run(session, company=company, user=user, scan=scan, decisions=plan.decisions,
+                                       modules=plan.modules, awaiting=awaiting)
 
 
 @asynccontextmanager
@@ -246,13 +261,16 @@ async def _start_errors(session: AsyncSession) -> AsyncIterator[None]:
         raise HTTPException(status_code=500, detail="Migration could not start.") from None
 
 
-async def _claim(session: AsyncSession, run_id: uuid.UUID, scan_token: str) -> None:
+async def _claim(session: AsyncSession, run_id: uuid.UUID, scan_token: str, *, awaiting: bool) -> None:
     """Start, phase two, after phase one committed: move the source into the run and start
-    it. Only the call that started the run schedules the runner."""
+    it, or, while it waits for its modules, restart Celerp to load them; startup then
+    starts the same run. Only the call that started the run schedules the runner."""
     async with _start_errors(session):
-        started = await migrations.claim_source(session, run_id, token=scan_token, start=True)
+        started = await migrations.claim_source(session, run_id, token=scan_token, start=not awaiting)
     if started:
         migrations.schedule_run(run_id)
+    elif awaiting:
+        requirements.schedule_restart()
 
 
 async def _owned_run(session: AsyncSession, run_id: uuid.UUID, ctx: AuthContext) -> MigrationRun:
@@ -310,14 +328,15 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
         await bootstrap.lock_bootstrap(session)
         await ensure_not_bootstrapped(session)
         scan = store.load_scan(payload.scan_token, owner=BOOTSTRAP)
-        decisions = await _prepare(scan)
+        plan = await _prepare(scan)
         errors: dict[str, str] = {}
         company_name = _company_name(payload.company_name, errors)
         name, email = owner_account(payload.name, payload.email, payload.password, errors)
         if errors:
             raise HTTPException(status_code=422, detail=errors)
+        awaiting = await _turn_on_modules(plan)
         user = await create_install_owner(session, name=name, email=email, password=payload.password)
-        run = await _stage(session, user=user, company_name=company_name, scan=scan, decisions=decisions)
+        run = await _stage(session, user=user, company_name=company_name, scan=scan, plan=plan, awaiting=awaiting)
         run_id = run.id
         # The first owner has no other company, so they are signed in to the staged one;
         # its token reaches the migration routes only. Issuing the tokens commits.
@@ -328,8 +347,8 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
             await asyncio.to_thread(bootstrap.clear_setup_code)
         except Exception:
             logger.warning("Setup-code cleanup failed after bootstrap migration start", exc_info=True)
-    await _claim(session, run_id, payload.scan_token)
-    return {**tokens, "run_id": str(run_id)}
+    await _claim(session, run_id, payload.scan_token, awaiting=awaiting)
+    return {**tokens, "run_id": str(run_id), "preparing": awaiting}
 
 
 # ── Company owner ────────────────────────────────────────────────────────────
@@ -365,20 +384,23 @@ async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: Aut
         run = await migrations.lock_scan_claim(session, store.scan_claim(payload.scan_token))
         if run is None:
             scan = store.load_scan(payload.scan_token, owner=("user", ctx.user.id))
-            decisions = await _prepare(scan)
+            plan = await _prepare(scan)
             errors: dict[str, str] = {}
             company_name = _company_name(payload.company_name, errors)
             if errors:
                 raise HTTPException(status_code=422, detail=errors)
-            run = await _stage(session, user=ctx.user, company_name=company_name, scan=scan, decisions=decisions)
+            awaiting = await _turn_on_modules(plan)
+            run = await _stage(session, user=ctx.user, company_name=company_name, scan=scan, plan=plan,
+                               awaiting=awaiting)
         elif run.created_by_user_id == ctx.user.id:
             response.status_code = 200
+            awaiting = bool(run.source_summary.get("awaiting_modules"))
         else:
             raise migrations.MigrationError(409, migrations.SCAN_ALREADY_STARTED)
         run_id = run.id
         await session.commit()
-    await _claim(session, run_id, payload.scan_token)
-    return {"run_id": str(run_id)}
+    await _claim(session, run_id, payload.scan_token, awaiting=awaiting)
+    return {"run_id": str(run_id), "preparing": awaiting}
 
 
 # ── Runs ─────────────────────────────────────────────────────────────────────

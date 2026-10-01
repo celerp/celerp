@@ -151,7 +151,7 @@ def _assert_clean_url(page) -> None:
 def _through_review(page, company_name: str) -> None:
     _assert_clean_url(page)
     body = page.content()
-    assert ("No blocking issues found" in body) or ("Blocks full history" in body)
+    assert ("No blocking issues found" in body) or ("Cannot move" in body)
     assert "Balances on the cutover date become opening balances." in body
     page.click('button[type="submit"]:has-text("Continue")')
     page.wait_for_url(re.compile(r"/migrate/(mapping|review)$"))

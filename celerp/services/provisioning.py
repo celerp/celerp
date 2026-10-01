@@ -122,9 +122,12 @@ async def provision_additional_company(session: AsyncSession, *, user: User, com
     return company
 
 
-async def provision_migration_company(session: AsyncSession, *, owner: User, company_name: str) -> Company:
-    """Create an inactive, migration-staged company: the owner link only, no seeds, no hooks."""
-    return await _create_company(session, owner=owner, company_name=company_name, settings={}, staged=True)
+async def provision_migration_company(session: AsyncSession, *, owner: User, company_name: str,
+                                      settings: dict | None = None) -> Company:
+    """Create an inactive, migration-staged company: the owner link and *settings* only, no
+    seeds, no hooks."""
+    return await _create_company(session, owner=owner, company_name=company_name, settings=settings or {},
+                                 staged=True)
 
 
 async def provision_restored_company(

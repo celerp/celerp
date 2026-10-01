@@ -105,7 +105,7 @@ def _run_view(run_id: str, *, status: str, source: str = "manager_io",
         "id": run_id, "company_id": str(uuid.uuid4()), "company_name": company_name,
         "source_system": source, "mode": "full_history", "cutover_date": None,
         "status": status, "current_phase": "inventory_masters", "phases": phases,
-        "coverage": [], "error_summary": {}, "retention_until": None,
+        "coverage": [], "error": None, "preparing": False, "retention_until": None,
         "source_deleted": False, "prepared_by": "Example Bookkeeping",
         "is_bootstrap_run": False, "is_sample": is_sample,
     }
@@ -894,3 +894,46 @@ def test_cancel_offered_only_where_the_run_can_be_cancelled(status):
     shown = "/cancel" in to_xml(_run_actions({"id": "r1", "status": status}))
     assert shown == can_transition(MigrationStatus(status), MigrationStatus.CANCEL_REQUESTED)
 
+
+
+@pytest.mark.asyncio
+async def test_preparing_run_explains_and_waits_without_a_start_button(ui, fake_api):
+    """While Celerp prepares the features a migration needs, the page says so, keeps
+    checking, and offers no Start that would only be refused."""
+    _owner(ui)
+    run_id = fake_api.add_run("ready")
+    fake_api.runs[run_id]["preparing"] = True
+    r = await ui.get(f"/migrations/{run_id}")
+    assert r.status_code == 200
+    assert "Celerp is preparing features for this company" in _visible(r)
+    assert 'hx-trigger="every 2s"' in _page(r)
+    assert f'action="/migrations/{run_id}/start"' not in _page(r)
+
+
+@pytest.mark.asyncio
+async def test_failed_run_shows_plain_message_and_never_says_still_running(ui, fake_api):
+    _owner(ui)
+    run_id = fake_api.add_run("failed")
+    fake_api.runs[run_id]["error"] = {"message": "The migration stopped unexpectedly.",
+                                      "missing": ["INV-0042"], "phase": "Invoices"}
+    r = await ui.get(f"/migrations/{run_id}")
+    text = _visible(r)
+    assert "The migration stopped unexpectedly." in text and "INV-0042" in text
+    assert "The migration keeps running" not in text
+    assert 'hx-trigger="every 2s"' not in _page(r)
+
+
+@pytest.mark.asyncio
+async def test_review_shows_company_currency_scope_and_plain_outcomes(ui, fake_api):
+    """The last step before starting names the file, company, currency and dates, and says
+    in plain words what will move, using the source's own record names."""
+    r = await ui.post("/setup/migrate/scan", files=_UPLOAD, data={"source": "manager_io"})
+    token = _cookie_value(r, SCAN_COOKIE)
+    ui.cookies.set(SCAN_COOKIE, token)
+    fake_api.scans[token]["scan"]["decisions"] = {"mode": "full_history", "cutover_date": None, "mappings": {}}
+    r = await ui.get("/setup/migrate/review")
+    assert r.status_code == 200, r.text
+    text = _visible(r)
+    for expected in ("Harbor Goods Ltd", "USD", "2024-01-01", "Sales invoice", "Will move", "Will not move"):
+        assert expected in text, expected
+    assert "sales_invoices" not in _page(r) and "sales invoices" not in text

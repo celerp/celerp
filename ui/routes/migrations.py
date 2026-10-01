@@ -682,10 +682,7 @@ async def _review_page(request: Request, mode: WizardMode, entry: dict, *, value
     method = t("migration.cutover") if decisions.get("mode") == "cutover" else t("migration.full_history")
     if decisions.get("mode") == "cutover":
         method = f"{method} ({decisions.get('cutover_date') or '--'})"
-    counts = scan.get("object_counts") or {}
-    changes = [row for row in scan.get("coverage") or [] if row.get("coverage_class") == "mapped_with_loss"]
     rows = [
-        (t("migration.file"), scan.get("file_name", "")),
         (t("migration.method"), method),
         (t("migration.prepared_by"), entry.get("prepared_by") or "--"),
     ]
@@ -695,15 +692,10 @@ async def _review_page(request: Request, mode: WizardMode, entry: dict, *, value
         _steps(4),
         auth_header(t("migration.review_title"), t("migration.review_subtitle")),
         flash(error) if error else "",
+        _summary(scan),
         Table(Tbody(*[Tr(Td(k), Td(v)) for k, v in rows]), cls="data-table"),
         H3(t("migration.records")),
-        Table(
-            Thead(Tr(Th(t("migration.record_type")), Th(t("migration.count"), cls="cell--number"))),
-            Tbody(*[Tr(Td(k.replace("_", " ")), Td(str(v), cls="cell--number")) for k, v in counts.items()]),
-            cls="data-table",
-        ) if counts else P(t("migration.no_records"), cls="form-hint"),
-        Div(H3(t("migration.transformations")),
-            Ul(*[Li(f"{row.get('source_type', '')}: {row.get('note') or '--'}") for row in changes])) if changes else "",
+        _coverage_table(scan),
         _issues(scan),
         P(t("migration.expected_reconciliation"), cls="form-hint"),
         Form(
@@ -827,7 +819,7 @@ def _run_actions(run: dict) -> FT:
     elif status in _RESUMABLE_STATUSES:
         buttons.append(Form(Button(t("migration.resume"), type="submit", cls="btn btn--primary"),
                             method="post", action=f"/migrations/{run_id}/start"))
-    elif status == "ready":
+    elif status == "ready" and not run.get("preparing"):
         buttons.append(Form(Button(t("migration.start"), type="submit", cls="btn btn--primary"),
                             method="post", action=f"/migrations/{run_id}/start"))
     if status == "ready_to_finalize":
@@ -839,12 +831,22 @@ def _run_actions(run: dict) -> FT:
     return Div(*buttons, cls="form-actions")
 
 
+def _error_block(error: dict | None) -> FT | str:
+    """A failed run's message, and the records it names when there are any."""
+    if not error:
+        return ""
+    missing = error.get("missing") or []
+    records = ", ".join(str(m) for m in missing) if isinstance(missing, list) else str(missing)
+    return Div(P(error["message"]),
+               P(t("migration.error_records", records=records), cls="form-hint") if records else "",
+               cls="flash flash--error")
+
+
 def _progress_fragment(run: dict, error: str | None = None) -> FT:
     status = run.get("status", "")
     phases = run.get("phases") or []
     polling = {"hx_get": f"/migrations/{run['id']}", "hx_trigger": "every 2s", "hx_swap": "outerHTML"} \
-        if status in _ACTIVE_STATUSES else {}
-    errors = run.get("error_summary") or {}
+        if status in _ACTIVE_STATUSES or run.get("preparing") else {}
     return Div(
         flash(error) if error else "",
         P(_badge(t(f"migration.status.{status}"), _PHASE_BADGE.get(
@@ -867,7 +869,8 @@ def _progress_fragment(run: dict, error: str | None = None) -> FT:
             ]),
             cls="data-table",
         ),
-        Ul(*[Li(f"{k}: {v}") for k, v in errors.items()]) if errors else "",
+        P(t("migration.preparing_notice"), cls="form-hint") if run.get("preparing") else "",
+        _error_block(run.get("error")),
         _run_actions(run),
         id="migration-progress",
         **polling,
@@ -886,7 +889,8 @@ def _progress_page(request: Request, run: dict, error: str | None = None):
         request,
         _steps(5),
         auth_header(t("migration.progress_title", company=run.get("company_name", "")),
-                t("migration.progress_subtitle")),
+                t("migration.progress_subtitle") if run.get("status") in _ACTIVE_STATUSES or run.get("preparing")
+                else ""),
         _progress_fragment(run, error),
         P(t("migration.retention"), cls="form-hint"),
     )
