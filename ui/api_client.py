@@ -2472,26 +2472,18 @@ async def merge_items(
     token: str,
     source_entity_ids: list[str],
     target_sku_from: str,
-    resulting_quantity: float | None = None,
-    resulting_name: str | None = None,
+    plan_fingerprint: str | None,
     resulting_sku: str | None = None,
-    resolved_attributes: dict | None = None,
     idempotency_key: str | None = None,
-    plan_fingerprint: str | None = None,
 ) -> dict:
+    """Confirm a merge with the fingerprint of the preview the user reviewed."""
     body: dict = {"source_entity_ids": source_entity_ids, "target_sku_from": target_sku_from}
-    if resulting_quantity is not None:
-        body["resulting_quantity"] = resulting_quantity
-    if resulting_name is not None:
-        body["resulting_name"] = resulting_name
-    if resulting_sku is not None:
-        body["resulting_sku"] = resulting_sku
-    if resolved_attributes:
-        body["resolved_attributes"] = resolved_attributes
-    if idempotency_key:
-        body["idempotency_key"] = idempotency_key
     if plan_fingerprint:
         body["plan_fingerprint"] = plan_fingerprint
+    if resulting_sku is not None:
+        body["resulting_sku"] = resulting_sku
+    if idempotency_key:
+        body["idempotency_key"] = idempotency_key
     async with _api_client(token) as c:
         return _raise(await c.post("/items/merge", json=body)).json()
 

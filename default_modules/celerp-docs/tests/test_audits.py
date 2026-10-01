@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from test_helpers import merge_items
 
 
 async def _register(client) -> str:
@@ -966,7 +967,7 @@ async def test_finalize_blocks_a_line_whose_item_was_merged_away(client):
     src = await _item(client, t, "MRG-1", loc=loc, qty=1, barcode="7201")
     other = await _item(client, t, "MRG-2", loc=loc, qty=1, barcode="7202")
     audit = (await _audit(client, t, loc))["id"]
-    r = await client.post("/items/merge", headers=_h(t),
+    r = await merge_items(client, headers=_h(t),
                           json={"source_entity_ids": [src, other], "target_sku_from": other})
     assert r.status_code == 200, r.text
     fin = await client.post(f"/lists/{audit}/finalize", headers=_h(t))

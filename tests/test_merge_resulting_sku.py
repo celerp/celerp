@@ -13,6 +13,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from test_helpers import merge_items
 
 
 async def _token(client) -> str:
@@ -37,8 +38,7 @@ async def _seed(client, headers, sku: str) -> str:
 
 
 async def _merge(client, headers, source_ids, target_id, **extra):
-    r = await client.post(
-        "/items/merge",
+    r = await merge_items(client,
         json={"source_entity_ids": source_ids, "target_sku_from": target_id, **extra},
         headers=headers,
     )
@@ -99,8 +99,7 @@ async def test_merge_target_must_be_one_of_sources(client):
     b = await _seed(client, h, "MERGE-B")
     outsider = await _seed(client, h, "MERGE-X")
 
-    r = await client.post(
-        "/items/merge",
+    r = await merge_items(client,
         json={"source_entity_ids": [a, b], "target_sku_from": outsider},
         headers=h,
     )

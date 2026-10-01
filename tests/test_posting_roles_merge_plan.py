@@ -23,6 +23,8 @@ from test_posting_roles_merge import _FIELD, _lot, _merge, _remap, _two_accounts
 
 pytestmark = pytest.mark.asyncio
 
+_PREVIEW_FIRST = "Preview this merge first, then confirm it with the plan_fingerprint the preview returned."
+
 
 async def _ledger_count(session, auth) -> int:
     session.expire_all()
@@ -86,14 +88,36 @@ async def test_a_merge_key_reused_for_a_different_merge_is_refused(session, clie
 async def test_an_exact_retry_of_a_merge_returns_the_first_result(session, client, auth):
     a, b = await _two_accounts(session, client, auth)
     key = f"merge-{uuid.uuid4().hex}"
-    first = await _merge(client, auth, [a, b], idempotency_key=key, resulting_name="Pair")
+    preview = await client.post("/items/merge/preview", headers=auth["headers"],
+                                json={"source_entity_ids": [a, b], "target_sku_from": a})
+    assert preview.status_code == 200, preview.text
+    sent = {"source_entity_ids": [a, b], "target_sku_from": a, "idempotency_key": key,
+            "resulting_name": "Pair", "plan_fingerprint": preview.json()["plan_fingerprint"]}
+    first = await client.post("/items/merge", headers=auth["headers"], json=sent)
     assert first.status_code == 200, first.text
     before = await _ledger_count(session, auth)
-    # The same merge with its items listed in another order is the same merge.
-    again = await client.post("/items/merge", headers=auth["headers"], json={
-        "source_entity_ids": [b, a], "target_sku_from": a, "idempotency_key": key, "resulting_name": "Pair"})
-    assert again.status_code == 200, again.text
-    assert again.json() == first.json()
+    # A retry is not previewed again: the same request, its old fingerprint and all,
+    # or without one, or with its items listed in another order, is the same merge.
+    for again in (sent, {k: v for k, v in sent.items() if k != "plan_fingerprint"},
+                  {**sent, "source_entity_ids": [b, a]}):
+        r = await client.post("/items/merge", headers=auth["headers"], json=again)
+        assert r.status_code == 200, r.text
+        assert r.json() == first.json()
+    assert await _ledger_count(session, auth) == before
+
+
+@pytest.mark.parametrize("key", [None, "fresh"])
+async def test_a_merge_confirmed_without_its_preview_is_refused(session, client, auth, key):
+    a, b = await _two_accounts(session, client, auth)
+    body = {"source_entity_ids": [a, b], "target_sku_from": a}
+    if key:
+        body["idempotency_key"] = f"merge-{uuid.uuid4().hex}"
+    items, before = await _items(session, auth), await _ledger_count(session, auth)
+    r = await client.post("/items/merge", headers=auth["headers"], json=body)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == _PREVIEW_FIRST
+    await session.rollback()
+    assert await _items(session, auth) == items
     assert await _ledger_count(session, auth) == before
 
 

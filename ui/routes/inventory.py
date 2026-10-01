@@ -4542,50 +4542,6 @@ function celerpPrintLabel(entityId, templateId) {
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
         return _split_redirect(orig_sku, [])   # children share the parent SKU
 
-    @app.post("/api/items/merge")
-    async def item_merge(request: Request):
-        token = _token(request)
-        if not token:
-            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
-        form = await request.form()
-        source_entity_ids = [v.strip() for v in form.getlist("source_entity_ids") if v.strip()]
-        target_sku_from = str(form.get("target_sku_from", "")).strip()
-        if not source_entity_ids or not target_sku_from:
-            return Span(t("inv.source_items_and_target_selection_are_required"), cls="flash flash--error")
-        raw_qty = str(form.get("resulting_quantity", "")).strip()
-        resulting_name = str(form.get("resulting_name", "")).strip() or None
-        resulting_sku = str(form.get("resulting_sku", "")).strip() or None
-        try:
-            resulting_quantity = float(raw_qty) if raw_qty else None
-        except ValueError:
-            return Span(t("error.invalid_resulting_quantity"), cls="flash flash--error")
-        # Collect resolved attributes for string conflicts.
-        resolved_attributes: dict = {}
-        for key, val in form.multi_items():
-            if key.startswith("resolved_attr_"):
-                attr_key = key[len("resolved_attr_"):]
-                resolved_attributes[attr_key] = str(val)
-            elif key.startswith("numeric_attr_"):
-                attr_key = key[len("numeric_attr_"):]
-                try:
-                    resolved_attributes[attr_key] = str(float(val))
-                except (TypeError, ValueError):
-                    pass
-        try:
-            result = await api.merge_items(
-                token,
-                source_entity_ids=source_entity_ids,
-                target_sku_from=target_sku_from,
-                resulting_quantity=resulting_quantity,
-                resulting_name=resulting_name,
-                resulting_sku=resulting_sku,
-                resolved_attributes=resolved_attributes or None,
-            )
-        except APIError as e:
-            return Span(str(e.detail), cls="flash flash--error")
-        new_id = result.get("id", "")
-        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{new_id}"})
-
     @app.post("/api/items/{entity_id}/duplicate")
     async def item_duplicate(request: Request, entity_id: str):
         token = _token(request)

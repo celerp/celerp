@@ -340,7 +340,7 @@ class MergeBody(BaseModel):
     resulting_sku: str | None = None           # optional custom SKU (default = target's SKU); issue #190
     resolved_attributes: dict | None = None    # user picks for conflicting string attributes
     idempotency_key: str | None = None
-    plan_fingerprint: str | None = None        # from the preview the user confirmed; refused if the items changed since
+    plan_fingerprint: str | None = None        # required to confirm: from the preview the user confirmed; refused if the items changed since
 
 
 class TransformBody(BaseModel):
@@ -3757,6 +3757,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
 _MERGE_ID_NAMESPACE = uuid.UUID("6f1d3c52-9a1e-4c55-9d1e-2a7f5b0e8c41")
 
 _STALE_MERGE = "The inventory changed since this merge was reviewed. Review the merge again."
+_UNREVIEWED_MERGE = "Preview this merge first, then confirm it with the plan_fingerprint the preview returned."
 
 
 def _merge_result_id(company_id, idempotency_key: str | None) -> str:
@@ -4210,6 +4211,11 @@ async def preview_merge(payload: MergeBody, company_id=Depends(get_current_compa
 
 @router.post("/merge")
 async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    """Merge the items into one new item. Preview the merge first with POST
+    /items/merge/preview and confirm it with the ``plan_fingerprint`` that preview
+    returned: a merge without one is refused, and so is one whose items changed since
+    the preview. A retry of the same request under the same ``idempotency_key``
+    returns the first merge's result without a new preview."""
     _check_merge_request(payload)
     from celerp.connectors import ownership
     from celerp.services.account_roles import current_settings
@@ -4235,7 +4241,9 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     # the items are no longer what the user reviewed.
     settings = await current_settings(session, company_id)
     plan = await _plan_merge(session, company_id, payload, settings, role, locked_sources)
-    if payload.plan_fingerprint is not None and not hmac.compare_digest(payload.plan_fingerprint, plan.fingerprint):
+    if payload.plan_fingerprint is None:
+        raise HTTPException(status_code=422, detail=_UNREVIEWED_MERGE)
+    if not hmac.compare_digest(payload.plan_fingerprint, plan.fingerprint):
         raise HTTPException(status_code=409, detail=_STALE_MERGE)
 
     new_entity_id = _merge_result_id(company_id, payload.idempotency_key)

@@ -112,6 +112,16 @@ async def default_location_id(client, headers: dict) -> str:
     return items[0]["id"]
 
 
+async def merge_items(client, *, json: dict, headers: dict | None = None):
+    """Merge the way a user does: preview the merge, then confirm it with the preview's
+    fingerprint. A refused preview leaves the merge to give its own refusal."""
+    if "plan_fingerprint" not in json:
+        preview = await client.post("/items/merge/preview", headers=headers, json=json)
+        if preview.status_code == 200:
+            json = {**json, "plan_fingerprint": preview.json()["plan_fingerprint"]}
+    return await client.post("/items/merge", headers=headers, json=json)
+
+
 async def create_location(client, headers: dict, name: str = "Warehouse 2") -> str:
     """Create a real location and return its id (for transfer-target tests)."""
     r = await client.post("/companies/me/locations", headers=headers,

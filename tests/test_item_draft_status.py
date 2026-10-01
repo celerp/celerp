@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from celerp.services.pricing import is_cost_list_name  # noqa: E402
-from test_helpers import create_item, grant_permission, perm_setup  # noqa: E402
+from test_helpers import create_item, grant_permission, perm_setup, merge_items  # noqa: E402
 
 
 async def _item_state(client, headers: dict, item_id: str) -> dict:
@@ -700,7 +700,7 @@ async def test_merge_rejects_two_draft_sources(client, session):
     a = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-DD-A")
     b = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-DD-B")
 
-    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a},
+    r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a},
                           headers=ctx["admin_h"])
     assert r.status_code == 422, r.text
 
@@ -716,7 +716,7 @@ async def test_merge_rejects_available_plus_draft_source(client, session):
     a = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-AD-A", status="available")
     b = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-AD-B")
 
-    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a},
+    r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a},
                           headers=ctx["admin_h"])
     assert r.status_code == 422, r.text
 
@@ -733,7 +733,7 @@ async def test_merge_rejects_draft_target_sku_from(client, session):
     a = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-T-A", status="available")
     b = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-T-B")
 
-    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": b},
+    r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": b},
                           headers=ctx["admin_h"])
     assert r.status_code == 422, r.text
 

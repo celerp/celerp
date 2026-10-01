@@ -95,21 +95,20 @@ async def _blocked(engine, n: int) -> None:
     raise AssertionError(f"{n} requests never queued on the company lock")
 
 
-@pytest.mark.parametrize("correction_first", [True, False])
-async def test_a_cost_correction_and_a_merge_serialize(real_engine, real_client, correction_first):
+async def test_a_merge_and_a_cost_correction_after_it_serialize(real_engine, real_client):
+    """The other order, a correction landing between the preview and the confirm, is
+    refused below."""
     cid, tok, a, b = await _books(real_engine, real_client)
-    merge_body = {"source_entity_ids": [a, b], "target_sku_from": a}
+    preview = await _post(real_client, tok, "/items/merge/preview", {"source_entity_ids": [a, b], "target_sku_from": a})
+    merge_body = {"source_entity_ids": [a, b], "target_sku_from": a,
+                  "plan_fingerprint": preview["plan_fingerprint"]}
     correction = {"fields_changed": {"cost_total": {"old": 400.0, "new": 450.0}}}
 
     conn, tx = await _held(real_engine, cid)
     try:
-        first = (real_client.patch(f"/items/{b}", headers=auth(tok), json=correction) if correction_first
-                 else real_client.post("/items/merge", headers=auth(tok), json=merge_body))
-        t1 = asyncio.create_task(first)
+        t1 = asyncio.create_task(real_client.post("/items/merge", headers=auth(tok), json=merge_body))
         await _blocked(real_engine, 1)
-        second = (real_client.post("/items/merge", headers=auth(tok), json=merge_body) if correction_first
-                  else real_client.patch(f"/items/{b}", headers=auth(tok), json=correction))
-        t2 = asyncio.create_task(second)
+        t2 = asyncio.create_task(real_client.patch(f"/items/{b}", headers=auth(tok), json=correction))
         await _blocked(real_engine, 2)
     finally:
         await tx.commit()
@@ -117,20 +116,20 @@ async def test_a_cost_correction_and_a_merge_serialize(real_engine, real_client,
     r1, r2 = await asyncio.wait_for(asyncio.gather(t1, t2), timeout=60)
     assert (r1.status_code, r2.status_code) == (200, 200), (r1.text, r2.text)
 
-    merged_id = (r2 if correction_first else r1).json()["id"]
+    merged_id = r1.json()["id"]
     [(je_id, lines)] = (await _reclass_entries(real_engine, cid)).items()
     assert je_id == f"je:auto:{merged_id}:merge-reclass"
-    corrected_before_merge = (await _seq(real_engine, cid, "item.created", merged_id)
-                              > await _seq(real_engine, cid, "item.updated", b))
-    assert corrected_before_merge is correction_first
-    moved = 450.0 if correction_first else 400.0
-    assert lines == {"1130-OB": (moved, 0), "1131": (0, moved)}
+    assert (await _seq(real_engine, cid, "item.created", merged_id)
+            < await _seq(real_engine, cid, "item.updated", b))
+    assert lines == {"1130-OB": (400.0, 0), "1131": (0, 400.0)}
     assert (await _state(real_engine, cid, merged_id))["cost_total"] == 1050.0
 
 
 async def test_two_deliveries_of_one_merge_move_the_value_once(real_engine, real_client):
     cid, tok, a, b = await _books(real_engine, real_client)
-    body = {"source_entity_ids": [a, b], "target_sku_from": a, "idempotency_key": f"merge-{uuid.uuid4().hex}"}
+    preview = await _post(real_client, tok, "/items/merge/preview", {"source_entity_ids": [a, b], "target_sku_from": a})
+    body = {"source_entity_ids": [a, b], "target_sku_from": a, "idempotency_key": f"merge-{uuid.uuid4().hex}",
+            "plan_fingerprint": preview["plan_fingerprint"]}
     conn, tx = await _held(real_engine, cid)
     try:
         t1 = asyncio.create_task(real_client.post("/items/merge", headers=auth(tok), json=body))

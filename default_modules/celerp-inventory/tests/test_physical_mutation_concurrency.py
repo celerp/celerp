@@ -35,6 +35,7 @@ from celerp_inventory.routes import (
     SplitChild,
     TransformBody,
     merge_items,
+    preview_merge,
     split_item,
     transform_item,
 )
@@ -131,6 +132,17 @@ def _merge_kwargs(company_id, user, session):
     return {k: v for k, v in _route_kwargs(company_id, user, session).items() if k != "settings"}
 
 
+async def _previewed(factory, company_id, user, **fields) -> MergeBody:
+    """A merge request carrying the fingerprint of its preview, as the merge requires."""
+    from celerp.services.account_roles import current_settings
+
+    body = MergeBody(**fields)
+    async with factory() as s:
+        kwargs = {k: v for k, v in _route_kwargs(company_id, user, s).items() if k != "user"}
+        preview = await preview_merge(body, **{**kwargs, "settings": await current_settings(s, company_id)})
+    return body.model_copy(update={"plan_fingerprint": preview["plan_fingerprint"]})
+
+
 def _split(entity_id, qty, company_id, user):
     return lambda s: split_item(entity_id, SplitBody(children=[SplitChild(quantity=qty)]),
                                 **_route_kwargs(company_id, user, s))
@@ -207,11 +219,11 @@ async def test_concurrent_merges_consume_sources_once(_db_engine, monkeypatch):
         a = await _seed_item(factory, company_id, user, "PART", 2)
         b = await _seed_item(factory, company_id, user, "PART", 3)
 
-        def _merge(order):
-            body = MergeBody(source_entity_ids=order, target_sku_from=a)
+        async def _merge(order):
+            body = await _previewed(factory, company_id, user, source_entity_ids=order, target_sku_from=a)
             return lambda s: merge_items(body, **_merge_kwargs(company_id, user, s))
 
-        results = await _race(factory, monkeypatch, [_merge([a, b]), _merge([b, a])])
+        results = await _race(factory, monkeypatch, [await _merge([a, b]), await _merge([b, a])])
         failures = [r for r in results if isinstance(r, BaseException)]
         assert len(failures) == 1, f"exactly one merge of the same sources must succeed: {results!r}"
         assert isinstance(failures[0], HTTPException) and failures[0].status_code == 409, repr(failures[0])

@@ -18,6 +18,7 @@ from sqlalchemy import text
 
 from company_backup_support import company, download, owner, restore, token
 from migration_support import auth, maker, real_client, real_engine  # noqa: F401
+from test_helpers import merge_items
 from test_restored_connector_safety import _local
 
 _POSTING_KEYS = ("posting_roles_schema", "posting_roles", "posting_role_scopes", "posting_legacy_lot_account")
@@ -170,7 +171,9 @@ async def test_a_restored_copy_keeps_a_merge_across_inventory_accounts(real_engi
     a = await _lot(real_client, tok, "LOT-A", 600.0)
     await _remap(real_client, tok, "inventory_opening", "1131", "1130")
     b = await _lot(real_client, tok, "LOT-B", 400.0)
-    merged = (await _post(real_client, tok, "/items/merge", {"source_entity_ids": [a, b], "target_sku_from": a}))["id"]
+    r = await merge_items(real_client, headers=auth(tok), json={"source_entity_ids": [a, b], "target_sku_from": a})
+    assert r.status_code == 200, r.text
+    merged = r.json()["id"]
     reclass = f"je:auto:{merged}:merge-reclass"
     assert await _entry(real_engine, source, reclass) == {"1130-OB": (400.0, 0), "1131": (0, 400.0)}
 

@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from celerp.models.projections import Projection
 from celerp_inventory.routes import resolve_item_by_code
+from test_helpers import merge_items
 
 
 async def _company_id(session, entity_id: str):
@@ -207,8 +208,7 @@ async def test_merge_carries_gtin_not_epc(client):
         headers=h,
     )).json()["id"]
 
-    r = await client.post(
-        "/items/merge",
+    r = await merge_items(client,
         json={"source_entity_ids": [src_a, src_b], "target_sku_from": src_a},
         headers=h,
     )

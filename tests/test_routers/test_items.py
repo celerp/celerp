@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from test_helpers import merge_items
 
 
 async def _token(client) -> str:
@@ -82,8 +83,7 @@ async def test_items_happy_path(client):
         headers=headers,
     )
     merge_peer_id = r2.json()["id"]
-    r = await client.post(
-        "/items/merge",
+    r = await merge_items(client,
         json={"source_entity_ids": [id, merge_peer_id], "target_sku_from": id},
         headers=headers,
     )
@@ -822,7 +822,7 @@ async def test_merge_preserves_allow_splitting_true(client):
     assert r.status_code == 200
     id_b = r.json()["id"]
 
-    r = await client.post("/items/merge", json={"source_entity_ids": [id_a, id_b], "target_sku_from": id_a}, headers=h)
+    r = await merge_items(client, json={"source_entity_ids": [id_a, id_b], "target_sku_from": id_a}, headers=h)
     assert r.status_code == 200
     merged_id = r.json()["id"]
 
@@ -841,7 +841,7 @@ async def test_merge_qty_truncated_to_unit_decimals(client):
     h = {"Authorization": f"Bearer {token}"}
     a = (await client.post("/items", json={"status": "available", "sku": "MQ-A", "name": "A", "quantity": 0.1, "sell_by": "carat"}, headers=h)).json()["id"]
     b = (await client.post("/items", json={"status": "available", "sku": "MQ-B", "name": "B", "quantity": 0.2, "sell_by": "carat"}, headers=h)).json()["id"]
-    merged_id = (await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)).json()["id"]
+    merged_id = (await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)).json()["id"]
     qty = (await client.get(f"/items/{merged_id}", headers=h)).json()["quantity"]
     assert qty == 0.3, f"merged qty must be truncated to unit precision; got {qty!r}"
 
@@ -857,7 +857,7 @@ async def test_merge_carries_attached_files(client):
     assert ra.status_code == 200, ra.text
     rb = await client.post(f"/items/{b}/files", files={"file": ("b.png", b"\x89PNG\r\n\x1a\n", "image/png")}, headers=h)
     assert rb.status_code == 200, rb.text
-    merged_id = (await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)).json()["id"]
+    merged_id = (await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)).json()["id"]
     state = (await client.get(f"/items/{merged_id}", headers=h)).json()
     files = state.get("files", [])
     assert len(files) == 2, f"both source files must be merged onto the new item; got {len(files)}"
@@ -879,7 +879,7 @@ async def test_merge_preserves_allow_splitting_false(client):
     assert r.status_code == 200
     id_b = r.json()["id"]
 
-    r = await client.post("/items/merge", json={"source_entity_ids": [id_a, id_b], "target_sku_from": id_a}, headers=h)
+    r = await merge_items(client, json={"source_entity_ids": [id_a, id_b], "target_sku_from": id_a}, headers=h)
     assert r.status_code == 200
     merged_id = r.json()["id"]
 
@@ -917,7 +917,7 @@ async def test_merge_rejects_different_sell_units(client):
     h = {"Authorization": f"Bearer {token}"}
     a = (await client.post("/items", json={"status": "available", "sku": "WU-A", "name": "Gold A", "quantity": 5, "sell_by": "gram"}, headers=h)).json()["id"]
     b = (await client.post("/items", json={"status": "available", "sku": "WU-B", "name": "Gold B", "quantity": 3, "sell_by": "carat"}, headers=h)).json()["id"]
-    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
+    r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert r.status_code == 422
     assert "unit" in r.json()["detail"].lower()
     assert "gram" in r.json()["detail"] and "carat" in r.json()["detail"]
@@ -932,7 +932,7 @@ async def test_merge_rejects_different_net_weight_units(client):
                                            "weight": 2, "weight_unit": "gram"}, headers=h)).json()["id"]
     b = (await client.post("/items", json={"status": "available", "sku": "NWU-B", "name": "B", "quantity": 1, "sell_by": "piece",
                                            "weight": 3, "weight_unit": "carat"}, headers=h)).json()["id"]
-    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
+    r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert r.status_code == 422
     assert "weight unit" in r.json()["detail"].lower()
 
@@ -944,7 +944,7 @@ async def test_merge_allows_same_weight_unit(client):
     h = {"Authorization": f"Bearer {token}"}
     a = (await client.post("/items", json={"status": "available", "sku": "SU-A", "name": "Gold A", "quantity": 5, "sell_by": "gram"}, headers=h)).json()["id"]
     b = (await client.post("/items", json={"status": "available", "sku": "SU-B", "name": "Gold B", "quantity": 3, "sell_by": "gram"}, headers=h)).json()["id"]
-    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
+    r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert r.status_code == 200
 
 
@@ -1322,7 +1322,7 @@ async def test_merge_sums_weight(client):
     assert rb.status_code == 200
     id_b = rb.json()["id"]
 
-    rm = await client.post("/items/merge", json={
+    rm = await merge_items(client, json={
         "source_entity_ids": [id_a, id_b], "target_sku_from": id_a,
     }, headers=h)
     assert rm.status_code == 200
@@ -1727,7 +1727,7 @@ async def test_merge_then_split_does_not_500(client):
     assert r1.status_code == 200, r1.text
     assert r2.status_code == 200, r2.text
     id1, id2 = r1.json()["id"], r2.json()["id"]
-    mr = await client.post("/items/merge", json={"source_entity_ids": [id1, id2], "target_sku_from": id1, "idempotency_key": "mts-merge-1"}, headers=h)
+    mr = await merge_items(client, json={"source_entity_ids": [id1, id2], "target_sku_from": id1, "idempotency_key": "mts-merge-1"}, headers=h)
     assert mr.status_code == 200, mr.text
     merged_id = mr.json()["id"]
     # Split must not 500 (this was crashing with ValueError: invalid literal for int() '25.0')
@@ -1751,7 +1751,7 @@ async def test_merge_numeric_attrs_stored_as_numbers(client):
     assert r1.status_code == 200
     assert r2.status_code == 200
     id1, id2 = r1.json()["id"], r2.json()["id"]
-    mr = await client.post("/items/merge", json={"source_entity_ids": [id1, id2], "target_sku_from": id1, "idempotency_key": "mna-merge-1"}, headers=h)
+    mr = await merge_items(client, json={"source_entity_ids": [id1, id2], "target_sku_from": id1, "idempotency_key": "mna-merge-1"}, headers=h)
     assert mr.status_code == 200, mr.text
     merged_id = mr.json()["id"]
     item = (await client.get(f"/items/{merged_id}", headers=h)).json()
@@ -2721,7 +2721,7 @@ async def test_merge_dropdown_fields_use_value_or_mixed_never_sum(client):
     # Differing dropdowns -> "Mixed"; numeric dropdown must NOT sum.
     a = await _mk("DD-A", {"grade": "A", "size": "1", "weight_ct": "5", "carats": "5"})
     b = await _mk("DD-B", {"grade": "B", "size": "2", "weight_ct": "3", "carats": "3"})
-    rm = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
+    rm = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert rm.status_code == 200, rm.text
     merged = (await client.get(f"/items/{rm.json()['id']}", headers=h)).json()
     assert _attr(merged, "grade") == "Mixed"
@@ -2734,7 +2734,7 @@ async def test_merge_dropdown_fields_use_value_or_mixed_never_sum(client):
     # Identical values carry through (dropdown, numeric, or custom); only conflicts are cleared/mixed.
     c = await _mk("DD-C", {"grade": "A", "size": "2", "weight_ct": "5", "carats": "5"})
     d = await _mk("DD-D", {"grade": "A", "size": "2", "weight_ct": "5", "carats": "5"})
-    rm2 = await client.post("/items/merge", json={"source_entity_ids": [c, d], "target_sku_from": c}, headers=h)
+    rm2 = await merge_items(client, json={"source_entity_ids": [c, d], "target_sku_from": c}, headers=h)
     assert rm2.status_code == 200, rm2.text
     merged2 = (await client.get(f"/items/{rm2.json()['id']}", headers=h)).json()
     assert _attr(merged2, "grade") == "A"

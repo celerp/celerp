@@ -22,6 +22,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from test_helpers import merge_items
 
 TZ = "Pacific/Kiritimati"
 
@@ -57,7 +58,7 @@ async def _item(client, auth, cost_total: float | None, qty: float = 1, sku: str
 
 
 async def _merge(client, auth, sources: list[str], **extra) -> str:
-    r = await client.post("/items/merge", headers=auth["headers"],
+    r = await merge_items(client, headers=auth["headers"],
                           json={"source_entity_ids": sources, "target_sku_from": sources[0], **extra})
     assert r.status_code == 200, r.text
     return r.json()["id"]
@@ -419,7 +420,7 @@ async def test_cost_permission_is_unchanged(client, session):
             "sku": f"P-{uuid.uuid4().hex[:6]}", "name": "Lot", "quantity": 1, "sell_by": "piece",
             "status": "available", "cost_total": cost})
         ids.append(r.json()["id"])
-    r = await client.post("/items/merge", headers=admin,
+    r = await merge_items(client, headers=admin,
                           json={"source_entity_ids": ids, "target_sku_from": ids[0]})
     c = r.json()["id"]
     body = {"fields_changed": {"cost_total": {"old": 100.0, "new": 120.0}}}

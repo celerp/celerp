@@ -18,7 +18,7 @@ from sqlalchemy import select
 from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
 from celerp.services.company_lock import locked_company
-from test_helpers import invite_user
+from test_helpers import invite_user, merge_items
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_posting_roles_landed import _freight_bill
 from test_receipt_accounting import _finalize, _receive
@@ -58,7 +58,7 @@ async def _lock_books(session, auth) -> None:
 
 
 async def _merge(client, auth, sources: list[str], **extra):
-    return await client.post("/items/merge", headers=auth["headers"],
+    return await merge_items(client, headers=auth["headers"],
                              json={"source_entity_ids": sources, "target_sku_from": sources[0], **extra})
 
 
@@ -305,7 +305,7 @@ async def test_a_role_that_cannot_see_cost_is_told_the_accounts_but_not_the_amou
     assert r.status_code == 200, r.text
     hidden = {**_A_TO_B, "moves": [{"account": "1131", "name": "Stock 1131", "amount": None}]}
     assert r.json()["inventory_reclassification"] == hidden
-    r = await client.post("/items/merge", headers=op, json={"source_entity_ids": [a, b], "target_sku_from": a})
+    r = await merge_items(client, headers=op, json={"source_entity_ids": [a, b], "target_sku_from": a})
     assert r.status_code == 200, r.text
     assert r.json()["inventory_reclassification"] == hidden
     assert _lines(await _reclass(session, auth, r.json()["id"])) == {"1130-OB": (400.0, 0), "1131": (0, 400.0)}
