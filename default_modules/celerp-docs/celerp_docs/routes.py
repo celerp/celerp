@@ -37,7 +37,7 @@ from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
 from celerp.services.document_lines import line_item_id
-from celerp.services.attachments import attach_file, store_upload
+from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
@@ -7902,13 +7902,12 @@ async def upload_doc_file(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    try:
-        meta = await store_upload(company_id, file)
-    except ValueError as exc:
-        raise HTTPException(status_code=413, detail=str(exc))
-
-    entry = await attach_file(session, company_id, "doc", entity_id, meta, user.id)
-    await session.commit()
+    async with storing(session, company_id) as store:
+        try:
+            meta = await store.upload(file)
+        except ValueError as exc:
+            raise HTTPException(status_code=413, detail=str(exc))
+        entry = await attach_file(session, company_id, "doc", entity_id, meta, user.id)
     return {"event_id": entry.id, **meta}
 
 

@@ -23,6 +23,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from celerp.services import import_stage
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
@@ -876,7 +878,6 @@ async def test_all_semantic_transports_write_through_import_items(client, sessio
     import ui.api_client as api
     import ui.config
     from ui.app import app as ui_app
-    from ui.routes import csv_import as ci
     from ui.routes.inventory import _import_operation_key
 
     entry = _import_items_spy(monkeypatch)
@@ -905,7 +906,7 @@ async def test_all_semantic_transports_write_through_import_items(client, sessio
     monkeypatch.setattr(api, "_get_transport", lambda: ASGITransport(app=celerp.main.app))
     text = "name,sell_by,quantity\nBrowsed,piece,1\n"
     browser_rows = list(csv.DictReader(io.StringIO(text)))
-    ref = ci._write_stage(perm["company_id"], text)
+    ref = import_stage.write_stage(perm["company_id"], text)
     preview = await _rows_preview(client, h, browser_rows, key=_import_operation_key(browser_rows, False))
     token = h["Authorization"].split()[1]
     with patch.object(api, "get_company", new=AsyncMock(return_value={

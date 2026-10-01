@@ -49,7 +49,7 @@ from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
 from celerp.services.business_time import business_timezone
-from celerp.services.company_lock import lock_company, locked_company
+from celerp.services.company_lock import lock_company, lock_company_for_deletion, locked_company
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -2279,6 +2279,7 @@ async def reset_company(
     from celerp.services.migrations import run_cleanup_task
 
     await lock_connector_maintenance(session)
+    await lock_company_for_deletion(session, ctx.company_id)
     await locked_authority(session, ctx.company_id, ctx.user.id, ("manage_company_lifecycle",))
     company = await session.get(Company, ctx.company_id)
     if company is None:

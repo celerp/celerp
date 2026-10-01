@@ -270,9 +270,9 @@ async def _close_ui_api_client() -> None:
 def _cleanup_import_stages() -> None:
     """Remove expired staged import files at startup, so they do not linger on
     an installation where nobody imports again."""
-    from ui.routes.csv_import import cleanup_expired_import_refs
+    from celerp.services.import_stage import cleanup_expired
     try:
-        cleanup_expired_import_refs()
+        cleanup_expired()
     except OSError:
         logging.getLogger(__name__).exception("Could not clean up staged import files at startup")
 

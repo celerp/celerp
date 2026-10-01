@@ -33,7 +33,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from ui.routes.csv_import import _read_stage, _write_stage, MAPPING_ATTRIBUTE, MAPPING_SKIP
+from celerp.services.import_stage import read_stage, write_stage
+from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
 from test_helpers import make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
@@ -90,7 +91,7 @@ async def _inventory_import_with_mapping(ui_client, csv_bytes: bytes):
     m = re.search(r'name="csv_ref"\s+value="([^"]+)"', html)
     assert m, "csv_ref hidden field not found"
     csv_ref = m.group(1)
-    csv_text = _read_stage(_TEST_COMPANY_ID, csv_ref)
+    csv_text = read_stage(_TEST_COMPANY_ID, csv_ref)
     assert csv_text, "stashed CSV missing"
 
     # Build mapping: map known core columns to themselves, others as attributes
@@ -132,7 +133,7 @@ async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url:
     m = re.search(r'name="csv_ref"\s+value="([^"]+)"', html)
     assert m, f"csv_ref hidden field not found in {preview_url} response"
     csv_ref = m.group(1)
-    csv_text = _read_stage(_TEST_COMPANY_ID, csv_ref)
+    csv_text = read_stage(_TEST_COMPANY_ID, csv_ref)
     assert csv_text, "stashed CSV missing"
 
     import csv as _csv, io as _io
@@ -157,7 +158,7 @@ _TEST_COMPANY_ID = "00000000-0000-0000-0000-00000000c0de"
 
 def _stage_csv(csv_text: str) -> str:
     """Stage CSV text under this file's test company and return its csv_ref."""
-    return _write_stage(_TEST_COMPANY_ID, csv_text)
+    return write_stage(_TEST_COMPANY_ID, csv_text)
 
 
 def _role_from_token(token: str | None) -> str:
@@ -16841,13 +16842,13 @@ class TestUnknownUnitRendererInFixTable:
     async def test_revalidate_with_valid_unit_clears_error(self, ui_client):
         """After user picks a valid unit in the fix table, revalidate must succeed."""
         import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
+        from ui.routes.csv_import import _rows_to_csv
 
         units = self._UNITS
         csv_rows = [{"sku": "X1", "name": "Ring", "sell_by": "grams", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
+        csv_ref = write_stage(_TEST_COMPANY_ID, csv_text)
 
         # User fixes "grams" → "gram" (valid unit)
         fixes = {"0__sell_by": "gram"}
@@ -16875,12 +16876,12 @@ class TestUnknownUnitRendererInFixTable:
         catalog and clicking Fix & Import (without changing the cell) must clear the error.
         """
         import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
+        from ui.routes.csv_import import _rows_to_csv
 
         csv_rows = [{"sku": "X2", "name": "Stone", "sell_by": "carat", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
+        csv_ref = write_stage(_TEST_COMPANY_ID, csv_text)
 
         # "carat" is now in the catalog (user added it while fix table was open)
         units_now = self._UNITS + [{"name": "carat", "label": "Carat", "decimals": 2}]
@@ -16903,12 +16904,12 @@ class TestUnknownUnitRendererInFixTable:
     async def test_revalidate_still_unknown_unit_keeps_error(self, ui_client):
         """If unit is still not in catalog after revalidate, error persists and value is preserved."""
         import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
+        from ui.routes.csv_import import _rows_to_csv
 
         csv_rows = [{"sku": "X3", "name": "Rock", "sell_by": "fathom", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
+        csv_ref = write_stage(_TEST_COMPANY_ID, csv_text)
 
         with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)), \
              patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
@@ -16931,12 +16932,12 @@ class TestUnknownUnitRendererInFixTable:
     async def test_add_new_option_not_saved_as_unit_value(self, ui_client):
         """If __add_new__ somehow reaches revalidate, it must not be stored as a sell_by value."""
         import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
+        from ui.routes.csv_import import _rows_to_csv
 
         csv_rows = [{"sku": "X4", "name": "Bead", "sell_by": "piece", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
+        csv_ref = write_stage(_TEST_COMPANY_ID, csv_text)
 
         # Simulate user somehow submitting __add_new__ as the fix value
         fixes = {"0__sell_by": "__add_new__"}

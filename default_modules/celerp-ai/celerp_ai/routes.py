@@ -32,7 +32,6 @@ Endpoints:
 from __future__ import annotations
 
 import copy
-import json
 import secrets
 import uuid
 from dataclasses import asdict
@@ -48,7 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai import memory as ai_memory
 from celerp.ai.batch import create_batch_job, get_batch_job, list_conversation_jobs, run_batch
-from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE, load_file, upload_dir
+from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE, load_file, save_upload, upload_dir
 from celerp.ai.conversations import (
     ERROR_MARKER,
     add_message,
@@ -80,6 +79,7 @@ from celerp.config import settings
 from celerp.db import get_session
 from celerp.models.ai import AIBatchJob
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
 from celerp.session_gate import require_session_token
 
@@ -246,13 +246,11 @@ async def ai_upload(
     files: list[UploadFile] = File(...),
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Upload files for AI batch processing. Returns list of file IDs."""
     if len(files) > 20:
         raise HTTPException(status_code=400, detail="Maximum 20 files allowed per batch")
-
-    file_ids = []
-    ud = upload_dir()
     for file in files:
         # Check size limit (10MB)
         file.file.seek(0, 2)
@@ -266,23 +264,15 @@ async def ai_upload(
                 detail=f"File {file.filename} has an unsupported type: {file.content_type}",
             )
 
-        file_id = f"ai_up_{uuid.uuid4().hex}"
-        bin_path = ud / f"{file_id}.bin"
-        meta_path = ud / f"{file_id}.meta"
-
-        content_bytes = await file.read()
-        bin_path.write_bytes(content_bytes)
-
-        meta = {
-            "filename": file.filename,
-            "content_type": file.content_type,
-            "size": size,
-            "company_id": str(company_id),
-            "user_id": str(user.id),
-        }
-        meta_path.write_text(json.dumps(meta))
-        file_ids.append(file_id)
-
+    # Held until the files are written: a company reset waits, then deletes them with the company.
+    if not await hold_company(session, company_id):
+        raise HTTPException(status_code=404, detail="Company not found")
+    file_ids = []
+    try:
+        for file in files:
+            file_ids.append(save_upload(company_id, user.id, file.filename, file.content_type, await file.read()))
+    finally:
+        await session.rollback()
     return {"file_ids": file_ids}
 
 

@@ -18,6 +18,7 @@ from celerp.config import settings
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
+from celerp.services.company_lock import hold_company
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
@@ -384,9 +385,7 @@ async def lock_issuance_company(session: AsyncSession, user_id, company_id) -> U
     anything, so a session issued under this lock either commits before the reset starts
     (and the reset then ends it) or waits and finds the company gone. Lock order is the
     company first, then ``UserAuthState``; every issuance path follows it."""
-    held = await session.scalar(
-        select(Company.id).where(Company.id == company_id).with_for_update(read=True, key_share=True))
-    link = None if held is None else await usable_company_link(session, user_id, company_id)
+    link = await usable_company_link(session, user_id, company_id) if await hold_company(session, company_id) else None
     if link is None:
         raise CompanyUnavailable()
     return link

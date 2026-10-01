@@ -35,6 +35,7 @@ from celerp.routers.migrations import ensure_not_bootstrapped, owner_account, us
 from celerp.services import bootstrap
 from celerp.services import company_backup as cb
 from celerp.services.auth import AuthContext, issue_token_pair
+from celerp.services.company_files import company_backups_dir
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,7 @@ _CHUNK = 1024 * 1024
 
 
 def _root() -> Path:
-    from celerp.config import settings
-    return settings.data_dir / "company_backups"
+    return company_backups_dir()
 
 
 def _purge(folder: Path) -> None:

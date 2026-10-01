@@ -23,6 +23,8 @@ from contextlib import asynccontextmanager
 from unittest.mock import patch
 
 import pytest
+
+from celerp.services import import_stage
 from httpx import ASGITransport, AsyncClient
 
 from celerp.events.types import EventType
@@ -159,7 +161,6 @@ class _Operation:
 
     async def _browser(self):
         import ui.api_client as ui_api
-        from ui.routes import csv_import as ci
         from ui.routes.inventory import _import_operation_key
 
         # The review step's preview of exactly these rows and this operation key.
@@ -168,7 +169,7 @@ class _Operation:
         })
         assert r.status_code == 200 and r.json()["errors"] == [], r.text
         preview_hash = r.json()["preview_hash"]
-        ref = ci._write_stage(self.ctx["company_id"], self.csv_text)
+        ref = import_stage.write_stage(self.ctx["company_id"], self.csv_text)
 
         results: list[dict] = []
         real_import_rows = ui_api.import_rows

@@ -20,12 +20,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.accounting import UserCompany
+from celerp.models.ai import AIBatchJob
 from celerp.models.auth import SessionRegistry
 from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig
 from celerp.models.migration import MigrationCleanupTask, MigrationRun
 from celerp.services.auth import first_usable_company_link
 from celerp.services.company_backup import _fk_order, _ident, _schema
+from celerp.services.company_lock import lock_company_for_deletion
 
 # Tables that belong to the installation rather than any one company, and why.
 INSTALL_WIDE = {
@@ -38,6 +40,8 @@ INSTALL_WIDE = {
 }
 
 NAME_MISMATCH = "The name you typed does not match this company's name. Nothing was deleted."
+AI_BATCH_ACTIVE = ("Wait for the assistant to finish reading files before resetting this company. "
+                   "Nothing was deleted.")
 FAILED = "The company could not be reset. Nothing was deleted."
 
 
@@ -98,15 +102,16 @@ async def owned_tables(session: AsyncSession) -> list[_Owned]:
 
 async def reset(session: AsyncSession, company: Company, typed_name: str) -> uuid.UUID:
     """Delete *company* and every row it owns in the session's transaction, and record its
-    files for deletion after the commit. The caller holds the company lock and connector
-    maintenance lock, commits, then runs the returned cleanup task. Nothing is written
-    unless every check passes; a database failure part way leaves the transaction to roll back."""
+    files for deletion after the commit. The caller holds the connector maintenance lock,
+    took ``lock_company_for_deletion`` before any other company lock, commits, then runs
+    the returned cleanup task. Nothing is written unless every check passes; a database
+    failure part way leaves the transaction to roll back."""
     if typed_name != company.name:
         raise ResetRefused(422, NAME_MISMATCH)
-    # A session being issued holds the company FOR KEY SHARE until it is saved: the reset
-    # waits for it and then ends it with the company's other sessions, and a later one
-    # waits for the reset and finds the company gone.
-    await session.execute(select(Company.id).where(Company.id == company.id).with_for_update())
+    # A session being issued, or a file being stored, holds the company FOR KEY SHARE until
+    # it is saved: the reset waits for it and then removes it with the company, and a later
+    # one waits for the reset and finds the company gone.
+    await lock_company_for_deletion(session, company.id)
     tables = await owned_tables(session)
     cid = str(company.id)
     connected = sorted(set((await session.scalars(
@@ -114,6 +119,11 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> uui
     if connected:
         raise ResetRefused(409, f"Disconnect {', '.join(connected)} before resetting this company. "
                                 "Nothing was deleted.")
+    # A batch is created under the company's key lock, so none can start once this check passed.
+    reading = await session.scalar(select(AIBatchJob.id).where(
+        AIBatchJob.company_id == company.id, AIBatchJob.status.in_(("pending", "running"))).limit(1))
+    if reading is not None:
+        raise ResetRefused(409, AI_BATCH_ACTIVE)
     run_ids = [str(r) for r in (await session.scalars(
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all()]
     members = set((await session.scalars(
