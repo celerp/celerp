@@ -284,6 +284,23 @@ class ItemPatched(_SkuGuard):
 
 class ItemSourceDeactivated(BaseModel):
     merged_into: str
+    # What the source was before the merge, restored if the merge is undone.
+    original_status: str | None = None
+    original_status_doc_id: str | None = None
+    original_status_doc_number: str | None = None
+
+
+class ItemMergeUndone(BaseModel):
+    """On a merge result whose merge was undone: its sources hold the stock again."""
+    source_entity_ids: list[str]
+
+
+class ItemUnmerged(BaseModel):
+    """On a merge source when its merge is undone."""
+    merged_into: str
+    restored_status: str
+    source_doc_id: str | None = None
+    doc_number: str | None = None
 
 
 class ItemConsumed(BaseModel):
@@ -1221,6 +1238,8 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.transformed_from": ItemTransformedFrom,
     "item.merged": ItemMerged,
     "item.source_deactivated": ItemSourceDeactivated,
+    "item.merge_undone": ItemMergeUndone,
+    "item.unmerged": ItemUnmerged,
     "item.patched": ItemPatched,
     "item.consumed": ItemConsumed,
     "item.produced": ItemProduced,

@@ -454,6 +454,16 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current["status"] = "merged"
         _stamp_status_doc(current, {})
         current["merged_into"] = data.get("merged_into")
+    elif event_type == "item.unmerged":
+        # The merge this lot went into was undone: it holds its stock again.
+        current["status"] = data["restored_status"]
+        _stamp_status_doc(current, data)
+        current.pop("merged_into", None)
+    elif event_type == "item.merge_undone":
+        # The merge result gives its stock back to the sources it was made from.
+        _set_quantity(current, 0.0)
+        current["status"] = "archived"
+        _stamp_status_doc(current, {})
     elif event_type == "item.consumed":
         # What is drawn down carries its share of cost, exactly as a sale relieves COGS.
         qty = float(current.get("quantity") or 0)

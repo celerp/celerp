@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal as _Dec
 
-from celerp.accounting_roles import INVENTORY_VALUE_ROLES, LANDED_ROLE_BY_KIND, AccountRole
+from celerp.accounting_roles import INVENTORY_VALUE_ROLES, LANDED_ROLE_BY_KIND, LOT_ACCOUNT_FIELD, AccountRole
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.account_roles import (
@@ -1457,6 +1457,85 @@ def lot_cost_of_sale(state: dict) -> float:
     if cost_total is not None:
         return float(cost_total)
     return float(state.get("cost_price") or 0) * float(state.get("quantity") or 0)
+
+
+@dataclass(frozen=True)
+class MergeReclassification:
+    """Where a merged lot is valued and the carrying value that moves there.
+
+    ``moves`` is the amount leaving each other inventory account, rounded once per
+    account; empty when every source already sits in ``destination``."""
+
+    destination: str | None
+    moves: dict[str, _Dec]
+    currency: str
+
+    def disclosure(self) -> dict | None:
+        if not self.moves:
+            return None
+        return {"destination": self.destination, "currency": self.currency,
+                "moves": [{"account": code, "amount": to_stored_float(a)} for code, a in self.moves.items()]}
+
+
+def merge_reclassification(settings: dict, survivor: dict, sources: list[dict], currency: str) -> MergeReclassification:
+    """The inventory account a merge keeps and the value it moves into it.
+
+    The merged lot keeps the surviving lot's own account, never the account new stock
+    goes to today. Every other source's carrying value (what a sale of it would
+    relieve, landed cost included) moves out of the account that lot is held in."""
+    recorded = {s.get(LOT_ACCOUNT_FIELD) for s in sources}
+    if len(recorded) == 1:
+        return MergeReclassification(recorded.pop(), {}, currency)
+    destination = lot_account(settings, survivor)
+    by_account: dict[str, _Dec] = {}
+    for state in sources:
+        code = lot_account(settings, state)
+        if code != destination:
+            by_account[code] = by_account.get(code, _Dec(0)) + to_decimal(lot_cost_of_sale(state))
+    moves = {code: a for code, v in sorted(by_account.items()) if (a := round_money(v, currency)) != 0}
+    return MergeReclassification(destination, moves, currency)
+
+
+def merge_reclass_je_id(merged_id: str) -> str:
+    return f"je:auto:{merged_id}:merge-reclass"
+
+
+async def create_for_merge_reclassification(
+    session, *, company_id, user_id, merged_id: str, merged_sku: str, source_ids: list[str],
+    reclass: MergeReclassification, ts: str,
+) -> None:
+    """Post the merge's reclassification: one credit per account the value leaves, one
+    debit to the surviving account. Nothing when no value moves."""
+    if not reclass.moves:
+        return
+    settings = await current_settings(session, company_id)
+    total = sum(reclass.moves.values(), _Dec(0))
+    lines = []
+    if total != 0:
+        lines.append(_origin_line(settings, reclass.destination, R.INVENTORY_PURCHASED,
+                                  debit=to_stored_float(max(total, _Dec(0))),
+                                  credit=to_stored_float(max(-total, _Dec(0)))))
+    for code, a in reclass.moves.items():
+        lines.append(_origin_line(settings, code, R.INVENTORY_PURCHASED,
+                                  debit=to_stored_float(max(-a, _Dec(0))), credit=to_stored_float(max(a, _Dec(0)))))
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id, je_id=merge_reclass_je_id(merged_id),
+        idem_create=je_idempotency_key(merged_id, "item.merged.reclass", "c"),
+        idem_posted=je_idempotency_key(merged_id, "item.merged.reclass", "p"),
+        memo=f"Inventory reclassified on merge into {merged_sku}",
+        entries=lines,
+        metadata_={"trigger": "item.merged", "item_id": merged_id, "source_ids": source_ids},
+        ts=ts,
+    )
+
+
+async def void_for_merge_reclassification(session, *, company_id, user_id, merged_id: str) -> bool:
+    """Reverse a merge's reclassification exactly, on its own date."""
+    return await _void_je_if_posted(
+        session, company_id=company_id, user_id=user_id, doc_id=merged_id, je_id=merge_reclass_je_id(merged_id),
+        idem_key=je_idempotency_key(merged_id, "item.merged.reclass", "void"),
+        reason="Merge undone", trigger="item.merge_undone",
+    )
 
 
 async def doc_line_of_lot(session, company_id, doc_id: str, doc_state: dict, lot_id: str, lot_state: dict) -> int | None:

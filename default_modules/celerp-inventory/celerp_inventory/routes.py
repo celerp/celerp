@@ -50,6 +50,7 @@ from celerp.accounting_roles import LOT_ACCOUNT_FIELD
 from celerp.services.account_roles import lot_account
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
+from celerp.services.business_time import business_date_at
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility, restricted_field_keys
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.demo import demo_item_ids
@@ -3749,21 +3750,54 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
 
 
 
-def _merged_lot_account(settings: dict, sources: list[Projection]) -> str | None:
-    """The inventory account a merged lot keeps: the one its sources share. Sources
-    valued in different inventory accounts are not merged, since one lot cannot hold
-    value on two accounts."""
-    recorded = {p.state.get(LOT_ACCOUNT_FIELD) for p in sources}
-    if len(recorded) == 1:
-        return recorded.pop()
-    accounts = {lot_account(settings, p.state) for p in sources}
-    if len(accounts) > 1:
-        raise HTTPException(
-            status_code=409,
-            detail=(f"These items are valued in different inventory accounts ({', '.join(sorted(accounts))}), "
-                    "so they cannot be merged into one item."),
-        )
-    return accounts.pop()
+class MergePreviewBody(BaseModel):
+    source_entity_ids: list[str]
+    target_sku_from: str
+
+
+# A merge sent with an idempotency key gets its result id from the key, so every
+# delivery of the same merge names the same item and the same journal entry.
+_MERGE_ID_NAMESPACE = uuid.UUID("6f1d3c52-9a1e-4c55-9d1e-2a7f5b0e8c41")
+
+
+def _merge_result_id(company_id, idempotency_key: str | None) -> str:
+    if not idempotency_key:
+        return f"item:{uuid.uuid4()}"
+    return f"item:{uuid.uuid5(_MERGE_ID_NAMESPACE, f'{company_id}:{idempotency_key}')}"
+
+
+def _merge_disclosure(reclass, settings: dict, role: str) -> dict | None:
+    """The inventory accounts a merge moves value between, for the person merging.
+    The amounts are goods cost, so a role that cannot see cost gets the accounts only."""
+    disclosure = reclass.disclosure()
+    if disclosure and not role_has_permission(settings, role, "view_inventory_costs"):
+        disclosure["moves"] = [{**m, "amount": None} for m in disclosure["moves"]]
+    return disclosure
+
+
+async def _merge_reclassification(session: AsyncSession, company_id, settings: dict, target_id: str,
+                                  sources: list[Projection]):
+    from celerp.services.auto_je import company_currency, merge_reclassification
+
+    survivor = next(p for p in sources if p.entity_id == target_id)
+    return merge_reclassification(settings, survivor.state, [p.state for p in sources],
+                                  await company_currency(session, company_id))
+
+
+@router.post("/merge/preview")
+async def preview_merge(payload: MergePreviewBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
+    """What merging these items would do to the books, before the user confirms."""
+    if payload.target_sku_from not in payload.source_entity_ids:
+        raise HTTPException(status_code=422, detail="target_sku_from must identify one of the merge sources.")
+    rows = {p.entity_id: p for p in (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item",
+        Projection.entity_id.in_(payload.source_entity_ids)))).scalars()}
+    missing = [sid for sid in payload.source_entity_ids if sid not in rows]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Item '{missing[0]}' not found.")
+    reclass = await _merge_reclassification(session, company_id, settings, payload.target_sku_from,
+                                            [rows[sid] for sid in payload.source_entity_ids])
+    return {"inventory_reclassification": _merge_disclosure(reclass, settings, role)}
 
 
 @router.post("/merge")
@@ -3791,6 +3825,16 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     for platform in sorted(ownership.PRODUCT_CHANNEL_PLATFORMS):
         await ownership.lock_connector_key(session, platform)
     locked_sources = await _lock_items_for_physical_mutation(session, company_id, payload.source_entity_ids)
+    if payload.idempotency_key:
+        # A repeat delivery of a merge that already happened gets its result again. Read
+        # under the item locks, so a delivery still in flight finishes first.
+        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
+        if replay is not None:
+            merged_from = (replay.metadata_ or {}).get("merged_from")
+            if replay.event_type != "item.created" or merged_from != payload.source_entity_ids:
+                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            return {"id": replay.entity_id,
+                    "inventory_reclassification": (replay.metadata_ or {}).get("inventory_reclassification")}
     source_projections: list[Projection] = []
     for sid in payload.source_entity_ids:
         proj = locked_sources.get(sid)
@@ -4049,7 +4093,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
     # Build item.created data from target projection.
     target_state = target_proj.state
-    new_entity_id = f"item:{uuid.uuid4()}"
+    new_entity_id = _merge_result_id(company_id, payload.idempotency_key)
     # The merged item is genuinely new, so its SKU can be the target's (default),
     # or a custom value the user typed (issue #190). SKU is a product-type that may
     # repeat across lots (per-lot identity is the barcode + entity_id), so no
@@ -4081,7 +4125,12 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     }
     if merged_catalog_id:
         create_data["catalog_item_id"] = merged_catalog_id
-    create_data[LOT_ACCOUNT_FIELD] = _merged_lot_account(settings, source_projections)
+    # The merged lot keeps the surviving lot's inventory account; value held in any
+    # other account moves into it with the merge (posted below, before the commit).
+    reclass = await _merge_reclassification(session, company_id, settings, payload.target_sku_from,
+                                            source_projections)
+    create_data[LOT_ACCOUNT_FIELD] = reclass.destination
+    disclosure = _merge_disclosure(reclass, settings, role)
 
     # The merged item is the same product as the target, so carry the target's product
     # GTIN. The physical RFID/EPC tag is NOT carried: the merged item is a new physical
@@ -4109,8 +4158,8 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         actor_id=user.id,
         location_id=emit_location_id,
         source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={"merged_from": payload.source_entity_ids},
+        idempotency_key=payload.idempotency_key or f"merge:{new_entity_id}",
+        metadata_={"merged_from": payload.source_entity_ids, "inventory_reclassification": disclosure},
     )
 
     # Carry attached files from every source onto the merged item (dedup by id; keep one hero)
@@ -4149,7 +4198,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
                 actor_id=user.id,
                 location_id=None,
                 source="api",
-                idempotency_key=str(uuid.uuid4()),
+                idempotency_key=f"merge:{new_entity_id}:file:{fid}",
                 metadata_={"reason": "from_merge"},
             )
 
@@ -4187,7 +4236,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             actor_id=user.id,
             location_id=None,
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"merge:{new_entity_id}:price:{price_type}",
             metadata_={"reason": "from_merge"},
         )
 
@@ -4207,7 +4256,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         actor_id=user.id,
         location_id=None,
         source="api",
-        idempotency_key=str(uuid.uuid4()),
+        idempotency_key=f"merge:{new_entity_id}:marker",
         metadata_={},
     )
 
@@ -4224,16 +4273,86 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
                 "merged_into": new_entity_id,
                 "merged_into_sku": new_sku,
                 "original_qty": float(proj.state.get("quantity") or 0),
+                "original_status": str(proj.state.get("status") or "available"),
+                "original_status_doc_id": proj.state.get("status_doc_id"),
+                "original_status_doc_number": proj.state.get("status_doc_number"),
             },
             actor_id=user.id,
             location_id=None,
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"merge:{new_entity_id}:source:{proj.entity_id}",
             metadata_={},
         )
 
+    from celerp.services.auto_je import create_for_merge_reclassification
+    await create_for_merge_reclassification(
+        session, company_id=company_id, user_id=user.id, merged_id=new_entity_id, merged_sku=new_sku,
+        source_ids=payload.source_entity_ids, reclass=reclass,
+        ts=business_date_at(datetime.now(timezone.utc), settings.get("timezone")),
+    )
+
     await session.commit()
-    return {"id": new_entity_id}
+    return {"id": new_entity_id, "inventory_reclassification": disclosure}
+
+
+async def _latest_item_event(session: AsyncSession, company_id, entity_id: str):
+    from celerp.models.ledger import LedgerEntry
+    return (await session.execute(
+        select(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id)
+        .order_by(LedgerEntry.id.desc()).limit(1)
+    )).scalar_one_or_none()
+
+
+@router.post("/{entity_id}/undo-merge")
+async def undo_merge(entity_id: str, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    """Undo a merge: the merged items hold their own stock again, each on the inventory
+    account it was in before, and the merge's reclassification entry is reversed.
+
+    Only while nothing has happened to the merged item or its sources since the merge;
+    after that the merge is part of what followed and stays."""
+    merged = (await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}))
+    if merged is None or merged.entity_type != "item":
+        raise HTTPException(status_code=404, detail=f"Item '{entity_id}' not found.")
+    marker = await _latest_item_event(session, company_id, entity_id)
+    if marker is None or marker.event_type != "item.merged":
+        raise HTTPException(status_code=409, detail=(
+            "This merge can no longer be undone: the merged item has changed since it was made."))
+    source_ids = list(marker.data["source_entity_ids"])
+    locked = await _lock_items_for_physical_mutation(session, company_id, [entity_id, *source_ids])
+    marker = await _latest_item_event(session, company_id, entity_id)
+    if marker is None or marker.event_type != "item.merged" or entity_id not in locked:
+        raise HTTPException(status_code=409, detail=(
+            "This merge can no longer be undone: the merged item has changed since it was made."))
+    restores = []
+    for sid in source_ids:
+        last = await _latest_item_event(session, company_id, sid)
+        if sid not in locked or last is None or last.event_type != "item.source_deactivated" \
+                or (last.data or {}).get("merged_into") != entity_id:
+            raise HTTPException(status_code=409, detail=(
+                "This merge can no longer be undone: one of the merged items has changed since it was made."))
+        if not (last.data or {}).get("original_status"):
+            raise HTTPException(status_code=409, detail=(
+                "This merge was made before merges could be undone, so the items' earlier state is not on record."))
+        restores.append((sid, last.data))
+
+    from celerp.services.auto_je import void_for_merge_reclassification
+    await void_for_merge_reclassification(session, company_id=company_id, user_id=user.id, merged_id=entity_id)
+    for sid, data in restores:
+        await emit_event(
+            session, company_id=company_id, entity_id=sid, entity_type="item", event_type="item.unmerged",
+            data={"merged_into": entity_id, "restored_status": data["original_status"],
+                  "source_doc_id": data.get("original_status_doc_id"),
+                  "doc_number": data.get("original_status_doc_number")},
+            actor_id=user.id, location_id=None, source="api",
+            idempotency_key=f"merge-undo:{entity_id}:{sid}", metadata_={},
+        )
+    await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="item", event_type="item.merge_undone",
+        data={"source_entity_ids": source_ids}, actor_id=user.id, location_id=None, source="api",
+        idempotency_key=f"merge-undo:{entity_id}", metadata_={},
+    )
+    await session.commit()
+    return {"id": entity_id, "restored": source_ids}
 
 
 @router.post("/{entity_id}/adjust")

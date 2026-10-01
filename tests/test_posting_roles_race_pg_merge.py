@@ -58,7 +58,7 @@ async def _rows(engine, cid, sql: str, **params) -> list:
 
 async def _reclass_entries(engine, cid) -> dict[str, dict]:
     rows = await _rows(engine, cid, "SELECT entity_id, state FROM projections WHERE company_id = :c "
-                                    "AND entity_id LIKE 'je:auto:%:merge-reclass'")
+                                    "AND entity_id LIKE :pattern", pattern="je:auto:%:merge-reclass")
     return {eid: {e["account"]: (e.get("debit") or 0, e.get("credit") or 0) for e in state["entries"]}
             for eid, state in rows}
 
