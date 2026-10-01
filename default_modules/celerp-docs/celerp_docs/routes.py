@@ -41,7 +41,7 @@ from celerp.services.attachments import attach_file, store_upload
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
-from celerp.services.permissions import assert_role_permission, get_current_company_settings, reject_price_change, require_permission, role_has_permission
+from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
@@ -4694,8 +4694,6 @@ async def import_doc(
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
     __: None = require_permission("import_export_data"),
-    role: str = Depends(get_current_role),
-    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4703,6 +4701,7 @@ async def import_doc(
     # Updates go through PATCH and state transitions through their dedicated endpoints.
     if body.event_type != "doc.created":
         raise HTTPException(status_code=422, detail=f"Event type {body.event_type!r} is not import-safe")
+    role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     _assert_doc_import_permissions(settings, role, body.data)
 
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
@@ -4829,13 +4828,12 @@ async def batch_import_docs(
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
     __: None = require_permission("import_export_data"),
-    role: str = Depends(get_current_role),
-    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
     from celerp_docs import import_service
 
+    role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     outcome = await import_service.import_doc_records(
         session, company_id, user, role, settings, body.records, upsert=body.upsert,
     )
@@ -6346,13 +6344,12 @@ async def import_list(
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
     __: None = require_permission("import_export_data"),
-    role: str = Depends(get_current_role),
-    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     if body.event_type != "list.created":
         raise HTTPException(status_code=422, detail=f"Event type {body.event_type!r} is not import-safe")
+    role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     _assert_list_import_permissions(settings, role, body.data)
 
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
@@ -6393,11 +6390,10 @@ async def batch_import_lists(
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
     __: None = require_permission("import_export_data"),
-    role: str = Depends(get_current_role),
-    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
+    role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     from sqlalchemy import select as _select
     from celerp.models.ledger import LedgerEntry
 
