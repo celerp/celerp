@@ -147,6 +147,10 @@ def test_restore_creates_new_company_browser(page, fresh_company, tmp_path):
     assert page.locator('text="Company restored"').count() == 1
     assert _session_company(page.context) != source["id"]
     assert _named(source["name"]) == 1 and _named(_restored_name(source)) == 1
+    # The company switcher tells the two apart.
+    switcher = page.request.get("/topbar-company-switcher").text()
+    names = re.findall(r"<option[^>]*>([^<]*)</option>", switcher)
+    assert source["name"] in names and _restored_name(source) in names, names
 
 
 def test_restore_existing_destination_adds_team_browser(page, fresh_company, tmp_path):
