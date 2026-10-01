@@ -849,7 +849,13 @@ async def landed_role_for_line(session, company_id, li: dict) -> AccountRole | N
             recoverable = bool((company.settings or {}).get("import_vat_recoverable_default")) if company else False
         if recoverable:
             return R.TAX_INPUT
-    return LANDED_ROLE_BY_KIND[kind]
+    role = LANDED_ROLE_BY_KIND[kind]
+    # A charge the bill posts to an account of its own is landed cost only when that
+    # account has served as the kind's clearing account; anywhere else it is that account's.
+    code = li.get("account_code")
+    if code and code not in scope_codes(await current_settings(session, company_id), role):
+        return None
+    return role
 
 
 def _inventory_lines(settings: dict, total: _Dec, by_account: dict[str, float], currency: str, *,
@@ -864,13 +870,62 @@ def _inventory_lines(settings: dict, total: _Dec, by_account: dict[str, float], 
             for code, share in zip(codes, shares) if share]
 
 
+_LANDED_ROLES = frozenset(role.value for role in LANDED_ROLE_BY_KIND.values())
+
+
+async def landed_clearing(session, company_id, doc_id: str, settings: dict) -> dict[str, dict[str, _Dec]]:
+    """Per landed-cost role, the clearing accounts a bill's charges sit in and how much
+    is on each, read off the bill's own entry; for a bill received before it was
+    finalized, off what its receipts drew from clearing."""
+    bill = await session.get(Projection, {"company_id": company_id, "entity_id": f"je:auto:{doc_id}:bill"})
+    if bill is not None and (bill.state or {}).get("status") == "posted":
+        rows, sign = [bill], 1
+    else:
+        rows = [row for row in (await session.execute(_select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "journal_entry",
+            Projection.entity_id.startswith(f"je:auto:{doc_id}:landed-cap:", autoescape=True),
+        ))).scalars().all() if row.state.get("status") == "posted"]
+        sign = -1
+    held: dict[str, dict[str, _Dec]] = {}
+    for row in rows:
+        for e in row.state.get("entries") or []:
+            amount = sign * (to_decimal(e.get("debit") or 0) - to_decimal(e.get("credit") or 0))
+            for role in _LANDED_ROLES.intersection(line_roles(settings, e)):
+                on_role = held.setdefault(role, {})
+                on_role[e["account"]] = on_role.get(e["account"], _Dec(0)) + amount
+    return held
+
+
+async def _clearing_lines(session, company_id, doc_id: str, settings: dict, amounts: dict[str, _Dec],
+                          currency: str, *, debit: bool) -> list[dict]:
+    """Each kind of landed cost in ``amounts`` on the clearing account the bill parked
+    it in, split by what the bill put on each where it used more than one. A charge the
+    bill has not recognized yet draws on the kind's current clearing account."""
+    held = await landed_clearing(session, company_id, doc_id, settings)
+    parked = {kind: {c: v for c, v in held.get(LANDED_ROLE_BY_KIND[kind].value, {}).items() if v > 0}
+              for kind, amt in amounts.items() if amt}
+    unheld = [LANDED_ROLE_BY_KIND[kind] for kind, codes in parked.items() if not codes]
+    acc = await resolve_many(session, company_id, unheld) if unheld else {}
+    lines = []
+    for kind, codes in parked.items():
+        role = LANDED_ROLE_BY_KIND[kind]
+        codes = codes or {acc[role]: _Dec(1)}
+        order = sorted(codes)
+        for code, share in zip(order, allocate_pro_rata(amounts[kind], [codes[c] for c in order], currency)):
+            if share:
+                amount = to_stored_float(share)
+                lines.append(_line(code, role, debit=amount if debit else 0.0, credit=0.0 if debit else amount))
+    return lines
+
+
 async def create_for_landed_capitalisation(
     session, *, company_id, user_id, doc_id: str, landed_by_kind: dict[str, float],
     landed_by_account: dict[str, float], receive_suffix: str, receive_date: str | None = None,
 ) -> None:
     """Capitalise received landed cost from the clearing accounts into goods inventory on receipt:
-    Dr the receiving lots' inventory accounts (``landed_by_account``) / Cr each kind's clearing
-    account. Balances by construction.
+    Dr the receiving lots' inventory accounts (``landed_by_account``) / Cr the clearing account
+    the bill parked each kind in. Balances by construction.
 
     The bill posting (create_for_bill_conversion) parks freight/insurance/duty/non-recoverable-VAT in
     the clearing accounts; this draws the received portion down into inventory so that COGS, which
@@ -881,14 +936,9 @@ async def create_for_landed_capitalisation(
     total = sum(credits.values(), _Dec(0))  # the debit is the sum of the rounded credits
     if total <= 0:
         return
-    roles = [LANDED_ROLE_BY_KIND[kind] for kind, amt in credits.items() if amt]
-    acc = await resolve_many(session, company_id, roles)
     settings = await current_settings(session, company_id)
-    entries = _inventory_lines(settings, total, landed_by_account, currency, debit=True)
-    for kind, amt in credits.items():
-        if amt:
-            role = LANDED_ROLE_BY_KIND[kind]
-            entries.append(_line(acc[role], role, credit=to_stored_float(amt)))
+    entries = [*_inventory_lines(settings, total, landed_by_account, currency, debit=True),
+               *await _clearing_lines(session, company_id, doc_id, settings, credits, currency, debit=False)]
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -912,7 +962,7 @@ async def create_for_supplier_return(
     Dr AP / Cr goods for the goods, AP on the account the document recognized its
     payable on. ``goods`` is keyed by the inventory account of the lot the goods leave,
     or by the role goods not held in stock were received to. Each kind of landed cost they
-    carried goes back to its clearing account (Dr clearing / Cr the lots' inventory
+    carried goes back to the clearing account the bill parked it in (Dr clearing / Cr the lots' inventory
     accounts, ``landed_by_account``) in an entry of its own, the reverse of the receipt's
     capitalisation, so undoing the receipt returns only the landed cost still on the shelf."""
     currency = await company_currency(session, company_id)
@@ -943,11 +993,8 @@ async def create_for_supplier_return(
     landed = {kind: round_money(amt or 0, currency) for kind, amt in landed_by_kind.items()}
     landed_total = sum(landed.values(), _Dec(0))
     if landed_total > 0:
-        roles = [LANDED_ROLE_BY_KIND[kind] for kind, amt in landed.items() if amt]
-        acc = await resolve_many(session, company_id, roles)
-        entries = [_line(acc[LANDED_ROLE_BY_KIND[kind]], LANDED_ROLE_BY_KIND[kind], debit=to_stored_float(amt))
-                   for kind, amt in landed.items() if amt]
-        entries += _inventory_lines(settings, landed_total, landed_by_account, currency, debit=False)
+        entries = [*await _clearing_lines(session, company_id, doc_id, settings, landed, currency, debit=True),
+                   *_inventory_lines(settings, landed_total, landed_by_account, currency, debit=False)]
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
@@ -983,8 +1030,9 @@ async def create_for_bill_conversion(
     rate = require_doc_rate(doc, base_currency)
     total_d = round_money(doc.get("total", 0) or 0, currency)
     line_items = doc.get("line_items", [])
-    # (account chosen on the line, or the role to post to; amount in the document currency)
-    lines: list[tuple[str | AccountRole, _Dec]] = []
+    # (account chosen on the line, the role to post to, or an account posted for a role;
+    # amount in the document currency)
+    lines: list[tuple[str | AccountRole | tuple[str, AccountRole], _Dec]] = []
     tax_total_d = _Dec(0)
 
     if line_items:
@@ -1000,7 +1048,9 @@ async def create_for_bill_conversion(
             receive_as = (li.get("receive_as") or "").strip().lower()
             landed_role = await landed_role_for_line(session, company_id, li)
             if li.get("account_code"):
-                target = li["account_code"]
+                # A landed charge posted to a clearing account of its own clears from there.
+                target = ((li["account_code"], landed_role) if landed_role and landed_role.value in _LANDED_ROLES
+                          else li["account_code"])
             elif receive_as == "expense":
                 target = R.GENERAL_EXPENSE
             elif receive_as == "asset":
@@ -1039,11 +1089,24 @@ async def create_for_bill_conversion(
         )
 
     settings = await current_settings(session, company_id)
+    # A charge its receipts already drew from clearing (goods received before the bill was
+    # finalized) is booked on the account they drew it from.
+    drawn = await landed_clearing(session, company_id, doc_id, settings)
+
+    def drawn_home(target):
+        held = {c: v for c, v in drawn.get(str(target), {}).items() if v > 0}
+        if not isinstance(target, AccountRole) or not held:
+            return target
+        return min(held, key=lambda c: (-held[c], c)), target
+
+    lines = [(drawn_home(target), a) for target, a in lines]
     acc = await resolve_many(session, company_id, [*(t for t, _ in lines if isinstance(t, AccountRole)), R.PAYABLE])
 
     def debit_line(target, amount: float) -> dict:
         if isinstance(target, AccountRole):
             return _line(acc[target], target, debit=amount)
+        if isinstance(target, tuple):
+            return _line(*target, debit=amount)
         return {"account": target, "debit": amount, "credit": 0.0}
 
     # AP is the bill total in base; the debits are converted line by line, and the unit
