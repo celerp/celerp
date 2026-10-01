@@ -3497,5 +3497,16 @@
   "posting.col_role": "يُستخدم لـ",
   "posting.col_account": "الحساب",
   "posting.choose": "اختر حسابًا",
-  "posting.add_account": "إضافة الحساب {code} {name} ({type})"
+  "posting.add_account": "إضافة الحساب {code} {name} ({type})",
+  "posting.tab": "حسابات الترحيل",
+  "posting.panel_hint": "تستخدم القيود الجديدة هذه الحسابات. يسري التغيير على المستندات الجديدة أو الأرصدة الجديدة. تبقى الذمم المدينة والذمم الدائنة ودفعات المخزون والقيود العكسية القائمة في الحسابات التي رُحّلت إليها أصلًا.",
+  "posting.col_earlier": "الحسابات السابقة",
+  "posting.status_ready": "جاهز",
+  "posting.status_missing": "غير محدد",
+  "posting.status_inactive": "غير نشط",
+  "posting.status_wrong_type": "نوع غير صحيح",
+  "posting.status_unused": "غير مستخدم بعد",
+  "posting.older_stock": "حساب المخزون للمخزون القديم",
+  "posting.older_stock_hint": "المخزون القديم الذي ليس له حساب مخزون خاص به ينقل تكلفته من هذا الحساب.",
+  "posting.unknown_role": "حساب ترحيل غير معروف."
 }

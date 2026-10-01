@@ -3497,5 +3497,16 @@
   "posting.col_role": "Digunakan untuk",
   "posting.col_account": "Akun",
   "posting.choose": "Pilih akun",
-  "posting.add_account": "Tambahkan akun {code} {name} ({type})"
+  "posting.add_account": "Tambahkan akun {code} {name} ({type})",
+  "posting.tab": "Akun posting",
+  "posting.panel_hint": "Posting baru menggunakan akun-akun ini. Perubahan berlaku untuk dokumen baru atau saldo baru. Piutang, utang, lot persediaan, dan pembalikan yang sudah ada tetap di akun tempat semula diposting.",
+  "posting.col_earlier": "Akun sebelumnya",
+  "posting.status_ready": "Siap",
+  "posting.status_missing": "Belum ada",
+  "posting.status_inactive": "Nonaktif",
+  "posting.status_wrong_type": "Jenis salah",
+  "posting.status_unused": "Belum digunakan",
+  "posting.older_stock": "Akun persediaan untuk stok lama",
+  "posting.older_stock_hint": "Stok lama yang tidak memiliki akun persediaan sendiri memindahkan biayanya dari akun ini.",
+  "posting.unknown_role": "Akun posting tidak dikenal."
 }

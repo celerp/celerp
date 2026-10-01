@@ -3497,5 +3497,16 @@
   "posting.col_role": "Usada para",
   "posting.col_account": "Conta",
   "posting.choose": "Escolha uma conta",
-  "posting.add_account": "Adicionar a conta {code} {name} ({type})"
+  "posting.add_account": "Adicionar a conta {code} {name} ({type})",
+  "posting.tab": "Contas de lançamento",
+  "posting.panel_hint": "Os novos lançamentos usam estas contas. Uma alteração vale para novos documentos ou novos saldos. Contas a receber, contas a pagar, lotes de estoque e estornos existentes continuam nas contas em que foram lançados originalmente.",
+  "posting.col_earlier": "Contas anteriores",
+  "posting.status_ready": "Pronta",
+  "posting.status_missing": "Ausente",
+  "posting.status_inactive": "Inativa",
+  "posting.status_wrong_type": "Tipo incorreto",
+  "posting.status_unused": "Ainda não usada",
+  "posting.older_stock": "Conta de estoque para estoque antigo",
+  "posting.older_stock_hint": "O estoque antigo sem conta de estoque própria retira seu custo desta conta.",
+  "posting.unknown_role": "Conta de lançamento desconhecida."
 }

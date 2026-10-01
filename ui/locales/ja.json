@@ -3497,5 +3497,16 @@
   "posting.col_role": "用途",
   "posting.col_account": "勘定",
   "posting.choose": "勘定を選択",
-  "posting.add_account": "勘定 {code} {name}（{type}）を追加"
+  "posting.add_account": "勘定 {code} {name}（{type}）を追加",
+  "posting.tab": "転記勘定",
+  "posting.panel_hint": "新しい転記はこれらの勘定を使用します。変更は新しい書類または新しい残高に適用されます。既存の売掛金、買掛金、在庫ロット、取消は、最初に転記された勘定に残ります。",
+  "posting.col_earlier": "以前の勘定",
+  "posting.status_ready": "準備完了",
+  "posting.status_missing": "未設定",
+  "posting.status_inactive": "無効",
+  "posting.status_wrong_type": "種類が不適切",
+  "posting.status_unused": "未使用",
+  "posting.older_stock": "旧在庫の在庫勘定",
+  "posting.older_stock_hint": "独自の在庫勘定を持たない旧在庫は、この勘定から原価を移します。",
+  "posting.unknown_role": "不明な転記勘定です。"
 }

@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import (
+    LEGACY_LOT_ACCOUNT_KEY,
     POSTING_ACCOUNTS_PATH,
     POSTING_ROLES_SCHEMA,
     POSTABLE_ROLES,
@@ -42,7 +43,9 @@ from celerp.models.projections import Projection
 from celerp.services.account_roles import (
     current_settings,
     role_map,
+    scope_list,
     source_controls,
+    target_problems,
     unmapped_roles,
     with_role,
 )
@@ -322,3 +325,54 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
         scopes.setdefault(role, []).extend(c for c in codes if c not in scopes[role])
     company.settings = {**settings, SCOPES_KEY: scopes}
     await session.flush()
+
+
+def _status(role: str, current: dict[str, str], chart: dict[str, dict], required: bool) -> tuple[str, str | None]:
+    """Whether the role's account can take new postings: ready, missing, inactive or
+    wrong_type, with the reason; unused when no account is set and nothing needs one."""
+    code = current.get(role)
+    if not code:
+        return ("missing", target_problems([role], current, None)[role]) if required else ("unused", None)
+    account = chart.get(code)
+    problem = target_problem(role, current, account)
+    if problem is None:
+        return "ready", None
+    if account is None:
+        return "missing", problem
+    return ("inactive" if not account.get("is_active", True) else "wrong_type"), problem
+
+
+def _older_stock(settings: dict, chart: dict[str, dict]) -> dict:
+    """The inventory account older stock with no recorded account moves its cost out
+    of, and the accounts it may be: those that have held purchased inventory."""
+    code = settings.get(LEGACY_LOT_ACCOUNT_KEY) or None
+    held = scope_list(settings, AccountRole.INVENTORY_PURCHASED.value)
+    return {"code": code, "name": (chart.get(code) or {}).get("name") if code else None,
+            "candidates": [{k: chart[c][k] for k in ("code", "name", "account_type")}
+                           for c in sorted(held) if c in chart]}
+
+
+async def panel(session: AsyncSession, company_id) -> dict | None:
+    """Settings > Accounting > Posting accounts: every role with its account, status,
+    the accounts it served before (``earlier``, where existing balances stay) and the
+    accounts that can serve it; plus the older-stock inventory account. None when
+    accounting is not running."""
+    chart = await _chart(session, company_id)
+    if chart is None:
+        return None
+    settings = await current_settings(session, company_id)
+    needed = set(needed_roles(await used_groups(session, company_id, settings)))
+    current = role_map(settings)
+    rows = []
+    for role in AccountRole:
+        code = current.get(role.value) or None
+        status, problem = _status(role.value, current, chart, role.value in needed)
+        rows.append({
+            "role": role.value, "label": ROLE_LABELS[role], "group": _GROUP_OF[role.value],
+            "required": role.value in needed, "code": code,
+            "name": (chart.get(code) or {}).get("name") if code else None,
+            "status": status, "problem": problem,
+            "earlier": [c for c in scope_list(settings, role.value) if c != code],
+            "candidates": _ranked(role.value, chart, []),
+        })
+    return {"roles": rows, "older_stock": _older_stock(settings, chart)}

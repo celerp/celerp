@@ -3497,5 +3497,16 @@
   "posting.col_role": "Dùng cho",
   "posting.col_account": "Tài khoản",
   "posting.choose": "Chọn tài khoản",
-  "posting.add_account": "Thêm tài khoản {code} {name} ({type})"
+  "posting.add_account": "Thêm tài khoản {code} {name} ({type})",
+  "posting.tab": "Tài khoản hạch toán",
+  "posting.panel_hint": "Các bút toán mới dùng những tài khoản này. Thay đổi áp dụng cho chứng từ mới hoặc số dư mới. Các khoản phải thu, phải trả, lô hàng tồn kho và bút toán đảo hiện có vẫn nằm ở tài khoản đã hạch toán ban đầu.",
+  "posting.col_earlier": "Tài khoản trước đây",
+  "posting.status_ready": "Sẵn sàng",
+  "posting.status_missing": "Chưa có",
+  "posting.status_inactive": "Ngừng hoạt động",
+  "posting.status_wrong_type": "Sai loại",
+  "posting.status_unused": "Chưa dùng",
+  "posting.older_stock": "Tài khoản tồn kho cho hàng tồn cũ",
+  "posting.older_stock_hint": "Hàng tồn cũ không có tài khoản tồn kho riêng sẽ chuyển giá vốn ra từ tài khoản này.",
+  "posting.unknown_role": "Tài khoản hạch toán không xác định."
 }

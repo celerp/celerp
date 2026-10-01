@@ -3497,5 +3497,16 @@
   "posting.col_role": "Verwendet für",
   "posting.col_account": "Konto",
   "posting.choose": "Konto wählen",
-  "posting.add_account": "Konto {code} {name} ({type}) hinzufügen"
+  "posting.add_account": "Konto {code} {name} ({type}) hinzufügen",
+  "posting.tab": "Buchungskonten",
+  "posting.panel_hint": "Neue Buchungen verwenden diese Konten. Eine Änderung wirkt sich auf neue Belege oder neue Salden aus. Bestehende Forderungen, Verbindlichkeiten, Lagerposten und Stornierungen bleiben auf den Konten, auf denen sie ursprünglich gebucht wurden.",
+  "posting.col_earlier": "Frühere Konten",
+  "posting.status_ready": "Bereit",
+  "posting.status_missing": "Fehlt",
+  "posting.status_inactive": "Inaktiv",
+  "posting.status_wrong_type": "Falscher Typ",
+  "posting.status_unused": "Noch nicht verwendet",
+  "posting.older_stock": "Lagerkonto für älteren Bestand",
+  "posting.older_stock_hint": "Älterer Bestand ohne eigenes Lagerkonto bucht seine Kosten von diesem Konto ab.",
+  "posting.unknown_role": "Unbekanntes Buchungskonto."
 }

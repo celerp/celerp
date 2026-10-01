@@ -3497,5 +3497,16 @@
   "posting.col_role": "Utilisé pour",
   "posting.col_account": "Compte",
   "posting.choose": "Choisir un compte",
-  "posting.add_account": "Ajouter le compte {code} {name} ({type})"
+  "posting.add_account": "Ajouter le compte {code} {name} ({type})",
+  "posting.tab": "Comptes d'imputation",
+  "posting.panel_hint": "Les nouvelles écritures utilisent ces comptes. Un changement s'applique aux nouveaux documents ou aux nouveaux soldes. Les créances, dettes, lots de stock et contrepassations existants restent sur les comptes où ils ont été comptabilisés à l'origine.",
+  "posting.col_earlier": "Comptes précédents",
+  "posting.status_ready": "Prêt",
+  "posting.status_missing": "Manquant",
+  "posting.status_inactive": "Inactif",
+  "posting.status_wrong_type": "Type incorrect",
+  "posting.status_unused": "Pas encore utilisé",
+  "posting.older_stock": "Compte de stock pour le stock ancien",
+  "posting.older_stock_hint": "Le stock ancien sans compte de stock propre sort son coût de ce compte.",
+  "posting.unknown_role": "Compte d'imputation inconnu."
 }

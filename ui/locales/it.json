@@ -3497,5 +3497,16 @@
   "posting.col_role": "Usato per",
   "posting.col_account": "Conto",
   "posting.choose": "Scegli un conto",
-  "posting.add_account": "Aggiungi il conto {code} {name} ({type})"
+  "posting.add_account": "Aggiungi il conto {code} {name} ({type})",
+  "posting.tab": "Conti di registrazione",
+  "posting.panel_hint": "Le nuove registrazioni usano questi conti. Una modifica vale per i nuovi documenti o i nuovi saldi. Crediti, debiti, lotti di magazzino e storni esistenti restano nei conti in cui sono stati registrati in origine.",
+  "posting.col_earlier": "Conti precedenti",
+  "posting.status_ready": "Pronto",
+  "posting.status_missing": "Mancante",
+  "posting.status_inactive": "Inattivo",
+  "posting.status_wrong_type": "Tipo errato",
+  "posting.status_unused": "Non ancora usato",
+  "posting.older_stock": "Conto di magazzino per le giacenze precedenti",
+  "posting.older_stock_hint": "Le giacenze precedenti senza un proprio conto di magazzino prelevano il costo da questo conto.",
+  "posting.unknown_role": "Conto di registrazione sconosciuto."
 }

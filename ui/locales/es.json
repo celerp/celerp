@@ -3497,5 +3497,16 @@
   "posting.col_role": "Se usa para",
   "posting.col_account": "Cuenta",
   "posting.choose": "Elija una cuenta",
-  "posting.add_account": "Añadir la cuenta {code} {name} ({type})"
+  "posting.add_account": "Añadir la cuenta {code} {name} ({type})",
+  "posting.tab": "Cuentas de contabilización",
+  "posting.panel_hint": "Las nuevas contabilizaciones usan estas cuentas. Un cambio afecta a los documentos nuevos o a los saldos nuevos. Las cuentas por cobrar, cuentas por pagar, lotes de inventario y reversiones existentes siguen en las cuentas donde se contabilizaron originalmente.",
+  "posting.col_earlier": "Cuentas anteriores",
+  "posting.status_ready": "Lista",
+  "posting.status_missing": "Falta",
+  "posting.status_inactive": "Inactiva",
+  "posting.status_wrong_type": "Tipo incorrecto",
+  "posting.status_unused": "Aún no se usa",
+  "posting.older_stock": "Cuenta de inventario para existencias antiguas",
+  "posting.older_stock_hint": "Las existencias antiguas sin cuenta de inventario propia sacan su costo de esta cuenta.",
+  "posting.unknown_role": "Cuenta de contabilización desconocida."
 }

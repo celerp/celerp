@@ -3497,5 +3497,16 @@
   "posting.col_role": "ใช้สำหรับ",
   "posting.col_account": "บัญชี",
   "posting.choose": "เลือกบัญชี",
-  "posting.add_account": "เพิ่มบัญชี {code} {name} ({type})"
+  "posting.add_account": "เพิ่มบัญชี {code} {name} ({type})",
+  "posting.tab": "บัญชีสำหรับบันทึก",
+  "posting.panel_hint": "การบันทึกใหม่ใช้บัญชีเหล่านี้ การเปลี่ยนแปลงมีผลกับเอกสารใหม่หรือยอดคงเหลือใหม่ ลูกหนี้ เจ้าหนี้ ล็อตสินค้าคงคลัง และรายการกลับรายการที่มีอยู่ยังคงอยู่ในบัญชีที่บันทึกไว้แต่แรก",
+  "posting.col_earlier": "บัญชีก่อนหน้า",
+  "posting.status_ready": "พร้อม",
+  "posting.status_missing": "ยังไม่ได้ตั้ง",
+  "posting.status_inactive": "ไม่ใช้งาน",
+  "posting.status_wrong_type": "ประเภทไม่ถูกต้อง",
+  "posting.status_unused": "ยังไม่ได้ใช้",
+  "posting.older_stock": "บัญชีสินค้าคงคลังสำหรับสต็อกเก่า",
+  "posting.older_stock_hint": "สต็อกเก่าที่ไม่มีบัญชีสินค้าคงคลังของตัวเองจะโอนต้นทุนออกจากบัญชีนี้",
+  "posting.unknown_role": "ไม่รู้จักบัญชีสำหรับบันทึกนี้"
 }

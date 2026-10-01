@@ -3497,5 +3497,16 @@
   "posting.col_role": "Used for",
   "posting.col_account": "Account",
   "posting.choose": "Choose an account",
-  "posting.add_account": "Add account {code} {name} ({type})"
+  "posting.add_account": "Add account {code} {name} ({type})",
+  "posting.tab": "Posting accounts",
+  "posting.panel_hint": "New postings use these accounts. Changing this affects new documents or new balances. Existing receivables, payables, inventory lots, and reversals continue in the accounts where they were originally posted.",
+  "posting.col_earlier": "Earlier accounts",
+  "posting.status_ready": "Ready",
+  "posting.status_missing": "Missing",
+  "posting.status_inactive": "Inactive",
+  "posting.status_wrong_type": "Wrong type",
+  "posting.status_unused": "Not used yet",
+  "posting.older_stock": "Inventory account for older stock",
+  "posting.older_stock_hint": "Older stock that has no inventory account of its own moves its cost out of this account.",
+  "posting.unknown_role": "Unknown posting account."
 }

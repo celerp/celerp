@@ -4163,6 +4163,57 @@ class PeriodLockPayload(BaseModel):
     lock_date: str | None  # ISO date or None to unlock
 
 
+class PostingAccountIn(BaseModel):
+    code: str
+
+
+async def _posting_accounts(session: AsyncSession, company_id) -> dict:
+    from celerp.services.posting_readiness import panel
+
+    return await panel(session, company_id) or {"roles": [], "older_stock": {}}
+
+
+@router.get("/posting-accounts")
+async def get_posting_accounts(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+    _: None = require_permission("manage_accounting"),
+) -> dict:
+    """Each posting role's account and whether it can take new postings."""
+    return await _posting_accounts(session, company_id)
+
+
+@router.put("/posting-accounts/older-stock")
+async def set_older_stock_posting_account(
+    payload: PostingAccountIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from celerp.services.account_roles import set_older_stock_account
+
+    await set_older_stock_account(session, company_id, payload.code)
+    await session.commit()
+    return await _posting_accounts(session, company_id)
+
+
+@router.put("/posting-accounts/{role}")
+async def set_posting_account(
+    role: str,
+    payload: PostingAccountIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Point a role at another account for new postings. Balances already posted stay
+    where they are; the earlier account stays with the role for them."""
+    from celerp.services.account_roles import set_role
+
+    await set_role(session, company_id, role, payload.code)
+    await session.commit()
+    return await _posting_accounts(session, company_id)
+
+
 class CloseYearPayload(BaseModel):
     fiscal_year_end: str  # ISO date, e.g. "2025-12-31"
 

@@ -50,9 +50,14 @@ def role_map(settings: dict | None) -> dict[str, str]:
     return dict((settings or {}).get(ROLES_KEY) or {})
 
 
+def scope_list(settings: dict | None, role: str) -> list[str]:
+    """Every account that has legitimately served ``role``, in the order it began to."""
+    return list(((settings or {}).get(SCOPES_KEY) or {}).get(str(role)) or ())
+
+
 def scope_codes(settings: dict | None, role: str) -> set[str]:
     """Every account that has legitimately served ``role``, for historical readers."""
-    return set(((settings or {}).get(SCOPES_KEY) or {}).get(str(role)) or ())
+    return set(scope_list(settings, role))
 
 
 def roles_for_account(settings: dict | None, code: str) -> list[str]:
@@ -293,3 +298,30 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str) -> d
     company.settings = settings
     await session.flush()
     return settings
+
+
+async def set_older_stock_account(session: AsyncSession, company_id, code: str) -> dict:
+    """Name the inventory account that older stock, which recorded no account of its
+    own, moves its cost out of. Only an account that has held purchased inventory can
+    be it, so the choice can never send cost out of an account it was never in."""
+    from celerp.services.company_lock import locked_company
+    from celerp.services.journal_accounts import lock_accounts
+
+    code = (code or "").strip()
+    if not code:
+        raise HTTPException(status_code=422, detail="Choose an account.")
+    company = await locked_company(session, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found.")
+    settings = dict(company.settings or {})
+    if code not in scope_codes(settings, AccountRole.INVENTORY_PURCHASED.value):
+        raise HTTPException(status_code=422, detail=(
+            f"Account {code} has never held inventory, so older stock cannot be in it."))
+    accounts = await lock_accounts(session, company_id, {code})
+    if accounts is None:
+        raise HTTPException(status_code=409, detail="Posting accounts need the accounting module.")
+    if code not in accounts:
+        raise HTTPException(status_code=422, detail=f"Account {code} is not in the chart of accounts.")
+    company.settings = {**settings, LEGACY_LOT_ACCOUNT_KEY: code}
+    await session.flush()
+    return company.settings

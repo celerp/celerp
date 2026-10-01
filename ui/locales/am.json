@@ -3497,5 +3497,16 @@
   "posting.col_role": "የሚያገለግለው ለ",
   "posting.col_account": "ሒሳብ",
   "posting.choose": "ሒሳብ ይምረጡ",
-  "posting.add_account": "ሒሳብ {code} {name} ({type}) ያክሉ"
+  "posting.add_account": "ሒሳብ {code} {name} ({type}) ያክሉ",
+  "posting.tab": "የመመዝገቢያ ሂሳቦች",
+  "posting.panel_hint": "አዳዲስ ምዝገባዎች እነዚህን ሂሳቦች ይጠቀማሉ። ለውጥ አዳዲስ ሰነዶችን ወይም አዳዲስ ቀሪ ሂሳቦችን ይነካል። ነባር ተቀባዮች፣ ተከፋዮች፣ የእቃ ክምችቶች እና ተገላቢጦሾች መጀመሪያ በተመዘገቡባቸው ሂሳቦች ውስጥ ይቀጥላሉ።",
+  "posting.col_earlier": "ቀደምት ሂሳቦች",
+  "posting.status_ready": "ዝግጁ",
+  "posting.status_missing": "የለም",
+  "posting.status_inactive": "ንቁ ያልሆነ",
+  "posting.status_wrong_type": "የተሳሳተ ዓይነት",
+  "posting.status_unused": "ገና ጥቅም ላይ አልዋለም",
+  "posting.older_stock": "ለቆየ ክምችት የእቃ ሂሳብ",
+  "posting.older_stock_hint": "የራሱ የእቃ ሂሳብ የሌለው የቆየ ክምችት ወጪውን ከዚህ ሂሳብ ያወጣል።",
+  "posting.unknown_role": "ያልታወቀ የመመዝገቢያ ሂሳብ።"
 }
