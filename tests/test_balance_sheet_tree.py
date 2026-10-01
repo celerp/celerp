@@ -9,11 +9,15 @@ every account's balance counts exactly once in the section total.
 """
 from __future__ import annotations
 
+import csv
+import io
 import uuid
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_ui import _authed, ui_client  # noqa: F401  (ui_client is a fixture)
 
 pytestmark = pytest.mark.asyncio
 
@@ -45,7 +49,9 @@ def _shape(lines: list[dict]) -> list[tuple]:
     return [(l["code"], l["depth"], l["amount"], bool(l.get("is_parent"))) for l in lines]
 
 
-async def test_a_four_level_tree_counts_every_balance_once(client, auth):
+async def _four_level_sheet(client, auth) -> dict:
+    """Four-level asset and liability trees, each level posted to before it gained a
+    sub-account, and the balance sheet they make."""
     async def debit_asset(code, amount):
         await _post(client, auth, code, "3100", amount)
 
@@ -61,7 +67,11 @@ async def test_a_four_level_tree_counts_every_balance_once(client, auth):
 
     r = await client.get("/accounting/balance-sheet", headers=auth["headers"])
     assert r.status_code == 200, r.text
-    sheet = r.json()
+    return r.json()
+
+
+async def test_a_four_level_tree_counts_every_balance_once(client, auth):
+    sheet = await _four_level_sheet(client, auth)
     assert (sheet["assets"]["total"], sheet["liabilities"]["total"]) == (1545.0, 100.0)
     # Every literal account balance appears on exactly one line that is not a header total.
     for key in ("assets", "liabilities"):
@@ -89,3 +99,26 @@ async def test_a_four_level_tree_counts_every_balance_once(client, auth):
         ("2911", 3, 30.0, False),
         ("2912", 3, 40.0, False),
     ]
+
+
+async def test_the_exported_sheet_marks_subtotals_so_the_balances_add_up(client, auth, ui_client):
+    """In the CSV every line says whether it is an account's balance or the subtotal of
+    a header, and how deep it sits. Adding up the balance lines of a section gives the
+    section total; the subtotals only restate them."""
+    sheet = await _four_level_sheet(client, auth)
+    with patch("ui.api_client.get_balance_sheet", new=AsyncMock(return_value=sheet)):
+        r = await ui_client.get("/reports/export/balance-sheet/csv?as_of=2026-12-31", cookies=_authed())
+    assert r.status_code == 200, r.text
+    rows = list(csv.DictReader(io.StringIO(r.text.lstrip("\ufeff"))))
+    assert list(rows[0]) == ["Section", "Level", "Line", "Code", "Account", "Amount"]
+
+    for key, section in (("assets", "Assets"), ("liabilities", "Liabilities")):
+        lines = [row for row in rows if row["Section"] == section]
+        [total] = [row for row in lines if row["Line"] == "Total"]
+        balances = [row for row in lines if row["Line"] == "Balance"]
+        subtotals = [row for row in lines if row["Line"] == "Subtotal"]
+        assert len(balances) + len(subtotals) + 1 == len(lines)
+        assert round(sum(float(row["Amount"]) for row in balances), 2) == float(total["Amount"]) \
+            == sheet[key]["total"]
+        assert [(row["Code"], int(row["Level"]), float(row["Amount"]), row["Line"] == "Subtotal")
+                for row in lines if row["Line"] != "Total"] == _shape(sheet[key]["lines"])

@@ -1508,11 +1508,14 @@ def setup_routes(app):
             data = await api.get_balance_sheet(token, {"as_of": as_of})
         except APIError as e:
             return plain_error_response(e)
-        rows: list[list] = [["Section", "Code", "Account", "Amount"]]
+        # A header's subtotal restates the balances under it, so every line says which
+        # it is and how deep it sits: the Balance lines of a section add up to its Total.
+        rows: list[list] = [["Section", "Level", "Line", "Code", "Account", "Amount"]]
         for key, label in [("assets", "Assets"), ("liabilities", "Liabilities"),
                            ("equity", "Equity")]:
             section = data.get(key, {})
             for line in section.get("lines", []):
-                rows.append([label, line.get("code", ""), line.get("name", ""), line.get("amount", 0)])
-            rows += [[f"TOTAL {label}", "", "", section.get("total", 0)], []]
+                rows.append([label, line.get("depth", 0), "Subtotal" if line.get("is_parent") else "Balance",
+                             line.get("code", ""), line.get("name", ""), line.get("amount", 0)])
+            rows += [[label, "", "Total", "", "", section.get("total", 0)], []]
         return csv_response(rows, f"balance_sheet_{fname_date(as_of)}.csv")
