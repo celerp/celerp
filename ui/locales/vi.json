@@ -41,7 +41,7 @@
   "acct.bulk_void_confirm": "Hủy các bút toán đã chọn ({n})? Việc hủy được ghi lại trong sổ và không thể hoàn tác.",
   "acct.bulk_void_refused": "Không hủy được: {n}. {reasons}",
   "acct.bulk_void_result": "Bút toán đã hủy: {n}.",
-  "acct.cash_flow_derived": "Mặc định (theo loại và mã)",
+  "acct.cash_flow_derived": "Mặc định (theo tài khoản cha)",
   "acct.cf_closing_cash": "Tiền mặt cuối kỳ",
   "acct.cf_direct": "Phương pháp trực tiếp",
   "acct.cf_financing": "Hoạt động tài chính",

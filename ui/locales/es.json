@@ -41,7 +41,7 @@
   "acct.bulk_void_confirm": "¿Anular los asientos seleccionados ({n})? La anulación queda registrada en el libro y es definitiva.",
   "acct.bulk_void_refused": "No anulados: {n}. {reasons}",
   "acct.bulk_void_result": "Asientos anulados: {n}.",
-  "acct.cash_flow_derived": "Predeterminado (por tipo y código)",
+  "acct.cash_flow_derived": "Predeterminado (de la cuenta principal)",
   "acct.cf_closing_cash": "Efectivo final",
   "acct.cf_direct": "Método directo",
   "acct.cf_financing": "Actividades de financiación",

@@ -41,7 +41,7 @@
   "acct.bulk_void_confirm": "Batalkan jurnal yang dipilih ({n})? Pembatalan tetap tercatat dalam buku dan tidak dapat dikembalikan.",
   "acct.bulk_void_refused": "Tidak dibatalkan: {n}. {reasons}",
   "acct.bulk_void_result": "Jurnal yang dibatalkan: {n}.",
-  "acct.cash_flow_derived": "Bawaan (dari jenis dan kode)",
+  "acct.cash_flow_derived": "Bawaan (dari akun induk)",
   "acct.cf_closing_cash": "Kas akhir",
   "acct.cf_direct": "Metode langsung",
   "acct.cf_financing": "Aktivitas pendanaan",

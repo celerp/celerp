@@ -142,8 +142,8 @@ async def test_an_entry_that_moves_no_cash_changes_nothing(client):
 
 
 @pytest.mark.asyncio
-async def test_an_account_with_no_override_is_classified_by_type_and_code(client):
-    """The default: 6200 is an expense, so rent paid in cash is operating."""
+async def test_an_account_with_no_override_takes_its_parents_section_or_operating(client):
+    """The default: neither 6200 nor its parent names a section, so rent paid in cash is operating."""
     tok = await _reg(client)
     await _je(client, tok, [{"account": "6200", "debit": 100.0, "credit": 0.0},
                             {"account": "1111", "debit": 0.0, "credit": 100.0}])

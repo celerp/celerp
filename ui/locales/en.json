@@ -41,7 +41,7 @@
   "acct.bulk_void_confirm": "Void the selected journal entries ({n})? A void stays on the record and cannot be undone.",
   "acct.bulk_void_refused": "Not voided: {n}. {reasons}",
   "acct.bulk_void_result": "Journal entries voided: {n}.",
-  "acct.cash_flow_derived": "Default (from type and code)",
+  "acct.cash_flow_derived": "Default (from parent account)",
   "acct.cf_closing_cash": "Closing cash",
   "acct.cf_direct": "Direct method",
   "acct.cf_financing": "Financing activities",

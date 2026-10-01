@@ -41,7 +41,7 @@
   "acct.bulk_void_confirm": "የተመረጡትን የጆርናል ግቤቶች ({n}) ውድቅ ይደረጉ? የውድቅ ምልክቱ በመዝገቡ ላይ ይቀራል እና መቀልበስ አይቻልም።",
   "acct.bulk_void_refused": "ውድቅ አልተደረጉም፦ {n}። {reasons}",
   "acct.bulk_void_result": "ውድቅ የተደረጉ የጆርናል ግቤቶች፦ {n}።",
-  "acct.cash_flow_derived": "ነባሪ (ከአይነት እና ኮድ)",
+  "acct.cash_flow_derived": "ነባሪ (ከወላጅ መለያ)",
   "acct.cf_closing_cash": "የመዝጊያ ጥሬ ገንዘብ",
   "acct.cf_direct": "ቀጥተኛ ዘዴ",
   "acct.cf_financing": "የፋይናንስ እንቅስቃሴዎች",

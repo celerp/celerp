@@ -41,7 +41,7 @@
   "acct.bulk_void_confirm": "إلغاء القيود المحددة ({n})؟ الإلغاء يبقى مسجلاً في الدفتر ولا يمكن الرجوع عنه.",
   "acct.bulk_void_refused": "لم يتم الإلغاء: {n}. {reasons}",
   "acct.bulk_void_result": "القيود الملغاة: {n}.",
-  "acct.cash_flow_derived": "افتراضي (حسب النوع والرمز)",
+  "acct.cash_flow_derived": "افتراضي (من الحساب الأصلي)",
   "acct.cf_closing_cash": "النقد الختامي",
   "acct.cf_direct": "الطريقة المباشرة",
   "acct.cf_financing": "الأنشطة التمويلية",

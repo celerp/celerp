@@ -41,7 +41,7 @@
   "acct.bulk_void_confirm": "Annuler les écritures comptables sélectionnées ({n}) ? L'annulation reste inscrite au journal et est définitive.",
   "acct.bulk_void_refused": "Non annulées : {n}. {reasons}",
   "acct.bulk_void_result": "Écritures comptables annulées : {n}.",
-  "acct.cash_flow_derived": "Par défaut (selon le type et le code)",
+  "acct.cash_flow_derived": "Par défaut (selon le compte parent)",
   "acct.cf_closing_cash": "Trésorerie de clôture",
   "acct.cf_direct": "Méthode directe",
   "acct.cf_financing": "Activités de financement",

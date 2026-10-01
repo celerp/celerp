@@ -41,7 +41,7 @@
   "acct.bulk_void_confirm": "Anular os lançamentos contábeis selecionados ({n})? A anulação fica registrada no diário e é definitiva.",
   "acct.bulk_void_refused": "Não anulados: {n}. {reasons}",
   "acct.bulk_void_result": "Lançamentos contábeis anulados: {n}.",
-  "acct.cash_flow_derived": "Padrão (por tipo e código)",
+  "acct.cash_flow_derived": "Padrão (da conta principal)",
   "acct.cf_closing_cash": "Caixa final",
   "acct.cf_direct": "Método direto",
   "acct.cf_financing": "Atividades de financiamento",

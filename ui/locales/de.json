@@ -41,7 +41,7 @@
   "acct.bulk_void_confirm": "Ausgewählte Buchungen ({n}) stornieren? Eine Stornierung bleibt im Journal und kann nicht rückgängig gemacht werden.",
   "acct.bulk_void_refused": "Nicht storniert: {n}. {reasons}",
   "acct.bulk_void_result": "Stornierte Buchungen: {n}.",
-  "acct.cash_flow_derived": "Standard (aus Kontoart und Nummer)",
+  "acct.cash_flow_derived": "Standard (vom übergeordneten Konto)",
   "acct.cf_closing_cash": "Endbestand liquide Mittel",
   "acct.cf_direct": "Direkte Methode",
   "acct.cf_financing": "Finanzierungstätigkeit",

@@ -162,22 +162,24 @@ async def create_chart_account(
     return acc
 
 
-async def next_bank_account_code(session: AsyncSession, company_id: uuid.UUID) -> str:
-    """Find next available account code under 1110 (1111, 1112, ...)."""
-    rows = (
-        await session.execute(
-            select(Account.code).where(
-                Account.company_id == company_id,
-                Account.code.like("111%"),
-            )
-        )
-    ).scalars().all()
-    used = set(rows)
+async def next_bank_account_code(session: AsyncSession, company_id: uuid.UUID, parent_code: str | None) -> str:
+    """The first free code numbered beneath ``parent_code``: 1111, 1112, ... under
+    1110; 1015-1, 1015-2, ... under a code not ending in 0; BANK-1, BANK-2, ... for
+    a bank with no parent account."""
+    if not parent_code:
+        stem = "BANK-"
+    elif parent_code.isdigit() and parent_code.endswith("0"):
+        stem = parent_code[:-1]
+    else:
+        stem = f"{parent_code}-"
+    used = set((await session.execute(
+        select(Account.code).where(Account.company_id == company_id, Account.code.like(f"{stem}%"))
+    )).scalars().all())
     for i in range(1, 100):
-        code = f"111{i}"
+        code = f"{stem}{i}"
         if code not in used:
             return code
-    raise HTTPException(status_code=400, detail="No available account codes under 1110")
+    raise HTTPException(status_code=400, detail=f"No available account codes under {parent_code}")
 
 
 async def add_bank_account(

@@ -28,9 +28,9 @@ class Account(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     account_type: Mapped[str] = mapped_column(String(32), nullable=False)  # asset|liability|equity|revenue|expense|cogs
     parent_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    # operating|investing|financing for the cash flow statement. Null means "use the
-    # default derived from account_type and code", which is right for every seeded
-    # account; an override only exists where a company's own chart disagrees.
+    # operating|investing|financing for the cash flow statement. Null means "the
+    # nearest parent account's section, else operating"; the seeded chart sets it on
+    # the headers whose accounts are not operating.
     cash_flow_category: Mapped[str | None] = mapped_column(String(16), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)

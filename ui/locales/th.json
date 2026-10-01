@@ -41,7 +41,7 @@
   "acct.bulk_void_confirm": "ยกเลิกรายการบันทึกบัญชีที่เลือก ({n}) หรือไม่? การยกเลิกจะยังคงอยู่ในบันทึกและไม่สามารถย้อนกลับได้",
   "acct.bulk_void_refused": "ไม่ได้ยกเลิก: {n}. {reasons}",
   "acct.bulk_void_result": "ยกเลิกรายการบันทึกบัญชีแล้ว: {n} รายการ",
-  "acct.cash_flow_derived": "ค่าเริ่มต้น (จากประเภทและรหัสบัญชี)",
+  "acct.cash_flow_derived": "ค่าเริ่มต้น (ตามบัญชีหลัก)",
   "acct.cf_closing_cash": "เงินสดปลายงวด",
   "acct.cf_direct": "วิธีทางตรง",
   "acct.cf_financing": "กิจกรรมจัดหาเงิน",

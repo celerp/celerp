@@ -41,7 +41,7 @@
   "acct.bulk_void_confirm": "Annullare le scritture selezionate ({n})? L'annullamento resta registrato nel giornale ed è definitivo.",
   "acct.bulk_void_refused": "Non annullate: {n}. {reasons}",
   "acct.bulk_void_result": "Scritture annullate: {n}.",
-  "acct.cash_flow_derived": "Predefinito (da tipo e codice)",
+  "acct.cash_flow_derived": "Predefinito (dal conto padre)",
   "acct.cf_closing_cash": "Liquidità finale",
   "acct.cf_direct": "Metodo diretto",
   "acct.cf_financing": "Attività di finanziamento",
