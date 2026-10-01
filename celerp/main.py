@@ -31,10 +31,10 @@ assert_secure_jwt()
 _FIRST_BOOT = not settings.gateway_instance_id
 _BOOT_ID = uuid.uuid4().hex
 ensure_instance_id()
-from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
+from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from celerp.models.base import Base
 
-from celerp.routers import auth, companies, ledger, migrations
+from celerp.routers import auth, companies, company_backup, ledger, migrations
 from celerp.routers import health, notifications, system, events as events_router_mod
 from celerp.routers import stars as stars_router_mod
 from celerp.importers.sinks import register_sink
@@ -188,6 +188,17 @@ async def _verify_runtime_dependencies() -> None:
 async def lifespan(_app: FastAPI):
     update_verify = _os.environ.get(_runtime.UPDATE_VERIFY_ENV) == "1"
     (settings.data_dir / "static" / "attachments").mkdir(parents=True, exist_ok=True)
+
+    # A System Recovery that stopped part way is finished (or undone from its safety
+    # archive) before anything initializes or reads the installation: the database it
+    # left may be one the current schema cannot be created on. While it stays
+    # unfinished nothing else starts and only the health probes answer.
+    from celerp.services.backup_import import finish_incomplete_recovery, recovery_incomplete
+    await finish_incomplete_recovery()
+    if recovery_incomplete():
+        yield
+        return
+
     try:
         async with lifecycle_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -302,6 +313,15 @@ async def lifespan(_app: FastAPI):
             "Develop→release upgrade guard failed (non-fatal); projections may be "
             "stale until rebuilt via doctor or /ledger/rebuild"
         )
+
+    # Attachment files of a company restore that stopped before it committed are removed,
+    # so stored files and restored companies agree after a crash. Non-fatal: a later boot
+    # or the next restore retries.
+    try:
+        from celerp.services.company_backup import reconcile_landings
+        await reconcile_landings()
+    except Exception:
+        logging.getLogger(__name__).exception("Reconciling unfinished company restores failed (non-fatal)")
 
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links
@@ -522,6 +542,7 @@ app = FastAPI(title="Celerp REST API", docs_url=None, redoc_url=None, lifespan=l
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(DrainMiddleware)
+app.add_middleware(RecoveryMaintenanceMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(SlidingTokenRefreshMiddleware)
 app.add_middleware(MaxBodySizeMiddleware, max_body_size_bytes=10 * 1024 * 1024)
@@ -592,6 +613,7 @@ app.include_router(notifications.router)
 app.include_router(events_router_mod.router)
 app.include_router(search_router_mod.router, tags=["search"])
 app.include_router(migrations.router)
+app.include_router(company_backup.router)
 register_sink(CORE_SINK)
 
 # Backup router — always registered; individual endpoints gate on cloud connection.

@@ -83,6 +83,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
+    "aiosqlite>=0.20",
     "faker>=24.0",
     "respx>=0.21",
     # <1.62: 1.62.0 hangs page teardown (tracing/close) under CI load, deadlocking

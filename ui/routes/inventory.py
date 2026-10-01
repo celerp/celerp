@@ -4807,16 +4807,12 @@ def _module_contribution_visible(
 
 
 async def _connected_connector_ids(company_id: str) -> set[str]:
-    """Read configured channels once per catalog render."""
+    """Read the channels this company is connected to once per catalog render."""
     try:
-        import sqlalchemy as sa
+        from celerp.connectors.ownership import connected_connector_platforms
         from celerp.db import get_session_ctx
-        from celerp.models.connector_config import ConnectorConfig
         async with get_session_ctx() as session:
-            rows = await session.execute(sa.select(ConnectorConfig.connector).where(
-                ConnectorConfig.company_id == str(company_id)
-            ))
-            return {str(v) for v in rows.scalars().all()}
+            return await connected_connector_platforms(session, company_id)
     except Exception:
         return set()
 

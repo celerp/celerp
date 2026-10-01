@@ -747,8 +747,8 @@ def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -
 
     cloud_section = Div(
         Div(
-            H4(t("page.backup"), style="margin:0;"),
-            A(t("settings.view_full_backup_settings"), href="/settings/general?tab=backup",
+            H4(t("page.cloud_backups"), style="margin:0;"),
+            A(t("system_recovery.title"), href="/settings/system-recovery",
               cls="settings-hint", style="font-size:0.82rem;"),
             style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;",
         ),

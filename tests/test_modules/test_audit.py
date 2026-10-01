@@ -128,17 +128,17 @@ class TestBackupExportWritesEnabledModules:
 
     @pytest.mark.asyncio
     async def test_meta_json_contains_enabled_modules(self, monkeypatch, tmp_path):
-        """When exporting, meta.json must list the company's enabled modules."""
+        """When exporting, meta.json must list the modules every company has enabled."""
         from celerp.services import backup_export as be
 
         captured: dict = {}
 
-        def fake_build(dump, attachment_dirs, meta):
+        def fake_build(dump, dirs, meta):
             captured["meta"] = meta
             return tmp_path / "test.celerp-backup"
 
-        async def fake_read_company_enabled_modules():
-            return ["celerp-inventory", "celerp-dashboard", "celerp-contacts"]
+        async def fake_required_installation_modules(session):
+            return {"celerp-inventory", "celerp-dashboard", "celerp-contacts"}
 
         # Lazy imports happen inside export_full, so patch the source modules
         import celerp.services.backup as backup_mod
@@ -146,12 +146,12 @@ class TestBackupExportWritesEnabledModules:
         monkeypatch.setattr(be, "_build_archive", fake_build)
         monkeypatch.setattr(backup_mod, "dump_database", lambda url: b"FAKE_DUMP")
         monkeypatch.setattr(be, "_version", lambda: "1.0.0")
-        monkeypatch.setattr(be, "_read_company_enabled_modules", fake_read_company_enabled_modules)
+        monkeypatch.setattr(be, "required_installation_modules", fake_required_installation_modules)
         monkeypatch.setattr(cfg_mod, "read_config", lambda: {"company": {"name": "Test"}})
 
         await be.export_full()
         assert captured["meta"]["enabled_modules"] == [
-            "celerp-inventory", "celerp-dashboard", "celerp-contacts"
+            "celerp-contacts", "celerp-dashboard", "celerp-inventory"
         ]
 
     @pytest.mark.asyncio

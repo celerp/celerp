@@ -21,19 +21,17 @@ from celerp.models.projections import Projection
 log = logging.getLogger(__name__)
 
 
-def _woo_link(state: dict) -> dict:
-    links = state.get("external_links") or {}
-    link = links.get("woocommerce") if isinstance(links, dict) else None
-    if isinstance(link, dict) and link.get("product_id") not in (None, ""):
-        return dict(link)
-    idem = str(state.get("idempotency_key") or "")
-    parts = idem.split(":")
-    if len(parts) >= 2 and parts[0] == "woocommerce":
-        out = {"product_id": parts[1], "sync_enabled": True}
-        if len(parts) >= 3 and parts[2]:
-            out["variation_id"] = parts[2]
-        return out
-    return {}
+async def _pushes_outbound(session, company_id: str, connector: str) -> bool:
+    """True when the company's connector is set to send changes to the store."""
+    return await session.scalar(
+        sa.select(ConnectorConfig.id).where(
+            ConnectorConfig.company_id == company_id,
+            ConnectorConfig.connector == connector,
+            ConnectorConfig.direction.in_([
+                SyncDirection.OUTBOUND.value, SyncDirection.BOTH.value
+            ]),
+        ).limit(1)
+    ) is not None
 
 
 def _identity(link: dict) -> str:
@@ -102,17 +100,9 @@ async def enqueue_item_change(session, entry, *, previous_state: dict | None = N
     if entry.entity_type != "item" or entry.source == "connector":
         return
     company_id = str(entry.company_id)
-    config = await session.scalar(
-        sa.select(ConnectorConfig).where(
-            ConnectorConfig.company_id == company_id,
-            ConnectorConfig.connector == "woocommerce",
-            ConnectorConfig.direction.in_([
-                SyncDirection.OUTBOUND.value, SyncDirection.BOTH.value
-            ]),
-        ).limit(1)
-    )
-    if config is None:
+    if not await _pushes_outbound(session, company_id, "woocommerce"):
         return
+    from celerp_inventory.services import external_link_for_state
 
     row = await session.get(
         Projection, {"company_id": entry.company_id, "entity_id": entry.entity_id}
@@ -127,13 +117,13 @@ async def enqueue_item_change(session, entry, *, previous_state: dict | None = N
         for state in states
         if state.get("catalog_item_id")
     }
-    direct_linked = any(_woo_link(state) for state in states)
+    direct_linked = any(external_link_for_state(state, "woocommerce") for state in states)
     if direct_linked:
         anchor_ids.add(str(entry.entity_id))
 
     identities: set[str] = set()
     for state in states:
-        link = _woo_link(state)
+        link = external_link_for_state(state, "woocommerce")
         if (
             link
             and link.get("sync_enabled") is not False
@@ -151,7 +141,7 @@ async def enqueue_item_change(session, entry, *, previous_state: dict | None = N
         )
         if candidate is None or candidate.entity_type != "item":
             continue
-        link = _woo_link(candidate.state or {})
+        link = external_link_for_state(candidate.state or {}, "woocommerce")
         if (
             link
             and link.get("sync_enabled") is not False
@@ -184,7 +174,7 @@ async def enqueue_item_change(session, entry, *, previous_state: dict | None = N
                 )
             )).scalars().all()
             for candidate in linked:
-                link = _woo_link(candidate.state or {})
+                link = external_link_for_state(candidate.state or {}, "woocommerce")
                 if (
                     link
                     and link.get("sync_enabled") is not False
@@ -289,8 +279,11 @@ async def enqueue_outbound(
     company_id: str, connector: str, entity_type: str, entity_id: str
 ) -> None:
     """Queue one identity unless it is already queued. Concurrent enqueues may
-    both insert; the processor keeps one row per identity."""
+    both insert; the processor keeps one row per identity. Nothing is queued
+    unless the connector is set to send changes to the store."""
     async with get_session_ctx() as session:
+        if not await _pushes_outbound(session, str(company_id), connector):
+            return
         existing = await session.scalar(
             sa.select(OutboundQueue.id).where(
                 OutboundQueue.company_id == company_id,

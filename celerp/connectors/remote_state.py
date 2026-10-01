@@ -28,7 +28,8 @@ def _safe_connector_name(value: str) -> str:
     return name
 
 
-async def _connection_revision(connector_name: str) -> str | None:
+async def connection_revision(connector_name: str) -> str | None:
+    """The relay's current revision of the connection, or None when there is none."""
     from celerp.gateway.state import relay_http_url, relay_session_headers
 
     try:
@@ -138,22 +139,30 @@ async def revoke_connector_remote_state(
     *,
     webhook_ids: list[str] | None = None,
     force: bool = False,
+    revision: str | None = None,
 ) -> None:
     """Disconnect one connector only if its remote state is unchanged. Store
     webhooks are removed first, while the credential still exists; `force`
-    continues when that removal cannot be confirmed."""
+    continues when that removal cannot be confirmed. Given the *revision* an
+    earlier attempt read, a retry disconnects exactly that connection: done when
+    it is gone, refused when it has changed."""
     from celerp.gateway.state import relay_http_url, relay_session_headers
 
     connector_name = _safe_connector_name(connector_name)
-    revision = await _connection_revision(connector_name)
-    if revision is None:
+    current = await connection_revision(connector_name)
+    if current is None:
         return
+    if revision is not None and current != revision:
+        raise ConnectorRemoteStateChangedError(
+            "The connection changed while disconnecting; retry."
+        )
+    revision = current
 
     if connector_name == "woocommerce":
         await _remove_woocommerce_webhooks(
             str(company_id), list(webhook_ids or []), force=force
         )
-        if await _connection_revision(connector_name) != revision:
+        if await connection_revision(connector_name) != revision:
             raise ConnectorRemoteStateChangedError(
                 "The connection changed while disconnecting; retry."
             )

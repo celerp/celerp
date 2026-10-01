@@ -982,16 +982,24 @@ async def query_items(
                 base_currency,
             )
 
-    # Connector source: items linked to a platform encode it in the idempotency key
-    # (e.g. "shopify:123:456"). Powers the connector detail "View N synced products" link.
-    # idempotency_key is never a schema field, so it carries no visible_to_roles floor and
-    # is safe to filter here; category/inventory_type/location_id ARE schema fields a role
-    # may be denied, so their filters run after apply_field_visibility (below) to avoid a
-    # membership oracle.
+    # Connector source: items linked to a platform this company is connected to; a link
+    # left from an earlier connection is history. Powers the connector detail "View N
+    # synced products" link. Channel links are never a schema field, so they carry no
+    # visible_to_roles floor and are safe to filter here; category/inventory_type/
+    # location_id ARE schema fields a role may be denied, so their filters run after
+    # apply_field_visibility (below) to avoid a membership oracle.
+    from celerp.connectors import ownership
+    try:
+        _connected = await ownership.connected_connector_platforms(session, company_id)
+    except ownership.ConnectorOwnershipError:
+        _connected = set()
     if f.source:
         from celerp_inventory.services import external_link_for_state
         _platform = f.source.strip().lower()
-        result = [r for r in result if external_link_for_state(r, _platform)]
+        result = [
+            r for r in result
+            if _platform in _connected and external_link_for_state(r, _platform)
+        ]
 
     # Apply visible_to_roles filtering from the effective field schema BEFORE any
     # membership-affecting step (category/inventory_type/location filters, facets, attr.*
@@ -1118,7 +1126,7 @@ async def query_items(
     )
 
     from celerp_inventory.services import build_channel_states
-    _channel_states = build_channel_states(rows)
+    _channel_states = build_channel_states(rows, connected_platforms=_connected)
     for _item in result:
         _item["_channel_state"] = _channel_states.get(_item.get("id"), {})
 
@@ -3769,6 +3777,12 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         price_keys_in({"attributes": payload.resolved_attributes or {}}, (await get_price_config(session, company_id))[0]),
         role, settings,
     )
+    from celerp.connectors import ownership, registry
+
+    # Hold every product channel steady (connect and disconnect wait) before the
+    # item locks, so the link check below cannot race a connector change.
+    for platform in sorted(ownership.PRODUCT_CHANNEL_PLATFORMS):
+        await ownership.lock_connector_key(session, platform)
     locked_sources = await _lock_items_for_physical_mutation(session, company_id, payload.source_entity_ids)
     source_projections: list[Projection] = []
     for sid in payload.source_entity_ids:
@@ -3784,22 +3798,22 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
     from celerp_inventory.services import external_link_for_state, normalize_sku
 
-    def _linked_platforms(proj: Projection) -> set[str]:
-        links = (proj.state or {}).get("external_links") or {}
-        return (
-            set(str(platform) for platform in links)
-            if isinstance(links, dict)
-            else set()
-        ) | {"shopify", "woocommerce"}
-
-    if any(
-        external_link_for_state(proj.state or {}, platform)
-        for proj in source_projections
-        for platform in _linked_platforms(proj)
-    ):
+    try:
+        connected = await ownership.connected_connector_platforms(session, company_id)
+    except ownership.ConnectorOwnershipError:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not check this company's connectors. Nothing was merged; try again.",
+        )
+    live = sorted(
+        registry.get(platform).display_name
+        for platform in connected
+        if any(external_link_for_state(proj.state or {}, platform) for proj in source_projections)
+    )
+    if live:
         raise HTTPException(
             status_code=409,
-            detail="A channel-linked catalog product cannot be merged; merge its physical lots instead.",
+            detail=f"This catalog product is currently linked to {' and '.join(live)}. Merge its physical lots instead.",
         )
 
     explicit_catalog_ids = {

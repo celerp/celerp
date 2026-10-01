@@ -771,9 +771,7 @@ def set_enabled_modules(names: list[str]) -> bool:
     every requested module was already enabled (no-op). Callers can use this
     to skip follow-up work like a process restart when nothing changed.
     """
-    _pkg_root = Path(__file__).parent.parent
-    module_dir = _pkg_root / "default_modules"
-    install_order = resolve_install_order(list(names), module_dir)
+    install_order = _install_closure(names)
 
     def _enable(cfg: dict) -> bool:
         modules = cfg.setdefault("modules", {})
@@ -785,6 +783,29 @@ def set_enabled_modules(names: list[str]) -> bool:
         return True
 
     return bool(_update_config(_enable))
+
+
+def replace_enabled_modules(names: list[str]) -> bool:
+    """Make the config file's enabled list exactly *names* plus their dependencies.
+
+    Modules not in that set are disabled. Returns True if the enabled list changed,
+    so callers restart only when the loaded module set actually differs.
+    """
+    install_order = _install_closure(names)
+
+    def _replace(cfg: dict) -> bool:
+        modules = cfg.setdefault("modules", {})
+        if set(modules.get("enabled", [])) == set(install_order):
+            return False
+        modules["enabled"] = install_order
+        return True
+
+    return bool(_update_config(_replace))
+
+
+def _install_closure(names: list[str]) -> list[str]:
+    """*names* and their transitive dependencies, resolved against the bundled modules."""
+    return resolve_install_order(list(names), Path(__file__).parent.parent / "default_modules")
 
 
 def remove_enabled_module(name: str) -> None:

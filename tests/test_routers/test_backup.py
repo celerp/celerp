@@ -362,7 +362,8 @@ async def test_import_bootstrap_blocked_when_users_exist(auth_client):
         files={"file": ("test.celerp-backup", buf.read(), "application/octet-stream")},
     )
     assert r.status_code == 403
-    assert "already bootstrapped" in r.json()["detail"].lower()
+    assert "already set up" in r.json()["detail"].lower()
+    assert "System Recovery" in r.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -384,7 +385,7 @@ async def test_import_returns_warnings_field(auth_client, monkeypatch):
 
     Even when the response is 403 (users exist) the schema must declare the
     field so the UI can rely on it. This test stubs out the actual import to
-    reach the success path: monkeypatch run_import to return ok=True with
+    reach the success path: monkeypatch bootstrap_recovery to return ok=True with
     warnings, and stub the existing-users check to allow the request through.
     """
     from celerp.services.backup import BackupResult
@@ -396,15 +397,15 @@ async def test_import_returns_warnings_field(auth_client, monkeypatch):
     # session.execute to return no rows. This is simpler than monkeypatching
     # the whole bootstrap guard.
 
-    # Stub run_import to return a successful result with warnings
-    async def fake_run_import(path):
+    # Stub bootstrap_recovery to return a successful result with warnings
+    async def fake_bootstrap_recovery(path):
         return BackupResult(
             ok=True, size_bytes=100,
             warnings=["celerp-fictional", "celerp-missing-too"],
         )
     monkeypatch.setattr(
-        "celerp.services.backup_import.run_import",
-        fake_run_import,
+        "celerp.services.backup_import.bootstrap_recovery",
+        fake_bootstrap_recovery,
     )
 
     # The bootstrap guard uses an in-process DB. The auth_client fixture has

@@ -399,8 +399,8 @@ async def test_setup_landing_offers_all_setup_paths(ui, router, session, sample_
     r = await ui.get("/setup")
     assert r.status_code == 200
     page = _page(r)
-    for label in ("Start a new company", "Move a company", "Try a sample migration",
-                  "Restore a Celerp backup"):
+    for label in ("Start a new company", "Move from another system", "Restore a company backup",
+                  "Try sample company", "Recover an entire Celerp installation"):
         assert label in page
     assert 'href="/setup/fresh"' in page
     assert 'href="/setup/migrate"' in page
@@ -534,7 +534,7 @@ async def test_existing_new_company_landing_offers_fresh_or_migrate(ui, router, 
     assert r.status_code == 200
     page = _page(r)
     assert _link(page, "/setup/new-company/fresh", "Start fresh")
-    assert _link(page, "/setup/new-company/migrate", "Move a company")
+    assert _link(page, "/setup/new-company/migrate", "Move from another system")
     assert _back(page, "/settings/general?tab=company")
 
     r = await ui.get("/setup/new-company/fresh")
@@ -567,7 +567,7 @@ async def test_existing_new_company_landing_offers_fresh_or_migrate(ui, router, 
         router.calls.clear()
         _owner(ui, role)
         r = await ui.get("/setup/new-company")
-        assert _link(_page(r), "/setup/new-company/migrate", "Move a company"), role
+        assert _link(_page(r), "/setup/new-company/migrate", "Move from another system"), role
         r = await ui.get("/setup/new-company/migrate")
         assert refusal in _page(r), role
         assert _back(_page(r), "/setup/new-company"), role
@@ -732,6 +732,7 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     assert _link(complete, f"/switch-company/{company_id}", "Open company")
     assert not _link(complete, "/dashboard")
     assert _link(complete, f"/setup/new-company/migrate?from_run={run_id}", "Move another company")
+    assert _link(complete, f"/company-backup/download?from_run={run_id}", "Download company backup")
 
     r = await ui.get(f"/migrations/{run_id}/pack")
     assert r.status_code == 200
@@ -749,7 +750,7 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     assert "That's the whole migration." in page
     assert _link(page, "/setup/new-company/migrate", "Move your first company")
     assert _link(page, f"/switch-company/{fake_api.runs[sample_id]['company_id']}", "Open")
-    assert "Create independent company copy" not in page
+    assert "Download company backup" not in page
 
 
 @pytest.mark.asyncio
@@ -892,3 +893,4 @@ def test_cancel_offered_only_where_the_run_can_be_cancelled(status):
 
     shown = "/cancel" in to_xml(_run_actions({"id": "r1", "status": status}))
     assert shown == can_transition(MigrationStatus(status), MigrationStatus.CANCEL_REQUESTED)
+

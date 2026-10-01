@@ -3583,3 +3583,57 @@ async def migration_pack(token: str, run_id: str):
     """GET the reconciliation pack CSV, streamed. Returns (chunk_iterator, headers)."""
     return await _stream_get(token, f"/migrations/{run_id}/reconciliation/pack",
                              timeout_message=TIMEOUT_MESSAGE)
+
+
+# ── Company backups ──────────────────────────────────────────────────────────
+
+async def company_backup_download(token: str, run_id: str | None = None):
+    """GET the session company's backup file, streamed. ``run_id`` names a completed
+    migration run of that company, whose provenance the API adds. Returns (chunk_iterator, headers)."""
+    return await _stream_get(token, "/company-backups/download", params={"run_id": run_id} if run_id else None,
+                             timeout_message=TIMEOUT_MESSAGE)
+
+
+async def company_backup_read(token: str | None, filename: str, content: BinaryIO,
+                              setup_code: str | None = None, mode: str | None = None) -> dict:
+    """Upload a company backup for checking. Nothing is written. Returns the upload token, a
+    preview and, for a signed-in owner, what restoring it in ``mode`` does."""
+    path = "/company-backups/read" if token else "/company-backups/bootstrap/read"
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True,
+                                 headers=None if token else _setup_code_headers(setup_code)) as c:
+            r = await c.post(path, files=[("file", (filename, content, "application/octet-stream"))],
+                             data={"mode": mode} if token and mode else None)
+    return _raise(r).json()
+
+
+async def company_backup_restore(token: str, upload_token: str, mode: str, plan_fingerprint: str) -> dict:
+    """Restore an uploaded backup as the preview showed it (mode "settings" or "new_company"):
+    a new company of the signed-in owner, or the one it was already restored as. Returns the
+    company and tokens for it."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
+            r = await c.post("/company-backups/restore", json={
+                "upload_token": upload_token, "mode": mode, "plan_fingerprint": plan_fingerprint})
+    return _raise(r).json()
+
+
+async def company_backup_reactivate(token: str, upload_token: str, mode: str, plan_fingerprint: str) -> dict:
+    """Reactivate the deactivated company an uploaded backup was already restored as. Returns
+    the company, whether it was reactivated, connectors to connect again, and tokens for it."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
+            r = await c.post("/company-backups/reactivate", json={
+                "upload_token": upload_token, "mode": mode, "plan_fingerprint": plan_fingerprint})
+    return _raise(r).json()
+
+
+async def company_backup_bootstrap_restore(upload_token: str, name: str, email: str, password: str,
+                                           setup_code: str | None = None) -> dict:
+    """Create the first owner and restore an uploaded backup as their company. Returns tokens and the company."""
+    async with _local_error_mapping():
+        async with _local_client(None, timeout=_MIGRATION_UPLOAD_TIMEOUT, headers=_setup_code_headers(setup_code)) as c:
+            r = await c.post("/company-backups/bootstrap/restore", json={
+                "upload_token": upload_token, "name": name, "email": email, "password": password,
+            })
+    return _raise(r).json()

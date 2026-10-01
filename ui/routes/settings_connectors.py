@@ -1088,9 +1088,9 @@ def setup_routes(app):
         company_id = _request_company_id(request)
         lang = get_lang(request)
         form = await request.form()
-        direction = form.get("direction", "both")
+        direction = form.get("direction")
         if direction not in ("inbound", "outbound", "both"):
-            direction = "both"
+            return Span(t("connectors.invalid_direction", lang), cls="flash flash--warning")
 
         async with get_session_ctx() as session:
             try:

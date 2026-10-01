@@ -110,12 +110,17 @@ class BackupResult:
     # on the source that aren't installed on the destination). Distinct
     # from `error` (which means the operation failed).
     warnings: list[str] = field(default_factory=list)
-    # Set when the restored database could not be migrated to the current
-    # schema: the data is present but unreadable until migrations run.
-    schema_warning: str | None = None
     # True when the import scheduled an automatic server restart (the restored
     # module set differed); the UI tells the user instead of dying silently.
     restart_scheduled: bool = False
+    # A recovery that could not make its safety archive changed nothing and waits
+    # for the owner to continue without one: the staged recovery's id and the
+    # sha256 of the staged archive the confirmation is bound to.
+    needs_confirmation: bool = False
+    confirmation_id: str | None = None
+    archive_digest: str | None = None
+    # Where the safety archive of the replaced installation was saved.
+    safety_archive: str | None = None
 
 
 def _parse_key(b64_key: str) -> bytes:
@@ -176,7 +181,8 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
     return aesgcm.decrypt(nonce, ciphertext, associated_data=None)
 
 
-def _restore_database(source: bytes | Path, database_url: str, *, clean_schema: bool, runner=None) -> None:
+def restore_database_file(dump_path: Path, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
+    """Restore a database from a pg_dump custom-format file."""
     if clean_schema:
         from sqlalchemy import create_engine, text
 
@@ -194,14 +200,10 @@ def _restore_database(source: bytes | Path, database_url: str, *, clean_schema: 
         mode = ["--clean", "--if-exists"]
 
     runner = runner or subprocess.run
-    kwargs = {"capture_output": True, "timeout": 600}
     try:
         command = _restore_command(database_url, mode)
-        if isinstance(source, Path):
-            command.append(str(source))
-        else:
-            kwargs["input"] = source
-        result = runner(command, **kwargs)
+        command.append(str(dump_path))
+        result = runner(command, capture_output=True, timeout=600)
     except FileNotFoundError as exc:
         raise RuntimeError("pg_restore not found in PATH") from exc
     except subprocess.TimeoutExpired as exc:
@@ -216,13 +218,3 @@ def _restore_command(database_url: str, mode: list[str]) -> list[str]:
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
     pg_restore = _find_pg_tool("pg_restore")
     return [pg_restore, *mode, "--no-password", "--no-privileges", "--no-owner", "-d", pg_url]
-
-
-def restore_database(dump_bytes: bytes, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
-    """Restore a dump supplied in memory."""
-    _restore_database(dump_bytes, database_url, clean_schema=clean_schema, runner=runner)
-
-
-def restore_database_file(dump_path: Path, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
-    """Restore directly from an existing dump file."""
-    _restore_database(Path(dump_path), database_url, clean_schema=clean_schema, runner=runner)

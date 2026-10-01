@@ -1,18 +1,27 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Import from .celerp-backup archive (validate, version check, pg_restore + files).
+"""System Recovery from a .celerp-backup archive: replaces the whole installation.
 
-Works without Cloud subscription — pure local operation.
+``prepare_recovery`` stages and checks the archive, ``make_safety_archive`` saves the
+current installation, and ``commit_recovery`` is the one destructive engine that local
+upload, cloud recovery point and bootstrap restore all run. Works without a Cloud
+subscription.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
+import shutil
 import tarfile
-from dataclasses import dataclass, field
+import uuid
+from contextlib import asynccontextmanager
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
 log = logging.getLogger(__name__)
@@ -227,43 +236,6 @@ def validate_archive(path: Path) -> ImportMeta:
     return meta
 
 
-async def _safety_backup(label: str):
-    """Run a pre-import safety backup if the encryption key is configured.
-
-    Module-level helper so tests can stub it cleanly.
-    """
-    from celerp.config import settings
-    from celerp.services.backup import BackupResult
-    if not settings.backup_encryption_key:
-        return BackupResult(ok=True, size_bytes=0)
-    from celerp.services.backup_repo import run_snapshot
-    return await run_snapshot(label=label)
-
-
-async def _read_modules_from_restored_db() -> list[str]:
-    """Read enabled_modules from the just-restored database.
-
-    Fallback for backups whose meta.json pre-dates the enabled_modules field.
-    After pg_restore the company row is present; we read its settings directly.
-    engine.dispose() was called before pg_restore but new connections are still
-    allowed, so this session open succeeds against the restored data.
-    """
-    try:
-        from sqlalchemy import select
-        from celerp.db import SessionLocal
-        from celerp.models.company import Company
-        async with SessionLocal() as session:
-            result = await session.execute(select(Company).limit(1))
-            company = result.scalar_one_or_none()
-            if company is None:
-                return []
-            raw = (company.settings or {}).get("enabled_modules") or []
-            return list(raw) if isinstance(raw, list) else []
-    except Exception as exc:
-        log.warning("Could not read enabled_modules from restored DB: %s", exc)
-        return []
-
-
 async def _dispose_engine() -> None:
     """Dispose the SQLAlchemy engine connection pool before pg_restore."""
     try:
@@ -274,27 +246,23 @@ async def _dispose_engine() -> None:
         log.warning("Pool dispose failed (non-fatal): %s", pool_exc)
 
 
-async def _run_pg_restore(dump_bytes: bytes, database_url: str) -> None:
-    """Run pg_restore in a thread executor (blocking subprocess)."""
+async def _run_pg_restore(dump_path: Path, database_url: str) -> None:
+    """Run pg_restore from the staged dump file off the event loop (blocking subprocess)."""
     import asyncio
-    from celerp.services.backup import restore_database
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(
-        None, lambda: restore_database(dump_bytes, database_url)
-    )
+    from celerp.services.backup import restore_database_file
+    await asyncio.to_thread(restore_database_file, dump_path, database_url)
 
 
-async def _reconcile_schema() -> str | None:
-    """Bring the restored database up to the current schema; returns a warning on failure.
+async def _reconcile_schema() -> None:
+    """Bring the restored database up to the current schema; raises on failure.
 
     A restored dump can be stamped behind (or ahead of) its actual DDL - a
     develop-origin source database, for example - and raw ``alembic upgrade head``
     then re-applies DDL that already exists and dies on DuplicateColumn, leaving the
-    schema silently stale while the running code queries newer columns. Run the same
+    schema stale while the running code queries newer columns. Run the same
     stamp-repair walker, grants, and develop-to-release reconcile the CLI's
-    ``celerp migrate`` uses, and surface any failure to the user instead of only
-    logging it: with a stale schema every data read fails, which reads as
-    "the import lost my data".
+    ``celerp migrate`` uses. With a stale schema every data read fails, so a failure
+    here fails the recovery.
     """
     import asyncio
     from celerp.config import settings
@@ -315,15 +283,12 @@ async def _reconcile_schema() -> str | None:
             _reconcile_after_migrate(settings.database_url)
 
     try:
-        await asyncio.get_event_loop().run_in_executor(None, _sync)
-        log.info("Schema reconcile completed after pg_restore")
-        return None
+        await asyncio.to_thread(_sync)
     except Exception as exc:
-        log.warning("Schema reconcile after pg_restore failed: %s", exc)
-        return (
-            f"Database restored, but the schema could not be brought up to date: {exc}. "
-            f"Restart the app (or run 'celerp migrate') before using the restored data."
-        )
+        raise RuntimeError(
+            f"The database was restored, but its schema could not be brought up to date: {exc}"
+        ) from exc
+    log.info("Schema reconcile completed after pg_restore")
 
 
 def _is_protected_module_dir(
@@ -351,111 +316,356 @@ def _is_protected_module_dir(
     return False
 
 
-async def _extract_files(path: Path) -> None:
-    """Extract attachments/, ai_uploads/, and custom modules/ into data_dir."""
+RESTORE_NOTICE_FILE = "restore-notice.json"
+
+
+SAFETY_WARNING = "A safety backup could not be made before restoring."
+
+# Response header on a successful whole-installation restore: every session
+# ended with it, so the UI drops the browser's session cookies.
+SESSION_ENDED_HEADER = "X-Session-Ended"
+
+
+def missing_modules_sentence(missing: list[str]) -> str:
+    """The one user-facing sentence for modules the source had but this install lacks."""
+    names = ", ".join(str(m) for m in missing)
+    return (
+        f"{len(missing)} module(s) enabled on the source are not installed on this "
+        f"server: {names}. Those features stay unavailable until the module packages "
+        f"are installed."
+    )
+
+
+RECOVERY_STAGING_DIR = "recovery-staging"
+RECOVERY_SAFETY_DIR = "recovery-safety"
+# Present from the first change to the installation until the recovery finishes or is undone.
+RECOVERY_MARKER = "recovery-in-progress.json"
+# An archive restored without a safety archive, kept until its recovery finishes.
+UNFINISHED_RECOVERY_ARCHIVE = "unfinished-recovery.celerp-backup"
+# Safety archives kept in RECOVERY_SAFETY_DIR; older ones are removed.
+SAFETY_KEEP = 3
+# How long a recovery staged without a safety archive waits for the owner to continue.
+CONFIRMATION_TTL = timedelta(minutes=15)
+# A staging directory with no pending confirmation is an interrupted recovery once
+# it is this old.
+_ABANDONED_STAGING_AGE = timedelta(days=1)
+
+_STAGED_ARCHIVE = "archive.celerp-backup"
+_STAGED_DUMP = "database.dump"
+_STAGED_FILES = "files"
+_STAGED_RECORD = "staged.json"
+_PENDING_RECORD = "pending.json"
+_STAGING_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _rename(src: Path, dst: Path) -> None:
+    """Same-filesystem rename used for every root swap and roll-back."""
+    os.rename(src, dst)
+
+
+@dataclass
+class PreparedRecovery:
+    """A recovery archive staged under data_dir and checked, ready to commit.
+
+    ``files`` maps every staged file (relative to the staging directory) to its size.
+    """
+    id: str
+    root: Path
+    digest: str
+    meta: ImportMeta
+    files: dict[str, int]
+
+    @property
+    def archive(self) -> Path:
+        return self.root / _STAGED_ARCHIVE
+
+    @property
+    def dump(self) -> Path:
+        return self.root / _STAGED_DUMP
+
+
+@dataclass
+class SafetyResult:
+    ok: bool
+    path: Path | None = None
+    error: str | None = None
+
+
+def _staging_root() -> Path:
+    from celerp.config import settings
+    return settings.data_dir / RECOVERY_STAGING_DIR
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        while chunk := fh.read(1024 * 1024):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _remove_staging(root: Path) -> None:
+    shutil.rmtree(root, ignore_errors=True)
+
+
+def _purge_expired_staging() -> None:
+    """Remove staged recoveries whose confirmation expired or that were abandoned."""
+    staging = _staging_root()
+    if not staging.is_dir():
+        return
+    now = _now()
+    for root in staging.iterdir():
+        try:
+            pending = root / _PENDING_RECORD
+            if pending.exists():
+                expired = datetime.fromisoformat(json.loads(pending.read_text())["expires_at"]) <= now
+            else:
+                modified = datetime.fromtimestamp(root.stat().st_mtime, timezone.utc)
+                expired = now - modified > _ABANDONED_STAGING_AGE
+        except (OSError, ValueError, KeyError):
+            expired = True
+        if expired:
+            _remove_staging(root)
+
+
+def _staged_files(root: Path) -> dict[str, int]:
+    files = root / _STAGED_FILES
+    out = {_STAGED_DUMP: (root / _STAGED_DUMP).stat().st_size}
+    for p in files.rglob("*"):
+        if p.is_file():
+            out[str(p.relative_to(root))] = p.stat().st_size
+    return out
+
+
+def _stage_members(archive: Path, root: Path) -> None:
+    """Extract the dump and every restore-owned file into *root*, refusing unsafe entries."""
     from celerp.config import settings
     from celerp.modules.loader import first_party_names
+    from celerp.services.backup_export import restore_roots
 
-    _ALLOWED_PREFIXES = ("attachments/", "ai_uploads/", "modules/")
-    protected_modules = first_party_names()
+    keys = set(restore_roots())
+    files = root / _STAGED_FILES
+    for key in keys:
+        (files / key).mkdir(parents=True, exist_ok=True)
+    files_root = files.resolve()
+    protected = first_party_names()
     module_root = settings.data_dir / "modules"
-    with tarfile.open(str(path), "r:gz") as tar:
+    with tarfile.open(str(archive), "r:gz") as tar:
         for member in tar.getmembers():
-            if member.name in ("database.dump", "meta.json"):
+            if member.name == "meta.json" or member.isdir():
                 continue
-            if member.name.startswith("/") or ".." in member.name:
-                continue
-            if not any(member.name.startswith(p) for p in _ALLOWED_PREFIXES):
-                continue
-            parts = PurePosixPath(member.name).parts
-            if (
-                len(parts) >= 2
-                and parts[0] == "modules"
-                and _is_protected_module_dir(module_root, parts[1], protected_modules)
-            ):
-                # PurePosixPath canonicalizes repeated separators and "." segments.
-                # Non-exact spellings are protected only when this filesystem
-                # resolves them to the same current first-party directory.
-                continue
-            if member.isfile():
-                dest = (
-                    settings.data_dir / "static" / member.name
-                    if member.name.startswith("attachments/")
-                    else settings.data_dir / member.name
-                )
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                src = tar.extractfile(member)
-                if src:
-                    dest.write_bytes(src.read())
+            if not member.isfile():
+                raise ValueError(f"Unsupported entry in archive (links and devices are not allowed): {member.name}")
+            if member.name == _STAGED_DUMP:
+                dest = root / _STAGED_DUMP
+            else:
+                parts = PurePosixPath(member.name).parts
+                if parts[0] not in keys:
+                    continue
+                if len(parts) < 2:
+                    raise ValueError(f"Unsafe path in archive: {member.name}")
+                if parts[0] == "modules" and _is_protected_module_dir(module_root, parts[1], protected):
+                    # Bundled module directories belong to the application, not the backup.
+                    continue
+                dest = files.joinpath(*parts)
+                if not dest.resolve().is_relative_to(files_root):
+                    raise ValueError(f"Unsafe path in archive: {member.name}")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            src = tar.extractfile(member)
+            if src is None:
+                raise ValueError(f"Cannot read {member.name} from archive")
+            with src, dest.open("wb") as out:
+                shutil.copyfileobj(src, out)
+    if not (root / _STAGED_DUMP).is_file():
+        raise ValueError("Archive missing database.dump")
 
 
-async def _activate_modules(modules: list[str]) -> bool:
-    """After a successful restore, update config.toml and request a restart.
-    Returns True when a restart was scheduled, so the UI can say so.
+def _prepare_sync(path: Path) -> PreparedRecovery:
+    _purge_expired_staging()
+    meta = validate_archive(path)
+    staging_id = uuid.uuid4().hex
+    root = _staging_root() / staging_id
+    root.mkdir(parents=True)
+    try:
+        shutil.copyfile(path, root / _STAGED_ARCHIVE)
+        digest = _sha256(root / _STAGED_ARCHIVE)
+        _stage_members(root / _STAGED_ARCHIVE, root)
+        prepared = PreparedRecovery(id=staging_id, root=root, digest=digest, meta=meta,
+                                    files=_staged_files(root))
+        (root / _STAGED_RECORD).write_text(json.dumps({
+            "digest": digest, "meta": asdict(meta), "files": prepared.files,
+        }))
+        return prepared
+    except BaseException:
+        _remove_staging(root)
+        raise
 
-    The destination may not have the same set of enabled modules as the
-    source. We call celerp.config.set_enabled_modules() (idempotent) so
-    config.toml reflects what was enabled at export time. Only when that
-    actually adds modules do we write the .restart_requested sentinel so the
-    celerp start process manager respawns with the new module set — when the
-    destination already had them all, the loaded code is identical and a
-    restart is pointless churn. The loader will skip modules that don't have
-    on-disk packages; the missing-modules warning surfaces those to the user.
 
-    No-op if modules is empty (backwards compat with old archives).
+async def prepare_recovery(path: Path) -> PreparedRecovery:
+    """Stage and check a recovery archive before anything is changed.
+
+    Validates the archive, copies it under data_dir and records its sha256, and
+    extracts the database dump and every restore-owned file into a staging
+    directory on the installation's filesystem, refusing links, devices and paths
+    outside the restore roots. Raises ValueError for an archive that cannot be
+    restored; nothing is left staged on failure.
     """
+    import asyncio
+    return await asyncio.to_thread(_prepare_sync, path)
+
+
+def _load_prepared(root: Path) -> PreparedRecovery:
+    record = json.loads((root / _STAGED_RECORD).read_text())
+    return PreparedRecovery(id=root.name, root=root, digest=record["digest"],
+                            meta=ImportMeta(**record["meta"]), files=record["files"])
+
+
+def _keep_newest_safety_archives(safety_dir: Path) -> None:
+    for old in sorted(safety_dir.glob("pre-recovery-*.celerp-backup"))[:-SAFETY_KEEP]:
+        old.unlink(missing_ok=True)
+
+
+async def make_safety_archive() -> SafetyResult:
+    """Archive the whole current installation into data_dir/recovery-safety. Never raises.
+
+    Uses the canonical full exporter, then re-validates the archive: one that does not
+    validate is no safety archive. The newest SAFETY_KEEP archives are kept.
+    """
+    import asyncio
+    from celerp.config import settings
+    from celerp.services import backup_export
+
+    partial: Path | None = None
+    try:
+        exported = await backup_export.export_full()
+        try:
+            await asyncio.to_thread(validate_archive, exported)
+            safety_dir = settings.data_dir / RECOVERY_SAFETY_DIR
+            safety_dir.mkdir(parents=True, exist_ok=True)
+            final = safety_dir / f"pre-recovery-{_now():%Y%m%dT%H%M%S%fZ}.celerp-backup"
+            partial = final.with_name(final.name + ".partial")
+            await asyncio.to_thread(shutil.move, exported, partial)
+            partial.replace(final)
+        finally:
+            exported.unlink(missing_ok=True)
+        _keep_newest_safety_archives(safety_dir)
+        log.info("Safety archive saved: %s", final)
+        return SafetyResult(ok=True, path=final)
+    except Exception as exc:
+        if partial is not None:
+            partial.unlink(missing_ok=True)
+        log.warning("Safety archive failed: %s", exc)
+        return SafetyResult(ok=False, error=str(exc) or repr(exc))
+
+
+async def _cloud_safety_snapshot() -> None:
+    """An optional extra safety copy in the cloud, when a cloud key is configured."""
+    from celerp.config import settings
+    from celerp.services import backup_repo
+    if not settings.backup_encryption_key or settings.cloud_disconnected:
+        return
+    result = await backup_repo.run_snapshot(label="pre-recovery")
+    if not result.ok:
+        log.warning("Cloud safety snapshot failed (the local safety archive was made): %s", result.error)
+
+
+def _verify_staged(prepared: PreparedRecovery) -> None:
+    if _staged_files(prepared.root) != prepared.files:
+        raise RuntimeError("The staged recovery files changed before they could be put in place.")
+
+
+def _swap_roots(prepared: PreparedRecovery) -> None:
+    """Replace each restore-owned root with its staged root by same-filesystem renames.
+
+    Bundled module directories are moved back into the new module root. On any
+    failure every root already swapped is put back as it was, then the error is raised.
+    """
+    from celerp.modules.loader import first_party_names
+    from celerp.services.backup_export import restore_roots
+
+    _verify_staged(prepared)
+    protected = first_party_names()
+    old = prepared.root / "old"
+    old.mkdir(exist_ok=True)
+    swapped: list[tuple[str, Path, bool]] = []
+    try:
+        for key, dest in restore_roots().items():
+            existed = dest.exists() or dest.is_symlink()
+            if existed:
+                _rename(dest, old / key)
+            swapped.append((key, dest, existed))
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _rename(prepared.root / _STAGED_FILES / key, dest)
+            if key == "modules" and existed:
+                for entry in sorted((old / key).iterdir()):
+                    if _is_protected_module_dir(old / key, entry.name, protected):
+                        _rename(entry, dest / entry.name)
+    except Exception:
+        _roll_back_roots(prepared.root, swapped, protected)
+        raise
+
+
+def _roll_back_roots(root: Path, swapped: list[tuple[str, Path, bool]], protected: frozenset[str]) -> None:
+    discard = root / "discard"
+    discard.mkdir(exist_ok=True)
+    for key, dest, existed in reversed(swapped):
+        try:
+            if key == "modules" and existed and dest.is_dir():
+                for entry in sorted(dest.iterdir()):
+                    kept = root / "old" / key / entry.name
+                    if _is_protected_module_dir(dest, entry.name, protected) and not kept.exists():
+                        _rename(entry, kept)
+            if dest.exists():
+                _rename(dest, discard / key)
+            if existed:
+                _rename(root / "old" / key, dest)
+        except Exception:
+            log.exception("Could not put back %s after a failed recovery", dest)
+
+
+def _apply_modules(modules: list[str]) -> bool:
+    """Make the enabled modules exactly *modules*; returns True when a restart was scheduled."""
     if not modules:
         return False
-    try:
-        from celerp.config import set_enabled_modules as _set_enabled_modules
-        changed = _set_enabled_modules(modules)
-        log.info("config.toml updated with %d enabled modules: %s",
-                 len(modules), modules)
-    except Exception as exc:
-        log.warning("Failed to update config.toml with enabled modules: %s", exc)
+    from celerp.config import replace_enabled_modules
+    if not replace_enabled_modules(modules):
+        log.info("Enabled modules unchanged - skipping restart")
         return False
-
-    if not changed:
-        log.info("Enabled modules unchanged — skipping restart")
-        return False
-
-    # Request a restart so the loader picks up the new modules.
-    # _send_sigterm writes the sentinel + sleeps 0.2s then SIGTERMs self.
-    # We schedule it via call_later so the HTTP response flushes first.
     try:
         import asyncio
         from celerp.routers.system import _restart_sentinel_path, _send_sigterm
         sentinel = _restart_sentinel_path()
         sentinel.parent.mkdir(parents=True, exist_ok=True)
         sentinel.touch()
-        log.info("Restart sentinel written: %s", sentinel)
-        loop = asyncio.get_event_loop()
-        loop.call_later(0.5, _send_sigterm)
-        log.info("Restart scheduled (SIGTERM in 0.5s)")
+        # Scheduled so the HTTP response flushes before the process restarts.
+        asyncio.get_running_loop().call_later(0.5, _send_sigterm)
+        log.info("Restart scheduled after recovery changed the enabled modules")
         return True
     except Exception as exc:
         log.warning("Failed to schedule restart: %s", exc)
         return False
 
 
-RESTORE_NOTICE_FILE = "restore-notice.json"
-
-
-def missing_modules_sentence(warnings: list[str]) -> str:
-    """The one user-facing sentence for modules the source had but this install lacks.
-
-    Every surface that reports a restore (settings flash, bootstrap warning page,
-    post-restart login notice) uses this same wording."""
-    names = ", ".join(str(w) for w in warnings)
-    return (
-        f"{len(warnings)} module(s) enabled on the source are not installed on this "
-        f"server: {names}. Those features stay unavailable until the module packages "
-        f"are installed."
-    )
+def _missing_module_warnings(modules: list[str]) -> list[str]:
+    try:
+        from celerp.modules.audit import audit_missing_modules
+        missing = audit_missing_modules(modules)
+    except Exception as audit_exc:
+        log.warning("Module audit failed (non-fatal): %s", audit_exc)
+        return []
+    if not missing:
+        return []
+    log.warning("Recovery enabled %d modules that are not installed on this server: %s",
+                len(missing), missing)
+    return [missing_modules_sentence(missing)]
 
 
 def _write_restore_notice(company_name: str | None, warnings: list[str],
-                          schema_warning: str | None, restart_scheduled: bool) -> None:
+                          safety_archive: str | None, restart_scheduled: bool) -> None:
     """Persist a one-shot restore notice for the login page.
 
     The post-restore restart can replace the page that showed the result (the
@@ -469,38 +679,68 @@ def _write_restore_notice(company_name: str | None, warnings: list[str],
         path.write_text(json.dumps({
             "company_name": company_name,
             "warnings": warnings,
-            "schema_warning": schema_warning,
+            "safety_archive": safety_archive,
             "restart_scheduled": restart_scheduled,
         }))
     except Exception as exc:
         log.warning("Could not write restore notice: %s", exc)
 
 
-async def _revoke_current_connector_state() -> None:
+async def _current_connectors() -> list[dict]:
+    """Every connector of the installation, as the recovery marker records it to revoke."""
     import sqlalchemy as sa
 
-    from celerp.connectors.remote_state import revoke_connector_remote_state
     from celerp.db import get_session_ctx
     from celerp.models.connector_config import ConnectorConfig
 
     async with get_session_ctx() as session:
-        configs = [
-            (
-                str(config.company_id),
-                config.connector,
-                list(config.webhook_ids or []),
-            )
-            for config in (await session.scalars(
-                sa.select(ConnectorConfig)
-            )).all()
-        ]
+        configs = (await session.scalars(
+            sa.select(ConnectorConfig).order_by(ConnectorConfig.id))).all()
+        return [{"company_id": str(c.company_id), "connector": c.connector,
+                 "webhook_ids": list(c.webhook_ids or []), "revision": None} for c in configs]
 
-    for company_id, connector, webhook_ids in configs:
-        await revoke_connector_remote_state(
-            company_id,
-            connector,
-            webhook_ids=webhook_ids,
-        )
+
+async def _reconcile_connectors() -> None:
+    """Revoke the remote state of every connector the recovery marker still lists.
+
+    The replacement discards every local connector config, so none may leave a live
+    relay credential or store webhook behind. Each connector is attempted whatever
+    happened to the others. The revision a disconnect is sent for is in the marker
+    before the request leaves, so a retry after a lost response disconnects that same
+    connection; a connection that changed since is read afresh. A connector leaves the
+    marker only once its remote state is confirmed gone; while any is left this raises,
+    and the marker keeps them for the next attempt.
+    """
+    from celerp.connectors.remote_state import (
+        ConnectorRemoteCleanupError,
+        ConnectorRemoteStateChangedError,
+        connection_revision,
+        revoke_connector_remote_state,
+    )
+
+    state = json.loads(_marker_path().read_text())
+    for _ in range(2):
+        for entry in list(state["connectors"]):
+            try:
+                if entry["revision"] is None:
+                    entry["revision"] = await connection_revision(entry["connector"])
+                    _write_marker(state)
+                if entry["revision"] is not None:
+                    await revoke_connector_remote_state(
+                        entry["company_id"], entry["connector"],
+                        webhook_ids=entry["webhook_ids"], revision=entry["revision"])
+            except ConnectorRemoteStateChangedError:
+                entry["revision"] = None
+                _write_marker(state)
+                continue
+            except Exception:
+                log.warning("Connector %s could not be disconnected", entry["connector"], exc_info=True)
+                continue
+            state["connectors"].remove(entry)
+            _write_marker(state)
+    if state["connectors"]:
+        names = ", ".join(sorted({e["connector"] for e in state["connectors"]}))
+        raise ConnectorRemoteCleanupError(f"Connections to other services could not be disconnected ({names})")
 
 
 async def _clear_restored_connector_state(session) -> None:
@@ -524,84 +764,289 @@ async def _clear_restored_connector_state(session) -> None:
     await session.execute(sa.delete(ConnectorConfig))
 
 
-async def run_import(path: Path):
-    """Import from .celerp-backup: safety backup + pg_restore + extract files.
-
-    Returns BackupResult with a `warnings` field listing modules the source
-    had enabled that aren't installed on the destination (read-only diff,
-    doesn't fail the import).
-    """
+def _failed(error: str, **kw):
     from celerp.services.backup import BackupResult
+    return BackupResult(ok=False, size_bytes=0, error=error, **kw)
+
+
+def _commit_failure(exc: Exception, safety_archive: str | None, restored: bool) -> str:
+    detail = (str(exc) or repr(exc)).rstrip(".")
+    if restored:
+        return (f"System Recovery did not complete: {detail}. The installation was put back "
+                f"as it was before, from the safety archive {safety_archive}; connections to "
+                "other services must be connected again and everyone must sign in again.")
+    saved = (f" The installation as it was before is saved in the safety archive {safety_archive}."
+             if safety_archive else "")
+    return f"System Recovery did not complete: {detail}.{saved} {MAINTENANCE_MESSAGE}"
+
+
+MAINTENANCE_MESSAGE = ("Celerp stays unavailable until the recovery is finished; "
+                       "restart Celerp to try again.")
+
+
+def _marker_path() -> Path:
     from celerp.config import settings
+    return settings.data_dir / RECOVERY_MARKER
 
+
+def recovery_incomplete() -> bool:
+    """Whether a destructive recovery started and has not finished or been undone.
+
+    While true the installation serves nothing but its liveness and readiness
+    probes: its database, files and modules may not agree, and no session from
+    before the replacement may be honoured.
+    """
+    return _marker_path().exists()
+
+
+def _mark_recovery_started(target: Path, connectors: list[dict]) -> None:
+    """Durably record that the installation is being replaced, what *target* archive
+    brings it back to a whole state if the replacement does not finish, and the
+    *connectors* whose remote state must be revoked before it is replaced."""
+    _write_marker({"target": str(target), "connectors": connectors})
+
+
+def _write_marker(state: dict) -> None:
+    path = _marker_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(path.name + ".partial")
+    with partial.open("w") as out:
+        json.dump(state, out)
+        out.flush()
+        os.fsync(out.fileno())
+    partial.replace(path)
+    _fsync_dir(path.parent)
+
+
+def _mark_recovery_finished() -> None:
+    from celerp.config import settings
+    _marker_path().unlink(missing_ok=True)
+    (settings.data_dir / RECOVERY_SAFETY_DIR / UNFINISHED_RECOVERY_ARCHIVE).unlink(missing_ok=True)
+    _fsync_dir(_marker_path().parent)
+
+
+def _fsync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
     try:
-        meta = validate_archive(path)
-        log.info("Importing backup from %s (company=%s, version=%s)",
-                 path, meta.company_name, meta.celerp_version)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
-        # Safety backup first (if encryption key is available)
-        safety = await _safety_backup("pre-import-safety")
-        if not safety.ok:
-            log.warning("Safety backup failed before import: %s", safety.error)
 
-        with tarfile.open(str(path), "r:gz") as tar:
-            dump_file = tar.extractfile("database.dump")
-            if dump_file is None:
-                return BackupResult(ok=False, size_bytes=0, error="Cannot read database.dump")
-            dump_bytes = dump_file.read()
+def _keep_for_retry(prepared: PreparedRecovery) -> Path:
+    """Move the staged archive out of staging so an unfinished recovery can be retried."""
+    from celerp.config import settings
+    safety_dir = settings.data_dir / RECOVERY_SAFETY_DIR
+    safety_dir.mkdir(parents=True, exist_ok=True)
+    kept = safety_dir / UNFINISHED_RECOVERY_ARCHIVE
+    _rename(prepared.root / _STAGED_ARCHIVE, kept)
+    return kept
 
-        from celerp.connectors.ownership import connector_maintenance_guard
-        from celerp.db import get_session_ctx
-        from celerp.services.backup_state import writes_paused
 
-        async with connector_maintenance_guard():
-            await _revoke_current_connector_state()
-            with writes_paused():
-                await _dispose_engine()
-                await _run_pg_restore(dump_bytes, settings.database_url)
-                schema_warning = await _reconcile_schema()
-                async with get_session_ctx() as restored_session:
-                    await _clear_restored_connector_state(restored_session)
-                    await restored_session.commit()
+async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], bool]:
+    """Replace the database, file roots and enabled modules with *prepared*'s.
 
-        # Extract files outside the tar context (already read dump above)
-        await _extract_files(path)
+    Clears the restored connectors and ends every session. Returns the enabled
+    modules and whether a restart was scheduled. The caller holds the recovery locks and the recovery marker.
+    """
+    import asyncio
+    from celerp.config import settings
+    from celerp.db import get_session_ctx
+    from celerp.services import session_tracker
+    from celerp.services.backup_export import required_installation_modules
 
-        # Activate pass: update config.toml with the source's enabled modules
-        # and request a restart so the loader picks them up. Server-side
-        # because we have no user token yet (bootstrap restore).
-        # meta.enabled_modules is the primary source (new backups); fall back
-        # to the restored DB row for old backups whose meta.json predates this field.
-        effective_modules = meta.enabled_modules or await _read_modules_from_restored_db()
-        restart_scheduled = False
-        if effective_modules:
-            restart_scheduled = await _activate_modules(effective_modules)
+    await _dispose_engine()
+    await _run_pg_restore(prepared.dump, settings.database_url)
+    await _reconcile_schema()
+    async with get_session_ctx() as session:
+        await _clear_restored_connector_state(session)
+        # Backups without module metadata take the set from every restored company.
+        modules = prepared.meta.enabled_modules or sorted(await required_installation_modules(session))
+        # No session from before the replacement stays valid; this also
+        # commits the connector cleanup.
+        await session_tracker.end_all_sessions(session)
+    await asyncio.to_thread(_swap_roots, prepared)
+    return modules, _apply_modules(modules)
 
-        # Audit pass: surface modules that were enabled on the source but
-        # have no on-disk package on the destination. Read-only — the import
-        # succeeds; the user just gets warned so the dashboard 404 is no
-        # longer a surprise.
-        warnings: list[str] = []
-        if effective_modules:
-            try:
-                from celerp.modules.audit import audit_missing_modules
-                warnings = audit_missing_modules(effective_modules)
-                if warnings:
-                    log.warning(
-                        "Imported backup enabled %d modules that are not "
-                        "installed on this server: %s",
-                        len(warnings), warnings,
-                    )
-            except Exception as audit_exc:
-                log.warning("Module audit failed (non-fatal): %s", audit_exc)
 
-        _write_restore_notice(meta.company_name, warnings, schema_warning, restart_scheduled)
-        return BackupResult(ok=True, size_bytes=len(dump_bytes), warnings=warnings,
-                            schema_warning=schema_warning, restart_scheduled=restart_scheduled)
+async def _replace_from(target: Path) -> None:
+    """Revoke the connectors the recovery marker still lists, replace the installation
+    with the archive *target*, then clear the marker."""
+    import asyncio
+    await _reconcile_connectors()
+    prepared = await prepare_recovery(target)
+    try:
+        await _replace_installation(prepared)
+    finally:
+        await asyncio.to_thread(_remove_staging, prepared.root)
+    _mark_recovery_finished()
 
+
+async def finish_incomplete_recovery() -> None:
+    """At startup, bring back to a whole state an installation whose recovery did not finish.
+
+    Replaces it with the archive the marker names: the safety archive of the
+    installation as it was, or, when the owner restored without one, the archive
+    being restored. On failure the marker stays and the installation stays
+    unavailable; the next start tries again.
+    """
+    if not recovery_incomplete():
+        return
+    try:
+        target = Path(json.loads(_marker_path().read_text())["target"])
+        async with _recovery_locks():
+            await _replace_from(target)
+        log.info("Unfinished System Recovery completed from %s", target)
+    except Exception:
+        log.exception("Unfinished System Recovery could not be completed; Celerp stays unavailable")
+
+
+async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | None):
+    """The one destructive recovery engine; the caller holds the recovery locks.
+
+    Under a durable recovery marker, revokes the current connectors' remote state
+    (`_reconcile_connectors`), then replaces the installation (`_replace_installation`).
+    When either fails, the installation is put back from the safety archive, once every
+    connector is revoked; with no safety archive, or when putting it back fails too, the
+    marker stays and the installation serves nothing until a start finishes the
+    recovery. The staging directory is removed either way.
+    """
+    import asyncio
+    from celerp.services.backup import BackupResult
+
+    safety = str(safety_archive) if safety_archive else None
+    try:
+        # Marked before the first remote revoke: a revoke cannot be undone, so from here a
+        # failure is a started recovery, finished or put back like any other.
+        _mark_recovery_started(safety_archive or await asyncio.to_thread(_keep_for_retry, prepared),
+                               await _current_connectors())
+        try:
+            await _reconcile_connectors()
+            modules, restart_scheduled = await _replace_installation(prepared)
+        except Exception as exc:
+            log.exception("System Recovery failed")
+            restored = False
+            if safety_archive is not None:
+                try:
+                    await _replace_from(safety_archive)
+                    restored = True
+                except Exception:
+                    log.exception("The installation could not be put back from %s", safety_archive)
+            return _failed(_commit_failure(exc, safety, restored), safety_archive=safety)
+        _mark_recovery_finished()
+        warnings = _missing_module_warnings(modules)
+        _write_restore_notice(prepared.meta.company_name, warnings, safety, restart_scheduled)
+        return BackupResult(ok=True, size_bytes=prepared.files[_STAGED_DUMP], warnings=warnings,
+                            restart_scheduled=restart_scheduled, safety_archive=safety)
+    finally:
+        await asyncio.to_thread(_remove_staging, prepared.root)
+
+
+def _start_failed(prepared: PreparedRecovery, exc: Exception):
+    """The recovery locks could not be taken or the safety step broke: nothing was restored."""
+    log.exception("System Recovery failed before the restore began")
+    _remove_staging(prepared.root)
+    return _failed(f"System Recovery did not start: {str(exc) or repr(exc)}")
+
+
+@asynccontextmanager
+async def _recovery_locks():
+    """Exclude connector work, then pause writes, for a coherent safety archive and restore."""
+    from celerp.connectors.ownership import connector_maintenance_guard
+    from celerp.services.backup_state import writes_paused
+    async with connector_maintenance_guard():
+        with writes_paused():
+            yield
+
+
+async def _prepare_or_fail(path: Path):
+    """(prepared, None) or (None, failed result) for an archive that cannot be restored."""
+    try:
+        return await prepare_recovery(path), None
     except ValueError as exc:
-        log.error("Backup import validation error: %s", exc)
-        return BackupResult(ok=False, size_bytes=0, error=str(exc))
+        log.error("Recovery archive refused: %s", exc)
+        return None, _failed(str(exc))
     except Exception as exc:
-        log.exception("Backup import failed unexpectedly")
-        return BackupResult(ok=False, size_bytes=0, error=str(exc) or repr(exc))
+        log.exception("Recovery archive could not be staged")
+        return None, _failed(f"The backup could not be prepared for restoring: {str(exc) or repr(exc)}")
+
+
+async def run_recovery(path: Path):
+    """System Recovery from a .celerp-backup: replaces the whole installation.
+
+    The archive is staged and checked first; then, holding the recovery locks, a
+    local safety archive of the current installation is made before anything is
+    overwritten. When no safety archive can be made nothing is changed: the result
+    has ``needs_confirmation`` and the staged recovery waits CONFIRMATION_TTL for
+    ``continue_recovery``.
+    """
+    prepared, failure = await _prepare_or_fail(path)
+    if failure is not None:
+        return failure
+    try:
+        async with _recovery_locks():
+            safety = await make_safety_archive()
+            if safety.ok:
+                await _cloud_safety_snapshot()
+                return await commit_recovery(prepared, safety.path)
+    except Exception as exc:
+        return _start_failed(prepared, exc)
+
+    expires_at = _now() + CONFIRMATION_TTL
+    (prepared.root / _PENDING_RECORD).write_text(json.dumps({
+        "digest": prepared.digest, "expires_at": expires_at.isoformat(),
+    }))
+    detail = (safety.error or "").rstrip(".")
+    return _failed(f"{SAFETY_WARNING} {detail}.", needs_confirmation=True,
+                   confirmation_id=prepared.id, archive_digest=prepared.digest)
+
+
+async def continue_recovery(confirmation_id: str, digest: str):
+    """Restore a staged recovery without a safety archive, on the owner's explicit confirmation.
+
+    The confirmation must name the staged recovery and the sha256 of its staged
+    archive, within CONFIRMATION_TTL; the staged archive must still have that digest.
+    """
+    import asyncio
+    if not isinstance(confirmation_id, str) or not _STAGING_ID.fullmatch(confirmation_id):
+        return _failed("This recovery is not available. Start the recovery again.")
+    root = _staging_root() / confirmation_id
+    pending_path = root / _PENDING_RECORD
+    try:
+        pending = json.loads(pending_path.read_text())
+        expires_at = datetime.fromisoformat(pending["expires_at"])
+    except (OSError, ValueError, KeyError):
+        return _failed("This recovery is not available. Start the recovery again.")
+    if _now() >= expires_at:
+        _remove_staging(root)
+        return _failed("The confirmation to restore without a safety copy has expired. "
+                       "Start the recovery again.")
+    if digest != pending["digest"]:
+        return _failed("This confirmation does not match the staged backup.")
+    try:
+        prepared = _load_prepared(root)
+        intact = prepared.digest == digest and await asyncio.to_thread(_sha256, prepared.archive) == digest
+    except (OSError, ValueError, KeyError, TypeError):
+        intact = False
+    if not intact:
+        _remove_staging(root)
+        return _failed("The staged backup changed after it was checked. Start the recovery again.")
+    # The confirmation is used once.
+    pending_path.unlink()
+    try:
+        async with _recovery_locks():
+            return await commit_recovery(prepared, None)
+    except Exception as exc:
+        return _start_failed(prepared, exc)
+
+
+async def bootstrap_recovery(path: Path):
+    """Restore into an installation with no users yet: nothing to protect, so no safety archive."""
+    prepared, failure = await _prepare_or_fail(path)
+    if failure is not None:
+        return failure
+    try:
+        async with _recovery_locks():
+            return await commit_recovery(prepared, None)
+    except Exception as exc:
+        return _start_failed(prepared, exc)

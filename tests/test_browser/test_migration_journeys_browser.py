@@ -111,7 +111,7 @@ def _lose_start_response(page, path: str) -> None:
 
 def _start_additional(page, company_name: str) -> None:
     page.goto("/setup/new-company")
-    page.click('a:has-text("Move a company")')
+    page.click('a:has-text("Move from another system")')
     page.wait_for_url(re.compile(r"/setup/new-company/migrate$"))
     _upload(page, "Example Bookkeeping")
     _through_review(page, company_name)
@@ -199,7 +199,7 @@ def test_journey_7_lost_start_response_additional_company(page, fresh_company):
 def test_journey_7_lost_start_response_first_run(first_run_page):
     page = first_run_page
     page.goto("/setup")
-    page.click('a:has-text("Move a company")')
+    page.click('a:has-text("Move from another system")')
     page.wait_for_url(re.compile(r"/setup/migrate$"))
     _upload(page, "Example Bookkeeping")
     _through_review(page, "Harbor Goods Ltd")
@@ -226,7 +226,7 @@ def test_journey_7_lost_start_response_first_run(first_run_page):
     page.wait_for_url(re.compile(rf"/migrations/{run_id}/discard$"))
     page.click('button:has-text("Discard migration")')
     page.wait_for_url(re.compile(r"/setup$"))
-    assert page.locator("text=Move a company").count() >= 1
+    assert page.locator("text=Move from another system").count() >= 1
 
 
 def _sweep() -> None:

@@ -3,7 +3,7 @@
 
 """DRY backup button builders with tooltips.
 
-Used in settings.py (_backup_tab) and settings_cloud.py (_backup_summary_card).
+Used on System Recovery (settings.py _system_recovery_content).
 """
 
 from __future__ import annotations
@@ -60,7 +60,10 @@ def local_backup_buttons(
             title=t(_TOOLTIP_KEYS["download"]),
         ),
         Button(t("btn.import_backup"),
-            onclick=f"document.getElementById('{import_input_id}').click()",
+            # Confirm before the file picker opens: the import replaces the
+            # whole installation. The translated text arrives via data-* (R2).
+            data_confirm_text=t("system_recovery.confirm"),
+            onclick=f"if(confirm(this.dataset.confirmText))document.getElementById('{import_input_id}').click()",
             cls=f"btn btn--secondary{size_cls}",
             title=t(_TOOLTIP_KEYS["import"]),
             id="backup-import-btn",

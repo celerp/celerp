@@ -80,7 +80,6 @@ router = APIRouter(prefix="/migrations", tags=["migrations"], route_class=_Migra
 OWNER_ONLY = "Only the company owner can move a company into Celerp."
 BOOTSTRAPPED = "System already bootstrapped. Contact your admin."
 BOOTSTRAP: store.ScanOwner = ("bootstrap", None)
-_NAME_MAX = 200
 
 
 class ScanTokenIn(BaseModel):
@@ -173,13 +172,13 @@ async def _upload_parts(request: Request) -> AsyncIterator[store.UploadPart]:
             pass
 
 
-async def _user_owner(ctx: AuthContext = Depends(get_auth_context)) -> AuthContext:
+async def user_owner(ctx: AuthContext = Depends(get_auth_context)) -> AuthContext:
     if not role_has_permission(ctx.company.settings, ctx.role, "manage_company_lifecycle"):
         raise HTTPException(status_code=403, detail=OWNER_ONLY)
     return ctx
 
 
-async def _ensure_not_bootstrapped(session: AsyncSession) -> None:
+async def ensure_not_bootstrapped(session: AsyncSession) -> None:
     if await session.scalar(select(User.id).limit(1)) is not None:
         raise HTTPException(status_code=409, detail=BOOTSTRAPPED)
 
@@ -188,9 +187,31 @@ def _company_name(value: str, errors: dict) -> str:
     name = value.strip()
     if not name:
         errors["company_name"] = "Enter a company name."
-    elif len(name) > _NAME_MAX:
-        errors["company_name"] = f"The company name must be at most {_NAME_MAX} characters."
+    elif len(name) > migrations.COMPANY_NAME_MAX:
+        errors["company_name"] = f"The company name must be at most {migrations.COMPANY_NAME_MAX} characters."
+    elif "\x00" in name:
+        errors["company_name"] = "The company name contains a character that cannot be saved."
     return name
+
+
+_EMAIL_MAX = 320  # users.email is String(320)
+
+
+def owner_account(name: str, email: str, password: str, errors: dict) -> tuple[str, str]:
+    """Check the first owner's name, email and password, recording each problem in
+    ``errors``; returns the trimmed name and email."""
+    name, email = name.strip(), email.strip()
+    if not name:
+        errors["name"] = "Enter your name."
+    elif "\x00" in name:
+        errors["name"] = "Your name contains a character that cannot be saved."
+    if "@" not in email or "\x00" in email or len(email) > _EMAIL_MAX:
+        errors["email"] = "Enter a valid email address."
+    try:
+        validate_password(password)
+    except ValueError:
+        errors["password"] = f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+    return name, email
 
 
 async def _prepare(scan: store.ScanSession):
@@ -255,7 +276,7 @@ async def sources() -> list[dict]:
 @limiter.limit("5/minute")
 async def bootstrap_scan(request: Request, session: AsyncSession = Depends(get_session),
                          x_setup_code: str | None = Header(None)) -> dict:
-    await _ensure_not_bootstrapped(session)
+    await ensure_not_bootstrapped(session)
     bootstrap.verify_setup_code(x_setup_code)
     scan = await store.create_scan(_upload_parts(request), owner=BOOTSTRAP)
     return {"scan_token": scan.token, "scan": migrations.scan_view(scan)}
@@ -263,13 +284,13 @@ async def bootstrap_scan(request: Request, session: AsyncSession = Depends(get_s
 
 @router.post("/bootstrap/scan/read")
 async def bootstrap_scan_read(payload: ScanTokenIn, session: AsyncSession = Depends(get_session)) -> dict:
-    await _ensure_not_bootstrapped(session)
+    await ensure_not_bootstrapped(session)
     return {"scan": migrations.scan_view(store.load_scan(payload.scan_token, owner=BOOTSTRAP))}
 
 
 @router.post("/bootstrap/decisions")
 async def bootstrap_decisions(payload: DecisionsIn, session: AsyncSession = Depends(get_session)) -> dict:
-    await _ensure_not_bootstrapped(session)
+    await ensure_not_bootstrapped(session)
     return await _save_decisions(BOOTSTRAP, payload)
 
 
@@ -284,23 +305,15 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
     The setup code is consumed only after the commit."""
     required = False
     async with _start_errors(session):
-        await _ensure_not_bootstrapped(session)
+        await ensure_not_bootstrapped(session)
         required = bootstrap.verify_setup_code(x_setup_code)
         await bootstrap.lock_bootstrap(session)
-        await _ensure_not_bootstrapped(session)
+        await ensure_not_bootstrapped(session)
         scan = store.load_scan(payload.scan_token, owner=BOOTSTRAP)
         decisions = await _prepare(scan)
         errors: dict[str, str] = {}
         company_name = _company_name(payload.company_name, errors)
-        name, email = payload.name.strip(), payload.email.strip()
-        if not name:
-            errors["name"] = "Enter your name."
-        if "@" not in email:
-            errors["email"] = "Enter a valid email address."
-        try:
-            validate_password(payload.password)
-        except ValueError:
-            errors["password"] = f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+        name, email = owner_account(payload.name, payload.email, payload.password, errors)
         if errors:
             raise HTTPException(status_code=422, detail=errors)
         user = await create_install_owner(session, name=name, email=email, password=payload.password)
@@ -322,13 +335,13 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
 # ── Company owner ────────────────────────────────────────────────────────────
 
 @router.post("/scan")
-async def scan(request: Request, ctx: AuthContext = Depends(_user_owner)) -> dict:
+async def scan(request: Request, ctx: AuthContext = Depends(user_owner)) -> dict:
     result = await store.create_scan(_upload_parts(request), owner=("user", ctx.user.id))
     return {"scan_token": result.token, "scan": migrations.scan_view(result)}
 
 
 @router.post("/scan/read")
-async def scan_read(payload: ScanTokenIn, ctx: AuthContext = Depends(_user_owner),
+async def scan_read(payload: ScanTokenIn, ctx: AuthContext = Depends(user_owner),
                     session: AsyncSession = Depends(get_session)) -> dict:
     """The scan's view, or ``{"run_id"}`` of the run the caller already started from it,
     so a wizard whose start response was lost returns to that run."""
@@ -339,12 +352,12 @@ async def scan_read(payload: ScanTokenIn, ctx: AuthContext = Depends(_user_owner
 
 
 @router.post("/scan/decisions")
-async def scan_decisions(payload: DecisionsIn, ctx: AuthContext = Depends(_user_owner)) -> dict:
+async def scan_decisions(payload: DecisionsIn, ctx: AuthContext = Depends(user_owner)) -> dict:
     return await _save_decisions(("user", ctx.user.id), payload)
 
 
 @router.post("/start-from-scan", status_code=201)
-async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: AuthContext = Depends(_user_owner),
+async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: AuthContext = Depends(user_owner),
                           session: AsyncSession = Depends(get_session)) -> dict:
     """Start a migration from a scan, 201. A repeated start from the same scan answers 200
     with the run it already created, finishing that start if it died part way."""

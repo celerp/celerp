@@ -169,7 +169,7 @@ def _check_min_version(manifest: dict) -> None:
         )
 
 
-def _installed_table_prefixes(exclude: str) -> dict[str, str]:
+def installed_table_prefixes(exclude: str) -> dict[str, str]:
     """Return {module_name: table_prefix} for every installed module that
     declares one, across every MODULE_DIR entry, excluding ``exclude`` so a
     reinstall of the same name never collides with its own prior copy. Manifests
@@ -227,7 +227,7 @@ def _validate_table_prefix(name: str, manifest: dict) -> None:
                 f'"{table_name}". Choose a prefix that no core or installed '
                 "table begins with."
             )
-    for other_name, other_prefix in _installed_table_prefixes(exclude=name).items():
+    for other_name, other_prefix in installed_table_prefixes(exclude=name).items():
         if prefix.startswith(other_prefix) or other_prefix.startswith(prefix):
             raise ModuleImportError(
                 f'table_prefix "{prefix}" overlaps the prefix "{other_prefix}" '

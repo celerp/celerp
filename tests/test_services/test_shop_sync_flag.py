@@ -121,17 +121,19 @@ async def test_bulk_shopify_sync_endpoint_sets_flag(session):
 
 @pytest.mark.asyncio
 async def test_list_items_source_filter(session):
-    """?source=shopify returns only items linked to that platform (idempotency-key prefix);
+    """?source=shopify returns only items linked to a connected platform (idempotency-key prefix);
     powers the connector detail 'View synced products' deep-link."""
     from datetime import datetime, timezone
     from types import SimpleNamespace
 
+    from celerp.models.connector_config import ConnectorConfig
     from celerp.models.projections import Projection
     from celerp_inventory.routes import ItemListFilters, list_items
 
     cid = uuid.uuid4()
     session.add(Company(id=cid, name="SrcCo", slug=f"srcco-{cid.hex[:8]}"))
     await session.flush()
+    session.add(ConnectorConfig(company_id=str(cid), connector="shopify"))
     now = datetime.now(timezone.utc)
 
     def _proj(eid, idem):

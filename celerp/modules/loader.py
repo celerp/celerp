@@ -523,6 +523,14 @@ def is_running(pkg_name: str) -> bool:
     return any(m["name"] == pkg_name for m in _loaded) or is_core_folded(pkg_name)
 
 
+def running_version(pkg_name: str) -> str | None:
+    """The version of *pkg_name* this process loaded, or None when the loader did not load it.
+
+    The copy on disk can be newer than the running code until the next restart.
+    """
+    return next((m.get("version") for m in _loaded if m["name"] == pkg_name), None)
+
+
 def restart_would_load(pkg_name: str) -> bool:
     """True when a server restart would load *pkg_name*.
 

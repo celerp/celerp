@@ -77,10 +77,13 @@ class MaxBodySizeMiddleware:
         # exempt them from the body cap. Bulk imports are bounded by the WS tunnel frame
         # size and the per-file 50 MB limit in store_upload(); a .celerp-backup restore is
         # a trusted whole-instance archive (DB + files) that is inherently large. The two
-        # migration scan uploads stream to disk under their own per-file and total caps.
+        # migration scan uploads stream to disk under their own per-file and total caps, and a
+        # company backup, which carries the company's attachment files, is staged under the
+        # same total cap.
         if scope.get("path", "").endswith(
             ("/items/files/bulk", "/items/attachments/bulk", "/backup/import", "/backup/import-bootstrap",
-             "/migrations/bootstrap/scan", "/migrations/scan")
+             "/migrations/bootstrap/scan", "/migrations/scan", "/company-backups/read",
+             "/company-backups/bootstrap/read")
         ):
             await self.app(scope, receive, send)
             return
@@ -292,3 +295,35 @@ class DrainMiddleware:
             return
 
         await self.app(scope, receive, send)
+
+
+# The anonymous liveness probes, matched exactly: the only routes an unfinished
+# System Recovery still serves. Readiness is refused until the recovery converges,
+# so nothing routes traffic to an installation that answers only 503s. Never a
+# prefix, so no authenticated or state-reading route under /health or /__celerp/
+# gets through.
+_RECOVERY_PROBES = frozenset({"/health", "/__celerp/health"})
+
+
+class RecoveryMaintenanceMiddleware:
+    """Serve nothing but the liveness probes while a System Recovery is unfinished.
+
+    Until the recovery finishes or is undone, the database, files and modules may
+    not agree, and no session from before the replacement may be honoured.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        from celerp.services.backup_import import MAINTENANCE_MESSAGE, recovery_incomplete
+
+        if (scope["type"] != "http" or scope.get("path", "") in _RECOVERY_PROBES
+                or not recovery_incomplete()):
+            await self.app(scope, receive, send)
+            return
+        response = JSONResponse(
+            status_code=503,
+            content={"detail": f"System Recovery did not finish. {MAINTENANCE_MESSAGE}"},
+        )
+        await response(scope, receive, send)

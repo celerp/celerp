@@ -63,6 +63,7 @@ def _items(loc1: str, loc2: str) -> list[tuple[str, str, dict]]:
 
 @pytest.fixture
 async def seeded(client, session):
+    from celerp.models.connector_config import ConnectorConfig
     from celerp.models.projections import Projection
 
     ctx = await perm_setup(client, session)
@@ -84,6 +85,7 @@ async def seeded(client, session):
             company_id=company_id, entity_id=entity_id, entity_type="item", state=state,
             version=1, location_id=uuid.UUID(loc), created_at=now, updated_at=now,
         ))
+    session.add(ConnectorConfig(company_id=str(company_id), connector="shopify"))
     company = await locked_company(session, company_id)
     company.settings = {**(company.settings or {}), "price_lists": _PRICE_LISTS, "base_price_list": "Retail"}
     await session.flush()

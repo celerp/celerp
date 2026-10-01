@@ -144,7 +144,7 @@ def test_structural_catalog_family_survives_anchor_sku_change():
     )
     rows = [anchor, explicit_lot, legacy_lot]
     assert catalog_family_rows(rows, anchor) == rows
-    state = build_channel_states(rows)
+    state = build_channel_states(rows, connected_platforms={"woocommerce"})
     assert state["item:explicit"]["woocommerce"]["anchor_id"] == "item:anchor"
     assert state["item:legacy"]["woocommerce"]["anchor_id"] == "item:anchor"
 
@@ -208,7 +208,7 @@ def test_reused_historical_sku_stays_a_separate_product_root():
     rows = [anchor, reused]
     assert catalog_family_rows(rows, anchor) == [anchor]
     assert catalog_family_rows(rows, reused) == [reused]
-    states = build_channel_states(rows)
+    states = build_channel_states(rows, connected_platforms={"woocommerce"})
     assert "woocommerce" not in states[reused.entity_id]
 
 

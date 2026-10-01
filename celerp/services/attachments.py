@@ -31,6 +31,7 @@ import asyncio
 import io
 import logging
 import mimetypes
+import os
 import shutil
 import time
 import uuid
@@ -87,6 +88,27 @@ def _stored_extension(mime: str) -> str:
     Unknown types get no extension rather than a guessed one, so a path is never
     fabricated for a type the allowlist does not admit."""
     return _MIME_EXTENSIONS.get(mime, "")
+
+
+_EXTENSION_MIMES = {ext: mime for mime, ext in _MIME_EXTENSIONS.items()}
+
+
+def stored_file_type(name: str) -> str | None:
+    """The allowed type a stored file name carries: the type whose stored extension ends
+    the name. None for any other name, so a file is never stored under an extension its
+    type does not give it."""
+    stem, dot, ext = name.rpartition(".")
+    return _EXTENSION_MIMES.get(f".{ext}") if dot and stem and is_plain_name(name) else None
+
+
+def stored_file_name(name: str, mime: str) -> str | None:
+    """``name`` with the stored extension of ``mime`` in place of its own; None when
+    ``mime`` is not an allowed type."""
+    ext = _MIME_EXTENSIONS.get(mime)
+    if ext is None:
+        return None
+    stem, dot, _ = name.rpartition(".")
+    return f"{stem if dot and stem else name}{ext}"
 
 
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
@@ -176,7 +198,7 @@ class LocalBackend:
     ) -> str:
         dest_name = f"{att_id}{_stored_extension(mime)}"
         root = self._company_dir(company_id).resolve()
-        dest = (root / dest_name).resolve() if _is_plain_name(att_id) else None
+        dest = (root / dest_name).resolve() if is_plain_name(att_id) else None
         if dest is None or dest.parent != root:
             raise ValueError(f"Invalid attachment id: {att_id!r}")
         dest.write_bytes(content)
@@ -194,16 +216,49 @@ class LocalBackend:
 
     async def delete(self, company_id: str, stored_id: str, mime: str) -> None:
         name = stored_id + _stored_extension(mime)
-        if not (_is_plain_name(str(company_id)) and _is_plain_name(name)):
+        if not (is_plain_name(str(company_id)) and is_plain_name(name)):
             raise ValueError(f"Invalid attachment id: {stored_id!r}")
         await asyncio.to_thread((self._root / str(company_id) / name).unlink, missing_ok=True)
 
     async def delete_company(self, company_id: str) -> None:
-        if not _is_plain_name(str(company_id)):
+        if not is_plain_name(str(company_id)):
             raise ValueError(f"Invalid company id: {company_id!r}")
         path = self._root / str(company_id)
         if path.exists():
             await asyncio.to_thread(shutil.rmtree, path)
+
+
+def _landing_dir() -> Path:
+    from celerp.config import settings
+    return settings.data_dir / "attachments_landing"
+
+
+def mark_landing(company_id: str) -> None:
+    """Durably record that files are about to be stored for a company whose records are not
+    committed yet, so they can be found and removed if it never is."""
+    if not is_plain_name(company_id):
+        raise ValueError(f"Invalid company id: {company_id!r}")
+    folder = _landing_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(folder / company_id, "wb") as fh:
+        os.fsync(fh.fileno())
+    if hasattr(os, "O_DIRECTORY"):
+        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def landing_companies() -> list[str]:
+    """The companies files were marked as landing for and not yet cleared."""
+    folder = _landing_dir()
+    return sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []
+
+
+def clear_landing(company_id: str) -> None:
+    if is_plain_name(company_id):
+        (_landing_dir() / company_id).unlink(missing_ok=True)
 
 
 def _read_local(path: Path | None, max_bytes: int) -> bytes | None:
@@ -212,9 +267,16 @@ def _read_local(path: Path | None, max_bytes: int) -> bytes | None:
     return path.read_bytes()
 
 
-def _is_plain_name(name: str) -> bool:
-    """A single file name: no separator of either platform and no dot reference."""
-    return bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name
+def is_plain_name(name: str) -> bool:
+    """A single file name: no separator of either platform, no dot reference, and short
+    enough for the file system (255 bytes)."""
+    return (bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name
+            and len(name.encode()) <= 255)
+
+
+def company_attachment_dir(company_id: str) -> Path:
+    """The local folder that holds a company's attachment files."""
+    return LocalBackend()._root / str(company_id)
 
 
 def local_attachment_path(company_id: str, filename: str) -> Path | None:
@@ -226,10 +288,9 @@ def local_attachment_path(company_id: str, filename: str) -> Path | None:
     caller serves a 404 rather than another tenant's file. This owns the
     on-disk layout shared with :class:`LocalBackend`.
     """
-    if not _is_plain_name(filename):
+    if not is_plain_name(filename):
         return None
-    from celerp.config import settings  # lazy: settings not ready at import time
-    root = (settings.data_dir / "static" / "attachments" / str(company_id)).resolve()
+    root = company_attachment_dir(company_id).resolve()
     target = (root / filename).resolve()
     if target.parent != root or not target.is_file():
         return None
@@ -283,7 +344,7 @@ class S3Backend:
         content: bytes,
         mime: str,
     ) -> str:
-        if not _is_plain_name(att_id):
+        if not is_plain_name(att_id):
             raise ValueError(f"Invalid attachment id: {att_id!r}")
         key = f"attachments/{company_id}/{att_id}{_stored_extension(mime)}"
 
@@ -318,7 +379,7 @@ class S3Backend:
         return await self._read_name(company_id, stored_id + _stored_extension(mime), max_bytes)
 
     async def _read_name(self, company_id: str, name: str, max_bytes: int) -> bytes | None:
-        if not _is_plain_name(name):
+        if not is_plain_name(name):
             return None
         async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
             try:
@@ -335,13 +396,13 @@ class S3Backend:
 
     async def delete(self, company_id: str, stored_id: str, mime: str) -> None:
         name = stored_id + _stored_extension(mime)
-        if not _is_plain_name(name):
+        if not is_plain_name(name):
             raise ValueError(f"Invalid attachment id: {stored_id!r}")
         async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
             await client.delete_object(Bucket=self._bucket, Key=f"attachments/{company_id}/{name}")
 
     async def delete_company(self, company_id: str) -> None:
-        if not _is_plain_name(str(company_id)):
+        if not is_plain_name(str(company_id)):
             raise ValueError(f"Invalid company id: {company_id!r}")
         prefix = f"attachments/{company_id}/"
         async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
@@ -589,6 +650,35 @@ def _backend_holding(url: str) -> StorageBackend:
     return get_backend() if url.startswith(("http://", "https://")) else LocalBackend()
 
 
+def company_file_name(company_id, url) -> str | None:
+    """The stored file name when ``url`` is a file stored for this company by any backend,
+    otherwise None."""
+    if not isinstance(url, str) or not url.startswith(("/", "http://", "https://")):
+        return None
+    marker = f"attachments/{company_id}/"
+    at = url.find(marker)
+    if at < 0 or (at and url[at - 1] != "/"):
+        return None
+    name = url[at + len(marker):]
+    return name if is_plain_name(name) else None
+
+
+async def read_company_file(company_id, url: str, max_bytes: int) -> bytes | None:
+    """Content of a file stored for this company, read through the backend holding it;
+    None when it is missing or larger than ``max_bytes``."""
+    return await _backend_holding(url).read(str(company_id), url, max_bytes)
+
+
+async def store_company_file(company_id, name: str, content: bytes) -> str:
+    """Store ``content`` for this company under the stored file name ``name`` through the
+    configured backend; returns the new URL. Raises ValueError when ``name`` does not end in
+    the stored extension of an allowed type."""
+    mime = stored_file_type(name)
+    if mime is None:
+        raise ValueError(f"Unsupported file type: {name}")
+    return await get_backend().store(str(company_id), name.rpartition(".")[0], content, mime)
+
+
 async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | None:
     """Return the list thumbnail bytes of a stored image attachment, or None.
 
@@ -602,7 +692,7 @@ async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | 
     global _thumbnail_jobs
     att_id = str(attachment.get("id") or "")
     mime = attachment.get("mime")
-    if mime not in _IMAGE_MIMES or not _is_plain_name(att_id):
+    if mime not in _IMAGE_MIMES or not is_plain_name(att_id):
         return None
     backend = _backend_holding(str(attachment.get("url") or ""))
     try:

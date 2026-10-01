@@ -142,10 +142,10 @@ def test_full_manufacturing_journey(page, ui_server, api):
     block.locator(".wo-action-select").first.select_option(value="complete")
     _wait_status("completed")
     # Completed work orders are hidden by default via the Status filter (no toggle), but the row is
-    # still rendered (just filtered out of view) — confirm it exists and is hidden.
-    page.wait_for_selector("#wo-orders-table", timeout=8000)
+    # still rendered (just filtered out of view) — confirm it exists and is hidden. The API can
+    # report the new status before the page's re-rendered table arrives, so wait for the row.
     badge = page.locator("#wo-orders-table .badge:has-text('Completed')")
-    assert badge.count() >= 1, "completed work order should be rendered"
+    badge.first.wait_for(state="attached", timeout=8000)
     deadline = _t2.time() + 5
     while _t2.time() < deadline and badge.first.is_visible():
         _t2.sleep(0.2)

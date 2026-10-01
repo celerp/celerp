@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import celerp.connectors as connectors
 from celerp.connectors.base import SyncDirection, SyncEntity
+from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.db import get_session
 from celerp.services.auth import (
     get_current_company_id,
@@ -308,7 +309,25 @@ async def store_credentials(
             "detail": "Disconnect the existing connector before changing credentials.",
         }
 
+    store_ctx = ConnectorContext(
+        company_id=str(company_id),
+        access_token=f"{payload.consumer_key}:{payload.consumer_secret}",
+        store_handle=store_url or None,
+    )
+    # The store is checked against the company's records, and its old product
+    # links become history, in the same commit that makes the company its owner.
     try:
+        await bind_connector_store(session, company_id, connector, store_ctx)
+    except ConnectorStoreChangedError as exc:
+        await session.rollback()
+        return {"ok": False, "error": "store_changed", "detail": str(exc)}
+
+    try:
+        if connector_name in PRODUCT_CHANNEL_PLATFORMS:
+            from celerp_inventory.services import detach_external_links_for_platform
+            await detach_external_links_for_platform(
+                session, company_id, connector_name
+            )
         await session.commit()
         config = await lock_connector_operation(
             session, company_id, connector_name, require_owner=True, exclusive=True
@@ -360,16 +379,6 @@ async def store_credentials(
             }
         return {"ok": False, "error": error, "detail": detail}
 
-    store_ctx = ConnectorContext(
-        company_id=str(company_id),
-        access_token=f"{payload.consumer_key}:{payload.consumer_secret}",
-        store_handle=store_url or None,
-    )
-    try:
-        await bind_connector_store(session, company_id, connector, store_ctx)
-    except ConnectorStoreChangedError as exc:
-        return await _failure("store_changed", str(exc))
-
     try:
         # Remove any stale remote state before starting the new generation.
         await revoke_connector_remote_state(company_id, connector_name)
@@ -382,11 +391,6 @@ async def store_credentials(
         }
 
     try:
-        if connector_name in {"shopify", "woocommerce"}:
-            from celerp_inventory.services import detach_external_links_for_platform
-            await detach_external_links_for_platform(
-                session, company_id, connector_name
-            )
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
             r = await client.post(
                 f"{relay_http_url()}/tokens/{connector_name}",
@@ -487,7 +491,7 @@ async def revoke_credentials(
         return failure
 
     try:
-        if connector_name in {"shopify", "woocommerce"}:
+        if connector_name in PRODUCT_CHANNEL_PLATFORMS:
             from celerp_inventory.services import detach_external_links_for_platform
             await detach_external_links_for_platform(
                 session, company_id, connector_name
@@ -672,7 +676,7 @@ async def set_item_sync(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Enable or disable catalog product synchronization for one connected channel."""
-    if connector_name not in {"shopify", "woocommerce"}:
+    if connector_name not in PRODUCT_CHANNEL_PLATFORMS:
         raise HTTPException(status_code=404, detail="Unsupported catalog connector")
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")

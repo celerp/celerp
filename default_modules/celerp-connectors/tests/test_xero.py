@@ -49,7 +49,11 @@ async def test_sync_products_skips_no_code(xero, ctx_xero, mock_upsert_item, xer
 
 
 @pytest.mark.asyncio
-async def test_sync_orders_filters_accrec(xero, ctx_xero, mock_upsert_invoice_xero, xero_relay):
+async def test_sync_orders_filters_accrec(xero, ctx_xero, mock_upsert_invoice_xero, xero_relay, monkeypatch):
+    async def _nothing_queued(*_args):
+        return []
+
+    monkeypatch.setattr("celerp.connectors.outbound_queue.queued_payloads", _nothing_queued)
     with respx.mock:
         respx.get(f"{xero_relay}/Invoices").mock(
             return_value=httpx.Response(200, json={"Invoices": [

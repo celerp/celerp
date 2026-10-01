@@ -67,14 +67,11 @@ def _consume_restore_notice() -> dict | None:
 
 def _restore_notice_message(notice: dict) -> str:
     """One readable sentence block for the post-restore login banner."""
-    from celerp.services.backup_import import missing_modules_sentence
     company = notice.get("company_name") or "backup"
     parts = [t("auth.restore_notice_message", company=company)]
-    if notice.get("schema_warning"):
-        parts.append(str(notice["schema_warning"]))
-    warnings = list(notice.get("warnings") or [])
-    if warnings:
-        parts.append(missing_modules_sentence(warnings))
+    parts.extend(str(w) for w in notice.get("warnings") or [])
+    if notice.get("safety_archive"):
+        parts.append(t("system_recovery.safety_saved", path=notice["safety_archive"]))
     return " ".join(parts)
 
 
@@ -143,7 +140,7 @@ def setup_routes(app):
             notice = flash(t("settings.password_changed"), kind="success")
         elif (restore_notice := _consume_restore_notice()) is not None:
             notice = flash(_restore_notice_message(restore_notice),
-                           kind="warning" if (restore_notice.get("warnings") or restore_notice.get("schema_warning")) else "success")
+                           kind="warning" if restore_notice.get("warnings") else "success")
         elif request.query_params.get("imported"):
             notice = flash(t("auth.backup_restored_signin"), kind="success")
         else:
@@ -228,7 +225,7 @@ def setup_routes(app):
         from ui.api_client import setup_code_required as _code_req
         return auth_shell(
             _setup_import_form(setup_code_required=await _code_req()),
-            title=page_title("page.restore_from_backup"),
+            title=page_title("system_recovery.title"),
         )
 
     @app.post("/setup/import-backup")
@@ -244,7 +241,7 @@ def setup_routes(app):
         file = form.get("backup_file")
         setup_code = str(form.get("setup_code", "")).strip()
         if not file or not hasattr(file, "read"):
-            return auth_shell(_setup_import_form(error=t("auth.select_backup_file")), title=page_title("page.restore_from_backup"))
+            return auth_shell(_setup_import_form(error=t("auth.select_backup_file")), title=page_title("system_recovery.title"))
         code_required = await api.setup_code_required()
         if code_required and not setup_code:
             return auth_shell(
@@ -252,7 +249,7 @@ def setup_routes(app):
                     error=t("auth.setup_code_required"),
                     setup_code_required=True,
                 ),
-                title=page_title("page.restore_from_backup"),
+                title=page_title("system_recovery.title"),
             )
         if getattr(file, "size", None) == 0:
             return auth_shell(
@@ -260,7 +257,7 @@ def setup_routes(app):
                     error=t("auth.file_empty"),
                     setup_code_required=code_required,
                 ),
-                title=page_title("page.restore_from_backup"),
+                title=page_title("system_recovery.title"),
             )
         try:
             await file.seek(0)
@@ -289,27 +286,20 @@ def setup_routes(app):
                     _setup_import_form(
                         error=detail, setup_code_required=code_required
                     ),
-                    title=page_title("page.restore_from_backup"),
+                    title=page_title("system_recovery.title"),
                 )
-            # Success - surface missing-module / schema warnings (if any) on the form
+            # Success - surface missing-module warnings (if any) on the form
             warnings: list[str] = []
-            schema_warning: str | None = None
             restart_scheduled = False
             try:
                 payload = r.json()
                 warnings = list(payload.get("warnings") or [])
-                schema_warning = payload.get("schema_warning") or None
                 restart_scheduled = bool(payload.get("restart_scheduled"))
             except Exception:
                 warnings = []
-            if warnings or schema_warning:
+            if warnings:
                 # Show a non-blocking warning page with "Continue anyway" link
-                parts: list[str] = []
-                if schema_warning:
-                    parts.append(schema_warning)
-                if warnings:
-                    from celerp.services.backup_import import missing_modules_sentence
-                    parts.append(missing_modules_sentence(warnings))
+                parts: list[str] = [str(w) for w in warnings]
                 if restart_scheduled:
                     parts.append(t("auth.restore_restart_note"))
                 warn_msg = t("auth.restore_complete_but") + " ".join(parts)
@@ -318,7 +308,7 @@ def setup_routes(app):
                         warning=warn_msg,
                         continue_to="/login?imported=1",
                     ),
-                    title=page_title("page.restore_from_backup"),
+                    title=page_title("system_recovery.title"),
                 )
         except httpx.TimeoutException:
             return auth_shell(
@@ -326,7 +316,7 @@ def setup_routes(app):
                     error=t("auth.import_timed_out"),
                     setup_code_required=code_required,
                 ),
-                title=page_title("page.restore_from_backup"),
+                title=page_title("system_recovery.title"),
             )
         except Exception as exc:
             return auth_shell(
@@ -334,7 +324,7 @@ def setup_routes(app):
                     error=t("auth.connection_error", exc=repr(exc)),
                     setup_code_required=code_required,
                 ),
-                title=page_title("page.restore_from_backup"),
+                title=page_title("system_recovery.title"),
             )
         return RedirectResponse("/login?imported=1", status_code=302)
 
@@ -637,7 +627,9 @@ async def _unbootstrapped_gate(request: Request):
 
 
 def _setup_chooser(code_required: bool) -> FT:
-    """First-run landing: every way to start, one card each."""
+    """First-run landing: every way to start, one card each, and below them the small
+    link to whole-installation recovery."""
+    from ui.routes.company_backup import BOOTSTRAP as RESTORE
     from ui.routes.migrations import BOOTSTRAP, chooser, choice_card
     # The sample run needs the setup code when one is configured; the migration
     # source page asks for it next to its sample button.
@@ -652,9 +644,10 @@ def _setup_chooser(code_required: bool) -> FT:
         [
             choice_card(t("setup.card_new"), t("setup.card_new_desc"), href="/setup/fresh"),
             choice_card(t("setup.card_move"), t("setup.card_move_desc"), href=BOOTSTRAP.base),
+            choice_card(t("setup.card_restore"), t("setup.card_restore_desc"), href=RESTORE.base),
             sample,
-            choice_card(t("setup.card_restore"), t("setup.card_restore_desc"), href="/setup/import-backup"),
         ],
+        P(A(t("setup.recover_installation"), href="/setup/import-backup", cls="auth-link"), cls="auth-alt-action"),
     )
 
 
@@ -734,9 +727,10 @@ def _setup_import_form(
             cls="auth-card",
         )
     return Div(
-        auth_header(t("page.restore_from_backup"), t("auth.upload_backup_desc")),
+        auth_header(t("system_recovery.title"), t("auth.upload_backup_desc")),
         Form(
             flash(error) if error else "",
+            P(t("system_recovery.scope"), cls="flash flash--warning"),
             Div(
                 Label(t("auth.backup_file_label"), For="backup_file", cls="form-label"),
                 Input(type="file", id="backup_file", name="backup_file",

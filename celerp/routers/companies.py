@@ -43,6 +43,7 @@ from celerp.services.permissions import (
 )
 from celerp.schemas.numbers import FiniteFloat
 from celerp.tax_regimes import get_regime, TAX_REGIMES
+from celerp.services import company_lifecycle
 from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
@@ -330,6 +331,13 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
             raise HTTPException(
                 status_code=422,
                 detail="Business type is set through POST /companies/me/business-type, not company settings",
+            )
+        # The record of which company backup a company was restored from is written only by
+        # the restore itself; a restore of that backup finds its company by it.
+        if "restored_backup" in payload.settings:
+            raise HTTPException(
+                status_code=422,
+                detail="The restored backup record is set only by restoring a company backup, not company settings",
             )
         merged = {**(company.settings or {}), **payload.settings}
         if "timezone" in payload.settings:
@@ -694,6 +702,7 @@ async def create_user(
     if payload.role not in ROLE_LEVELS:
         raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))}")
     _assert_role_assignable(caller_role, payload.role)
+    await lock_company(session, company_id)
 
     # Check if user with this email already exists globally; if so, just link them.
     existing_user = (await session.execute(select(User).where(User.email == payload.email))).scalar_one_or_none()
@@ -756,6 +765,7 @@ async def patch_user(
     from celerp.models.accounting import UserCompany
     from sqlalchemy import func as _func
 
+    await lock_company(session, company_id)
     user = (await session.execute(
         select(User).where(User.id == user_id).with_for_update()
     )).scalar_one_or_none()
@@ -2263,6 +2273,7 @@ async def deactivate_company(
     import re as _re2
     import sqlalchemy as sa
     from celerp.connectors.ownership import (
+        PRODUCT_CHANNEL_PLATFORMS,
         RESET_STATUS_DEACTIVATED,
         lock_connector_maintenance,
         record_connector_reset,
@@ -2285,6 +2296,20 @@ async def deactivate_company(
         .where(ConnectorConfig.company_id == company_id_str)
         .with_for_update()
     )).all())
+    # Product links become history before anything is revoked remotely, so a
+    # failure here leaves the company and its connections untouched.
+    import celerp_inventory.services as inventory_services
+    for platform in PRODUCT_CHANNEL_PLATFORMS:
+        try:
+            await inventory_services.detach_external_links_for_platform(
+                session, company_id_str, platform
+            )
+        except Exception as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=503,
+                detail=f"Could not disconnect {platform}; the company was not deactivated.",
+            ) from exc
     for config in configs:
         connector_name = config.connector
         webhook_ids = list(config.webhook_ids or [])
@@ -2336,27 +2361,22 @@ async def deactivate_company(
 @router.post("/me/reactivate", dependencies=[require_permission("manage_company_lifecycle")])
 async def reactivate_company(
     company_id=Depends(get_current_company_id),
+    user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Reactivate a previously deactivated company. Admin only.
+    """Reactivate the session's company, if it was deactivated. Owner only.
 
     Connectors disconnected by the deactivation stay disconnected; their names
     are returned so the caller can prompt for an explicit reconnect."""
-    import re as _re2
-    from celerp.connectors.ownership import connectors_awaiting_reconnect
-    company = await session.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-    company.is_active = True
-    # Restore slug to its original form (strip deactivated suffix).
-    company.slug = _re2.sub(r"-deactivated-\d+$", "", company.slug)
-    reconnect = await connectors_awaiting_reconnect(session, company_id)
-    await session.commit()
+    try:
+        done = await company_lifecycle.reactivate_company(session, company_id, user.id)
+    except company_lifecycle.NotAnOwner as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
     return {
         "ok": True,
-        "company_id": str(company_id),
+        "company_id": str(done.company_id),
         "is_active": True,
-        "connectors_to_reconnect": reconnect,
+        "connectors_to_reconnect": done.connectors_to_reconnect,
     }
 
 
