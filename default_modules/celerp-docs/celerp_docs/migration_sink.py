@@ -65,6 +65,8 @@ CONTACT = "contact"
 ACCOUNT = "account"
 TAX = "tax"
 PAYABLE_CODE = "2110"
+# The control account an imported document's balance sits on, by document type.
+_PARTY_ACCOUNT = {"invoice": "1120", "credit_note": "1120", "bill": PAYABLE_CODE, "debit_note": PAYABLE_CODE}
 
 # Celerp status of an imported document, by type and source status. Issued sales
 # and purchase documents arrive unpaid; orders and quotes carry no money.
@@ -343,6 +345,7 @@ async def _post_document(
                 context.session, company_id=context.company_id, user_id=context.user_id,
                 doc_id=outcome.entity_id, doc_type=record.doc_type.value,
                 contact_id=contacts.get(record.contact_external_id or ""),
+                party_account=_PARTY_ACCOUNT[record.doc_type.value],
                 entries=_entries(record, base, accounts), ts=_date(record),
                 cogs_allocations=_cogs_allocations(record, base, delivered),
             )
@@ -381,6 +384,7 @@ async def _import_debit_note(
                 context.session, company_id=context.company_id, user_id=context.user_id,
                 doc_id=bill_id, doc_type=record.doc_type.value,
                 contact_id=contacts.get(record.contact_external_id or ""),
+                party_account=_PARTY_ACCOUNT[record.doc_type.value],
                 entries=_entries(record, base, accounts), ts=_date(record), suffix=suffix,
             )
             entry, _amount = await apply_doc_payment(

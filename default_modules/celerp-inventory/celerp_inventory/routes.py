@@ -48,7 +48,6 @@ from .services import (
 )
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
-from celerp.services.auto_je import create_for_item_transform
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility, restricted_field_keys
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.demo import demo_item_ids
@@ -3741,17 +3740,6 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         source="api",
         idempotency_key=idempotency_key,
         metadata_={},
-    )
-
-    # 6. Auto JE
-    await create_for_item_transform(
-        session,
-        company_id=company_id,
-        user_id=user.id,
-        parent_entity_id=entity_id,
-        parent_cost_total=parent_cost_total,
-        parent_category=parent.state.get("category", ""),
-        child_category=payload.child_category,
     )
 
     await session.commit()

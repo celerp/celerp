@@ -2831,7 +2831,7 @@ async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = 
     await auto_je.void_for_doc_payment(
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
         payment_index=payload.payment_index, amount=to_stored_float(amount_d),
-        bank_account_code=payment.get("bank_account") or "1111",
+        bank_account_code=payment.get("bank_account"),
         doc_type=row.state.get("doc_type", "invoice"), refund_date=payload.payment_date,
         base_currency=(company.settings.get("currency", "USD") if company else "USD"),
         doc_rate=float(row.state.get("conversion_rate") or 1),
@@ -2887,10 +2887,9 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
     )
     doc_type = row.state.get("doc_type", "invoice")
     if payment.get("method") not in ("credit_note", "applied"):
-        # Reverse the payment JE - use stored bank_account; fall back to "1111"
-        # (default account that always exists) for historical payments recorded
-        # before bank_account was required.
-        bank_code = payment.get("bank_account") or "1111"
+        # Reverse the payment JE. A payment recorded before bank_account was required
+        # has none stored; the reversal then mirrors its original entry.
+        bank_code = payment.get("bank_account")
         _void_company = await session.get(Company, company_id)
         _void_base_currency = (_void_company.settings.get("currency", "USD") if _void_company else "USD")
         await auto_je.void_for_doc_payment(
@@ -3895,10 +3894,10 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     if doc_type == "purchase_order":
         # A purchase order books the goods this receipt brought in: Dr inventory / Cr AP. The
         # bill it becomes books only what its receipts have not.
-        debits: dict[str, float] = {}
+        debits: dict = {}
         for it, (_, _, received_cost) in zip(payload.received_items, priced):
-            account = auto_je.po_receipt_account(row.state, it.receive_as)
-            debits[account] = debits.get(account, 0.0) + received_cost
+            role = auto_je.po_receipt_role(row.state, it.receive_as)
+            debits[role] = debits.get(role, 0.0) + received_cost
         await auto_je.create_for_po_receipt(
             session, company_id=company_id, user_id=user.id, po_id=entity_id,
             receipt_key=key, debits=debits,
@@ -3907,7 +3906,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     elif doc_type == "bill" and landed_drawdown:
         # A bill already recognised goods + AP at finalize (create_for_bill_conversion); receiving must
         # NOT re-post that JE (it would double-count inventory and AP). Receipt only capitalises the
-        # received landed cost from the clearing accounts into 1130-P (Dr 1130-P / Cr clearing).
+        # received landed cost from the clearing accounts into inventory (Dr inventory / Cr clearing).
         await auto_je.create_for_landed_capitalisation(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id,
             landed_by_kind=landed_drawdown, receive_suffix=key,
@@ -4217,7 +4216,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     if owned:
         await auto_je.create_for_supplier_return(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id, return_key=key,
-            goods_account=auto_je.po_receipt_account(row.state), goods=goods_cost,
+            goods_role=auto_je.po_receipt_role(row.state), goods=goods_cost,
             landed_by_kind=landed_by_kind, return_date=datetime.now(timezone.utc).date().isoformat(),
         )
     entry = await emit_event(
@@ -8532,8 +8531,6 @@ async def adjust_audit(
         l["adjustment_unit_cost"] = unit_cost
         l["adjusted"] = True
         adjusted += 1
-    if shrink_val > 0:
-        await _validate_writeoff_account(session, company_id, auto_je._AUDIT_SHRINKAGE_ACCT)
     await auto_je.create_for_audit_adjustment(
         session, company_id=company_id, user_id=user.id, list_id=entity_id,
         shrinkage_value=float(shrink_val), overage_value=float(over_val), cycle=cycle,
@@ -8907,7 +8904,7 @@ async def write_off_stock(
     total_value = to_stored_float(sum(debits.values(), Decimal(0)))
     entries = [{"account": acct, "debit": to_stored_float(val), "credit": 0.0} for acct, val in debits.items()]
     if entries:
-        entries.append({"account": auto_je._INVENTORY_ACCT, "debit": 0.0, "credit": total_value})
+        entries.append(await auto_je.stock_relief_line(session, company_id, total_value))
     await auto_je.create_for_line_adjustment(
         session, company_id=company_id, user_id=user.id, list_id=entity_id,
         kind="writeoff", entries=entries, cycle=cycle,

@@ -227,8 +227,11 @@ async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUI
 
 async def seed_chart_of_accounts_hook(*, session: AsyncSession, company_id: uuid.UUID) -> None:
     """Lifecycle hook called via on_company_created slot."""
+    from celerp.services.account_roles import reconcile_company
+
     await seed_chart_of_accounts(session, company_id)
     await _seed_default_bank_account(session, company_id)
+    await reconcile_company(session, company_id)
 
 
 async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
@@ -237,21 +240,26 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     Seeds the chart of accounts for every company, active or deactivated, that has none
     yet. This handles the case where accounting is enabled after the company was already
     created (e.g. first-run with no modules, then preset applied), and a deactivated
-    company then works when it is reactivated. A company staged for a migration is left
-    alone: its chart comes from the imported books.
+    company then works when it is reactivated. Then every company's posting accounts are
+    reconciled with its chart (account_roles.reconcile_company). A company staged for a
+    migration is left alone: its chart and posting accounts come from the imported books
+    when the migration is finalized.
     """
     from celerp.models.company import Company
     from celerp.services import migrations
+    from celerp.services.account_roles import reconcile_company
     from sqlalchemy import select as _select
 
-    company_ids = (await session.execute(
+    unseeded = set((await session.execute(
         _select(Company.id).where(~_select(Account.id).where(Account.company_id == Company.id).exists())
-    )).scalars().all()
-    for company_id in company_ids:
+    )).scalars().all())
+    for company_id in (await session.execute(_select(Company.id).order_by(Company.id))).scalars().all():
         if await migrations.is_company_migration_staged(session, company_id):
             continue
-        await seed_chart_of_accounts(session, company_id)
-        await _seed_default_bank_account(session, company_id)
+        if company_id in unseeded:
+            await seed_chart_of_accounts(session, company_id)
+            await _seed_default_bank_account(session, company_id)
+        await reconcile_company(session, company_id)
 
 
 def _account_to_dict(acc: Account) -> dict:

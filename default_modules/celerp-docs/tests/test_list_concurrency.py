@@ -162,11 +162,13 @@ async def test_get_list_for_update_serializes_concurrent_writers(_db_engine):
 
 
 async def _seed_chart(factory, company_id):
-    """Give the company its default chart so the write-off account validation and the Inventory
-    credit both resolve real accounts."""
+    """Give the company its default chart and posting accounts so the write-off account
+    validation and the Inventory credit both resolve real accounts."""
+    from celerp.services.account_roles import reconcile_company
     from celerp_accounting.routes import seed_chart_of_accounts
     async with factory() as s:
         await seed_chart_of_accounts(s, company_id)
+        await reconcile_company(s, company_id)
         await s.commit()
 
 

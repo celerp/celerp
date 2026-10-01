@@ -31,6 +31,14 @@ POSTING_ROLES_SCHEMA = 1
 ROLES_KEY = "posting_roles"
 SCOPES_KEY = "posting_role_scopes"
 SCHEMA_KEY = "posting_roles_schema"
+# The inventory account every lot without its own origin was valued in. Set once,
+# only when the company's history proves it: before lots carried their origin,
+# every automatic goods movement posted to the seeded inventory leaf.
+LEGACY_LOT_ACCOUNT_KEY = "posting_legacy_lot_account"
+LEGACY_LOT_ACCOUNT = "1130-P"
+
+# The item-state field holding the inventory account a lot's value sits in.
+LOT_ACCOUNT_FIELD = "inventory_account_code"
 
 # Where a user fixes a missing or invalid role.
 POSTING_ACCOUNTS_PATH = "/settings/accounting?tab=posting-accounts"
@@ -157,6 +165,11 @@ LANDED_ROLE_BY_KIND: dict[str, AccountRole] = {
     "import_vat": R.LANDED_IMPORT_VAT,
 }
 LANDED_KIND_BY_ROLE: dict[str, str] = {role.value: kind for kind, role in LANDED_ROLE_BY_KIND.items()}
+
+# Roles whose accounts hold the value of goods on hand: stock itself, its opening
+# balance, and landed cost waiting to be capitalized into it.
+INVENTORY_VALUE_ROLES: frozenset[AccountRole] = frozenset({
+    R.INVENTORY, R.INVENTORY_PURCHASED, R.INVENTORY_OPENING, *LANDED_ROLE_BY_KIND.values()})
 
 # Roles grouped by the workflow that needs them, for migration readiness and the
 # Settings panel. A group's roles only block finalization when the company uses it.

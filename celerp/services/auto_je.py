@@ -14,8 +14,19 @@ import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal as _Dec
 
+from celerp.accounting_roles import INVENTORY_VALUE_ROLES, LANDED_ROLE_BY_KIND, AccountRole
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
+from celerp.services.account_roles import (
+    AmbiguousOriginError,
+    PostingRoleError,
+    current_settings,
+    line_has_role,
+    line_roles,
+    resolve,
+    resolve_many,
+    scope_codes,
+)
 from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
@@ -24,18 +35,21 @@ from celerp.services.units import is_non_stock_line
 from sqlalchemy import or_
 from sqlalchemy import select as _select
 
-# Canonical goods-inventory account. Every goods movement - purchase/receive, bill, manufacturing,
-# COGS relief, audit adjustment, landed-cost capitalisation - posts here so the asset account and its
-# COGS relief reconcile against the SAME account. 1130 is the parent rollup; 1130-P is the postable
-# leaf where goods actually live (receive/bill/mfg all debit it). The previous COGS-side "1300" was a
-# placeholder that is not in the chart of accounts, so COGS credits were stranded and 1130-P was never
-# relieved on sale.
-_INVENTORY_ACCT = "1130-P"
+R = AccountRole
 
-# Where a settlement exchange difference lands. Seeded in the default chart and
-# backfilled for every company holding the 6000 parent, so it is always there to
-# post to.
-_FX_DIFFERENCE_ACCT = "6960"
+
+def _line(code: str, role, debit=0.0, credit=0.0) -> dict:
+    """A journal line posted for ``role``: the role rides on the line as its snapshot."""
+    return {"account": code, "account_roles": [str(role)], "debit": debit, "credit": credit}
+
+
+def _origin_line(settings: dict, code: str, role, debit=0.0, credit=0.0) -> dict:
+    """A line continuing a balance on the account it was recognized on. The role rides
+    along when that account has served it; an account recorded before the company had
+    posting accounts is left for the books to classify once it does."""
+    if code in scope_codes(settings, role):
+        return _line(code, role, debit, credit)
+    return {"account": code, "debit": debit, "credit": credit}
 
 
 # Ledger metadata key set on a doc.created written by a raw snapshot import. It is
@@ -63,7 +77,21 @@ def import_auto_je_kind(data: dict) -> str | None:
     return None
 
 
-def _balanced_with_fx_difference(entries: list[dict]) -> list[dict]:
+def _exchange_gap(entries: list[dict]) -> _Dec:
+    return (sum((to_decimal(e.get("debit")) for e in entries), _Dec(0))
+            - sum((to_decimal(e.get("credit")) for e in entries), _Dec(0)))
+
+
+def _fx_difference_role(entries: list[dict]) -> AccountRole | None:
+    """The role of the exchange difference that balances ``entries``: a gain when the
+    credit side is short, a loss when the debit side is, None when they agree."""
+    gap = _exchange_gap(entries)
+    if gap == 0:
+        return None
+    return R.FX_GAIN if gap > 0 else R.FX_LOSS
+
+
+def _balanced_with_fx_difference(entries: list[dict], difference: dict | None) -> list[dict]:
     """The entry, plus the exchange difference line that makes it balance.
 
     A receivable or payable can only be cleared at the rate it was raised at, and
@@ -75,24 +103,20 @@ def _balanced_with_fx_difference(entries: list[dict]) -> list[dict]:
 
     The side is not decided here, it is read off the entry: whichever side is
     short takes the line. One rule covers a receipt and a payment, a gain and a
-    loss, without a sign convention to get backwards.
+    loss, without a sign convention to get backwards. ``difference`` is the line's
+    account and roles: the exchange gain or loss account for new recognition, or the
+    original entry's own difference line when reversing it.
 
     Returned untouched when the two rates agree, which is every document in the
     company's own currency. A difference of zero is not a difference, and a line
     for it would put an account with no movement on the statement of every
     document ever settled.
     """
-    gap = (sum(to_decimal(e.get("debit")) for e in entries)
-           - sum(to_decimal(e.get("credit")) for e in entries))
+    gap = _exchange_gap(entries)
     if gap == 0:
         return entries
     short_side = "credit" if gap > 0 else "debit"
-    return entries + [{
-        "account": _FX_DIFFERENCE_ACCT,
-        "debit": 0.0,
-        "credit": 0.0,
-        short_side: to_stored_float(abs(gap)),
-    }]
+    return entries + [{**(difference or {}), "debit": 0.0, "credit": 0.0, short_side: to_stored_float(abs(gap))}]
 
 
 class UnbalancedJournalEntry(ValueError):
@@ -338,20 +362,27 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     cycle = int(doc.get("revert_count", 0))
     cycle_suffix = f"fin:{cycle}" if cycle else "fin"
     je_type_key = f"invoice.finalized:{cycle}" if cycle else "invoice.finalized"
-    entries = [
-        {"account": "1120", "debit": total, "credit": 0.0},
-        {"account": "4100", "debit": 0.0, "credit": revenue},
-        {"account": "2120", "debit": 0.0, "credit": tax},
-    ]
     # Recognize COGS with revenue: cost of the goods sold posts on the same JE, dated
     # the invoice date, so the P&L matches even when the invoice is never fulfilled.
     # span_lots is set only by the live finalize route, where a line exceeding its
     # bound lot recognizes at the sibling lots that will actually be drawn.
     cogs_result = await compute_doc_cogs(session, company_id, doc, span_lots=span_lots, doc_id=doc_id)
     cogs = cogs_result.total
+    roles = [R.RECEIVABLE, R.SALES_REVENUE]
+    if tax:
+        roles.append(R.TAX_OUTPUT)
     if cogs > 0:
-        entries.append({"account": "5100", "debit": cogs, "credit": 0.0})
-        entries.append({"account": _INVENTORY_ACCT, "debit": 0.0, "credit": cogs})
+        roles += [R.COGS, R.INVENTORY_PURCHASED]
+    acc = await resolve_many(session, company_id, roles)
+    entries = [
+        _line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=total),
+        _line(acc[R.SALES_REVENUE], R.SALES_REVENUE, credit=revenue),
+    ]
+    if tax:
+        entries.append(_line(acc[R.TAX_OUTPUT], R.TAX_OUTPUT, credit=tax))
+    if cogs > 0:
+        entries.append(_line(acc[R.COGS], R.COGS, debit=cogs))
+        entries.append(_line(acc[R.INVENTORY_PURCHASED], R.INVENTORY_PURCHASED, credit=cogs))
     metadata_ = _recognition_metadata("doc.finalized", doc_id, cogs_result.allocations)
     await _emit_auto_posted_je(
         session,
@@ -367,11 +398,69 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     )
 
 
-async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", doc_rate: float, settlement_rate: float) -> None:
+_PURCHASE_TYPES = ("bill", "purchase_order")
+
+
+def _control_role(doc_type: str) -> AccountRole:
+    """The party control role a document's balance sits in."""
+    return R.PAYABLE if doc_type in _PURCHASE_TYPES else R.RECEIVABLE
+
+
+async def party_origin(session, company_id, doc_id: str, role, settings: dict | None = None) -> str | None:
+    """The control account a document's receivable or payable was recognized on, read
+    off its own recognition entry: the line that snapshots the role, or, for an entry
+    from before snapshots, the line whose account served the role then, else the line
+    the source system named the party on. None when the document recognized no
+    balance. More than one account is reported, never guessed."""
+    if settings is None:
+        settings = await current_settings(session, company_id)
+    rows = [row for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
+            if suffix.split(":")[0] in ("fin", "bill")]
+    posted = [row for row in rows if (row.state or {}).get("status") == "posted"]
+    codes: set[str] = set()
+    for row in posted or rows:
+        entries = (row.state or {}).get("entries") or []
+        found = {e["account"] for e in entries if line_has_role(settings, e, role)}
+        if not found:
+            found = {e["account"] for e in entries if e.get("contact") and e.get("account_roles") is None}
+        codes |= found
+    if len(codes) > 1:
+        raise AmbiguousOriginError(str(role), f"Document {doc_id}", codes)
+    return next(iter(codes), None)
+
+
+async def _settlement_accounts(session, company_id, *, doc_id: str, control: AccountRole, bank: str | None,
+                               entries_for) -> list[dict]:
+    """A settlement entry: its control line on the document's own origin account, its
+    bank line on ``bank`` (the default deposit account when the payment names none),
+    and any exchange difference, all resolved from one read of the company's roles.
+
+    ``entries_for(control_line, bank_code)`` returns the entry's two lines."""
+    settings = await current_settings(session, company_id)
+    origin = await party_origin(session, company_id, doc_id, control, settings)
+    probe = entries_for(lambda debit=0.0, credit=0.0: {"debit": debit, "credit": credit}, "")
+    roles = [r for r in (None if origin else control, None if bank else R.DEFAULT_DEPOSIT,
+                         _fx_difference_role(probe)) if r is not None]
+    acc = await resolve_many(session, company_id, roles) if roles else {}
+    if origin:
+        def control_line(debit=0.0, credit=0.0):
+            return _origin_line(settings, origin, control, debit, credit)
+    else:
+        def control_line(debit=0.0, credit=0.0):
+            return _line(acc[control], control, debit, credit)
+    if bank:
+        entries = entries_for(control_line, bank)
+    else:
+        entries = entries_for(control_line, acc[R.DEFAULT_DEPOSIT])
+    fx_role = _fx_difference_role(entries)
+    return _balanced_with_fx_difference(entries, _line(acc[fx_role], fx_role) if fx_role else None)
+
+
+async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str | None, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", doc_rate: float, settlement_rate: float) -> None:
     """Create JE for a payment.
 
-    bank_account_code: chart account to debit. Required - no default. Always pass the
-        specific bank sub-account (e.g. "1111"). Omitting raises TypeError at call time.
+    bank_account_code: chart account the cash moves through. None only for a payment
+        recorded without one, which moves through the company's default deposit account.
     doc_type: 'invoice' debits bank/credits AR; 'bill' debits AP/credits bank.
     payment_date: ISO date string (YYYY-MM-DD). Always required.
     payment_index: position of this payment in the payments list (0-based). Used as the
@@ -382,6 +471,9 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     settlement_rate: the rate the cash actually converted at, which converts the bank
         side. Equal to doc_rate unless the payer recorded a rate of their own.
 
+    The receivable or payable cleared is the account the document recognized it on,
+    whatever the role points at today.
+
     Both rates are required - no default. A rate silently defaulting to 1 next to a real
     one would post a fabricated exchange difference, so a caller that omits either raises
     TypeError at call time instead.
@@ -389,24 +481,18 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     ledger_amount = to_base(float(amount), checked_exchange_rate(doc_rate), base_currency)
     bank_amount = to_base(float(amount), checked_exchange_rate(settlement_rate), base_currency)
     paid_key = str(payment_index)
-    if doc_type in ("bill", "purchase_order"):
-        entries = [
-            {"account": "2110", "debit": ledger_amount, "credit": 0.0},
-            {"account": bank_account_code, "debit": 0.0, "credit": bank_amount},
-        ]
-    elif doc_type == "credit_note":
-        # Cash refund of a credit note: money LEAVES the bank and the credit
-        # balance the note held against AR is cleared.
-        entries = [
-            {"account": "1120", "debit": ledger_amount, "credit": 0.0},
-            {"account": bank_account_code, "debit": 0.0, "credit": bank_amount},
-        ]
-    else:
-        entries = [
-            {"account": bank_account_code, "debit": bank_amount, "credit": 0.0},
-            {"account": "1120", "debit": 0.0, "credit": ledger_amount},
-        ]
-    entries = _balanced_with_fx_difference(entries)
+
+    def entries_for(control, bank):
+        bank_line = {"account": bank, "debit": 0.0, "credit": 0.0}
+        if doc_type in _PURCHASE_TYPES or doc_type == "credit_note":
+            # A bill payment clears AP; a credit note's cash refund clears the credit
+            # balance it held against AR. Either way money leaves the bank.
+            return [control(debit=ledger_amount), {**bank_line, "credit": bank_amount}]
+        return [{**bank_line, "debit": bank_amount}, control(credit=ledger_amount)]
+
+    entries = await _settlement_accounts(
+        session, company_id, doc_id=doc_id, control=_control_role(doc_type), bank=bank_account_code,
+        entries_for=entries_for)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -421,8 +507,22 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     )
 
 
-async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float, refund_number: int | None = None, already_given_back: float = 0.0) -> None:
+def _reversal_template(entry: dict) -> dict:
+    """A line on the same account, with the same role snapshot, as ``entry``."""
+    out = {"account": entry["account"], "debit": 0.0, "credit": 0.0}
+    if entry.get("account_roles") is not None:
+        out["account_roles"] = list(entry["account_roles"])
+    return out
+
+
+async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str | None, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float, refund_number: int | None = None, already_given_back: float = 0.0) -> None:
     """Reverse a payment JE, or the refunded share of it, by creating a counter-entry.
+
+    The counter-entry posts to the accounts the payment's own entry posted to - its
+    bank, its receivable or payable, and its exchange difference - never to what the
+    company's roles point at today. A payment with no entry of its own (recorded before
+    automatic entries existed) reverses on its document's origin account and
+    ``bank_account_code``.
 
     refund_date: ISO date for the reversal JE (defaults to today if None). Used when
         void is actually a refund - the date affects bank ledger position.
@@ -450,24 +550,35 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
     else:
         kind, key, trigger = "payrefund", f"refund_{payment_index}_{refund_number}", "doc.payment.refunded"
         memo = f"Auto JE for {doc_id} payment refund (index {payment_index})"
-    if doc_type in ("bill", "purchase_order"):
-        entries = [
-            {"account": bank_account_code, "debit": bank_amount, "credit": 0.0},
-            {"account": "2110", "debit": 0.0, "credit": ledger_amount},
-        ]
-    elif doc_type == "credit_note":
-        # Reverse of the refund's outflow: the money comes back into the bank
-        # and the credit balance is restored against AR.
-        entries = [
-            {"account": bank_account_code, "debit": bank_amount, "credit": 0.0},
-            {"account": "1120", "debit": 0.0, "credit": ledger_amount},
-        ]
+    outflow = doc_type in _PURCHASE_TYPES or doc_type == "credit_note"
+
+    def entries_for(control, bank):
+        bank_line = bank if isinstance(bank, dict) else {"account": bank, "debit": 0.0, "credit": 0.0}
+        if outflow:
+            # The reverse of an outflow: the money comes back into the bank.
+            return [{**bank_line, "debit": bank_amount}, control(credit=ledger_amount)]
+        return [control(debit=ledger_amount), {**bank_line, "credit": bank_amount}]
+
+    original = await session.get(Projection, {"company_id": company_id, "entity_id": f"je:auto:{doc_id}:pay:{payment_index}"})
+    posted = (original.state or {}).get("entries") or [] if original is not None else []
+    if len(posted) >= 2:
+        # The payment's entry is [control, bank] for an outflow and [bank, control] for
+        # a receipt, then its exchange difference, if any.
+        control_entry, bank_entry = (posted[0], posted[1]) if outflow else (posted[1], posted[0])
+        control_template = _reversal_template(control_entry)
+
+        def control_line(debit=0.0, credit=0.0):
+            return {**control_template, "debit": debit, "credit": credit}
+        entries = entries_for(control_line, _reversal_template(bank_entry))
+        difference = _reversal_template(posted[2]) if len(posted) > 2 else None
+        if difference is None and _fx_difference_role(entries) is not None:
+            fx_role = _fx_difference_role(entries)
+            difference = _line((await resolve_many(session, company_id, [fx_role]))[fx_role], fx_role)
+        entries = _balanced_with_fx_difference(entries, difference)
     else:
-        entries = [
-            {"account": "1120", "debit": ledger_amount, "credit": 0.0},
-            {"account": bank_account_code, "debit": 0.0, "credit": bank_amount},
-        ]
-    entries = _balanced_with_fx_difference(entries)
+        entries = await _settlement_accounts(
+            session, company_id, doc_id=doc_id, control=_control_role(doc_type), bank=bank_account_code,
+            entries_for=entries_for)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -485,6 +596,11 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
 async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, cn_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float) -> None:
     """Create JE for credit note application: AR-to-AR transfer.
 
+    The invoice's receivable is credited on the account the invoice recognized it on,
+    and the credit note's own receivable debited on the account it recognized it on; a
+    credit note that recognized nothing of its own (one issued in Celerp) clears against
+    the invoice's account, so the application moves nothing between accounts.
+
     payment_index disambiguates repeated applications (void + re-apply) to the same CN-invoice pair.
     base_currency: company base currency for JE conversion.
     conversion_rate: doc-to-base-currency rate (1.0 for base currency docs).
@@ -492,6 +608,11 @@ async def create_for_cn_application(session, *, company_id, user_id, doc_id: str
     rate = checked_exchange_rate(conversion_rate)
     base_amount = to_base(float(amount), rate, base_currency)
     app_key = f"cn_apply_{cn_id}:{payment_index}"
+    settings = await current_settings(session, company_id)
+    invoice_ar = await party_origin(session, company_id, doc_id, R.RECEIVABLE, settings)
+    if invoice_ar is None:
+        invoice_ar = (await resolve_many(session, company_id, [R.RECEIVABLE]))[R.RECEIVABLE]
+    cn_ar = await party_origin(session, company_id, cn_id, R.RECEIVABLE, settings) or invoice_ar
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -505,8 +626,8 @@ async def create_for_cn_application(session, *, company_id, user_id, doc_id: str
         memo=f"Auto JE for credit note {cn_id} applied to {doc_id}",
         ts=payment_date,
         entries=[
-            {"account": "1120", "debit": 0.0, "credit": base_amount},
-            {"account": "1120", "debit": base_amount, "credit": 0.0},
+            _origin_line(settings, invoice_ar, R.RECEIVABLE, credit=base_amount),
+            _origin_line(settings, cn_ar, R.RECEIVABLE, debit=base_amount),
         ],
         metadata_={"trigger": "cn.applied", "doc_id": doc_id, "cn_id": cn_id},
     )
@@ -519,24 +640,25 @@ def bill_line_kind(line: dict) -> str:
     return kind or ("stock" if line.get("sku") or line.get("item_id") else "expense")
 
 
-def po_receipt_account(doc: dict, receive_as: str = "stock") -> str:
-    """The account a purchase order receipt debits: stock by the order's purchase kind."""
+def po_receipt_role(doc: dict, receive_as: str = "stock") -> AccountRole:
+    """The role a purchase order receipt debits: stock by the order's purchase kind."""
     if receive_as in ("expense", "asset"):
-        return {"expense": "6950", "asset": "1210"}[receive_as]
+        return {"expense": R.GENERAL_EXPENSE, "asset": R.FIXED_ASSETS}[receive_as]
     purchase_kind = str(doc.get("purchase_kind") or "inventory").strip().lower()
-    return {"expense": "6950", "asset": "1210"}.get(purchase_kind, _INVENTORY_ACCT)
+    return {"expense": R.GENERAL_EXPENSE, "asset": R.FIXED_ASSETS}.get(purchase_kind, R.INVENTORY_PURCHASED)
 
 
 async def _post_po_receipt(session, *, company_id, user_id, po_id: str, receipt_key: str | None,
-                           debits: dict[str, float], receive_date: str | None) -> None:
-    """Dr each receipt account / Cr AP (2110) for the sum of the rounded debits."""
+                           debits: dict[AccountRole, float], receive_date: str | None) -> None:
+    """Dr each receipt role's account / Cr AP for the sum of the rounded debits."""
     currency = await company_currency(session, company_id)
-    rounded = {acct: round_money(amount, currency) for acct, amount in debits.items()}
+    rounded = {role: round_money(amount, currency) for role, amount in debits.items()}
     total = sum(rounded.values(), _Dec(0))
     if total <= 0:
         return
-    entries = [{"account": acct, "debit": to_stored_float(amt), "credit": 0.0} for acct, amt in rounded.items() if amt]
-    entries.append({"account": "2110", "debit": 0.0, "credit": to_stored_float(total)})
+    acc = await resolve_many(session, company_id, [*(r for r, amt in rounded.items() if amt), R.PAYABLE])
+    entries = [_line(acc[role], role, debit=to_stored_float(amt)) for role, amt in rounded.items() if amt]
+    entries.append(_line(acc[R.PAYABLE], R.PAYABLE, credit=to_stored_float(total)))
     suffix = f":{receipt_key}" if receipt_key else ""
     await _emit_auto_posted_je(
         session,
@@ -552,21 +674,21 @@ async def _post_po_receipt(session, *, company_id, user_id, po_id: str, receipt_
     )
 
 
-# Party control account and JE id suffix of an imported document's own entry.
-_IMPORTED_DOC_ENTRY = {
-    "invoice": ("1120", "fin"), "credit_note": ("1120", "fin"), "bill": ("2110", "bill"), "debit_note": ("2110", "dn"),
-}
+# JE id suffix of an imported document's own entry.
+_IMPORTED_DOC_SUFFIX = {"invoice": "fin", "credit_note": "fin", "bill": "bill", "debit_note": "dn"}
 
 
 async def create_for_imported_document(
     session, *, company_id, user_id, doc_id: str, doc_type: str, contact_id: str | None,
-    entries: list[dict], ts: str | None, suffix: str | None = None, cogs_allocations: dict | None = None,
+    party_account: str, entries: list[dict], ts: str | None, suffix: str | None = None,
+    cogs_allocations: dict | None = None,
 ) -> None:
     """Post the entry an imported document carries in its source books.
 
     `entries` are the document's own line postings on the accounts the source used,
-    already in base currency; the customer or supplier control account takes the
-    balancing line, named for the contact. The entry takes the id and keys of the
+    already in base currency; `party_account`, the customer or supplier control account
+    the source kept the document's balance on, takes the balancing line, named for the
+    contact. The entry takes the id and keys of the
     document's normal recognition entry (`:fin` for the sales side, `:bill` for the
     purchase side), so a document can carry exactly one of the two. No cost of sales
     is computed: the source's own postings are the whole effect, and
@@ -576,8 +698,7 @@ async def create_for_imported_document(
     no Celerp document: it posts on the bill it notes, `doc_id`, under its own
     `suffix`.
     """
-    party_account, kind = _IMPORTED_DOC_ENTRY[doc_type]
-    suffix = suffix or kind
+    suffix = suffix or _IMPORTED_DOC_SUFFIX[doc_type]
     gap = sum(to_decimal(e.get("debit")) for e in entries) - sum(to_decimal(e.get("credit")) for e in entries)
     party = {"account": party_account, "debit": to_stored_float(max(-gap, _Dec(0))),
              "credit": to_stored_float(max(gap, _Dec(0)))}
@@ -613,18 +734,18 @@ async def create_for_po_received(
     rate = require_doc_rate(doc or {}, base_currency)
     await _post_po_receipt(
         session, company_id=company_id, user_id=user_id, po_id=po_id, receipt_key=None,
-        debits={po_receipt_account(doc or {}): to_base(float(total), rate, base_currency)},
+        debits={po_receipt_role(doc or {}): to_base(float(total), rate, base_currency)},
         receive_date=receive_date,
     )
 
 
 async def create_for_po_receipt(
-    session, *, company_id, user_id, po_id: str, receipt_key: str, debits: dict[str, float],
+    session, *, company_id, user_id, po_id: str, receipt_key: str, debits: dict[AccountRole, float],
     receive_date: str | None = None,
 ) -> None:
     """Receipt entry for one batch of goods received on a purchase order.
 
-    debits are what the received goods cost per account, in the books' currency:
+    debits are what the received goods cost per role, in the books' currency:
     the same amounts the receipt adds to the lots' cost."""
     await _post_po_receipt(
         session, company_id=company_id, user_id=user_id, po_id=po_id, receipt_key=receipt_key,
@@ -632,39 +753,35 @@ async def create_for_po_receipt(
     )
 
 
-async def _doc_receipt_booked(session, company_id, doc_id: str) -> dict[str, _Dec]:
-    """Net debit per account of the posted receipt entries of a document."""
+def _net_key(settings: dict, entry: dict) -> tuple[str, tuple[str, ...]]:
+    """What a line nets against: its account and what it was posted for."""
+    return entry["account"], tuple(sorted(line_roles(settings, entry)))
+
+
+async def _doc_receipt_booked(session, company_id, doc_id: str, settings: dict) -> dict[tuple, _Dec]:
+    """Net debit per account and role of the posted receipt entries of a document."""
     prefix = f"je:auto:{doc_id}:rcv"
     rows = (await session.execute(_select(Projection).where(
         Projection.company_id == company_id,
         Projection.entity_type == "journal_entry",
         Projection.entity_id.startswith(prefix, autoescape=True),
     ))).scalars().all()
-    net: dict[str, _Dec] = {}
+    net: dict[tuple, _Dec] = {}
     for row in rows:
         if row.state.get("status") != "posted" or not (row.entity_id == prefix or row.entity_id.startswith(f"{prefix}:")):
             continue
         for e in row.state.get("entries") or []:
-            net[e["account"]] = net.get(e["account"], _Dec(0)) + to_decimal(e.get("debit") or 0) - to_decimal(e.get("credit") or 0)
+            key = _net_key(settings, e)
+            net[key] = net.get(key, _Dec(0)) + to_decimal(e.get("debit") or 0) - to_decimal(e.get("credit") or 0)
     return net
 
 
-# Landed-cost clearing accounts: capitalisable import charges park here at bill posting and
-# capitalise into inventory on receipt (P3). Recoverable import VAT goes to 1150 instead (not a cost).
-_LANDED_CLEARING_ACCT: dict[str, str] = {
-    "freight": "1130-FRT",
-    "insurance": "1130-INS",
-    "duty": "1130-DTY",
-    "import_vat": "1130-IVT",
-}
-
-
-async def landed_account_for_line(session, company_id, li: dict) -> str | None:
-    """Return the clearing/receivable account for a landed-cost bill line, or None if not one.
+async def landed_role_for_line(session, company_id, li: dict) -> AccountRole | None:
+    """The role a landed-cost bill line posts to, or None if it is not one.
 
     A line is a landed-cost component if it carries landed_cost_kind, or references a
-    freight-typed item. Recoverable import VAT routes to 1150 (input VAT receivable, not capitalised);
-    every other capitalisable kind routes to its clearing account.
+    freight-typed item. Recoverable import VAT is input tax (not capitalised); every
+    other capitalisable kind parks in its clearing role.
     """
     kind = li.get("landed_cost_kind")
     recoverable = li.get("recoverable")
@@ -678,7 +795,7 @@ async def landed_account_for_line(session, company_id, li: dict) -> str | None:
         kind = proj.state.get("landed_cost_kind") or "freight"
         if recoverable is None:
             recoverable = proj.state.get("recoverable")
-    if kind not in _LANDED_CLEARING_ACCT:
+    if kind not in LANDED_ROLE_BY_KIND:
         return None
     if kind == "import_vat":
         # Fall back to the company default when recoverability is unspecified (worldwide: a company in a
@@ -688,8 +805,8 @@ async def landed_account_for_line(session, company_id, li: dict) -> str | None:
             company = await session.get(Company, company_id)
             recoverable = bool((company.settings or {}).get("import_vat_recoverable_default")) if company else False
         if recoverable:
-            return "1150"
-    return _LANDED_CLEARING_ACCT[kind]
+            return R.TAX_INPUT
+    return LANDED_ROLE_BY_KIND[kind]
 
 
 async def create_for_landed_capitalisation(
@@ -697,21 +814,24 @@ async def create_for_landed_capitalisation(
     receive_date: str | None = None,
 ) -> None:
     """Capitalise received landed cost from the clearing accounts into goods inventory on receipt:
-    Dr 1130-P (total) / Cr each kind's clearing account. Balances by construction.
+    Dr inventory (total) / Cr each kind's clearing account. Balances by construction.
 
     The bill posting (create_for_bill_conversion) parks freight/insurance/duty/non-recoverable-VAT in
-    the clearing accounts; this draws the received portion down into 1130-P so that COGS, which relieves
-    the item's full cost_total (base + landed) from 1130-P, reconciles against the same account.
+    the clearing accounts; this draws the received portion down into inventory so that COGS, which
+    relieves the item's full cost_total (base + landed), reconciles against the same account.
     """
     currency = await company_currency(session, company_id)
     credits = {kind: round_money(amt or 0, currency) for kind, amt in landed_by_kind.items()}
     total = sum(credits.values(), _Dec(0))  # the debit is the sum of the rounded credits
     if total <= 0:
         return
-    entries: list[dict] = [{"account": _INVENTORY_ACCT, "debit": to_stored_float(total), "credit": 0.0}]
+    roles = [LANDED_ROLE_BY_KIND[kind] for kind, amt in credits.items() if amt]
+    acc = await resolve_many(session, company_id, [R.INVENTORY_PURCHASED, *roles])
+    entries: list[dict] = [_line(acc[R.INVENTORY_PURCHASED], R.INVENTORY_PURCHASED, debit=to_stored_float(total))]
     for kind, amt in credits.items():
         if amt:
-            entries.append({"account": _LANDED_CLEARING_ACCT[kind], "debit": 0.0, "credit": to_stored_float(amt)})
+            role = LANDED_ROLE_BY_KIND[kind]
+            entries.append(_line(acc[role], role, credit=to_stored_float(amt)))
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -727,18 +847,23 @@ async def create_for_landed_capitalisation(
 
 
 async def create_for_supplier_return(
-    session, *, company_id, user_id, doc_id: str, return_key: str, goods_account: str,
+    session, *, company_id, user_id, doc_id: str, return_key: str, goods_role: AccountRole,
     goods: float, landed_by_kind: dict[str, float], return_date: str | None = None,
 ) -> None:
     """Goods sent back to the supplier leave the books at what they carried.
 
-    Dr AP (2110) / Cr goods_account for the goods. Each kind of landed cost they carried
-    goes back to its clearing account (Dr clearing / Cr inventory) in an entry of its own,
-    the reverse of the receipt's capitalisation, so undoing the receipt returns only the
-    landed cost still on the shelf."""
+    Dr AP / Cr goods for the goods, AP on the account the document recognized its
+    payable on. Each kind of landed cost they carried goes back to its clearing account
+    (Dr clearing / Cr inventory) in an entry of its own, the reverse of the receipt's
+    capitalisation, so undoing the receipt returns only the landed cost still on the shelf."""
     currency = await company_currency(session, company_id)
     goods_d = round_money(goods or 0, currency)
     if goods_d > 0:
+        settings = await current_settings(session, company_id)
+        ap = await party_origin(session, company_id, doc_id, R.PAYABLE, settings)
+        acc = await resolve_many(session, company_id, [goods_role] if ap else [goods_role, R.PAYABLE])
+        ap_line = (_origin_line(settings, ap, R.PAYABLE, debit=to_stored_float(goods_d)) if ap
+                   else _line(acc[R.PAYABLE], R.PAYABLE, debit=to_stored_float(goods_d)))
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
@@ -748,16 +873,17 @@ async def create_for_supplier_return(
             idem_posted=je_idempotency_key(doc_id, f"items.returned:{return_key}", "p"),
             memo=f"Auto JE for {doc_id} goods returned to supplier",
             ts=return_date,
-            entries=[{"account": "2110", "debit": to_stored_float(goods_d), "credit": 0.0},
-                     {"account": goods_account, "debit": 0.0, "credit": to_stored_float(goods_d)}],
+            entries=[ap_line, _line(acc[goods_role], goods_role, credit=to_stored_float(goods_d))],
             metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
         )
     landed = {kind: round_money(amt or 0, currency) for kind, amt in landed_by_kind.items()}
     landed_total = sum(landed.values(), _Dec(0))
     if landed_total > 0:
-        entries = [{"account": _LANDED_CLEARING_ACCT[kind], "debit": to_stored_float(amt), "credit": 0.0}
+        roles = [LANDED_ROLE_BY_KIND[kind] for kind, amt in landed.items() if amt]
+        acc = await resolve_many(session, company_id, [*roles, R.INVENTORY_PURCHASED])
+        entries = [_line(acc[LANDED_ROLE_BY_KIND[kind]], LANDED_ROLE_BY_KIND[kind], debit=to_stored_float(amt))
                    for kind, amt in landed.items() if amt]
-        entries.append({"account": _INVENTORY_ACCT, "debit": 0.0, "credit": to_stored_float(landed_total)})
+        entries.append(_line(acc[R.INVENTORY_PURCHASED], R.INVENTORY_PURCHASED, credit=to_stored_float(landed_total)))
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
@@ -784,16 +910,17 @@ async def create_for_bill_conversion(
 ) -> None:
     """Create JE when a bill is finalized (direct bill) or when a PO is converted to a bill.
 
-    Debit per-line expense/inventory accounts, credit AP (2110), less what the
+    Debit per-line expense/inventory accounts, credit AP, less what the
     document's purchase order receipts already booked.
-    Line-level account_code takes priority; otherwise defaults to 1130 (inventory)
-    for lines with SKU, 6950 (misc expense) for lines without.
+    A line's own account_code takes priority; otherwise the line posts to the role
+    for what it brings in: inventory for stock, general expense for anything else.
     """
     currency = doc.get("currency", "USD")
     rate = require_doc_rate(doc, base_currency)
     total_d = round_money(doc.get("total", 0) or 0, currency)
     line_items = doc.get("line_items", [])
-    lines: list[tuple[str, _Dec]] = []  # (account, amount in the document currency)
+    # (account chosen on the line, or the role to post to; amount in the document currency)
+    lines: list[tuple[str | AccountRole, _Dec]] = []
     tax_total_d = _Dec(0)
 
     if line_items:
@@ -807,19 +934,19 @@ async def create_for_bill_conversion(
                 continue
             # receive_as overrides SKU-based account selection for bills.
             receive_as = (li.get("receive_as") or "").strip().lower()
-            landed_acct = await landed_account_for_line(session, company_id, li)
+            landed_role = await landed_role_for_line(session, company_id, li)
             if li.get("account_code"):
-                account = li["account_code"]
+                target = li["account_code"]
             elif receive_as == "expense":
-                account = "6950"
+                target = R.GENERAL_EXPENSE
             elif receive_as == "asset":
-                account = "1210"
-            elif landed_acct:
-                # Landed-cost charge (freight/insurance/duty/import_vat): clearing or 1150.
-                account = landed_acct
+                target = R.FIXED_ASSETS
+            elif landed_role:
+                # Landed-cost charge (freight/insurance/duty/import_vat): clearing or input tax.
+                target = landed_role
             else:
-                account = _INVENTORY_ACCT if bill_line_kind(li) == "stock" else "6950"
-            lines.append((account, line_total))
+                target = R.INVENTORY_PURCHASED if bill_line_kind(li) == "stock" else R.GENERAL_EXPENSE
+            lines.append((target, line_total))
         # Input VAT: debit the EFFECTIVE tax that create_doc rolled into `total` (line `taxes[].amount`
         # + doc_taxes), not a per-line `tax_rate` the structured-tax create path never sets.
         tax_total_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency)
@@ -835,17 +962,25 @@ async def create_for_bill_conversion(
     discount_d = goods_d + tax_total_d + shipping_d - total_d
     if 0 < discount_d <= goods_d:
         shares = allocate_pro_rata(discount_d, [a for _, a in lines], currency)
-        lines = [(acct, a - share) for (acct, a), share in zip(lines, shares)]
+        lines = [(target, a - share) for (target, a), share in zip(lines, shares)]
     if tax_total_d > 0:
-        lines.append(("1150", tax_total_d))
+        lines.append((R.TAX_INPUT, tax_total_d))
     if shipping_d > 0:
-        lines.append(("1130-FRT", shipping_d))
+        lines.append((R.LANDED_FREIGHT, shipping_d))
     if not lines:
-        lines.append(("6950", total_d))
+        lines.append((R.GENERAL_EXPENSE, total_d))
     if sum((a for _, a in lines), _Dec(0)) != total_d:
         raise UnbalancedJournalEntry(
             f"Bill {doc_id}: its lines, tax and shipping do not add up to its total of {total_d} {currency}"
         )
+
+    settings = await current_settings(session, company_id)
+    acc = await resolve_many(session, company_id, [*(t for t, _ in lines if isinstance(t, AccountRole)), R.PAYABLE])
+
+    def debit_line(target, amount: float) -> dict:
+        if isinstance(target, AccountRole):
+            return _line(acc[target], target, debit=amount)
+        return {"account": target, "debit": amount, "credit": 0.0}
 
     # AP is the bill total in base; the debits are converted line by line, and the unit
     # of rounding that conversion can leave goes to the largest debit so the entry balances.
@@ -853,19 +988,21 @@ async def create_for_bill_conversion(
     debits = [to_decimal(to_base(to_stored_float(a), rate, base_currency)) for _, a in lines]
     largest = max(range(len(debits)), key=lambda i: debits[i])
     debits[largest] += to_decimal(base_total) - sum(debits, _Dec(0))
-    entries = [{"account": acct, "debit": to_stored_float(d), "credit": 0.0} for (acct, _), d in zip(lines, debits)]
-    entries.append({"account": "2110", "debit": 0.0, "credit": base_total})
+    entries = [debit_line(target, to_stored_float(d)) for (target, _), d in zip(lines, debits)]
+    entries.append(_line(acc[R.PAYABLE], R.PAYABLE, credit=base_total))
     # What the document's purchase order receipts already booked is not booked again, so
     # receiving before or after finalizing ends in the same books.
-    booked = await _doc_receipt_booked(session, company_id, doc_id)
+    booked = await _doc_receipt_booked(session, company_id, doc_id, settings)
     if booked:
-        net: dict[str, _Dec] = {}
+        net: dict[tuple, _Dec] = {}
         for e in entries:
-            net[e["account"]] = net.get(e["account"], _Dec(0)) + to_decimal(e["debit"]) - to_decimal(e["credit"])
-        for acct, amount in booked.items():
-            net[acct] = net.get(acct, _Dec(0)) - amount
-        entries = [{"account": acct, "debit": to_stored_float(max(v, _Dec(0))), "credit": to_stored_float(max(-v, _Dec(0)))}
-                   for acct, v in net.items() if v]
+            key = _net_key(settings, e)
+            net[key] = net.get(key, _Dec(0)) + to_decimal(e["debit"]) - to_decimal(e["credit"])
+        for key, amount in booked.items():
+            net[key] = net.get(key, _Dec(0)) - amount
+        entries = [{"account": acct, "account_roles": list(roles),
+                    "debit": to_stored_float(max(v, _Dec(0))), "credit": to_stored_float(max(-v, _Dec(0)))}
+                   for (acct, roles), v in net.items() if v]
         if not entries:
             return
 
@@ -1046,6 +1183,19 @@ async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str) -> N
         )
 
 
+async def _cogs_entries(session, company_id, amount: float, *, expense: bool = True) -> list[dict]:
+    """Cost of goods sold against inventory: ``expense`` moves ``amount`` out of stock
+    into COGS, otherwise back from COGS into stock."""
+    acc = await resolve_many(session, company_id, [R.COGS, R.INVENTORY_PURCHASED])
+    out, into = (R.INVENTORY_PURCHASED, R.COGS) if expense else (R.COGS, R.INVENTORY_PURCHASED)
+    return [_line(acc[into], into, debit=float(amount)), _line(acc[out], out, credit=float(amount))]
+
+
+async def stock_relief_line(session, company_id, amount: float) -> dict:
+    """The inventory credit that takes ``amount`` of goods off the books."""
+    return _line(await resolve(session, company_id, R.INVENTORY_PURCHASED), R.INVENTORY_PURCHASED, credit=float(amount))
+
+
 async def create_for_doc_cogs_backfill(session, *, company_id, user_id, doc_id: str, cogs: float, ts: str | None) -> None:
     """Post the one-time COGS JE for a finalized invoice that predates
     COGS-at-finalize and never received its COGS at fulfillment.
@@ -1062,10 +1212,7 @@ async def create_for_doc_cogs_backfill(session, *, company_id, user_id, doc_id: 
         idem_posted=je_idempotency_key(doc_id, "invoice.cogs_backfill", "p"),
         memo=f"Auto JE for {doc_id} COGS backfill",
         ts=ts,
-        entries=[
-            {"account": "5100", "debit": float(cogs), "credit": 0.0},
-            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(cogs)},
-        ],
+        entries=await _cogs_entries(session, company_id, cogs),
         metadata_={"trigger": "doc.cogs_backfill", "doc_id": doc_id},
     )
 
@@ -1293,11 +1440,13 @@ async def reconcile_doc_cogs(
         unshipped = allocated - shipped_qty[int(idx)]
         if allocated > 0 and unshipped > 1e-9:
             truth += amount * unshipped / allocated
+    settings = await current_settings(session, company_id)
     booked = sum(
         float(e.get("credit") or 0) - float(e.get("debit") or 0)
         for row in (await _doc_recognition_jes(session, company_id, doc_id)).values()
         if (row.state or {}).get("status") == "posted"
-        for e in (row.state or {}).get("entries", []) if e.get("account") == _INVENTORY_ACCT
+        for e in (row.state or {}).get("entries", [])
+        if line_has_role(settings, e, R.INVENTORY_PURCHASED)
     )
     await create_for_doc_cogs_adjustment(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id, delta=truth - booked,
@@ -1313,7 +1462,7 @@ async def create_for_doc_cogs_adjustment(
 ) -> None:
     """Post one COGS true-up JE for a document (see reconcile_doc_cogs).
 
-    A positive delta debits 5100 and relieves inventory; a negative one reverses
+    A positive delta debits COGS and relieves inventory; a negative one reverses
     that. The delta is rounded once to the company currency and nothing posts when
     it rounds to zero. cycle_tag scopes the JE id and its idempotency keys to the
     event that triggered it (fulfill-0:l0-1, reverse-1:l2, restate-<id>), so
@@ -1325,16 +1474,7 @@ async def create_for_doc_cogs_adjustment(
     amount = to_stored_float(abs(rounded))
     if amount <= 0:
         return
-    if rounded > 0:
-        entries = [
-            {"account": "5100", "debit": amount, "credit": 0.0},
-            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": amount},
-        ]
-    else:
-        entries = [
-            {"account": _INVENTORY_ACCT, "debit": amount, "credit": 0.0},
-            {"account": "5100", "debit": 0.0, "credit": amount},
-        ]
+    entries = await _cogs_entries(session, company_id, amount, expense=rounded > 0)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -1435,7 +1575,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str) 
 
 
 async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, total_cogs: float, cycle: int = 0, ts: str | None = None) -> None:
-    """Create COGS JE when a doc is fulfilled: Debit COGS (5100) / Credit Inventory (1130-P).
+    """Create COGS JE when a doc is fulfilled: Debit COGS / Credit Inventory.
 
     cycle must be incremented each time a doc is re-fulfilled (e.g. use doc revert_count so that
     fulfill → revert → re-fulfill produces distinct JE idempotency keys and entity IDs).
@@ -1455,10 +1595,7 @@ async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str,
         idem_posted=f"je:auto:{doc_id}:{cycle_tag}:posted",
         memo=f"Auto JE for {doc_id} fulfilled (COGS)",
         ts=ts,
-        entries=[
-            {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
-            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(total_cogs)},
-        ],
+        entries=await _cogs_entries(session, company_id, total_cogs),
         metadata_={"trigger": "doc.fulfilled", "doc_id": doc_id},
     )
 
@@ -1488,7 +1625,7 @@ async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, c
 
 
 async def create_for_return_received(session, *, company_id, user_id, cn_id: str, total_cogs: float, je_suffix: str) -> None:
-    """Reversing COGS JE when goods are returned via credit note: Debit Inventory (1130-P) / Credit COGS (5100).
+    """Reversing COGS JE when goods are returned via credit note: Debit Inventory / Credit COGS.
 
     je_suffix names the receive-return call, so each return received on the credit note has its own entry.
     """
@@ -1503,16 +1640,13 @@ async def create_for_return_received(session, *, company_id, user_id, cn_id: str
         idem_posted=je_idempotency_key(cn_id, f"return:{je_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return received (COGS reversal)",
         ts=__import__("datetime").date.today().isoformat(),
-        entries=[
-            {"account": _INVENTORY_ACCT, "debit": float(total_cogs), "credit": 0.0},
-            {"account": "5100", "debit": 0.0, "credit": float(total_cogs)},
-        ],
+        entries=await _cogs_entries(session, company_id, total_cogs, expense=False),
         metadata_={"trigger": "doc.return_received", "cn_id": cn_id},
     )
 
 
 async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, total_cogs: float, unique_suffix: str) -> None:
-    """Reverse the COGS reversal JE when a receive-return is undone: Debit COGS (5100) / Credit Inventory (1130-P).
+    """Reverse the COGS reversal JE when a receive-return is undone: Debit COGS / Credit Inventory.
 
     unique_suffix must be unique per call (e.g. a UUID) so repeated undo attempts each get their own JE.
     """
@@ -1527,10 +1661,7 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
         idem_posted=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return undone (COGS re-reversal)",
         ts=__import__("datetime").date.today().isoformat(),
-        entries=[
-            {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
-            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(total_cogs)},
-        ],
+        entries=await _cogs_entries(session, company_id, total_cogs),
         metadata_={"trigger": "doc.return_undone", "cn_id": cn_id},
     )
 
@@ -1557,6 +1688,8 @@ async def create_for_mfg_completed(session, *, company_id, user_id, order_id: st
     currency = await company_currency(session, company_id)
     input_amt, waste_amt = round_money(input_cost, currency), round_money(waste_cost, currency)
     output_amt = max(_Dec(0), input_amt - waste_amt)
+    acc = await resolve_many(session, company_id, [R.INVENTORY_PURCHASED, R.COGS])
+    stock = acc[R.INVENTORY_PURCHASED]
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -1567,20 +1700,12 @@ async def create_for_mfg_completed(session, *, company_id, user_id, order_id: st
         memo=f"Auto JE for {order_id} completion",
         ts=__import__("datetime").date.today().isoformat(),
         entries=[
-            {"account": _INVENTORY_ACCT, "debit": to_stored_float(output_amt), "credit": 0.0},
-            {"account": "5100", "debit": to_stored_float(waste_amt), "credit": 0.0},
-            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": to_stored_float(input_amt)},
+            _line(stock, R.INVENTORY_PURCHASED, debit=to_stored_float(output_amt)),
+            _line(acc[R.COGS], R.COGS, debit=to_stored_float(waste_amt)),
+            _line(stock, R.INVENTORY_PURCHASED, credit=to_stored_float(input_amt)),
         ],
         metadata_={"trigger": "mfg.order.completed", "order_id": order_id},
     )
-
-
-# Inventory-audit stock adjustment accounts:
-#   shrinkage (count < system): Dr 6970 Inventory Shrinkage & Write-offs / Cr 1130-P Inventory
-#   overage   (count > system): Dr 1130-P Inventory          / Cr 4300 Other Income
-_AUDIT_SHRINKAGE_ACCT = "6970"
-_AUDIT_OVERAGE_ACCT = "4300"
-_AUDIT_INVENTORY_ACCT = _INVENTORY_ACCT
 
 
 # Memo prefix per list-adjustment kind; the full memo is "<prefix> <list_id>".
@@ -1643,16 +1768,23 @@ async def create_for_audit_adjustment(
     """Post the balanced inventory write-down/up JE for an audit's stock adjustment.
 
     shrinkage_value = total value lost (count below system); overage_value = total value gained.
-    Thin wrapper: builds the fixed-account shrinkage/overage entries and delegates to the shared
-    list-adjustment poster (kind="audit"), so audit and write-off share one posting core.
+    Shrinkage (count below system) is Dr stock shrinkage / Cr inventory; overage is Dr inventory /
+    Cr stock gains. Thin wrapper: builds those entries and delegates to the shared list-adjustment
+    poster (kind="audit"), so audit and write-off share one posting core.
     """
+    shrink, over = shrinkage_value > 1e-9, overage_value > 1e-9
+    if not (shrink or over):
+        return
+    acc = await resolve_many(session, company_id, [
+        R.INVENTORY_PURCHASED, *([R.STOCK_SHRINKAGE] if shrink else []), *([R.STOCK_GAIN] if over else [])])
+    stock = acc[R.INVENTORY_PURCHASED]
     entries: list[dict] = []
-    if shrinkage_value > 1e-9:
-        entries.append({"account": _AUDIT_SHRINKAGE_ACCT, "debit": float(shrinkage_value), "credit": 0.0})
-        entries.append({"account": _AUDIT_INVENTORY_ACCT, "debit": 0.0, "credit": float(shrinkage_value)})
-    if overage_value > 1e-9:
-        entries.append({"account": _AUDIT_INVENTORY_ACCT, "debit": float(overage_value), "credit": 0.0})
-        entries.append({"account": _AUDIT_OVERAGE_ACCT, "debit": 0.0, "credit": float(overage_value)})
+    if shrink:
+        entries.append(_line(acc[R.STOCK_SHRINKAGE], R.STOCK_SHRINKAGE, debit=float(shrinkage_value)))
+        entries.append(_line(stock, R.INVENTORY_PURCHASED, credit=float(shrinkage_value)))
+    if over:
+        entries.append(_line(stock, R.INVENTORY_PURCHASED, debit=float(overage_value)))
+        entries.append(_line(acc[R.STOCK_GAIN], R.STOCK_GAIN, credit=float(overage_value)))
     await create_for_line_adjustment(
         session, company_id=company_id, user_id=user_id, list_id=list_id,
         kind="audit", entries=entries, cycle=cycle,
@@ -1717,7 +1849,7 @@ async def upsert_opening_inventory_je(
             if cost is not None:
                 catalog_total += _Dec(str(cost)) * _Dec(str(qty))
 
-    # --- JE-backed inventory: sum 1130 / 1130-P / 1130-OB across all posted JEs ---
+    # --- JE-backed inventory: every posted line that holds the value of goods on hand ---
     je_rows = (
         await session.execute(
             _sel(Projection).where(
@@ -1727,10 +1859,12 @@ async def upsert_opening_inventory_je(
         )
     ).scalars().all()
 
-    # Every 1130* account is inventory asset value: goods (1130-P), opening balance (1130-OB), and the
-    # landed-cost clearing sub-accounts (1130-FRT/INS/DTY/IVT). catalog cost_total now includes
-    # capitalised landed cost, so the JE-backed sum must cover the clearing accounts too or the landed
-    # amount would show up as a spurious opening-balance gap.
+    # Inventory value is every line posted for goods, their opening balance, or landed cost
+    # waiting to be capitalised (INVENTORY_VALUE_ROLES). catalog cost_total includes capitalised
+    # landed cost, so the JE-backed sum must cover the clearing roles too or the landed amount
+    # would show up as a spurious opening-balance gap.
+    settings = await current_settings(session, company_id)
+    value_roles = {str(r) for r in INVENTORY_VALUE_ROLES}
     ob_je_id = f"je:auto:opening-inventory:{company_id}"
     je_backed = _Dec("0")
     ob_proj = None
@@ -1742,20 +1876,18 @@ async def upsert_opening_inventory_je(
         if s.get("status") != "posted":
             continue
         for entry in s.get("entries", []):
-            if str(entry.get("account") or "").startswith("1130"):
+            if value_roles.intersection(line_roles(settings, entry)):
                 je_backed += _Dec(str(entry.get("debit") or 0))
                 je_backed -= _Dec(str(entry.get("credit") or 0))
 
     gap = catalog_total - je_backed
-    from celerp.models.company import Company as _Company
-    company_obj = await session.get(_Company, company_id)
-    base_currency = (company_obj.settings or {}).get("currency", "USD") if company_obj else "USD"
+    base_currency = settings.get("currency", "USD")
 
-    # Current OB JE amount (0 if not posted)
+    # Current OB JE amount (0 if not posted): its opening-inventory debit
     current_amount = 0.0
     if ob_proj and ob_proj.state.get("status") == "posted":
         for entry in ob_proj.state.get("entries", []):
-            if entry.get("account") == "1130-OB":
+            if float(entry.get("debit") or 0) and line_has_role(settings, entry, R.INVENTORY_OPENING):
                 current_amount = float(entry.get("debit") or 0)
                 break
 
@@ -1791,6 +1923,13 @@ async def upsert_opening_inventory_je(
         if exc.status_code == 422 and "locked" in str(exc.detail).lower():
             return
         raise
+    # Likewise an opening-inventory or retained-earnings role that is unmapped leaves the books
+    # as they are; the posting accounts panel and the books check report the unmapped role.
+    if needed_d > 0:
+        try:
+            acc = await resolve_many(session, company_id, [R.INVENTORY_OPENING, R.RETAINED_EARNINGS])
+        except PostingRoleError:
+            return
 
     # Void the existing OB JE if posted (amount changed or gap closed)
     if ob_proj and ob_proj.state.get("status") == "posted":
@@ -1821,42 +1960,9 @@ async def upsert_opening_inventory_je(
         idem_posted=f"opening-inv:{company_id}:p:{needed}:{today}",
         memo="Opening inventory balance (pre-system stock)",
         entries=[
-            {"account": "1130-OB", "debit": needed, "credit": 0.0},
-            {"account": "3200",    "debit": 0.0,    "credit": needed},
+            _line(acc[R.INVENTORY_OPENING], R.INVENTORY_OPENING, debit=needed),
+            _line(acc[R.RETAINED_EARNINGS], R.RETAINED_EARNINGS, credit=needed),
         ],
         metadata_={"trigger": "opening_inventory.auto"},
         ts=today,
-    )
-
-
-def _category_inventory_account(category: str) -> str:
-    """All categories map to the canonical goods-inventory account until category-level CoA mapping
-    is built. (Was a 1300 placeholder that is not in the chart of accounts.)"""
-    return _INVENTORY_ACCT
-
-
-async def create_for_item_transform(
-    session, *, company_id, user_id, parent_entity_id: str,
-    parent_cost_total: float, parent_category: str, child_category: str,
-) -> None:
-    """Inventory reclassification JE for transform. Moves parent_cost_total exactly.
-    Currently a no-op (both categories -> 1300). Scaffolded for future category-CoA mapping.
-    """
-    dr_account = _category_inventory_account(child_category)
-    cr_account = _category_inventory_account(parent_category)
-    if dr_account == cr_account:
-        return
-    await _emit_auto_posted_je(
-        session,
-        company_id=company_id,
-        user_id=user_id,
-        je_id=f"je:transform:{parent_entity_id}",
-        idem_create=je_idempotency_key(parent_entity_id, "item.transform", "c"),
-        idem_posted=je_idempotency_key(parent_entity_id, "item.transform", "p"),
-        memo=f"Inventory transform: {parent_category} -> {child_category}",
-        entries=[
-            {"account": dr_account, "debit": parent_cost_total, "credit": 0.0},
-            {"account": cr_account, "debit": 0.0, "credit": parent_cost_total},
-        ],
-        metadata_={"trigger": "item.transform", "parent_entity_id": parent_entity_id},
     )

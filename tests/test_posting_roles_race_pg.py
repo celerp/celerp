@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
-from celerp.services.account_roles import resolve_many, seeded_role_settings, set_role
+from celerp.services.account_roles import reconcile_company, resolve_many, set_role
 from celerp_accounting.chart_rules import change_account
 from celerp_accounting.models import Account
 from celerp_accounting.routes import seed_chart_of_accounts
@@ -34,10 +34,11 @@ async def _seed(factory, extra: list[tuple[str, str, str | None]] = ()) -> uuid.
     company_id = uuid.uuid4()
     async with factory() as s:
         s.add(Company(id=company_id, name="RoleRace", slug=f"rr-{company_id.hex[:8]}",
-                      settings=seeded_role_settings()))
+                      settings={}))
         await s.flush()
         await seed_chart_of_accounts(s, company_id)
         await s.flush()
+        await reconcile_company(s, company_id)
         for code, account_type, parent in extra:
             s.add(Account(id=uuid.uuid4(), company_id=company_id, code=code, name=code,
                           account_type=account_type, parent_code=parent))

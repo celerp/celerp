@@ -28,6 +28,7 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
+from celerp.services.account_roles import reconcile_company
 from celerp_accounting.routes import seed_chart_of_accounts
 from celerp_accounting.models import Account
 from celerp.models.company import Company, User
@@ -50,6 +51,7 @@ async def _seed_company(factory):
                    auth_hash="x"))
         await s.flush()
         await seed_chart_of_accounts(s, company_id)
+        await reconcile_company(s, company_id)
         await s.commit()
     return company_id, user_id, types.SimpleNamespace(id=user_id)
 

@@ -17,6 +17,9 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import (
+    LEGACY_LOT_ACCOUNT,
+    LEGACY_LOT_ACCOUNT_KEY,
+    LOT_ACCOUNT_FIELD,
     POSTING_ACCOUNTS_PATH,
     POSTING_ROLES_SCHEMA,
     ROLE_LABELS,
@@ -74,15 +77,6 @@ def line_has_role(settings: dict | None, entry: dict, role: str) -> bool:
     return str(role) in line_roles(settings, entry)
 
 
-def seeded_role_settings() -> dict:
-    """The role keys for a company whose chart is the seeded default chart."""
-    return {
-        SCHEMA_KEY: POSTING_ROLES_SCHEMA,
-        ROLES_KEY: {role.value: code for role, code in SEEDED_TARGETS.items()},
-        SCOPES_KEY: {role.value: [code] for role, code in SEEDED_TARGETS.items()},
-    }
-
-
 def with_role(settings: dict, role: str, code: str) -> dict:
     """``settings`` with ``role`` pointing at ``code``; the scope only ever grows."""
     roles = role_map(settings)
@@ -91,6 +85,86 @@ def with_role(settings: dict, role: str, code: str) -> dict:
     if code not in scopes.setdefault(str(role), []):
         scopes[str(role)].append(code)
     return {**settings, SCHEMA_KEY: POSTING_ROLES_SCHEMA, ROLES_KEY: roles, SCOPES_KEY: scopes}
+
+
+def reconciled_settings(settings: dict, accounts: dict[str, dict]) -> dict:
+    """``settings`` with every unmapped role pointed at its seeded target, where the
+    chart (``accounts``, keyed by code) holds that account active and of a type the
+    role can use. A role already mapped is never changed, a missing or colliding
+    account leaves its role unmapped, and no account is ever created. Running it
+    again changes nothing."""
+    out = {**settings, SCHEMA_KEY: POSTING_ROLES_SCHEMA}
+    current = role_map(out)
+    trial = {**{r.value: c for r, c in SEEDED_TARGETS.items()}, **current}
+    for role, code in SEEDED_TARGETS.items():
+        if not current.get(role.value) and target_problem(role.value, trial, accounts.get(code)) is None:
+            out = with_role(out, role.value, code)
+    if not out.get(LEGACY_LOT_ACCOUNT_KEY) and LEGACY_LOT_ACCOUNT in scope_codes(
+            out, AccountRole.INVENTORY_PURCHASED.value):
+        out[LEGACY_LOT_ACCOUNT_KEY] = LEGACY_LOT_ACCOUNT
+    return out
+
+
+def unmapped_roles(settings: dict | None) -> list[str]:
+    current = role_map(settings)
+    return [role.value for role in AccountRole if not current.get(role.value)]
+
+
+async def reconcile_company(session: AsyncSession, company_id) -> list[str]:
+    """Map the company's unmapped roles to the seeded chart's accounts where they
+    exist and fit (see ``reconciled_settings``). Returns the roles left unmapped.
+    Does nothing when accounting is not running."""
+    from celerp.services.company_lock import locked_company
+    from celerp.services.journal_accounts import lock_accounts
+
+    accounts = await lock_accounts(session, company_id, set(SEEDED_TARGETS.values()))
+    if accounts is None:
+        return []
+    company = await locked_company(session, company_id)
+    if company is None:
+        return []
+    before = dict(company.settings or {})
+    after = reconciled_settings(before, accounts)
+    if after != before:
+        company.settings = after
+        await session.flush()
+    return unmapped_roles(after)
+
+
+class LotOriginError(HTTPException):
+    """A lot's inventory account cannot be proven, so its cost cannot move."""
+
+    def __init__(self, sku: str):
+        super().__init__(
+            status_code=409,
+            detail=(f"Stock {sku or 'item'} has no recorded inventory account, so its cost cannot be "
+                    "moved without guessing. Choose the inventory account for older stock in "
+                    "Settings > Accounting > Posting accounts."),
+            headers={"X-Celerp-Fix": POSTING_ACCOUNTS_PATH},
+        )
+
+
+class AmbiguousOriginError(HTTPException):
+    """An older entry's account cannot be told apart, so it is reported, not guessed."""
+
+    def __init__(self, role: str, what: str, codes):
+        label = ROLE_LABELS[AccountRole(role)].lower()
+        super().__init__(
+            status_code=409,
+            detail=(f"{what} was recorded against more than one {label} account "
+                    f"({', '.join(sorted(codes))}), so Celerp cannot tell which one to use. "
+                    "The books check lists it for correction."),
+        )
+
+
+def lot_account(settings: dict | None, state: dict) -> str:
+    """The inventory account a lot's value sits in: the one it recorded when it first
+    took on stock, else, for a lot from before lots recorded it, the account the
+    company's history proves. Never today's role target."""
+    code = state.get(LOT_ACCOUNT_FIELD) or (settings or {}).get(LEGACY_LOT_ACCOUNT_KEY)
+    if not code:
+        raise LotOriginError(str(state.get("sku") or ""))
+    return code
 
 
 async def current_settings(session: AsyncSession, company_id) -> dict:

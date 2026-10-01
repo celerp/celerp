@@ -19,7 +19,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import ROLE_LABELS, AccountRole, is_role
+from celerp.accounting_roles import ROLE_LABELS, SCHEMA_KEY, AccountRole, is_role
 from celerp.models.company import Company
 from celerp.services.account_roles import (
     PostingRoleError,
@@ -54,7 +54,9 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict) -
     served the role before (then it only has to exist, as when a payment settles a
     receivable recognized before a remap). A line naming no roles is classified by
     every role whose target or scope holds its account; an explicit empty list stays
-    deliberately unclassified.
+    deliberately unclassified. Before the company has posting roles at all (a company
+    still being migrated), such a line is left without a snapshot, so readers classify
+    it by the scopes the company's roles are given later.
     """
     entries = [e for e in (data.get("entries") or []) if isinstance(e, dict) and e.get("account")]
     if not entries:
@@ -69,7 +71,8 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict) -
             raise HTTPException(status_code=422, detail=f"Account {code} is not in the chart of accounts.")
         roles = entry.get("account_roles")
         if roles is None:
-            entry["account_roles"] = roles_for_account(settings, code)
+            if SCHEMA_KEY in settings:
+                entry["account_roles"] = roles_for_account(settings, code)
             continue
         for role in roles:
             if not is_role(role):
