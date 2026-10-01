@@ -247,13 +247,15 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     yet. This handles the case where accounting is enabled after the company was already
     created (e.g. first-run with no modules, then preset applied), and a deactivated
     company then works when it is reactivated. Then every company's posting accounts are
-    reconciled with its chart (account_roles.reconcile_company). A company staged for a
-    migration is left alone: its chart and posting accounts come from the imported books
-    when the migration is finalized.
+    reconciled with its chart (account_roles.reconcile_company), and a company left
+    without an account its workflows need gets one notice pointing at the fix. A company
+    staged for a migration is left alone: its chart and posting accounts come from the
+    imported books when the migration is finalized.
     """
     from celerp.models.company import Company
     from celerp.services import migrations
     from celerp.services.account_roles import reconcile_company
+    from celerp.services.posting_readiness import notify_unmapped
     from sqlalchemy import select as _select
 
     unseeded = set((await session.execute(
@@ -265,7 +267,8 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
         if company_id in unseeded:
             await seed_chart_of_accounts(session, company_id)
             await _seed_default_bank_account(session, company_id)
-        await reconcile_company(session, company_id)
+        if await reconcile_company(session, company_id):
+            await notify_unmapped(session, company_id)
 
 
 def _account_to_dict(acc: Account) -> dict:

@@ -93,8 +93,12 @@ def reconciled_settings(settings: dict, accounts: dict[str, dict]) -> dict:
     chart (``accounts``, keyed by code) holds that account active and of a type the
     role can use. A role already mapped is never changed, a missing or colliding
     account leaves its role unmapped, and no account is ever created. Running it
-    again changes nothing."""
+    again changes nothing. A company whose roles come from its source books (a
+    migration) keeps its own chart's numbering: a default number its chart happens
+    to hold proves nothing there."""
     out = {**settings, SCHEMA_KEY: POSTING_ROLES_SCHEMA}
+    if SOURCE_CONTROLS_KEY in out:
+        return out
     current = role_map(out)
     trial = {**{r.value: c for r, c in SEEDED_TARGETS.items()}, **current}
     for role, code in SEEDED_TARGETS.items():
