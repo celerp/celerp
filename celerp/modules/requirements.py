@@ -91,16 +91,16 @@ def _at_least(version, minimum: str | None) -> bool:
 def _status(name: str, minimum: str | None, enabled: set[str]) -> tuple[Status, bool]:
     if loader.is_core_folded(name):
         return Status.READY, True
-    path = loader.resolve_runtime_module_path(name)
-    first_party = loader.is_first_party(path) if path is not None else name in loader.first_party_names()
+    path = loader.resolve_runtime_module_path(name, loader.module_search_path())
+    if path is None:
+        # Removed from disk: even while its code still runs, it is gone after a restart.
+        return Status.MISSING, name in loader.first_party_names()
+    first_party = loader.is_first_party(path)
     if loader.is_running(name):
         if _at_least(loader.running_version(name), minimum):
             return Status.READY, first_party
-        on_disk = loader.read_manifest(path).get("version") if path is not None else None
-        return (Status.UPGRADE_RESTART_REQUIRED if _at_least(on_disk, minimum)
+        return (Status.UPGRADE_RESTART_REQUIRED if _at_least(loader.read_manifest(path).get("version"), minimum)
                 else Status.INCOMPATIBLE), first_party
-    if path is None:
-        return Status.MISSING, first_party
     if name in loader.load_errors() or not _at_least(loader.read_manifest(path).get("version"), minimum):
         return Status.INCOMPATIBLE, first_party
     return (Status.RESTART_REQUIRED if name in enabled else Status.ENABLE_REQUIRED), first_party

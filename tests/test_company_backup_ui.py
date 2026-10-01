@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import html as _html
+import inspect
 import io
 import json
 import re
@@ -75,7 +76,8 @@ class Router(httpx.AsyncBaseTransport):
         self.requests.append(request)
         hook = self.overrides.get((request.method, request.url.path))
         if hook is not None:
-            return hook(request)
+            answer = hook(request)
+            return await answer if inspect.isawaitable(answer) else answer
         return await self._real.handle_async_request(request)
 
 
@@ -413,7 +415,7 @@ async def test_migration_has_no_own_backup_implementation():
 # ── Missing module ───────────────────────────────────────────────────────────
 
 async def test_restore_page_names_missing_module(ui, real_engine, real_client):
-    """The restore page names the module a backup needs and restores nothing."""
+    """The preview names the module a backup needs, offers to import it, and offers no restore."""
     _, _, tok = await _setup(real_engine)
     parts = members(await download(real_client, tok))
     meta = json.loads(parts["manifest.json"])
@@ -426,10 +428,12 @@ async def test_restore_page_names_missing_module(ui, real_engine, real_client):
 
     before = await _company_ids(real_engine)
     r = await ui.post(f"{base}/read", files={"file": ("alpha.celerp-company", data, "application/octet-stream")})
+    assert r.status_code == 200, r.text
     page = _page(r)
-    assert "needs the celerp-example-widgets module" in page
-    assert "Nothing was restored." in page
-    assert 'type="file"' in r.text
+    assert "celerp-example-widgets" in page
+    assert "Not installed here. Import the module file to continue." in page
+    assert f'action="{base}/import-module"' in r.text and 'name="module"' in r.text
+    assert f'action="{base}/restore"' not in r.text
     assert await _company_ids(real_engine) == before
 
 
@@ -471,3 +475,225 @@ async def test_settings_restore_states_team_access_before_and_after(ui, real_eng
     assert TEAM_AFTER in page, page[:2000]
     assert "company_backup." not in page
 
+
+
+# ── Destination, scope, cancel and outcome ───────────────────────────────────
+
+async def _names(engine) -> list[str]:
+    async with engine.connect() as conn:
+        return sorted((await conn.execute(text("SELECT name FROM companies"))).scalars().all())
+
+
+def _stages(tmp_path: Path) -> list[Path]:
+    folder = tmp_path / "company_backups" / "uploads"
+    return sorted(p for p in folder.iterdir() if p.suffix == ".upload") if folder.is_dir() else []
+
+
+async def test_restore_preview_names_destination_and_states_scope(ui, real_engine, real_client):
+    """The preview proposes a name that is not one of the owner's companies, editable, and
+    says what the backup brings and what stays behind; the chosen name is the new company's."""
+    _, _, tok = await _setup(real_engine)
+    data = await download(real_client, tok)
+    ui.cookies.set("celerp_token", tok)
+    base = "/settings/restore-backup"
+
+    r = await _upload_and_preview(ui, base, data)
+    page = _page(r)
+    assert re.search(r'<input\b[^>]*name="company_name"[^>]*value="Alpha Trading \(Restored\)"', page), page[:3000]
+    assert "Included: records, settings, attached files." in page
+    assert "Not included: users, passwords, sign-in sessions, connections, share links." in page
+
+    r = await ui.post(f"{base}/restore", data={**_hidden(page), "company_name": "Alpha Trading"})
+    page = _page(r)
+    assert r.status_code == 200, r.text
+    assert "You already have a company with this name. Choose a different name." in page, page[:3000]
+    assert re.search(r'name="company_name"[^>]*value="Alpha Trading"', page)
+    assert await _names(real_engine) == ["Alpha Trading"]
+
+    r = await ui.post(f"{base}/restore", data={**_hidden(page), "company_name": "Alpha Archive"})
+    assert r.status_code == 303, r.text
+    assert await _names(real_engine) == ["Alpha Archive", "Alpha Trading"]
+
+
+async def test_choose_other_file_deletes_upload(ui, real_engine, real_client, tmp_path):
+    """Choosing another file deletes the upload and goes back to choosing a file."""
+    _, _, tok = await _setup(real_engine)
+    data = await download(real_client, tok)
+    ui.cookies.set("celerp_token", tok)
+    base = "/settings/restore-backup"
+
+    page = _page(await _upload_and_preview(ui, base, data))
+    assert f'action="{base}/discard"' in page
+    assert len(_stages(tmp_path)) == 1
+    r = await ui.post(f"{base}/discard")
+    assert r.status_code == 303 and r.headers["location"] == base
+    assert _stages(tmp_path) == []
+    assert any(c.startswith(f"{UPLOAD_COOKIE}=") and "Max-Age=0" in c for c in r.headers.get_list("set-cookie"))
+
+
+OPENED = "This backup was already restored. Celerp opened the existing company; no duplicate was created."
+DISCONNECTED = "Integrations are disconnected and outbound sync is off until you turn it on again."
+
+
+async def test_done_page_states_outcome_from_server(ui, real_engine, real_client):
+    """The page after a restore says what the API reported: a new company, or the existing
+    one opened with no duplicate. The address cannot make it claim either."""
+    _, _, tok = await _setup(real_engine)
+    data = await download(real_client, tok)
+    ui.cookies.set("celerp_token", tok)
+    base = "/settings/restore-backup"
+
+    preview = _page(await _upload_and_preview(ui, base, data))
+    r = await ui.post(f"{base}/restore", data=_hidden(preview))
+    restored_tok = _cookie(r, "celerp_token")
+    page = _page(await _follow(ui, r))
+    assert "Company restored" in page and DISCONNECTED in page and OPENED not in page
+
+    ui.cookies.set("celerp_token", tok)
+    preview = _page(await _upload_and_preview(ui, base, data))
+    page = _page(await _follow(ui, await ui.post(f"{base}/restore", data=_hidden(preview))))
+    assert OPENED in page and DISCONNECTED not in page
+    assert len(await _company_ids(real_engine)) == 2
+
+    ui.cookies.set("celerp_token", restored_tok)
+    page = _page(await ui.get(f"{base}/done?restored=1&team_members=5&reactivated=1"))
+    assert DISCONNECTED not in page and OPENED not in page and "team members" not in page.lower()
+
+
+async def test_done_page_links_users_and_roles_when_roles_follow_installation(ui, real_engine):
+    """When a new company works under this installation's role permissions, the done page links to Users & Roles."""
+    _, _, tok = await _setup(real_engine)
+    ui.cookies.set("celerp_token", tok)
+    base = "/setup/new-company/restore-backup"
+    ui.cookies.set("celerp_company_backup_outcome", "created:0:0:destination", path=base)
+    page = _page(await ui.get(f"{base}/done"))
+    assert _link(page, "/settings/general?tab=users", "Review Users & Roles")
+    ui.cookies.set("celerp_company_backup_outcome", "created:0:0:source", path=base)
+    assert "/settings/general?tab=users" not in _page(await ui.get(f"{base}/done"))
+
+
+# ── Lost responses and unreachable service ───────────────────────────────────
+
+NOT_CONFIRMED = "Celerp could not confirm the restore because the local service became unavailable."
+
+
+async def test_lost_response_after_commit_resolves_to_same_company(routed_ui, real_engine, real_client):
+    """The restore commits but its answer never arrives: the page does not say nothing was
+    written, and checking again opens the company that was made, without a duplicate."""
+    ui, router = routed_ui
+    _, _, tok = await _setup(real_engine)
+    data = await download(real_client, tok)
+    ui.cookies.set("celerp_token", tok)
+    base = "/settings/restore-backup"
+    preview = _page(await _upload_and_preview(ui, base, data))
+
+    async def commit_then_drop(request):
+        await router._real.handle_async_request(request)
+        raise httpx.ReadError("connection dropped")
+
+    router.overrides[("POST", "/company-backups/restore")] = commit_then_drop
+    r = await ui.post(f"{base}/restore", data=_hidden(preview))
+    page = _page(r)
+    assert NOT_CONFIRMED in page and NOTHING_WRITTEN not in page
+    assert "http://" not in page and "Check again" in page
+    assert len(await _company_ids(real_engine)) == 2
+
+    del router.overrides[("POST", "/company-backups/restore")]
+    r = await ui.post(f"{base}/restore", data=_hidden(page))
+    assert r.status_code == 303, r.text
+    done = _page(await _follow(ui, r))
+    assert OPENED in done
+    assert len(await _company_ids(real_engine)) == 2
+
+
+async def test_lost_response_before_commit_retry_restores_once(routed_ui, real_engine, real_client):
+    """The restore never reaches the service: checking again performs it, once."""
+    ui, router = routed_ui
+    _, _, tok = await _setup(real_engine)
+    data = await download(real_client, tok)
+    ui.cookies.set("celerp_token", tok)
+    base = "/settings/restore-backup"
+    preview = _page(await _upload_and_preview(ui, base, data))
+
+    def unreachable(request):
+        raise httpx.ConnectError("refused")
+
+    router.overrides[("POST", "/company-backups/restore")] = unreachable
+    page = _page(await ui.post(f"{base}/restore", data=_hidden(preview)))
+    assert "Celerp could not reach its local service." in page and "http://" not in page
+    assert len(await _company_ids(real_engine)) == 1
+
+    del router.overrides[("POST", "/company-backups/restore")]
+    r = await ui.post(f"{base}/restore", data=_hidden(page))
+    assert r.status_code == 303, r.text
+    assert "Company restored" in _page(await _follow(ui, r))
+    assert len(await _company_ids(real_engine)) == 2
+
+
+async def test_read_refusal_names_the_chosen_file(ui, real_engine):
+    """A file that is not a company backup is refused naming the file the owner chose."""
+    _, _, tok = await _setup(real_engine)
+    ui.cookies.set("celerp_token", tok)
+    r = await ui.post("/settings/restore-backup/read",
+                      files={"file": ("ledger-notes.txt", b"plain text, not a backup", "text/plain")})
+    assert r.status_code >= 400
+    assert "ledger-notes.txt: " in _page(r)
+
+
+# ── Modules the backup needs ─────────────────────────────────────────────────
+
+def _json(status: int, body: dict):
+    return lambda request: httpx.Response(status, json=body)
+
+
+async def test_prepare_modules_restarts_then_returns_to_backup(routed_ui, real_engine, real_client):
+    """Turning on a module the backup needs waits for Celerp to restart and comes back to
+    the same staged backup; with no restart needed it goes straight back."""
+    ui, router = routed_ui
+    _, _, tok = await _setup(real_engine)
+    data = await download(real_client, tok)
+    ui.cookies.set("celerp_token", tok)
+    base = "/settings/restore-backup"
+    await _upload_and_preview(ui, base, data)
+
+    router.overrides[("POST", "/company-backups/prepare")] = _json(202, {"restart": True, "restarting": True})
+    r = await ui.post(f"{base}/prepare", data={"consent": ["acme-widgets"]})
+    assert r.status_code == 303 and r.headers["location"] == f"{base}/restarting"
+    sent = json.loads(router.requests[-1].content)
+    assert sent["consent"] == ["acme-widgets"] and sent["upload_token"]
+    page = (await ui.get(f"{base}/restarting")).text
+    assert f"{base}/staged" in page and "X-Celerp-Staged" in page
+
+    r = await ui.get(f"{base}/staged")
+    assert r.status_code == 200 and r.headers.get("x-celerp-staged") == "1"
+    assert "Alpha Trading" in _page(r)
+
+    router.overrides[("POST", "/company-backups/prepare")] = _json(200, {"restart": False, "restarting": False})
+    r = await ui.post(f"{base}/prepare")
+    assert r.status_code == 303 and r.headers["location"] == f"{base}/staged"
+
+
+async def test_preview_offers_prepare_for_disabled_module(routed_ui, real_engine, real_client):
+    """A module installed but turned off is named with a step to turn it on, asking
+    consent for one from outside Celerp; there is no restore until it is ready."""
+    ui, router = routed_ui
+    _, _, tok = await _setup(real_engine)
+    data = await download(real_client, tok)
+    ui.cookies.set("celerp_token", tok)
+    base = "/settings/restore-backup"
+
+    async def needs_module(request):
+        real = await router._real.handle_async_request(request)
+        body = json.loads(await real.aread())
+        body.update(modules_ready=False, modules=[
+            {"name": "acme-widgets", "label": "Acme Widgets", "status": "enable_required", "first_party": False},
+            {"name": "celerp-labels", "label": "Labels", "status": "enable_required", "first_party": True}])
+        return httpx.Response(200, json=body)
+
+    router.overrides[("POST", "/company-backups/read")] = needs_module
+    r = await ui.post(f"{base}/read", files={"file": ("alpha.celerp-company", data, "application/octet-stream")})
+    page = _page(r)
+    assert "Installed but turned off." in page
+    assert f'action="{base}/prepare"' in page and f'action="{base}/restore"' not in page
+    assert re.search(r'name="consent"[^>]*value="acme-widgets"', page)
+    assert 'value="celerp-labels"' not in page

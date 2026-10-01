@@ -52,7 +52,7 @@ def _ref(user_id) -> str:
 
 
 def _staged_file(tmp_path, upload_token: str):
-    (path,) = (tmp_path / "company_backups" / "uploads").glob(f"*-{upload_token}.celerp-company")
+    (path,) = (tmp_path / "company_backups" / "uploads").glob(f"*-{upload_token}.upload")
     return path
 
 
@@ -202,7 +202,7 @@ async def test_same_backup_with_different_contents_refused(real_engine, real_cli
     assert await snapshot(real_engine) == before
     again = await restore(real_client, tok, data, mode="new_company")
     assert again.status_code == 200, again.text
-    assert (again.json()["company_id"], again.json()["created"]) == (first["company_id"], False)
+    assert (again.json()["company_id"], again.json()["outcome"]) == (first["company_id"], "opened_existing")
 
 
 async def test_company_restored_before_file_hash_kept_still_opens(real_engine, real_client, tmp_path, monkeypatch):
@@ -218,7 +218,7 @@ async def test_company_restored_before_file_hash_kept_still_opens(real_engine, r
             "WHERE id = :c"), {"c": uuid.UUID(first["company_id"])})
     again = await restore(real_client, tok, _r_with_rows(data, "ledger", lambda row: row), mode="new_company")
     assert again.status_code == 200, again.text
-    assert (again.json()["company_id"], again.json()["created"]) == (first["company_id"], False)
+    assert (again.json()["company_id"], again.json()["outcome"]) == (first["company_id"], "opened_existing")
 
 
 async def test_restored_company_records_file_hash(real_engine, real_client, tmp_path, monkeypatch):

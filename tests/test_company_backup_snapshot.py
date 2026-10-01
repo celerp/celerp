@@ -245,7 +245,7 @@ async def test_export_unreadable_attachment_removes_partial(real_engine, real_cl
     url = fake.url(cid, "photo.png")
     fake.files[url] = b"cloud-photo"
     await _bk_point_at(real_engine, cid, url)
-    folder = settings.data_dir / "company_backups" / str(cid)
+    folder = settings.data_dir / "company_backups" / "exports"
     seen_while_reading: list[list[str]] = []
 
     async def unreadable(company_id, read_url, max_bytes):
@@ -267,7 +267,7 @@ async def test_export_unreadable_attachment_removes_partial(real_engine, real_cl
     assert err.value.status_code == 409 and url in err.value.detail
     assert list(out.parent.iterdir()) == []
     assert len(seen_while_reading) == 3
-    assert all(len(names) == 1 and names[0].endswith(".celerp-company.partial")
+    assert all(len(names) == 1 and names[0].endswith(".export.partial")
                for names in seen_while_reading[:2]), seen_while_reading
 
 
@@ -354,7 +354,7 @@ async def test_download_routes_use_export_company_snapshot(real_engine, real_cli
         assert r.status_code == 200, r.text
         assert r.content == b"backup"
     assert [(c[0], c[2]) for c in calls] == [(cid, None), (cid, _PROVENANCE)]
-    assert all(c[1].name.endswith(".celerp-company") for c in calls)
+    assert all(c[1].name.endswith(".export") for c in calls)
     assert not hasattr(cb, "export_company")
 
 

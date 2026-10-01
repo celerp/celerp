@@ -188,12 +188,8 @@ async def ensure_not_bootstrapped(session: AsyncSession) -> None:
 
 def _company_name(value: str, errors: dict) -> str:
     name = value.strip()
-    if not name:
-        errors["company_name"] = "Enter a company name."
-    elif len(name) > migrations.COMPANY_NAME_MAX:
-        errors["company_name"] = f"The company name must be at most {migrations.COMPANY_NAME_MAX} characters."
-    elif "\x00" in name:
-        errors["company_name"] = "The company name contains a character that cannot be saved."
+    if (error := migrations.company_name_error(name)) is not None:
+        errors["company_name"] = error
     return name
 
 

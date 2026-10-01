@@ -757,7 +757,7 @@ class TestReportApiErrors:
 
     @pytest.mark.parametrize("failure,status,fragment", [
         (httpx.TimeoutException("slow"), 504, "Request timed out."),
-        (httpx.ConnectError("refused"), 503, "Is the server running?"),
+        (httpx.ConnectError("refused"), 503, "Celerp could not reach its local service."),
     ])
     @pytest.mark.parametrize("factory,args", [
         ("_api_client", ("tok",)),

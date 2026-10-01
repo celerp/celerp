@@ -547,10 +547,13 @@ def restart_would_load(pkg_name: str) -> bool:
 
 
 def module_label(pkg_name: str) -> str:
-    """The module's display name from its manifest, or the package name."""
+    """The module's display name from its manifest. A module that is not on disk has
+    no manifest, so its package name is shown as words ("celerp-accounting" ->
+    "Accounting") rather than as an identifier."""
     path = resolve_runtime_module_path(pkg_name, module_search_path())
     meta = read_manifest_metadata(path) if path is not None else {}
-    return meta.get("display_name") or meta.get("label") or pkg_name
+    return (meta.get("display_name") or meta.get("label")
+            or pkg_name.removeprefix("celerp-").replace("-", " ").replace("_", " ").title())
 
 
 # Fields to extract from PLUGIN_MANIFEST for display purposes.

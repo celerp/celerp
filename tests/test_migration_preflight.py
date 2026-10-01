@@ -44,7 +44,8 @@ def no_journal_sink(migration_env):
 
 @pytest.fixture
 def module_dir(code_config, tmp_path, monkeypatch):
-    """A MODULE_DIR that holds no modules, a config with nothing enabled, nothing running."""
+    """An installation with no modules on disk (MODULE_DIR and the bundled dirs both
+    empty), a config with nothing enabled, nothing running."""
     from celerp.config import read_config, write_config
     from celerp.modules import loader
     root = tmp_path / "modules"
@@ -54,6 +55,7 @@ def module_dir(code_config, tmp_path, monkeypatch):
     cfg = read_config()
     cfg.setdefault("modules", {})["enabled"] = []
     write_config(cfg)
+    monkeypatch.setattr(loader, "_BUNDLED_MODULES_DIRS", ())
     monkeypatch.setattr(loader, "_loaded", [m for m in loader._loaded if m["name"] != "celerp-accounting"])
     return root
 

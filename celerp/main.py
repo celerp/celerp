@@ -326,13 +326,16 @@ async def lifespan(_app: FastAPI):
         )
 
     # Attachment files of a company restore that stopped before it committed are removed,
-    # so stored files and restored companies agree after a crash. Non-fatal: a later boot
+    # so stored files and restored companies agree after a crash, and so are expired
+    # backup uploads and downloads a stopped process left behind. Non-fatal: a later boot
     # or the next restore retries.
     try:
         from celerp.services.company_backup import reconcile_landings
+        from celerp.services.company_backup_files import sweep_transient_files
+        await asyncio.to_thread(sweep_transient_files)
         await reconcile_landings()
     except Exception:
-        logging.getLogger(__name__).exception("Reconciling unfinished company restores failed (non-fatal)")
+        logging.getLogger(__name__).exception("Cleaning up after unfinished company restores failed (non-fatal)")
 
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links

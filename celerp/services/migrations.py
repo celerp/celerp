@@ -157,6 +157,17 @@ _PREPARED_BY_MAX = 200
 COMPANY_NAME_MAX = 200
 
 
+def company_name_error(name: str) -> str | None:
+    """Why a trimmed company name cannot be used, or None when it can."""
+    if not name:
+        return "Enter a company name."
+    if len(name) > COMPANY_NAME_MAX:
+        return f"The company name must be at most {COMPANY_NAME_MAX} characters."
+    if "\x00" in name:
+        return "The company name contains a character that cannot be saved."
+    return None
+
+
 class MigrationError(HTTPException):
     """A migration request that cannot be served; the detail is shown to the user."""
 
