@@ -699,3 +699,88 @@ async def test_backfill_skips_ambiguous_multi_lot_invoice(session, caplog):
     await session.commit()
     assert second == {"changed": False}
     assert await _rowcount(session) == rows_after_first
+
+
+async def _remap_cogs(session, company_id, code: str) -> None:
+    from celerp_accounting.models import Account
+
+    from celerp.services.account_roles import set_role
+
+    session.add(Account(company_id=company_id, code=code, name="Cost of sales", account_type="cogs"))
+    await session.flush()
+    await set_role(session, company_id, "cogs", code)
+
+
+@pytest.mark.asyncio
+async def test_backfill_skips_invoice_whose_cogs_sits_on_an_earlier_cogs_account(session):
+    """COGS posted to the account the company used for it then still counts as posted
+    after the company moves its COGS account."""
+    await _clear_marker(session)
+    company_id = await _seed_company(session)
+    _seed_parcel(session, company_id, "item:p20", cost_total=40.0, quantity=2.0)
+    doc_id = "doc:INV-0020"
+    _seed_doc(session, company_id, doc_id,
+              line_items=[{"quantity": 1, "item_id": "item:p20", "line_total": 100.0}])
+    await _emit_je(session, company_id, f"je:auto:{doc_id}:fin",
+                   entries=_fin_entries(cogs=20.0), ts="2026-01-05")
+    await _remap_cogs(session, company_id, "5101")
+    await session.commit()
+    before_ids = _posted_ids(await _doc_jes(session, company_id, doc_id))
+
+    await run_cogs_backfill(session)
+    await session.commit()
+
+    assert _posted_ids(await _doc_jes(session, company_id, doc_id)) == before_ids
+
+
+@pytest.mark.asyncio
+async def test_backfill_skips_invoice_whose_cogs_sits_on_the_companys_own_cogs_account(session):
+    """COGS posted for the COGS role on an account other than 5100 is recognized."""
+    await _clear_marker(session)
+    company_id = await _seed_company(session)
+    await _remap_cogs(session, company_id, "5101")
+    _seed_parcel(session, company_id, "item:p21", cost_total=40.0, quantity=2.0)
+    doc_id = "doc:INV-0021"
+    _seed_doc(session, company_id, doc_id,
+              line_items=[{"quantity": 1, "item_id": "item:p21", "line_total": 100.0}])
+    await _emit_je(session, company_id, f"je:auto:{doc_id}:fin", entries=[
+        *_fin_entries(),
+        {"account": "5101", "account_roles": ["cogs"], "debit": 20.0, "credit": 0.0},
+        {"account": "1130-P", "account_roles": ["inventory_purchased"], "debit": 0.0, "credit": 20.0},
+    ], ts="2026-01-05")
+    await session.commit()
+    before_ids = _posted_ids(await _doc_jes(session, company_id, doc_id))
+
+    await run_cogs_backfill(session)
+    await session.commit()
+
+    assert _posted_ids(await _doc_jes(session, company_id, doc_id)) == before_ids
+
+
+@pytest.mark.asyncio
+async def test_backfill_reports_an_older_cost_line_it_cannot_classify_instead_of_posting_twice(session):
+    """An older entry debiting an account the company never recorded as its COGS
+    account may be the doc's COGS; nothing is posted and the doc is reported."""
+    from celerp.accounting_roles import SCOPES_KEY
+
+    await _clear_marker(session)
+    company_id = await _seed_company(session)
+    await _remap_cogs(session, company_id, "5101")
+    company = await locked_company(session, company_id)
+    company.settings = {**company.settings, SCOPES_KEY: {**company.settings[SCOPES_KEY], "cogs": ["5101"]}}
+    _seed_parcel(session, company_id, "item:p22", cost_total=40.0, quantity=2.0)
+    doc_id = "doc:INV-0022"
+    _seed_doc(session, company_id, doc_id,
+              line_items=[{"quantity": 1, "item_id": "item:p22", "line_total": 100.0}])
+    await session.flush()
+    await _emit_je(session, company_id, f"je:auto:{doc_id}:fin",
+                   entries=_fin_entries(cogs=20.0), ts="2026-01-05")
+    await session.commit()
+    before_ids = _posted_ids(await _doc_jes(session, company_id, doc_id))
+
+    result = await run_cogs_backfill(session)
+    await session.commit()
+
+    assert _posted_ids(await _doc_jes(session, company_id, doc_id)) == before_ids
+    assert result["errored"] == 1
+    assert await _marker_value(session) is None
