@@ -3,7 +3,7 @@
 
 """The backup-banner poll must surface an upstream failure as HTTP 503.
 
-`/backup/active` catches any upstream backup-status error and returns a body of
+`/backup/active` catches any upstream backup-active error and returns a body of
 {"state": "error"} with a DEFAULT 200 status. To the poller, a failed backend
 read is then indistinguishable from a healthy 200 response, so an outage looks
 healthy at the HTTP layer. The route must return 503 on upstream failure so the
@@ -32,14 +32,14 @@ def _cookies() -> dict:
 @pytest.mark.asyncio
 async def test_backup_active_returns_503_on_upstream_failure(ui_app):
     """With a valid owner token (past the token gate) but a failing upstream
-    backup-status read, /backup/active must respond 503 - the status the client
+    backup-active read, /backup/active must respond 503 - the status the client
     observes - not a bare 200 that reads as a healthy backend."""
     failing = AsyncMock(side_effect=RuntimeError("backup service unreachable"))
-    with patch("ui.api_client.get_backup_status", new=failing):
+    with patch("ui.api_client.get_backup_active", new=failing):
         async with AsyncClient(transport=ASGITransport(app=ui_app),
                                base_url="http://ui", follow_redirects=False) as c:
             r = await c.get("/backup/active", cookies=_cookies())
 
     assert r.status_code == 503, (
-        f"an upstream backup-status failure must surface as HTTP 503, not "
+        f"an upstream backup-active failure must surface as HTTP 503, not "
         f"{r.status_code}; body={r.text}")

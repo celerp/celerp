@@ -2440,7 +2440,7 @@ def setup_routes(app):
         """Lightweight poll for the global 'backup in progress' banner (#161).
 
         On success returns {"active": bool} - true while a snapshot is building
-        (writes paused). When the upstream backup-status call cannot be reached,
+        (writes paused). When the upstream backup-active call cannot be reached,
         returns a distinct {"state": "error"} instead of a bare {"active": false}:
         a failed poll must never read as a healthy idle backend, so the banner can
         hold its last known state rather than flip to "not active"."""
@@ -2450,8 +2450,7 @@ def setup_routes(app):
         if not token:
             return JSONResponse({"active": False})
         try:
-            status = await _api.get_backup_status(token)
-            return JSONResponse({"active": bool(status.get("active"))})
+            return JSONResponse({"active": await _api.get_backup_active(token)})
         except Exception:
             return JSONResponse({"state": "error"}, status_code=503)
 

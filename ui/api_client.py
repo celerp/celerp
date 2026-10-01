@@ -3282,6 +3282,12 @@ async def get_billing_portal_url(token: str) -> str:
         return _raise(await c.post("/settings/cloud/billing-portal")).json()["portal_url"]
 
 
+async def get_backup_active(token: str) -> bool:
+    """GET /settings/backup-active - whether a backup is running (writes paused)."""
+    async with _api_client(token) as c:
+        return bool(_raise(await c.get("/settings/backup-active")).json()["active"])
+
+
 async def get_backup_status(token: str) -> dict:
     """GET /settings/backup-status — returns scheduler state from API process."""
     async with _api_client(token) as c:

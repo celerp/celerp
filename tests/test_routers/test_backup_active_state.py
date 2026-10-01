@@ -31,11 +31,11 @@ def _cookies() -> dict:
 
 @pytest.mark.asyncio
 async def test_backup_active_reports_error_state(ui_app):
-    """When the upstream backup-status call raises, /backup/active must report a
+    """When the upstream backup-active call raises, /backup/active must report a
     distinct error/unknown state, never a bare {"active": false} that reads as a
     healthy idle backend."""
     failing = AsyncMock(side_effect=RuntimeError("backup service unreachable"))
-    with patch("ui.api_client.get_backup_status", new=failing):
+    with patch("ui.api_client.get_backup_active", new=failing):
         async with AsyncClient(transport=ASGITransport(app=ui_app),
                                base_url="http://ui", follow_redirects=False) as c:
             r = await c.get("/backup/active", cookies=_cookies())
