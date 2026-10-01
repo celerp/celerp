@@ -198,10 +198,10 @@ async def test_only_the_owner_can_reset(real_engine, real_client, tmp_path, monk
     shared, solo, a, b = await _two_companies(real_engine, tmp_path)
     admin = await owner(real_engine, "admin@example.com", "Admin")
     await member(real_engine, admin, a, "admin")
+    admin_token = await token(real_engine, admin, a, "admin")
     before = await snapshot(real_engine)
 
-    r = await real_client.post(RESET, json={"company_name": "Harbor Goods Ltd"},
-                               headers=auth(await token(real_engine, admin, a, "admin")))
+    r = await real_client.post(RESET, json={"company_name": "Harbor Goods Ltd"}, headers=auth(admin_token))
     assert r.status_code == 403
     assert (await real_client.post(RESET, json={"company_name": "Harbor Goods Ltd"})).status_code == 401
     assert await snapshot(real_engine) == before

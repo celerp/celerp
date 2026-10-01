@@ -20,6 +20,7 @@ from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.services.auth import (
     AuthContext,
+    first_company_link,
     get_auth_context,
     get_current_company_id,
     get_current_user,
@@ -2257,6 +2258,53 @@ async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     staged.unlink(missing_ok=True)
     staged.with_suffix(".json").unlink(missing_ok=True)
     return {"ok": True, **info}
+
+
+class CompanyReset(BaseModel):
+    company_name: str
+
+
+@router.post("/me/reset", dependencies=[require_permission("manage_company_lifecycle")])
+async def reset_company(
+    payload: CompanyReset,
+    ctx: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Remove the current company: its records, settings, chart of accounts, attachments
+    and memberships. Logins and other companies stay.
+
+    The typed name must equal the company's name exactly. All or nothing: files go only
+    after the commit. Returns a token pair for another of the caller's companies, or
+    ``{"next": "start_company"}`` when this was their last one."""
+    from celerp.connectors.ownership import lock_connector_maintenance
+    from celerp.services import company_reset
+    from celerp.services.migrations import run_cleanup_task
+
+    await lock_connector_maintenance(session)
+    await locked_authority(session, ctx.company_id, ctx.user.id, ("manage_company_lifecycle",))
+    company = await session.get(Company, ctx.company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    try:
+        task_id = await company_reset.reset(session, company, payload.company_name)
+    except company_reset.ResetRefused as exc:
+        await session.rollback()
+        if exc.__cause__ is not None:
+            logger.error("Company reset failed: %s", type(exc.__cause__).__name__)
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    link = await first_company_link(session, ctx.user.id)
+    if link is None:
+        await session.commit()
+        result = {"next": "start_company"}
+    else:
+        # The new session continues this one, so it cannot jump a concurrent sign-out.
+        result = await issue_token_pair(
+            session, user=ctx.user, company=await session.get(Company, link.company_id),
+            role=link.role, expected_snonce=ctx.snonce,
+        )
+    session.expunge_all()
+    await run_cleanup_task(session, task_id)
+    return result
 
 
 @router.delete("/me", dependencies=[require_permission("manage_company_lifecycle")])

@@ -19,10 +19,11 @@ from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.services import bootstrap
-from celerp.services.provisioning import provision_registered_company
+from celerp.services.provisioning import provision_additional_company, provision_registered_company
 from celerp.services.auth import (
     AuthContext,
     decode_refresh_token,
+    first_company_link,
     get_auth_context,
     MIN_PASSWORD_LENGTH,
     get_current_company_id,
@@ -36,6 +37,8 @@ from celerp.services.auth import (
 )
 
 router = APIRouter()
+
+NO_COMPANY = "No active company membership"
 
 logger = logging.getLogger(__name__)
 
@@ -168,37 +171,25 @@ limiter = Limiter(key_func=get_remote_address)
 
 
 async def _issue_login_tokens(session: AsyncSession, user: User) -> dict:
-    """Sign *user* in to one of their active company links.
-
-    A user in several companies uses /switch-company after login. A company still
-    being moved in is picked only when the user has no other company, so a login
-    never lands on a staged company while a working one exists."""
-    link = (
-        await session.execute(
-            select(UserCompany)
-            .join(Company, Company.id == UserCompany.company_id)
-            .where(
-                UserCompany.user_id == user.id,
-                UserCompany.is_active == True,  # noqa: E712
-            )
-            .order_by(Company.is_migration_staged, UserCompany.id)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    """Sign *user* in to the company ``first_company_link`` picks."""
+    link = await first_company_link(session, user.id)
     if link is None:
-        raise HTTPException(status_code=401, detail="No active company membership")
+        raise HTTPException(status_code=401, detail=NO_COMPANY)
 
     company = await session.get(Company, link.company_id)
     return await _issue_tokens(session, user, company, link.role)
 
 
-@router.post("/login")
-@limiter.limit("10/minute")
-async def login(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
-    user = (await session.execute(select(User).where(User.email == payload.email))).scalar_one_or_none()
-    if not user or not user.auth_hash or not verify_password(payload.password, user.auth_hash) or not user.is_active:
+async def _authenticate(session: AsyncSession, email: str, password: str) -> User:
+    """The active login these credentials belong to; a neutral 401 otherwise."""
+    user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if not user or not user.auth_hash or not verify_password(password, user.auth_hash) or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    return user
 
+
+async def _check_direct_connection(session: AsyncSession) -> None:
+    """Without the cloud relay only one person may be signed in at a time."""
     from celerp.gateway.state import get_session_token as _get_session_token
     from celerp.services.session_tracker import active_user_ids as _active_ids
     if not _get_session_token():
@@ -206,6 +197,12 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
         if active:
             raise HTTPException(status_code=409, detail="direct_connection_limit")
 
+
+@router.post("/login")
+@limiter.limit("10/minute")
+async def login(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
+    user = await _authenticate(session, payload.email, payload.password)
+    await _check_direct_connection(session)
     return await _issue_login_tokens(session, user)
 
 
@@ -213,15 +210,38 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
 @limiter.limit("5/minute")
 async def login_force(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
     """Like /login but evicts all other active sessions from the tracker first."""
-    user = (await session.execute(select(User).where(User.email == payload.email))).scalar_one_or_none()
-    if not user or not user.auth_hash or not verify_password(payload.password, user.auth_hash) or not user.is_active:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    user = await _authenticate(session, payload.email, payload.password)
 
     from celerp.services.session_tracker import invalidate_all_sessions as _invalidate_all
     evicting_ip = request.client.host if request.client else None
     await _invalidate_all(session, str(user.id), evicting_ip=evicting_ip)
 
     return await _issue_login_tokens(session, user)
+
+
+class StartCompanyRequest(BaseModel):
+    email: str
+    password: str
+    company_name: str
+
+
+@router.post("/start-company")
+@limiter.limit("5/minute")
+async def start_company(request: Request, payload: StartCompanyRequest,
+                        session: AsyncSession = Depends(get_session)) -> dict:
+    """Create a company for a login that has none left, after its last company was reset,
+    and sign it in as that company's owner."""
+    user = await _authenticate(session, payload.email, payload.password)
+    name = payload.company_name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Company name required")
+    await _check_direct_connection(session)
+    # Held until the commit, so two requests cannot both find no company and make two.
+    await session.get(User, user.id, with_for_update=True, populate_existing=True)
+    if await first_company_link(session, user.id) is not None:
+        raise HTTPException(status_code=409, detail="This login already has a company. Sign in instead.")
+    company = await provision_additional_company(session, user=user, company_name=name)
+    return await _issue_tokens(session, user, company, "owner")
 
 
 class RefreshRequest(BaseModel):

@@ -338,6 +338,21 @@ async def get_current_role(ctx: AuthContext = Depends(get_auth_context)) -> str:
     return ctx.role
 
 
+async def first_company_link(session: AsyncSession, user_id) -> UserCompany | None:
+    """The company a sign-in lands on: the user's first active company link.
+
+    A user in several companies uses /switch-company afterwards. A company still
+    being moved in is picked only when the user has no other company, so a sign-in
+    never lands on a staged company while a working one exists."""
+    return (await session.execute(
+        select(UserCompany)
+        .join(Company, Company.id == UserCompany.company_id)
+        .where(UserCompany.user_id == user_id, UserCompany.is_active == True)  # noqa: E712
+        .order_by(Company.is_migration_staged, UserCompany.id)
+        .limit(1)
+    )).scalar_one_or_none()
+
+
 async def issue_token_pair(
     session: AsyncSession,
     *,
