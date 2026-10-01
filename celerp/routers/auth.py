@@ -24,13 +24,14 @@ from celerp.services.auth import (
     AuthContext,
     decode_refresh_token,
     NO_COMPANY,
-    first_company_link,
+    first_usable_company_link,
     get_auth_context,
     MIN_PASSWORD_LENGTH,
     get_current_company_id,
     get_current_user,
     hash_password,
     issue_token_pair,
+    usable_company_link,
     oauth2_scheme_optional,
     validate_access_token,
     validate_password,
@@ -171,8 +172,8 @@ limiter = Limiter(key_func=get_remote_address)
 
 
 async def _issue_login_tokens(session: AsyncSession, user: User) -> dict:
-    """Sign *user* in to the company ``first_company_link`` picks."""
-    link = await first_company_link(session, user.id)
+    """Sign *user* in to the company ``first_usable_company_link`` picks."""
+    link = await first_usable_company_link(session, user.id)
     if link is None:
         raise HTTPException(status_code=401, detail=NO_COMPANY)
 
@@ -238,7 +239,7 @@ async def start_company(request: Request, payload: StartCompanyRequest,
     await _check_direct_connection(session)
     # Held until the commit, so two requests cannot both find no company and make two.
     await session.get(User, user.id, with_for_update=True, populate_existing=True)
-    if await first_company_link(session, user.id) is not None:
+    if await first_usable_company_link(session, user.id) is not None:
         raise HTTPException(status_code=409, detail="This login already has a company. Sign in instead.")
     company = await provision_additional_company(session, user=user, company_name=name)
     return await _issue_tokens(session, user, company, "owner")
@@ -271,19 +272,10 @@ async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    link = await session.scalar(
-        select(UserCompany).where(
-            UserCompany.user_id == user.id,
-            UserCompany.company_id == company_uuid,
-            UserCompany.is_active == True,  # noqa: E712
-        )
-    )
+    link = await usable_company_link(session, user.id, company_uuid)
     if link is None:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
-
     company = await session.get(Company, company_uuid)
-    if company is None or (not company.is_active and link.role != "owner"):
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     # Nonce equality is enforced once, under the issuance row lock: the refresh
     # is a continuation, so it presents the snonce it decoded. If a concurrent

@@ -20,7 +20,7 @@ from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.services.auth import (
     AuthContext,
-    first_company_link,
+    first_usable_company_link,
     get_auth_context,
     get_current_company_id,
     get_current_user,
@@ -2292,7 +2292,7 @@ async def reset_company(
         if exc.__cause__ is not None:
             logger.error("Company reset failed: %s", type(exc.__cause__).__name__)
         raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
-    link = await first_company_link(session, ctx.user.id)
+    link = await first_usable_company_link(session, ctx.user.id)
     if link is None:
         await session.commit()
         result = {"next": "start_company"}

@@ -11,7 +11,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
@@ -236,21 +236,16 @@ async def validate_access_token(session: AsyncSession, token: str) -> AuthContex
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    link = await session.scalar(
-        select(UserCompany).where(
-            UserCompany.user_id == user.id,
-            UserCompany.company_id == company_uuid,
-            UserCompany.is_active == True,  # noqa: E712
-        )
-    )
+    link = await usable_company_link(session, user.id, company_uuid)
     if link is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-
-    # Block access to deactivated companies - but owners can still authenticate
-    # so they can create a new company or reactivate the existing one.
+        # Name the deactivated company case; owners still authenticate into it so
+        # they can reactivate it or create a new company.
+        held = await session.scalar(select(UserCompany.id).where(
+            UserCompany.user_id == user.id, UserCompany.company_id == company_uuid,
+            UserCompany.is_active.is_(True)))
+        detail = "Company is deactivated" if held is not None else "Invalid token"
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
     company = await session.get(Company, company_uuid)
-    if company is None or (not company.is_active and link.role != "owner"):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Company is deactivated")
 
     # Nonce equality is mandatory: a token whose snonce no longer matches the
     # current per-user nonce (logout, force-login, or any security-sensitive
@@ -342,18 +337,34 @@ async def get_current_role(ctx: AuthContext = Depends(get_auth_context)) -> str:
 NO_COMPANY = "No active company membership"
 
 
-async def first_company_link(session: AsyncSession, user_id) -> UserCompany | None:
-    """The company a sign-in lands on: the user's first active company link.
+# The one rule for whether a login can work in a company: an active membership in an
+# active company, or an owner's active membership in a deactivated or still-being-moved-in
+# company, so the owner can reactivate it or finish the move.
+USABLE_LINK = and_(UserCompany.is_active.is_(True),
+                   or_(Company.is_active.is_(True), UserCompany.role == "owner"))
+
+
+def _usable_links(user_id):
+    return (select(UserCompany).join(Company, Company.id == UserCompany.company_id)
+            .where(UserCompany.user_id == user_id, USABLE_LINK))
+
+
+async def first_usable_company_link(session: AsyncSession, user_id) -> UserCompany | None:
+    """The company a sign-in lands on: the user's first usable company link, or None when
+    the login has no company it can work in.
 
     A user in several companies uses /switch-company afterwards. A company still
     being moved in is picked only when the user has no other company, so a sign-in
     never lands on a staged company while a working one exists."""
     return (await session.execute(
-        select(UserCompany)
-        .join(Company, Company.id == UserCompany.company_id)
-        .where(UserCompany.user_id == user_id, UserCompany.is_active == True)  # noqa: E712
-        .order_by(Company.is_migration_staged, UserCompany.id)
-        .limit(1)
+        _usable_links(user_id).order_by(Company.is_migration_staged, UserCompany.id).limit(1)
+    )).scalar_one_or_none()
+
+
+async def usable_company_link(session: AsyncSession, user_id, company_id) -> UserCompany | None:
+    """The user's link to *company_id* when the login can work in that company, else None."""
+    return (await session.execute(
+        _usable_links(user_id).where(UserCompany.company_id == company_id)
     )).scalar_one_or_none()
 
 

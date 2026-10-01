@@ -24,7 +24,7 @@ from celerp.models.auth import SessionRegistry
 from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig
 from celerp.models.migration import MigrationCleanupTask, MigrationRun
-from celerp.services.auth import first_company_link
+from celerp.services.auth import first_usable_company_link
 from celerp.services.company_backup import _fk_order, _ident, _schema
 
 # Tables that belong to the installation rather than any one company, and why.
@@ -120,7 +120,7 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> uui
             await session.execute(text(f"DELETE FROM {_ident(owned.table)} WHERE {owned.where}"), {"c": cid})
         # A login left with no company is signed out everywhere, so it no longer holds
         # the single direct sign-in place.
-        left = [u for u in members if await first_company_link(session, u) is None]
+        left = [u for u in members if await first_usable_company_link(session, u) is None]
         if left:
             await session.execute(delete(SessionRegistry).where(SessionRegistry.user_id.in_(left)))
         task = MigrationCleanupTask(company_id=company.id, run_ids=run_ids)
