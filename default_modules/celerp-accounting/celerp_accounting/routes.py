@@ -1785,7 +1785,7 @@ async def account_ledger(
     running balance, closing balance and source doc links.
 
     contact_id narrows the account to one party, which is what turns a control
-    account into that party's subledger: 1120 filtered to a customer is that
+    account into that party's subledger: the receivable filtered to a customer is that
     customer's receivable, and every such line sums back to the control account.
     Lines with no resolvable party are reported under the empty string so a
     filtered view can never quietly exclude them from the account's total.

@@ -1700,7 +1700,7 @@ async def create_doc(
         data["subtotal"] = to_stored_float(round_money(subtotal_d, currency))
         # Persist the EFFECTIVE tax (doc-level + line-level) into `tax`. Previously this was computed
         # for `total` but discarded, leaving `tax`=0 for line-level taxes — so the finalize JE booked
-        # the tax-inclusive total entirely to revenue (4100) and recorded zero output VAT (2120),
+        # the tax-inclusive total entirely to revenue and recorded zero output VAT,
         # overstating revenue and understating the VAT liability. total = subtotal + tax + shipping.
         data["tax"] = to_stored_float(round_money(effective_tax_d, currency))
 
@@ -2156,7 +2156,7 @@ async def _finalize_doc_impl(
                     idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
                 )
     elif doc_type in ("purchase_order", "bill"):
-        # Bill conversion JE: debit expense/inventory accounts, credit AP (2110)
+        # Bill conversion JE: debit expense/inventory accounts, credit accounts payable
         # Covers both PO->bill conversion and directly-created bills finalized directly.
         # Pass revert_count so cycle-aware idempotency keys are used on re-finalize.
         _revert_count = int(_initial_doc_state.get("revert_count", 0))

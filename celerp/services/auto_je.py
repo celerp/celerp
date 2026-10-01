@@ -2032,8 +2032,8 @@ async def upsert_opening_inventory_je(
     """Auto-post (or update) the opening inventory JE for pre-system stock.
 
     Computes gap = catalog_cost_total (stocked, non-consignment, non-archived)
-    minus the sum of all JE-backed balances on 1130 / 1130-P (excluding the OB
-    JE itself). The gap is rounded once to the company currency; a positive representable
+    minus the sum of all JE-backed balances on the inventory value accounts
+    (excluding the OB JE itself). The gap is rounded once to the company currency; a positive representable
     amount emits/updates je:auto:opening-inventory:{company_id}, while zero voids the OB JE.
 
     When the gap changes (more stock added), voids the old JE and posts a fresh
