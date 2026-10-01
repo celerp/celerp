@@ -160,14 +160,18 @@ async def test_migration_rejects_unknown_or_mismatched_source(client, migration_
 
     cases = [
         (fake_bytes(), "not_a_source", "This source is not available."),
-        (fake_bytes(), "manager_io", "This file is not a Manager.io file."),
-        (b"PK\x03\x04 a spreadsheet", None, "Celerp cannot read this file yet."),
+        (fake_bytes(), "manager_io",
+         '"books.fake" is not a Manager.io file. Accepted: Manager business file (.manager).'),
+        (b"PK\x03\x04 a spreadsheet", None,
+         {f'Celerp cannot read "books.fake" yet. Accepted: {first}, {second}.'
+          for first, second in (("Source file (.fake)", "Manager business file (.manager)"),
+                                ("Manager business file (.manager)", "Source file (.fake)"))}),
         (fake_bytes(fake_spec(unreadable=True)), FAKE_KEY, "This file is damaged."),
     ]
     for data, source, detail in cases:
         r = await scan_upload(client, data, source=source)
         assert r.status_code == 422, r.text
-        assert r.json()["detail"] == detail
+        assert r.json()["detail"] in (detail if isinstance(detail, set) else {detail})
         assert _scan_dirs(migration_env) == set()
 
     assert registry.get_adapter("not_a_source") is None

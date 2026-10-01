@@ -287,11 +287,20 @@ def setup_code_field() -> FT:
     )
 
 
+# Where each source's file comes from, in the words of that system's own menus.
+_EXPORT_HELP = {"manager_io": "migration.export_help.manager_io"}
+
+
 async def _source_page(request: Request, mode: WizardMode, *, selected: str = "", prepared_by: str = "",
                        error: str | None = None, back: str | None = None):
     sources, sources_error = await _sources()
     code_required = await setup_code_required(mode)
-    extensions = sorted({ext for s in sources for a in s.get("artifacts", []) for ext in a.get("extensions", [])})
+    artifacts = [a for s in sources for a in s.get("artifacts", [])]
+    extensions = sorted({ext for a in artifacts for ext in a.get("extensions", [])})
+    # One file per source unless a source reads several together.
+    several = any(len(s.get("artifacts", [])) > 1 for s in sources)
+    accepted = ", ".join(f"{a['label']} ({', '.join(a.get('extensions', []))})" for a in artifacts)
+    guidance = [P(t(_EXPORT_HELP[s["key"]]), cls="form-hint") for s in sources if s["key"] in _EXPORT_HELP]
     options = [("", t("migration.detect_source"))] + [(s["key"], s["display_name"]) for s in sources]
     radios = [
         Label(
@@ -305,8 +314,10 @@ async def _source_page(request: Request, mode: WizardMode, *, selected: str = ""
         Fieldset(Legend(t("migration.source_label"), cls="form-label"), *radios, cls="form-group"),
         Div(
             Label(t("migration.files_label"), For="files", cls="form-label"),
-            Input(type="file", id="files", name="files", multiple=True, required=True,
+            Input(type="file", id="files", name="files", multiple=several,
                   accept=",".join(extensions) if extensions else None, cls="form-input"),
+            P(t("migration.accepted_files", files=accepted), cls="form-hint") if accepted else "",
+            *guidance,
             cls="form-group",
         ),
         Div(
@@ -530,7 +541,7 @@ def _coverage_page(request: Request, mode: WizardMode, entry: dict, errors: dict
         Input(type="date", id="cutover_date", name="cutover_date", value=decisions.get("cutover_date") or "",
               cls="form-input"),
         field_error(errors, "cutover_date"),
-        cls="form-group",
+        cls="form-group cutover-date",
     )
     return wizard_page(
         request,

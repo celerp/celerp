@@ -324,19 +324,28 @@ async def _receive(files: AsyncIterable[UploadPart], directory: Path) -> tuple[A
     return artifacts, adapter
 
 
+def _accepted(adapters) -> str:
+    """The files the given sources read, as shown to the user: label and extensions."""
+    return ", ".join(f"{s.label} ({', '.join(s.extensions)})" for a in adapters for s in a.artifact_specs)
+
+
 def _recognise(artifacts: ArtifactSet, chosen: SourceAdapter | None) -> SourceAdapter:
     """The adapter that reads the upload. A recognised source saved at a file format
-    revision its adapter does not read is refused with that adapter's own message."""
+    revision its adapter does not read is refused with that adapter's own message.
+    A refusal names the uploaded file and the files that are accepted."""
+    names = ", ".join(f'"{a.original_name}"' for a in artifacts)
     try:
         if chosen is not None:
             if not chosen.detect(artifacts).matched:
-                raise ScanStoreError(422, f"This file is not a {chosen.display_name} file.")
+                raise ScanStoreError(422, f"{names} is not a {chosen.display_name} file. "
+                                          f"Accepted: {_accepted([chosen])}.")
             return chosen
         adapter = registry.detect_adapter(artifacts)
     except SourceRevisionError as exc:
         raise ScanStoreError(422, str(exc)) from exc
     if adapter is None:
-        raise ScanStoreError(422, "Celerp cannot read this file yet.")
+        raise ScanStoreError(422, f"Celerp cannot read {names} yet. "
+                                  f"Accepted: {_accepted(registry.list_adapters())}.")
     return adapter
 
 

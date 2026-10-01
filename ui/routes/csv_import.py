@@ -265,7 +265,7 @@ async def save_import_draft(token: str, ref: str, csv_text: str, draft: dict, re
 
 
 async def stage_tabular_upload(
-    token: str, form: Any, known: Any = (),
+    token: str, form: Any, known: Any = (), *, from_onboarding: bool = False,
 ) -> tuple[list[dict], str, str | None]:
     """Read the uploaded file and stage its rows for the authenticated company.
 
@@ -274,7 +274,8 @@ async def stage_tabular_upload(
     choice (its sheet, or which line is the header) the file itself is staged
     first, so the choice is made on the stored file without uploading it again;
     the error then carries the staged file's reference. The chosen sheet and
-    header row are kept with the staged rows. When a stage cannot be written the
+    header row are kept with the staged rows, and so is whether the import was
+    opened from the getting-started hub. When a stage cannot be written the
     error is a generic message; where staged files live stays in the server log.
     """
     source_ref = str(form.get("source_ref") or "")
@@ -297,7 +298,8 @@ async def stage_tabular_upload(
             return rows, "", err
         cols = list(rows[0].keys()) if rows else []
         source = {"filename": filename, "sheet": sheet, "header_row": header_row}
-        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols), {"source": source})
+        draft = {"source": source, "from_onboarding": True} if from_onboarding else {"source": source}
+        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols), draft)
     except OSError:
         logger.exception("Could not stage an uploaded import file")
         return [], "", t("import.err_stage_unavailable")
@@ -404,6 +406,21 @@ def entered_from_onboarding(request) -> bool:
     return request.cookies.get(_ONBOARDING_COOKIE) == "1"
 
 
+def import_back_link(request, home: str, label_key: str = "btn.back") -> Any:
+    """An upload page's Back: the getting-started hub when the page was opened from it
+    (the marker on the visit, the cookie on a re-render after a post), else ``home``."""
+    opened = (request.query_params.get(ONBOARDING_MARKER) == "1" if request.method == "GET"
+              else entered_from_onboarding(request))
+    if opened:
+        return A(t("btn.back"), href="/onboarding", cls="btn btn--secondary")
+    return A(t(label_key), href=home, cls="btn btn--secondary")
+
+
+def import_page_href(path: str, from_onboarding: bool) -> str:
+    """The import page that Back and Cancel return to, keeping the getting-started origin."""
+    return f"{path}?{ONBOARDING_MARKER}=1" if from_onboarding else path
+
+
 def _mapping_js_labels() -> dict[str, str]:
     """Translated labels the mapping dropdown JS reads at render time.
 
@@ -422,6 +439,17 @@ def _mapping_js_labels() -> dict[str, str]:
         "category_fields": t("import.js_category_fields"),
         "core_fields": t("import.js_core_fields"),
     }
+
+
+def translated_labels(label_keys: dict[str, str]) -> dict[str, str]:
+    """An importer's target labels in the reader's language, from target -> translation key."""
+    return {col: t(key) for col, key in label_keys.items()}
+
+
+def column_label(col: str, labels: dict[str, str]) -> str:
+    """A target column's name for the reader: its translated label when the importer
+    names it, else the key in words."""
+    return labels.get(col) or col.replace("_", " ").title()
 
 
 def column_mapping_form(
@@ -443,6 +471,7 @@ def column_mapping_form(
 
     Each CSV column stays as a visual column with a searchable mapping dropdown
     and 3-5 sample data rows below - matching the user's spreadsheet mental model.
+    ``col_labels`` names core and category targets in the reader's language.
     """
     attrs = category_attrs or []
     suggested = suggest_mapping(csv_cols, target_cols, category_attrs=attrs)
@@ -466,14 +495,16 @@ def column_mapping_form(
     option_defs.append({"value": MAPPING_SKIP, "label": t("import.opt_skip"), "group": "action"})
     # Core fields
     for tc in target_cols:
-        label = _col_labels.get(tc) or tc.replace("_", " ").title()
+        label = column_label(tc, _col_labels)
         if tc in req:
             label += " *"
         option_defs.append({"value": tc, "label": label, "group": "core"})
-    # Category attribute fields
+    # Category attribute fields, never a second entry for a core field
     for attr_key in attrs:
+        if attr_key in target_cols:
+            continue
         attr_val = f"{MAPPING_ATTR_PREFIX}{attr_key}"
-        label = attr_key.replace("_", " ").title()
+        label = column_label(attr_key, _col_labels)
         option_defs.append({"value": attr_val, "label": label, "group": "category"})
 
     # Build per-column header cells
@@ -1189,6 +1220,8 @@ def _fix_errors_panel(
     error_report_action: str,
     back_href: str,
     has_mapping: bool = False,
+    *,
+    col_labels: dict[str, str],
 ) -> FT:
     """Inline-fix error panel: editable error cells + fill-all bars."""
     ok_count = len(rows) - len(error_row_indices)
@@ -1215,7 +1248,7 @@ def _fix_errors_panel(
             continue
         col_error_count = col_error_counts.get(col, 0)
         if col_error_count > 1:
-            label = col.replace("_", " ").title()
+            label = column_label(col, col_labels)
             fill_widget = Input(
                 type="text", id=f"fill-{col}",
                 placeholder=t("import.fill_placeholder", label=label),
@@ -1253,7 +1286,7 @@ def _fix_errors_panel(
 
     header_cells = [Th("#", cls="csv-th")]
     for col in visible_cols:
-        label = col.replace("_", " ").title()
+        label = column_label(col, col_labels)
         is_err_col = col in error_cols
         badge = t("import.n_errors_paren", n=col_error_counts.get(col, 0)) if is_err_col else ""
         tooltip = _COL_TOOLTIPS.get(col)
@@ -1384,6 +1417,7 @@ def validation_result(
     upsert_label: str | None = None,
     notes: Any = "",
     ready: int | None = None,
+    col_labels: dict[str, str] | None = None,
 ) -> FT:
     """Return the post-upload panel: inline-fix error panel or clean confirm panel.
 
@@ -1415,6 +1449,7 @@ def validation_result(
             error_report_action=error_report_action,
             back_href=back_href,
             has_mapping=has_mapping,
+            col_labels=col_labels or {},
         )
 
     # Clean - confirm panel with preview table
@@ -1428,10 +1463,11 @@ def validation_result(
         upsert_control=_upsert_control(upsert_label) if upsert_label else "",
         notes=notes,
         ready=ready,
+        col_labels=col_labels or {},
     )
 
 
-def _preview_table(rows: list[dict], cols: list[str]) -> FT:
+def _preview_table(rows: list[dict], cols: list[str], col_labels: dict[str, str]) -> FT:
     """First 5 rows, values truncated to 40 chars, with a 'showing n of total' note."""
     n = len(rows)
     preview_rows = rows[:5]
@@ -1439,7 +1475,7 @@ def _preview_table(rows: list[dict], cols: list[str]) -> FT:
         return ""
     return Div(
         Table(
-            Thead(Tr(*[Th(c.replace("_", " ").title()) for c in cols])),
+            Thead(Tr(*[Th(column_label(c, col_labels)) for c in cols])),
             Tbody(*[Tr(*[Td(str(row.get(c, ""))[:40]) for c in cols]) for row in preview_rows]),
             cls="data-table import-preview-table",
         ),
@@ -1483,6 +1519,7 @@ def _confirm_panel(
     upsert_control: Any = "",
     notes: Any = "",
     ready: int | None = None,
+    col_labels: dict[str, str],
 ) -> FT:
     """Rows-ready summary, preview table, and the single import button."""
     review_step = 3 if has_mapping else 2
@@ -1499,7 +1536,7 @@ def _confirm_panel(
                 cls="import-summary-cards",
             ),
             notes,
-            _preview_table(rows, cols),
+            _preview_table(rows, cols, col_labels),
             Form(
                 *[Input(type="hidden", name=k, value=v) for k, v in hidden.items()],
                 upsert_control,
@@ -1648,7 +1685,7 @@ def plan_review_panel(
                 _review_decisions(plan),
                 Div(Table(
                     Thead(Tr(Th(t("import.col_row")), Th(t("import.col_exclude")),
-                             *[Th(col_labels.get(c, c.replace("_", " ").title())) for c in shown_cols],
+                             *[Th(column_label(c, col_labels)) for c in shown_cols],
                              Th(t("import.col_problem")))),
                     Tbody(*body),
                     cls="csv-fix-table data-table import-preview-table",

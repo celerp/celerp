@@ -1351,6 +1351,7 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
     # copy stays relay-sourced; the card is hidden in neutral (relay down) or dismissed.
     js = (
         "(function(){"
+        "if(!window.celerpStarFetch)return;"
         "Promise.all(["
         "window.celerpStarFetch('/stars/cta?medium=" + medium + "').catch(function(){return null}),"
         "window.celerpStarFetch('/stars/badge').catch(function(){return null})"

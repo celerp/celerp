@@ -65,5 +65,6 @@ def test_card_medium_is_parameterized():
     assert "/stars/cta?medium=dashboard" in to_xml(star_supporter_card("dashboard"))
 
 
-def test_onboarding_view_includes_card():
-    assert 'id="star-supporter-card"' in to_xml(_onboarding_view(set()))
+def test_onboarding_view_has_no_card():
+    """Getting started stays on setting up the business; the dashboard carries the card."""
+    assert 'id="star-supporter-card"' not in to_xml(_onboarding_view(set()))

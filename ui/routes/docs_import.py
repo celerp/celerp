@@ -31,6 +31,9 @@ from ui.routes.csv_import import (
     import_result_panel,
     import_numbered,
     entered_from_onboarding,
+    import_back_link,
+    import_page_href,
+    translated_labels,
     onboarding_entry_cookie,
     stage_tabular_upload,
     upload_form,
@@ -52,6 +55,15 @@ _DOC_IMPORT_SPEC = CsvImportSpec(
     type_map={"total": float, "amount_outstanding": float, "line_total_price": float,
                "line_unit_price": float, "line_weight_ct": float, "line_qty": float},
 )
+# The translated name of each document import target.
+_DOC_IMPORT_LABEL_KEYS = {
+    "doc_type": "import.field.doc_type", "doc_number": "field.doc_number", "date": "field.issue_date",
+    "due_date": "field.due_date", "contact_name": "field.contact_name", "total": "field.total",
+    "amount_outstanding": "field.amount_outstanding", "status": "field.status",
+    **{col: f"import.field.{col}" for col in (
+        "line_sku", "line_barcode", "line_stone_type", "line_weight_ct",
+        "line_qty", "line_unit_price", "line_total_price", "line_cost_basis")},
+}
 
 
 # The address free-tier share links are published under.
@@ -258,13 +270,17 @@ def received_detail(r: dict, *, error: str | None = None) -> list:
 
 def setup_routes(app):
 
+    def _upload_header(request: Request):
+        """The upload page's header, the same before and after a failed upload."""
+        return page_header(
+            t("docs_import.import_documents"),
+            import_back_link(request, "/docs", "btn.back_to_settings"),
+            A(t("btn.download_template"), href="/docs/import/template", cls="btn btn--secondary"),
+        )
+
     async def _import_page(request: Request, *, shared_error: str | None = None, link: str = ""):
         return await base_shell(
-            page_header(
-                t("docs_import.import_documents"),
-                A(t("btn.back_to_settings"), href="/docs", cls="btn btn--secondary"),
-                A(t("btn.download_template"), href="/docs/import/template", cls="btn btn--secondary"),
-            ),
+            _upload_header(request),
             upload_form(
                 cols=_DOC_IMPORT_SPEC.cols,
                 template_href="/docs/import/template",
@@ -438,7 +454,7 @@ def setup_routes(app):
         rows, csv_ref, err = await stage_tabular_upload(token, form)
         if err:
             return await base_shell(
-                page_header(t("docs_import.import_documents")),
+                _upload_header(request),
                 upload_form(
                     cols=_DOC_IMPORT_SPEC.cols,
                     template_href="/docs/import/template",
@@ -459,8 +475,9 @@ def setup_routes(app):
                 csv_ref=csv_ref,
                 sample_rows=rows,
                 confirm_action="/docs/import/mapped",
-                back_href="/docs/import",
+                back_href=import_page_href("/docs/import", entered_from_onboarding(request)),
                 required_targets=_DOC_IMPORT_SPEC.required,
+                col_labels=translated_labels(_DOC_IMPORT_LABEL_KEYS),
             ),
             title=page_title("docs_import.import_documents"),
             nav_active="docs",
@@ -477,7 +494,7 @@ def setup_routes(app):
         csv_text = await resolve_import_csv(token, form)
         if not csv_text:
             return await base_shell(
-                page_header(t("docs_import.import_documents")),
+                _upload_header(request),
                 upload_form(
                     cols=_DOC_IMPORT_SPEC.cols,
                     template_href="/docs/import/template",
@@ -503,8 +520,9 @@ def setup_routes(app):
                     csv_ref=csv_ref,
                     sample_rows=rows,
                     confirm_action="/docs/import/mapped",
-                    back_href="/docs/import",
+                    back_href=import_page_href("/docs/import", entered_from_onboarding(request)),
                     required_targets=_DOC_IMPORT_SPEC.required,
+                    col_labels=translated_labels(_DOC_IMPORT_LABEL_KEYS),
                     errors=mapping_errors,
                     form_values=dict(form),
                 ),
@@ -521,13 +539,14 @@ def setup_routes(app):
         return await base_shell(
             page_header(t("docs_import.import_documents")),
             validation_result(
+                col_labels=translated_labels(_DOC_IMPORT_LABEL_KEYS),
                 csv_ref=csv_ref,
                 rows=rows,
                 cols=cols,
                 validate=lambda c, v, r: validate_cell(_DOC_IMPORT_SPEC, c, v),
                 confirm_action="/docs/import/confirm",
                 error_report_action="/docs/import/errors",
-                back_href="/docs/import",
+                back_href=import_page_href("/docs/import", entered_from_onboarding(request)),
                 revalidate_action="/docs/import/revalidate",
                 has_mapping=True,
                 upsert_label=t("docs_import.upsert_label"),
@@ -557,12 +576,13 @@ def setup_routes(app):
         rows = apply_fixes_to_rows(form, rows, cols)
         csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols))
         return validation_result(
+            col_labels=translated_labels(_DOC_IMPORT_LABEL_KEYS),
             csv_ref=csv_ref,
             rows=rows, cols=cols,
             validate=lambda c, v, r: validate_cell(_DOC_IMPORT_SPEC, c, v),
             confirm_action="/docs/import/confirm",
             error_report_action="/docs/import/errors",
-            back_href="/docs/import",
+            back_href=import_page_href("/docs/import", entered_from_onboarding(request)),
             revalidate_action="/docs/import/revalidate",
             has_mapping=True,
             upsert_label=t("docs_import.upsert_label"),

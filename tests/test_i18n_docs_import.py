@@ -73,8 +73,9 @@ def _routes():
 class _FormReq:
     """Fake request exposing a cookies dict and an async ``form()``."""
 
-    def __init__(self, form: dict):
+    def __init__(self, form: dict, method: str = "POST"):
         self._form = form
+        self.method = method
         self.cookies: dict = {}
         self.query_params: dict = {}
 
@@ -96,7 +97,7 @@ async def test_import_page_header_and_title_translate(monkeypatch):
     monkeypatch.setattr(di, "_token", lambda request: "tok")
 
     handler = _routes()[("GET", "/docs/import")]
-    page, _cookie = await handler(_FormReq({}))
+    page, _cookie = await handler(_FormReq({}, "GET"))
     html = to_xml(page)
 
     # page_header(t(...)) renders the sentinel as the H1 text.

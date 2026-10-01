@@ -28,14 +28,23 @@ def ui_client():
 
 
 def _vertical_select(html: str) -> str:
-    m = re.search(r'<select[^>]*name="vertical"[^>]*>.*?</select>', html, re.S)
-    assert m, "no business-type select rendered"
+    """The searchable business-type control: its visible input, value input and options."""
+    m = re.search(r'<div class="combobox-wrap">\s*<input[^>]*>\s*<input type="hidden" name="vertical"'
+                  r'.*?combobox-option--empty.*?</div>', html, re.S)
+    assert m, "no business-type control rendered"
     return m.group(0)
 
 
 def _selected_values(select_html: str) -> list[str]:
-    return [re.search(r'value="([^"]*)"', o).group(1)
-            for o in re.findall(r"<option[^>]*>", select_html) if re.search(r"\sselected", o)]
+    """What the control submits: the value of its single hidden input."""
+    return re.findall(r'<input type="hidden" name="vertical"[^>]*value="([^"]*)"', select_html)
+
+
+def _shows_only_placeholder(select_html: str) -> bool:
+    """Nothing is chosen: the visible input is empty and shows the prompt."""
+    from ui.i18n import t
+    visible = re.search(r'<input[^>]*class="combobox-input[^>]*>', select_html).group(0)
+    return 'value=""' in visible and f'placeholder="{t("setup.choose_business_type")}"' in visible
 
 
 _FULL_FORM = {"vertical": "gemstones", "currency": "EUR", "timezone": "Europe/Paris",
@@ -61,9 +70,7 @@ class TestSetupRender:
             r = await ui_client.get("/setup/company", cookies=_authed())
         select = _vertical_select(r.text)
         assert _selected_values(select) == [""]
-        placeholder = re.search(r'<option value=""[^>]*>', select).group(0)
-        assert "disabled" in placeholder
-        assert "required" in select.split(">", 1)[0]
+        assert _shows_only_placeholder(select)
 
     @pytest.mark.asyncio
     async def test_stored_type_is_selected(self, ui_client):

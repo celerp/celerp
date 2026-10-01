@@ -378,18 +378,16 @@ class TestSetupInvariant:
     async def test_setup_company_has_placeholder_selected_when_vertical_absent(self, stored):
         from ui.api_client import APIError
         from ui.app import app as ui_app
-        from test_setup_business_type import _selected_values, _vertical_select
+        from test_setup_business_type import _selected_values, _shows_only_placeholder, _vertical_select
         get_company = AsyncMock(side_effect=APIError(503, "down")) if stored is None else AsyncMock(return_value=stored)
         with patch("ui.api_client.get_company", new=get_company):
             async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
                 r = await c.get("/setup/company", cookies=_owner_cookies())
         select = _vertical_select(r.text)
-        # Only the placeholder is selected, it cannot be submitted, and the field is
-        # required, so no real business type is sent unless the user picks one.
+        # Only the prompt shows and the control submits nothing, so no real business
+        # type is sent unless the user picks one (an empty choice is refused by the server).
         assert _selected_values(select) == [""]
-        placeholder = re.search(r'<option value=""[^>]*>', select).group(0)
-        assert "disabled" in placeholder
-        assert "required" in select.split(">", 1)[0]
+        assert _shows_only_placeholder(select)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("vertical", ["", "   ", None], ids=["empty", "whitespace", "missing"])
@@ -1992,14 +1990,18 @@ def _registered_paths() -> set[str]:
 async def _confirm_inventory_import(stage_dir, *, cookies: dict | None = None):
     """Run the inventory confirm step against a stubbed server that accepts the import."""
     from ui.app import app as ui_app
-    ref = ci._write_stage(_COMPANY_A, "name,sell_by\nWidget,piece\n")
     company = _company({})
     jar = {**_owner_cookies(), **(cookies or {})}
     with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
+         patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])), \
          patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
          patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-            # Mapping saves the draft, which remembers where the import was opened from.
+            # The upload records where the import was opened from; mapping carries it into the draft.
+            uploaded = await c.post("/inventory/import/preview", cookies=jar, files={
+                "csv_file": ("stock.csv", io.BytesIO(b"name,sell_by\nWidget,piece\n"), "text/csv")})
+            assert uploaded.status_code == 200, uploaded.text[:2000]
+            ref = re.search(r'name="csv_ref" value="([^"]+)"', uploaded.text).group(1)
             mapped = await c.post("/inventory/import/mapped",
                                   data={"csv_ref": ref, "map__name": "name", "map__sell_by": "sell_by"},
                                   cookies=jar)
@@ -2020,9 +2022,9 @@ class TestEntryOrchestrationInvariant:
             assert href.split("?")[0] in registered, href
 
     @pytest.mark.asyncio
-    async def test_hub_does_not_offer_whole_company_migration_yet(self):
+    async def test_hub_moves_books_only_through_the_new_company_wizard(self):
         r = await _ui_request("GET", "/onboarding")
-        assert "Move from another system" not in r.text
+        assert 'href="/setup/new-company/migrate"' in r.text
         assert "/onboarding/upload/cif" not in r.text
 
     def test_hub_omits_actions_whose_page_is_not_installed(self):
@@ -2033,7 +2035,8 @@ class TestEntryOrchestrationInvariant:
     def test_hub_actions_hand_off_to_the_canonical_import_and_connector_pages(self):
         from ui.routes.auth import _ONBOARDING_ACTIONS
         assert {path for path, *_ in _ONBOARDING_ACTIONS} == {
-            "/inventory/import", "/crm/import/contacts", "/docs/import", "/settings/cloud",
+            "/inventory/import", "/crm/import/contacts", "/docs/import", "/setup/new-company/migrate",
+            "/settings/cloud",
         }
 
     @pytest.mark.asyncio
@@ -2086,7 +2089,7 @@ class TestEntryOrchestrationInvariant:
     async def test_connector_action_is_not_labelled_as_migration(self):
         import html as _html
         r = await _ui_request("GET", "/onboarding", settings={"onboarding_pending": True})
-        connector = re.search(r'<a[^>]*href="/settings/cloud"[^>]*>(.*?)</a>', r.text, re.S)
+        connector = re.search(r'<a[^>]*href="/settings/cloud\?tab=website"[^>]*>(.*?)</a>', r.text, re.S)
         assert connector, r.text
         text = _html.unescape(re.sub(r"<[^>]+>", " ", connector.group(1))).lower()
         for word in ("migrat", "move ", "moving", "switch", "leave", "transfer", "whole company", "everything"):

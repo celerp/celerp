@@ -1,0 +1,17 @@
+{
+  "name": "retail",
+  "display_name": "Retail / Shop",
+  "label_key": "enum.vertical_preset.retail",
+  "license": "MIT",
+  "categories": [],
+  "modules": [
+    "celerp-inventory",
+    "celerp-labels",
+    "celerp-docs",
+    "celerp-contacts",
+    "celerp-accounting",
+    "celerp-reports",
+    "celerp-dashboard",
+    "celerp-verticals"
+  ]
+}

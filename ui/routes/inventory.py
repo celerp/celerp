@@ -27,7 +27,7 @@ from ui.components.table import data_table, search_bar, pagination, EMPTY, bread
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from celerp.services.cost_visibility import COST_ITEM_KEYS
-from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, cost_columns
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, builtin_label_keys, cost_columns
 from celerp.services.field_schema import union_category_attr_keys as _union_category_attr_keys
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, is_price_item_key, price_key, price_lists_in, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
@@ -1403,11 +1403,7 @@ def setup_routes(app):
             return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
         return await base_shell(
-            page_header(
-                t("page.import_inventory", lang),
-                A(t("btn.back", lang), href="/inventory", cls="btn btn--secondary"),
-                A(t("btn.download_template", lang), href="/inventory/import/template", cls="btn btn--secondary"),
-            ),
+            _import_page_header(request.query_params.get(ONBOARDING_MARKER) == "1"),
             _import_upload_form(),
             title=page_title("page.import_inventory"),
             nav_active="inventory",
@@ -1458,10 +1454,11 @@ def setup_routes(app):
         except Exception:
             price_lists = PRICE_LISTS_FALLBACK
         spec = _build_import_spec(price_lists)
-        rows, csv_ref, err = await stage_tabular_upload(token, form, known=known_headers(spec.cols))
+        rows, csv_ref, err = await stage_tabular_upload(token, form, known=known_headers(spec.cols),
+                                                        from_onboarding=entered_from_onboarding(request))
         if err:
             return await base_shell(
-                page_header(t("page.import_inventory", lang)),
+                _import_page_header(entered_from_onboarding(request)),
                 _import_upload_form(error=err),
                 title=page_title("page.import_inventory"),
                 nav_active="inventory",
@@ -1472,7 +1469,7 @@ def setup_routes(app):
         cols = list(rows[0].keys()) if rows else []
         if not cols:
             return await base_shell(
-                page_header(t("page.import_inventory", lang)),
+                _import_page_header(entered_from_onboarding(request)),
                 _import_upload_form(error=t("inventory.csv_no_columns")),
                 title=page_title("page.import_inventory"),
                 nav_active="inventory",
@@ -1491,10 +1488,10 @@ def setup_routes(app):
                 csv_ref=csv_ref,
                 sample_rows=rows,
                 confirm_action="/inventory/import/mapped",
-                back_href="/inventory/import",
+                back_href=import_page_href("/inventory/import", entered_from_onboarding(request)),
                 required_targets=spec.required,
                 category_attrs=cat_attrs,
-                col_labels=_import_price_col_labels(price_lists),
+                col_labels=_import_field_labels(price_lists, cat_schemas),
                 mutex_groups=item_price_mutex_groups(price_lists),
             ),
             title=page_title("page.import_inventory"),
@@ -1516,7 +1513,7 @@ def setup_routes(app):
         staged = await load_import_draft(token, str(form.get("csv_ref") or ""))
         if staged is None:
             return await base_shell(
-                page_header(t("page.import_inventory", lang)),
+                _import_page_header(entered_from_onboarding(request)),
                 _import_upload_form(error=t("inventory.csv_expired")),
                 title=page_title("page.import_inventory"),
                 nav_active="inventory",
@@ -1524,6 +1521,7 @@ def setup_routes(app):
                 request=request,
             )
         csv_text, uploaded, _revision = staged
+        from_onboarding = bool(uploaded.get("from_onboarding"))
 
         try:
             price_lists = await api.get_price_lists(token)
@@ -1535,7 +1533,8 @@ def setup_routes(app):
         original_cols = list(csv.DictReader(io.StringIO(csv_text)).fieldnames or [])
 
         # Validate mapping before applying
-        cat_attrs = _union_category_attr_keys(await api.get_all_category_schemas(token))
+        cat_schemas = await api.get_all_category_schemas(token)
+        cat_attrs = _union_category_attr_keys(cat_schemas)
         mapping_errors = validate_column_mapping(
             form, original_cols, core_fields=spec.cols, required_targets=spec.required,
             is_reserved_field=is_item_field_key, allowed_category_attrs=cat_attrs,
@@ -1556,12 +1555,12 @@ def setup_routes(app):
                     csv_ref=csv_ref,
                     sample_rows=rows,
                     confirm_action="/inventory/import/mapped",
-                    back_href="/inventory/import",
+                    back_href=import_page_href("/inventory/import", from_onboarding),
                     required_targets=spec.required,
                     category_attrs=cat_attrs,
                     errors=mapping_errors,
                     form_values=dict(form),
-                    col_labels=_import_price_col_labels(price_lists),
+                    col_labels=_import_field_labels(price_lists, cat_schemas),
                     mutex_groups=item_price_mutex_groups(price_lists),
                 ),
                 title=page_title("page.import_inventory"),
@@ -1575,7 +1574,7 @@ def setup_routes(app):
         cols = list(dict.fromkeys([*(remapped_cols or spec.cols), *(k for row in rows for k in row)]))
 
         # The mapped rows become the import's draft; every later step reads it.
-        draft = {"upsert": False, "decisions": {}, "from_onboarding": entered_from_onboarding(request),
+        draft = {"upsert": False, "decisions": {}, "from_onboarding": from_onboarding,
                  "source": uploaded.get("source") or {}}
         csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols), draft)
         return RedirectResponse(f"/inventory/import/draft/{csv_ref}", status_code=303)
@@ -7506,6 +7505,8 @@ from ui.routes.csv_import import (
     import_abort_panel,
     import_result_panel,
     entered_from_onboarding,
+    import_page_href,
+    ONBOARDING_MARKER,
     onboarding_entry_cookie,
     plan_error_report_response,
     plan_review_panel,
@@ -7579,6 +7580,7 @@ async def _item_import_review(token: str, csv_ref: str, *, notice: str = ""):
     except APIError as e:
         return _item_import_api_error(e)
     col_labels = {
+        **_import_field_labels(price_lists),
         **{k: t(v) for k, v in _REVIEW_COL_KEYS.items()},
         "cost_price_total": t("inventory.import_col_total", name=t("label.cost_price")),
         **_import_price_col_labels(price_lists),
@@ -7613,6 +7615,20 @@ def _build_import_spec(price_lists: list[dict]) -> CsvImportSpec:
     return build_item_import_spec(price_lists)
 
 
+def _import_field_labels(price_lists: list[dict], cat_schemas: dict | None = None) -> dict[str, str]:
+    """Every item import target in the reader's language: built-in fields by their
+    translated label, the company's price columns, and category fields by the label
+    their category gives them. Built-in fields win over a category field of the same key."""
+    labels: dict[str, str] = {}
+    for fields in (cat_schemas or {}).values():
+        for field in fields if isinstance(fields, list) else []:
+            if field.get("key") and field["key"] not in labels:
+                labels[field["key"]] = field_label(field)
+    labels.update({key: t(label_key) for key, label_key in builtin_label_keys().items()})
+    labels.update(_import_price_col_labels(price_lists))
+    return labels
+
+
 def _import_price_col_labels(price_lists: list[dict]) -> dict[str, str]:
     """Human-readable labels for price columns in the import mapping UI."""
     labels: dict[str, str] = {}
@@ -7622,6 +7638,16 @@ def _import_price_col_labels(price_lists: list[dict]) -> dict[str, str]:
         labels[key] = t("inventory.import_col_unit_price", name=name)
         labels[f"{key}_total"] = t("inventory.import_col_total", name=name)
     return labels
+
+
+def _import_page_header(from_onboarding: bool) -> FT:
+    """The upload page's header, the same before and after a failed upload: Back
+    returns to where the import was opened from."""
+    return page_header(
+        t("page.import_inventory"),
+        A(t("btn.back"), href="/onboarding" if from_onboarding else "/inventory", cls="btn btn--secondary"),
+        A(t("btn.download_template"), href="/inventory/import/template", cls="btn btn--secondary"),
+    )
 
 
 def _import_upload_form(error: str | None = None) -> FT:

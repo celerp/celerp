@@ -27,7 +27,7 @@ from ui.api_client import login as api_login, login_force as api_login_force, lo
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.api_client import migration_staged_run as api_migration_staged_run
-from ui.components.shell import auth_shell, flash, page_title, star_supporter_card, toast_header
+from ui.components.shell import auth_shell, flash, page_title, toast_header
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, get_role, set_session_cookies, clear_session_cookies
 from ui.i18n import t, get_lang
 from ui.routes.csv_import import ONBOARDING_MARKER
@@ -772,13 +772,14 @@ def _resumes_onboarding(company: dict, request: Request) -> bool:
     return (company.get("settings") or {}).get("onboarding_pending") is True and _can_set_up(company, request)
 
 
-# Getting-started actions: (page the action opens, title key, description key, is an
-# import). Import pages open with the onboarding marker so their result offers a way back.
-_ONBOARDING_ACTIONS: tuple[tuple[str, str, str, bool], ...] = (
-    ("/inventory/import", "onboarding.products", "onboarding.file_desc", True),
-    ("/crm/import/contacts", "onboarding.contacts", "onboarding.file_desc", True),
-    ("/docs/import", "onboarding.documents", "onboarding.file_desc", True),
-    ("/settings/cloud", "onboarding.connect", "onboarding.connect_desc", False),
+# Getting-started actions: (page path, title key, description key, query string). Imports carry the onboarding
+# marker so they return to this hub; the store connector opens on its own tab.
+_ONBOARDING_ACTIONS: tuple[tuple[str, str, str, str], ...] = (
+    ("/inventory/import", "onboarding.products", "onboarding.file_desc", f"{ONBOARDING_MARKER}=1"),
+    ("/crm/import/contacts", "onboarding.contacts", "onboarding.file_desc", f"{ONBOARDING_MARKER}=1"),
+    ("/docs/import", "onboarding.documents", "onboarding.file_desc", f"{ONBOARDING_MARKER}=1"),
+    ("/setup/new-company/migrate", "setup.card_move", "onboarding.move_desc", ""),
+    ("/settings/cloud", "onboarding.connect", "onboarding.connect_desc", "tab=website"),
 )
 
 
@@ -797,10 +798,10 @@ def _onboarding_view(registered: set[str], error: str | None = None) -> FT:
         A(
             Strong(t(title)),
             P(t(desc), cls="quick-link-desc"),
-            href=f"{path}?{ONBOARDING_MARKER}=1" if is_import else path,
+            href=f"{path}?{query}" if query else path,
             cls="quick-link-card",
         )
-        for path, title, desc, is_import in _ONBOARDING_ACTIONS
+        for path, title, desc, query in _ONBOARDING_ACTIONS
         if path in registered
     ]
     return Div(
@@ -817,7 +818,6 @@ def _onboarding_view(registered: set[str], error: str | None = None) -> FT:
             ),
             cls="mt-lg text-center",
         ),
-        star_supporter_card("onboarding"),
         cls="onboarding-card",
     )
 

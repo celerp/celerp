@@ -241,7 +241,7 @@ class TestSetupCompanyPost:
             )
         assert r.status_code == 200
         assert b"type failed" in r.content
-        assert b'<option value="gemstones" selected>' in r.content
+        assert b'<input type="hidden" name="vertical" data-name="vertical" value="gemstones">' in r.content
         restart.assert_not_awaited()
 
     @pytest.mark.asyncio
