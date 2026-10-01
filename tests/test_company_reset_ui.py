@@ -154,3 +154,18 @@ async def test_the_old_reset_route_is_gone(ui, real_engine):
     ui.cookies.set("celerp_token", await token(real_engine, shared, a))
     assert (await ui.post("/settings/factory-reset")).status_code == 404
     assert await count(real_engine, "companies") == 1
+
+
+async def test_start_company_explains_when_someone_else_is_signed_in(ui, real_engine, monkeypatch):
+    import celerp.gateway.state as gw_state
+    from test_company_reset import _signed_in
+    from ui.i18n import t
+    monkeypatch.setattr(gw_state, "get_session_token", lambda: "")  # no cloud relay
+    shared = await owner(real_engine)
+    await company(real_engine, shared, "Harbor Goods Ltd", "alpha")
+    await owner(real_engine, SOLO_EMAIL, "Solo")
+    await _signed_in(real_engine, shared)
+    r = await ui.post(START, data={"email": SOLO_EMAIL, "password": SOLO_PASSWORD, "company_name": "X Ltd"})
+    page = _page(r)
+    assert r.status_code == 200 and t("auth.direct_connection_gate_body") in page
+    assert "direct_connection_limit" not in page

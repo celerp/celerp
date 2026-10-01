@@ -225,6 +225,8 @@ def setup_routes(app):
         try:
             access_token, refresh_token = await api_start_company(email, password, company_name)
         except APIError as e:
+            if e.status == 409 and e.detail == "direct_connection_limit":
+                return _fail(t("auth.direct_connection_gate_body"))
             return _fail(e.detail if isinstance(e.detail, str) else t("auth.server_error", e=e.detail))
         except Exception as e:
             return _fail(t("auth.server_error", e=e))

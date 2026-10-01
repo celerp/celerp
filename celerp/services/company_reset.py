@@ -15,13 +15,16 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.models.accounting import UserCompany
+from celerp.models.auth import SessionRegistry
 from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig
 from celerp.models.migration import MigrationCleanupTask, MigrationRun
+from celerp.services.auth import first_company_link
 from celerp.services.company_backup import _fk_order, _ident, _schema
 
 # Tables that belong to the installation rather than any one company, and why.
@@ -32,6 +35,7 @@ INSTALL_WIDE = {
     "supporter_badges": "each login's supporter badge",
     "system_runtime_state": "the installation's own runtime state",
     "alembic_version": "the database schema version",
+    "instance_meta": "the installation's upgrade markers, created at runtime",
 }
 
 NAME_MISMATCH = "The name you typed does not match this company's name. Nothing was deleted."
@@ -109,9 +113,16 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> uui
                                 "Nothing was deleted.")
     run_ids = [str(r) for r in (await session.scalars(
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all()]
+    members = set((await session.scalars(
+        select(UserCompany.user_id).where(UserCompany.company_id == company.id))).all())
     try:
         for owned in tables:
             await session.execute(text(f"DELETE FROM {_ident(owned.table)} WHERE {owned.where}"), {"c": cid})
+        # A login left with no company is signed out everywhere, so it no longer holds
+        # the single direct sign-in place.
+        left = [u for u in members if await first_company_link(session, u) is None]
+        if left:
+            await session.execute(delete(SessionRegistry).where(SessionRegistry.user_id.in_(left)))
         task = MigrationCleanupTask(company_id=company.id, run_ids=run_ids)
         session.add(task)
         await session.flush()
