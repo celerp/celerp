@@ -18,11 +18,14 @@ from sqlalchemy import select
 from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
 from celerp.services.company_lock import locked_company
+from test_helpers import invite_user
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_posting_roles_landed import _freight_bill
 from test_receipt_accounting import _finalize, _receive
 
 _FIELD = "inventory_account_code"
+_A_TO_B = {"destination": "1130-P", "destination_name": "Inventory - Purchased", "currency": "USD",
+           "moves": [{"account": "1131", "name": "Stock 1131", "amount": 400.0}]}
 
 
 async def _account(client, auth, code: str) -> str:
@@ -122,8 +125,7 @@ async def test_lots_in_two_accounts_move_the_other_value_into_the_surviving_acco
     je = await _reclass(session, auth, out["id"])
     assert je["status"] == "posted"
     assert _lines(je) == {"1130-P": (400.0, 0), "1131": (0, 400.0)}
-    assert out["inventory_reclassification"] == {
-        "destination": "1130-P", "moves": [{"account": "1131", "amount": 400.0}], "currency": "USD"}
+    assert out["inventory_reclassification"] == _A_TO_B
     # Traceable to the merge it belongs to.
     row = (await session.execute(select(Projection).where(
         Projection.company_id == auth["company_id"],
@@ -152,7 +154,8 @@ async def test_three_accounts_post_one_credit_per_account_for_the_exact_total(se
     assert _lines(je) == {"1130-P": (325.5, 0), "1131": (0, 250.0), "1132": (0, 75.5)}
     assert len(je["entries"]) == 3
     assert out["inventory_reclassification"]["moves"] == [
-        {"account": "1131", "amount": 250.0}, {"account": "1132", "amount": 75.5}]
+        {"account": "1131", "name": "Stock 1131", "amount": 250.0},
+        {"account": "1132", "name": "Stock 1132", "amount": 75.5}]
     assert (await _state(session, auth, out["id"]))["cost_total"] == 925.5
 
 
@@ -283,8 +286,7 @@ async def test_the_merge_preview_names_the_value_that_will_move(session, client,
     r = await client.post("/items/merge/preview", headers=auth["headers"],
                           json={"source_entity_ids": [a, b], "target_sku_from": a})
     assert r.status_code == 200, r.text
-    assert r.json()["inventory_reclassification"] == {
-        "destination": "1130-P", "moves": [{"account": "1131", "amount": 400.0}], "currency": "USD"}
+    assert r.json()["inventory_reclassification"] == _A_TO_B
     a2 = await _lot(client, auth, 5.0)
     a3 = await _lot(client, auth, 5.0)
     r = await client.post("/items/merge/preview", headers=auth["headers"],
@@ -292,3 +294,17 @@ async def test_the_merge_preview_names_the_value_that_will_move(session, client,
     assert r.status_code == 200, r.text
     assert r.json()["inventory_reclassification"] is None
     assert await _reclass(session, auth, "anything") is None
+
+
+@pytest.mark.asyncio
+async def test_a_role_that_cannot_see_cost_is_told_the_accounts_but_not_the_amount(session, client, auth):
+    a, b = await _two_accounts(session, client, auth)
+    op = {"Authorization": f"Bearer {await invite_user(client, session, auth['headers'], 'operator@example.com', 'operator')}"}
+    r = await client.post("/items/merge/preview", headers=op, json={"source_entity_ids": [a, b], "target_sku_from": a})
+    assert r.status_code == 200, r.text
+    hidden = {**_A_TO_B, "moves": [{"account": "1131", "name": "Stock 1131", "amount": None}]}
+    assert r.json()["inventory_reclassification"] == hidden
+    r = await client.post("/items/merge", headers=op, json={"source_entity_ids": [a, b], "target_sku_from": a})
+    assert r.status_code == 200, r.text
+    assert r.json()["inventory_reclassification"] == hidden
+    assert _lines(await _reclass(session, auth, r.json()["id"])) == {"1130-P": (400.0, 0), "1131": (0, 400.0)}

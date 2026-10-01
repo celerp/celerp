@@ -3766,12 +3766,21 @@ def _merge_result_id(company_id, idempotency_key: str | None) -> str:
     return f"item:{uuid.uuid5(_MERGE_ID_NAMESPACE, f'{company_id}:{idempotency_key}')}"
 
 
-def _merge_disclosure(reclass, settings: dict, role: str) -> dict | None:
-    """The inventory accounts a merge moves value between, for the person merging.
-    The amounts are goods cost, so a role that cannot see cost gets the accounts only."""
+async def _merge_disclosure(session: AsyncSession, company_id, reclass, settings: dict, role: str) -> dict | None:
+    """The inventory accounts a merge moves value between, named as the chart names
+    them, for the person merging. The amounts are goods cost, so a role that cannot
+    see cost gets the accounts only."""
+    from celerp.services.posting_readiness import account_names
+
     disclosure = reclass.disclosure()
-    if disclosure and not role_has_permission(settings, role, "view_inventory_costs"):
-        disclosure["moves"] = [{**m, "amount": None} for m in disclosure["moves"]]
+    if not disclosure:
+        return None
+    names = await account_names(session, company_id,
+                                [disclosure["destination"], *(m["account"] for m in disclosure["moves"])])
+    disclosure["destination_name"] = names[disclosure["destination"]]
+    hide = not role_has_permission(settings, role, "view_inventory_costs")
+    disclosure["moves"] = [{**m, "name": names[m["account"]], **({"amount": None} if hide else {})}
+                           for m in disclosure["moves"]]
     return disclosure
 
 
@@ -3797,7 +3806,7 @@ async def preview_merge(payload: MergePreviewBody, company_id=Depends(get_curren
         raise HTTPException(status_code=404, detail=f"Item '{missing[0]}' not found.")
     reclass = await _merge_reclassification(session, company_id, settings, payload.target_sku_from,
                                             [rows[sid] for sid in payload.source_entity_ids])
-    return {"inventory_reclassification": _merge_disclosure(reclass, settings, role)}
+    return {"inventory_reclassification": await _merge_disclosure(session, company_id, reclass, settings, role)}
 
 
 @router.post("/merge")
@@ -4130,7 +4139,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     reclass = await _merge_reclassification(session, company_id, settings, payload.target_sku_from,
                                             source_projections)
     create_data[LOT_ACCOUNT_FIELD] = reclass.destination
-    disclosure = _merge_disclosure(reclass, settings, role)
+    disclosure = await _merge_disclosure(session, company_id, reclass, settings, role)
 
     # The merged item is the same product as the target, so carry the target's product
     # GTIN. The physical RFID/EPC tag is NOT carried: the merged item is a new physical

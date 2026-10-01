@@ -138,6 +138,13 @@ async def _chart(session: AsyncSession, company_id) -> dict[str, dict] | None:
     return {row["code"]: row for row in rows}
 
 
+async def account_names(session: AsyncSession, company_id, codes) -> dict[str, str]:
+    """The chart's name for each of ``codes``; a code the chart does not hold, or a
+    company without the accounting module, falls back to the code itself."""
+    chart = await _chart(session, company_id) or {}
+    return {code: (chart.get(code) or {}).get("name") or code for code in codes}
+
+
 def _candidate_types(role: str) -> frozenset[str]:
     """Types an account may have to be offered for ``role``: exchange gain and loss may
     share one account of either type."""
