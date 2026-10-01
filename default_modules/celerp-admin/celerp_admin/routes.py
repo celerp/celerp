@@ -992,12 +992,12 @@ async def _check_posting_origins(
 ) -> dict:
     """Find what automatic posting cannot proceed on without a decision: a posting
     account the company needs but has not set or cannot use, stock on hand with no
-    provable inventory account, and an older document whose receivable or payable
+    provable inventory account (none recorded, or several it could sit in), and an older document whose receivable or payable
     was recorded on more than one account. Report-only: each needs the user to choose
     an account, never a guess."""
-    from celerp.accounting_roles import LEGACY_LOT_ACCOUNT_KEY, LOT_ACCOUNT_FIELD, POSTING_ACCOUNTS_PATH
+    from celerp.accounting_roles import LEGACY_LOT_ACCOUNT_KEY, POSTING_ACCOUNTS_PATH
     from celerp.models.company import Company
-    from celerp.services.account_roles import AmbiguousOriginError, LotOriginError, current_settings
+    from celerp.services.account_roles import AmbiguousOriginError, LotOriginError, current_settings, lot_account
     from celerp.services.auto_je import _control_role, party_origin
     from celerp.services.posting_readiness import panel
 
@@ -1016,9 +1016,12 @@ async def _check_posting_origins(
             ))).scalars().all()
             for row in items:
                 state = row.state or {}
-                if not state.get(LOT_ACCOUNT_FIELD) and Decimal(str(state.get("quantity") or 0)) > 0:
-                    findings.append({"kind": "lot_origin", "entity_id": row.entity_id,
-                                     "problem": LotOriginError(str(state.get("sku") or "")).detail,
+                if Decimal(str(state.get("quantity") or 0)) <= 0:
+                    continue
+                try:
+                    lot_account(settings, state)
+                except LotOriginError as exc:
+                    findings.append({"kind": "lot_origin", "entity_id": row.entity_id, "problem": exc.detail,
                                      "fix": POSTING_ACCOUNTS_PATH})
 
         docs = {row.entity_id: (row.state or {}).get("doc_type") for row in (await session.execute(

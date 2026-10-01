@@ -173,13 +173,17 @@ async def record_source_control(session: AsyncSession, company_id, role, code: s
 
 
 class LotOriginError(HTTPException):
-    """A lot's inventory account cannot be proven, so its cost cannot move."""
+    """A lot's inventory account cannot be proven, so its cost cannot move. ``codes``
+    are the inventory accounts the company's stock has been valued in, when more than
+    one could hold it."""
 
-    def __init__(self, sku: str):
+    def __init__(self, sku: str, codes=()):
+        why = (f"was valued in more than one inventory account ({', '.join(sorted(codes))}), so Celerp "
+               "cannot tell which one holds it" if len(codes) > 1 else
+               "has no recorded inventory account, so its cost cannot be moved without guessing")
         super().__init__(
             status_code=409,
-            detail=(f"Stock {sku or 'item'} has no recorded inventory account, so its cost cannot be "
-                    "moved without guessing. Choose the inventory account for older stock in "
+            detail=(f"Stock {sku or 'item'} {why}. Choose the inventory account for older stock in "
                     "Settings > Accounting > Posting accounts."),
             headers={"X-Celerp-Fix": POSTING_ACCOUNTS_PATH},
         )
@@ -204,7 +208,8 @@ def lot_account(settings: dict | None, state: dict) -> str:
     company's history proves. Never today's role target."""
     code = state.get(LOT_ACCOUNT_FIELD) or (settings or {}).get(LEGACY_LOT_ACCOUNT_KEY)
     if not code:
-        raise LotOriginError(str(state.get("sku") or ""))
+        raise LotOriginError(str(state.get("sku") or ""),
+                             scope_codes(settings, AccountRole.INVENTORY_PURCHASED.value))
     return code
 
 

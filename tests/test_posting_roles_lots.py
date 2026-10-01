@@ -272,3 +272,34 @@ async def test_manufacturing_relieves_inputs_on_their_account_and_books_output_w
     run = await _state(session, auth, order)
     for out in run.get("received_lots") or []:
         assert (await _state(session, auth, out))[_FIELD] == "1131"
+
+
+@pytest.mark.asyncio
+async def test_an_older_lot_whose_stock_sat_in_more_than_one_account_waits_for_a_choice(session, client, auth):
+    lot = await _lot(client, auth, 30.0, sku="OLD-2")
+    await _forget_origin(session, auth, lot)
+    await _remap(session, auth, await _new_inventory_account(client, auth))
+    company = await locked_company(session, auth["company_id"])
+    company.settings = {k: v for k, v in company.settings.items() if k != "posting_legacy_lot_account"}
+    await session.commit()
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "total": 50.0,
+        "line_items": [{"entity_id": lot, "name": "Lot", "quantity": 1, "unit_price": 50.0, "sell_by": "piece"}]})
+    assert r.status_code == 200, r.text
+    inv = r.json()["id"]
+    r = await client.post(f"/docs/{inv}/finalize", headers=auth["headers"])
+    assert r.status_code == 409, r.text
+    assert "OLD-2 was valued in more than one inventory account (1130-P, 1131)" in r.json()["detail"]
+    assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
+    await session.rollback()  # the refused request's work ends with it, as its own session would
+
+    r = await client.post("/admin/doctor?checks=posting_origins", headers=auth["headers"])
+    (finding,) = r.json()["results"][0]["details"]
+    assert (finding["kind"], finding["entity_id"]) == ("lot_origin", lot)
+    assert "more than one inventory account (1130-P, 1131)" in finding["problem"]
+
+    r = await client.put("/accounting/posting-accounts/older-stock", headers=auth["headers"], json={"code": "1131"})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{inv}/finalize", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    assert _credits(await _state(session, auth, f"je:auto:{inv}:fin")) == {"1131": 30.0}
