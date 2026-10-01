@@ -276,7 +276,7 @@ async def resolve(session: AsyncSession, company_id, role) -> str:
 async def set_role(session: AsyncSession, company_id, role: str, code: str) -> dict:
     """Point ``role`` at ``code`` for new recognition. Existing balances stay where they
     were posted; the old account stays in the role's scope for historical readers."""
-    from celerp.services.company_lock import locked_company
+    from celerp.services.company_lock import lock_chart, locked_company
     from celerp.services.journal_accounts import lock_accounts
 
     if not is_role(role):
@@ -287,6 +287,8 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str) -> d
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found.")
+    # A child added under the account meanwhile would turn it into a header.
+    await lock_chart(session, company_id)
     settings = with_role(dict(company.settings or {}), role, code)
     new_map = role_map(settings)
     # Exchange gain and loss are judged as a pair: moving one side can change what

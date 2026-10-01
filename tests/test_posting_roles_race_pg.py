@@ -206,3 +206,114 @@ async def test_two_moves_cannot_close_a_loop(committed_engine):
     assert isinstance(out, HTTPException) and out.status_code == 422, out
     assert (await _row(factory, cid, "8500")).parent_code == "8501"
     assert (await _row(factory, cid, "8501")).parent_code is None
+
+
+# --- Structural chart changes meet one at a time ---------------------------------------
+
+
+async def _create(s, cid, code, parent, account_type="asset"):
+    from celerp_accounting.import_service import create_chart_account
+
+    acc = await create_chart_account(s, cid, code=code, name=code, account_type=account_type,
+                                     parent_code=parent)
+    await s.flush()
+    return acc.code
+
+
+async def _children(factory, cid, parent) -> list[str]:
+    async with factory() as s:
+        return sorted((await s.execute(select(Account.code).where(
+            Account.company_id == cid, Account.parent_code == parent))).scalars().all())
+
+
+async def test_a_child_added_while_its_parent_is_switched_off_is_refused(committed_engine):
+    factory = _factory(committed_engine)
+    cid = await _seed(factory, [("8600", "asset", None)])
+
+    async def deactivate(s):
+        return await change_account(s, cid, "8600", is_active=False)
+
+    _, out = await _second(committed_engine, factory, deactivate, lambda s: _create(s, cid, "8601", "8600"))
+    assert isinstance(out, HTTPException) and out.status_code == 422, out
+    assert await _children(factory, cid, "8600") == []
+
+
+async def test_a_parent_switched_off_while_a_child_is_added_is_refused(committed_engine):
+    factory = _factory(committed_engine)
+    cid = await _seed(factory, [("8610", "asset", None)])
+
+    async def deactivate(s):
+        return await change_account(s, cid, "8610", is_active=False)
+
+    _, out = await _second(committed_engine, factory, lambda s: _create(s, cid, "8611", "8610"), deactivate)
+    assert isinstance(out, HTTPException) and out.status_code == 409, out
+    assert (await _row(factory, cid, "8610")).is_active is True
+    assert await _children(factory, cid, "8610") == ["8611"]
+
+
+async def test_an_account_moved_while_its_new_parent_is_retyped_is_refused(committed_engine):
+    factory = _factory(committed_engine)
+    cid = await _seed(factory, [("8620", "asset", None), ("8621", "asset", None)])
+
+    async def retype(s):
+        return await change_account(s, cid, "8620", account_type="liability")
+
+    async def move(s):
+        return await change_account(s, cid, "8621", parent_code="8620")
+
+    _, out = await _second(committed_engine, factory, retype, move)
+    assert isinstance(out, HTTPException) and out.status_code == 422, out
+    assert (await _row(factory, cid, "8621")).parent_code is None
+
+
+async def test_a_parent_retyped_while_an_account_moves_under_it_is_refused(committed_engine):
+    factory = _factory(committed_engine)
+    cid = await _seed(factory, [("8630", "asset", None), ("8631", "asset", None)])
+
+    async def move(s):
+        return await change_account(s, cid, "8631", parent_code="8630")
+
+    async def retype(s):
+        return await change_account(s, cid, "8630", account_type="liability")
+
+    _, out = await _second(committed_engine, factory, move, retype)
+    assert isinstance(out, HTTPException) and out.status_code == 422, out
+    assert (await _row(factory, cid, "8630")).account_type == "asset"
+
+
+@pytest.mark.parametrize("change", ["create", "move"])
+async def test_a_child_placed_while_a_role_moves_onto_its_parent_is_refused(committed_engine, change):
+    factory = _factory(committed_engine)
+    cid = await _seed(factory, [("8640", "asset", "1100"), ("8641", "asset", None)])
+
+    async def remap(s):
+        return await set_role(s, cid, "receivable", "8640")
+
+    async def place(s):
+        if change == "create":
+            return await _create(s, cid, "8642", "8640")
+        return await change_account(s, cid, "8641", parent_code="8640")
+
+    _, out = await _second(committed_engine, factory, remap, place)
+    assert isinstance(out, HTTPException) and out.status_code == 422, out
+    assert await _children(factory, cid, "8640") == []
+    assert (await _settings(factory, cid))["posting_roles"]["receivable"] == "8640"
+
+
+@pytest.mark.parametrize("change", ["create", "move"])
+async def test_a_role_moved_onto_a_parent_while_a_child_is_placed_is_refused(committed_engine, change):
+    factory = _factory(committed_engine)
+    cid = await _seed(factory, [("8650", "asset", "1100"), ("8651", "asset", None)])
+
+    async def place(s):
+        if change == "create":
+            return await _create(s, cid, "8652", "8650")
+        return await change_account(s, cid, "8651", parent_code="8650")
+
+    async def remap(s):
+        return await set_role(s, cid, "receivable", "8650")
+
+    _, out = await _second(committed_engine, factory, place, remap)
+    assert isinstance(out, HTTPException) and out.status_code == 422, out
+    assert "header account" in out.detail
+    assert (await _settings(factory, cid))["posting_roles"]["receivable"] == "1120"

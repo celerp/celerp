@@ -24,14 +24,14 @@ from celerp.events.engine import emit_event, write_period_lock
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting import import_service
-from celerp_accounting.chart_rules import change_account, parent_problem
+from celerp_accounting.chart_rules import change_account, parent_problem, posting_targets
 from celerp_accounting.import_service import AccImportRecord
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole
 from celerp.services.account_roles import current_settings, line_roles, resolve, resolve_many, role_map, scope_codes
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import lock_chart, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
 from celerp.services.line_measures import line_label
@@ -385,11 +385,12 @@ class ChartImportPlan:
     errors: list[str]
 
 
-def plan_chart_import(records: list[Any], existing: dict[str, dict]) -> ChartImportPlan:
+def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: dict[str, list[str]]) -> ChartImportPlan:
     """Decide every row of a chart import against the chart it will produce.
 
     ``existing`` maps each code already in the chart to its row (parent_code,
-    account_type, is_active). A row
+    account_type, is_active); ``targets`` is posting_targets() of the company's
+    settings, the accounts nothing can sit under. A row
     whose code is already there is kept as it is and listed once, whatever else
     the row says. A new row is added only if its fields are valid and its parent
     is in the chart or is another row being added, so the order of rows in the
@@ -451,7 +452,7 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict]) -> ChartImp
                 continue
             if parent in existing or parent in adding:
                 problem = parent_problem(
-                    row["account_type"], existing.get(parent) or valid[adding[parent]], parent,
+                    row["account_type"], existing.get(parent) or valid[adding[parent]], parent, targets,
                 )
                 if problem:
                     bad[i] = f"{label(i, row['code'])}: {problem}"
@@ -595,7 +596,7 @@ async def _planned_chart_import(
         a.code: {"parent_code": a.parent_code, "account_type": a.account_type, "is_active": a.is_active}
         for a in rows
     }
-    return plan_chart_import(body.records, existing)
+    return plan_chart_import(body.records, existing, posting_targets(await current_settings(session, company_id)))
 
 
 def _chart_import_result(plan: ChartImportPlan) -> ChartImportResult:
@@ -633,6 +634,7 @@ async def import_chart_accounts(
     # Hold the company lock so two imports of one file cannot both see a code as new,
     # and judge the caller's authority as it stands once nothing can change it.
     await locked_authority(session, company_id, user.id, ("manage_accounting", "import_export_data"))
+    await lock_chart(session, company_id)
     plan = await _planned_chart_import(request, body, company_id, session)
     for row in plan.to_create:
         session.add(Account(id=uuid.uuid4(), company_id=company_id, **row))

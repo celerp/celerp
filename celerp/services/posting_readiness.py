@@ -264,7 +264,7 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
     needed role is left without an account or a choice cannot take it; the caller owns
     the transaction and rolls it back."""
     from celerp.modules.slots import get, resolve_handler
-    from celerp.services.company_lock import locked_company
+    from celerp.services.company_lock import lock_chart, locked_company
     from celerp.services.journal_accounts import lock_accounts
 
     choices = choices or {}
@@ -273,6 +273,7 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
     chosen = _chosen(choices.get("roles"))
     added = _new_accounts(choices.get("add_accounts"))
     company = await locked_company(session, company_id)
+    await lock_chart(session, company_id)
     rows = await readiness(session, company_id)
     if rows is None:
         return

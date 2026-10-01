@@ -129,8 +129,9 @@ ROLE_TYPES: dict[AccountRole, frozenset[str]] = {
 }
 
 # Roles a posting lands on directly, so the target must be a concrete account,
-# not a header other accounts roll up into.
-POSTABLE_ROLES: frozenset[AccountRole] = frozenset({R.DEFAULT_DEPOSIT})
+# not a header other accounts roll up into. Cash and inventory only group the
+# accounts under them; every other role receives debits and credits.
+POSTABLE_ROLES: frozenset[AccountRole] = frozenset(R) - {R.CASH_AND_EQUIVALENTS, R.INVENTORY}
 
 # The targets of a seeded chart. A company created by this release starts with
 # these, and the upgrade maps an existing company to them only where the account

@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
-from sqlalchemy import event, select
+import hashlib
+
+from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import get_history
@@ -40,6 +42,23 @@ async def lock_company(session: AsyncSession, company_id) -> None:
     await session.execute(
         select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
     )
+
+
+async def lock_chart(session: AsyncSession, company_id) -> None:
+    """Serialize changes to the shape of the company's chart of accounts.
+
+    Adding an account, moving one, changing its type, switching it on or off, and
+    pointing a posting role at one each read other accounts (a parent, the children)
+    before writing. Taking this lock first makes those changes happen one at a time
+    for a company, so each one checks the chart the previous one left. Postings
+    never take it. Lock order: the company lock, when the caller holds it, then this
+    lock, then account rows. Held until the transaction ends; SQLite writes one
+    transaction at a time already.
+    """
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    key = int.from_bytes(hashlib.sha256(b"chart:" + str(company_id).encode()).digest()[:8], "big", signed=True)
+    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
 
 
 async def lock_projections(session: AsyncSession, company_id, entity_ids) -> dict[str, Projection]:

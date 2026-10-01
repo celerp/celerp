@@ -4,12 +4,13 @@
 """The chart of accounts' own rules: the one place an account is checked before it is
 added or changed, and the account lookup the core journal boundary uses.
 
-Lock order: the company lock (when a caller takes it) comes before account rows.
-A posting holds the accounts it uses FOR SHARE until it commits. Deactivating or
-retyping an account takes only that row FOR UPDATE, so it waits for postings in
-flight and they never wait for it while holding the company lock. Moving an account
-in the hierarchy also takes the company lock: two moves of unrelated rows can close
-a loop between them, so moves for one company happen one at a time.
+Lock order: the company lock (when a caller takes it), then the chart lock, then
+account rows. Every change to the chart's shape (adding an account, moving it,
+retyping it, switching it on or off, pointing a posting role at it) takes the chart
+lock first, so those changes happen one at a time and each checks the parents,
+children and role targets the previous one left. A posting holds the accounts it
+uses FOR SHARE until it commits and never takes the chart lock; a change to an
+account row takes that row FOR UPDATE, so it waits for postings in flight.
 """
 
 from __future__ import annotations
@@ -20,9 +21,10 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import ROLE_LABELS, AccountRole, allowed_types
+from celerp.accounting_roles import POSTABLE_ROLES, ROLE_LABELS, AccountRole, allowed_types
 from celerp.models.projections import Projection
 from celerp.services.account_roles import current_settings, role_map
+from celerp.services.company_lock import lock_chart
 from celerp_accounting.models import Account
 
 # The account types an account may sit under. Cost of sales and operating expenses
@@ -80,10 +82,26 @@ async def chart_accounts(session: AsyncSession, company_id: uuid.UUID) -> list[d
     ]
 
 
-def parent_problem(account_type: str, parent: Account | dict | None, parent_code: str | None) -> str | None:
-    """Why ``parent_code`` cannot hold an account of ``account_type``, or None."""
+def posting_targets(settings: dict) -> dict[str, list[str]]:
+    """Each account a role posts to directly, with those roles' labels. Nothing can
+    sit under such an account: its postings would land on a header."""
+    out: dict[str, list[str]] = {}
+    for role, code in sorted(role_map(settings).items()):
+        if AccountRole(role) in POSTABLE_ROLES:
+            out.setdefault(code, []).append(ROLE_LABELS[AccountRole(role)])
+    return out
+
+
+def parent_problem(
+    account_type: str, parent: Account | dict | None, parent_code: str | None, targets: dict[str, list[str]],
+) -> str | None:
+    """Why ``parent_code`` cannot hold an account of ``account_type``, or None.
+    ``targets`` is posting_targets() of the company's settings."""
     if parent_code is None:
         return None
+    if parent_code in targets:
+        return (f"Account {parent_code} is the posting account for {', '.join(targets[parent_code])}, "
+                "so no account can sit under it.")
     if parent is None:
         return f"Parent account {parent_code} is not in the chart of accounts."
     get = parent.get if isinstance(parent, dict) else lambda k: getattr(parent, k)
@@ -98,19 +116,22 @@ def parent_problem(account_type: str, parent: Account | dict | None, parent_code
 async def _account(session: AsyncSession, company_id: uuid.UUID, code: str, *, lock: bool = False) -> Account | None:
     stmt = select(Account).where(Account.company_id == company_id, Account.code == code)
     if lock:
-        stmt = stmt.with_for_update().execution_options(populate_existing=True)
-    return (await session.execute(stmt)).scalar_one_or_none()
+        stmt = stmt.with_for_update()
+    return (await session.execute(stmt.execution_options(populate_existing=True))).scalar_one_or_none()
 
 
 async def check_new_account(
     session: AsyncSession, company_id: uuid.UUID, *, account_type: str, parent_code: str | None,
 ) -> None:
-    """A new account's parent is a same-company, active, compatible account. A new
-    code cannot close a loop, since nothing hangs under it yet."""
+    """A new account's parent is a same-company, active, compatible account that no
+    role posts to directly. A new code cannot close a loop, since nothing hangs under
+    it yet."""
+    await lock_chart(session, company_id)
     if parent_code is None:
         return
     parent = await _account(session, company_id, parent_code)
-    problem = parent_problem(account_type, parent, parent_code)
+    targets = posting_targets(await current_settings(session, company_id))
+    problem = parent_problem(account_type, parent, parent_code, targets)
     if problem:
         raise HTTPException(status_code=422, detail=problem)
 
@@ -145,10 +166,8 @@ async def change_account(
     """Change one account. ``...`` leaves a field alone. The code never changes:
     postings, parents, banks and posting roles all refer to the account by it."""
     moving = parent_code is not ...
-    if moving:
-        from celerp.services.company_lock import lock_company
-
-        await lock_company(session, company_id)
+    if moving or account_type is not None or is_active is not None:
+        await lock_chart(session, company_id)
     acc = await _account(session, company_id, code, lock=True)
     if acc is None:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -193,6 +212,23 @@ async def change_account(
             detail=f"Account {code} is the posting account for {', '.join(targeted)}. "
                    "Choose another account in Settings > Accounting > Posting accounts first.",
         )
+    if is_active is False and acc.is_active:
+        active_children = (await session.execute(
+            select(Account.code).where(
+                Account.company_id == company_id, Account.parent_code == code, Account.is_active.is_(True),
+            ).order_by(Account.code)
+        )).scalars().all()
+        if active_children:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Accounts under {code} are still active ({', '.join(active_children)}). "
+                       "Switch them off or move them first.",
+            )
+    if is_active is True and not acc.is_active and acc.parent_code is not None and (
+            not moving or parent_code == acc.parent_code):
+        parent = await _account(session, company_id, acc.parent_code)
+        if parent is not None and not parent.is_active:
+            raise HTTPException(status_code=422, detail=f"Parent account {acc.parent_code} is inactive.")
     if is_active is not None:
         acc.is_active = is_active
 
@@ -201,7 +237,7 @@ async def change_account(
             if parent_code == code:
                 raise HTTPException(status_code=422, detail="An account cannot be its own parent.")
             parent = await _account(session, company_id, parent_code)
-            problem = parent_problem(acc.account_type, parent, parent_code)
+            problem = parent_problem(acc.account_type, parent, parent_code, posting_targets(settings))
             if problem:
                 raise HTTPException(status_code=422, detail=problem)
             parents = dict((await session.execute(
