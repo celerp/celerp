@@ -56,6 +56,7 @@ from ui.routes.migrations import (
     gate,
     setup_code_field,
     setup_code_required,
+    sign_in_fields,
     upload_again_page,
     wizard_page,
 )
@@ -137,18 +138,6 @@ async def _gate(request: Request, mode: WizardMode):
     return None if mode is START_COMPANY else await gate(request, mode)
 
 
-def _sign_in_fields(email: str) -> list:
-    """The email and password of a login with no company, which every step checks."""
-    return [
-        Div(Label(t("label.email"), For="email", cls="form-label"),
-            Input(type="email", id="email", name="email", value=email, required=True, cls="form-input"),
-            cls="form-group"),
-        Div(Label(t("label.password"), For="password", cls="form-label"),
-            Input(type="password", id="password", name="password", required=True, cls="form-input"),
-            cls="form-group"),
-    ]
-
-
 def _sign_in(form) -> tuple[str, str]:
     return str(form.get("email", "")).strip(), str(form.get("password", ""))
 
@@ -157,7 +146,7 @@ def _start_company_fields(mode: WizardMode, values: dict) -> list:
     """The login's email and password again, at the step that restores for a login with no company."""
     if mode is not START_COMPANY:
         return []
-    return [P(t("company_backup.confirm_with_password"), cls="form-hint"), *_sign_in_fields(values.get("email", ""))]
+    return [P(t("company_backup.confirm_with_password"), cls="form-hint"), *sign_in_fields(values.get("email", ""))]
 
 
 def _set_upload_cookie(resp, token: str, mode: WizardMode, request: Request) -> None:
@@ -199,7 +188,7 @@ async def _upload_page(request: Request, mode: WizardMode, error: str | None = N
                       cls="form-input"),
                 cls="form-group",
             ),
-            *(_sign_in_fields(email) if mode is START_COMPANY else []),
+            *(sign_in_fields(email) if mode is START_COMPANY else []),
             setup_code_field() if await setup_code_required(mode) else "",
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full"),
             method="post", action=f"{mode.base}/read", enctype="multipart/form-data", cls="auth-form",

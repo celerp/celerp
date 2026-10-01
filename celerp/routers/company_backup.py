@@ -33,12 +33,12 @@ from celerp.models.company import User
 from celerp.models.migration import MigrationRun, MigrationStatus
 from celerp.modules import requirements
 from celerp.modules.importer import MAX_ARCHIVE_BYTES, ModuleImportError, install_from_zip
-from celerp.routers.auth import authenticate, hold_direct_slot, limiter
+from celerp.routers.auth import companyless_login, hold_direct_slot, limiter
 from celerp.routers.migrations import ensure_not_bootstrapped, owner_account, user_owner
 from celerp.services import bootstrap
 from celerp.services import company_backup as cb
 from celerp.services import company_backup_files as files
-from celerp.services.auth import HAS_COMPANY, AuthContext, first_usable_company_link, issue_token_pair
+from celerp.services.auth import AuthContext, issue_token_pair
 
 logger = logging.getLogger(__name__)
 
@@ -409,19 +409,11 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
     return response
 
 
-async def _companyless(session: AsyncSession, email: str, password: str) -> User:
-    """The login these credentials belong to, when it has no company left."""
-    user = await authenticate(session, email, password)
-    if await first_usable_company_link(session, user.id) is not None:
-        raise HTTPException(status_code=409, detail=HAS_COMPANY)
-    return user
-
-
 @router.post("/start-company/read")
 @limiter.limit("5/minute")
 async def start_company_read(request: Request, file: UploadFile = File(...), email: str = Form(...),
                              password: str = Form(...), session: AsyncSession = Depends(get_session)):
-    user = await _companyless(session, email, password)
+    user = await companyless_login(session, email, password)
     try:
         return await _read(file, str(user.id), session, _START_COMPANY, user.id)
     except cb.BackupError as exc:
@@ -442,7 +434,7 @@ async def start_company_restore(request: Request, payload: StartCompanyRestoreIn
                                 session: AsyncSession = Depends(get_session)):
     """Restore a staged backup as the company of a login that has none left, as the preview
     showed it, and sign it in to that company."""
-    user = await _companyless(session, payload.email, payload.password)
+    user = await companyless_login(session, payload.email, payload.password)
     stage = _uploaded(str(user.id), payload.upload_token)
     await hold_direct_slot(session)
     try:

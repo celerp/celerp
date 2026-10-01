@@ -3532,33 +3532,42 @@ async def migration_sources() -> list[dict]:
         return _raise(await c.get("/migrations/sources")).json()
 
 
+def _migration_path(token: str | None, step: str, group: str) -> str:
+    """A wizard step's API path: the session's own, or, with no session, ``group``'s
+    (``bootstrap`` before the first owner exists, ``start-company`` for a login with no
+    company left)."""
+    return f"/migrations/{step}" if token else f"/migrations/{group}/{step}"
+
+
 async def migration_scan(token: str | None, files: list[tuple[str, BinaryIO]], source: str | None,
-                         setup_code: str | None = None) -> dict:
-    """Upload source files for analysis. Returns {"scan_token", "scan"}."""
-    path = "/migrations/scan" if token else "/migrations/bootstrap/scan"
+                         setup_code: str | None = None, *, group: str = "bootstrap",
+                         credentials: tuple[str, str] | None = None) -> dict:
+    """Upload source files for analysis. Returns {"scan_token", "scan"}. A login with no
+    company signs the upload with its ``credentials`` (email, password)."""
     async with _local_error_mapping():
         async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True,
                                  headers=None if token else _setup_code_headers(setup_code)) as c:
             r = await c.post(
-                path,
+                _migration_path(token, "scan", group),
                 files=[("files", (name, content, "application/octet-stream")) for name, content in files],
                 data={"source": source} if source else None,
+                auth=httpx.BasicAuth(*credentials) if credentials else httpx.USE_CLIENT_DEFAULT,
             )
     return _raise(r).json()
 
 
-async def migration_scan_read(token: str | None, scan_token: str) -> dict:
+async def migration_scan_read(token: str | None, scan_token: str, *, group: str = "bootstrap") -> dict:
     """``{"scan": view}`` for a scan token, or ``{"run_id"}`` once the caller started a run from it."""
-    path = "/migrations/scan/read" if token else "/migrations/bootstrap/scan/read"
     async with _local_error_mapping():
         async with _local_client(token) as c:
-            r = await c.post(path, json={"scan_token": scan_token})
+            r = await c.post(_migration_path(token, "scan/read", group), json={"scan_token": scan_token})
     return _raise(r).json()
 
 
-async def migration_save_decisions(token: str | None, scan_token: str, decisions: dict) -> dict:
+async def migration_save_decisions(token: str | None, scan_token: str, decisions: dict, *,
+                                   group: str = "bootstrap") -> dict:
     """Save method, cutover date, mappings and Prepared by. Returns the updated scan."""
-    path = "/migrations/scan/decisions" if token else "/migrations/bootstrap/decisions"
+    path = "/migrations/scan/decisions" if token else f"/migrations/{group}/decisions"
     async with _local_error_mapping():
         async with _local_client(token) as c:
             r = await c.post(path, json={"scan_token": scan_token, **decisions})
@@ -3573,6 +3582,16 @@ async def migration_bootstrap_start(scan_token: str, company_name: str, name: st
             r = await c.post("/migrations/bootstrap/start", json={
                 "scan_token": scan_token, "company_name": company_name,
                 "name": name, "email": email, "password": password,
+            })
+    return _raise(r).json()
+
+
+async def migration_start_company_start(email: str, password: str, scan_token: str, company_name: str) -> dict:
+    """Start a migration as the company of a login that has none left. Returns tokens and run_id."""
+    async with _local_error_mapping():
+        async with _local_client(None, timeout=30.0) as c:
+            r = await c.post("/migrations/start-company/start", json={
+                "email": email, "password": password, "scan_token": scan_token, "company_name": company_name,
             })
     return _raise(r).json()
 

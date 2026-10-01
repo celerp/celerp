@@ -432,6 +432,15 @@ def load_scan(token: str, *, owner: ScanOwner) -> ScanSession:
     return _read(token, _directory(token), owner)
 
 
+def scan_owner(token: str) -> ScanOwner:
+    """Who the scan under ``token`` belongs to; an unreadable scan reads as expired."""
+    try:
+        kind, ident = json.loads((_directory(token) / "scan.json").read_text())["owner"]
+        return kind, uuid.UUID(ident) if ident else None
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ScanStoreError(410, EXPIRED) from exc
+
+
 def save_decisions(token: str, *, owner: ScanOwner, decisions: MigrationDecisions) -> ScanSession:
     directory = _directory(token)
     with _token_lock(directory):

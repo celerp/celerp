@@ -182,6 +182,14 @@ async def authenticate(session: AsyncSession, email: str, password: str) -> User
     return user
 
 
+async def companyless_login(session: AsyncSession, email: str, password: str) -> User:
+    """The login these credentials belong to, when it has no company left; 409 otherwise."""
+    user = await authenticate(session, email, password)
+    if await first_usable_company_link(session, user.id) is not None:
+        raise HTTPException(status_code=409, detail=HAS_COMPANY)
+    return user
+
+
 async def hold_direct_slot(session: AsyncSession, *, taking_over: bool = False) -> None:
     """Without the cloud relay only one person may be signed in at a time.
 

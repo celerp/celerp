@@ -27,6 +27,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from python_multipart.exceptions import MultipartParseError
@@ -39,14 +40,16 @@ from celerp.importers.adapters.registry import list_adapters
 from celerp.models.company import Company, User
 from celerp.models.migration import MigrationRun
 from celerp.modules import requirements
-from celerp.routers.auth import limiter
+from celerp.routers.auth import companyless_login, hold_direct_slot, limiter
 from celerp.services import bootstrap
 from celerp.services import migration_scan_store as store
 from celerp.services import migrations
 from celerp.services.auth import (
+    HAS_COMPANY,
     MIN_PASSWORD_LENGTH,
     AuthContext,
     get_auth_context,
+    hold_companyless_login,
     issue_token_pair,
     validate_password,
 )
@@ -99,6 +102,13 @@ class DecisionsIn(BaseModel):
 
 
 class StartFromScanIn(BaseModel):
+    scan_token: str
+    company_name: str
+
+
+class StartCompanyStartIn(BaseModel):
+    email: str
+    password: str
     scan_token: str
     company_name: str
 
@@ -396,6 +406,74 @@ async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: Aut
         await session.commit()
     await _claim(session, run_id, payload.scan_token, awaiting=awaiting)
     return {"run_id": str(run_id), "preparing": awaiting}
+
+
+# ── A login with no company left ─────────────────────────────────────────────
+# After its last company was reset, a login moves its books in from another system. The
+# upload and the start each check its email and password; the steps between them hold
+# only the scan token, as in bootstrap. The migration's staged company becomes its company.
+
+START_COMPANY = "start_company"
+_basic = HTTPBasic(auto_error=False)
+
+
+def _start_company_owner(scan_token: str) -> store.ScanOwner:
+    owner = store.scan_owner(scan_token)
+    if owner[0] != START_COMPANY:
+        raise store.ScanStoreError(410, store.EXPIRED)
+    return owner
+
+
+@router.post("/start-company/scan")
+@limiter.limit("5/minute")
+async def start_company_scan(request: Request, credentials: HTTPBasicCredentials | None = Depends(_basic),
+                             session: AsyncSession = Depends(get_session)) -> dict:
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    user_id = (await companyless_login(session, credentials.username, credentials.password)).id
+    await session.rollback()  # nothing is held while the upload streams in
+    scan = await store.create_scan(_upload_parts(request), owner=(START_COMPANY, user_id))
+    return {"scan_token": scan.token, "scan": migrations.scan_view(scan)}
+
+
+@router.post("/start-company/scan/read")
+async def start_company_scan_read(payload: ScanTokenIn) -> dict:
+    owner = _start_company_owner(payload.scan_token)
+    return {"scan": migrations.scan_view(store.load_scan(payload.scan_token, owner=owner))}
+
+
+@router.post("/start-company/decisions")
+async def start_company_decisions(payload: DecisionsIn) -> dict:
+    return await _save_decisions(_start_company_owner(payload.scan_token), payload)
+
+
+@router.post("/start-company/start", status_code=201)
+@limiter.limit("5/minute")
+async def start_company_start(request: Request, payload: StartCompanyStartIn,
+                              session: AsyncSession = Depends(get_session)) -> dict:
+    """Start a migration as the company of a login that has none left, then sign it in to
+    that company. The login is held until the commit, so of two starts one creates the
+    company and the other is told the login already has one; a start whose answer was
+    lost is the same, and signing in lands on the company being moved in."""
+    async with _start_errors(session):
+        user = await companyless_login(session, payload.email, payload.password)
+        await hold_direct_slot(session)
+        if not await hold_companyless_login(session, user.id):
+            raise HTTPException(status_code=409, detail=HAS_COMPANY)
+        if await migrations.lock_scan_claim(session, store.scan_claim(payload.scan_token)) is not None:
+            raise migrations.MigrationError(409, migrations.SCAN_ALREADY_STARTED)
+        scan = store.load_scan(payload.scan_token, owner=(START_COMPANY, user.id))
+        plan = await _prepare(scan)
+        errors: dict[str, str] = {}
+        company_name = _company_name(payload.company_name, errors)
+        if errors:
+            raise HTTPException(status_code=422, detail=errors)
+        awaiting = await _turn_on_modules(plan)
+        run = await _stage(session, user=user, company_name=company_name, scan=scan, plan=plan, awaiting=awaiting)
+        run_id = run.id
+        tokens = await issue_token_pair(session, user=user, company_id=run.company_id)
+    await _claim(session, run_id, payload.scan_token, awaiting=awaiting)
+    return {**tokens, "run_id": str(run_id), "preparing": awaiting}
 
 
 # ── Runs ─────────────────────────────────────────────────────────────────────

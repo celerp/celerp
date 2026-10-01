@@ -82,7 +82,7 @@ from celerp.modules import requirements
 from celerp.modules.registry import set_enabled
 from celerp.services import attachments
 from celerp.services import migration_scan_store as store
-from celerp.services.auth import normalize_role
+from celerp.services.auth import first_usable_company_link, normalize_role
 from celerp.services.company_files import delete_company_data
 from celerp.services.company_lock import lock_company
 from celerp.services.csv_export import csv_safe
@@ -1051,6 +1051,9 @@ async def company_tables(session: AsyncSession) -> list[str]:
         "ORDER BY c.table_name"))).all())
 
 
+START_COMPANY_PAGE = "/setup/start-company"
+
+
 async def discard(session: AsyncSession, run: MigrationRun) -> str:
     """Delete a staged company and its runs, then their files; returns where the user goes next.
 
@@ -1089,6 +1092,8 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         if others is None:
             await session.execute(text("DELETE FROM users WHERE id = :u"), {"u": str(owner_id)})
             redirect = "/setup"
+    elif await first_usable_company_link(session, owner_id) is None:
+        redirect = START_COMPANY_PAGE  # the login has no company left
     await session.commit()
     task_id = task.id
     session.expunge_all()
