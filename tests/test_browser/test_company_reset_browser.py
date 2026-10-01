@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Browser journeys for Reset this company: the dialog offers the company backup, asks
 for the exact company name and shows a refusal inside itself; resetting a login's last
-company lands on starting a new one."""
+company lands on starting a new one, and an owner whose other company is still being
+moved in lands on that move."""
 
 from __future__ import annotations
 
@@ -14,6 +15,8 @@ from pathlib import Path
 import pytest
 
 from .test_company_backup_browser import _WAIT_MS, _add_user, _client, _db, _session_company, _token_for
+from .test_migration_journeys_browser import _start_additional, held_runner  # noqa: F401 - fixture
+from .test_migration_wizard_browser import _run_id
 
 pytestmark = pytest.mark.browser
 
@@ -78,11 +81,48 @@ def test_reset_dialog_needs_the_exact_name_and_shows_refusals_inside(page, fresh
     assert _session_company(page.context) != source["id"]
 
 
-def _start_over(page, source: dict, user_id: str, email: str) -> None:
+def _reset(page, name: str) -> None:
     _open_reset(page)
     page.locator('#company-reset-modal button:has-text("Skip - continue")').click()
-    page.locator("#company-reset-confirm-input").fill(source["name"])
+    page.locator("#company-reset-confirm-input").fill(name)
     page.locator("#company-reset-confirm-btn").click()
+
+
+def test_resetting_lands_on_the_owners_company_still_being_moved_in(playwright, ui_server, fresh_company,
+                                                                    held_runner):
+    """The owner's other company is still being moved in: the reset lands on that move."""
+    source = fresh_company.get("/companies/me").json()
+    user_id, _ = _add_user(fresh_company, "owner")
+    moved = f"Moving In {uuid.uuid4().hex[:6]}"
+    browser = playwright.chromium.launch(headless=True)
+    try:
+        ctx = browser.new_context(base_url=ui_server)
+        ctx.add_cookies([{"name": "celerp_token", "value": _token_for(user_id, source["id"]),
+                          "domain": "127.0.0.1", "path": "/"}])
+        page = ctx.new_page()
+        _start_additional(page, moved)
+        page.click('button:has-text("Create company and migrate")')
+        page.wait_for_url(re.compile(r"/migrations/[0-9a-f-]{36}$"), timeout=_WAIT_MS)
+        run_id = _run_id(page)
+        [(staged, is_staged)] = _db("SELECT id, is_migration_staged FROM companies WHERE name = %s", moved)
+        assert is_staged and _session_company(ctx) == source["id"]
+
+        _reset(page, source["name"])
+
+        page.wait_for_url(re.compile(rf"/migrations/{run_id}$"), timeout=_WAIT_MS)
+        assert _db("SELECT count(*) FROM companies WHERE id = %s", source["id"])[0][0] == 0
+        assert _session_company(ctx) == str(staged)
+        assert page.locator('button:has-text("Cancel")').count() == 1
+        _shot(page, "6-reset-lands-on-the-move-in-progress")
+        # Coming back later returns to the same move.
+        page.goto("/")
+        page.wait_for_url(re.compile(rf"/migrations/{run_id}$"), timeout=_WAIT_MS)
+    finally:
+        browser.close()
+
+
+def _start_over(page, source: dict, user_id: str, email: str) -> None:
+    _reset(page, source["name"])
 
     page.wait_for_url(re.compile(r"/setup/start-company$"), timeout=_WAIT_MS)
     assert _db("SELECT count(*) FROM companies WHERE id = %s", source["id"])[0][0] == 0
