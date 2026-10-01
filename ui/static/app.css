@@ -362,6 +362,9 @@ a:hover { text-decoration: underline; }
   border-bottom-color: var(--c-accent) !important;
 }
 
+/* Posting accounts: a status's explanation wraps inside its column. */
+.posting-accounts td p { white-space: normal; max-width: 360px; margin: 4px 0 0; }
+
 /* Pencil icon affordance on hover — pure CSS, no extra HTML */
 .cell--clickable:hover::after {
   content: "✎";

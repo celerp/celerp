@@ -315,7 +315,7 @@ def _posting_display_cell(key: str, code: str | None, name: str | None, error: s
         P(error, cls="cell-error") if error else None,
         hx_get=f"/settings/accounting/posting-accounts/{key}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-        title=t("settings.click_to_edit"), cls="editable-cell",
+        title=t("settings.click_to_edit"), cls="cell cell--text cell--clickable",
     )
 
 
@@ -371,14 +371,14 @@ def _posting_accounts_tab(data: dict) -> FT:
     return Div(
         H3(t("posting.tab"), cls="section-title"),
         P(t("posting.panel_hint"), cls="text-muted mb-md"),
-        Table(
+        Div(Table(
             Thead(Tr(Th(t("posting.col_role")), Th(t("posting.col_account")), Th(t("th.status")),
                      Th(t("posting.col_earlier")))),
             Tbody(*[_posting_role_row(r) for r in data.get("roles", [])],
                   *([_older_stock_row(data["older_stock"])] if (data.get("older_stock") or {}).get("candidates")
                     else [])),
-            cls="data-table",
-        ),
+            cls="data-table posting-accounts",
+        ), cls="table-scroll-wrap"),
         cls="settings-card",
     )
 
