@@ -469,7 +469,8 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
             code = l.get("code", "")
             synthetic = l.get("synthetic", False)
             is_parent = l.get("is_parent", False)
-            is_child = l.get("is_child", False)
+            # Accounts nest as deep as the chart does; each level indents one step.
+            indent = f"padding-left:{1.5 * l['depth']}rem" if l.get("depth") else None
 
             if synthetic and l.get("href_pnl"):
                 label = l.get("name", "")
@@ -479,24 +480,17 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
                 )
             elif is_parent:
                 label = f"{code} {l.get('name', '')}".strip()
-                name_cell = Td(Strong(label))
-            elif is_child:
-                label = f"{code} {l.get('name', '')}".strip()
-                name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"), style="padding-left:2rem")
+                name_cell = Td(Strong(label), style=indent)
             elif code and not synthetic:
                 label = f"{code} {l.get('name', '')}".strip()
-                name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"))
+                name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"), style=indent)
             else:
                 name_cell = Td(l.get("name", ""))
 
-            amount_style = "padding-left:2rem" if is_child else ""
             rows.append(Tr(
                 name_cell,
-                Td(fmt_money(l.get('amount', 0), currency) if not is_parent else "", cls="cell--number", style=amount_style),
-                Td(fmt_money(l.get('amount', 0), currency) if is_parent else "", cls="cell--number"),
-            ) if is_parent else Tr(
-                name_cell,
-                Td(fmt_money(l.get('amount', 0), currency), cls="cell--number"),
+                Td(Strong(fmt_money(l.get('amount', 0), currency)) if is_parent
+                   else fmt_money(l.get('amount', 0), currency), cls="cell--number"),
             ))
         total_el = fmt_money(section_data.get('total', 0), currency)
         return Div(

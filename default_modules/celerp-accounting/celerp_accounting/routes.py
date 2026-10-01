@@ -24,6 +24,7 @@ from celerp.events.engine import emit_event, write_period_lock
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting import import_service
+from celerp_accounting.account_tree import account_tree_lines
 from celerp_accounting.chart_rules import change_account, parent_problem, posting_targets
 from celerp_accounting.import_service import AccImportRecord
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
@@ -2165,62 +2166,17 @@ async def balance_sheet(
             select(Account).where(Account.company_id == company_id).order_by(Account.code)
         )
     ).scalars().all()
-    account_map = {a.code: a for a in accounts}
 
     # Balance sheet uses all entries up to as_of
     balances = _build_balances(posted, date_from=None, date_to=as_of)
 
-    def _section(types: list[str], credit_normal: bool) -> tuple[list[dict], float]:
-        lines = []
-        # Collect all leaf balances first
-        leaf_lines: list[dict] = []
-        seen_codes: set[str] = set()
-        for code in sorted(balances):
-            acc = account_map.get(code)
-            if not acc or acc.account_type not in types:
-                continue
-            net = balances[code]
-            amount = float(-net) if credit_normal else float(net)
-            leaf_lines.append({"code": code, "name": acc.name, "account_type": acc.account_type, "amount": amount, "parent_code": acc.parent_code})
-            seen_codes.add(code)
+    def _section(types: set[str], credit_normal: bool) -> tuple[list[dict], float]:
+        lines, total = account_tree_lines(accounts, balances, types, credit_normal=credit_normal)
+        return lines, float(total)
 
-        # Also include child accounts that exist in account_map but have zero balance,
-        # so parent accounts with sub-accounts always expand correctly.
-        parent_codes_in_balance = {l["code"] for l in leaf_lines}
-        for acc in sorted(accounts, key=lambda a: a.code):
-            if acc.code in seen_codes:
-                continue
-            if acc.account_type not in types:
-                continue
-            if acc.parent_code in parent_codes_in_balance:
-                leaf_lines.append({"code": acc.code, "name": acc.name, "account_type": acc.account_type, "amount": 0.0, "parent_code": acc.parent_code})
-                seen_codes.add(acc.code)
-        leaf_lines.sort(key=lambda l: l["code"])
-
-        # For accounts that have children in the result set, replace with parent + indented children.
-        child_codes = {l["code"] for l in leaf_lines if l.get("parent_code") and any(l2["code"] == l["parent_code"] for l2 in leaf_lines)}
-        for leaf in leaf_lines:
-            code = leaf["code"]
-            children = [l for l in leaf_lines if l.get("parent_code") == code]
-            if children:
-                # Parent total = its own directly-posted balance (legacy
-                # pre-sub-account entries) plus its children. The parent's own
-                # amount stays attributed to the parent, matching how the
-                # trial balance, general ledger, and ledger drilldown bucket
-                # by literal account code.
-                parent_total = leaf["amount"] + sum(c["amount"] for c in children)
-                lines.append({"code": code, "name": leaf["name"], "account_type": leaf["account_type"], "amount": parent_total, "is_parent": True})
-                for child in children:
-                    lines.append({**child, "is_child": True})
-            elif code not in child_codes:
-                lines.append(leaf)
-
-        total = sum(l["amount"] for l in lines if not l.get("is_child"))
-        return lines, total
-
-    asset_lines, total_assets = _section(["asset"], credit_normal=False)
-    liability_lines, total_liabilities = _section(["liability"], credit_normal=True)
-    equity_lines, total_equity = _section(["equity"], credit_normal=True)
+    asset_lines, total_assets = _section({"asset"}, credit_normal=False)
+    liability_lines, total_liabilities = _section({"liability"}, credit_normal=True)
+    equity_lines, total_equity = _section({"equity"}, credit_normal=True)
 
     # Retained earnings = net income (all revenue - COGS - expenses) accumulated to date.
     # This equals Assets - Liabilities - explicit Equity by the accounting equation.
