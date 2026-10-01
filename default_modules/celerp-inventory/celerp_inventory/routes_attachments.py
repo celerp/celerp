@@ -284,7 +284,7 @@ async def bulk_attach_files(
             for info in sorted(entries, key=lambda i: i.filename):  # sorted for deterministic hero selection
                 name = info.filename
                 # Check the BASENAME, not the full ZIP path, so nested junk like
-                # sub/.DS_Store is skipped too (the full name doesn't start with '.') — F5.
+                # sub/.DS_Store is skipped too (the full name doesn't start with '.') - F5.
                 base = _Path(name).name
                 if base.startswith("__") or base.startswith("."):
                     continue
@@ -366,7 +366,7 @@ async def bulk_attach_files(
                     # ProjectionEngine.apply_event already appended the file to this
                     # same projection row (session identity map), so row.state is
                     # current for the next file on this SKU. Re-applying double-counts
-                    # the file (two entries with the same file_id) — see F1.
+                    # the file (two entries with the same file_id) - see F1.
 
                     matched += 1
                     report.append({"sku": sku_part, "file": name, "status": "ok",
