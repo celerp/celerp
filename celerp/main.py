@@ -188,6 +188,17 @@ async def _verify_runtime_dependencies() -> None:
 async def lifespan(_app: FastAPI):
     update_verify = _os.environ.get(_runtime.UPDATE_VERIFY_ENV) == "1"
     (settings.data_dir / "static" / "attachments").mkdir(parents=True, exist_ok=True)
+
+    # A System Recovery that stopped part way is finished (or undone from its safety
+    # archive) before anything initializes or reads the installation: the database it
+    # left may be one the current schema cannot be created on. While it stays
+    # unfinished nothing else starts and only the health probes answer.
+    from celerp.services.backup_import import finish_incomplete_recovery, recovery_incomplete
+    await finish_incomplete_recovery()
+    if recovery_incomplete():
+        yield
+        return
+
     try:
         async with lifecycle_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -202,11 +213,6 @@ async def lifespan(_app: FastAPI):
             file=sys.stderr,
         )
         sys.exit(1)
-
-    # A System Recovery that stopped part way is finished (or undone from its safety
-    # archive) before anything reads the installation; until then nothing is served.
-    from celerp.services.backup_import import finish_incomplete_recovery
-    await finish_incomplete_recovery()
 
     # Load external modules (opt-in: no-op if MODULE_DIR not set)
     _loaded_modules = []

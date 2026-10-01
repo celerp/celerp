@@ -347,6 +347,8 @@ function runMigrations(dbUrl) {
     PYTHONUTF8: "1",
     DATABASE_URL: dbUrl,
     PYTHONPATH: APP_DIR,
+    // The data dir holds the unfinished-recovery marker, which migrate must see.
+    CELERP_DATA_DIR: DATA_DIR,
   };
   execFileSync(pythonBin(), migrateArgs(dbUrl), {
     cwd: APP_DIR,
@@ -361,8 +363,7 @@ function runMigrations(dbUrl) {
  * database is opened, refreshing the subscription from the relay. A crash,
  * timeout, or killed process maps to UNREACHABLE so a packaging bug asks rather
  * than silently forking data. The env carries the Python config path and data
- * dir the one-shot needs to read the token and write the refreshed config; the
- * migrations env deliberately omits both, so they are set here explicitly.
+ * dir the one-shot needs to read the token and write the refreshed config.
  */
 function runEntitlementPreflight() {
   const env = {

@@ -1033,3 +1033,121 @@ async def test_failed_recovery_does_not_revive_sessions(tmp_path, monkeypatch, c
     assert len(rec.safety_archives()) == 1
     assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 401
     assert backup_import.recovery_incomplete() is False
+
+
+# ---------------------------------------------------------------------------
+# An unfinished recovery is resolved before normal startup touches the database
+# ---------------------------------------------------------------------------
+
+
+async def _break_schema_init(engine) -> str:
+    """Leave *engine*'s database where the current metadata cannot be created on it,
+    as an interrupted pg_restore can: a table is gone and a relation holds the
+    name of that table's index. Returns the blocking relation's name."""
+    from sqlalchemy import text
+
+    from celerp.models.base import Base
+    table = next(t for t in Base.metadata.sorted_tables if t.indexes)
+    index = sorted(i.name for i in table.indexes)[0]
+    async with engine.begin() as conn:
+        await conn.execute(text(f'DROP TABLE "{table.name}" CASCADE'))
+        await conn.execute(text(f'CREATE TABLE "{index}" (x int)'))
+    with pytest.raises(Exception):
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    return index
+
+
+def _boot_to_schema(monkeypatch, engine):
+    """Run the real lifespan on *engine* only as far as schema initialization."""
+    import celerp.main as main_mod
+    from celerp import runtime
+
+    monkeypatch.setattr(main_mod, "lifecycle_engine", engine)
+    monkeypatch.setattr(main_mod, "_MODULE_DIR", None)
+    monkeypatch.setenv(runtime.UPDATE_VERIFY_ENV, "1")
+    verified = AsyncMock()
+    monkeypatch.setattr(main_mod, "_verify_runtime_dependencies", verified)
+    return main_mod, verified
+
+
+async def test_boot_finishes_unfinished_recovery_before_schema_init(rec, tmp_path, monkeypatch, committed_engine):
+    """A recovery marker over a database the current schema cannot be created on: the
+    recovery puts the installation back first, then startup initializes the schema on
+    the whole restored database and comes up."""
+    from sqlalchemy import text
+
+    from celerp.models.base import Base
+    from celerp.services import backup_import
+    rec.seed()
+    blocker = await _break_schema_init(committed_engine)
+    safety = _archive(tmp_path / "safety.celerp-backup", SOURCE_FILES)
+    backup_import._mark_recovery_started(safety)
+    stub_restore = backup_import._run_pg_restore
+
+    async def _restore(dump, url):
+        await stub_restore(dump, url)
+        async with committed_engine.begin() as conn:
+            await conn.execute(text(f'DROP TABLE "{blocker}"'))
+
+    monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+    main_mod, verified = _boot_to_schema(monkeypatch, committed_engine)
+
+    async with main_mod.lifespan(None):
+        pass
+
+    assert rec.names()[:3] == ["guard", "pg_restore", "reconcile"]
+    assert rec.restored == [SOURCE_DUMP]
+    assert backup_import.recovery_incomplete() is False
+    assert rec.tree("ai_uploads") == {"new.txt": b"SOURCE-AI"}
+    verified.assert_awaited_once()
+    async with committed_engine.connect() as conn:
+        tables = set(await conn.run_sync(lambda c: __import__("sqlalchemy").inspect(c).get_table_names()))
+    assert set(Base.metadata.tables) <= tables
+
+
+async def test_boot_with_recovery_still_unfinished_starts_nothing_else(rec, tmp_path, monkeypatch, committed_engine):
+    """When the recovery cannot be finished at startup the marker stays, the database
+    is left exactly as it was for the next start, and nothing else starts: only the
+    liveness and readiness probes answer."""
+    from sqlalchemy import text
+
+    from celerp.services import backup_import
+    rec.seed()
+    blocker = await _break_schema_init(committed_engine)
+    backup_import._mark_recovery_started(_archive(tmp_path / "safety.celerp-backup", SOURCE_FILES))
+    rec.pg_error = RuntimeError("disk full")
+    main_mod, verified = _boot_to_schema(monkeypatch, committed_engine)
+
+    async with main_mod.lifespan(None):
+        pass
+
+    assert backup_import.recovery_incomplete() is True
+    verified.assert_not_awaited()
+    async with committed_engine.connect() as conn:
+        still = (await conn.execute(text("SELECT to_regclass(:n) IS NOT NULL"), {"n": f'"{blocker}"'})).scalar_one()
+    assert still
+
+
+async def test_migrate_leaves_a_database_under_unfinished_recovery_to_the_recovery(tmp_path, monkeypatch):
+    """`celerp migrate` and `celerp start` run no migration on a database whose
+    recovery is unfinished; the server's startup recovery brings it to a whole state."""
+    from celerp import cli
+    from celerp.config import settings
+    from celerp.services import backup_import
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    backup_import._mark_recovery_started(tmp_path / "safety.celerp-backup")
+    ran = []
+    monkeypatch.setattr(cli, "_run_migrations", lambda url: ran.append(url))
+    monkeypatch.setattr(cli, "_migration_lock", lambda url: contextlib.nullcontext())
+    monkeypatch.setattr(cli, "_stamped_revision", lambda url: None)
+    monkeypatch.setattr(cli, "_post_migration_grants", lambda url: ran.append(url))
+    monkeypatch.setattr(cli, "_reconcile_after_migrate", lambda url: ran.append(url))
+
+    cli._migrate_to_head("postgresql://x/y")
+    assert ran == []
+
+    backup_import._mark_recovery_finished()
+    cli._migrate_to_head("postgresql://x/y")
+    assert ran == ["postgresql://x/y"] * 3

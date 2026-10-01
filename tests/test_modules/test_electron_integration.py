@@ -283,6 +283,12 @@ class TestSecondBootGuards:
         assert "fs.existsSync(dst)" in self._src
         assert "continue" in self._src
 
+    def test_migrations_see_the_data_dir(self):
+        """migrate runs with the data dir, where an unfinished recovery is marked."""
+        body = self._src[self._src.find("function runMigrations("):]
+        body = body[: body.find("\n}\n")]
+        assert "CELERP_DATA_DIR: DATA_DIR" in body
+
     def test_migrations_are_idempotent_upgrade_head(self):
         """runMigrations uses alembic upgrade head which is a no-op if already current."""
         assert "upgrade" in self._src and "head" in self._src

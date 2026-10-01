@@ -697,6 +697,13 @@ def _migrate_to_head(db_url: str) -> None:
     routine start is as quiet as it was and a start that changed the schema
     cannot be mistaken for one that did not.
     """
+    from celerp.services.backup_import import recovery_incomplete
+    if recovery_incomplete():
+        # The database is mid System Recovery: the server's startup recovery replaces
+        # it and brings its schema to head, so a migration here would only run on
+        # the half-replaced one.
+        click.echo("  System Recovery unfinished; the database is migrated when it completes.")
+        return
     before = after = None
     with _migration_lock(db_url):
         before = _stamped_revision(db_url)
