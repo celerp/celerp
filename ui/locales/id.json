@@ -1673,6 +1673,7 @@
   "activity.change.fulfilled_items": "Barang yang telah diproses diperbarui",
   "activity.change.taxes": "Pajak diperbarui",
   "activity.change.addresses": "Alamat diperbarui",
+  "activity.actor_historical": "{name} (dari cadangan)",
   "activity.change.payments": "Pembayaran diperbarui",
   "activity.change.tc_items": "Ketentuan dan Syarat barang diperbarui",
   "activity.change.attributes": "Atribut diperbarui",

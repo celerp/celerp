@@ -78,12 +78,23 @@ async def list_entries(
             "metadata": r.metadata_ or {},
             "ts": r.ts.isoformat() if hasattr(r.ts, "isoformat") else str(r.ts),
             **({"entity_name": name_map.get(r.entity_id, "")} if resolve else {}),
-            **({"actor_name": actor_map.get(str(r.actor_id), str(r.actor_id) if r.actor_id else "")} if resolve else {}),
+            **(_actor(r, actor_map) if resolve else {}),
         }
         for r in rows
     ]
     # Fail-closed cost redaction: never ship cost amounts to under-manager roles.
     return {"items": redact_entries_for_role(items, settings, role), "total": total}
+
+
+def _actor(entry, actor_map: dict[str, str]) -> dict:
+    """Who made a change: the user it links to, or else the name a company backup carried
+    for it, marked as historical because it is not a user of this installation."""
+    if entry.actor_id and str(entry.actor_id) in actor_map:
+        return {"actor_name": actor_map[str(entry.actor_id)]}
+    carried = ((entry.metadata_ or {}).get("backup_actor") or {}) if isinstance(entry.metadata_, dict) else {}
+    if not entry.actor_id and isinstance(carried, dict) and carried.get("name"):
+        return {"actor_name": str(carried["name"]), "actor_historical": True}
+    return {"actor_name": str(entry.actor_id) if entry.actor_id else ""}
 
 
 @router.get("/{entry_id}")

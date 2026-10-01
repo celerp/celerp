@@ -3855,7 +3855,7 @@ celerpUpdateBulkAlloc();
             total = int(resp.get("total", len(entries))) if isinstance(resp, dict) else len(entries)
         except Exception:
             entries, total = [], 0
-        from ui.components.activity import format_timestamp, detail_from_entry, _event_display, _is_uuid
+        from ui.components.activity import format_timestamp, detail_from_entry, _event_display, actor_label
         EMPTY = "--"
         def _row(e: dict):
             display_text, url = _event_display(e)
@@ -3864,9 +3864,7 @@ celerpUpdateBulkAlloc();
             data = e.get("data") or {}
             raw_type = str(e.get("event_type") or "")
             detail = detail_from_entry(data, raw_type) if isinstance(data, dict) else ""
-            actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
-            actor_display = actor if (actor and not _is_uuid(actor)) else EMPTY
-            return Tr(event_cell, Td(ts_display), Td(actor_display), Td(detail or EMPTY))
+            return Tr(event_cell, Td(ts_display), Td(actor_label(e)), Td(detail or EMPTY))
         rows = [_row(e) for e in entries]
         footer = server_pager(
             offset, per_page, total,

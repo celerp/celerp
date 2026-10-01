@@ -36,8 +36,10 @@ from company_backup_support import (
     members,
     owner,
     read,
+    replayed,
     restore,
     rezip,
+    settle,
     sha256,
     snapshot,
     token,
@@ -194,25 +196,26 @@ async def _bk_seed_portable(engine, cid, marker: str) -> None:
 
 
 async def _bk_extra_ledger(engine, cid, n: int, marker: str) -> None:
-    """n more ledger events and projections for the company."""
+    """n more ledger events, and the records they produce, for the company."""
     async with engine.begin() as conn:
         for i in range(n):
             await conn.execute(text(
                 "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, idempotency_key) "
                 "VALUES (:c, :e, 'item', 'item.created', CAST(:d AS json), 'api', :k)"),
                 {"c": cid, "e": f"item:x{i}", "d": json.dumps({"name": f"{marker}-{i}"}), "k": f"k-{marker}-{i}"})
-            await conn.execute(text(
-                "INSERT INTO projections (company_id, entity_id, entity_type, state, version, updated_at) "
-                "VALUES (:c, :e, 'item', CAST(:d AS json), 1, now())"),
-                {"c": cid, "e": f"item:x{i}", "d": json.dumps({"name": f"{marker}-{i}"})})
+    await settle(engine, cid)
 
 
 async def _bk_point_at(engine, cid, url: str) -> None:
-    """Reference an attachment URL from the company's projection state and ledger data."""
-    await _bk_sql(engine, "UPDATE projections SET state = CAST(:d AS json) WHERE company_id = :c",
-                  c=cid, d=json.dumps({"name": "photo item", "attachments": [{"url": url, "name": "photo.png"}]}))
+    """Reference an attachment URL from the company's ledger data and so its record."""
+    await _bk_set_data(engine, cid, {"name": "photo item", "attachments": [{"url": url, "name": "photo.png"}]})
+
+
+async def _bk_set_data(engine, cid, data: dict) -> None:
+    """Replace the company's ledger event data and rebuild its record from it."""
     await _bk_sql(engine, "UPDATE ledger SET data = CAST(:d AS json) WHERE company_id = :c",
-                  c=cid, d=json.dumps({"name": "photo item", "attachments": [{"url": url}]}))
+                  c=cid, d=json.dumps(data))
+    await settle(engine, cid)
 
 
 def _bk_local_file(tmp_path, cid, name: str, body: bytes) -> str:
@@ -321,12 +324,19 @@ async def _bk_run(engine, user_id, cid, *, status: str = "completed", prepared_b
         return run.id
 
 
-async def _bk_normalized_rows(engine, table: str, cid) -> list[str]:
-    """The company's rows in a table with identity and installation-user columns removed and
-    every uuid replaced by a placeholder, sorted."""
+async def _bk_normalized_rows(engine, table: str, cid, *, attributed: bool = False) -> list[str]:
+    """The company's rows in a table with identity columns removed and every uuid replaced
+    by a placeholder, sorted. With ``attributed`` each ledger row is first given the form a
+    restore elsewhere keeps: no link to a user of this installation, and the author's name
+    with a one-way reference to their account in its metadata."""
+    actor = ("(to_jsonb(x) || jsonb_build_object('actor_id', NULL) || COALESCE((SELECT jsonb_build_object("
+             "'metadata', COALESCE(CAST(x.metadata AS jsonb), '{}'::jsonb) || jsonb_build_object("
+             "'backup_actor', jsonb_build_object('name', u.name, 'user_ref', "
+             "encode(sha256(convert_to('celerp-backup-actor:' || CAST(u.id AS text), 'UTF8')), 'hex')))) "
+             "FROM users u WHERE u.id = x.actor_id), '{}'::jsonb))") if attributed else "to_jsonb(x)"
     async with engine.connect() as conn:
         rows = (await conn.execute(text(
-            f"SELECT (to_jsonb(x) - 'id' - 'company_id' - 'actor_id')::text FROM \"{table}\" x "
+            f"SELECT ({actor} - 'id' - 'company_id')::text FROM \"{table}\" x "
             "WHERE company_id::text = :c"), {"c": str(cid)})).scalars().all()
     return sorted(_BK_UUID.sub("<id>", r) for r in rows)
 
@@ -1116,8 +1126,7 @@ async def test_attachments_processed_one_at_a_time(real_engine, real_client, tmp
     _, cid, tok = await _bk_setup(real_engine)
     bodies = {f"photo{i}.png": f"photo-body-{i}".encode() for i in range(3)}
     urls = [_bk_local_file(tmp_path, cid, name, body) for name, body in bodies.items()]
-    await _bk_sql(real_engine, "UPDATE projections SET state = CAST(:d AS json) WHERE company_id = :c",
-                  c=cid, d=json.dumps({"attachments": [{"url": u} for u in urls]}))
+    await _bk_set_data(real_engine, cid, {"attachments": [{"url": u} for u in urls]})
 
     events: list[tuple[str, str]] = []
     reading = {"now": 0, "max": 0}
@@ -1230,20 +1239,17 @@ async def test_attachment_urls_rewritten_exactly(real_engine, real_client, tmp_p
     _, cid, tok = await _bk_setup(real_engine)
     url = _bk_local_file(tmp_path, cid, "photo.png", b"alpha-photo")
     elsewhere = "/static/attachments/elsewhere/photo.png"
-    state = {"attachments": [{"url": url}], "gallery": [[url]], "note": "photo.png", "mirror": elsewhere}
-    await _bk_sql(real_engine, "UPDATE projections SET state = CAST(:d AS json) WHERE company_id = :c",
-                  c=cid, d=json.dumps(state))
-    await _bk_sql(real_engine, "UPDATE ledger SET data = CAST(:d AS json) WHERE company_id = :c",
-                  c=cid, d=json.dumps({"files": {"main": url}, "mirror": elsewhere}))
+    await _bk_set_data(real_engine, cid, {"attachments": [{"url": url}], "gallery": [[url]], "note": "photo.png",
+                                          "files": {"main": url}, "mirror": elsewhere})
     new = await _bk_restore_new(real_client, tok, await download(real_client, tok))
     new_url = f"/static/attachments/{new}/photo.png"
     restored = json.loads(await _bk_scalar(real_engine, "SELECT state::text FROM projections WHERE company_id = :c",
                                            c=uuid.UUID(new)))
-    assert restored == {"attachments": [{"url": new_url}], "gallery": [[new_url]], "note": "photo.png",
-                        "mirror": elsewhere}
     data = json.loads(await _bk_scalar(real_engine, "SELECT data::text FROM ledger WHERE company_id = :c",
                                        c=uuid.UUID(new)))
-    assert data == {"files": {"main": new_url}, "mirror": elsewhere}
+    assert data == {"attachments": [{"url": new_url}], "gallery": [[new_url]], "note": "photo.png",
+                    "files": {"main": new_url}, "mirror": elsewhere}
+    assert restored == replayed(data)
 
 
 @pytest.mark.parametrize("backend", ["local", "cloud"])
@@ -1660,7 +1666,7 @@ async def test_round_trip_every_portable_table(real_engine, real_client, tmp_pat
     new = await _bk_restore_new(real_client, tok, data)
     assert new != str(cid)
     for table in sorted(cb.PORTABLE_TABLES):
-        source = await _bk_normalized_rows(real_engine, table, cid)
+        source = await _bk_normalized_rows(real_engine, table, cid, attributed=table == "ledger")
         restored = await _bk_normalized_rows(real_engine, table, new)
         assert source, table
         assert restored == source, table
@@ -1697,15 +1703,12 @@ async def _r_location(engine, cid) -> str:
     return await _r_scalar(engine, "SELECT id::text FROM locations WHERE company_id = :c", c=cid)
 
 
-async def _r_set_json(engine, cid, *, state: dict | None = None, data: dict | None = None) -> None:
-    """Replace the company's projection state and/or ledger event data."""
+async def _r_set_data(engine, cid, data: dict) -> None:
+    """Replace the company's ledger event data and rebuild its record from it."""
     async with engine.begin() as conn:
-        if state is not None:
-            await conn.execute(text("UPDATE projections SET state = CAST(:d AS json) WHERE company_id = :c"),
-                               {"d": json.dumps(state), "c": cid})
-        if data is not None:
-            await conn.execute(text("UPDATE ledger SET data = CAST(:d AS json) WHERE company_id = :c"),
-                               {"d": json.dumps(data), "c": cid})
+        await conn.execute(text("UPDATE ledger SET data = CAST(:d AS json) WHERE company_id = :c"),
+                           {"d": json.dumps(data), "c": cid})
+    await settle(engine, cid)
 
 
 async def _r_rows(engine, table: str, cid) -> list[dict]:
@@ -1856,7 +1859,7 @@ async def _r_cloud_files(engine, cloud: _RCloud, cid) -> dict[str, bytes]:
     """Two cloud-stored attachments referenced by the company's projection."""
     files = {cloud.url(cid, "photo.png"): b"alpha-photo", cloud.url(cid, "scan.png"): b"alpha-scan"}
     cloud.files.update(files)
-    await _r_set_json(engine, cid, state={
+    await _r_set_data(engine, cid, {
         "name": _R_MARKER,
         "attachments": [{"url": url, "name": url.rsplit("/", 1)[1], "mime": "image/png"} for url in files]})
     return files
@@ -2228,7 +2231,7 @@ async def test_exact_value_id_remap(real_engine, real_client, tmp_path, monkeypa
         await conn.execute(text("INSERT INTO work_centers (id, company_id, name, wip_location_id, is_default, created_at) "
                                 "VALUES (:i, :c, 'Bench', :l, false, now())"), {"i": wc, "c": cid, "l": loc})
     nested = {"name": _R_MARKER, "location_id": loc, "lines": [{"location_id": loc}, loc], "work_center": wc}
-    await _r_set_json(real_engine, cid, state=nested, data=nested)
+    await _r_set_data(real_engine, cid, nested)
     data = await download(real_client, tok)
     body = _r_created(await restore(real_client, tok, data))
     new = uuid.UUID(body["company_id"])
@@ -2239,7 +2242,7 @@ async def test_exact_value_id_remap(real_engine, real_client, tmp_path, monkeypa
                 "work_center": new_wc["id"]}
     (proj,) = await _r_rows(real_engine, "projections", new)
     (event,) = await _r_rows(real_engine, "ledger", new)
-    assert proj["state"] == expected and event["data"] == expected
+    assert proj["state"] == replayed(expected) and event["data"] == expected
     assert proj["location_id"] == new_loc and event["location_id"] == new_loc
 
     source_ids = {str(cid), loc, wc}
@@ -2261,14 +2264,14 @@ async def test_uuid_substrings_in_text_not_remapped(real_engine, real_client, tm
     _, cid, tok = await _r_source(real_engine)
     loc = await _r_location(real_engine, cid)
     note = f"see order {loc} and http://x/{loc}"
-    await _r_set_json(real_engine, cid, state={"name": _R_MARKER, "location_id": loc, "note": note},
-                      data={"name": _R_MARKER, "memo": note})
+    await _r_set_data(real_engine, cid, {"name": _R_MARKER, "location_id": loc, "note": note, "memo": note})
     data = await download(real_client, tok)
     body = _r_created(await restore(real_client, tok, data))
     new = uuid.UUID(body["company_id"])
     (proj,) = await _r_rows(real_engine, "projections", new)
     (event,) = await _r_rows(real_engine, "ledger", new)
-    assert proj["state"]["note"] == note and event["data"]["memo"] == note
+    assert proj["state"] == replayed(event["data"])
+    assert event["data"]["note"] == note and event["data"]["memo"] == note
     assert proj["state"]["location_id"] == await _r_location(real_engine, new)
 
 
@@ -2277,14 +2280,14 @@ async def test_installation_independent_reference_permitted(real_engine, real_cl
     _r_env(tmp_path, monkeypatch)
     _, cid, tok = await _r_source(real_engine)
     external = str(uuid.uuid4())
-    await _r_set_json(real_engine, cid, state={"name": _R_MARKER, "external_ref": external},
-                      data={"name": _R_MARKER, "payment_ref": external})
+    await _r_set_data(real_engine, cid, {"name": _R_MARKER, "external_ref": external, "payment_ref": external})
     data = await download(real_client, tok)
     body = _r_created(await restore(real_client, tok, data))
     new = uuid.UUID(body["company_id"])
     (proj,) = await _r_rows(real_engine, "projections", new)
     (event,) = await _r_rows(real_engine, "ledger", new)
-    assert proj["state"]["external_ref"] == external and event["data"]["payment_ref"] == external
+    assert proj["state"] == replayed(event["data"])
+    assert event["data"]["external_ref"] == external and event["data"]["payment_ref"] == external
 
 
 async def test_cross_company_reference_refused(real_engine, real_client, tmp_path, monkeypatch):
@@ -2352,11 +2355,13 @@ async def test_unresolved_reference_refused_before_writes(real_engine, real_clie
 
 
 async def test_installation_user_references_policy(real_engine, real_client, tmp_path, monkeypatch):
-    """Columns naming installation users, such as ledger.actor_id, are empty in the restored company."""
+    """Columns naming installation users, such as ledger.actor_id, are empty in a company
+    restored from another company's backup. (A Settings restore of the same company links
+    history back to its exact authors: test_same_company_restore_relinks_exact_authors.)"""
     _r_env(tmp_path, monkeypatch)
     user, cid, tok = await _r_source(real_engine)
     data = await download(real_client, tok)
-    body = _r_created(await restore(real_client, tok, data))
+    body = _r_created(await restore(real_client, tok, data, mode="new_company"))
     new = uuid.UUID(body["company_id"])
     (event,) = await _r_rows(real_engine, "ledger", new)
     assert event["actor_id"] is None
@@ -2385,6 +2390,7 @@ async def test_ledger_generated_ids_policy(real_engine, real_client, tmp_path, m
                 "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, idempotency_key) "
                 "VALUES (:c, :e, 'item', 'item.created', CAST(:d AS json), 'api', :k)"),
                 {"c": cid, "e": f"item:{n + 2}", "d": json.dumps({"name": _R_MARKER}), "k": f"extra-{n}"})
+    await settle(real_engine, cid)
     data = await download(real_client, tok)
     body = _r_created(await restore(real_client, tok, data))
     new = uuid.UUID(body["company_id"])
@@ -2476,7 +2482,7 @@ async def test_database_rollback_on_verification_failure(real_engine, real_clien
     folder = tmp_path / "static" / "attachments" / str(cid)
     folder.mkdir(parents=True)
     (folder / "photo.png").write_bytes(b"alpha-photo")
-    await _r_set_json(real_engine, cid, state={
+    await _r_set_data(real_engine, cid, {
         "name": _R_MARKER, "attachments": [{"url": f"/static/attachments/{cid}/photo.png", "mime": "image/png"}]})
     data = await download(real_client, tok)
     before = await snapshot(real_engine)
@@ -2749,8 +2755,7 @@ async def test_attachment_named_before_type_extensions_round_trips(real_engine, 
     _, cid, tok = await _bk_setup(real_engine)
     url = _bk_local_file(tmp_path, cid, "scan.html", b"png-bytes")
     state = {"attachments": [{"url": url, "mime": "image/png", "filename": "scan.html"}]}
-    await _bk_sql(real_engine, "UPDATE projections SET state = CAST(:d AS json) WHERE company_id = :c",
-                  c=cid, d=json.dumps(state))
+    await _bk_set_data(real_engine, cid, state)
     data = await download(real_client, tok)
     [entry] = manifest(data)["attachments"]
     assert (entry["url"], entry["name"]) == (url, "scan.png")
@@ -2763,8 +2768,7 @@ async def test_attachment_named_before_type_extensions_round_trips(real_engine, 
     assert restored["attachments"][0]["url"] == f"/static/attachments/{new}/scan.png"
 
     state["attachments"][0]["mime"] = "text/html"
-    await _bk_sql(real_engine, "UPDATE projections SET state = CAST(:d AS json) WHERE company_id = :c",
-                  c=cid, d=json.dumps(state))
+    await _bk_set_data(real_engine, cid, state)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
     assert "a type Celerp does not store" in r.json()["detail"] and r.json()["detail"].endswith("Nothing was backed up.")

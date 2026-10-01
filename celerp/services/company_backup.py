@@ -41,6 +41,7 @@ import zipfile
 import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Context, Decimal
 from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
@@ -145,7 +146,10 @@ UNSUPPORTED = "This company has data Celerp cannot back up yet." + _NOT_BACKED_U
 UNSAVABLE = "This company backup has records this Celerp cannot save." + _NOT_RESTORED
 ATTACHMENT_FAILED = "Celerp could not save an attachment file from this backup." + _NOT_RESTORED
 ATTACHMENT_TYPE = "This company backup has an attachment file of a type Celerp does not store: {name}." + _NOT_RESTORED
-MISMATCH = "The restored company did not match the backup ({table})." + _NOT_RESTORED
+MISMATCH = "The restored company did not match the backup." + _NOT_RESTORED
+DISAGREE = "This backup contains business records that do not agree with each other." + _NOT_RESTORED
+CHANGED_COPY = ("This backup was already restored here, but this file holds different records under the same"
+                " backup. Use the original file or make a new backup." + _NOT_RESTORED)
 FOREIGN = "This company backup refers to records of another company." + _NOT_RESTORED
 ALREADY_SET_UP = "This Celerp is already set up." + _NOT_RESTORED
 NOT_A_MEMBER = ("This backup was already restored here as a company you are not a member of."
@@ -480,8 +484,32 @@ def _dump_rows(rows: list[dict]) -> str:
     return _NUMBER.sub(r"\1", json.dumps(rows))
 
 
+def _number(spelled: str) -> str:
+    """A number by its exact value, whatever its spelling: 0.00, 0.0 and 0 are one value."""
+    value = Decimal(spelled)
+    if not value:
+        return "\x000"
+    return "\x00" + str(value.normalize(Context(prec=max(len(value.as_tuple().digits), 1))))
+
+
+def _canonical(value):
+    """A parsed row with every number in one exact spelling (_number), for comparing
+    records by value rather than by how their numbers were written."""
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        return _number(str(value))
+    if isinstance(value, str):
+        return _number(value[1:-1]) if len(value) > 1 and value[0] == value[-1] == "\x00" else value
+    if isinstance(value, dict):
+        return {k: _canonical(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_canonical(v) for v in value]
+    return value
+
+
 def _row_digest(row: dict) -> int:
-    return int(hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest(), 16)
+    return int(hashlib.sha256(json.dumps(_canonical(row), sort_keys=True).encode()).hexdigest(), 16)
 
 
 def _has_nul(value) -> bool:
@@ -589,6 +617,18 @@ def _module_versions(names: set[str]) -> dict[str, str]:
     return versions
 
 
+# Who made each change travels as a label in the event's metadata: the person's name, and
+# a one-way reference to their account that only recognises them when the backup returns
+# to the installation it came from. User accounts and their ids never travel, so the
+# event's own link to its author is cleared on export.
+_USER_REF = "encode(sha256(convert_to('celerp-backup-actor:' || CAST(u.id AS text), 'UTF8')), 'hex')"
+_ACTOR_LABEL = (
+    "COALESCE((SELECT jsonb_build_object('metadata', COALESCE(CAST(t.metadata AS jsonb), '{}'::jsonb) "
+    f"|| jsonb_build_object('backup_actor', jsonb_build_object('name', u.name, 'user_ref', {_USER_REF}))) "
+    "FROM users u WHERE u.id = t.actor_id "
+    "AND jsonb_typeof(COALESCE(CAST(t.metadata AS jsonb), '{}'::jsonb)) = 'object'), '{}'::jsonb)")
+
+
 async def export_company_snapshot(company_id, out: Path, *, provenance: dict | None = None) -> dict:
     """Write a backup of one company to ``out``; returns its manifest.
 
@@ -645,6 +685,8 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
             for name in tables:
                 table = plan.schema[name]
                 expr = _without([c for c, col in table.columns.items() if col.generated])
+                if name == "ledger":
+                    expr = f"({expr} || {_ACTOR_LABEL})"
                 for cols in plan.outside_fks(name):
                     expr = f"({expr} || jsonb_build_object({', '.join(f'{_literal(c)}, NULL' for c in cols)}))"
                 digest, rows = hashlib.sha256(), 0
@@ -699,9 +741,11 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
 
 @dataclass(frozen=True)
 class BackupFile:
-    """A backup file whose manifest and every member have been checked."""
+    """A backup file whose manifest and every member have been checked, with the SHA-256
+    of the whole file."""
     path: Path
     manifest: dict
+    sha256: str
 
     def summary(self) -> dict:
         m = self.manifest
@@ -864,7 +908,11 @@ def read_backup(path: Path) -> BackupFile:
     except (zipfile.BadZipFile, zipfile.LargeZipFile, zlib.error, OSError, EOFError, ValueError, KeyError,
             RuntimeError, NotImplementedError):
         raise BackupError(422, DAMAGED) from None
-    return BackupFile(path=path, manifest=manifest)
+    whole = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(_CHUNK):
+            whole.update(chunk)
+    return BackupFile(path=path, manifest=manifest, sha256=whole.hexdigest())
 
 
 # ── Checking a backup against this installation ──────────────────────────────
@@ -1101,11 +1149,19 @@ def _restored_as(backup_id: str):
             .order_by(Company.is_active.desc(), Company.created_at, Company.id).limit(1))
 
 
-async def _bootstrap_existing(session: AsyncSession, backup_id: str,
+def _same_file(backup: BackupFile, restored: Company | None) -> None:
+    """Refuse a file that claims to be a backup already restored here but holds different
+    bytes. A company restored before its file's hash was kept is not compared."""
+    kept = ((restored.settings or {}).get("restored_backup") or {}).get("sha256") if restored is not None else None
+    if kept is not None and kept != backup.sha256:
+        raise BackupError(409, CHANGED_COPY)
+
+
+async def _bootstrap_existing(session: AsyncSession, backup: BackupFile,
                               owner_account: dict) -> tuple[Company, User] | None:
     """The company a bootstrap restore of this backup already created, with its owner, when
     the same account repeats it; refused for anyone else or when that company is deactivated."""
-    company = await session.scalar(_restored_as(backup_id))
+    company = await session.scalar(_restored_as(backup.manifest["backup_id"]))
     if company is None:
         return None
     user = await session.scalar(select(User).where(User.email == owner_account["email"]).limit(1))
@@ -1113,6 +1169,7 @@ async def _bootstrap_existing(session: AsyncSession, backup_id: str,
             or not verify_password(owner_account["password"], user.auth_hash)
             or not await _is_member(session, user.id, company.id)):
         raise BackupError(409, ALREADY_SET_UP)
+    _same_file(backup, company)
     return company, user
 
 
@@ -1147,10 +1204,10 @@ class RestorePlan:
                 "destination_policy": self.destination_policy, "plan_fingerprint": self.fingerprint}
 
 
-def _planned(backup_id: str, mode: str, action: str, destination: Company | None = None, *,
+def _planned(backup: BackupFile, mode: str, action: str, destination: Company | None = None, *,
              team: tuple[tuple[str, str], ...] = (), blocked: int = 0, carry: bool = False,
              grants: dict | None = None) -> RestorePlan:
-    facts = {"backup_id": backup_id, "mode": mode, "action": action,
+    facts = {"backup_id": backup.manifest["backup_id"], "file_sha256": backup.sha256, "mode": mode, "action": action,
              "destination_id": str(destination.id) if destination is not None else None,
              "team": [list(m) for m in team], "blocked": blocked, "carry": carry,
              "policy": "source" if carry else "destination", "grants": grants if carry else None}
@@ -1174,6 +1231,11 @@ async def _missing_team(session: AsyncSession, source: str, user_id: uuid.UUID,
     return tuple((uid, role) for uid, role in rows.all())
 
 
+def _same_lineage(mode: str, current_company_id, source: str) -> bool:
+    """A Settings restore of a backup of the company the caller is working in."""
+    return mode == "settings" and current_company_id is not None and str(current_company_id) == source
+
+
 async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, current_company_id, *,
                 lock: bool) -> tuple[RestorePlan, Company | None]:
     """The plan and the destination company. With ``lock`` the source and destination
@@ -1183,15 +1245,16 @@ async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, c
     m = backup.manifest
     backup_id, source = m["backup_id"], m["company"]["id"]
     me = uuid.UUID(str(user_id))
-    same_lineage = mode == "settings" and current_company_id is not None and str(current_company_id) == source
+    same_lineage = _same_lineage(mode, current_company_id, source)
     found = await session.scalar(_restored_as(backup_id))
+    _same_file(backup, found)
     if lock:
         for cid in sorted({*([source] if same_lineage else []), *([str(found.id)] if found is not None else [])}):
             await lock_company(session, uuid.UUID(cid))
     if found is None:
         team = await _missing_team(session, source, me, None) if same_lineage else ()
         grants = await _source_grants(session, source) if same_lineage else None
-        return _planned(backup_id, mode, CREATE, team=team, carry=same_lineage, grants=grants), None
+        return _planned(backup, mode, CREATE, team=team, carry=same_lineage, grants=grants), None
     destination = await locked_company(session, found.id) if lock else found
     membership = select(UserCompany.role, UserCompany.is_active).where(
         UserCompany.user_id == me, UserCompany.company_id == destination.id)
@@ -1199,19 +1262,19 @@ async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, c
     role = row.role if row is not None and row.is_active else None
     if not destination.is_active:
         if role == "owner":
-            return _planned(backup_id, mode, OFFER_REACTIVATE, destination), destination
-        return _planned(backup_id, mode, REFUSE), None
+            return _planned(backup, mode, OFFER_REACTIVATE, destination), destination
+        return _planned(backup, mode, REFUSE), None
     if role is None:
-        return _planned(backup_id, mode, REFUSE), None
+        return _planned(backup, mode, REFUSE), None
     missing = await _missing_team(session, source, me, destination.id) if same_lineage else ()
     if not missing:
-        return _planned(backup_id, mode, RETURN_EXISTING, destination), destination
+        return _planned(backup, mode, RETURN_EXISTING, destination), destination
     if role != "owner":
-        return _planned(backup_id, mode, RETURN_EXISTING, destination, blocked=len(missing)), destination
+        return _planned(backup, mode, RETURN_EXISTING, destination, blocked=len(missing)), destination
     settings = destination.settings or {}
     carry = not (settings.get("restored_backup") or {}).get("team_policy_carried") and not settings.get("role_grants")
     grants = await _source_grants(session, source) if carry else None
-    return _planned(backup_id, mode, ADD_TEAM, destination, team=missing, carry=carry, grants=grants), destination
+    return _planned(backup, mode, ADD_TEAM, destination, team=missing, carry=carry, grants=grants), destination
 
 
 async def plan_existing_restore(session: AsyncSession, backup: BackupFile, mode: str, user_id,
@@ -1279,7 +1342,42 @@ async def _verify(session: AsyncSession, checked: _Checked, manifest: dict, comp
                 total += _row_digest(remap(_parse_row(line), back))
             rows += len(batch)
         if rows != meta["rows"] or total % (1 << 256) != checked.digests[name]:
-            raise BackupError(422, MISMATCH.format(table=name))
+            logger.warning("Company restore refused: %s did not read back as the backup holds it", name)
+            raise BackupError(422, MISMATCH)
+
+
+async def _projection_states(session: AsyncSession, company_id) -> dict[str, tuple[str, object]]:
+    rows = await session.execute(text(
+        "SELECT entity_id, entity_type, state::text FROM projections WHERE company_id = :c"), {"c": company_id})
+    return {eid: (etype, _canonical(_parse_row(state))) for eid, etype, state in rows.all()}
+
+
+async def _check_replay(session: AsyncSession, company_id) -> None:
+    """Replay the restored ledger with the running modules and refuse the restore unless it
+    produces exactly the records the backup holds. The replay itself is undone, so the
+    restored records keep their own times and versions."""
+    from celerp.projections.engine import ProjectionEngine
+    restored = await _projection_states(session, company_id)
+    savepoint = await session.begin_nested()
+    try:
+        await ProjectionEngine.rebuild(session, company_id)
+        await session.flush()
+        replayed = await _projection_states(session, company_id)
+    finally:
+        await savepoint.rollback()
+    if replayed != restored:
+        differ = sorted(k for k in restored.keys() | replayed.keys() if restored.get(k) != replayed.get(k))
+        logger.warning("Company restore refused: %d records do not agree with the ledger (first: %s)",
+                       len(differ), differ[0])
+        raise BackupError(422, DISAGREE)
+
+
+async def _rebind_actors(session: AsyncSession, company_id) -> None:
+    """Point restored history back at the people who made it, where each is the exact user
+    of this installation the backup's reference names."""
+    await session.execute(text(
+        "UPDATE ledger l SET actor_id = u.id FROM users u WHERE l.company_id = :c AND l.actor_id IS NULL "
+        f"AND CAST(l.metadata AS jsonb) -> 'backup_actor' ->> 'user_ref' = {_USER_REF}"), {"c": company_id})
 
 
 async def _apply_existing(session: AsyncSession, plan: RestorePlan, destination: Company, source: str) -> int:
@@ -1343,8 +1441,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             checked = await check_backup(session, backup)
             await _lock(session, backup_id, bootstrapping=mode == "bootstrap")
             if mode == "bootstrap":
-                plan = _planned(backup_id, mode, CREATE)
-                found = await _bootstrap_existing(session, backup_id, owner_account)
+                plan = _planned(backup, mode, CREATE)
+                found = await _bootstrap_existing(session, backup, owner_account)
                 if found is not None:
                     company, user = found
                     result = RestoreResult(company_id=str(company.id), company_name=company.name, created=False,
@@ -1393,7 +1491,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 settings = remap(_kept_settings(m["company"]["settings"]), id_map)
                 settings = set_enabled(settings, get_enabled(settings) | set(m["modules"]["enabled"]))
                 settings["restored_backup"] = {
-                    "backup_id": backup_id, "created_at": m["created_at"],
+                    "backup_id": backup_id, "sha256": backup.sha256, "created_at": m["created_at"],
                     "source_company_name": m["company"]["name"],
                     "restored_at": datetime.now(timezone.utc).isoformat(),
                     **({"provenance": m["provenance"]} if m.get("provenance") else {}),
@@ -1410,6 +1508,9 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 except DBAPIError:
                     raise BackupError(422, UNSAVABLE) from None
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
+            await _check_replay(session, new_id)
+            if _same_lineage(mode, current_company_id, source):
+                await _rebind_actors(session, new_id)
             await _turn_off_shop_sync(session, new_id, user.id)
             team = await _add_team(session, new_id, plan.team_to_add) if plan.team_to_add else 0
             await session.commit()

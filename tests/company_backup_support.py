@@ -13,6 +13,8 @@ import zipfile
 
 from sqlalchemy import text
 
+from celerp.projections.engine import ProjectionEngine
+
 from migration_support import OWNER_EMAIL, auth, maker
 from test_helpers import make_authed_token
 
@@ -33,8 +35,8 @@ async def owner(engine, email: str = OWNER_EMAIL, name: str = "Owner"):
 
 
 async def company(engine, user_id, name: str, marker: str, *, settings: dict | None = None):
-    """A company owned by ``user_id`` with one location, one ledger event and one projection
-    carrying ``marker``."""
+    """A company owned by ``user_id`` with one location, one ledger event and the record it
+    produces, carrying ``marker``."""
     from celerp.models.company import User
     from celerp.services.provisioning import provision_migration_company
     async with maker(engine)() as s:
@@ -51,12 +53,21 @@ async def company(engine, user_id, name: str, marker: str, *, settings: dict | N
             "source, idempotency_key) VALUES (:c, 'item:1', 'item', 'item.created', CAST(:d AS json), :u, :l, 'api', :k)"),
             {"c": cid, "d": json.dumps({"name": marker, "location_id": str(loc)}), "u": user_id, "l": loc,
              "k": f"k-{marker}"})
-        await s.execute(text(
-            "INSERT INTO projections (company_id, entity_id, entity_type, state, version, location_id, updated_at) "
-            "VALUES (:c, 'item:1', 'item', CAST(:d AS json), 1, :l, now())"),
-            {"c": cid, "d": json.dumps({"name": marker, "location_id": str(loc)}), "l": loc})
+        await ProjectionEngine.rebuild(s, cid)
         await s.commit()
         return cid
+
+
+async def settle(engine, company_id) -> None:
+    """Rebuild the company's records from its ledger, as Celerp keeps them."""
+    async with maker(engine)() as s:
+        await ProjectionEngine.rebuild(s, company_id)
+        await s.commit()
+
+
+def replayed(data: dict, event_type: str = "item.created") -> dict:
+    """The record one event with ``data`` produces."""
+    return ProjectionEngine._apply({}, event_type, data)
 
 
 async def member(engine, user_id, company_id, role: str = "viewer", *, active: bool = True):

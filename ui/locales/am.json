@@ -1774,6 +1774,7 @@
   "activity.change.fulfilled_items": "የተፈጸሙ ዕቃዎች ተዘምነዋል",
   "activity.change.taxes": "ግብሮች ተዘምነዋል",
   "activity.change.addresses": "አድራሻ ተዘምኗል",
+  "activity.actor_historical": "{name} (ከመጠባበቂያ)",
   "activity.change.payments": "ክፍያዎች ተዘምነዋል",
   "activity.change.tc_items": "T&C ንጥሎች ተዘምነዋል",
   "activity.change.attributes": "ባህሪያት ተዘምነዋል",

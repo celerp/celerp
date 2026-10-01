@@ -1673,6 +1673,7 @@
   "activity.change.fulfilled_items": "出荷済み商品の更新",
   "activity.change.taxes": "税金が更新されました",
   "activity.change.addresses": "住所が更新されました",
+  "activity.actor_historical": "{name}（バックアップから）",
   "activity.change.payments": "支払いが更新されました",
   "activity.change.tc_items": "利用規約項目が更新されました",
   "activity.change.attributes": "属性が更新されました",

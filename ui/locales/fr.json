@@ -1674,6 +1674,7 @@
   "activity.change.fulfilled_items": "Articles livrés mis à jour",
   "activity.change.taxes": "Taxes mises à jour",
   "activity.change.addresses": "Adresse mise à jour",
+  "activity.actor_historical": "{name} (d'une sauvegarde)",
   "activity.change.payments": "Paiements mis à jour",
   "activity.change.tc_items": "Articles des CGV mis à jour",
   "activity.change.attributes": "Attributs mis à jour",

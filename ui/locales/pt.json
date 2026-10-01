@@ -1673,6 +1673,7 @@
   "activity.change.fulfilled_items": "Itens processados atualizados",
   "activity.change.taxes": "Impostos atualizados",
   "activity.change.addresses": "Endereço atualizado",
+  "activity.actor_historical": "{name} (de um backup)",
   "activity.change.payments": "Pagamentos atualizados",
   "activity.change.tc_items": "Itens dos Termos e Condições atualizados",
   "activity.change.attributes": "Atributos atualizados",

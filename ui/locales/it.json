@@ -1674,6 +1674,7 @@
   "activity.change.fulfilled_items": "Articoli evasi aggiornati",
   "activity.change.taxes": "Imposte aggiornate",
   "activity.change.addresses": "Indirizzo aggiornato",
+  "activity.actor_historical": "{name} (da un backup)",
   "activity.change.payments": "Pagamenti aggiornati",
   "activity.change.tc_items": "Articoli con Termini e condizioni aggiornati",
   "activity.change.attributes": "Attributi aggiornati",

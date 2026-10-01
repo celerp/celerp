@@ -794,6 +794,15 @@ def _is_uuid(s: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", s, re.I))
 
 
+def actor_label(e: dict) -> str:
+    """Who made a change, for display: a name, a name carried in from a company backup
+    marked as such, or "--" when there is none to show."""
+    actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
+    if not actor or _is_uuid(actor):
+        return "--"
+    return t("activity.actor_historical", name=actor) if e.get("actor_historical") else actor
+
+
 def _item_link(entity_id, label: str, anchor=None) -> FT:
     """A linked SKU chip pointing at an item detail page, optionally anchored to a history row."""
     url = entity_url(str(entity_id or ""))
@@ -1004,8 +1013,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
 
     def _assemble(e: dict, content, detail: str, suffix: str, *, blank_detail: bool = False) -> FT:
         when_cell = Td(format_timestamp(str(e.get("ts") or "")) or EMPTY)
-        actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
-        user_cell = Td(actor if (actor and not _is_uuid(actor)) else EMPTY)
+        user_cell = Td(actor_label(e))
         if blank_detail:
             detail_cell = Td("")
         else:

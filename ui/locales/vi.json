@@ -1673,6 +1673,7 @@
   "activity.change.fulfilled_items": "Các mặt hàng đã xuất được cập nhật",
   "activity.change.taxes": "Thuế đã cập nhật",
   "activity.change.addresses": "Địa chỉ đã cập nhật",
+  "activity.actor_historical": "{name} (từ bản sao lưu)",
   "activity.change.payments": "Thanh toán đã cập nhật",
   "activity.change.tc_items": "Các mục Điều khoản và Điều kiện đã được cập nhật",
   "activity.change.attributes": "Các thuộc tính đã được cập nhật",

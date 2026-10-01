@@ -1673,6 +1673,7 @@
   "activity.change.fulfilled_items": "تم تحديث العناصر المُنفَّذة",
   "activity.change.taxes": "تم تحديث الضرائب",
   "activity.change.addresses": "تم تحديث العنوان",
+  "activity.actor_historical": "{name} (من نسخة احتياطية)",
   "activity.change.payments": "تم تحديث المدفوعات",
   "activity.change.tc_items": "تم تحديث بنود الشروط والأحكام",
   "activity.change.attributes": "تم تحديث السمات",

@@ -1793,6 +1793,7 @@
   "activity.change.fulfilled_items": "Fulfilled items updated",
   "activity.change.taxes": "Taxes updated",
   "activity.change.addresses": "Address updated",
+  "activity.actor_historical": "{name} (from a backup)",
   "activity.change.payments": "Payments updated",
   "activity.change.tc_items": "T&C items updated",
   "activity.change.attributes": "Attributes updated",
