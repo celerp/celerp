@@ -260,6 +260,12 @@ async def emit_event(
     # Enforce period lock
     await _check_period_lock(session, kwargs.get("company_id"), kwargs.get("data", {}))
 
+    # Every journal line, whoever produced it, passes the one account boundary.
+    if kwargs["event_type"] == "acc.journal_entry.created":
+        from celerp.services.journal_accounts import prepare_journal_entry
+
+        await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"])
+
     # Enforce physical-item uniqueness on new OUTBOUND doc writes (invoice, memo).
     # Extract the post-change line set by DATA SHAPE so every doc writer (create,
     # patch, shared_import, update, conversion, import) is covered by one rule,

@@ -978,6 +978,11 @@ class JELine(BaseModel):
     # posted amounts are the only ones such a line carries.
     fx_currency: str | None = None
     fx_rate: float | None = None
+    # The posting roles the line served when it was written, set once by the
+    # journal boundary and never rewritten: what a line meant does not change when
+    # a role later points at another account. Absent on lines posted before roles
+    # existed; an empty list is a line deliberately left unclassified.
+    account_roles: list[str] | None = None
 
 
 class AccJournalEntryFx(BaseModel):

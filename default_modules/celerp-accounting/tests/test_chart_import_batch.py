@@ -44,6 +44,17 @@ async def _chart(client, h) -> dict[str, dict]:
     return {a["code"]: a for a in r.json()["items"]}
 
 
+async def _legacy_account(client, session, h, code, parent_code) -> None:
+    """A row from before parents were checked, which the chart can still hold."""
+    from celerp_accounting.models import Account
+
+    r = await client.get("/companies/me", headers=h)
+    assert r.status_code == 200, r.text
+    session.add(Account(id=uuid.uuid4(), company_id=uuid.UUID(r.json()["id"]), code=code,
+                        name=f"Legacy {code}", account_type="asset", parent_code=parent_code))
+    await session.commit()
+
+
 async def _import(client, h, records, **body):
     return await client.post(PATH, headers=h, json={"records": records, **body})
 
@@ -337,12 +348,10 @@ async def test_chart_import_cycle_is_invalid(client):
 
 
 @pytest.mark.asyncio
-async def test_chart_import_cycle_through_existing_account_is_invalid(client):
+async def test_chart_import_cycle_through_existing_account_is_invalid(client, session):
     h = await _reg(client)
     # An account already in the chart whose parent code names nothing yet.
-    r = await client.post("/accounting/accounts", headers=h, json={
-        "code": "8950", "name": "Existing", "account_type": "asset", "parent_code": "8960"})
-    assert r.status_code == 200, r.text
+    await _legacy_account(client, session, h, "8950", "8960")
     r = await _import(client, h, [_row("8960", "Closes The Loop", parent_code="8950")])
     body = r.json()
     assert body["created"] == 0
@@ -351,12 +360,10 @@ async def test_chart_import_cycle_through_existing_account_is_invalid(client):
 
 
 @pytest.mark.asyncio
-async def test_chart_import_row_under_a_loop_already_in_the_chart_is_invalid(client):
+async def test_chart_import_row_under_a_loop_already_in_the_chart_is_invalid(client, session):
     h = await _reg(client)
     # An account already in the chart that is its own parent.
-    r = await client.post("/accounting/accounts", headers=h, json={
-        "code": "8955", "name": "Own Parent", "account_type": "asset", "parent_code": "8955"})
-    assert r.status_code == 200, r.text
+    await _legacy_account(client, session, h, "8955", "8955")
     r = await _import(client, h, [
         _row("8956", "Under The Loop", parent_code="8955"),
         _row("8957", "Under That", parent_code="8956"),

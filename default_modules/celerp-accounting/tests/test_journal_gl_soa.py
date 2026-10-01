@@ -1445,9 +1445,23 @@ async def test_general_ledger_rejects_a_contact_filter_that_matches_no_contact(c
 # Account codes with no chart entry
 # ---------------------------------------------------------------------------
 
+async def _remove_account(client, session, tok, code) -> None:
+    """Leave ``code`` posted but with no chart entry, as books written before every
+    journal line was checked against the chart can be. Writers now refuse a code
+    the chart does not hold, so a test posts to a real account and then removes it."""
+    from sqlalchemy import delete
+
+    from celerp_accounting.models import Account
+
+    r = await client.get("/companies/me", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    await session.execute(delete(Account).where(
+        Account.company_id == uuid.UUID(r.json()["id"]), Account.code == code))
+    await session.commit()
+
+
 async def _import_je(client, tok, entries, ts="2026-01-10", fx=None):
-    """Post straight to the projection, the only way a code with no chart entry
-    gets a posted line (manual entry refuses an account that does not exist).
+    """Post straight to the projection.
 
     `fx` writes the entry-level shape used before currency moved to the line,
     which is the only way to produce one now that the writer is gone.
@@ -1465,14 +1479,18 @@ async def _import_je(client, tok, entries, ts="2026-01-10", fx=None):
 
 
 @pytest.mark.asyncio
-async def test_ledger_opens_a_posted_code_that_has_no_account_row(client):
+async def test_ledger_opens_a_posted_code_that_has_no_account_row(client, session):
     """The general ledger lists such a code, so its drilldown must open. The
     type is reported as unknown rather than guessed."""
     tok = await _reg(client)
+    r = await client.post("/accounting/accounts", headers=_h(tok), json={
+        "code": "9999", "name": "Removed", "account_type": "expense"})
+    assert r.status_code == 200, r.text
     await _import_je(client, tok, [
         {"account": "9999", "debit": 70.0, "credit": 0},
         {"account": "3200", "debit": 0, "credit": 70.0},
     ])
+    await _remove_account(client, session, tok, "9999")
 
     led = await _ledger(client, tok, "9999")
     assert led["account_type"] == "unknown"
@@ -1480,7 +1498,7 @@ async def test_ledger_opens_a_posted_code_that_has_no_account_row(client):
 
 
 @pytest.mark.asyncio
-async def test_ledger_and_general_ledger_agree_on_the_normal_side(client):
+async def test_ledger_and_general_ledger_agree_on_the_normal_side(client, session):
     """One debit-normal rule for both endpoints: a drilldown can never
     contradict the sign of the report row it was opened from.
 
@@ -1491,10 +1509,14 @@ async def test_ledger_and_general_ledger_agree_on_the_normal_side(client):
     r = await client.post("/accounting/accounts", headers=_h(tok), json={
         "code": "9100", "name": "Suspense", "account_type": "other"})
     assert r.status_code == 200, r.text
+    r = await client.post("/accounting/accounts", headers=_h(tok), json={
+        "code": "9999", "name": "Removed", "account_type": "expense"})
+    assert r.status_code == 200, r.text
     await _import_je(client, tok, [
         {"account": "9100", "debit": 0, "credit": 40.0},
         {"account": "9999", "debit": 40.0, "credit": 0},
     ])
+    await _remove_account(client, session, tok, "9999")
 
     _, rows = await _gl_rows(client, tok)
     for code in ("9100", "9999"):

@@ -39,8 +39,9 @@ async def auth(session, ids):
     session.add(User(id=uid, email=f"admin-{cid.hex[:8]}@test.co", name="Admin", auth_hash="x", is_active=True))
     await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
+    from test_helpers import make_authed_token, provision_company_books
+    await provision_company_books(session, cid)
     await session.commit()
-    from test_helpers import make_authed_token
     token = await make_authed_token(session, str(uid), str(cid), "admin")
     return {"headers": {"Authorization": f"Bearer {token}"}, "company_id": cid, "user_id": uid}
 

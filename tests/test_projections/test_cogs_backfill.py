@@ -19,6 +19,8 @@ from celerp.models.projections import Projection
 from celerp.services.auto_je import compute_doc_cogs
 from celerp.services.cogs_backfill import COGS_BACKFILL_KEY, run_cogs_backfill
 
+from test_helpers import provision_company_books
+
 
 async def _clear_marker(session) -> None:
     """The backfill is once-per-database: any app boot against this DB sets the
@@ -38,6 +40,7 @@ async def _seed_company(session, name: str = "CogsCo") -> uuid.UUID:
     company_id = uuid.uuid4()
     session.add(Company(id=company_id, name=name, slug=f"cogs-{company_id.hex[:8]}"))
     await session.flush()
+    await provision_company_books(session, company_id)
     return company_id
 
 
@@ -168,9 +171,9 @@ async def test_backfill_posts_cogs_for_unfulfilled_invoice(session):
     assert backfill["status"] == "posted"
     assert backfill["ts"] == "2024-03-02", "ts must copy the finalize JE's ts"
     assert backfill["memo"] == f"Auto JE for {doc_id} COGS backfill"
-    assert backfill["entries"] == [
-        {"account": "5100", "debit": expected, "credit": 0.0},
-        {"account": "1130-P", "debit": 0.0, "credit": expected},
+    assert [(e["account"], e["debit"], e["credit"]) for e in backfill["entries"]] == [
+        ("5100", expected, 0.0),
+        ("1130-P", 0.0, expected),
     ]
     assert _posted_5100_debits(jes) == [expected]
     assert await _marker_value(session) == "done"

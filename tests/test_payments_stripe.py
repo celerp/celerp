@@ -216,6 +216,9 @@ async def test_backup_push_uses_company_deposit_account(client, session, payment
     tok = await _register(client)
     eid, token = await _payable_invoice(client, tok)
     cid = _company_id(tok)
+    r = await client.post("/accounting/accounts", headers={"Authorization": f"Bearer {tok}"}, json={
+        "code": "1055", "name": "Stripe balance", "account_type": "asset", "parent_code": "1110"})
+    assert r.status_code == 200, r.text
     company = await locked_company(session, cid)
     company.settings = {**(company.settings or {}), "stripe_deposit_account": "1055"}
     await session.commit()

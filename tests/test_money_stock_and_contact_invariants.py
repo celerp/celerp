@@ -17,7 +17,7 @@ from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
-from test_helpers import make_authed_token, perm_setup
+from test_helpers import make_authed_token, perm_setup, provision_company_books
 
 
 async def _auth_company(session, currency: str = "USD") -> dict:
@@ -26,6 +26,7 @@ async def _auth_company(session, currency: str = "USD") -> dict:
     session.add(User(id=uid, email=f"inv-{uid.hex[:8]}@example.test", name="Admin", auth_hash="x", is_active=True))
     await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
+    await provision_company_books(session, cid)
     await session.commit()
     token = await make_authed_token(session, str(uid), str(cid), "admin")
     return {"company_id": cid, "user_id": uid, "headers": {"Authorization": f"Bearer {token}"}}
@@ -139,9 +140,9 @@ async def _seed_user(factory) -> uuid.UUID:
 
 
 async def _seed_chart(factory, company_id) -> None:
-    from celerp_accounting.routes import seed_chart_of_accounts
+    from celerp_accounting.routes import seed_chart_of_accounts_hook
     async with factory() as s:
-        await seed_chart_of_accounts(s, company_id)
+        await seed_chart_of_accounts_hook(session=s, company_id=company_id)
         await s.commit()
 
 
@@ -184,10 +185,11 @@ async def _seed_audit(factory, company_id, list_id: str, item_id: str, *,
 
 
 async def _cleanup(factory, company_id, user_id) -> None:
-    from celerp_accounting.models import Account
+    from celerp_accounting.models import Account, BankAccount
     async with factory() as s:
         await s.execute(delete(Projection).where(Projection.company_id == company_id))
         await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
+        await s.execute(delete(BankAccount).where(BankAccount.company_id == company_id))
         await s.execute(delete(Account).where(Account.company_id == company_id))
         await s.execute(delete(Company).where(Company.id == company_id))
         await s.execute(delete(User).where(User.id == user_id))

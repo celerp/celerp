@@ -24,6 +24,7 @@ from celerp.events.engine import emit_event, write_period_lock
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting import import_service
+from celerp_accounting.chart_rules import change_account, parent_problem
 from celerp_accounting.import_service import AccImportRecord
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
@@ -367,16 +368,17 @@ class ChartImportPlan:
     errors: list[str]
 
 
-def plan_chart_import(records: list[Any], existing: dict[str, str | None]) -> ChartImportPlan:
+def plan_chart_import(records: list[Any], existing: dict[str, dict]) -> ChartImportPlan:
     """Decide every row of a chart import against the chart it will produce.
 
-    ``existing`` maps each code already in the chart to its parent code. A row
+    ``existing`` maps each code already in the chart to its row (parent_code,
+    account_type, is_active). A row
     whose code is already there is kept as it is and listed once, whatever else
     the row says. A new row is added only if its fields are valid and its parent
     is in the chart or is another row being added, so the order of rows in the
     file never matters. A parent that is nowhere, or that could not be added
-    itself, makes the row invalid, and so does a chain of parents that runs into
-    a loop.
+    itself, makes the row invalid, and so does a parent that is inactive or of a
+    type the row cannot sit under, and a chain of parents that runs into a loop.
     """
     row_errors: dict[int, str] = {}
     skipped_codes: list[str] = []
@@ -428,14 +430,24 @@ def plan_chart_import(records: list[Any], existing: dict[str, str | None]) -> Ch
         bad: dict[int, str] = {}
         for i, row in valid.items():
             parent = row["parent_code"]
-            if parent is None or parent in existing or parent in adding:
+            if parent is None:
+                continue
+            if parent in existing or parent in adding:
+                problem = parent_problem(
+                    row["account_type"], existing.get(parent) or valid[adding[parent]], parent,
+                )
+                if problem:
+                    bad[i] = f"{label(i, row['code'])}: {problem}"
                 continue
             if parent in in_file:
                 bad[i] = f"{label(i, row['code'])}: its parent {parent} in this file could not be added."
             else:
                 bad[i] = f"{label(i, row['code'])}: its parent {parent} is not in the chart or in this file."
         if not bad:
-            parents = {**existing, **{row["code"]: row["parent_code"] for row in valid.values()}}
+            parents = {
+                **{code: acc["parent_code"] for code, acc in existing.items()},
+                **{row["code"]: row["parent_code"] for row in valid.values()},
+            }
             for i, row in valid.items():
                 chain = [row["code"]]
                 seen = {row["code"]}
@@ -537,25 +549,17 @@ async def patch_account(
     company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    acc = (
-        await session.execute(
-            select(Account).where(Account.company_id == company_id, Account.code == code)
-        )
-    ).scalar_one_or_none()
-    if not acc:
-        raise HTTPException(status_code=404, detail="Account not found")
-
-    if payload.name is not None:
-        acc.name = _checked_account_name(payload.name)
-    if payload.account_type is not None:
-        acc.account_type = _checked_account_type(payload.account_type)
-    if payload.parent_code is not None:
-        acc.parent_code = _checked_parent_code(payload.parent_code)
-    if payload.is_active is not None:
-        acc.is_active = payload.is_active
-    if payload.cash_flow_category is not None:
-        acc.cash_flow_category = _checked_cash_flow_category(payload.cash_flow_category)
-
+    acc = await change_account(
+        session, company_id, code,
+        name=None if payload.name is None else _checked_account_name(payload.name),
+        account_type=None if payload.account_type is None else _checked_account_type(payload.account_type),
+        parent_code=... if payload.parent_code is None else _checked_parent_code(payload.parent_code),
+        is_active=payload.is_active,
+        cash_flow_category=(
+            ... if payload.cash_flow_category is None
+            else _checked_cash_flow_category(payload.cash_flow_category)
+        ),
+    )
     await session.commit()
     return _account_to_dict(acc)
 
@@ -576,9 +580,11 @@ async def _planned_chart_import(
             status_code=422,
             detail=f"A chart file can hold up to {_CHART_IMPORT_MAX} accounts; this one has {len(body.records)}.",
         )
-    existing = dict((await session.execute(
-        select(Account.code, Account.parent_code).where(Account.company_id == company_id)
-    )).all())
+    rows = (await session.execute(select(Account).where(Account.company_id == company_id))).scalars()
+    existing = {
+        a.code: {"parent_code": a.parent_code, "account_type": a.account_type, "is_active": a.is_active}
+        for a in rows
+    }
     return plan_chart_import(body.records, existing)
 
 
@@ -2489,6 +2495,7 @@ async def create_bank_account(
     bank = await import_service.add_bank_account(
         session, company_id,
         code=code,
+        parent_code=_CASH_PARENT,
         account_name=f"{payload.bank_name} ({payload.bank_type.replace('_', ' ').title()})",
         bank_name=payload.bank_name,
         account_number=payload.account_number,

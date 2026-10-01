@@ -284,8 +284,9 @@ async def auth(session, _setup_ids):
     session.add(User(id=uid, email="admin@test.co", name="Admin", auth_hash="x", is_active=True))
     await session.flush()  # parents before membership for Postgres FK checks
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
+    from test_helpers import make_authed_token, provision_company_books
+    await provision_company_books(session, cid)
     await session.commit()
-    from test_helpers import make_authed_token
     token = await make_authed_token(session, str(uid), str(cid), "admin")
     return {
         "headers": {"Authorization": f"Bearer {token}"},

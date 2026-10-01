@@ -25,6 +25,8 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 import celerp.connectors.upsert as u
 
+from test_helpers import provision_company_books
+
 
 async def _seed_company(session, name: str) -> uuid.UUID:
     cid = uuid.uuid4()
@@ -42,6 +44,7 @@ async def _seed_company(session, name: str) -> uuid.UUID:
         user_id=uid, company_id=cid, role="owner", is_active=True,
     ))
     await session.flush()
+    await provision_company_books(session, cid)
     return cid
 
 
@@ -1435,6 +1438,10 @@ async def test_woocommerce_payment_books_to_the_chosen_deposit_account(use_test_
     company's online-payments default, else Cash."""
     session = use_test_session
     cid = await _seed_company(session, "WooDeposit")
+    if expected == "1055":
+        from celerp_accounting.models import Account
+        session.add(Account(company_id=cid, code="1055", name="Stripe balance",
+                            account_type="asset", parent_code="1110"))
     company = await locked_company(session, cid)
     company.settings = {**(company.settings or {}), **settings}
     await session.flush()

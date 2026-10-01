@@ -73,6 +73,16 @@ async def make_authed_token(session, user_id: str, company_id: str, role: str) -
     return token
 
 
+async def provision_company_books(session, company_id) -> None:
+    """Give a company created directly in a test what provisioning gives every new
+    company: each module's starter data, including the chart of accounts and its
+    posting accounts. Tests that post to the ledger need it."""
+    from celerp.modules import slots
+
+    await slots.fire_lifecycle("on_company_created", session=session, company_id=company_id)
+    await session.flush()
+
+
 async def ensure_user(session, user_id) -> None:
     """Insert a minimal users row if absent.
 

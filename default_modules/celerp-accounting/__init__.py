@@ -20,6 +20,8 @@ PLUGIN_MANIFEST = {
             {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "label": "Reconcile", "label_key": "nav.reconcile", "order": 52, "permission": "manage_accounting"},
         ],
         "on_company_created": {"handler": "celerp_accounting.routes:seed_chart_of_accounts_hook"},
+        # The chart as the core journal boundary sees it (celerp.services.journal_accounts).
+        "journal_accounts": {"handler": "celerp_accounting.chart_rules:lock_accounts"},
         "on_modules_ready": {"handler": "celerp_accounting.routes:backfill_chart_of_accounts_hook"},
         "projection_handler": [
             {"prefix": "account.", "handler": "celerp_accounting.projections:apply_accounting_event"},

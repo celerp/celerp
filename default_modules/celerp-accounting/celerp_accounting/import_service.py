@@ -22,6 +22,7 @@ from celerp.importers.results import ImportOutcome
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp_accounting.models import Account, BankAccount
+from celerp_accounting.chart_rules import check_new_account
 
 JOURNAL_CREATED = "acc.journal_entry.created"
 
@@ -139,12 +140,14 @@ async def create_chart_account(
     cash_flow_category: str | None = None,
     is_active: bool = True,
 ) -> Account:
-    """Add one chart-of-accounts row; an account code already in use is refused."""
+    """Add one chart-of-accounts row; an account code already in use is refused, and
+    so is a parent the new account cannot sit under."""
     existing = (await session.execute(
         select(Account.id).where(Account.company_id == company_id, Account.code == code)
     )).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail=f"Account code {code} already exists")
+    await check_new_account(session, company_id, account_type=account_type, parent_code=parent_code)
     acc = Account(
         id=uuid.uuid4(),
         company_id=company_id,
@@ -182,6 +185,7 @@ async def add_bank_account(
     company_id: uuid.UUID,
     *,
     code: str,
+    parent_code: str | None,
     account_name: str,
     bank_name: str,
     account_number: str,
@@ -189,13 +193,13 @@ async def add_bank_account(
     currency: str,
     opening_balance: float,
 ) -> BankAccount:
-    """A bank account and, when its chart code is new, its chart row under 1110."""
+    """A bank account and, when its chart code is new, its chart row under ``parent_code``."""
     existing_acc = (await session.execute(
         select(Account.id).where(Account.company_id == company_id, Account.code == code)
     )).scalar_one_or_none()
     if not existing_acc:
         await create_chart_account(
-            session, company_id, code=code, name=account_name, account_type="asset", parent_code="1110",
+            session, company_id, code=code, name=account_name, account_type="asset", parent_code=parent_code,
         )
     bank = BankAccount(
         id=uuid.uuid4(),

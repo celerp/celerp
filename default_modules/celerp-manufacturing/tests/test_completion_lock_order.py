@@ -45,6 +45,8 @@ from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
+from celerp_accounting.models import Account, BankAccount
+from celerp_accounting.routes import seed_chart_of_accounts_hook
 from celerp_inventory.services import lock_item_code_namespace
 
 
@@ -72,6 +74,8 @@ async def _cleanup(factory, company_id, user_id) -> None:
     async with factory() as s:
         await s.execute(delete(Projection).where(Projection.company_id == company_id))
         await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
+        await s.execute(delete(BankAccount).where(BankAccount.company_id == company_id))
+        await s.execute(delete(Account).where(Account.company_id == company_id))
         await s.execute(delete(Company).where(Company.id == company_id))
         await s.execute(delete(User).where(User.id == user_id))
         await s.commit()
@@ -83,6 +87,8 @@ async def _seed_company(factory) -> tuple[uuid.UUID, uuid.UUID, types.SimpleName
         s.add(Company(id=company_id, name="Lockrace Co", slug=f"lockrace-{company_id.hex[:8]}"))
         s.add(User(id=user_id, email=f"race-{user_id.hex[:8]}@lockrace.test", name="Race User",
                    auth_hash="x"))
+        await s.flush()
+        await seed_chart_of_accounts_hook(session=s, company_id=company_id)
         await s.commit()
     # A bare .id accessor is all production code reads off `user` on these paths (actor_id on
     # emitted events); the FK target is the committed row above.
