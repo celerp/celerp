@@ -297,15 +297,16 @@ class DrainMiddleware:
         await self.app(scope, receive, send)
 
 
-# The anonymous liveness and readiness probes, matched exactly: the only routes an
-# unfinished System Recovery still serves. Never a prefix, so no authenticated or
-# state-reading route under /health or /__celerp/ gets through.
-_RECOVERY_PROBES = frozenset({"/health", "/health/ready", "/__celerp/health", "/__celerp/ready"})
+# The anonymous liveness probes, matched exactly: the only routes an unfinished
+# System Recovery still serves. Readiness is refused until the recovery converges,
+# so nothing routes traffic to an installation that answers only 503s. Never a
+# prefix, so no authenticated or state-reading route under /health or /__celerp/
+# gets through.
+_RECOVERY_PROBES = frozenset({"/health", "/__celerp/health"})
 
 
 class RecoveryMaintenanceMiddleware:
-    """Serve nothing but the liveness and readiness probes while a System Recovery
-    is unfinished.
+    """Serve nothing but the liveness probes while a System Recovery is unfinished.
 
     Until the recovery finishes or is undone, the database, files and modules may
     not agree, and no session from before the replacement may be honoured.
