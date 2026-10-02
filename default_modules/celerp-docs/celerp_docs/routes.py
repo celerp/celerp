@@ -2658,7 +2658,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     if doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
         raise HTTPException(status_code=409, detail="Cannot record payment in current status")
     # Replay guard for referenced (online) payments: the same Stripe intent
-    # arriving twice (return leg + webhook push) records exactly once.
+    # delivered twice records exactly once.
     reference = body.get("reference")
     # Deleted tombstones do not hold the reference: deleting a mistaken
     # payment frees its charge to be re-recorded, as removal always did.

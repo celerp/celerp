@@ -330,8 +330,8 @@ async def test_online_payment_posts_exactly_one_journal_entry(client, session, p
 @pytest.mark.asyncio
 async def test_manual_payment_racing_online_confirm(client, session, payments_on):
     """A manual payment lands while the customer is at Stripe checkout. The online
-    confirm then arrives holding a STALE snapshot (as both the return leg and the
-    gateway push do) and a charge larger than what is still owed.
+    delivery then arrives holding a STALE snapshot and a charge larger than what is
+    still owed.
 
     The invoice refuses the charge whole, against what it owes under its row lock:
     nothing is clamped onto it and the manual payment stands alone (the intake then
@@ -344,7 +344,7 @@ async def test_manual_payment_racing_online_confirm(client, session, payments_on
     eid, token = await _payable_invoice(client, tok)
     cid = _company_id(tok)
 
-    # Snapshot BEFORE the manual payment: this is what the confirm leg holds.
+    # Snapshot BEFORE the manual payment: this is what the delivery holds.
     stale = dict((await session.get(Projection, (cid, eid))).state)
 
     r = await client.post(f"/docs/{eid}/payment", json={
@@ -355,7 +355,7 @@ async def test_manual_payment_racing_online_confirm(client, session, payments_on
     with pytest.raises(HTTPException) as refused:
         await record_stripe_payment(session, cid, eid, stale,
                                     reference="pi_race", amount_minor=107000, currency="usd",
-                                paid_at=PAID, context=BOOKS)
+                                    paid_at=PAID, context=BOOKS)
     assert refused.value.status_code == 409
     assert "exceeds amount outstanding" in refused.value.detail
     await session.rollback()
@@ -366,8 +366,8 @@ async def test_manual_payment_racing_online_confirm(client, session, payments_on
 
 
 @pytest.mark.asyncio
-async def test_stale_replay_after_return_recorded_is_noop(client, session, payments_on):
-    """Gateway push arrives with a snapshot older than the return leg's record:
+async def test_stale_repeated_delivery_is_noop(client, session, payments_on):
+    """A repeated delivery arrives with a snapshot older than the first one's record:
     the fresh re-read inside the lock sees the reference and quietly no-ops."""
     from celerp.models.projections import Projection
     from celerp_docs.routes_payments import record_stripe_payment
