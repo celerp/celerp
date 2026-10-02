@@ -1251,10 +1251,14 @@ async def _restore_losing_a_payment(tmp_path, monkeypatch, engine, client, paid_
 
 
 async def _add_account(engine, cid, code: str) -> None:
-    from celerp_accounting.models import Account
+    """A bank account online payments can be deposited to, with its chart account."""
+    from celerp_accounting.models import Account, BankAccount
     async with maker(engine)() as s:
         s.add(Account(id=uuid.uuid4(), company_id=cid, code=code, name="Online payments clearing",
                       account_type="asset", parent_code="1110"))
+        s.add(BankAccount(id=uuid.uuid4(), company_id=cid, chart_account_code=code,
+                          bank_name="Online payments clearing", account_number="", bank_type="checking",
+                          currency="USD", opening_balance=0.0))
         await s.commit()
 
 

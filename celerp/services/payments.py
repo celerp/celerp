@@ -12,10 +12,12 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import func, select
 
 from celerp.models.payment_closure import PaymentClosure, PaymentRecovery, UnmatchedPayment
+from celerp.services.money import round_money, to_decimal
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +56,55 @@ async def _cloud_post(path: str, payload: dict) -> dict | None:
     return await _cloud_request("POST", path, payload)
 
 
+# ── Stripe amount units ──────────────────────────────────────────────────────
+# Stripe's own unit rules (docs.stripe.com/currencies), which are not the books'
+# precision (money.currency_dp): IDR is kept in whole rupiah but charged in
+# hundredths. Every amount sent to or received from Stripe crosses here.
+
+_STRIPE_ZERO_DECIMAL = frozenset(
+    "BIF CLP DJF GNF JPY KMF KRW MGA PYG RWF VND VUV XAF XOF XPF".split())
+_STRIPE_THREE_DECIMAL = frozenset("BHD JOD KWD OMR TND".split())  # last digit always 0
+_STRIPE_WHOLE_UNITS = frozenset({"ISK", "UGX"})  # two decimals in the API, always 00
+
+
+def _stripe_exponent(currency: str) -> int:
+    code = currency.upper()
+    if code in _STRIPE_ZERO_DECIMAL:
+        return 0
+    return 3 if code in _STRIPE_THREE_DECIMAL else 2
+
+
+def stripe_amount(api_amount: int, currency: str) -> Decimal:
+    """*api_amount*, an integer amount in Stripe's units, as an amount of *currency*."""
+    return Decimal(api_amount).scaleb(-_stripe_exponent(currency))
+
+
+def to_stripe_amount(amount, currency: str) -> int:
+    """*amount* of *currency* as the integer Stripe charges. ValueError, never rounding,
+    when the books and Stripe cannot both hold it exactly: not positive, finer than the
+    books keep *currency* or than Stripe charges it, a fraction of an ISK or UGX, or a
+    three-decimal amount not ending in 0."""
+    value = to_decimal(amount)
+    scaled = value.scaleb(_stripe_exponent(currency))
+    code = currency.upper()
+    if (value <= 0 or value != round_money(value, code) or scaled != scaled.to_integral_value()
+            or (code in _STRIPE_WHOLE_UNITS and value != value.to_integral_value())
+            or (code in _STRIPE_THREE_DECIMAL and scaled % 10)):
+        raise ValueError(f"{value} {code} cannot be paid online: Stripe cannot charge that amount exactly")
+    return int(scaled)
+
+
+def from_stripe_amount(api_amount: int, currency: str) -> Decimal:
+    """*api_amount*, as Stripe reports a charge, as an amount of *currency*: the exact
+    inverse of ``to_stripe_amount``, and ValueError for any integer it would not produce."""
+    value = stripe_amount(api_amount, currency)
+    try:
+        to_stripe_amount(value, currency)
+    except ValueError as exc:
+        raise ValueError(f"{api_amount} is not an exact Stripe amount of {currency.upper()}") from exc
+    return value
+
+
 # ── Payment (customer-facing, via the hosted invoice view) ───────────────────
 
 PAUSED = "Online payment is paused while recent payments are checked. Please try again shortly."
@@ -90,7 +141,7 @@ async def create_checkout(*, amount_minor: int, currency: str, description: str,
 
     Returns {"url": <stripe checkout url>} (redirect the customer there), or None on
     failure. Raises CheckoutPaused when Cloud holds new payments for a restore.
-    `amount_minor` is the balance due in minor units.
+    `amount_minor` is the balance due in Stripe's units (``to_stripe_amount``).
     """
     from celerp.config import settings
     if settings.cloud_disconnected:

@@ -28,7 +28,7 @@ from celerp.services import payments as pay
 from celerp.services.auth import get_current_user, require_install_owner
 from celerp.services.business_time import business_date_at, business_timezone
 from celerp.services.doc_balance import outstanding_balance
-from celerp.services.money import books_currency, checked_exchange_rate, currency_dp, require_doc_rate, to_minor_units
+from celerp.services.money import books_currency, checked_exchange_rate, require_doc_rate
 from celerp.services.permissions import require_permission
 
 log = logging.getLogger(__name__)
@@ -58,10 +58,10 @@ async def _doc_for_token(session: AsyncSession, token: str):
     return share.company_id, share.entity_id, dict(row.state)
 
 
-def _outstanding(state: dict) -> float:
+def _outstanding(state: dict) -> Decimal:
     """What the document still owes (``outstanding_balance``); 0, so not payable, when the
     recorded balance is not a number."""
-    return float(outstanding_balance(state) or 0)
+    return outstanding_balance(state) or Decimal(0)
 
 
 async def _company_owner_id(session: AsyncSession, company_id):
@@ -86,6 +86,23 @@ async def deposit_account(
     )
 
 
+async def require_online_deposit_account(session: AsyncSession, company_id, code: str) -> None:
+    """422 unless online payments may be deposited to *code*: Cash (the default) or one
+    of the company's active bank accounts. The bank account is read FOR SHARE, so it
+    cannot be deactivated while a payment posts to it."""
+    from celerp_accounting.models import Account, BankAccount
+    if code == DEFAULT_DEPOSIT_ACCOUNT:
+        found = select(Account.id).where(Account.company_id == company_id, Account.code == code)
+    else:
+        found = (select(BankAccount.id).where(
+            BankAccount.company_id == company_id, BankAccount.chart_account_code == code,
+            BankAccount.is_active.is_(True)).with_for_update(read=True))
+    if (await session.execute(found)).first() is None:
+        raise HTTPException(status_code=422, detail=(
+            f"Online payments can be deposited only to Cash ({DEFAULT_DEPOSIT_ACCOUNT}) or an active "
+            f"bank account; '{code}' is neither"))
+
+
 _BOOKS = ("deposit_account", "timezone", "base_currency", "rate")
 
 
@@ -104,21 +121,17 @@ async def payment_books(session: AsyncSession, company_id, state: dict) -> dict:
 
 async def _checked_books(session: AsyncSession, company_id, books) -> tuple[str, str, str, Decimal]:
     """(deposit account, timezone, base currency, rate) from the books a payment page
-    opened with, or 422 when they are missing, unusable, or name a deposit account
-    the company no longer has. Whether they still describe the company's ledger is
-    judged when the payment is recorded, under the document's lock (apply_doc_payment)."""
-    from celerp_accounting.models import Account
+    opened with, or 422 when they are missing or unusable. Whether they still describe
+    the company's ledger, and whether the deposit account may still take online
+    payments, is judged when the payment is recorded, under the document's lock
+    (apply_doc_payment)."""
     if not (isinstance(books, dict) and all(isinstance(books.get(k), str) and books[k] for k in _BOOKS)):
         raise HTTPException(status_code=422, detail="The payment carries no books to record it on")
     try:
         timezone, rate = business_timezone(books["timezone"]).key, checked_exchange_rate(books["rate"])
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    account = books["deposit_account"]
-    if (await session.execute(select(Account.id).where(
-            Account.company_id == company_id, Account.code == account))).scalar_one_or_none() is None:
-        raise HTTPException(status_code=422, detail=f"Account '{account}' is not in the chart of accounts")
-    return account, timezone, books["base_currency"].upper(), rate
+    return books["deposit_account"], timezone, books["base_currency"].upper(), rate
 
 
 async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
@@ -143,9 +156,12 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     account, timezone, base, rate = await _checked_books(session, company_id, context)
     if paid_at is None:
         raise HTTPException(status_code=422, detail="The payment carries no time it was paid")
-    amount = amount_minor / (10 ** currency_dp(currency))
+    try:
+        amount = pay.from_stripe_amount(amount_minor, currency)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     from celerp_docs.routes import apply_doc_payment
-    body = {"amount": amount, "payment_date": business_date_at(paid_at, timezone),
+    body = {"amount": float(amount), "payment_date": business_date_at(paid_at, timezone),
             "currency": currency.upper(), "bank_account": account, "conversion_rate": float(rate),
             "method": "stripe", "reference": reference}
     try:
@@ -166,6 +182,9 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
 
 # ── Public: pay, and the customer's return ───────────────────────────────────
 
+_NOT_SET_UP = "Online payment is not set up for this invoice. Please contact the business that sent it."
+
+
 @public_router.get("/pay/{token}")
 async def start_payment(token: str, session: AsyncSession = Depends(get_session)):
     company_id, entity_id, state = await _doc_for_token(session, token)
@@ -182,8 +201,17 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
     except ValueError:
         raise HTTPException(status_code=409, detail="This document is not payable")
     try:
+        amount = pay.to_stripe_amount(_outstanding(state), currency)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    try:
+        await require_online_deposit_account(session, company_id, books["deposit_account"])
+    except HTTPException as exc:
+        log.warning("Online payment refused for %s: %s", entity_id, exc.detail)
+        raise HTTPException(status_code=409, detail=_NOT_SET_UP) from exc
+    try:
         result = await pay.create_checkout(
-            amount_minor=to_minor_units(_outstanding(state), currency), currency=currency,
+            amount_minor=amount, currency=currency,
             description=f"Invoice {ref}",
             company_id=str(company_id), entity_id=entity_id, share_token=token,
             generation=await pay.checkout_generation(), context=books,
@@ -239,7 +267,7 @@ async def payments_unmatched(session: AsyncSession = Depends(get_session)) -> di
     """Online payments received for a company or invoice that no longer exists, or
     that the invoice refused, newest first."""
     return {"items": [{
-        "reference": p.reference, "amount": p.amount_minor / 10 ** currency_dp(p.currency),
+        "reference": p.reference, "amount": float(pay.stripe_amount(p.amount_minor, p.currency)),
         "currency": p.currency, "company_id": p.former_company, "document_id": p.document,
         "received_at": p.received_at.isoformat(),
         "paid_at": p.paid_at.isoformat() if p.paid_at else None,

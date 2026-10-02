@@ -2719,6 +2719,8 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     # than 1 restates the receipt: 100 banked as 3500. Refused before the
     # event is written, the same way finalization refuses it on the document.
     if books is not None:
+        from celerp_docs.routes_payments import require_online_deposit_account
+        await require_online_deposit_account(session, company_id, bank_code)
         _base_currency, _document_rate = await _books_still_kept(session, company_id, doc_state, books)
     else:
         _company = await session.get(Company, company_id)
