@@ -224,7 +224,7 @@ async def test_full_online_payment_journey(client, session, payments_on, monkeyp
     Chains every hop of the real flow: send email (Pay leads with the amount
     due) -> share page carries the pay bar -> /pay creates the checkout with
     the exact balance in minor units and the books it is recorded on -> the
-    return leg records nothing -> Celerp Cloud's delivery records the payment ->
+    return from Stripe records nothing -> Celerp Cloud's delivery records the payment ->
     status paid, journal entry posted, pay bar gone, /pay refuses further
     charges -> a repeated return or delivery records nothing."""
     import asyncio as _asyncio
