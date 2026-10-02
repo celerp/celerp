@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: BUSL-1.1
 """Removing items without a trace: deleting a draft that was a mistake, undoing an
 import, clearing sample items nobody used.
 

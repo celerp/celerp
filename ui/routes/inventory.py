@@ -27,7 +27,7 @@ from ui.components.table import fmt_money, data_table, search_bar, pagination, E
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from celerp.services.cost_visibility import COST_ITEM_KEYS
-from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, cost_columns
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, SYSTEM_ITEM_KEYS, cost_columns
 from celerp.services.field_schema import union_category_attr_keys as _union_category_attr_keys
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, is_price_item_key, price_key, price_lists_in, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
@@ -1176,7 +1176,8 @@ async def _import_export_allowed(request: Request, token: str) -> bool:
 def _duplicate_payload(source: dict, new_sku: str, *, can_set_prices: bool) -> dict:
     """Build a create payload from an existing item, carrying every field except
     id, status, location_name, created_at, updated_at (status is reset by the create
-    path) and barcode. Barcode is globally unique, so a copy never inherits the
+    path), barcode and the fields only the app sets (SYSTEM_ITEM_KEYS: a copy starts
+    with no files, lineage, documents or inventory account of its own). Barcode is globally unique, so a copy never inherits the
     source's: auto_barcode tells the create path to mint a fresh unique one from the
     shared sequence (the same reset a split child gets). Core columns and any *_price
     stay top-level; everything else goes into attributes. Without set_inventory_prices
@@ -1184,7 +1185,7 @@ def _duplicate_payload(source: dict, new_sku: str, *, can_set_prices: bool) -> d
     because the copy is a draft its creator may still cost. Shared by the single-item
     and bulk duplicate paths."""
     _SKIP = {"id", "status", "location_name", "created_at", "updated_at", "barcode",
-             "idempotency_key", "external_links", "_channel_state"}
+             "idempotency_key", "external_links", "_channel_state"} | SYSTEM_ITEM_KEYS
     _CORE = {"sku", "name", "quantity", "category", "location_id",
              "description", "unit", "sell_by", "tax_codes"}
     payload: dict = {"sku": new_sku, "auto_barcode": True}

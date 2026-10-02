@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,7 +42,7 @@ from celerp.services.company_lock import holds_company_lock, lock_company, lock_
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.lot_origin import recognize_opening_lots
 from celerp.importers.tabular import CsvImportSpec, cell_error_code, finite_float
-from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
+from celerp.services.field_schema import AMOUNT_ITEM_KEYS, reject_system_item_fields
 from celerp.services.money import to_stored_float, unit_price_from_total
 from celerp.services.permissions import role_has_permission
 from celerp.services.vertical_presets import category_item_defaults
@@ -3066,12 +3067,10 @@ async def write_import_batch(
         idem_key = rec.idempotency_key
         primary = existing.get(idem_key)
 
-        managed = sorted(SYSTEM_ITEM_KEYS & set(data))
-        if managed:
-            outcome.add(entity_id, "rejected",
-                f"Row (SKU={data.get('sku', '?')}): {managed} cannot be imported; "
-                "remove these columns and import again"
-            )
+        try:
+            reject_system_item_fields(data)
+        except HTTPException as exc:
+            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {exc.detail}")
             continue
 
         if event_type == "item.patched":

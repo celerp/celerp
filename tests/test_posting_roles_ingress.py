@@ -401,3 +401,63 @@ async def test_the_first_import_takes_off_exactly_the_sample_value_and_books_its
     assert await _sample_value(session, owner["company_id"]) == 0
     assert await assert_books_carry_stock(session, owner["company_id"]) == {"1130-P": 0, "1130-OB": 150}
     assert await _account_net(session, owner["company_id"], _RE) == -150.0
+
+
+# --- What the system records about a lot is never entered -------------------------------
+
+_FORGED = {_FIELD: "1130-P"}
+
+
+@pytest.mark.parametrize("status", ["draft", "available"])
+async def test_an_item_cannot_be_created_with_an_inventory_account(session, client, auth, status):
+    before = await _events(session, auth["company_id"])
+    r = await _create(client, auth, cost_total=200.0, status=status, **_FORGED)
+    assert r.status_code == 422 and _FIELD in r.text, r.text
+    await session.rollback()
+    assert await _events(session, auth["company_id"]) == before
+    assert await _opening_entries(session, auth["company_id"]) == []
+
+
+@pytest.mark.parametrize("event_type", ["item.created", "item.snapshot"])
+async def test_a_raw_import_cannot_carry_an_inventory_account(session, client, auth, event_type):
+    record = _raw_record(event_type, 50.0)
+    record["data"].update(_FORGED)
+    r = await _raw(client, auth, record)
+    assert r.status_code == 200 and r.json()["created"] == 0, r.text
+    assert _FIELD in r.text, r.text
+    assert await _items_by_sku(session, auth["company_id"], record["data"]["sku"]) == []
+    assert await _opening_entries(session, auth["company_id"]) == []
+
+
+async def test_an_import_row_cannot_carry_an_inventory_account(session, client, auth):
+    r = await _import_rows(client, auth, [{**_row("FORGED-R", 50.0), **_FORGED}])
+    assert r.status_code == 422 and _FIELD in r.text, r.text
+    assert await _items_by_sku(session, auth["company_id"], "FORGED-R") == []
+    assert await _opening_entries(session, auth["company_id"]) == []
+
+
+async def test_an_edit_cannot_set_an_inventory_account(session, client, auth):
+    item = (await _create(client, auth, cost_total=200.0, status="available")).json()["id"]
+    before = await _events(session, auth["company_id"])
+    for change in ({_FIELD: {"old": "1130-OB", "new": "1130-P"}},
+                   {"attributes": {"old": {}, "new": _FORGED}}):
+        r = await client.patch(f"/items/{item}", headers=auth["headers"], json={"fields_changed": change})
+        assert r.status_code == 422 and _FIELD in r.text, r.text
+    await session.rollback()
+    assert await _events(session, auth["company_id"]) == before
+    assert (await _state(session, auth, item))[_FIELD] == "1130-OB"
+
+
+async def test_a_duplicated_item_starts_with_none_of_the_original_s_system_fields(session, client, auth):
+    """Duplicate copies what a user entered; the copy is a new draft with no account,
+    files or document links of its own, and the create accepts it."""
+    from ui.routes.inventory import _duplicate_payload
+
+    item = (await _create(client, auth, cost_total=200.0, status="available")).json()["id"]
+    source = (await client.get(f"/items/{item}", headers=auth["headers"])).json()
+    r = await client.post("/items", headers=auth["headers"],
+                          json=_duplicate_payload(source, "DUP-1", can_set_prices=True))
+    assert r.status_code == 200, r.text
+    copy = await _state(session, auth, r.json()["id"])
+    assert copy["status"] == "draft" and copy.get("cost_total") == 200.0
+    assert _FIELD not in copy and _FIELD not in (copy.get("attributes") or {})

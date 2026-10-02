@@ -59,7 +59,7 @@ from celerp.services.business_time import business_date_at
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility, restricted_field_keys
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.demo import demo_item_ids
-from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS, DEFAULT_ITEM_SCHEMA, NUMERIC_SCHEMA_TYPES
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS, DEFAULT_ITEM_SCHEMA, NUMERIC_SCHEMA_TYPES, reject_system_item_fields
 from celerp.services.permissions import (
     assert_role_permission,
     get_current_company_settings,
@@ -2249,6 +2249,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     # A new item starts as a draft. One created available is made available in the same
     # request, so its stock is booked as it enters (Make Available); any other status is
     # reached only through the action that leads to it.
+    reject_system_item_fields(payload.model_dump(exclude_none=True))
     _requested_status = str((payload.model_extra or {}).get("status") or "draft").lower()
     if _requested_status not in ("draft", "available"):
         raise HTTPException(status_code=422, detail=(
@@ -2479,6 +2480,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # a granted operator edits cost, an ungranted manager still cannot.
     restricted -= COST_ITEM_KEYS
     changed_keys = set(payload.fields_changed.keys())
+    reject_system_item_fields(dict.fromkeys(
+        (changed_keys - {"attributes"}) | _changed_attribute_keys(_proj.state, payload.fields_changed)))
     _price_lists, _base_name, _ = await get_price_config(session, company_id)
     _price_changes = {k for k in changed_keys | _changed_attribute_keys(_proj.state, payload.fields_changed) if is_price_item_key(k, _price_lists)}
     if draft_cost_carveout(_is_draft, role, settings):
