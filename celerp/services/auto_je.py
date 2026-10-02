@@ -118,11 +118,13 @@ async def _emit_auto_posted_je(
     entries: list[dict],
     metadata_: dict,
     ts: str | None = None,
+    currency: str | None = None,
 ) -> None:
     """Post an automatic JE. The one place its amounts become money: every line is rounded
-    to the company currency, and an entry that does not balance after rounding is refused,
-    so producers build their lines to balance once rounded."""
-    currency = await company_currency(session, company_id)
+    to the company currency (*currency* when the producer already holds the books it posts
+    on), and an entry that does not balance after rounding is refused, so producers build
+    their lines to balance once rounded."""
+    currency = currency or await company_currency(session, company_id)
     entries = [
         {**e,
          "debit": to_stored_float(round_money(e.get("debit") or 0, currency)),
@@ -416,6 +418,7 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
         idem_posted=je_idempotency_key(doc_id, f"invoice.paid:{paid_key}", "p"),
         memo=f"Auto JE for {doc_id} payment",
         ts=payment_date,
+        currency=base_currency.upper(),
         entries=entries,
         metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "payment_index": payment_index},
     )

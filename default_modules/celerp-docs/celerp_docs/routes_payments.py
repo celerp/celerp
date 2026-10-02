@@ -3,18 +3,19 @@
 """Online invoice payment - Stripe checkout for a shared invoice, brokered by
 Celerp Connect.
 
-Public: /pay/{token} (start), /pay/{token}/return (reconcile on the customer's
-return); Celerp Cloud's delivery covers a closed tab. Both record through
-``payments.receive_payment``. Authed: the merchant's payment
-connection status + connect/disconnect. The instance stores no Stripe credentials;
-all money records through the same path as a manual payment.
+Public: /pay/{token} (start), /pay/{token}/return (back to the invoice). A payment
+is recorded only when Celerp Cloud delivers it (``payments.receive_payment``), on
+the books its payment page opened with. Authed: the merchant's payment connection
+status + connect/disconnect. The instance stores no Stripe credentials; all money
+records through the same path as a manual payment.
 """
 from __future__ import annotations
 
 import datetime
 import logging
+from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,12 +24,11 @@ from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.models.projections import Projection
-from celerp.models.share import DocShareToken
 from celerp.services import payments as pay
 from celerp.services.auth import get_current_user, require_install_owner
-from celerp.services.business_time import business_date_at
+from celerp.services.business_time import business_date_at, business_timezone
 from celerp.services.doc_balance import outstanding_balance
-from celerp.services.money import currency_dp, to_minor_units
+from celerp.services.money import checked_exchange_rate, currency_dp, require_doc_rate, to_minor_units
 from celerp.services.permissions import require_permission
 
 log = logging.getLogger(__name__)
@@ -45,18 +45,11 @@ ONLINE_DEPOSIT_ACCOUNT_KEY = "stripe_deposit_account"
 WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY = "woocommerce_deposit_account"
 
 
-async def _doc_for_token(session: AsyncSession, token: str, *, require_active: bool = True):
-    """Resolve a pay token to its document. Starting a payment requires a live
-    share link (a revoked or expired link must not take money); the return leg
-    resolves any token, because a charge completed at Stripe has to reconcile
-    even if the link lapsed mid-checkout."""
-    if require_active:
-        from celerp_docs.routes_share import _active_share_row
-        share = await _active_share_row(session, token)
-    else:
-        share = (await session.execute(
-            select(DocShareToken).where(DocShareToken.token == token)
-        )).scalar_one_or_none()
+async def _doc_for_token(session: AsyncSession, token: str):
+    """Resolve a live share link to its document (a revoked or expired link must not
+    take money)."""
+    from celerp_docs.routes_share import _active_share_row
+    share = await _active_share_row(session, token)
     if share is None:
         return None, None, None
     row = await session.get(Projection, (share.company_id, share.entity_id))
@@ -93,13 +86,49 @@ async def deposit_account(
     )
 
 
+_BOOKS = ("deposit_account", "timezone", "base_currency", "rate")
+
+
+async def payment_books(session: AsyncSession, company_id, state: dict) -> dict:
+    """The books an online payment on *state* is recorded on, fixed when its payment
+    page opens: the deposit account, the business timezone that dates it, the company
+    currency and the document's rate. ValueError when the document cannot be paid in
+    the company's books (no usable timezone or rate)."""
+    company = await session.get(Company, company_id)
+    settings = (company.settings or {}) if company else {}
+    base = str(settings.get("currency") or "USD").upper()
+    return {"deposit_account": await deposit_account(session, company_id),
+            "timezone": business_timezone(settings.get("timezone")).key,
+            "base_currency": base, "rate": str(require_doc_rate(state, base))}
+
+
+async def _checked_books(session: AsyncSession, company_id, books) -> tuple[str, str, str, Decimal]:
+    """(deposit account, timezone, base currency, rate) from the books a payment page
+    opened with, or 422 when they are missing, unusable, or name a deposit account
+    the company no longer has."""
+    from celerp_accounting.models import Account
+    if not (isinstance(books, dict) and all(isinstance(books.get(k), str) and books[k] for k in _BOOKS)):
+        raise HTTPException(status_code=422, detail="The payment carries no books to record it on")
+    try:
+        timezone, rate = business_timezone(books["timezone"]).key, checked_exchange_rate(books["rate"])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    account = books["deposit_account"]
+    if (await session.execute(select(Account.id).where(
+            Account.company_id == company_id, Account.code == account))).scalar_one_or_none() is None:
+        raise HTTPException(status_code=422, detail=f"Account '{account}' is not in the chart of accounts")
+    return account, timezone, books["base_currency"].upper(), rate
+
+
 async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
                                 reference: str, amount_minor: int, currency: str,
-                                paid_at: datetime.datetime | None = None):
+                                paid_at: datetime.datetime | None, context):
     """Record a confirmed online charge as a payment on its invoice. Only
-    ``payments.receive_payment`` calls it. The payment is dated the company's
-    business day at *paid_at*, when Stripe reported it paid, so a payment recorded
-    again after a System Recovery keeps its own day; without one, today.
+    ``payments.receive_payment`` calls it. The payment is recorded on *context*, the
+    books its payment page opened with (``payment_books``), and dated their business day at
+    *paid_at*, when Stripe reported it paid, so a payment recorded again after a
+    System Recovery posts exactly as it first did. Without usable books or *paid_at*
+    it is refused (422), never recorded on today's settings.
 
     The same charge (Stripe payment_intent) recorded again is a quiet None. A charge
     the invoice cannot take whole (it is already paid, or owes less than the charge)
@@ -109,23 +138,20 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
         return None
     if any(p.get("reference") == reference and p.get("status") != "deleted"
            for p in doc_state.get("payments", [])):
-        return None  # already recorded - replayed push / re-opened return page
+        return None  # already recorded - a repeated delivery
+    account, timezone, base, rate = await _checked_books(session, company_id, context)
+    if paid_at is None:
+        raise HTTPException(status_code=422, detail="The payment carries no time it was paid")
     amount = amount_minor / (10 ** currency_dp(currency))
-    company = await session.get(Company, company_id)
-    try:
-        payment_date = business_date_at(paid_at or datetime.datetime.now(datetime.timezone.utc),
-                                        ((company.settings or {}) if company else {}).get("timezone"))
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
     from celerp_docs.routes import apply_doc_payment
-    body = {"amount": amount, "payment_date": payment_date,
-            "currency": currency.upper(), "bank_account": await deposit_account(session, company_id),
+    body = {"amount": amount, "payment_date": business_date_at(paid_at, timezone),
+            "currency": currency.upper(), "bank_account": account, "conversion_rate": float(rate),
             "method": "stripe", "reference": reference}
     try:
         entry, _amount = await apply_doc_payment(
             session, company_id, entity_id, body,
             source="stripe", actor_id=await _company_owner_id(session, company_id),
-            idempotency_key=reference,
+            idempotency_key=reference, books=(base, rate),
         )
     except HTTPException as exc:
         if exc.status_code == 409 and exc.detail == "Payment already recorded":
@@ -137,7 +163,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     return entry
 
 
-# ── Public: pay + reconcile-on-return ────────────────────────────────────────
+# ── Public: pay, and the customer's return ───────────────────────────────────
 
 @public_router.get("/pay/{token}")
 async def start_payment(token: str, session: AsyncSession = Depends(get_session)):
@@ -151,11 +177,15 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
     currency = state.get("currency", "USD")
     ref = state.get("ref_id") or state.get("doc_number") or entity_id.split(":")[-1][:8]
     try:
+        books = await payment_books(session, company_id, state)
+    except ValueError:
+        raise HTTPException(status_code=409, detail="This document is not payable")
+    try:
         result = await pay.create_checkout(
             amount_minor=to_minor_units(_outstanding(state), currency), currency=currency,
             description=f"Invoice {ref}",
             company_id=str(company_id), entity_id=entity_id, share_token=token,
-            generation=await pay.checkout_generation(),
+            generation=await pay.checkout_generation(), context=books,
         )
     except pay.CheckoutPaused:
         raise HTTPException(status_code=409, detail=pay.PAUSED)
@@ -165,29 +195,9 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
 
 
 @public_router.get("/pay/{token}/return")
-async def return_from_payment(token: str, session_id: str = Query(""),
-                              session: AsyncSession = Depends(get_session)):
-    """Customer's return from Stripe - reconcile immediately, then show the doc."""
-    company_id, entity_id, state = await _doc_for_token(session, token, require_active=False)
-    if state is not None and session_id:
-        try:
-            cs = await pay.checkout_status(session_id)
-            import hashlib
-            binding_matches = bool(
-                cs
-                and cs.get("company_id") == str(company_id)
-                and cs.get("entity_id") == entity_id
-                and cs.get("share_token_hash")
-                    == hashlib.sha256(token.encode()).hexdigest()
-            )
-            if cs and cs.get("paid") and binding_matches:
-                await pay.receive_payment({
-                    "company_id": str(company_id), "entity_id": entity_id,
-                    "reference": cs.get("reference"), "amount_minor": cs.get("amount_minor"),
-                    "currency": cs.get("currency") or state.get("currency", "USD"),
-                })
-        except Exception:
-            log.warning("Payment reconcile-on-return failed", exc_info=True)
+async def return_from_payment(token: str):
+    """Customer's return from Stripe: back to the invoice. Nothing is recorded here;
+    Celerp Cloud delivers the payment once Stripe reports it paid."""
     return RedirectResponse(f"/share/{token}", status_code=303)
 
 

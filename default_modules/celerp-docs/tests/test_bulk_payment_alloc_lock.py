@@ -15,6 +15,7 @@ on real Postgres via the session-scoped _db_engine with independent sessions."""
 from __future__ import annotations
 
 import asyncio
+import datetime
 import types
 import uuid
 
@@ -155,7 +156,9 @@ async def test_stripe_overpay_is_refused_whole(_db_engine):
             with pytest.raises(HTTPException) as refused:
                 await routes_payments.record_stripe_payment(
                     s, company_id, inv, dict(doc_state),
-                    reference="pi_test_123", amount_minor=20000, currency="usd")
+                    reference="pi_test_123", amount_minor=20000, currency="usd",
+                    paid_at=datetime.datetime(2026, 7, 13, 9, 0, tzinfo=datetime.timezone.utc),
+                    context={"deposit_account": "1110", "timezone": "UTC", "base_currency": "USD", "rate": "1"})
         assert refused.value.status_code == 409
 
         st = await _state(factory, company_id, inv)
