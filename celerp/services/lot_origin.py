@@ -45,7 +45,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import (
     INVENTORY_ORIGIN_KEY,
     INVENTORY_ORIGIN_SCHEMA,
-    KEPT_STOCK_KEY,
     LOT_ACCOUNT_FIELD,
     ON_BOOKS_FIELD,
     SCHEMA_KEY,
@@ -269,7 +268,7 @@ async def _period_open(session: AsyncSession, company_id, day: str) -> bool:
     return True
 
 
-def _kept_by_user(entry: LedgerEntry) -> bool:
+def _retired_by_user(entry: LedgerEntry) -> bool:
     """Whether an older release's event retired a lot at the user's request: Archive or
     Expire, or an edit to either status. Every other writer that leaves a lot archived
     says why (a split, transform or undone receipt or return), merges and write-offs have
@@ -285,44 +284,35 @@ def _kept_by_user(entry: LedgerEntry) -> bool:
     return False
 
 
-async def record_kept_stock(session: AsyncSession, company_id) -> None:
-    """Older releases archived and expired lots without saying whether the stock stayed
-    the company's. Each archived or expired lot is replayed from its own events, reading
-    every Archive and Expire the user made as keeping the stock (``_kept_by_user``), and a
-    lot that ends up holding its stock records so in an event, which a rebuild replays.
-    Runs once per company; the company is marked when done."""
-    from celerp.events.engine import emit_event
+async def _older_retired_stock(session: AsyncSession, company_id,
+                               pending: list[Projection]) -> list[tuple[Projection, Decimal]]:
+    """The lots among ``pending`` an older release archived or expired at the user's
+    request (``_retired_by_user``) with nothing moving them since, each with the value it
+    would hold were it still the company's stock. Older releases never recorded whether
+    the company kept such stock, so these are only candidates: the books decide
+    (normalize_legacy_inventory_origins). Read only; replays each lot's own events."""
     from celerp.projections.engine import ProjectionEngine
-    from celerp.services.company_lock import locked_company
 
-    async with session.begin_nested():
-        company = await locked_company(session, company_id)
-        if company is None or KEPT_STOCK_KEY in (company.settings or {}):
-            return
-        retired = sorted((r for r in await _items(session, company_id)
-                          if str((r.state or {}).get("status") or "").lower() in RETIRED
-                          and not (r.state or {}).get(ON_BOOKS_FIELD)), key=lambda r: r.entity_id)
-        for row in retired:
-            entries = (await session.execute(select(LedgerEntry).where(
-                LedgerEntry.company_id == company_id, LedgerEntry.entity_type == "item",
-                LedgerEntry.entity_id == row.entity_id)
-                .order_by(LedgerEntry.id))).scalars().all()
-            state: dict = {}
-            for e in entries:
-                data = {**e.data, ON_BOOKS_FIELD: True} if _kept_by_user(e) else e.data
-                state = ProjectionEngine._apply(state, e.event_type, data)
-            if state.get(ON_BOOKS_FIELD):
-                await emit_event(session, company_id=company_id, entity_id=row.entity_id, entity_type="item",
-                                 event_type=KEPT, data={}, actor_id=None, location_id=None, source="system",
-                                 idempotency_key=f"kept-stock:{row.entity_id}", metadata_={})
-        company.settings = {**(company.settings or {}), KEPT_STOCK_KEY: 1}
-        await session.flush()
+    found = []
+    for row in sorted(pending, key=lambda r: r.entity_id):
+        if str((row.state or {}).get("status") or "").lower() not in RETIRED:
+            continue
+        entries = (await session.execute(select(LedgerEntry).where(
+            LedgerEntry.company_id == company_id, LedgerEntry.entity_type == "item",
+            LedgerEntry.entity_id == row.entity_id).order_by(LedgerEntry.id))).scalars().all()
+        state: dict = {}
+        for e in entries:
+            state = ProjectionEngine._apply(state, e.event_type,
+                                            {**e.data, ON_BOOKS_FIELD: True} if _retired_by_user(e) else e.data)
+        value = held_value(SimpleNamespace(state=state, consignment_flag=row.consignment_flag))
+        if state.get(ON_BOOKS_FIELD) and value:
+            found.append((row, value))
+    return found
 
 
-def _kept_value(items: list[Projection]) -> Decimal:
-    """The value of the archived and expired stock the company keeps."""
-    return sum((held_value(r) or Decimal("0") for r in items
-                if str((r.state or {}).get("status") or "").lower() in RETIRED), Decimal("0"))
+class _Retry(Exception):
+    """A period lock forbids the upgrade's writes: roll the company's savepoint back and
+    retry on a later start."""
 
 
 async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) -> bool:
@@ -333,109 +323,83 @@ async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) 
     recording OB, into P, every older lot that has held stock records P, on hand or not,
     and the company is marked upgraded. An older draft holds no stock, so it counts
     toward neither V nor the proof and records nothing. Retained earnings, cost
-    of sales, total inventory and older documents are untouched. When the books cannot
-    vouch for the stock, nothing moves and the company is still marked, leaving each older
-    lot that has held stock for the user to place. A period lock that forbids the entry writes nothing and
-    leaves the company unmarked, to retry on a later start. Running it again changes
-    nothing. Returns whether the company was marked."""
-    from celerp.services.auto_je import _emit_auto_posted_je, _line
+    of sales, total inventory and older documents are untouched.
 
-    async with session.begin_nested():
-        purchased, opening = AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value
-        settings, codes = await _locked(session, company_id, [purchased, opening])
-        items = await _items(session, company_id)
-        pending = _legacy(items)
-        if codes is None or not pending or await _foreign(session, company_id, settings):
-            await _mark(session, company_id)
-            return True
-        p, ob = codes[purchased], codes[opening]
-        currency = settings.get("currency", "USD")
-        held = [(r, held_value(r)) for r in items if held_value(r) is not None]
-        if any((r.state or {}).get(LOT_ACCOUNT_FIELD) not in (None, "", p, ob) for r, _ in held):
-            await _mark(session, company_id)
-            return True
-        entries = await _posted_entries(session, company_id)
-        balance = {code: sum((Decimal(str(e.get("debit") or 0)) - Decimal(str(e.get("credit") or 0))
-                              for _, e in entries if e.get("account") == code), Decimal("0")) for code in (p, ob)}
-        value = sum((v for _, v in held), Decimal("0"))
-        day = business_date_of(None, settings.get("timezone"))
-        if round_money(balance[p] + balance[ob], currency) != round_money(value, currency):
-            kept = await _put_back_kept_stock(session, company_id, settings, items, balance[p] + balance[ob], value,
-                                              ob, day)
-            if kept is None:
-                await _mark(session, company_id)
-                return True
-            if kept is False:
-                return False
-            balance[ob] += kept
-        on_opening = sum((v for r, v in held if (r.state or {}).get(LOT_ACCOUNT_FIELD) == ob), Decimal("0"))
-        moved = round_money(balance[ob] - on_opening, currency)
-        je_id = f"je:auto:inventory-origin:{company_id}"
-        if moved:
-            if await session.get(Projection, {"company_id": company_id, "entity_id": je_id}) is not None:
-                await _mark(session, company_id)  # moved once already; the books have changed since
-                return True
-            if not await _period_open(session, company_id, day):
-                return False
-            amount, (debit, credit) = abs(moved), ((p, purchased), (ob, opening)) if moved > 0 else ((ob, opening), (p, purchased))
-            await _emit_auto_posted_je(
-                session, company_id=company_id, user_id=None, je_id=je_id,
-                idem_create=f"inventory-origin:{company_id}:c", idem_posted=f"inventory-origin:{company_id}:p",
-                memo="Opening inventory moved into purchased inventory, where older releases booked its sales",
-                entries=[_line(debit[0], debit[1], debit=float(amount)), _line(credit[0], credit[1], credit=float(amount))],
-                metadata_={"trigger": "inventory_origin.normalized"}, ts=day)
-        for row in sorted(pending, key=lambda r: r.entity_id):
-            await _record(session, company_id, row.entity_id, p, "normalized", None)
-        await _mark(session, company_id)
-        if moved:
-            await _notify_moved(session, company_id, p, ob, abs(moved), currency, day)
-    return True
+    Older releases archived and expired lots without recording whether the company kept
+    the stock. Such a lot (``_older_retired_stock``) is recognized as still holding its
+    stock only when P and OB carry exactly V plus its value, in an event a rebuild
+    replays; when they carry V alone it stays off the books. No entry puts value back.
 
-
-async def _put_back_kept_stock(session: AsyncSession, company_id, settings: dict, items: list[Projection],
-                               books: Decimal, value: Decimal, ob: str, day: str) -> Decimal | bool | None:
-    """Older releases recomputed the opening inventory entry without archived and expired
-    stock, so archiving or expiring a lot took its value off the books though the company
-    still owned it (record_kept_stock). When the purchased and opening inventory accounts
-    (``books``) fall short of the stock on hand (``value``) by exactly the archived and
-    expired stock the company keeps, one entry dated ``day`` puts that value back on the
-    opening inventory account against retained earnings, where the opening entry had
-    taken it from. Returns the amount put back; None when the books cannot vouch for it
-    (the shortfall is anything else, or retained earnings cannot take the entry), so
-    nothing is posted and the stock is left for the user to place; False when a period
-    lock forbids the entry, to retry on a later start."""
-    from celerp.services.account_roles import PostingRoleError
-    from celerp.services.auto_je import _emit_auto_posted_je, _line
-
-    currency = settings.get("currency", "USD")
-    kept = round_money(_kept_value(items), currency)
-    if not kept or round_money(books + kept, currency) != round_money(value, currency):
-        return None
-    je_id = f"je:auto:kept-stock:{company_id}"
-    if await session.get(Projection, {"company_id": company_id, "entity_id": je_id}) is not None:
-        return None  # put back once already; the books have changed since
-    retained = AccountRole.RETAINED_EARNINGS.value
+    When the books cannot vouch for the stock, nothing moves and the company is still
+    marked, leaving each older lot that has held stock for the user to place. A period
+    lock that forbids a write rolls the whole savepoint back and leaves the company
+    unmarked, to retry on a later start. Running it again changes nothing. Returns
+    whether the company was marked."""
     try:
-        code = (await resolve_many(session, company_id, [retained]))[retained]
-    except PostingRoleError:
-        return None
-    if not await _period_open(session, company_id, day):
+        async with session.begin_nested():
+            return await _normalize(session, company_id)
+    except _Retry:
         return False
-    await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=None, je_id=je_id,
-        idem_create=f"kept-stock:{company_id}:c", idem_posted=f"kept-stock:{company_id}:p",
-        memo="Archived and expired stock the company still owns, put back on the books",
-        entries=[_line(ob, AccountRole.INVENTORY_OPENING.value, debit=float(kept)),
-                 _line(code, retained, credit=float(kept))],
-        metadata_={"trigger": "inventory_origin.kept_stock"}, ts=day)
-    from celerp.notifications import service as notification_service
 
-    await notification_service.create(
-        session, company_id, "accounting", "Archived stock put back on the books",
-        f"Earlier releases left archived and expired stock out of opening inventory, though it is still yours. "
-        f"One entry dated {day} put {kept} {currency} back on {ob} against {code}. Archive and Expire now keep "
-        f"stock on the books; use Write off stock to take it off.")
-    return kept
+
+async def _normalize(session: AsyncSession, company_id) -> bool:
+    from celerp.events.engine import emit_event
+    from celerp.services.auto_je import _emit_auto_posted_je, _line
+
+    purchased, opening = AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value
+    settings, codes = await _locked(session, company_id, [purchased, opening])
+    if INVENTORY_ORIGIN_KEY in settings:
+        return True  # another start upgraded the company while this one waited for the lock
+    items = await _items(session, company_id)
+    pending = _legacy(items)
+    if codes is None or not pending or await _foreign(session, company_id, settings):
+        await _mark(session, company_id)
+        return True
+    p, ob = codes[purchased], codes[opening]
+    currency = settings.get("currency", "USD")
+    held = [(r, held_value(r)) for r in items if held_value(r) is not None]
+    if any((r.state or {}).get(LOT_ACCOUNT_FIELD) not in (None, "", p, ob) for r, _ in held):
+        await _mark(session, company_id)
+        return True
+    entries = await _posted_entries(session, company_id)
+    balance = {code: sum((Decimal(str(e.get("debit") or 0)) - Decimal(str(e.get("credit") or 0))
+                          for _, e in entries if e.get("account") == code), Decimal("0")) for code in (p, ob)}
+    books = round_money(balance[p] + balance[ob], currency)
+    value = round_money(sum((v for _, v in held), Decimal("0")), currency)
+    day = business_date_of(None, settings.get("timezone"))
+    kept: list[Projection] = []
+    if books != value:
+        retired = await _older_retired_stock(session, company_id, pending)
+        if not retired or books != round_money(value + sum((v for _, v in retired), Decimal("0")), currency):
+            await _mark(session, company_id)
+            return True
+        kept = [r for r, _ in retired]
+    on_opening = sum((v for r, v in held if (r.state or {}).get(LOT_ACCOUNT_FIELD) == ob), Decimal("0"))
+    moved = round_money(balance[ob] - on_opening, currency)
+    je_id = f"je:auto:inventory-origin:{company_id}"
+    if moved and await session.get(Projection, {"company_id": company_id, "entity_id": je_id}) is not None:
+        await _mark(session, company_id)  # moved once already; the books have changed since
+        return True
+    if (moved or kept) and not await _period_open(session, company_id, day):
+        raise _Retry
+    for row in kept:
+        await emit_event(session, company_id=company_id, entity_id=row.entity_id, entity_type="item",
+                         event_type=KEPT, data={}, actor_id=None, location_id=None, source="system",
+                         idempotency_key=f"kept-stock:{row.entity_id}", metadata_={})
+    if moved:
+        amount, (debit, credit) = abs(moved), ((p, purchased), (ob, opening)) if moved > 0 else ((ob, opening), (p, purchased))
+        await _emit_auto_posted_je(
+            session, company_id=company_id, user_id=None, je_id=je_id,
+            idem_create=f"inventory-origin:{company_id}:c", idem_posted=f"inventory-origin:{company_id}:p",
+            memo="Opening inventory moved into purchased inventory, where older releases booked its sales",
+            entries=[_line(debit[0], debit[1], debit=float(amount)), _line(credit[0], credit[1], credit=float(amount))],
+            metadata_={"trigger": "inventory_origin.normalized"}, ts=day)
+    for row in sorted(pending, key=lambda r: r.entity_id):
+        await _record(session, company_id, row.entity_id, p, "normalized", None)
+    await _mark(session, company_id)
+    if moved:
+        await _notify_moved(session, company_id, p, ob, abs(moved), currency, day)
+    return True
 
 
 async def _notify_moved(session: AsyncSession, company_id, p: str, ob: str, amount: Decimal, currency: str,
@@ -462,25 +426,35 @@ async def open_inventory_origins(session: AsyncSession, company_id, user_id=None
     one account. Stock from elsewhere (``_foreign``) records nothing and waits for the
     user. A period lock that forbids the entry writes nothing and leaves the company
     unmarked, to retry on a later start. Returns whether the company was marked."""
+    try:
+        async with session.begin_nested():
+            return await _open(session, company_id, user_id)
+    except _Retry:
+        return False
+
+
+async def _open(session: AsyncSession, company_id, user_id) -> bool:
     from celerp.services.auto_je import book_opening_inventory
 
-    async with session.begin_nested():
-        opening, retained = AccountRole.INVENTORY_OPENING.value, AccountRole.RETAINED_EARNINGS.value
-        settings, codes = await _locked(session, company_id, [opening, retained])
-        pending = _legacy(await _items(session, company_id))
-        if codes is None or not pending or await _foreign(session, company_id, settings):
-            await _mark(session, company_id)
-            return True
-        if not await _period_open(session, company_id, business_date_of(None, settings.get("timezone"))):
-            return False
-        inventory = {code for role in _INVENTORY for code in scope_codes(settings, role)}
-        if any(e.get("account") in inventory for _, e in await _posted_entries(session, company_id)):
-            await book_opening_inventory(session, company_id=company_id, user_id=user_id)
-            return await normalize_legacy_inventory_origins(session, company_id)
-        for row in sorted(pending, key=lambda r: r.entity_id):
-            await _record(session, company_id, row.entity_id, codes[opening], "accounting turned on", None)
-        await book_opening_inventory(session, company_id=company_id, user_id=user_id)
+    opening, retained = AccountRole.INVENTORY_OPENING.value, AccountRole.RETAINED_EARNINGS.value
+    settings, codes = await _locked(session, company_id, [opening, retained])
+    if INVENTORY_ORIGIN_KEY in settings:
+        return True  # another start opened the company while this one waited for the lock
+    pending = _legacy(await _items(session, company_id))
+    if codes is None or not pending or await _foreign(session, company_id, settings):
         await _mark(session, company_id)
+        return True
+    if not await _period_open(session, company_id, business_date_of(None, settings.get("timezone"))):
+        raise _Retry
+    inventory = {code for role in _INVENTORY for code in scope_codes(settings, role)}
+    if any(e.get("account") in inventory for _, e in await _posted_entries(session, company_id)):
+        await book_opening_inventory(session, company_id=company_id, user_id=user_id)
+        await _normalize(session, company_id)
+        return True
+    for row in sorted(pending, key=lambda r: r.entity_id):
+        await _record(session, company_id, row.entity_id, codes[opening], "accounting turned on", None)
+    await book_opening_inventory(session, company_id=company_id, user_id=user_id)
+    await _mark(session, company_id)
     return True
 
 

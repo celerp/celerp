@@ -20,20 +20,24 @@ it back.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import func, select
 
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
+from celerp.services.business_time import business_date_at
+from celerp.services.company_lock import locked_company
 from celerp.services.lot_origin import held_value
 from stock_books import assert_books_carry_stock
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import TZ, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_helpers import sell_item
 from test_posting_roles_lot_origin import _open_books
 from test_posting_roles_merge import _merged
 from test_posting_roles_older_stock import (
-    _accounts, _lot, _marked, _net, _older_release, _opening_entry, _reclassification,
+    _accounts, _custom_opening_account, _lot, _marked, _net, _older_release, _opening_entry, _reclassification,
+    _settings,
 )
 from test_posting_roles_rollout import _startup
 from test_receipt_accounting import _doc, _finalize, _receive
@@ -388,31 +392,6 @@ async def _kept_stock_entry(session, auth) -> dict | None:
     return (await _state(session, auth, f"je:auto:kept-stock:{auth['company_id']}")) or None
 
 
-async def test_older_archived_stock_dropped_by_the_opening_entry_is_put_back_once(session, client, auth):
-    """An older release recomputed opening inventory without archived stock, so archiving
-    a lot took its value off the books. On upgrade the lot is kept stock again and one
-    entry puts its value back, then the opening stock moves to purchased inventory."""
-    await _older_release(session, auth)
-    kept, other = await _lot(client, auth, 40.0), await _lot(client, auth, 30.0)
-    await _older_archive(session, auth, kept)
-    await _opening_entry(session, auth, 30.0)
-
-    await _startup(session)
-
-    assert (await _state(session, auth, kept))[_FLAG] is True
-    entry = await _kept_stock_entry(session, auth)
-    assert {e["account"]: (e["debit"], e["credit"]) for e in entry["entries"]} == {
-        "1130-OB": (40.0, 0.0), "3200": (0.0, 40.0)}
-    assert await _accounts(session, auth, kept, other) == ["1130-P", "1130-P"]
-    assert await _net(session, auth, "1130-P", "1130-OB") == (70.0, 0.0)
-    assert await _marked(session, auth)
-    await _books(session, client, auth)
-
-    events = await _event_count(session, auth)
-    await _startup(session)
-    assert await _event_count(session, auth) == events
-
-
 async def test_older_archived_stock_the_books_still_carry_needs_no_entry(session, client, auth):
     await _older_release(session, auth)
     kept, other = await _lot(client, auth, 40.0), await _lot(client, auth, 30.0)
@@ -425,7 +404,12 @@ async def test_older_archived_stock_the_books_still_carry_needs_no_entry(session
     assert await _kept_stock_entry(session, auth) is None
     assert await _accounts(session, auth, kept, other) == ["1130-P", "1130-P"]
     assert await _net(session, auth, "1130-P", "1130-OB") == (70.0, 0.0)
+    assert await _marked(session, auth)
     await _books(session, client, auth)
+
+    events = await _event_count(session, auth)
+    await _startup(session)
+    assert await _event_count(session, auth) == events
 
 
 async def test_older_expired_and_edited_to_archived_stock_is_kept(session, client, auth):
@@ -471,24 +455,6 @@ async def test_older_rows_archived_by_a_movement_or_an_import_are_not_kept(sessi
     await _books(session, client, auth)
 
 
-async def test_older_books_that_cannot_vouch_for_kept_stock_are_left_for_the_user(session, client, auth):
-    """The books hold neither the stock with the kept lot nor without it: nothing is
-    posted and the older lots wait for the user to place them."""
-    await _older_release(session, auth)
-    kept, other = await _lot(client, auth, 40.0), await _lot(client, auth, 30.0)
-    await _older_archive(session, auth, kept)
-    await _opening_entry(session, auth, 50.0)
-
-    await _startup(session)
-
-    assert (await _state(session, auth, kept))[_FLAG] is True
-    assert await _kept_stock_entry(session, auth) is None
-    assert await _reclassification(session, auth) is None
-    assert await _accounts(session, auth, kept, other) == [None, None]
-    assert await _net(session, auth, "1130-P", "1130-OB") == (0.0, 50.0)
-    assert await _marked(session, auth)
-
-
 async def test_a_rebuild_reproduces_kept_stock(session, client, auth):
     from celerp.projections.engine import ProjectionEngine
 
@@ -516,3 +482,121 @@ async def _event_count(session, auth) -> int:
 
     return await session.scalar(select(func.count()).select_from(LedgerEntry).where(
         LedgerEntry.company_id == auth["company_id"]))
+
+
+def _carried(entry: dict | None) -> dict:
+    return {e["account"]: (e["debit"], e["credit"]) for e in (entry or {}).get("entries") or []}
+
+
+async def test_older_archived_stock_the_books_do_not_carry_stays_off_them(session, client, auth):
+    """The books carry exactly the stock on hand without the archived lot: nothing says
+    it is still held, so it stays off the books and no entry invents its value."""
+    await _older_release(session, auth)
+    archived, other = await _lot(client, auth, 40.0), await _lot(client, auth, 30.0)
+    await _older_archive(session, auth, archived)
+    await _opening_entry(session, auth, 30.0)
+
+    await _startup(session)
+
+    assert _FLAG not in await _state(session, auth, archived)
+    assert await _kept_stock_entry(session, auth) is None
+    assert await _accounts(session, auth, archived, other) == ["1130-P", "1130-P"]
+    assert await _net(session, auth, "1130-P", "1130-OB") == (30.0, 0.0)
+    assert await _marked(session, auth)
+    await _books(session, client, auth)
+
+
+async def test_older_archived_stock_the_books_cannot_account_for_stays_off_them(session, client, auth):
+    await _older_release(session, auth)
+    archived, other = await _lot(client, auth, 40.0), await _lot(client, auth, 30.0)
+    await _older_archive(session, auth, archived)
+    await _opening_entry(session, auth, 50.0)
+
+    await _startup(session)
+
+    assert _FLAG not in await _state(session, auth, archived)
+    assert await _kept_stock_entry(session, auth) is None
+    assert await _reclassification(session, auth) is None
+    assert await _accounts(session, auth, archived, other) == [None, None]
+    assert await _marked(session, auth)
+
+
+async def test_a_locked_day_leaves_older_archived_stock_untouched_until_a_later_start(session, client, auth):
+    """Recognizing the archived lot and moving opening stock into purchased inventory
+    happen together: the locked day refuses the entry, so the lot is not recognized
+    either, and the next start after the lock is lifted does both."""
+    await _older_release(session, auth)
+    archived, other = await _lot(client, auth, 40.0), await _lot(client, auth, 30.0)
+    await _older_archive(session, auth, archived)
+    await _opening_entry(session, auth, 70.0)
+    await _settings(session, auth, lock_date=business_date_at(datetime.now(timezone.utc), TZ))
+    events = await _event_count(session, auth)
+
+    await _startup(session)
+
+    assert await _event_count(session, auth) == events
+    assert _FLAG not in await _state(session, auth, archived)
+    assert await _reclassification(session, auth) is None
+    assert not await _marked(session, auth)
+
+    company = await locked_company(session, auth["company_id"])
+    company.settings = {k: v for k, v in company.settings.items() if k != "lock_date"}
+    await session.commit()
+    await _startup(session)
+
+    assert (await _state(session, auth, archived))[_FLAG] is True
+    assert _carried(await _reclassification(session, auth)) == {"1130-P": (70.0, 0.0), "1130-OB": (0.0, 70.0)}
+    assert await _accounts(session, auth, archived, other) == ["1130-P", "1130-P"]
+    assert await _marked(session, auth)
+    await _books(session, client, auth)
+    events = await _event_count(session, auth)
+    await _startup(session)
+    assert await _event_count(session, auth) == events
+
+
+async def test_an_opening_account_that_cannot_take_entries_leaves_older_archived_stock_untouched(
+        session, client, auth):
+    await _older_release(session, auth)
+    archived = await _lot(client, auth, 40.0)
+    await _older_archive(session, auth, archived)
+    await _opening_entry(session, auth, 40.0)
+    await _custom_opening_account(session, client, auth)
+
+    await _startup(session)
+
+    assert _FLAG not in await _state(session, auth, archived)
+    assert await _kept_stock_entry(session, auth) is None
+    assert await _reclassification(session, auth) is None
+    assert await _accounts(session, auth, archived) == [None]
+
+
+async def test_an_upgrade_that_fails_part_way_keeps_none_of_its_work_and_retries(session, client, auth, monkeypatch):
+    """Recognizing the archived lot, moving opening stock and marking the company are one
+    unit: a failure after the first of them leaves the company as it was for the next start."""
+    from celerp.notifications import service as notification_service
+
+    await _older_release(session, auth)
+    archived, other = await _lot(client, auth, 40.0), await _lot(client, auth, 30.0)
+    await _older_archive(session, auth, archived)
+    await _opening_entry(session, auth, 70.0)
+    events = await _event_count(session, auth)
+
+    async def refused(*args, **kwargs):
+        raise RuntimeError("notification store unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(notification_service, "create", refused)
+        await _startup(session)
+
+    assert await _event_count(session, auth) == events
+    assert _FLAG not in await _state(session, auth, archived)
+    assert await _reclassification(session, auth) is None
+    assert await _accounts(session, auth, archived, other) == [None, None]
+    assert not await _marked(session, auth)
+
+    await _startup(session)
+
+    assert (await _state(session, auth, archived))[_FLAG] is True
+    assert await _accounts(session, auth, archived, other) == ["1130-P", "1130-P"]
+    assert await _marked(session, auth)
+    await _books(session, client, auth)

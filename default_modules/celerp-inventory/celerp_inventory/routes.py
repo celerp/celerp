@@ -52,7 +52,7 @@ from .services import (
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
 from celerp.services.company_lock import lock_projections
 from celerp.services.item_erasure import depended_on, erase_items
-from celerp.services.lot_origin import RECORDED, RETIRED, STOCK_TYPES, ever_became_stock, in_stock, is_authoring_event, record_kept_stock
+from celerp.services.lot_origin import RECORDED, RETIRED, STOCK_TYPES, ever_became_stock, in_stock, is_authoring_event
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.business_time import business_date_at
@@ -4952,15 +4952,3 @@ def setup_api_routes(app) -> None:
     from celerp.importers.sinks import register_sink
     from celerp_inventory.migration_sink import SINK
     register_sink(SINK)
-
-
-async def record_kept_stock_hook(*, session: AsyncSession) -> None:
-    """on_modules_ready: recognize the archived and expired stock older releases left
-    every company (lot_origin.record_kept_stock). A company staged for a data migration
-    is left alone until the migration finishes."""
-    from celerp.models.company import Company
-    from celerp.services import migrations
-
-    for company_id in (await session.execute(select(Company.id).order_by(Company.id))).scalars().all():
-        if not await migrations.is_company_migration_staged(session, company_id):
-            await record_kept_stock(session, company_id)

@@ -248,33 +248,12 @@ async def _legacy_import_moved(s, company_id) -> bool:
         LedgerEntry.company_id == company_id, LedgerEntry.event_type == "doc.shared_import").limit(1)) is None
 
 
-async def _archived_by_an_older_release(s, company_id) -> None:
-    """A lot the user archived before Archive recorded that the stock stays on the books."""
-    from celerp.events.engine import emit_event
-
-    for event_type, data in (("item.created", {"sku": "OLD-ARCH", "name": "Old", "quantity": 1,
-                                               "sell_by": "piece", "status": "available", "cost_price": 10.0}),
-                             ("item.status.set", {"new_status": "archived"})):
-        await emit_event(s, company_id=company_id, entity_id="item:old-archived", entity_type="item",
-                         event_type=event_type, data=data, actor_id=None, location_id=None, source="api",
-                         idempotency_key=f"old-archived:{event_type}:{company_id}", metadata_={})
-
-
-async def _archived_stock_kept(s, company_id) -> bool:
-    from celerp.accounting_roles import ON_BOOKS_FIELD
-    from celerp.models.projections import Projection
-
-    row = await s.get(Projection, {"company_id": company_id, "entity_id": "item:old-archived"})
-    return row.state.get(ON_BOOKS_FIELD) is True
-
-
 # Each backfill, with what makes a company need it and whether the backfill reached it.
 LIFECYCLE_BACKFILLS = {
     "celerp_accounting.routes:backfill_chart_of_accounts_hook": (_drop_chart, _has_chart),
     "celerp_manufacturing.routes:backfill_default_work_center_hook": (_drop_work_centers, _has_default_work_center),
     "celerp_contacts.migrations:backfill_self_contacts_hook": (_self_contact_without_phone, _self_contact_has_phone),
     "celerp_docs.received_legacy:move_legacy_imports_hook": (_legacy_import, _legacy_import_moved),
-    "celerp_inventory.routes:record_kept_stock_hook": (_archived_by_an_older_release, _archived_stock_kept),
 }
 # Needs a staged company cannot have: only the migration writes to it, and it never
 # emits doc.shared_import, which nothing but imports from before Received wrote.

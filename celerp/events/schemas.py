@@ -334,8 +334,9 @@ class ItemInventoryAccountRecorded(BaseModel):
 
 
 class ItemInventoryOnBooksRecorded(BaseModel):
-    # A lot an older release archived or expired at the user's request: it still holds
-    # the company's stock, recognized once on upgrade (lot_origin.record_kept_stock).
+    # A lot an older release archived or expired at the user's request that the books
+    # show still holds the company's stock, recognized once on upgrade
+    # (lot_origin.normalize_legacy_inventory_origins).
     pass
 
 

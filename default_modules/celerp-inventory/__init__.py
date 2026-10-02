@@ -27,9 +27,6 @@ PLUGIN_MANIFEST = {
             {"group": "Inventory", "key": "inventory_disposed", "href": "/inventory?status=disposed", "label": "Disposed Inventory", "label_key": "nav.disposed_inventory", "order": 33, "permission": "view_inventory"},
             {"group": "Inventory", "key": "audits", "href": "/lists?type=audit", "label": "Audits", "label_key": "nav.audits", "order": 34, "permission": "view_inventory"},
         ],
-        # Older releases archived and expired stock without saying whether the company
-        # kept it: recognized once per company (lot_origin.record_kept_stock).
-        "on_modules_ready": {"handler": "celerp_inventory.routes:record_kept_stock_hook"},
         "projection_handler": [
             {"prefix": "item.", "handler": "celerp_inventory.projections:apply_item_event"},
             # {"prefix": "scan.", "handler": "celerp.projections.handlers.scanning:apply_scanning_event"},  # Scanning module disabled until properly finished

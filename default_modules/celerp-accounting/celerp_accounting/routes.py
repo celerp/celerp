@@ -259,11 +259,12 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     company then works when it is reactivated. Then every company's posting accounts are
     reconciled with its chart (account_roles.reconcile_company), and a company left
     without an account its workflows need gets one notice pointing at the fix. Stock from
-    before lots recorded their inventory account is then placed once, after the archived
-    and expired stock the company kept is recognized (lot_origin.record_kept_stock): as opening stock
-    when Accounting is being turned on now (lot_origin.open_inventory_origins), otherwise
-    by the upgrade of older books (lot_origin.normalize_legacy_inventory_origins). A
-    company that fails to upgrade is logged and retried on the next start. A company
+    before lots recorded their inventory account is then placed once, in one savepoint per
+    company: as opening stock when Accounting is being turned on now
+    (lot_origin.open_inventory_origins), otherwise by the upgrade of older books, which
+    also decides whether stock an older release archived is still on them
+    (lot_origin.normalize_legacy_inventory_origins). A company that fails to upgrade
+    keeps none of that work, is logged, and is retried on the next start. A company
     staged for a migration is left alone: its chart and posting accounts come from the
     imported books when the migration is finalized.
     """
@@ -274,7 +275,6 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     from celerp.services.lot_origin import (
         normalize_legacy_inventory_origins,
         open_inventory_origins,
-        record_kept_stock,
     )
     from celerp.services.posting_readiness import notify_unmapped
     from sqlalchemy import select as _select
@@ -294,7 +294,6 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
             continue
         place = open_inventory_origins if company_id in unseeded else normalize_legacy_inventory_origins
         try:
-            await record_kept_stock(session, company_id)
             await place(session, company_id)
         except Exception:
             logger.exception("Older stock of company %s was not placed; retrying on the next start", company_id)
