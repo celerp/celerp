@@ -7,6 +7,7 @@ sizes their platform needs."""
 from __future__ import annotations
 
 import hashlib
+import struct
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,11 @@ def test_window_and_linux_icon_is_512_rgba_shield():
 
 
 def test_windows_ico_carries_every_size():
+    data = (_ASSETS / "icon.ico").read_bytes()
+    entries = struct.unpack("<H", data[4:6])[0]
+    offsets = [struct.unpack("<I", data[18 + 16 * i:22 + 16 * i])[0] for i in range(entries)]
+    # Bitmap (not PNG) entries: the Windows installer and exe resource tools read them everywhere.
+    assert all(data[off:off + 4] != b"\x89PNG" for off in offsets)
     with Image.open(_ASSETS / "icon.ico") as im:
         assert im.format == "ICO"
         assert {w for w, h in im.ico.sizes()} == _ICO_SIZES
