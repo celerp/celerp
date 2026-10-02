@@ -2415,11 +2415,6 @@ async def set_item_price(token: str, entity_id: str, price_type: str, new_price:
         return _raise(await c.post(f"/items/{entity_id}/price", json={"price_type": price_type, "new_price": new_price})).json()
 
 
-async def set_item_status(token: str, entity_id: str, status: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/items/{entity_id}/status", json={"status": status})).json()
-
-
 async def reserve_item(token: str, entity_id: str, quantity: float, reference: str | None = None) -> dict:
     async with _api_client(token) as c:
         payload: dict = {"quantity": quantity}

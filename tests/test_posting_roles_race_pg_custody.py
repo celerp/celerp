@@ -106,3 +106,39 @@ async def test_make_available_waiting_on_a_delete_finds_nothing_to_book(committe
             LedgerEntry.company_id == cid, LedgerEntry.entity_id == lot)) == 0
     assert await _draft_entries(committed_engine, cid, lot) == []
     assert sum((await _books(committed_engine, cid)).values()) == 0
+
+
+async def test_a_quotation_waiting_on_an_import_undo_never_names_an_erased_item(committed_engine, race):
+    """Undo Import holds its commit; a quotation naming one of the imported items waits.
+    Once the undo erases the item, the quotation must not be saved pointing at it."""
+    from celerp.models.projections import Projection
+    from migration_support import maker
+    from sqlalchemy import select
+
+    client, hold = race
+    cid, tok = await _company(committed_engine)
+    r = await client.post("/items/import/rows", headers=auth(tok), json={"rows": [
+        {"sku": "UNDO-Q", "name": "Imported", "sell_by": "piece", "quantity": "1", "cost_price": "10",
+         "location_name": "Main"}], "upsert": False, "idempotency_key": "undo-quote"})
+    assert r.status_code == 200 and not r.json()["errors"], r.text
+    batch = r.json()["batch_id"]
+    async with maker(committed_engine)() as s:
+        [lot] = [row.entity_id for row in (await s.execute(select(Projection).where(
+            Projection.company_id == cid, Projection.entity_type == "item"))).scalars()
+            if row.state.get("sku") == "UNDO-Q"]
+
+    undo, quote = await _race(
+        committed_engine, client, hold,
+        lambda: client.post(f"/items/import/batches/{batch}/undo", headers=auth(tok)),
+        lambda: client.post("/docs", headers=auth(tok), json={"doc_type": "quotation", "line_items": [
+            {"entity_id": lot, "sku": "UNDO-Q", "name": "Imported", "quantity": 1, "unit_price": 20.0,
+             "sell_by": "piece"}]}))
+
+    assert undo.status_code == 200, undo.text
+    async with maker(committed_engine)() as s:
+        assert await s.get(Projection, {"company_id": cid, "entity_id": lot}) is None
+        named = [row.entity_id for row in (await s.execute(select(Projection).where(
+            Projection.company_id == cid, Projection.entity_type == "doc"))).scalars()
+            if any(li.get("entity_id") == lot for li in row.state.get("line_items") or [])]
+    assert quote.status_code != 200 or not named, (quote.status_code, named)
+    assert sum((await _books(committed_engine, cid)).values()) == 0
