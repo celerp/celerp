@@ -10,6 +10,7 @@ is refused before anything is written.
 """
 from __future__ import annotations
 
+import re
 import uuid
 
 import pytest
@@ -216,7 +217,7 @@ async def test_a_merge_confirmed_after_its_items_changed_is_refused(session, cli
                                 json={"source_entity_ids": [a, b], "target_sku_from": a})
     assert preview.status_code == 200, preview.text
     fingerprint = preview.json()["plan_fingerprint"]
-    assert fingerprint and "400" not in fingerprint
+    assert re.fullmatch(r"[0-9a-f]{64}", fingerprint)  # a keyed digest: says nothing about cost
     r = await client.patch(f"/items/{b}", headers=auth["headers"],
                            json={"fields_changed": {"cost_total": {"old": 400.0, "new": 450.0}}})
     assert r.status_code == 200, r.text

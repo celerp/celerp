@@ -115,6 +115,23 @@ async def test_an_item_created_available_is_booked_as_opening_stock_before_the_r
     assert await _account_net(session, auth["company_id"], _RE) == -200.0
 
 
+
+async def test_a_component_created_available_is_booked_and_a_build_takes_it_off_the_books(session, client, auth):
+    """Components are goods the company holds like any other stock: booked as they enter,
+    and their cost moves off the books into what is made from them."""
+    gold = (await _create(client, auth, quantity=100, sell_by="gram", cost_total=8000.0, status="available",
+                          inventory_type="component")).json()["id"]
+    assert (await _state(session, auth, gold)).get(_FIELD) == "1130-OB"
+    assert await assert_books_carry_stock(session, auth["company_id"]) == {"1130-P": 0, "1130-OB": 8000}
+    ring = (await _create(client, auth, quantity=0, status="available")).json()["id"]
+    r = await client.put(f"/manufacturing/items/{ring}/recipe", headers=auth["headers"], json={
+        "output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/manufacturing/items/{ring}/build", headers=auth["headers"],
+                          json={"quantity": 2, "complete": True})
+    assert r.status_code == 200, r.text
+    assert await assert_books_carry_stock(session, auth["company_id"]) == {"1130-P": 800, "1130-OB": 7200}
+
 @pytest.mark.parametrize("problem", [_unmapped, _inactive, _wrong_type])
 async def test_an_item_created_available_is_not_created_when_the_opening_account_cannot_take_it(
         session, client, auth, problem):

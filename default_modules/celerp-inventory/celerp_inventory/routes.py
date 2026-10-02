@@ -52,7 +52,7 @@ from .services import (
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
 from celerp.services.company_lock import lock_projections
 from celerp.services.item_erasure import erase_items, mentioned_elsewhere
-from celerp.services.lot_origin import RECORDED, RETIRED, in_stock, is_authoring_event, record_kept_stock
+from celerp.services.lot_origin import RECORDED, RETIRED, STOCK_TYPES, in_stock, is_authoring_event, record_kept_stock
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.business_time import business_date_at
@@ -1305,9 +1305,8 @@ async def get_valuation(
         if holding_scope is None and (row.consignment_flag == "in" or state.get("consignment_flag") == "in"):
             continue
 
-        # Exclude non-stocked and service items from valuation (only stocked items have physical value)
-        inv_type = state.get("inventory_type") or "stocked"
-        if inv_type != "stocked":
+        # Only goods the company holds have physical value; services and non-stocked do not.
+        if (state.get("inventory_type") or "stocked") not in STOCK_TYPES:
             continue
 
         # Holdings scope: when filtering by on_memo_to or consigned_from, include only matching items

@@ -79,12 +79,16 @@ RETIRED = frozenset({"archived", "expired"})
 
 _INVENTORY = (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
 
+# Inventory types that are goods the company holds: finished stock and the components
+# it makes things from, both bought onto and used off the inventory accounts.
+STOCK_TYPES = frozenset({"stocked", "component"})
+
 
 def _owned_stock(row: Projection) -> bool:
-    """Whether a lot is stocked goods of the company's own, whatever its status."""
+    """Whether a lot is goods of the company's own (STOCK_TYPES), whatever its status."""
     s = row.state or {}
     return (s.get("consignment_flag") != "in" and row.consignment_flag != "in"
-            and (s.get("inventory_type") or "stocked") == "stocked")
+            and (s.get("inventory_type") or "stocked") in STOCK_TYPES)
 
 
 def in_stock(state: dict | None) -> bool:

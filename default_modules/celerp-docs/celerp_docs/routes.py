@@ -34,6 +34,7 @@ from celerp.accounting_roles import LOT_ACCOUNT_FIELD, AccountRole
 from celerp.services.account_roles import current_settings, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.journal_accounts import require_settlement_account
+from celerp.services.lot_origin import STOCK_TYPES
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
@@ -8087,8 +8088,6 @@ async def delete_doc_file(
 # See context/2026-0617-unified-lists-lifecycle-plan.md.
 # ---------------------------------------------------------------------------
 
-# Physical item types an audit counts (services / non-stocked have no stock to count).
-_AUDIT_STOCK_TYPES = frozenset({"stocked", "component"})
 
 
 class AuditCreateBody(BaseModel):
@@ -8253,7 +8252,7 @@ async def create_audit_list(
             continue
         if (st.get("status") or "available") != "available":
             continue
-        if (st.get("inventory_type") or "stocked") not in _AUDIT_STOCK_TYPES:
+        if (st.get("inventory_type") or "stocked") not in STOCK_TYPES:  # services / non-stocked have no stock to count
             continue
         lines.append({"item_id": r.entity_id, "sku": st.get("sku"), "name": st.get("name"),
                       "barcode": st.get("barcode"), "quantity": float(st.get("quantity") or 0)})
