@@ -8,7 +8,8 @@ by Celerp itself moves its opening inventory balance into purchased inventory in
 one entry, when the two accounts together hold exactly the stock on hand, and
 every older lot then records 1130-P, including lots already sold, so a sale undone
 later brings the lot back on its account. An older draft has never held stock, so it
-records 1130-OB, as a new draft does, and is booked there once it is made available.
+records nothing, as a new draft does; made available, it records 1130-OB and is booked
+there in the same step.
 Nothing else changes: total inventory, retained earnings, cost of sales and older
 documents stay as they were.
 
@@ -35,7 +36,7 @@ from celerp.models.projections import Projection
 from celerp.services.auto_je import _emit_auto_posted_je
 from celerp.services.business_time import business_date_at
 from celerp.services.company_lock import locked_company
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import TZ, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_money_stock_and_contact_invariants import _account_net
 from test_posting_roles_lot_origin import _books_match_lots, _open_books
 from test_posting_roles_lots import _forget_origin, _lot, _sell
@@ -506,7 +507,7 @@ async def test_a_period_lock_that_forbids_the_entry_leaves_everything_for_a_late
     await _older_release(session, auth)
     lot = await _lot(client, auth, 30.0)
     await _opening_entry(session, auth, 30.0)
-    await _settings(session, auth, lock_date=business_date_at(datetime.now(timezone.utc), None))
+    await _settings(session, auth, lock_date=business_date_at(datetime.now(timezone.utc), TZ))
     events = await _events(session, auth)
     await _startup(session)
     assert await _events(session, auth) == events
@@ -765,19 +766,22 @@ async def _make_available(client, auth, lot: str) -> None:
 
 
 async def _draft_becomes_opening_stock_and_sells(session, client, auth, draft: str, purchased: float) -> None:
-    """The draft records opening inventory; made available, it is booked there by the
-    opening inventory entry, and selling it relieves the same account."""
+    """The draft records nothing until it is made available; then it records opening
+    inventory and is booked there at once, and selling it relieves the same account.
+    No report is opened, so the books agree with the stock on their own."""
     assert await _status(session, auth, draft) == "draft"
-    assert await _accounts(session, auth, draft) == ["1130-OB"]
+    assert await _accounts(session, auth, draft) == [None]
     await _make_available(client, auth, draft)
-    await _books(session, client, auth, purchased=purchased, opening=200.0)
+    assert await _accounts(session, auth, draft) == ["1130-OB"]
+    books = {"1130-P": purchased, "1130-OB": 200.0}
+    assert await _books_match_lots(session, auth, "1130-P", "1130-OB") == books
     await _sold(client, auth, (draft, 1))
-    await _books(session, client, auth, purchased=purchased, opening=100.0)
+    assert await _books_match_lots(session, auth, "1130-P", "1130-OB") == {**books, "1130-OB": 100.0}
     await _sold(client, auth, (draft, 1))
-    await _books(session, client, auth, purchased=purchased, opening=0.0)
+    assert await _books_match_lots(session, auth, "1130-P", "1130-OB") == {**books, "1130-OB": 0.0}
 
 
-async def test_an_older_draft_records_opening_inventory_on_upgrade(session, client, auth):
+async def test_an_older_draft_records_opening_inventory_when_it_is_made_available(session, client, auth):
     lot = await _lot(client, auth, 30.0)
     await _opening_entry(session, auth, 30.0)
     draft = await _draft(client, auth, 200.0, 2)
@@ -789,7 +793,7 @@ async def test_an_older_draft_records_opening_inventory_on_upgrade(session, clie
     await _draft_becomes_opening_stock_and_sells(session, client, auth, draft, purchased=30.0)
 
 
-async def test_an_older_draft_records_opening_inventory_when_accounting_is_turned_on_over_older_sales(
+async def test_an_older_draft_records_opening_inventory_when_made_available_after_accounting_is_turned_on(
         session, client, auth):
     # Older releases posted every sale to 1130-P even with no chart of accounts, so turning
     # Accounting on upgrades these books like any older company's.
@@ -804,6 +808,20 @@ async def test_an_older_draft_records_opening_inventory_when_accounting_is_turne
     await _draft_becomes_opening_stock_and_sells(session, client, auth, draft, purchased=0.0)
 
 
+async def test_an_older_draft_records_nothing_on_upgrade_when_the_opening_account_cannot_take_it(
+        session, client, auth):
+    draft = await _draft(client, auth, 200.0, 2)
+    await _as_older_release(session, auth, [draft], [])
+    await _custom_opening_account(session, client, auth)
+    await _startup(session)
+    assert await _marked(session, auth)
+    assert await _accounts(session, auth, draft) == [None]
+    r = await client.post("/items/bulk/make-available", headers=auth["headers"], json={"entity_ids": [draft]})
+    assert r.status_code == 409, r.text
+    assert _REPAIR in r.json()["detail"]
+    assert (await _status(session, auth, draft), *await _accounts(session, auth, draft)) == ("draft", None)
+
+
 async def _books_short(session, client, auth) -> None:
     await _opening_entry(session, auth, 20.0)  # the opening entry predates 10 of the stock
 
@@ -814,7 +832,7 @@ async def _books_restored(session, client, auth) -> None:
 
 
 @pytest.mark.parametrize("books", [_books_short, _books_restored])
-async def test_an_older_draft_records_opening_inventory_where_the_books_cannot_vouch_for_the_stock(
+async def test_an_older_draft_is_booked_once_made_available_where_the_books_cannot_vouch_for_the_stock(
         session, client, auth, books):
     lot = await _lot(client, auth, 30.0)
     draft = await _draft(client, auth, 200.0, 2)
@@ -822,5 +840,9 @@ async def test_an_older_draft_records_opening_inventory_where_the_books_cannot_v
     await books(session, client, auth)
     await _startup(session)
     assert await _reclassification(session, auth) is None
-    assert await _accounts(session, auth, lot, draft) == [None, "1130-OB"]
+    assert await _accounts(session, auth, lot, draft) == [None, None]
     assert await _marked(session, auth)
+    before = await _account_net(session, auth["company_id"], "1130-OB")
+    await _make_available(client, auth, draft)
+    assert await _accounts(session, auth, draft) == ["1130-OB"]
+    assert await _account_net(session, auth["company_id"], "1130-OB") == round(before + 200.0, 2)

@@ -232,3 +232,39 @@ async def test_startup_after_finishing_leaves_the_migrated_accounts_alone(sessio
     await backfill_chart_of_accounts_hook(session=session)
     await session.commit()
     assert (await _company(context)).settings[ROLES_KEY] == before
+
+
+@pytest.mark.asyncio
+async def test_a_migrated_draft_records_the_opening_account_chosen_at_finish_when_made_available(
+        session, monkeypatch):
+    import uuid
+    from decimal import Decimal
+
+    from celerp.events.engine import emit_event
+    from celerp.importers.schema import CIFItem
+    from celerp.models.projections import Projection
+    from test_migration_sinks import _PROVENANCE
+    from test_money_stock_and_contact_invariants import _account_net
+    from test_posting_roles_migration_sinks import _via
+
+    context = await _staged_context(session)
+    await _import_chart(context)
+    item = CIFItem(**_PROVENANCE, source_type="InventoryItem", source_external_id="draft-1", sku="DFT-1",
+                   name="Draft", status="draft", total_cost=Decimal("40"))
+    result = await _via(context, "items", [item])
+    assert result.errors == []
+    draft = result.mappings[0].target_entity_id
+    row = await session.get(Projection, (context.company_id, draft))
+    assert "inventory_account_code" not in row.state
+    await _ready_run(context, monkeypatch)
+    roles = {k: v for k, v in _CHOICES["roles"].items() if k != "inventory_opening"}
+    await _finalize(context, monkeypatch, {"roles": roles, "add_accounts": [
+        *_CHOICES["add_accounts"],
+        {"code": "1135", "name": "Opening stock", "account_type": "asset", "role": "inventory_opening"}]})
+    await emit_event(session, company_id=context.company_id, entity_id=draft, entity_type="item",
+                     event_type="item.status.set", data={"new_status": "available"}, actor_id=None,
+                     location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+    row = await session.get(Projection, (context.company_id, draft), populate_existing=True)
+    assert row.state["inventory_account_code"] == "1135"
+    assert await _account_net(session, context.company_id, "1135") == 40.0
