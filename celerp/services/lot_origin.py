@@ -52,6 +52,7 @@ from celerp.accounting_roles import (
 )
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.projections.engine import Transition
 from celerp.services.account_roles import (
     current_settings,
     lot_account,
@@ -119,6 +120,33 @@ def unrecorded(items: list[Projection]) -> list[Projection]:
 
 def _draft(state: dict) -> bool:
     return str(state.get("status") or "").lower() == "draft"
+
+
+# Item events that author a lot without moving it: none of them means the item has
+# circulated. item.file.* events are authoring too (is_authoring_event).
+AUTHORING_EVENT_TYPES: frozenset[str] = frozenset({
+    "item.created", "item.updated", "item.patched", "item.pricing.set",
+    "item.status.set", "item.recipe.set", "item.workflow.set",
+    RECORDED,
+    "shop.sync.enabled", "shop.sync.disabled",
+})
+
+
+def is_authoring_event(event_type: str) -> bool:
+    return event_type in AUTHORING_EVENT_TYPES or event_type.startswith("item.file.")
+
+
+def assert_draft_not_circulated(event_type: str, transition: Transition) -> None:
+    """A draft is not stock: only authoring may touch it, and it leaves draft only by
+    becoming available. Checked on the state the row lock applied the event to, so a
+    reservation, fulfilment or any other movement that read the lot as available before
+    it was returned to draft is refused, not applied to the draft."""
+    before = transition.before
+    if before is None or not _draft(before):
+        return
+    if is_authoring_event(event_type) and str(transition.after.get("status") or "").lower() in ("draft", "available"):
+        return
+    raise HTTPException(status_code=409, detail="This item is a draft, not stock yet: make it available first.")
 
 
 def _legacy(items: list[Projection]) -> list[Projection]:
@@ -324,38 +352,38 @@ class DraftBoundary:
     day: str
 
 
-async def draft_boundary(session: AsyncSession, kwargs: dict, previous: Projection) -> DraftBoundary | None:
-    """Whether an item event moves a lot across the line between draft and stock, decided
-    before anything is written, so a move the books cannot take writes nothing. Made
-    available, the lot keeps the account it recorded before or takes the opening
+async def draft_boundary(session: AsyncSession, entry: LedgerEntry, transition: Transition) -> DraftBoundary | None:
+    """Whether an applied item event moved a lot across the line between draft and stock,
+    read from the transition the row lock applied it under (ProjectionEngine.apply_event),
+    so two requests racing to move the same lot see each other's move and only one books
+    it. Made available, the lot keeps the account it recorded before or takes the opening
     inventory account in use now, and its value is booked there against retained
     earnings; returned to draft, its value comes off the account it recorded. Every
     account is checked as any new entry's is (account_roles.resolve_many), and the entry
     is dated the business day the operation recorded (``ts``) or today. The period lock is
-    the event's own (events.engine). With Accounting off, nothing is booked."""
-    from celerp.projections.engine import ProjectionEngine
+    the event's own (events.engine). With Accounting off, nothing is booked. Anything
+    refused here rolls the event back with it."""
     from celerp.services.auto_je import entry_day
 
-    company_id, before = kwargs["company_id"], previous.state or {}
-    after = ProjectionEngine._apply(dict(before), kwargs["event_type"], kwargs["data"])
-    if _draft(before) == _draft(after):
+    before, after = transition.before, transition.after
+    if before is None or _draft(before) == _draft(after):
         return None
-    settings = await current_settings(session, company_id)
+    settings = await current_settings(session, entry.company_id)
     if SCHEMA_KEY not in settings:
         return None
     made_available = _draft(before)
-    value = held_value(SimpleNamespace(state=after if made_available else before,
-                                       consignment_flag=previous.consignment_flag))
+    state = after if made_available else before
+    value = held_value(SimpleNamespace(state=state, consignment_flag=state.get("consignment_flag")))
     if value is None:
         return None
     value = round_money(value, settings.get("currency", "USD"))
     code = before.get(LOT_ACCOUNT_FIELD) if made_available else lot_account(before)
     opening, retained = AccountRole.INVENTORY_OPENING.value, AccountRole.RETAINED_EARNINGS.value
     roles = ([] if code else [opening]) + ([retained] if value else [])
-    accounts = await resolve_many(session, company_id, roles) if roles else {}
+    accounts = await resolve_many(session, entry.company_id, roles) if roles else {}
     return DraftBoundary(made_available=made_available, value=value, code=code or accounts[opening],
                          record=not code, retained=accounts.get(retained), settings=settings,
-                         day=await entry_day(session, company_id, kwargs["data"].get("ts")))
+                         day=await entry_day(session, entry.company_id, (entry.data or {}).get("ts")))
 
 
 async def book_draft_boundary(session: AsyncSession, entry: LedgerEntry, move: DraftBoundary) -> None:

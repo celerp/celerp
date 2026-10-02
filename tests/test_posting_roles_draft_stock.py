@@ -249,9 +249,10 @@ def _midnight(monkeypatch, passes_after: str) -> None:
     apply = ProjectionEngine.apply_event
 
     async def applied(session, entry):
-        await apply(session, entry)
+        transition = await apply(session, entry)
         if entry.event_type == passes_after:
             now["instant"] = _AFTER
+        return transition
 
     monkeypatch.setattr(ProjectionEngine, "apply_event", staticmethod(applied))
 

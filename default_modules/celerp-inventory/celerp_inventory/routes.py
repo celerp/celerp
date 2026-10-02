@@ -50,6 +50,8 @@ from .services import (
     source_header_semantics,
 )
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD
+from celerp.services.company_lock import lock_projections
+from celerp.services.lot_origin import is_authoring_event
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.business_time import business_date_at
@@ -391,18 +393,6 @@ ITEM_STATUSES: frozenset[str] = frozenset({
     "merged", "expired", "memo_out", "returned", "disposed",
 })
 
-# Authoring-only event types: none of these mean the item has circulated.
-# Any other ledger event on the item (adjust, transfer, fulfill, reserve,
-# split, receive, ...) counts as circulation and blocks a revert to draft.
-# item.file.* is matched by prefix below.
-_AUTHORING_EVENT_TYPES: frozenset[str] = frozenset({
-    "item.created", "item.updated", "item.patched", "item.pricing.set",
-    "item.status.set", "item.recipe.set", "item.workflow.set",
-    "item.inventory_account.recorded",
-    "shop.sync.enabled", "shop.sync.disabled",
-})
-
-
 async def assert_status_change_allowed(
     session: AsyncSession, company_id, entity_id: str, new_status: str,
     role: str, settings: dict,
@@ -458,10 +448,7 @@ async def assert_status_change_allowed(
             LedgerEntry.entity_id == entity_id,
         )
     )).scalars().all())
-    circulated = sorted(
-        e for e in event_types
-        if e not in _AUTHORING_EVENT_TYPES and not e.startswith("item.file.")
-    )
+    circulated = sorted(e for e in event_types if not is_authoring_event(e))
     if circulated:
         raise HTTPException(
             status_code=409,
@@ -2170,17 +2157,8 @@ async def _lock_items_for_physical_mutation(session: AsyncSession, company_id, e
     committed before this transaction acquired the row locks.
     """
     await lock_item_code_namespace(session, company_id)
-    ids = sorted(set(entity_ids))
-    if not ids:
-        return {}
-    rows = (await session.execute(
-        select(Projection)
-        .where(Projection.company_id == company_id, Projection.entity_type == "item", Projection.entity_id.in_(ids))
-        .order_by(Projection.entity_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )).scalars().all()
-    return {row.entity_id: row for row in rows}
+    rows = await lock_projections(session, company_id, entity_ids)
+    return {entity_id: row for entity_id, row in rows.items() if row.entity_type == "item"}
 
 
 async def _require_company_location(session: AsyncSession, company_id, location_id) -> None:
@@ -2674,14 +2652,21 @@ class RevertToDraftBody(BaseModel):
 
 @router.post("/bulk/make-available")
 async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    """Commit one or more drafts into stock. Same authority as authoring the draft (edit_inventory) - no extra permission."""
+    """Commit one or more drafts into stock. Same authority as authoring the draft (edit_inventory) - no extra permission.
+
+    Every selected lot is locked before any is checked, so a second request for the same
+    lots waits for this one and then finds them available: already available is a no-op,
+    and only the drafts actually moved are returned."""
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    rows = await _lock_selected_items(session, company_id, payload.entity_ids)
     for entity_id in payload.entity_ids:
         await assert_make_available_allowed(session, company_id, entity_id)
     at = datetime.now(timezone.utc).isoformat()  # one business day for the whole move
     event_ids = []
     for entity_id in payload.entity_ids:
+        if not _row_is_draft(rows[entity_id]):
+            continue
         entry = await emit_event(
             session,
             company_id=company_id,
@@ -2702,14 +2687,20 @@ async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get
 
 @router.post("/bulk/revert-to-draft")
 async def bulk_revert_to_draft(payload: RevertToDraftBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
-    """assert_status_change_allowed does the real gating (revert_items_to_draft + clean history)."""
+    """assert_status_change_allowed does the real gating (revert_items_to_draft + clean history),
+    on lots locked before any is checked: a fulfilment or reservation that reached a lot
+    first is seen, and a second request for the same lots finds them drafts already, a
+    no-op. Only the lots actually returned to draft are returned."""
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    rows = await _lock_selected_items(session, company_id, payload.entity_ids)
     for entity_id in payload.entity_ids:
         await assert_status_change_allowed(session, company_id, entity_id, "draft", role, settings)
     at = datetime.now(timezone.utc).isoformat()  # one business day for the whole move
     event_ids = []
     for entity_id in payload.entity_ids:
+        if _row_is_draft(rows[entity_id]):
+            continue
         entry = await emit_event(
             session,
             company_id=company_id,
@@ -2726,6 +2717,19 @@ async def bulk_revert_to_draft(payload: RevertToDraftBody, company_id=Depends(ge
         event_ids.append(entry.id)
     await session.commit()
     return {"updated": len(event_ids), "event_ids": event_ids}
+
+
+async def _lock_selected_items(session: AsyncSession, company_id, entity_ids: list[str]) -> dict[str, Projection]:
+    """Lock every selected item before any is checked; an id that is not an item is 404."""
+    rows = await lock_projections(session, company_id, entity_ids)
+    missing = sorted({e for e in entity_ids if e not in rows or rows[e].entity_type != "item"})
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Item not found: {', '.join(missing)}")
+    return rows
+
+
+def _row_is_draft(row: Projection) -> bool:
+    return str((row.state or {}).get("status") or "").lower() == "draft"
 
 
 class BulkShopifySyncBody(BaseModel):

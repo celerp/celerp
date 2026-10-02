@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, select
@@ -53,6 +55,15 @@ def _get_module_handlers() -> dict[str, object]:
         if fn is not None:
             handlers[prefix] = fn
     return handlers
+
+
+@dataclass(frozen=True)
+class Transition:
+    """What one event did to its entity, read under the row lock that applied it: the
+    state before (None for a new entity) and the state after."""
+
+    before: dict | None
+    after: dict
 
 
 class ProjectionEngine:
@@ -119,7 +130,7 @@ class ProjectionEngine:
         return result.scalar_one_or_none()
 
     @staticmethod
-    async def apply_event(session, entry: LedgerEntry) -> None:
+    async def apply_event(session, entry: LedgerEntry) -> Transition:
         projection = await ProjectionEngine._locked_projection(session, entry)
         if projection is None:
             fields = ProjectionEngine._next_fields({}, entry, 0)
@@ -138,7 +149,7 @@ class ProjectionEngine:
                         )
                     )
                     await session.flush()
-                return
+                return Transition(before=None, after=fields["state"])
             except IntegrityError as exc:
                 # Only the (company_id, entity_id) primary-key race is a benign
                 # concurrent-first-insert to retry as an update on the winner's row.
@@ -155,6 +166,7 @@ class ProjectionEngine:
                 projection = await ProjectionEngine._locked_projection(session, entry)
                 if projection is None:
                     raise
+        before = deepcopy(projection.state or {})
         fields = ProjectionEngine._next_fields(projection.state, entry, projection.version)
         for column, value in fields.items():
             setattr(projection, column, value)
@@ -171,6 +183,7 @@ class ProjectionEngine:
             if is_rfid_epc_unique_violation(exc):
                 raise RfidEpcConflictError((fields.get("state") or {}).get("rfid_epc")) from exc
             raise
+        return Transition(before=before, after=fields["state"])
 
     @staticmethod
     async def rebuild(session, company_id=None) -> None:
