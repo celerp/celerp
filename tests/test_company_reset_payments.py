@@ -178,7 +178,9 @@ class _Cloud:
         if path == RECOVERY:
             step, key = "recovery", json["recovery_id"]
         else:
-            assert path.startswith(CLOSURE)
+            # Cloud's three closing routes and the exact body each one takes.
+            assert path in {CLOSURE + name for name in ("prepare", "finalize", "cancel")}, path
+            assert set(json) == {"company_id", "operation_id", "generation"}, json
             step, key = path.removeprefix(CLOSURE), json["operation_id"]
             self.generations.append(json["generation"])
             async with maker(self.engine)() as s:

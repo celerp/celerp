@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """One login left without a company gets exactly one new company, however many requests
 give it one at once, with the cloud relay present (so no single sign-in place is held).
-Starting a company and restoring a backup race each other here on a real database: each
-request that gets past the companyless check waits until the other request has either got
-past it too or is waiting on the database for it, so the interleaving is the one under
-test, not a lucky schedule."""
+Starting a company, restoring a backup and moving books in race each other here on a
+real database: each request that gets past the companyless check waits until the other
+request has either got past it too or is waiting on the database for it, so the
+interleaving is the one under test, not a lucky schedule."""
 
 from __future__ import annotations
 
@@ -16,8 +16,9 @@ import pytest
 from sqlalchemy import text
 
 from company_backup_support import company, download, member, owner, token
-from migration_support import OWNER_EMAIL, OWNER_PASSWORD, auth, count, real_client, real_engine  # noqa: F401
+from migration_support import OWNER_EMAIL, OWNER_PASSWORD, auth, count, migration_env, real_client, real_engine  # noqa: F401
 from test_company_reset import _local_files
+from test_company_reset_migration import _ready_scan, _start as _move_in
 
 pytestmark = pytest.mark.asyncio
 
@@ -44,6 +45,7 @@ def _check_together(monkeypatch, engine):
     """Hold each request just past the companyless check until the other request has
     passed it as well, or is blocked by the database inside it."""
     from celerp.routers import auth as auth_router
+    from celerp.routers import migrations as migrations_router
     from celerp.services import company_backup
     from celerp.services.auth import hold_companyless_login as real
     entered: list[int] = []
@@ -63,6 +65,7 @@ def _check_together(monkeypatch, engine):
 
     monkeypatch.setattr(auth_router, "hold_companyless_login", hold)
     monkeypatch.setattr(company_backup, "hold_companyless_login", hold)
+    monkeypatch.setattr(migrations_router, "hold_companyless_login", hold)
 
 
 async def _companyless_owner_with_backups(client, engine, backups: int) -> tuple[str, list[bytes]]:
@@ -137,6 +140,36 @@ async def test_two_restores_of_different_backups_for_one_login_with_the_relay_ma
     _check_together(monkeypatch, real_engine)
 
     results = await asyncio.gather(*(real_client.post(RESTORE, json=c) for c in confirms))
+
+    _one_won(results, {201})
+    await _one_company_for(real_engine, boss)
+
+
+async def test_a_start_and_a_move_in_for_one_login_with_the_relay_make_one_company(real_client, real_engine,
+                                                                                   migration_env, monkeypatch,
+                                                                                   tmp_path):
+    _local_files(monkeypatch, tmp_path)
+    boss, _ = await _companyless_owner_with_backups(real_client, real_engine, 0)
+    scan_token = await _ready_scan(real_client)
+    _relay(monkeypatch)
+    _check_together(monkeypatch, real_engine)
+
+    results = await asyncio.gather(_start(real_client, "Fresh Start Ltd"), _move_in(real_client, scan_token))
+
+    _one_won(results, {200, 201})
+    await _one_company_for(real_engine, boss)
+
+
+async def test_two_move_ins_for_one_login_with_the_relay_make_one_company(real_client, real_engine, migration_env,
+                                                                         monkeypatch, tmp_path):
+    _local_files(monkeypatch, tmp_path)
+    boss, _ = await _companyless_owner_with_backups(real_client, real_engine, 0)
+    scan_token = await _ready_scan(real_client)  # a login keeps one scan: both send it
+    _relay(monkeypatch)
+    _check_together(monkeypatch, real_engine)
+
+    results = await asyncio.gather(*(_move_in(real_client, scan_token, company_name=name)
+                                     for name in ("Moved Co", "Moved Again Co")))
 
     _one_won(results, {201})
     await _one_company_for(real_engine, boss)
