@@ -48,6 +48,7 @@ from celerp.models.projections import Projection
 from celerp_accounting.models import Account, BankAccount
 from celerp_accounting.routes import seed_chart_of_accounts_hook
 from celerp_inventory.services import lock_item_code_namespace
+from celerp.services.lot_origin import recognize_opening_lots
 
 
 def _is_deadlock(exc: BaseException) -> bool:
@@ -177,6 +178,7 @@ async def _seed_buildable(factory, company_id, user, i: int) -> str:
             actor_id=user.id, location_id=None, source="test",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )
+        await recognize_opening_lots(s, company_id, [component_id, product_id], user.id, f"seed:{product_id}")
         await s.commit()
     return product_id
 

@@ -9,6 +9,8 @@ import uuid
 
 import pytest
 
+from stock_books import SAMPLE_STOCK_ENTRY
+
 
 async def _register(client) -> str:
     addr = f"admin-{uuid.uuid4().hex[:8]}@inlife.test"
@@ -26,8 +28,10 @@ async def _location(client, t) -> str:
 
 
 async def _net(client, t) -> dict[str, float]:
-    """Net debit-credit per account across all non-voided posted JEs (entries live on .created events)."""
-    led = (await client.get("/ledger?entity_type=journal_entry", headers=_h(t))).json()["items"]
+    """Net debit-credit per account across all non-voided posted JEs (entries live on .created events),
+    less the sample stock's opening entry."""
+    led = [e for e in (await client.get("/ledger?entity_type=journal_entry", headers=_h(t))).json()["items"]
+           if not e["entity_id"].startswith(SAMPLE_STOCK_ENTRY)]
     voided = {e["entity_id"] for e in led if str(e.get("event_type", "")).endswith(".voided")}
     by_acct: dict[str, float] = {}
     for e in led:

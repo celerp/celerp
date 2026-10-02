@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services.lot_origin import recognize_opening_lots
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_helpers import sell_item
 from test_money_stock_and_contact_invariants import (
@@ -384,6 +385,7 @@ async def test_a_returned_sale_taken_back_twice_at_once_is_taken_back_once(_db_e
                   "return_received_items": [{"item_id": item, "sku": "RET-RACE", "quantity": 1, "cost_total": 40.0}]},
             actor_id=user_id, location_id=None, source="test", idempotency_key=str(uuid.uuid4()), metadata_={},
         )
+        await recognize_opening_lots(s, company_id, [item], None, f"seed:{item}")
         await s.commit()
 
     first, second = factory(), factory()

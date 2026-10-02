@@ -2607,12 +2607,14 @@ async def test_list_items_sold_total_over_full_set(client, session, auth, _setup
 
 
 async def _je_net(client, headers) -> dict[str, float]:
-    """Net debit-credit per account across all non-voided posted journal entries."""
+    """Net debit-credit per account across the non-voided posted journal entries documents
+    wrote, leaving out the entry each lot was booked with as it was made available."""
     led = (await client.get("/ledger?entity_type=journal_entry", headers=headers)).json()["items"]
     voided = {e["entity_id"] for e in led if str(e.get("event_type", "")).endswith(".voided")}
     by_acct: dict[str, float] = {}
     for e in led:
-        if not str(e.get("event_type", "")).endswith(".created") or e["entity_id"] in voided:
+        if (not str(e.get("event_type", "")).endswith(".created") or e["entity_id"] in voided
+                or ":made-available:" in e["entity_id"]):
             continue
         for x in (e.get("data") or {}).get("entries", []):
             by_acct[x["account"]] = round(

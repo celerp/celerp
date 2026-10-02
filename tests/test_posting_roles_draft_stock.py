@@ -201,11 +201,10 @@ async def test_a_locked_day_refuses_returning_stock_to_draft_and_its_value_stays
 
 async def test_an_opening_entry_in_a_locked_period_does_not_leave_new_stock_unbooked(session, client, auth):
     # Opening stock booked before the lock; a draft made available afterwards is still booked.
-    await _lot(client, auth, 30.0)
-    r = await client.get("/accounting/balance-sheet", headers=auth["headers"])
-    assert r.status_code == 200, r.text
-    row = await session.get(Projection, {"company_id": auth["company_id"],
-                                         "entity_id": f"je:auto:opening-inventory:{auth['company_id']}"})
+    lot = await _lot(client, auth, 30.0)
+    row = await session.scalar(select(Projection).where(
+        Projection.company_id == auth["company_id"],
+        Projection.entity_id.startswith(f"je:auto:{lot}:made-available:")))
     assert row is not None and row.state["status"] == "posted"
     row.state = {**row.state, "ts": "2026-01-15"}
     await session.commit()

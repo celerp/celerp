@@ -1589,6 +1589,11 @@ def reconcile_vertical_defaults(settings: dict, previous_vertical: str | None, t
     return out
 
 
+# The operation the sample stock is booked and removed under. It names no sample item:
+# a record mentioning one marks that item used (_untouched_demo_items).
+_SAMPLE_STOCK = "sample-stock"
+
+
 async def demo_item_ids(session: AsyncSession, company_id: uuid.UUID) -> list[str]:
     """Every item the demo seeder created for the company, touched or not."""
     import sqlalchemy as sa
@@ -1604,15 +1609,18 @@ async def demo_item_ids(session: AsyncSession, company_id: uuid.UUID) -> list[st
 
 
 async def delete_demo_items(session: AsyncSession, company_id: uuid.UUID, entity_ids: list[str]) -> None:
-    """Remove the given items completely: their projection and every ledger row.
+    """Remove the given items completely: their projection and every ledger row, after
+    taking the stock they hold off the books (lot_origin.remove_opening_lots).
 
     Runs inside the caller's transaction and does not commit."""
     import sqlalchemy as sa
     from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
+    from celerp.services.lot_origin import remove_opening_lots
 
     if not entity_ids:
         return
+    await remove_opening_lots(session, company_id, entity_ids, None, _SAMPLE_STOCK)
     await session.execute(sa.delete(Projection).where(
         Projection.company_id == company_id, Projection.entity_id.in_(entity_ids),
     ))
@@ -1625,18 +1633,21 @@ async def _untouched_demo_items(session: AsyncSession, company_id: uuid.UUID, en
     """The demo items that are still exactly as seeded and used nowhere.
 
     An item is touched when any of its ledger rows came from somewhere other than
-    the demo seeder, and used when another record (a document line, a movement, a
-    note) mentions its id or its SKU. Demo ids and SKUs all contain "demo-", so one
-    case-insensitive pass per table finds every candidate mention."""
+    the demo seeder, the books recording where its stock sits aside, and used when
+    another record (a document line, a movement, a note) mentions its id or its SKU.
+    Demo ids and SKUs all contain "demo-", so one case-insensitive pass per table
+    finds every candidate mention."""
     import sqlalchemy as sa
     from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
+    from celerp.services.lot_origin import KEPT, RECORDED
 
     touched = set((await session.execute(
         sa.select(LedgerEntry.entity_id).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_id.in_(entity_ids),
             LedgerEntry.source != "demo",
+            LedgerEntry.event_type.not_in((RECORDED, KEPT)),
         ).distinct()
     )).scalars().all())
     skus = dict((await session.execute(
@@ -1721,8 +1732,10 @@ async def seed_demo_items(
 ) -> None:
     """Seed vertical-aware demo items and default price lists in company settings.
 
-    A demo SKU already held by an item is skipped, so seeding never duplicates a SKU."""
+    A demo SKU already held by an item is skipped, so seeding never duplicates a SKU.
+    The stock seeded is booked as opening stock (lot_origin.recognize_opening_lots)."""
     from celerp.services.company_lock import locked_company
+    from celerp.services.lot_origin import recognize_opening_lots
 
     # Seed default price lists into company settings if not already set
     company = await locked_company(session, company_id)
@@ -1744,6 +1757,7 @@ async def seed_demo_items(
         company.settings = settings
     items = _VERTICAL_ITEMS.get(vertical or "", _GENERIC_ITEMS) if vertical else _GENERIC_ITEMS
     taken = await _skus_in_use(session, company_id, [data["sku"] for data in items])
+    seeded: list[str] = []
     for data in items:
         sku = data["sku"]
         if sku in taken:
@@ -1780,7 +1794,7 @@ async def seed_demo_items(
             payload["location_id"] = str(default_location_id)
         # Strip None values to keep event data clean
         payload = {k: v for k, v in payload.items() if v is not None}
-        await emit_event(
+        entry = await emit_event(
             session,
             company_id=company_id,
             entity_id=entity_id,
@@ -1792,6 +1806,8 @@ async def seed_demo_items(
             source="demo",
             idempotency_key=f"demo:item:{company_id}:{sku}",
         )
+        seeded.append(entry.entity_id)
+    await recognize_opening_lots(session, company_id, seeded, actor_id, _SAMPLE_STOCK)
 
 
 async def seed_self_contacts(

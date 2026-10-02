@@ -21,6 +21,7 @@ from sqlalchemy import select
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services import auto_je
+from celerp.services.lot_origin import recognize_opening_lots
 from test_memo_lifecycle_concurrency import _barcode, _cleanup, _factory, _race, _seed_company
 
 
@@ -35,6 +36,7 @@ async def _lot(factory, company_id, user, cost_total: float = 100.0) -> str:
             actor_id=user.id, location_id=None, source="test",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )
+        await recognize_opening_lots(s, company_id, [entity_id], user.id, f"seed:{entity_id}")
         await s.commit()
     return entity_id
 

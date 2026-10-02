@@ -36,6 +36,7 @@ from celerp.models.projections import Projection
 from celerp.services.auto_je import _emit_auto_posted_je
 from celerp.services.business_time import business_date_at
 from celerp.services.company_lock import locked_company
+from stock_books import older_release_lot
 from test_cost_restatement import TZ, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_money_stock_and_contact_invariants import _account_net
 from test_posting_roles_lot_origin import _books_match_lots, _open_books
@@ -316,7 +317,7 @@ async def _revert(client, auth, inv: str, lot: str) -> None:
 
 async def test_opening_stock_all_sold_and_shipped_by_an_older_release_leaves_both_accounts_at_zero(session, client,
                                                                                                    auth):
-    lot = await _lot(client, auth, 100.0, qty=10)
+    lot = await older_release_lot(session, auth["company_id"], auth["user_id"], 100.0, qty=10)
     await _opening_entry(session, auth, 100.0)
     inv = await _shipped_by_older_release(session, client, auth, lot, 10)
     await _as_older_release(session, auth, [lot], [inv])
@@ -329,7 +330,7 @@ async def test_opening_stock_all_sold_and_shipped_by_an_older_release_leaves_bot
 
 
 async def test_stock_sold_before_the_upgrade_comes_back_on_its_account_when_the_sale_is_undone(session, client, auth):
-    lot = await _lot(client, auth, 100.0)
+    lot = await older_release_lot(session, auth["company_id"], auth["user_id"], 100.0)
     await _opening_entry(session, auth, 100.0)
     inv = await _shipped_by_older_release(session, client, auth, lot, 1)
     await _as_older_release(session, auth, [lot], [inv])
@@ -629,7 +630,7 @@ async def _opening_inventory(session, auth) -> dict | None:
 async def test_the_balance_sheet_leaves_opening_stock_unbooked_on_a_locked_business_day(
         session, client, auth, monkeypatch):
     tz, instant, host_day = _NEW_YORK
-    await _lot(client, auth, 30.0)
+    await older_release_lot(session, auth["company_id"], auth["user_id"], 30.0)
     await _locked_through(session, auth, tz)
     _clock(monkeypatch, instant, host_day)
     await _open_books(client, auth)
@@ -639,7 +640,7 @@ async def test_the_balance_sheet_leaves_opening_stock_unbooked_on_a_locked_busin
 
 async def test_the_balance_sheet_books_opening_stock_on_the_business_day(session, client, auth, monkeypatch):
     tz, instant, host_day = _BANGKOK
-    await _lot(client, auth, 30.0)
+    await older_release_lot(session, auth["company_id"], auth["user_id"], 30.0)
     await _locked_through(session, auth, tz)
     _clock(monkeypatch, instant, host_day)
     await _open_books(client, auth)
@@ -687,7 +688,7 @@ async def test_stock_entered_before_accounting_is_turned_on_becomes_opening_stoc
 async def test_stock_sold_before_accounting_comes_back_with_its_account_and_value_when_the_sale_is_undone(
         session, client, auth):
     # Older releases posted every sale to 1130-P even with no chart of accounts.
-    lot = await _lot(client, auth, 100.0)
+    lot = await older_release_lot(session, auth["company_id"], auth["user_id"], 100.0)
     inv = await _shipped_by_older_release(session, client, auth, lot, 1)
     await _as_older_release(session, auth, [lot], [inv])
     await _without_accounting(session, auth)
@@ -782,7 +783,7 @@ async def _draft_becomes_opening_stock_and_sells(session, client, auth, draft: s
 
 
 async def test_an_older_draft_records_opening_inventory_when_it_is_made_available(session, client, auth):
-    lot = await _lot(client, auth, 30.0)
+    lot = await older_release_lot(session, auth["company_id"], auth["user_id"], 30.0)
     await _opening_entry(session, auth, 30.0)
     draft = await _draft(client, auth, 200.0, 2)
     await _as_older_release(session, auth, [lot, draft], [])
@@ -797,7 +798,7 @@ async def test_an_older_draft_records_opening_inventory_when_made_available_afte
         session, client, auth):
     # Older releases posted every sale to 1130-P even with no chart of accounts, so turning
     # Accounting on upgrades these books like any older company's.
-    sold = await _lot(client, auth, 100.0)
+    sold = await older_release_lot(session, auth["company_id"], auth["user_id"], 100.0)
     inv = await _shipped_by_older_release(session, client, auth, sold, 1)
     draft = await _draft(client, auth, 200.0, 2)
     await _as_older_release(session, auth, [sold, draft], [inv])

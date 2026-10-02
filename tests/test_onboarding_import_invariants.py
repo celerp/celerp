@@ -1164,8 +1164,8 @@ class TestPreviewCommitInvariant:
         assert again.status_code == 200, again.text
         after_second = await _business_snapshot(session, perm["company_id"])
 
-        # The first commit did real work: new lots, and for the upsert two patches
-        # plus a cost restatement on the ledger.
+        # The first commit did real work: new lots, and for the upsert the new lot with
+        # the inventory account it is booked into, two patches and a cost restatement.
         new_items = set(after_first["items"]) - set(before["items"])
         if mode == "create":
             assert len(new_items) == 3
@@ -1173,7 +1173,7 @@ class TestPreviewCommitInvariant:
             assert "finish" in str(after_first["category_schemas"]["red_a"])
         else:
             assert len(new_items) == 1
-            assert after_first["ledger_count"] == before["ledger_count"] + 4
+            assert after_first["ledger_count"] == before["ledger_count"] + 5
         for part in ("item_count", "items", "quantities", "projections", "ledger_count", "ledger",
                      "import_batches", "locations", "category_schemas"):
             assert after_second[part] == after_first[part], part

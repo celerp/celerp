@@ -12,19 +12,43 @@ With Accounting on, every lot of the company's own that is on hand records one o
 those accounts, except the ones the caller names as unplaced (stock from another
 system's books, waiting for the user to place it); their value is left out of the
 comparison. With Accounting off nothing is booked, so no account may carry anything.
+
+Also shared: the stock an older release left behind, for the tests of what happens to it.
 """
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 
 from sqlalchemy import select
 
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, SCHEMA_KEY, AccountRole
+from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.account_roles import scope_codes
 from celerp.services.lot_origin import held_value
 from celerp.services.money import round_money
+
+SAMPLE_STOCK_ENTRY = "je:auto:opening-stock:sample-stock:"
+"""Id prefix of the journal entry a new company's sample stock is booked with at
+registration (lot_origin.recognize_opening_lots), for tests that count the entries
+their own documents write."""
+
+async def older_release_lot(session, company_id, actor_id, cost: float, *, qty: float = 1,
+                            sku: str | None = None) -> str:
+    """Commit a lot on hand as an older release brought it in: no inventory account
+    recorded on it and no entry booking it."""
+    lot = f"item:{uuid.uuid4()}"
+    await emit_event(session, company_id=company_id, entity_id=lot, entity_type="item",
+                     event_type="item.created",
+                     data={"sku": sku or f"OLD-{uuid.uuid4().hex[:6]}", "name": "Lot", "quantity": qty,
+                           "sell_by": "piece", "status": "available", "cost_total": cost},
+                     actor_id=actor_id, location_id=None, source="api",
+                     idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+    return lot
+
 
 _LOT_ROLES = (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
 

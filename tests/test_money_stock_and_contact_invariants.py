@@ -17,6 +17,8 @@ from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
+from celerp.services.lot_origin import recognize_opening_lots
+from stock_books import older_release_lot
 from test_helpers import make_authed_token, perm_setup, provision_company_books
 
 
@@ -110,7 +112,7 @@ async def test_kwd_manual_overpayment_uses_fils_not_cent_tolerance(client, sessi
 @pytest.mark.asyncio
 async def test_kwd_opening_inventory_posts_sub_cent_gap(client, session):
     auth = await _auth_company(session, "KWD")
-    await _api_item(client, auth, f"KWD-OB-{uuid.uuid4().hex[:6]}", 1, 0.005)
+    await older_release_lot(session, auth["company_id"], auth["user_id"], 0.005)
     await auto_je.upsert_opening_inventory_je(
         session, company_id=auth["company_id"], user_id=auth["user_id"])
     await session.commit()
@@ -157,6 +159,7 @@ async def _seed_item(factory, company_id, item_id: str, *, qty: float, cost_tota
             actor_id=None, location_id=None, source="test",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )
+        await recognize_opening_lots(s, company_id, [item_id], None, f"seed:{item_id}")
         await s.commit()
 
 

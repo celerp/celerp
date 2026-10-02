@@ -10,7 +10,6 @@ the lot on its account and the books still matching the stock.
 """
 from __future__ import annotations
 
-import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import MagicMock, patch
 
@@ -20,6 +19,7 @@ from sqlalchemy import select
 
 from company_backup_support import company, owner, token
 from migration_support import auth, maker
+from stock_books import older_release_lot
 from test_posting_roles_race_pg import _until_blocked
 
 pytestmark = pytest.mark.asyncio
@@ -63,11 +63,6 @@ async def _post(client, tok: str, path: str, body: dict | None = None) -> dict:
     return r.json()
 
 
-async def _lot(client, tok: str, cost: float) -> str:
-    return (await _post(client, tok, "/items", {"sku": f"LOT-{uuid.uuid4().hex[:6]}", "name": "Lot", "quantity": 1,
-                                                "sell_by": "piece", "status": "available", "cost_total": cost}))["id"]
-
-
 async def _rows(engine, cid, entity_type: str):
     from celerp.models.projections import Projection
 
@@ -98,7 +93,9 @@ async def _older_books(engine, client):
         await provision_company_books(s, cid)
         await s.commit()
     tok = await token(engine, user, cid)
-    held, sold = await _lot(client, tok, 30.0), await _lot(client, tok, 100.0)
+    async with maker(engine)() as s:
+        held = await older_release_lot(s, cid, user, 30.0)
+        sold = await older_release_lot(s, cid, user, 100.0)
     async with maker(engine)() as s:
         for lot in (held, sold):
             row = await s.get(Projection, {"company_id": cid, "entity_id": lot})

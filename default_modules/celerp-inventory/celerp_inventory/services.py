@@ -39,6 +39,7 @@ from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import round_basis
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
+from celerp.services.lot_origin import recognize_opening_lots
 from celerp.importers.tabular import CsvImportSpec, cell_error_code, finite_float
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
 from celerp.services.money import to_stored_float, unit_price_from_total
@@ -144,24 +145,6 @@ async def allocate_internal_codes(session: AsyncSession, company_id, count: int 
             codes.append(code)
         candidate += 1
     return codes
-
-
-async def create_item(session, company_id: str, data: dict, actor_id: str | None = None):
-    entity_id = data.get("entity_id", f"item:{uuid.uuid4()}")
-    return await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.created",
-        data=data,
-        actor_id=actor_id,
-        location_id=data.get("location_id"),
-        source="api",
-        idempotency_key=data.get("idempotency_key", str(uuid.uuid4())),
-        metadata_={},
-    )
-
 
 
 class CostRestatementConflict(ValueError):
@@ -829,6 +812,9 @@ async def upsert_external_product(
                 event_type="item.created", data=data, actor_id=None, location_id=None,
                 source="connector", idempotency_key=event_idem, metadata_={},
             )
+            # A store product is stock held here: it records the opening inventory account,
+            # and any value it carries is booked as opening stock.
+            await recognize_opening_lots(session, cid, [entity_id], None, f"connector:{identity}")
             await session.commit()
             return ("noop" if getattr(entry, "was_deduped", False) else "created", entity_id)
 
@@ -1697,9 +1683,11 @@ async def upsert_from_connector(company_id: str, item) -> str:
         derived = derived_price_keys((await get_price_config(session, company_id))[0])
         for key in derived:
             data.pop(key, None)
+        # Stock from an accounting system is held on that system's books, so it arrives as
+        # a draft: the user makes it available once it is stock held here.
         outcome = await connector_upsert(
             session, company_id=company_id, entity_type="item",
-            event_type="item.created", idem_key=idem_key, data=data,
+            event_type="item.created", idem_key=idem_key, data=data, on_create={"status": "draft"},
         )
         await session.commit()
         return outcome
@@ -2926,6 +2914,8 @@ async def import_items(
         )
         outcome.records.extend(chunk_outcome.records)
         batch_id = chunk_batch_id or batch_id
+    await recognize_opening_lots(
+        session, company_id, [r.entity_id for r in outcome.records if r.status == "created"], actor_id, batch_id)
 
     # Mutating category schemas is a settings change, so the caller's role must
     # carry manage_company_settings; without it the merge is skipped.
@@ -3341,9 +3331,15 @@ async def commit_import_batch(
     *,
     operation_key: str | None = None,
 ) -> BatchImportResult:
-    """Write an item import batch and commit it; the route and agent transports call this."""
+    """Write an item import batch and commit it; the route and agent transports call this.
+    The stock its local creates bring in is booked as opening stock; a snapshot of another
+    system's item, or a migrated one, keeps the books it came with."""
     outcome, batch_id = await write_import_batch(
         session, company_id, user, role, settings, body, operation_key=operation_key,
     )
+    local = {r.entity_id for r in body.records if r.event_type == "item.created" and r.source != "migration"}
+    await recognize_opening_lots(
+        session, company_id, [r.entity_id for r in outcome.records if r.status == "created" and r.entity_id in local],
+        user.id, batch_id)
     await session.commit()
     return BatchImportResult(**outcome.route_counts(cap_rejections=False), batch_id=batch_id)

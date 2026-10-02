@@ -130,7 +130,7 @@ async def _connector_entity_id(
 
 async def connector_upsert(
     session, *, company_id, entity_type: str, event_type: str, idem_key: str, data: dict,
-    external_identity: tuple[str, str] | None = None,
+    external_identity: tuple[str, str] | None = None, on_create: dict | None = None,
 ) -> str:
     """Create-or-update a projection from a connector payload.
 
@@ -142,7 +142,9 @@ async def connector_upsert(
 
     ``idem_key`` (the stable platform id) is stored in projection state so a re-import
     resolves the SAME projection; the event's idempotency key varies with the content,
-    so an unchanged re-import dedups (no-op) while a changed one updates.
+    so an unchanged re-import dedups (no-op) while a changed one updates. ``on_create``
+    holds fields written only when the record is created (an item's starting status);
+    they are not part of the content, so a re-import never writes them again.
     """
     import hashlib
     import json as _json
@@ -167,6 +169,8 @@ async def connector_upsert(
     )).first()
     if seen:
         return "noop"
+    if not existing_id and on_create:
+        data = {**on_create, **data}
 
     await emit_event(
         session,
@@ -216,19 +220,22 @@ def _touches_physical_codes(state: dict, event_type: str, data: dict) -> bool:
 
 
 async def _record_lot_account(session, kwargs: dict, previous_state: dict | None) -> None:
-    """A new lot records the inventory account its value is booked into: the opening
-    inventory account, which carries stock entered with no purchase behind it, unless
-    its writer names one (a receipt or a production run names the account it books, a
-    part of a lot keeps the lot's). A draft is not stock and records none until it is
-    made available (lot_origin.draft_boundary). No later event may change it: the lot's
-    value stays on that account for as long as the lot holds stock."""
+    """A new lot records the inventory account its value is booked into when its writer
+    books it: a receipt or a production run names the account it debits, a part of a lot
+    keeps the lot's, and stock entered with no purchase behind it takes the opening
+    inventory account when it is booked as opening stock (lot_origin.draft_boundary,
+    lot_origin.recognize_opening_lots). Stock a migration brings in keeps the account its
+    source books held it in. Nothing else is guessed: a snapshot of another system's item
+    records none until its stock is placed. No later event may change it: the lot's value
+    stays on that account for as long as the lot holds stock."""
     from celerp.accounting_roles import LOT_ACCOUNT_FIELD
-    from celerp.services.account_roles import new_lot_account
+    from celerp.services.account_roles import source_lot_account
 
     data = kwargs["data"]
     if kwargs["event_type"] in {"item.created", "item.snapshot"} and previous_state is None:
-        if LOT_ACCOUNT_FIELD not in data and str(data.get("status") or "available").lower() != "draft":
-            code = await new_lot_account(session, kwargs["company_id"])
+        if (kwargs["event_type"] == "item.created" and kwargs.get("source") == "migration"
+                and LOT_ACCOUNT_FIELD not in data and str(data.get("status") or "").lower() != "draft"):
+            code = await source_lot_account(session, kwargs["company_id"])
             if code:
                 data[LOT_ACCOUNT_FIELD] = code
         return

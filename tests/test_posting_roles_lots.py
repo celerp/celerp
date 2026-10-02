@@ -18,6 +18,7 @@ from sqlalchemy import select
 from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
 from celerp.services.company_lock import locked_company
+from stock_books import older_release_lot
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_money_stock_and_contact_invariants import _account_net
 
@@ -175,10 +176,11 @@ async def test_a_top_up_after_a_remap_adds_to_the_lot_on_its_own_account(session
                     [{"item_id": lot, "name": "Lot", "quantity": 5, "unit_price": 14.0}])
     r = await _receive(client, auth, po, {"po_line_index": 0, "item_id": lot, "quantity_received": 5})
     assert r.status_code == 200, r.text
-    assert await _books(session, auth, "1130-OB", "1131") == {"1130-OB": 70.0, "1131": 0.0}
+    # The lot's own 100 and the 70 added to it, both on the account it came in on.
+    assert await _books(session, auth, "1130-OB", "1131") == {"1130-OB": 170.0, "1131": 0.0}
     # Billing the order later moves nothing between inventory accounts.
     await _finalize(client, auth, po)
-    assert await _books(session, auth, "1130-OB", "1131", "2110") == {"1130-OB": 70.0, "1131": 0.0, "2110": -70.0}
+    assert await _books(session, auth, "1130-OB", "1131", "2110") == {"1130-OB": 170.0, "1131": 0.0, "2110": -70.0}
 
 
 @pytest.mark.asyncio
@@ -191,7 +193,7 @@ async def test_goods_sent_back_after_a_remap_leave_the_account_they_came_in_on(s
     await _remap(session, auth, await _new_inventory_account(client, auth))
     r = await _return(client, auth, po, lot, 5)
     assert r.status_code == 200, r.text
-    assert await _books(session, auth, "1130-OB", "1131") == {"1130-OB": 0.0, "1131": 0.0}
+    assert await _books(session, auth, "1130-OB", "1131") == {"1130-OB": 100.0, "1131": 0.0}
 
 
 @pytest.mark.asyncio
@@ -239,7 +241,8 @@ async def test_an_audit_after_a_remap_adjusts_each_lot_on_its_own_account(sessio
         assert r.status_code == 200, r.text
     r = await client.post(f"/lists/{audit}/adjust", headers=h)
     assert r.status_code == 200, r.text
-    assert await _books(session, auth, "1130-OB", "1131") == {"1130-OB": -20.0, "1131": 10.0}
+    # 100 and 50 booked as each lot came in, then 2 of the old lot short and 1 of the new one over.
+    assert await _books(session, auth, "1130-OB", "1131") == {"1130-OB": 80.0, "1131": 60.0}
 
 
 @pytest.mark.asyncio
@@ -256,7 +259,8 @@ async def test_manufacturing_relieves_inputs_on_their_account_and_books_output_w
     assert (await client.post(f"/manufacturing/{order}/issue", headers=h)).status_code == 200
     r = await client.post(f"/manufacturing/{order}/complete", headers=h, json={})
     assert r.status_code == 200, r.text
-    assert await _books(session, auth, "1130-OB", "1131") == {"1130-OB": -10.0, "1131": 10.0}
+    # 40 booked as the inputs came in, 10 of it relieved into the output.
+    assert await _books(session, auth, "1130-OB", "1131") == {"1130-OB": 30.0, "1131": 10.0}
     run = await _state(session, auth, order)
     for out in run.get("received_lots") or []:
         assert (await _state(session, auth, out))[_FIELD] == "1131"
@@ -264,8 +268,7 @@ async def test_manufacturing_relieves_inputs_on_their_account_and_books_output_w
 
 @pytest.mark.asyncio
 async def test_an_older_lot_waits_for_its_account_and_only_one_that_holds_it_can_be_chosen(session, client, auth):
-    lot = await _lot(client, auth, 30.0, sku="OLD-2")
-    await _forget_origin(session, auth, lot)
+    lot = await older_release_lot(session, auth["company_id"], auth["user_id"], 30.0, sku="OLD-2")
     await _remap(session, auth, await _new_inventory_account(client, auth), "inventory_purchased")
     # Viewing the balance sheet posts the opening inventory entry, which carries it on 1130-OB.
     assert (await client.get("/accounting/balance-sheet", headers=auth["headers"])).status_code == 200

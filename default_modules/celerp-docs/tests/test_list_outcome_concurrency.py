@@ -34,6 +34,7 @@ from celerp_accounting.models import Account
 from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services.lot_origin import recognize_opening_lots
 
 
 def _factory(engine):
@@ -82,6 +83,7 @@ async def _seed_item(factory, company_id, user, *, sku, name, qty, barcode) -> s
             actor_id=user.id, location_id=None, source="test",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )
+        await recognize_opening_lots(s, company_id, [entity_id], user.id, f"seed:{entity_id}")
         await s.commit()
     return entity_id
 

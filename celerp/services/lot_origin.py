@@ -471,8 +471,6 @@ class DraftBoundary:
     value: Decimal
     code: str
     record: bool  # the lot records ``code`` as it is made available
-    retained: str | None
-    settings: dict
     day: str
 
 
@@ -500,37 +498,134 @@ async def draft_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
     value = held_value(SimpleNamespace(state=state, consignment_flag=state.get("consignment_flag")))
     if value is None:
         return None
-    value = round_money(value, settings.get("currency", "USD"))
     code = before.get(LOT_ACCOUNT_FIELD) if made_available else lot_account(before)
-    opening, retained = AccountRole.INVENTORY_OPENING.value, AccountRole.RETAINED_EARNINGS.value
-    roles = ([] if code else [opening]) + ([retained] if value else [])
-    accounts = await resolve_many(session, entry.company_id, roles) if roles else {}
-    return DraftBoundary(made_available=made_available, value=value, code=code or accounts[opening],
-                         record=not code, retained=accounts.get(retained), settings=settings,
+    if not code:
+        opening = AccountRole.INVENTORY_OPENING.value
+        code = (await resolve_many(session, entry.company_id, [opening]))[opening]
+    return DraftBoundary(made_available=made_available, value=value, code=code,
+                         record=not before.get(LOT_ACCOUNT_FIELD) and made_available,
                          day=await entry_day(session, entry.company_id, (entry.data or {}).get("ts")))
 
 
 async def book_draft_boundary(session: AsyncSession, entry: LedgerEntry, move: DraftBoundary) -> None:
     """Record and book a lot's move between draft and stock (draft_boundary), in the
     same transaction as the event that moved it."""
-    from celerp.services.auto_je import _emit_auto_posted_je, _line, _lot_line
-
     if move.record:
         await _record(session, entry.company_id, entry.entity_id, move.code, "made available", entry.actor_id)
-    if not move.value:
+    kind = "made-available" if move.made_available else "returned-to-draft"
+    await post_opening_stock_delta(
+        session, entry.company_id, {move.code: move.value}, onto_books=move.made_available,
+        je_id=f"je:auto:{entry.entity_id}:{kind}:{entry.id}", idem=f"draft-stock:{entry.id}",
+        memo="Opening stock made available" if move.made_available else "Opening stock returned to draft",
+        metadata={"trigger": f"item.{kind}"}, actor_id=entry.actor_id, day=move.day)
+
+
+async def post_opening_stock_delta(session: AsyncSession, company_id, values: dict[str, Decimal], *,
+                                   onto_books: bool, je_id: str, idem: str, memo: str, metadata: dict,
+                                   actor_id, day: str) -> None:
+    """Book opening stock onto the books (``onto_books``) or take it off them: the value
+    on each inventory account in ``values`` against retained earnings, in one entry dated
+    ``day`` and keyed by ``idem``, so a retried operation books nothing more. Each value
+    is rounded to the company currency; nothing is posted when they all round to zero.
+    The retained earnings account is checked as any new entry's is
+    (account_roles.resolve_many)."""
+    from celerp.services.auto_je import _emit_auto_posted_je, _line, _lot_line
+
+    settings = await current_settings(session, company_id)
+    currency = settings.get("currency", "USD")
+    rounded = {code: round_money(v, currency) for code, v in sorted(values.items())}
+    values = {code: v for code, v in rounded.items() if v}
+    if not values:
         return
-    amount, retained = float(move.value), AccountRole.RETAINED_EARNINGS.value
-    if move.made_available:
-        kind, memo = "made-available", "Opening stock made available"
-        lines = [_lot_line(move.settings, move.code, debit=amount), _line(move.retained, retained, credit=amount)]
+    retained = AccountRole.RETAINED_EARNINGS.value
+    total = float(sum(values.values()))
+    re_code = (await resolve_many(session, company_id, [retained]))[retained]
+    if onto_books:
+        lines = [*(_lot_line(settings, code, debit=float(v)) for code, v in values.items()),
+                 _line(re_code, retained, credit=total)]
     else:
-        kind, memo = "returned-to-draft", "Opening stock returned to draft"
-        lines = [_line(move.retained, retained, debit=amount), _lot_line(move.settings, move.code, credit=amount)]
+        lines = [_line(re_code, retained, debit=total),
+                 *(_lot_line(settings, code, credit=float(v)) for code, v in values.items())]
     await _emit_auto_posted_je(
-        session, company_id=entry.company_id, user_id=entry.actor_id,
-        je_id=f"je:auto:{entry.entity_id}:{kind}:{entry.id}",
-        idem_create=f"draft-stock:{entry.id}:c", idem_posted=f"draft-stock:{entry.id}:p",
-        memo=memo, entries=lines, metadata_={"trigger": f"item.{kind}"}, ts=move.day)
+        session, company_id=company_id, user_id=actor_id, je_id=je_id,
+        idem_create=f"{idem}:c", idem_posted=f"{idem}:p", memo=memo, entries=lines, metadata_=metadata, ts=day)
+
+
+async def recognize_opening_lots(session: AsyncSession, company_id, item_ids, actor_id, operation_id: str,
+                                 at=None) -> None:
+    """Book the stock one operation brought in with no purchase behind it (an import, a
+    store sync, the sample items) as opening stock, in the operation's own transaction.
+    Each of the named lots that is the company's own, holds stock and records no account
+    yet records the opening inventory account in use now; their value is booked there
+    against retained earnings in one entry for the operation, dated the business day of
+    ``at`` or today. A lot with no cost records its account and books no money. Both
+    accounts are checked before anything is written, so a refusal leaves the operation
+    to roll back whole. With Accounting off nothing is recorded or booked: the stock is
+    opening stock when Accounting is turned on (open_inventory_origins). The entry is
+    keyed by the operation and the lots it booked, so a retry books nothing more."""
+    import hashlib
+
+    from celerp.services.auto_je import entry_day
+    from celerp.services.company_lock import locked_company
+
+    ids = sorted(set(item_ids))
+    if not ids:
+        return
+    company = await locked_company(session, company_id)
+    settings = dict(company.settings or {})
+    if SCHEMA_KEY not in settings:
+        return
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item", Projection.entity_id.in_(ids))
+        .order_by(Projection.entity_id).with_for_update().execution_options(populate_existing=True))).scalars()
+    lots = [r for r in rows if held_value(r) is not None and not (r.state or {}).get(LOT_ACCOUNT_FIELD)]
+    if not lots:
+        return
+    value = sum((held_value(r) for r in lots), Decimal("0"))
+    opening, retained = AccountRole.INVENTORY_OPENING.value, AccountRole.RETAINED_EARNINGS.value
+    accounts = await resolve_many(session, company_id, [opening, retained])
+    day = await entry_day(session, company_id, at)
+    for lot in lots:
+        await _record(session, company_id, lot.entity_id, accounts[opening], "opening stock", actor_id)
+    digest = hashlib.sha256("\n".join(lot.entity_id for lot in lots).encode()).hexdigest()[:16]
+    key = f"opening-stock:{operation_id}:{digest}"
+    await post_opening_stock_delta(
+        session, company_id, {accounts[opening]: value}, onto_books=True, je_id=f"je:auto:{key}", idem=key,
+        memo="Opening stock brought in", metadata={"trigger": "item.opening-stock", "operation": operation_id},
+        actor_id=actor_id, day=day)
+
+
+async def remove_opening_lots(session: AsyncSession, company_id, item_ids, actor_id, operation_id: str) -> None:
+    """Take the stock of lots about to be removed without a trace (sample items nobody
+    used) off the books, in the removal's own transaction: the value each one holds
+    comes off the account it recorded against retained earnings, in one entry for the
+    operation, so the books still equal the stock left. A lot that records no account
+    has nothing booked to take off."""
+    import hashlib
+
+    from celerp.services.auto_je import entry_day
+    from celerp.services.company_lock import locked_company
+
+    ids = sorted(set(item_ids))
+    if not ids:
+        return
+    company = await locked_company(session, company_id)
+    if SCHEMA_KEY not in (company.settings or {}):
+        return
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item", Projection.entity_id.in_(ids))
+        .order_by(Projection.entity_id).with_for_update().execution_options(populate_existing=True))).scalars()
+    values: dict[str, Decimal] = {}
+    for row in rows:
+        value, code = held_value(row), (row.state or {}).get(LOT_ACCOUNT_FIELD)
+        if value is not None and code:
+            values[code] = values.get(code, Decimal("0")) + value
+    digest = hashlib.sha256("\n".join(ids).encode()).hexdigest()[:16]
+    key = f"opening-stock-removed:{operation_id}:{digest}"
+    await post_opening_stock_delta(
+        session, company_id, values, onto_books=False, je_id=f"je:auto:{key}", idem=key,
+        memo="Opening stock removed", metadata={"trigger": "item.opening-stock-removed", "operation": operation_id},
+        actor_id=actor_id, day=await entry_day(session, company_id))
 
 
 async def choose_lot_account(session: AsyncSession, company_id, item_id: str, code: str, actor_id) -> None:

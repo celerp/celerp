@@ -2246,7 +2246,14 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     # Guard: setting a price on creation requires set_inventory_prices, except that a
     # draft's creator authors cost with edit_inventory alone (the gate re-arms at commit) -
     # the same draft_cost_carveout the pricing surfaces use, so the three stay in lockstep.
-    _create_draft = str((payload.model_extra or {}).get("status") or "draft").lower() == "draft"
+    # A new item starts as a draft. One created available is made available in the same
+    # request, so its stock is booked as it enters (Make Available); any other status is
+    # reached only through the action that leads to it.
+    _requested_status = str((payload.model_extra or {}).get("status") or "draft").lower()
+    if _requested_status not in ("draft", "available"):
+        raise HTTPException(status_code=422, detail=(
+            f"An item is created as draft or available, not {_requested_status}."))
+    _create_draft = _requested_status == "draft"
     _price_lists = (await get_price_config(session, company_id))[0]
     _gated = price_keys_in(payload.model_dump(exclude_none=True), _price_lists)
     if draft_cost_carveout(_create_draft, role, settings):
@@ -2349,12 +2356,9 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         if data.get(field) is None and field in category_defaults:
             data[field] = category_defaults[field]
 
-    # Ensure status is set (not part of ItemCreate model but required for projections).
-    # Manual creation starts as draft: the item stays authorable (amounts and costs
-    # editable by anyone with edit_inventory) until "Make available" commits it into
-    # circulating stock. System flows (split, merge, import, receive) pass status
-    # explicitly and stay available - they derive from stock already in circulation.
-    data.setdefault("status", "draft")
+    # Created as a draft: authorable (amounts and costs editable by anyone with
+    # edit_inventory) until Make Available commits it into stock.
+    data["status"] = "draft"
 
     # Strip price fields from create event data - they go via pricing events.
     # Any key ending in _price is treated as a pricing field. cost_total is also a pricing field.
@@ -2401,6 +2405,21 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
             location_id=None,
             source="api",
             idempotency_key=f"{idem_key}:price:{price_type}",
+            metadata_={},
+        )
+
+    if not _create_draft:
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type="item",
+            event_type="item.status.set",
+            data={"new_status": "available", "ts": datetime.now(timezone.utc).isoformat()},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=f"{idem_key}:make-available",
             metadata_={},
         )
 
