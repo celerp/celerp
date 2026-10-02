@@ -13,7 +13,7 @@ from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
-from celerp.services.document_lines import assert_document_item_uniqueness
+from celerp.services.document_lines import assert_document_item_uniqueness, line_item_id, linked_items
 from celerp.services.business_time import business_timezone
 
 
@@ -260,14 +260,18 @@ async def emit_event(
     # Enforce period lock
     await _check_period_lock(session, kwargs.get("company_id"), kwargs.get("data", {}))
 
-    # Enforce physical-item uniqueness on new OUTBOUND doc writes (invoice, memo).
-    # Extract the post-change line set by DATA SHAPE so every doc writer (create,
-    # patch, shared_import, update, conversion, import) is covered by one rule,
-    # keyed on entity_type == "doc" rather than an event list. The doc-type scope
-    # lives in assert_document_item_uniqueness beside the invariant; this boundary
-    # only resolves the doc_type to hand it. Rebuild/replay applies events via
-    # apply_event, never emit_event, so historical events are never re-validated.
-    if kwargs.get("entity_type") == "doc":
+    # Enforce the line rules on every document and List write. Extract the post-change
+    # line set by DATA SHAPE so every writer (create, patch, shared_import, update,
+    # conversion, import) is covered by one rule, keyed on the entity type rather than
+    # an event list:
+    #   - every line a write adds must link to a real item of this company (a stale form
+    #     or an import can carry the id of an item Undo removed); lines already on the
+    #     stored document are carried forward, so an old document stays editable;
+    #   - an OUTBOUND document (invoice, memo) never repeats a physical item; the
+    #     doc-type scope lives in assert_document_item_uniqueness beside the invariant.
+    # Rebuild/replay applies events via apply_event, never emit_event, so historical
+    # events are never re-validated.
+    if kwargs.get("entity_type") in ("doc", "list"):
         data = kwargs.get("data") or {}
         line_set = None
         if isinstance(data.get("line_items"), list):
@@ -277,18 +281,22 @@ async def emit_event(
             if isinstance(changed, dict):
                 line_set = changed.get("new")
         if line_set is not None:
-            # Prefer the event's own doc_type (present on doc.created and any update
-            # that carries it - zero query). Otherwise resolve it from the persisted
-            # projection, reading state["doc_type"] only when that projection is a doc
-            # (the Projection PK is (company_id, entity_id) with no type discriminator,
-            # so the entity_type check guards against a same-id non-doc projection).
-            doc_type = data.get("doc_type")
-            if doc_type is None:
-                proj = await session.get(
-                    Projection, (kwargs.get("company_id"), kwargs.get("entity_id"))
-                )
-                if proj is not None and proj.entity_type == "doc":
-                    doc_type = (proj.state or {}).get("doc_type")
+            # The stored record, read only when it is of the same type (the Projection PK
+            # is (company_id, entity_id) with no type discriminator).
+            proj = await session.get(
+                Projection, (kwargs.get("company_id"), kwargs.get("entity_id"))
+            )
+            same = proj is not None and proj.entity_type == kwargs.get("entity_type")
+            stored = (proj.state or {}) if same else {}
+            await linked_items(
+                session, kwargs.get("company_id"), line_set,
+                known=frozenset(
+                    line_item_id(li) for li in stored.get("line_items") or [] if isinstance(li, dict)
+                ),
+            )
+            # Prefer the event's own doc_type; otherwise the stored document's. A List has
+            # none, so the outbound uniqueness rule never applies to it.
+            doc_type = data.get("doc_type") or stored.get("doc_type")
             await assert_document_item_uniqueness(
                 session, kwargs.get("company_id"), doc_type, line_set
             )
