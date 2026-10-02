@@ -105,6 +105,27 @@ async def test_checkout_sends_balance_due_and_reconcile_metadata(client, payment
 
 
 @pytest.mark.asyncio
+async def test_checkout_request_to_cloud_carries_generation_and_books(client, payments_on, monkeypatch):
+    """Celerp Cloud opens a payment page only for a request that names the
+    installation's payment generation and the books the payment will be recorded on."""
+    import httpx
+    sent = []
+    async def _cloud(method, path, *, json=None, **kw):
+        sent.append((method, path, json))
+        return httpx.Response(200, json={"url": "https://stripe.test/cs_1"})
+    monkeypatch.setattr("celerp.services.cloud_entitlement.authenticated_request", _cloud)
+
+    tok = await _register(client)
+    _, token = await _payable_invoice(client, tok)
+    r = await client.get(f"/pay/{token}", follow_redirects=False)
+
+    assert r.status_code == 303
+    (body,) = [json for method, path, json in sent if path == "/billing/connect/checkout"]
+    assert body["generation"] == 0
+    assert body["context"] == BOOKS
+
+
+@pytest.mark.asyncio
 async def test_checkout_unavailable_when_disabled(client):
     # No connected account → the flag is off → the pay route is closed.
     tok = await _register(client)
