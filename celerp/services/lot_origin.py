@@ -9,9 +9,13 @@ Those releases booked pre-system stock to the opening inventory account and ever
 goods movement, including the cost of opening stock sold, to the purchased inventory
 account, so neither account alone says where a lot's value sits; together they hold all
 of it. On upgrade, a company Celerp built itself has its opening inventory balance moved
-into purchased inventory by one entry, and every older lot records purchased inventory
+into purchased inventory by one entry, and every older lot, on hand or not (sold, merged,
+archived and the rest), records purchased inventory, so a lot brought back into stock
+later (a sale undone, a merge split) still records its account
 (normalize_legacy_inventory_origins). Stock entered before Accounting was turned on is
-opening stock, booked by the opening inventory entry (open_inventory_origins).
+opening stock, booked by the opening inventory entry; where an older release already
+posted that company's goods movements, its books are upgraded the same way instead
+(open_inventory_origins).
 
 Nothing else is assumed. Stock in a company whose books came from elsewhere (a
 migration, a bundle import, a restored backup), or whose two accounts do not add up to
@@ -23,7 +27,7 @@ beyond the stock already recorded on it.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import HTTPException
@@ -40,6 +44,7 @@ from celerp.accounting_roles import (
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.account_roles import role_map, scope_codes, target_problems
+from celerp.services.business_time import business_date_at
 from celerp.services.money import round_money
 
 RECORDED = "item.inventory_account.recorded"
@@ -51,15 +56,18 @@ NOT_HELD = frozenset({"archived", "deleted", "void", "sold", "fulfilled", "merge
 _INVENTORY = (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
 
 
+def _owned_stock(row: Projection) -> bool:
+    """Whether a lot is stocked goods of the company's own, whatever its status."""
+    s = row.state or {}
+    return (s.get("consignment_flag") != "in" and row.consignment_flag != "in"
+            and (s.get("inventory_type") or "stocked") == "stocked")
+
+
 def held_value(row: Projection) -> Decimal | None:
     """The value of the goods a lot holds on the books, or None when it holds none on
     them (not owned, not committed, consigned in, or not stocked)."""
     s = row.state or {}
-    if str(s.get("status") or "").lower() in NOT_HELD:
-        return None
-    if s.get("consignment_flag") == "in" or row.consignment_flag == "in":
-        return None
-    if (s.get("inventory_type") or "stocked") != "stocked":
+    if str(s.get("status") or "").lower() in NOT_HELD or not _owned_stock(row):
         return None
     if float(s.get("cost_total") or 0):
         return Decimal(str(s["cost_total"]))
@@ -91,6 +99,13 @@ def _room(entries: list[tuple[str, dict]], items: list[Projection], code: str) -
 def unrecorded(items: list[Projection]) -> list[Projection]:
     """The lots on hand that record no inventory account."""
     return [r for r in items if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and held_value(r) is not None]
+
+
+def _legacy(items: list[Projection]) -> list[Projection]:
+    """Every lot of the company's own stock that records no inventory account, on hand or
+    not: a sold, merged or archived lot can come back into stock and must then know its
+    account."""
+    return [r for r in items if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and _owned_stock(r)]
 
 
 async def unrecorded_lots(session: AsyncSession, company_id) -> list[dict]:
@@ -153,11 +168,17 @@ async def _mark(session: AsyncSession, company_id) -> None:
     await session.flush()
 
 
-async def _period_open(session: AsyncSession, company_id, today: str) -> bool:
+def _business_day(settings: dict) -> str:
+    """Today in the company's own timezone: the date the entries here carry, and the one
+    the period lock is checked against."""
+    return business_date_at(datetime.now(timezone.utc), settings.get("timezone"))
+
+
+async def _period_open(session: AsyncSession, company_id, day: str) -> bool:
     from celerp.events.engine import _check_period_lock
 
     try:
-        await _check_period_lock(session, company_id, {"ts": today})
+        await _check_period_lock(session, company_id, {"ts": day})
     except HTTPException as exc:
         if exc.status_code == 422:
             return False
@@ -169,8 +190,9 @@ async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) 
     """Give the older stock of a company Celerp built itself the inventory account it sits
     in (module docstring), all in one savepoint. The purchased (P) and opening (OB)
     inventory accounts must both take entries, and together hold exactly the stock on
-    hand (V); then one entry dated today moves OB, beyond the stock recording OB, into P,
-    every older lot records P, and the company is marked upgraded. Retained earnings, cost
+    hand (V); then one entry dated the company's business day moves OB, beyond the stock
+    recording OB, into P, every older lot records P, on hand or not, and the company is
+    marked upgraded. Retained earnings, cost
     of sales, total inventory and older documents are untouched. When the books cannot
     vouch for the stock, nothing moves and the company is still marked, leaving each older
     lot for the user to place. A period lock that forbids the entry writes nothing and
@@ -182,7 +204,7 @@ async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) 
         purchased, opening = AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value
         settings, codes = await _locked(session, company_id, [purchased, opening])
         items = await _items(session, company_id)
-        pending = unrecorded(items)
+        pending = _legacy(items)
         if codes is None or not pending or await _foreign(session, company_id, settings):
             await _mark(session, company_id)
             return True
@@ -203,11 +225,11 @@ async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) 
         moved = round_money(balance[ob] - on_opening, currency)
         je_id = f"je:auto:inventory-origin:{company_id}"
         if moved:
-            today = str(date.today())
+            day = _business_day(settings)
             if await session.get(Projection, {"company_id": company_id, "entity_id": je_id}) is not None:
                 await _mark(session, company_id)  # moved once already; the books have changed since
                 return True
-            if not await _period_open(session, company_id, today):
+            if not await _period_open(session, company_id, day):
                 return False
             amount, (debit, credit) = abs(moved), ((p, purchased), (ob, opening)) if moved > 0 else ((ob, opening), (p, purchased))
             await _emit_auto_posted_je(
@@ -215,43 +237,52 @@ async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) 
                 idem_create=f"inventory-origin:{company_id}:c", idem_posted=f"inventory-origin:{company_id}:p",
                 memo="Opening inventory moved into purchased inventory, where older releases booked its sales",
                 entries=[_line(debit[0], debit[1], debit=float(amount)), _line(credit[0], credit[1], credit=float(amount))],
-                metadata_={"trigger": "inventory_origin.normalized"}, ts=today)
+                metadata_={"trigger": "inventory_origin.normalized"}, ts=day)
         for row in sorted(pending, key=lambda r: r.entity_id):
             await _record(session, company_id, row.entity_id, p, "normalized", None)
         await _mark(session, company_id)
         if moved:
-            await _notify_moved(session, company_id, p, ob, abs(moved), currency)
+            await _notify_moved(session, company_id, p, ob, abs(moved), currency, day)
     return True
 
 
-async def _notify_moved(session: AsyncSession, company_id, p: str, ob: str, amount: Decimal, currency: str) -> None:
+async def _notify_moved(session: AsyncSession, company_id, p: str, ob: str, amount: Decimal, currency: str,
+                        day: str) -> None:
     from celerp.notifications import service as notification_service
 
     await notification_service.create(
         session, company_id, "accounting", "Older stock moved to purchased inventory",
         f"Older releases booked the cost of opening stock sold to {p}, so {p} and {ob} only matched your stock "
-        f"together. One entry dated today moved {amount} {currency} from {ob} to {p}, and your older stock now "
+        f"together. One entry dated {day} moved {amount} {currency} from {ob} to {p}, and your older stock now "
         f"sits on {p}. Total inventory and retained earnings are unchanged.")
 
 
 async def open_inventory_origins(session: AsyncSession, company_id, user_id=None) -> bool:
-    """When Accounting is first turned on for a company Celerp built itself, the stock it
-    already holds is opening stock: each such lot records the opening inventory account
-    and the opening inventory entry books it, in one savepoint. Stock from elsewhere
-    (``_foreign``) records nothing and waits for the user. A period lock that forbids the
-    entry writes nothing and leaves the company unmarked, to retry on a later start.
-    Returns whether the company was marked."""
+    """When Accounting is first turned on for a company Celerp built itself, its older
+    stock is opening stock: each such lot, on hand or not, records the opening inventory
+    account and the opening inventory entry books the stock on hand, in one savepoint.
+    Older releases posted goods movements to purchased inventory even without a chart of
+    accounts; a company whose books already carry them gets the opening entry for the
+    stock those books never booked, and is then upgraded like any older company
+    (normalize_legacy_inventory_origins), so its earlier documents and its lots agree on
+    one account. Stock from elsewhere (``_foreign``) records nothing and waits for the
+    user. A period lock that forbids the entry writes nothing and leaves the company
+    unmarked, to retry on a later start. Returns whether the company was marked."""
     from celerp.services.auto_je import upsert_opening_inventory_je
 
     async with session.begin_nested():
         opening, retained = AccountRole.INVENTORY_OPENING.value, AccountRole.RETAINED_EARNINGS.value
         settings, codes = await _locked(session, company_id, [opening, retained])
-        pending = unrecorded(await _items(session, company_id))
+        pending = _legacy(await _items(session, company_id))
         if codes is None or not pending or await _foreign(session, company_id, settings):
             await _mark(session, company_id)
             return True
-        if not await _period_open(session, company_id, str(date.today())):
+        if not await _period_open(session, company_id, _business_day(settings)):
             return False
+        inventory = {code for role in _INVENTORY for code in scope_codes(settings, role)}
+        if any(e.get("account") in inventory for _, e in await _posted_entries(session, company_id)):
+            await upsert_opening_inventory_je(session, company_id=company_id, user_id=user_id)
+            return await normalize_legacy_inventory_origins(session, company_id)
         for row in sorted(pending, key=lambda r: r.entity_id):
             await _record(session, company_id, row.entity_id, codes[opening], "accounting turned on", None)
         await upsert_opening_inventory_je(session, company_id=company_id, user_id=user_id)

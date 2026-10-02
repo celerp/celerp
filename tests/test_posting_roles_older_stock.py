@@ -6,7 +6,8 @@ Older releases booked opening stock to 1130-OB and every later goods movement,
 including the cost of opening stock sold, to 1130-P. On upgrade a company built
 by Celerp itself moves its opening inventory balance into purchased inventory in
 one entry, when the two accounts together hold exactly the stock on hand, and
-every older lot then records 1130-P. Nothing else changes: total inventory,
+every older lot then records 1130-P, including lots already sold, so a sale undone
+later brings the lot back on its account. Nothing else changes: total inventory,
 retained earnings, cost of sales and older documents stay as they were.
 
 Anything the books cannot vouch for (a migration, a restored backup, an import,
@@ -30,6 +31,7 @@ from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.auto_je import _emit_auto_posted_je
+from celerp.services.business_time import business_date_at
 from celerp.services.company_lock import locked_company
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_money_stock_and_contact_invariants import _account_net
@@ -502,7 +504,7 @@ async def test_a_period_lock_that_forbids_the_entry_leaves_everything_for_a_late
     await _older_release(session, auth)
     lot = await _lot(client, auth, 30.0)
     await _opening_entry(session, auth, 30.0)
-    await _settings(session, auth, lock_date=str(date.today()))
+    await _settings(session, auth, lock_date=business_date_at(datetime.now(timezone.utc), None))
     events = await _events(session, auth)
     await _startup(session)
     assert await _events(session, auth) == events

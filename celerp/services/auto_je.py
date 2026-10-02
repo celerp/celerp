@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import Decimal as _Dec
 
 from celerp.accounting_roles import INVENTORY_VALUE_ROLES, LANDED_ROLE_BY_KIND, LOT_ACCOUNT_FIELD, AccountRole
@@ -27,6 +28,7 @@ from celerp.services.account_roles import (
     resolve_many,
     scope_codes,
 )
+from celerp.services.business_time import business_date_at
 from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value
@@ -2248,14 +2250,16 @@ async def upsert_opening_inventory_je(
     # the OB entry must degrade to "leave the books as they are" - a report GET
     # can never fail because the lock forbids restating the opening balance.
     # Both halves (void + repost) are lock-checked BEFORE anything mutates, so
-    # a lock can never leave a half-done restatement behind.
-    from datetime import date as _date
-
+    # a lock can never leave a half-done restatement behind. The entry is dated
+    # the company's business day; an unreadable timezone leaves the books too.
     from fastapi import HTTPException as _HTTPExc
 
     from celerp.events.engine import _check_period_lock
 
-    today = str(_date.today())
+    try:
+        today = business_date_at(datetime.now(timezone.utc), settings.get("timezone"))
+    except ValueError:
+        return
     try:
         if ob_proj and ob_proj.state.get("status") == "posted":
             await _check_period_lock(session, company_id, je_void_data("", ob_proj.state))
