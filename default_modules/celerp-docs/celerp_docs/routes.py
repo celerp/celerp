@@ -1950,7 +1950,7 @@ async def _payments_tip_suffix(session, company_id) -> str:
     company.settings = settings
     session.add(company)
     return (" Tip: connect a Stripe account under Web Access, Payments and "
-            "emailed invoices include a Pay button so customers can pay you by card.")
+            "emailed invoices include a Pay button so customers can pay you online.")
 
 
 def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: str,
