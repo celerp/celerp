@@ -743,3 +743,60 @@ async def test_an_unresolved_lot_moves_its_cost_once_an_account_that_holds_it_is
 
     await _sold(client, auth, (lot, 1))
     await _books(session, client, auth, purchased=0.0, opening=0.0)
+
+
+# --- A draft from an older release has never held stock -------------------------------
+
+
+async def _draft(client, auth, cost: float, qty: float) -> str:
+    """A manual item left as a draft: not stock yet, so nothing is booked for it."""
+    r = await client.post("/items", headers=auth["headers"], json={
+        "sku": f"DFT-{uuid.uuid4().hex[:6]}", "name": "Draft", "quantity": qty, "sell_by": "piece",
+        "cost_total": cost})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+async def _make_available(client, auth, lot: str) -> None:
+    r = await client.post("/items/bulk/make-available", headers=auth["headers"], json={"entity_ids": [lot]})
+    assert r.status_code == 200, r.text
+
+
+async def _draft_becomes_opening_stock_and_sells(session, client, auth, draft: str, purchased: float) -> None:
+    """The draft records opening inventory; made available, it is booked there by the
+    opening inventory entry, and selling it relieves the same account."""
+    assert await _status(session, auth, draft) == "draft"
+    assert await _accounts(session, auth, draft) == ["1130-OB"]
+    await _make_available(client, auth, draft)
+    await _books(session, client, auth, purchased=purchased, opening=200.0)
+    await _sold(client, auth, (draft, 1))
+    await _books(session, client, auth, purchased=purchased, opening=100.0)
+    await _sold(client, auth, (draft, 1))
+    await _books(session, client, auth, purchased=purchased, opening=0.0)
+
+
+async def test_an_older_draft_records_opening_inventory_on_upgrade(session, client, auth):
+    lot = await _lot(client, auth, 30.0)
+    await _opening_entry(session, auth, 30.0)
+    draft = await _draft(client, auth, 200.0, 2)
+    await _as_older_release(session, auth, [lot, draft], [])
+    await _startup(session)
+    assert _moved(await _reclassification(session, auth)) == {"1130-P": (30.0, 0.0), "1130-OB": (0.0, 30.0)}
+    assert await _accounts(session, auth, lot) == ["1130-P"]
+    assert await _marked(session, auth)
+    await _draft_becomes_opening_stock_and_sells(session, client, auth, draft, purchased=30.0)
+
+
+async def test_an_older_draft_records_opening_inventory_when_accounting_is_turned_on_over_older_sales(
+        session, client, auth):
+    # Older releases posted every sale to 1130-P even with no chart of accounts, so turning
+    # Accounting on upgrades these books like any older company's.
+    sold = await _lot(client, auth, 100.0)
+    inv = await _shipped_by_older_release(session, client, auth, sold, 1)
+    draft = await _draft(client, auth, 200.0, 2)
+    await _as_older_release(session, auth, [sold, draft], [inv])
+    await _without_accounting(session, auth)
+    await _startup(session)
+    assert await _accounts(session, auth, sold) == ["1130-P"]
+    assert await _marked(session, auth)
+    await _draft_becomes_opening_stock_and_sells(session, client, auth, draft, purchased=0.0)
