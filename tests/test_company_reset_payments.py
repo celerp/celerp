@@ -921,6 +921,7 @@ async def test_a_lost_cancel_is_reopened_by_the_next_reconciliation_without_a_re
             await asyncio.sleep(0.01)
     finally:
         loop.cancel()
+        await asyncio.gather(loop, return_exceptions=True)
 
     assert _steps(cloud)[:4] == ["prepare", "cancel", "cancel", "cancel"]
     assert cloud.payments_open(a)

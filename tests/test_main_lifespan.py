@@ -142,3 +142,39 @@ async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
     fire.assert_not_awaited()
     associate.assert_not_awaited()
     adopt.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_every_background_task_to_stop(monkeypatch):
+    """A background loop stopped at shutdown finishes its own cleanup (closing its
+    database session) before the app is down, instead of being left mid-way when the
+    event loop ends, which kept its connection open inside a transaction."""
+    import asyncio
+
+    import celerp.main as main_mod
+    from celerp.config import settings
+    from celerp.services import payments
+
+    stopped: list[bool] = []
+
+    async def _loop_with_cleanup():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0.05)  # e.g. rolling back and closing its session
+            stopped.append(True)
+
+    monkeypatch.setattr(payments, "reconcile_payments_loop", _loop_with_cleanup)
+    monkeypatch.setattr("celerp.gateway.has_active_share", AsyncMock(return_value=False))
+    saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
+    settings.gateway_token = ""
+    settings.celerp_public_url = None
+    try:
+        with _mock_db():
+            async with main_mod.lifespan(MagicMock()):
+                await asyncio.sleep(0)
+    finally:
+        settings.gateway_token = saved_token
+        settings.celerp_public_url = saved_public
+
+    assert stopped == [True]

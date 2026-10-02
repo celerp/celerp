@@ -470,18 +470,13 @@ async def lifespan(_app: FastAPI):
     from celerp.notifications.sse import shutdown_all as _sse_shutdown
     _sse_shutdown()
 
-    # Stop background tasks
-    cleanup_task.cancel()
-    jti_cleanup_task.cancel()
-    connector_sched_task.cancel()
-    outbound_connector_task.cancel()
-    reorder_alert_task.cancel()
-    update_task.cancel()
-    payments_reconcile_task.cancel()
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
+    # Stop background tasks and wait for each to finish its own cleanup (closing its
+    # database session), so none is left part way through when the app is down.
+    background = (cleanup_task, jti_cleanup_task, connector_sched_task, outbound_connector_task,
+                  reorder_alert_task, update_task, payments_reconcile_task)
+    for task in background:
+        task.cancel()
+    await asyncio.gather(*background, return_exceptions=True)
 
     # Stop backup scheduler
     try:
