@@ -151,6 +151,8 @@ class ItemStatusSet(BaseModel):
     new_status: str
     # Set by revert-to-draft only.
     reason: str | None = None
+    # When a move between draft and stock happened: the business day its entry carries.
+    ts: str | None = None
 
 
 class ItemTransferred(BaseModel):

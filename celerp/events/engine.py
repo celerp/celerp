@@ -218,14 +218,15 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
     """A new lot records the inventory account its value is booked into: the opening
     inventory account, which carries stock entered with no purchase behind it, unless
     its writer names one (a receipt or a production run names the account it books, a
-    part of a lot keeps the lot's). No later event may change it: the lot's value stays
-    on that account for as long as the lot holds stock."""
+    part of a lot keeps the lot's). A draft is not stock and records none until it is
+    made available (lot_origin.draft_boundary). No later event may change it: the lot's
+    value stays on that account for as long as the lot holds stock."""
     from celerp.accounting_roles import LOT_ACCOUNT_FIELD
     from celerp.services.account_roles import new_lot_account
 
     data = kwargs["data"]
     if kwargs["event_type"] in {"item.created", "item.snapshot"} and previous_state is None:
-        if LOT_ACCOUNT_FIELD not in data:
+        if LOT_ACCOUNT_FIELD not in data and str(data.get("status") or "available").lower() != "draft":
             code = await new_lot_account(session, kwargs["company_id"])
             if code:
                 data[LOT_ACCOUNT_FIELD] = code
@@ -364,8 +365,13 @@ async def emit_event(
                 session, kwargs["company_id"], kwargs["entity_id"], previous_item_state, after
             )
 
+    draft_move = None
     if kwargs.get("entity_type") == "item":
         await _record_lot_account(session, kwargs, previous_item_state)
+        if previous_item_state is not None:
+            from celerp.services.lot_origin import draft_boundary
+
+            draft_move = await draft_boundary(session, kwargs, previous)
 
     entry = LedgerEntry(**kwargs)
 
@@ -395,6 +401,11 @@ async def emit_event(
         return original
 
     await ProjectionEngine.apply_event(session, entry)
+
+    if draft_move is not None:
+        from celerp.services.lot_origin import book_draft_boundary
+
+        await book_draft_boundary(session, entry, draft_move)
 
     # Durable connector work is recorded in the same transaction as the item event.
     # No network I/O occurs here; the worker re-reads current state before sending.

@@ -8509,6 +8509,7 @@ async def adjust_audit(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Apply a finalized audit against fresh, locked inventory state."""
+    at = datetime.now(timezone.utc).isoformat()  # one business day for the whole adjustment
     row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Finalize the count before adjusting stock")
@@ -8581,7 +8582,7 @@ async def adjust_audit(
         adjusted += 1
     await auto_je.create_for_audit_adjustment(
         session, company_id=company_id, user_id=user.id, list_id=entity_id,
-        shrinkage=shrink_by, overage=over_by, cycle=cycle,
+        shrinkage=shrink_by, overage=over_by, cycle=cycle, recorded=at,
     )
     await _emit_list(session, company_id, entity_id, "list.closed",
                      {"result": "stock_adjusted", "line_items": lines, "adjust_count": cycle + 1}, user)
@@ -8825,6 +8826,7 @@ async def write_off_stock(
     quantity but an invalid account/item/quantity rejects the whole action. Reversible via
     undo-write-off."""
     from celerp_inventory.routes import split_off_child
+    at = datetime.now(timezone.utc).isoformat()  # one business day for the whole write-off
     # Row-lock the list for the whole transaction: this terminal moves ledger value, so a second
     # concurrent run must serialize (a double run would double-carve and post twice). The audit terminal
     # only reads status; the ledger effect here is why the write-off locks and the audit does not.
@@ -8904,7 +8906,7 @@ async def write_off_stock(
     # finalize and the disposal are atomic - a later failure rolls both back and the list stays a draft.
     if status == DRAFT:
         await _emit_list(session, company_id, entity_id, "list.finalized",
-                         {"status": FINALIZED, "finalized_at": datetime.now(timezone.utc).isoformat()}, user)
+                         {"status": FINALIZED, "finalized_at": at}, user)
     # Each line's value is money in the company currency; the account debits and the Inventory
     # credit are sums of those rounded values, so the entry balances.
     currency = await auto_je.company_currency(session, company_id)
@@ -8961,7 +8963,7 @@ async def write_off_stock(
             session, company_id, {code: to_stored_float(v) for code, v in credits.items()})
     await auto_je.create_for_line_adjustment(
         session, company_id=company_id, user_id=user.id, list_id=entity_id,
-        kind="writeoff", entries=entries, cycle=cycle,
+        kind="writeoff", entries=entries, cycle=cycle, recorded=at,
     )
     await _emit_list(session, company_id, entity_id, "list.closed",
                      {"result": "written_off", "line_items": lines, "adjust_count": cycle + 1}, user)

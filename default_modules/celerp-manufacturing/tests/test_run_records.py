@@ -17,6 +17,8 @@ from sqlalchemy import select
 from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 
+_AT = "2026-10-01T12:00:00+00:00"  # the business moment a directly closed run is dated
+
 
 async def _register(client, email: str | None = None) -> str:
     addr = email or f"admin-{uuid.uuid4().hex[:8]}@mfg.test"
@@ -388,8 +390,8 @@ async def test_complete_idempotent_double_call(client, session):
     company_id, user = await _actors(session)
     row = await mfg._get_order(session, company_id, run)
     states = await mfg._all_item_states(session, company_id)
-    await mfg._close_run(session, company_id, user, run, row.state, states, None)
-    await mfg._close_run(session, company_id, user, run, row.state, states, None)
+    await mfg._close_run(session, company_id, user, run, row.state, states, None, at=_AT)
+    await mfg._close_run(session, company_id, user, run, row.state, states, None, at=_AT)
     await session.commit()
 
     rows = (await session.execute(select(LedgerEntry).where(
@@ -413,7 +415,7 @@ async def test_complete_zero_received_relieves_actual_input(client, session):
     company_id, user = await _actors(session)
     row = await mfg._get_order(session, company_id, run)
     states = await mfg._all_item_states(session, company_id)
-    await mfg._close_run(session, company_id, user, run, row.state, states, None)
+    await mfg._close_run(session, company_id, user, run, row.state, states, None, at=_AT)
     await session.commit()
 
     assert _input_relief(await _completion_entries(client, token, run)) == pytest.approx(6 * 80)

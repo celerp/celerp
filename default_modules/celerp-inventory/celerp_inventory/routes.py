@@ -398,6 +398,7 @@ ITEM_STATUSES: frozenset[str] = frozenset({
 _AUTHORING_EVENT_TYPES: frozenset[str] = frozenset({
     "item.created", "item.updated", "item.patched", "item.pricing.set",
     "item.status.set", "item.recipe.set", "item.workflow.set",
+    "item.inventory_account.recorded",
     "shop.sync.enabled", "shop.sync.disabled",
 })
 
@@ -2678,6 +2679,7 @@ async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
     for entity_id in payload.entity_ids:
         await assert_make_available_allowed(session, company_id, entity_id)
+    at = datetime.now(timezone.utc).isoformat()  # one business day for the whole move
     event_ids = []
     for entity_id in payload.entity_ids:
         entry = await emit_event(
@@ -2686,7 +2688,7 @@ async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get
             entity_id=entity_id,
             entity_type="item",
             event_type="item.status.set",
-            data={"new_status": "available"},
+            data={"new_status": "available", "ts": at},
             actor_id=user.id,
             location_id=None,
             source="api",
@@ -2705,6 +2707,7 @@ async def bulk_revert_to_draft(payload: RevertToDraftBody, company_id=Depends(ge
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
     for entity_id in payload.entity_ids:
         await assert_status_change_allowed(session, company_id, entity_id, "draft", role, settings)
+    at = datetime.now(timezone.utc).isoformat()  # one business day for the whole move
     event_ids = []
     for entity_id in payload.entity_ids:
         entry = await emit_event(
@@ -2713,7 +2716,7 @@ async def bulk_revert_to_draft(payload: RevertToDraftBody, company_id=Depends(ge
             entity_id=entity_id,
             entity_type="item",
             event_type="item.status.set",
-            data={"new_status": "draft", "reason": payload.reason},
+            data={"new_status": "draft", "reason": payload.reason, "ts": at},
             actor_id=user.id,
             location_id=None,
             source="api",

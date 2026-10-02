@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -362,6 +363,7 @@ async def build_item(
         raise HTTPException(status_code=422, detail="Build quantity must be greater than zero")
     inputs, outputs = expand_recipe(item.state, payload.quantity)
     order_id = f"mfg:{uuid.uuid4()}"
+    at = datetime.now(timezone.utc).isoformat()
     entry = await emit_event(
         session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
         event_type="mfg.order.created",
@@ -381,7 +383,7 @@ async def build_item(
         await _issue_and_record(session, company_id, user, order_id, run.state.get("inputs", []), states)
         await _receive(session, company_id, user, order_id, run.state, payload.quantity, states)
         run = await _get_order(session, company_id, order_id)
-        await _close_run(session, company_id, user, order_id, run.state, states)
+        await _close_run(session, company_id, user, order_id, run.state, states, at=at)
     await session.commit()
     return {"event_id": entry.id, "id": order_id}
 
@@ -643,14 +645,15 @@ async def _emit_work_order(session, company_id, actor_id, item_id: str, item_sta
     return order_id
 
 
-async def _complete_work_order_now(session, company_id, user, order_id: str, qty: float, states: dict) -> None:
-    """One-tap: issue all components, receive the output and close the work order."""
+async def _complete_work_order_now(session, company_id, user, order_id: str, qty: float, states: dict,
+                                   at: str) -> None:
+    """One-tap: issue all components, receive the output and close the work order, dated ``at``."""
     run = await _get_order(session, company_id, order_id)
     await _lock_code_namespace_for_completion(session, company_id)
     await _issue_and_record(session, company_id, user, order_id, run.state.get("inputs", []), states)
     await _receive(session, company_id, user, order_id, run.state, qty, states)
     run = await _get_order(session, company_id, order_id)
-    await _close_run(session, company_id, user, order_id, run.state, states)
+    await _close_run(session, company_id, user, order_id, run.state, states, at=at)
 
 
 def _line_source(doc: dict) -> dict:
@@ -685,6 +688,7 @@ async def make_work_orders(
     issued, received and closed. This is Demand Planning's 'Make selected' / 'Make & complete'."""
     if not payload.lines:
         return {"created": [], "skipped": []}
+    at = datetime.now(timezone.utc).isoformat()
     rows = {r["item_id"]: r for r in await _compute_to_make(session, company_id)}
     states = await _all_item_states(session, company_id)
     created: list[dict] = []
@@ -703,7 +707,7 @@ async def make_work_orders(
         order_id = await _emit_work_order(session, company_id, user.id, ln.item_id, st, qty,
                                           _line_source(doc) if doc else None)
         if payload.complete:
-            await _complete_work_order_now(session, company_id, user, order_id, qty, states)
+            await _complete_work_order_now(session, company_id, user, order_id, qty, states, at)
         created.append({"item_id": ln.item_id, "doc_id": ln.doc_id, "run_id": order_id, "quantity": qty})
     await session.commit()
     return {"created": created, "skipped": skipped}
@@ -718,6 +722,7 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
     if not settings.get("auto_create_work_orders"):
         return
     auto_complete = bool(settings.get("auto_complete_work_orders"))
+    at = datetime.now(timezone.utc).isoformat()
     user = await session.get(User, user_id) if auto_complete else None
     completed: list[str] = []
     failed: list[str] = []
@@ -752,7 +757,7 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
             # aborts the loop nor escapes the hook into the finalize commit.
             try:
                 async with session.begin_nested():
-                    await _complete_work_order_now(session, company_id, user, order_id, make_qty, states)
+                    await _complete_work_order_now(session, company_id, user, order_id, make_qty, states, at)
                 completed.append(order_id)
             except Exception as exc:
                 failed.append(order_id)
@@ -845,6 +850,7 @@ async def bulk_run_action(
     action = payload.action
     if action not in _BULK_RUN_ACTIONS:
         raise HTTPException(status_code=422, detail=f"Unknown bulk action: {action}")
+    at = datetime.now(timezone.utc).isoformat()
     states = await _all_item_states(session, company_id) if action in ("issue", "complete") else {}
     require_issued = (action == "complete" and bool(
         (await _mfg_settings(session, company_id)).get("require_issued_before_complete")))
@@ -891,7 +897,7 @@ async def bulk_run_action(
                 if qty > 0:
                     await _receive(session, company_id, user, run_id, st, qty, states)
                     st = (await _get_order(session, company_id, run_id)).state
-                await _close_run(session, company_id, user, run_id, st, states)
+                await _close_run(session, company_id, user, run_id, st, states, at=at)
             done.append(run_id)
         except ValueError as e:
             skipped.append({"id": run_id, "reason": str(e)})
@@ -1507,9 +1513,10 @@ async def _receive(session: AsyncSession, company_id, user, order_id: str, run_s
 
 
 async def _close_run(session: AsyncSession, company_id, user, order_id: str, run_state: dict,
-                     states: dict[str, dict], payload: "CompleteBody | None" = None) -> None:
-    """Close a run: record the actual yield, post the completion journal entry, and re-cost the run's
-    lots to the final actual output cost so they reconcile exactly against that entry.
+                     states: dict[str, dict], payload: "CompleteBody | None" = None, *, at: str) -> None:
+    """Close a run: record the actual yield, post the completion journal entry dated the business
+    day of ``at`` (when the operation closing it started), and re-cost the run's lots to the final
+    actual output cost so they reconcile exactly against that entry.
 
     Idempotent: the completion event, its journal entry, and every lot re-cost carry deterministic
     keys derived from the order id, so closing the same run twice dedups rather than double posting."""
@@ -1558,7 +1565,7 @@ async def _close_run(session: AsyncSession, company_id, user, order_id: str, run
             outputs[code] = outputs.get(code, 0.0) + float(lot["quantity"])
     await auto_je.create_for_mfg_completed(
         session, company_id=company_id, user_id=user.id, order_id=order_id,
-        inputs=inputs, waste_cost=waste_cost, outputs=outputs,
+        inputs=inputs, waste_cost=waste_cost, outputs=outputs, recorded=at,
     )
     await _recost_run_lots(session, company_id, user, order_id, run_state, input_cost - waste_cost)
 
@@ -1815,13 +1822,14 @@ async def receive_order(
            else _outstanding_output(row.state))
     if qty <= 0:
         raise HTTPException(status_code=422, detail="Receive quantity must be greater than zero")
+    at = datetime.now(timezone.utc).isoformat()
     states = await _all_item_states(session, company_id)
     lot_id = await _receive(session, company_id, user, order_id, row.state, qty, states,
                             idempotency_key=(payload.idempotency_key if payload else None))
     # Auto-complete once the full expected output has been received.
     row = await _get_order(session, company_id, order_id)
     if _outstanding_output(row.state) <= 1e-9:
-        await _close_run(session, company_id, user, order_id, row.state, states)
+        await _close_run(session, company_id, user, order_id, row.state, states, at=at)
     await session.commit()
     return {"received": qty, "lot_item_id": lot_id}
 
@@ -1843,6 +1851,7 @@ async def complete_order(
     row = await _get_order(session, company_id, order_id)
     if row.state.get("status") in {"completed", "cancelled"}:
         raise HTTPException(status_code=409, detail="Cannot complete a closed run")
+    at = datetime.now(timezone.utc).isoformat()
     states = await _all_item_states(session, company_id)
     outstanding = _outstanding_inputs(row.state)
     if outstanding:
@@ -1857,7 +1866,7 @@ async def complete_order(
     if qty > 0:
         await _receive(session, company_id, user, order_id, row.state, qty, states)
         row = await _get_order(session, company_id, order_id)
-    await _close_run(session, company_id, user, order_id, row.state, states, payload)
+    await _close_run(session, company_id, user, order_id, row.state, states, payload, at=at)
     await session.commit()
     return {"status": "completed"}
 

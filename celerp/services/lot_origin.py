@@ -15,10 +15,14 @@ brought back into stock later (a sale undone, a merge split) still records its a
 (normalize_legacy_inventory_origins). Stock entered before Accounting was turned on is
 opening stock, booked by the opening inventory entry; where an older release already
 posted that company's goods movements, its books are upgraded the same way instead
-(open_inventory_origins). An older draft has never held stock, so nothing is booked for
-it yet: in every case it records the account a new draft records today
-(account_roles.new_lot_account), opening inventory, where the opening inventory entry
-books it once it is made available.
+(open_inventory_origins).
+
+A draft is not stock: it records no inventory account and nothing is booked for it,
+whatever release wrote it. Making it available records the opening inventory account in
+use at that moment and books its value there against retained earnings in the same
+operation; returning it to draft takes that value off again (draft_boundary). With
+Accounting off the move books nothing, and the stock is opening stock when Accounting is
+turned on.
 
 Nothing else is assumed. Stock in a company whose books came from elsewhere (a
 migration, a bundle import, a restored backup), or whose two accounts do not add up to
@@ -30,7 +34,9 @@ beyond the stock already recorded on it.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
+from types import SimpleNamespace
 
 from fastapi import HTTPException
 from sqlalchemy import and_, or_, select
@@ -40,12 +46,20 @@ from celerp.accounting_roles import (
     INVENTORY_ORIGIN_KEY,
     INVENTORY_ORIGIN_SCHEMA,
     LOT_ACCOUNT_FIELD,
+    SCHEMA_KEY,
     SOURCE_CONTROLS_KEY,
     AccountRole,
 )
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services.account_roles import new_lot_account, role_map, scope_codes, target_problems
+from celerp.services.account_roles import (
+    current_settings,
+    lot_account,
+    resolve_many,
+    role_map,
+    scope_codes,
+    target_problems,
+)
 from celerp.services.business_time import business_date_of
 from celerp.services.money import round_money
 
@@ -103,16 +117,17 @@ def unrecorded(items: list[Projection]) -> list[Projection]:
     return [r for r in items if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and held_value(r) is not None]
 
 
-def _draft(row: Projection) -> bool:
-    return str((row.state or {}).get("status") or "").lower() == "draft"
+def _draft(state: dict) -> bool:
+    return str(state.get("status") or "").lower() == "draft"
 
 
 def _legacy(items: list[Projection]) -> list[Projection]:
     """Every lot of the company's own stock that has held stock and records no inventory
     account, on hand or not: a sold, merged or archived lot can come back into stock and
-    must then know its account. Drafts, which have never held stock, are placed by
-    ``_mark``."""
-    return [r for r in items if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and _owned_stock(r) and not _draft(r)]
+    must then know its account. A draft has never held stock and records its account
+    when it is made available (draft_boundary)."""
+    return [r for r in items
+            if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and _owned_stock(r) and not _draft(r.state or {})]
 
 
 async def unrecorded_lots(session: AsyncSession, company_id) -> list[dict]:
@@ -168,16 +183,9 @@ async def _locked(session: AsyncSession, company_id, roles: list[str]) -> tuple[
 
 
 async def _mark(session: AsyncSession, company_id) -> None:
-    """Mark the company upgraded. Its older drafts first record the account a new draft
-    records today, so none is left without one."""
+    """Mark the company upgraded."""
     from celerp.services.company_lock import locked_company
 
-    code = await new_lot_account(session, company_id)
-    if code:
-        drafts = [r for r in await _items(session, company_id)
-                  if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and _owned_stock(r) and _draft(r)]
-        for row in sorted(drafts, key=lambda r: r.entity_id):
-            await _record(session, company_id, row.entity_id, code, "draft", None)
     company = await locked_company(session, company_id)
     company.settings = {**(company.settings or {}), INVENTORY_ORIGIN_KEY: INVENTORY_ORIGIN_SCHEMA}
     await session.flush()
@@ -202,7 +210,7 @@ async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) 
     hand (V); then one entry dated the company's business day moves OB, beyond the stock
     recording OB, into P, every older lot that has held stock records P, on hand or not,
     and the company is marked upgraded. An older draft holds no stock, so it counts
-    toward neither V nor the proof and records OB (``_mark``). Retained earnings, cost
+    toward neither V nor the proof and records nothing. Retained earnings, cost
     of sales, total inventory and older documents are untouched. When the books cannot
     vouch for the stock, nothing moves and the company is still marked, leaving each older
     lot that has held stock for the user to place. A period lock that forbids the entry writes nothing and
@@ -269,9 +277,10 @@ async def _notify_moved(session: AsyncSession, company_id, p: str, ob: str, amou
 
 async def open_inventory_origins(session: AsyncSession, company_id, user_id=None) -> bool:
     """When Accounting is first turned on for a company Celerp built itself, its older
-    stock is opening stock: each such lot, on hand or not, and each older draft
-    (``_mark``) records the opening inventory account and the opening inventory entry
-    books the stock on hand, in one savepoint.
+    stock is opening stock: each such lot, on hand or not, records the opening inventory
+    account and the opening inventory entry books the stock on hand, in one savepoint.
+    Anything that stops the entry (posting accounts, a period lock on an earlier opening
+    entry) fails the whole savepoint, so no lot records an account its value never reached.
     Older releases posted goods movements to purchased inventory even without a chart of
     accounts; a company whose books already carry them gets the opening entry for the
     stock those books never booked, and is then upgraded like any older company
@@ -279,7 +288,7 @@ async def open_inventory_origins(session: AsyncSession, company_id, user_id=None
     one account. Stock from elsewhere (``_foreign``) records nothing and waits for the
     user. A period lock that forbids the entry writes nothing and leaves the company
     unmarked, to retry on a later start. Returns whether the company was marked."""
-    from celerp.services.auto_je import upsert_opening_inventory_je
+    from celerp.services.auto_je import book_opening_inventory
 
     async with session.begin_nested():
         opening, retained = AccountRole.INVENTORY_OPENING.value, AccountRole.RETAINED_EARNINGS.value
@@ -292,13 +301,84 @@ async def open_inventory_origins(session: AsyncSession, company_id, user_id=None
             return False
         inventory = {code for role in _INVENTORY for code in scope_codes(settings, role)}
         if any(e.get("account") in inventory for _, e in await _posted_entries(session, company_id)):
-            await upsert_opening_inventory_je(session, company_id=company_id, user_id=user_id)
+            await book_opening_inventory(session, company_id=company_id, user_id=user_id)
             return await normalize_legacy_inventory_origins(session, company_id)
         for row in sorted(pending, key=lambda r: r.entity_id):
             await _record(session, company_id, row.entity_id, codes[opening], "accounting turned on", None)
-        await upsert_opening_inventory_je(session, company_id=company_id, user_id=user_id)
+        await book_opening_inventory(session, company_id=company_id, user_id=user_id)
         await _mark(session, company_id)
     return True
+
+
+@dataclass(frozen=True)
+class DraftBoundary:
+    """A lot moving between draft and stock: the value it brings onto the books (made
+    available) or takes off them (returned to draft), on its inventory account."""
+
+    made_available: bool
+    value: Decimal
+    code: str
+    record: bool  # the lot records ``code`` as it is made available
+    retained: str | None
+    settings: dict
+    day: str
+
+
+async def draft_boundary(session: AsyncSession, kwargs: dict, previous: Projection) -> DraftBoundary | None:
+    """Whether an item event moves a lot across the line between draft and stock, decided
+    before anything is written, so a move the books cannot take writes nothing. Made
+    available, the lot keeps the account it recorded before or takes the opening
+    inventory account in use now, and its value is booked there against retained
+    earnings; returned to draft, its value comes off the account it recorded. Every
+    account is checked as any new entry's is (account_roles.resolve_many), and the entry
+    is dated the business day the operation recorded (``ts``) or today. The period lock is
+    the event's own (events.engine). With Accounting off, nothing is booked."""
+    from celerp.projections.engine import ProjectionEngine
+    from celerp.services.auto_je import entry_day
+
+    company_id, before = kwargs["company_id"], previous.state or {}
+    after = ProjectionEngine._apply(dict(before), kwargs["event_type"], kwargs["data"])
+    if _draft(before) == _draft(after):
+        return None
+    settings = await current_settings(session, company_id)
+    if SCHEMA_KEY not in settings:
+        return None
+    made_available = _draft(before)
+    value = held_value(SimpleNamespace(state=after if made_available else before,
+                                       consignment_flag=previous.consignment_flag))
+    if value is None:
+        return None
+    value = round_money(value, settings.get("currency", "USD"))
+    code = before.get(LOT_ACCOUNT_FIELD) if made_available else lot_account(before)
+    opening, retained = AccountRole.INVENTORY_OPENING.value, AccountRole.RETAINED_EARNINGS.value
+    roles = ([] if code else [opening]) + ([retained] if value else [])
+    accounts = await resolve_many(session, company_id, roles) if roles else {}
+    return DraftBoundary(made_available=made_available, value=value, code=code or accounts[opening],
+                         record=not code, retained=accounts.get(retained), settings=settings,
+                         day=await entry_day(session, company_id, kwargs["data"].get("ts")))
+
+
+async def book_draft_boundary(session: AsyncSession, entry: LedgerEntry, move: DraftBoundary) -> None:
+    """Record and book a lot's move between draft and stock (draft_boundary), in the
+    same transaction as the event that moved it."""
+    from celerp.services.auto_je import _emit_auto_posted_je, _line, _lot_line
+
+    if move.record:
+        await _record(session, entry.company_id, entry.entity_id, move.code, "made available", entry.actor_id)
+    if not move.value:
+        return
+    amount, retained = float(move.value), AccountRole.RETAINED_EARNINGS.value
+    if move.made_available:
+        kind, memo = "made-available", "Opening stock made available"
+        lines = [_lot_line(move.settings, move.code, debit=amount), _line(move.retained, retained, credit=amount)]
+    else:
+        kind, memo = "returned-to-draft", "Opening stock returned to draft"
+        lines = [_line(move.retained, retained, debit=amount), _lot_line(move.settings, move.code, credit=amount)]
+    await _emit_auto_posted_je(
+        session, company_id=entry.company_id, user_id=entry.actor_id,
+        je_id=f"je:auto:{entry.entity_id}:{kind}:{entry.id}",
+        idem_create=f"draft-stock:{entry.id}:c", idem_posted=f"draft-stock:{entry.id}:p",
+        memo=memo, entries=lines, metadata_={"trigger": f"item.{kind}"}, ts=move.day)
 
 
 async def choose_lot_account(session: AsyncSession, company_id, item_id: str, code: str, actor_id) -> None:

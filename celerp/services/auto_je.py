@@ -2012,10 +2012,11 @@ async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: st
 
 
 async def create_for_mfg_completed(session, *, company_id, user_id, order_id: str, inputs: dict[str, float],
-                                   waste_cost: float, outputs: dict[str, float]) -> None:
+                                   waste_cost: float, outputs: dict[str, float], recorded: object = None) -> None:
     """Components leave the inventory accounts their lots are valued in (``inputs``, cost per
     account); the output goes to the accounts the run's output lots recorded (``outputs``,
-    quantity per account) and waste to COGS."""
+    quantity per account) and waste to COGS. Dated the business day of ``recorded``, when
+    the completion started (entry_day)."""
     # Input and waste become money first; the output is what is left of them, so the entry balances.
     currency = await company_currency(session, company_id)
     relief = {code: round_money(v, currency) for code, v in sorted(inputs.items())}
@@ -2034,7 +2035,7 @@ async def create_for_mfg_completed(session, *, company_id, user_id, order_id: st
         idem_create=je_idempotency_key(order_id, "mfg.completed", "c"),
         idem_posted=je_idempotency_key(order_id, "mfg.completed", "p"),
         memo=f"Auto JE for {order_id} completion",
-        ts=await entry_day(session, company_id),
+        ts=await entry_day(session, company_id, recorded),
         entries=[
             *(_inventory_lines(settings, output_amt, outputs, currency, debit=True) if output_amt else []),
             _line(cogs, R.COGS, debit=to_stored_float(waste_amt)),
@@ -2055,8 +2056,10 @@ def _list_adjustment_je_id(list_id: str, kind: str, cycle: int) -> str:
 
 async def create_for_line_adjustment(
     session, *, company_id, user_id, list_id: str, kind: str, entries: list[dict], cycle: int = 0,
+    recorded: object = None,
 ) -> None:
-    """Post one balanced auto JE for a list terminal that adjusts stock value.
+    """Post one balanced auto JE for a list terminal that adjusts stock value, dated the
+    business day of ``recorded``, when the terminal started (entry_day).
 
     `entries` is the caller-built balanced set of debit/credit lines: audit builds fixed
     shrinkage/overage lines; write-off builds one debit per chosen destination account against
@@ -2073,7 +2076,7 @@ async def create_for_line_adjustment(
         idem_create=je_idempotency_key(list_id, f"{kind}.adjusted:{cycle}", "c"),
         idem_posted=je_idempotency_key(list_id, f"{kind}.adjusted:{cycle}", "p"),
         memo=f"{_ADJUST_MEMO.get(kind, kind)} {list_id}",
-        ts=await entry_day(session, company_id),
+        ts=await entry_day(session, company_id, recorded),
         entries=entries,
         metadata_={"trigger": f"{kind}.adjusted", "list_id": list_id},
     )
@@ -2101,7 +2104,7 @@ async def void_for_list_adjustment(session, *, company_id, user_id, list_id: str
 
 async def create_for_audit_adjustment(
     session, *, company_id, user_id, list_id: str, shrinkage: dict[str, float], overage: dict[str, float],
-    cycle: int = 0,
+    cycle: int = 0, recorded: object = None,
 ) -> None:
     """Post the balanced inventory write-down/up JE for an audit's stock adjustment.
 
@@ -2131,7 +2134,7 @@ async def create_for_audit_adjustment(
         entries.append(_line(acc[R.STOCK_GAIN], R.STOCK_GAIN, credit=to_stored_float(over_d)))
     await create_for_line_adjustment(
         session, company_id=company_id, user_id=user_id, list_id=list_id,
-        kind="audit", entries=entries, cycle=cycle,
+        kind="audit", entries=entries, cycle=cycle, recorded=recorded,
     )
 
 
@@ -2142,7 +2145,7 @@ async def void_for_audit_adjustment(session, *, company_id, user_id, list_id: st
     )
 
 
-async def upsert_opening_inventory_je(
+async def book_opening_inventory(
     session,
     *,
     company_id,
@@ -2161,7 +2164,9 @@ async def upsert_opening_inventory_je(
     account is changed; whatever is left goes to the current opening account.
 
     When the gap or its split changes, voids the old JE and posts a fresh one so
-    it stays current.  Idempotent: safe to call on every render.
+    it stays current. Idempotent. Raises when the entry cannot be written (posting
+    accounts, a period lock on either half, an unreadable timezone), before anything
+    changes.
     """
     from sqlalchemy import select as _sel
 
@@ -2234,14 +2239,9 @@ async def upsert_opening_inventory_je(
         needed_d = _Dec("0")
     needed = to_stored_float(needed_d)
 
-    # An opening-inventory or retained-earnings role that is unmapped leaves the books as
-    # they are; the posting accounts panel and the books check report the unmapped role.
     split: dict[str, _Dec] = {}
     if needed_d > 0:
-        try:
-            acc = await resolve_many(session, company_id, [R.INVENTORY_OPENING, R.RETAINED_EARNINGS])
-        except PostingRoleError:
-            return
+        acc = await resolve_many(session, company_id, [R.INVENTORY_OPENING, R.RETAINED_EARNINGS])
         left = needed_d
         opening = scope_codes(settings, R.INVENTORY_OPENING)
         for code in sorted(c for c in {*by_lot_account, *backed_by_account} if c in opening):
@@ -2262,29 +2262,16 @@ async def upsert_opening_inventory_je(
         if not (ob_proj and ob_proj.state.get("status") == "posted" and not ob_proj.state.get("ts")):
             return  # already correct and has a date, nothing to do
 
-    # This upsert runs inside report views (balance sheet), so a period lock on
-    # the OB entry must degrade to "leave the books as they are" - a report GET
-    # can never fail because the lock forbids restating the opening balance.
-    # Both halves (void + repost) are lock-checked BEFORE anything mutates, so
-    # a lock can never leave a half-done restatement behind. The entry is dated
-    # the company's business day; an unreadable timezone leaves the books too.
-    from fastapi import HTTPException as _HTTPExc
-
+    # Both halves (void + repost) are lock-checked BEFORE anything mutates, so a lock
+    # can never leave a half-done restatement behind. The entry is dated the
+    # company's business day.
     from celerp.events.engine import _check_period_lock
 
-    try:
-        today = business_date_of(None, settings.get("timezone"))
-    except ValueError:
-        return
-    try:
-        if ob_proj and ob_proj.state.get("status") == "posted":
-            await _check_period_lock(session, company_id, je_void_data("", ob_proj.state))
-        if needed_d > 0:
-            await _check_period_lock(session, company_id, {"ts": today})
-    except _HTTPExc as exc:
-        if exc.status_code == 422 and "locked" in str(exc.detail).lower():
-            return
-        raise
+    today = await entry_day(session, company_id)
+    if ob_proj and ob_proj.state.get("status") == "posted":
+        await _check_period_lock(session, company_id, je_void_data("", ob_proj.state))
+    if needed_d > 0:
+        await _check_period_lock(session, company_id, {"ts": today})
     # Void the existing OB JE if posted (amount changed or gap closed)
     if ob_proj and ob_proj.state.get("status") == "posted":
         from celerp.events.engine import emit_event as _emit
@@ -2320,3 +2307,20 @@ async def upsert_opening_inventory_je(
         metadata_={"trigger": "opening_inventory.auto"},
         ts=today,
     )
+
+
+async def upsert_opening_inventory_je(session, *, company_id, user_id) -> None:
+    """Bring the opening inventory entry up to date for a report (book_opening_inventory).
+    A report can never fail because the books cannot take the entry: an unmapped or
+    unusable posting account, a period lock or an unreadable timezone leaves the books as
+    they are, and the posting accounts panel and the books check report the cause."""
+    from fastapi import HTTPException
+
+    try:
+        async with session.begin_nested():
+            await book_opening_inventory(session, company_id=company_id, user_id=user_id)
+    except PostingRoleError:
+        return
+    except HTTPException as exc:
+        if exc.status_code != 422:
+            raise
