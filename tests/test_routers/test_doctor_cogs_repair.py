@@ -76,7 +76,7 @@ async def test_doctor_finalize_repair_includes_cogs(client, session):
     # The stock parcel behind the line item: unit cost 20 (40 total over qty 2).
     session.add(Projection(
         company_id=company_id, entity_id="item:doctor-parcel", entity_type="item",
-        state={"cost_total": 40.0, "quantity": 2.0}, version=1,
+        state={"cost_total": 40.0, "quantity": 2.0, "inventory_account_code": "1130-P"}, version=1,
         updated_at=datetime.now(timezone.utc)))
     await session.flush()
 

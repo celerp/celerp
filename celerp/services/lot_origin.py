@@ -180,7 +180,8 @@ async def prove_lot_accounts(session: AsyncSession, company_id) -> int:
         proofs[item_id] = found
         return found
 
-    proven = {item_id: found for item_id in pending if (found := prove(item_id))}
+    proven = {item_id: prove(item_id) for item_id in pending}
+    proven = {item_id: found for item_id, found in proven.items() if found}
     by_document = {i: p for i, p in proven.items() if p[0] is not _OPENING}
     by_opening = {i: p for i, p in proven.items() if p[0] is _OPENING}
     if by_opening:

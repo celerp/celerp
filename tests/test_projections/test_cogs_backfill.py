@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import func, select, text
 
 from celerp.services.company_lock import locked_company
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD
 from celerp.events.engine import emit_event
 from celerp.migrations._data_reconcile import get_meta
 from celerp.models.company import Company
@@ -46,8 +47,9 @@ async def _seed_company(session, name: str = "CogsCo") -> uuid.UUID:
 
 def _seed_parcel(session, company_id, entity_id: str, *, cost_total=None,
                  quantity=0.0, cost_price=None) -> None:
-    """A parcel projection as compute_doc_cogs reads it."""
-    state: dict = {"quantity": quantity}
+    """A parcel projection as compute_doc_cogs reads it, recording the inventory account
+    a lot takes on when it first holds stock."""
+    state: dict = {"quantity": quantity, LOT_ACCOUNT_FIELD: "1130-P"}
     if cost_total is not None:
         state["cost_total"] = cost_total
     if cost_price is not None:
