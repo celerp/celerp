@@ -87,20 +87,22 @@ async def deposit_account(
 
 
 async def require_online_deposit_account(session: AsyncSession, company_id, code: str) -> None:
-    """422 unless online payments may be deposited to *code*: Cash (the default) or one
-    of the company's active bank accounts. The bank account is read FOR SHARE, so it
-    cannot be deactivated while a payment posts to it."""
-    from celerp_accounting.models import Account, BankAccount
-    if code == DEFAULT_DEPOSIT_ACCOUNT:
-        found = select(Account.id).where(Account.company_id == company_id, Account.code == code)
-    else:
-        found = (select(BankAccount.id).where(
-            BankAccount.company_id == company_id, BankAccount.chart_account_code == code,
-            BankAccount.is_active.is_(True)).with_for_update(read=True))
-    if (await session.execute(found)).first() is None:
+    """422 unless online payments may be deposited to *code*: an active asset account of
+    the company that is Cash (the default) or behind one of its active bank accounts. The
+    bank account and the chart account are read FOR SHARE, so neither can be archived or
+    retyped while a payment posts to them."""
+    from celerp_accounting.ledger_accounts import require_money_account
+    from celerp_accounting.models import BankAccount
+    try:
+        if code != DEFAULT_DEPOSIT_ACCOUNT and (await session.execute(select(BankAccount.id).where(
+                BankAccount.company_id == company_id, BankAccount.chart_account_code == code,
+                BankAccount.is_active.is_(True)).with_for_update(read=True))).first() is None:
+            raise HTTPException(status_code=422, detail="No active bank account uses it.")
+        await require_money_account(session, company_id, code)
+    except HTTPException as refused:
         raise HTTPException(status_code=422, detail=(
             f"Online payments can be deposited only to Cash ({DEFAULT_DEPOSIT_ACCOUNT}) or an active "
-            f"bank account; '{code}' is neither"))
+            f"bank account; '{code}' is neither. {refused.detail}")) from None
 
 
 _BOOKS = ("deposit_account", "timezone", "base_currency", "rate")
