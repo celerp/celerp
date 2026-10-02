@@ -555,3 +555,68 @@ async def test_unmatched_payments_are_listed_newest_first(client, session):
 async def test_unmatched_payments_need_the_installation_owner(client):
     r = await client.get("/payments/unmatched")
     assert r.status_code in (401, 403)
+
+
+# ── payment pages Celerp Cloud cancelled unpaid ─────────────────────────────
+
+def _expiry(company_id: str, entity_id: str, reference: str = "pi_exp", **over) -> dict:
+    return {"company_id": company_id, "entity_id": entity_id, "reference": reference,
+            "amount_minor": 107000, "currency": "usd", "opened_at": "2026-09-01T09:00:00+00:00",
+            "expired_at": "2026-09-26T09:00:00+00:00", "age_days": 25, "delivery_id": "d-1"} | over
+
+
+@pytest.mark.asyncio
+async def test_an_expired_payment_page_is_recorded_once_and_shown_on_its_invoice(client, payments_on):
+    from celerp.services.payments import record_expiry
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+
+    assert await record_expiry(_expiry(cid, eid)) is True
+    assert await record_expiry(_expiry(cid, eid)) is True  # delivered again: nothing changes
+
+    doc = await _doc_state(client, tok, eid)
+    assert doc["payment_expiries"] == [{
+        "reference": "pi_exp", "amount": 1070.0, "currency": "USD", "age_days": 25,
+        "opened_at": "2026-09-01T09:00:00+00:00", "expired_at": "2026-09-26T09:00:00+00:00"}]
+    assert doc["amount_paid"] == 0 and doc["status"] != "paid"  # expired, not paid
+
+
+@pytest.mark.asyncio
+async def test_an_expiry_naming_no_payment_is_not_recorded(payments_on):
+    from celerp.services.payments import record_expiry
+    assert await record_expiry(_expiry("", "doc:1")) is False
+    assert await record_expiry(_expiry("c-1", "doc:1", reference="")) is False
+
+
+@pytest.mark.asyncio
+async def test_expired_payments_are_listed_newest_first(client, session):
+    import datetime
+    from celerp.models.payment_closure import ExpiredPayment
+    tok = await _register(client)
+    old = datetime.datetime(2026, 9, 28, 9, 0, tzinfo=datetime.timezone.utc)
+    session.add_all([
+        ExpiredPayment(reference="pi_old", amount_minor=107000, currency="USD", company="c-old",
+                       document="doc:1", age_days=25, opened_at=old - datetime.timedelta(days=25),
+                       expired_at=old, received_at=old),
+        ExpiredPayment(reference="pi_new", amount_minor=5000, currency="JPY", company="c-new",
+                       document="doc:2", age_days=25, received_at=old + datetime.timedelta(days=1)),
+    ])
+    await session.commit()
+
+    r = await client.get("/payments/expired", headers=_h(tok))
+
+    assert r.status_code == 200
+    assert r.json() == {"items": [
+        {"reference": "pi_new", "amount": 5000, "currency": "JPY", "company_id": "c-new",
+         "document_id": "doc:2", "age_days": 25, "opened_at": None, "expired_at": None},
+        {"reference": "pi_old", "amount": 1070.0, "currency": "USD", "company_id": "c-old",
+         "document_id": "doc:1", "age_days": 25, "opened_at": "2026-09-03T09:00:00+00:00",
+         "expired_at": "2026-09-28T09:00:00+00:00"},
+    ]}
+
+
+@pytest.mark.asyncio
+async def test_expired_payments_need_the_installation_owner(client):
+    r = await client.get("/payments/expired")
+    assert r.status_code in (401, 403)

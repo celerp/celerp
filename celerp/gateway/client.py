@@ -668,6 +668,9 @@ class GatewayClient:
         elif msg_type == "invoice.payment":
             self._spawn(self._handle_invoice_payment(payload))
 
+        elif msg_type == "invoice.payment_expired":
+            self._spawn(self._handle_payment_expired(payload))
+
         elif msg_type == "commercial_updated":
             # The payload is the context itself (flat, like subscription_updated);
             # the same shared apply/persist seam as the hello_ack branch, so
@@ -748,18 +751,27 @@ class GatewayClient:
 
     async def _handle_invoice_payment(self, payload: dict) -> None:
         """Record a delivered invoice payment and acknowledge it once recorded."""
+        from celerp.services import payments
+        await self._record_and_ack("invoice.payment", payments.receive_payment, payload)
+
+    async def _handle_payment_expired(self, payload: dict) -> None:
+        """Record a delivered payment page expiry and acknowledge it once recorded."""
+        from celerp.services import payments
+        await self._record_and_ack("invoice.payment_expired", payments.record_expiry, payload)
+
+    async def _record_and_ack(self, kind: str, record, payload: dict) -> None:
+        """Acknowledge a Cloud delivery only once *record* has recorded it; otherwise
+        Cloud delivers it again."""
         delivery_id = payload.get("delivery_id")
-        entity_id = payload.get("entity_id")
         try:
-            from celerp.services.payments import receive_payment
-            if await receive_payment(payload) and delivery_id and self._ws is not None:
+            if await record(payload) and delivery_id and self._ws is not None:
                 await self._send(self._ws, {
                     "type": "event.ack",
                     "id": str(uuid.uuid4()),
                     "payload": {"delivery_id": delivery_id},
                 })
         except Exception as exc:
-            log.warning("invoice.payment handling failed (entity=%s): %s", entity_id, exc)
+            log.warning("%s handling failed (entity=%s): %s", kind, payload.get("entity_id"), exc)
 
     def _get_http_transport(self) -> _SharedProxyTransport:
         """Return the one shared bounded transport that every per-request proxy client

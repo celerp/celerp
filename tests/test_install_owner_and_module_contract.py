@@ -106,6 +106,24 @@ async def test_invoice_delivery_is_acked_only_once_recorded(monkeypatch, recorde
                                  "payload": {"delivery_id": "delivery-1"}}] if acked else [])
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recorded,acked", [
+    (AsyncMock(return_value=True), True),
+    (AsyncMock(return_value=False), False),
+    (AsyncMock(side_effect=RuntimeError("write failed")), False),
+], ids=["recorded", "names-no-payment", "recording-fails"])
+async def test_expiry_delivery_is_acked_only_once_recorded(monkeypatch, recorded, acked):
+    client = GatewayClient("key", "instance", "ws://example.test")
+    monkeypatch.setattr("celerp.services.payments.record_expiry", recorded)
+    client._ws = _WS()
+
+    await client._handle_payment_expired(dict(_DELIVERY))
+
+    recorded.assert_awaited_once_with(_DELIVERY)
+    assert client._ws.sent == ([{"type": "event.ack", "id": client._ws.sent[0]["id"],
+                                 "payload": {"delivery_id": "delivery-1"}}] if acked else [])
+
+
 def test_install_owner_backfill_uses_existing_data_reconcile_path():
     from celerp.migrations._data_reconcile import data_backfill_scripts
 

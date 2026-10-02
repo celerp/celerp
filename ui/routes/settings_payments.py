@@ -9,7 +9,7 @@ Four states, four jobs:
   disconnecting  - a status line: new payments are stopped while existing ones finish
 
 Below any of the last three, the payments received for a company or invoice that no
-longer exists, when there are any.
+longer exists, and the payment pages cancelled unpaid, when there are any.
 """
 
 from __future__ import annotations
@@ -103,9 +103,31 @@ def _unmatched(payments: list[dict]) -> FT | str:
     )
 
 
+def _expired(payments: list[dict]) -> FT | str:
+    """Online payment pages cancelled because they were still unpaid, newest first."""
+    if not payments:
+        return ""
+    return Div(
+        H3(t("pay.expired_head"), cls="section-title"),
+        P(t("pay.expired_hint"), cls="form-hint"),
+        Table(
+            Thead(Tr(Th(t("pay.expired_on")), Th(t("pay.expired_opened")), Th(t("pay.expired_open_for")),
+                     Th(t("label.reference")), Th(t("label.amount"), cls="cell--number"),
+                     Th(t("th.company")), Th(t("th.document")))),
+            Tbody(*[Tr(Td((p.get("expired_at") or "")[:10] or EMPTY), Td((p.get("opened_at") or "")[:10] or EMPTY),
+                       Td(t("pay.expired_days", days=p["age_days"])), Td(p["reference"]),
+                       Td(fmt_money(p["amount"], p["currency"]), cls="cell--money"),
+                       Td(p["company_id"]), Td(p["document_id"])) for p in payments]),
+            cls="data-table",
+        ),
+        cls="settings-card", style="margin-top:24px;",
+    )
+
+
 def _page(relay_ok: bool, enabled: bool, deposit_account: str,
           bank_accounts: list[dict], has_team_features: bool, saved: bool = False,
-          disconnecting: bool = False, unmatched: list[dict] | None = None) -> FT:
+          disconnecting: bool = False, unmatched: list[dict] | None = None,
+          expired: list[dict] | None = None) -> FT:
     if not relay_ok:
         body = upgrade_banner(t("nav.payments"), t("pay.upgrade_desc"), plan="cloud")
     elif disconnecting:
@@ -119,10 +141,19 @@ def _page(relay_ok: bool, enabled: bool, deposit_account: str,
         _cloud_tabs("payments", has_team_features=has_team_features),
         body,
         _unmatched(unmatched or []) if relay_ok else "",
+        _expired(expired or []) if relay_ok else "",
     )
 
 
-async def _load(token: str) -> tuple[bool, bool, str, list[dict], bool, list[dict]]:
+async def _owner_list(load, token: str) -> list[dict]:
+    """A list only the installation owner sees; empty for any other login."""
+    try:
+        return (await load(token)).get("items", [])
+    except APIError:
+        return []
+
+
+async def _load(token: str) -> tuple[bool, bool, str, list[dict], bool, list[dict], list[dict]]:
     relay_ok = False
     try:
         relay_ok = _relay_has_paid_access(await api.get_relay_status(token))
@@ -138,21 +169,17 @@ async def _load(token: str) -> tuple[bool, bool, str, list[dict], bool, list[dic
             banks = (await api.get_bank_accounts(token)).get("items", [])
         except APIError:
             pass
-    unmatched: list[dict] = []
-    try:
-        unmatched = (await api.get_unmatched_payments(token)).get("items", [])
-    except APIError:
-        pass  # only the installation owner sees them
-    return relay_ok, enabled, deposit, banks, status.get("state") == "disconnecting", unmatched
+    return (relay_ok, enabled, deposit, banks, status.get("state") == "disconnecting",
+            await _owner_list(api.get_unmatched_payments, token), await _owner_list(api.get_expired_payments, token))
 
 
 async def _page_with_error(request: Request, token: str, error: APIError):
-    relay_ok, enabled, deposit, banks, disconnecting, unmatched = await _load(token)
+    relay_ok, enabled, deposit, banks, disconnecting, unmatched, expired = await _load(token)
     has_team = _has_team_features(await _commercial_state(request))
     return await base_shell(
         Div(flash(str(error.detail)),
             _page(relay_ok, enabled, deposit, banks, has_team, disconnecting=disconnecting,
-                  unmatched=unmatched)),
+                  unmatched=unmatched, expired=expired)),
         title=page_title("nav.payments"), nav_active="web-access", request=request)
 
 
@@ -166,7 +193,7 @@ def setup_routes(app):
         if redir:
             return redir
         try:
-            relay_ok, enabled, deposit, banks, disconnecting, unmatched = await _load(token)
+            relay_ok, enabled, deposit, banks, disconnecting, unmatched, expired = await _load(token)
         except APIError as e:
             return await base_shell(flash(str(e.detail)), title=page_title("nav.payments"),
                                     nav_active="web-access", request=request)
@@ -174,7 +201,7 @@ def setup_routes(app):
         return await base_shell(
             _page(relay_ok, enabled, deposit, banks, has_team,
                   saved=request.query_params.get("saved") == "1", disconnecting=disconnecting,
-                  unmatched=unmatched),
+                  unmatched=unmatched, expired=expired),
             title=page_title("nav.payments"), nav_active="web-access", request=request)
 
     @app.post("/settings/payments")
