@@ -1289,6 +1289,75 @@ async def test_a_payment_recorded_again_after_a_restore_posts_as_its_page_opened
     assert await _posting(real_engine, eid) == first
 
 
+async def _payment_journal(engine, entity_id) -> list[str]:
+    """The payment journal entries posted for the invoice."""
+    async with maker(engine)() as s:
+        return list((await s.scalars(text("SELECT entity_id FROM projections WHERE entity_id LIKE :j"),
+                                     {"j": f"je:auto:{entity_id}:pay:%"})).all())
+
+
+async def test_a_payment_whose_page_opened_before_the_company_changed_currency_is_kept_among_the_unmatched(
+        monkeypatch, real_engine, real_client):
+    """The company keeps its books in dollars when a customer opens the payment page,
+    then moves them to baht before the customer pays. The payment is never posted in
+    dollars into the baht books."""
+    _payments_on(monkeypatch)
+    boss, a, b = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    eid, share = await _shared_invoice(real_client, real_engine, boss, a)
+    assert (await real_client.get(f"/pay/{share}", follow_redirects=False)).status_code == 303
+    assert cloud.opened[eid]["base_currency"] == "USD"
+
+    await _company_settings(real_engine, a, currency="THB")
+    cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _references(real_engine, eid) == []
+    assert await _payment_journal(real_engine, eid) == []
+    assert await _unmatched(real_engine) == [("pi_paid", 50000, "USD", str(a), eid)]
+
+
+async def test_a_payment_recorded_again_into_books_a_restore_brought_back_in_another_currency_is_kept_among_the_unmatched(
+        tmp_path, monkeypatch, code_config, real_engine, real_client):
+    """After the backup the company moves its books from dollars to baht and gives the
+    invoice its baht rate; a customer opens the payment page and pays. The restore
+    brings back the dollar books and loses the payment; delivered again, it is never
+    posted with the baht books into the dollar ledger."""
+    from celerp.services import backup_export, backup_import
+    _system_recovery(tmp_path, monkeypatch)
+    _payments_on(monkeypatch)
+    boss, a, b = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    eid, share = await _shared_invoice(real_client, real_engine, boss, a)
+    source = await backup_export.export_full()
+    try:
+        await _company_settings(real_engine, a, currency="THB")
+        async with maker(real_engine)() as s:
+            await s.execute(text("UPDATE projections SET state = jsonb_set(state::jsonb, '{conversion_rate}', "
+                                 "'35.125')::json WHERE entity_id = :e"), {"e": eid})
+            await s.commit()
+        assert (await real_client.get(f"/pay/{share}", follow_redirects=False)).status_code == 303
+        assert cloud.opened[eid]["base_currency"] == "THB" and float(cloud.opened[eid]["rate"]) == 35.125
+        cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
+        await cloud.deliver()
+        assert await _references(real_engine, eid) == ["pi_paid"]
+        result = await backup_import.run_recovery(source)
+    finally:
+        source.unlink(missing_ok=True)
+    assert result.ok is True, result.error
+    async with maker(real_engine)() as s:
+        settings = await s.scalar(text("SELECT settings FROM companies WHERE id = :c"), {"c": a})
+    assert settings.get("currency", "USD") == "USD"
+
+    await cloud.deliver()
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert [d["context"]["base_currency"] for d in cloud.deliveries if d.get("replay")] == ["THB"]
+    assert await _references(real_engine, eid) == []
+    assert await _payment_journal(real_engine, eid) == []
+    assert await _unmatched(real_engine) == [("pi_paid", 50000, "USD", str(a), eid)]
+
+
 async def test_a_payment_whose_bank_account_a_restore_removed_is_kept_among_the_unmatched(
         tmp_path, monkeypatch, code_config, real_engine, real_client):
     """The account online payments clear to was added after the backup: the payment is
