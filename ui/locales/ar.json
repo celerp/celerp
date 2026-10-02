@@ -1201,7 +1201,7 @@
   "pay.unmatched_head": "مدفوعات غير مطابقة لفاتورة",
   "pay.unmatched_hint": "وصلت هذه المدفوعات الإلكترونية لشركة أو فاتورة لم تعد موجودة، أو لم تتمكن من قبول الدفعة. سجّل كل دفعة في مكانها الصحيح، أو استردها من لوحة تحكم Stripe.",
   "pay.unmatched_paid_on": "تاريخ الدفع",
-  "pay.unmatched_received": "تاريخ الاستلام",
+  "pay.unmatched_received": "تاريخ التسجيل",
   "pay.upgrade_desc": "اسمح للعملاء بدفع الفواتير عبر الإنترنت بالبطاقة. اربط هذه النسخة بـ Celerp Connect أولًا، ثم اربط حساب Stripe.",
   "perm.page_no_access": "ليس لديك حق الوصول إلى هذه الصفحة.",
   "reason_export.gift": "هدية",

@@ -1201,7 +1201,7 @@
   "pay.unmatched_head": "Paiements non rattachés à une facture",
   "pay.unmatched_hint": "Ces paiements en ligne sont arrivés pour une entreprise ou une facture qui n'existe plus, ou qui n'a pas pu accepter le paiement. Enregistrez chacun à sa place ou remboursez-le depuis votre tableau de bord Stripe.",
   "pay.unmatched_paid_on": "Payé le",
-  "pay.unmatched_received": "Reçu le",
+  "pay.unmatched_received": "Enregistré le",
   "pay.upgrade_desc": "Permettez à vos clients de payer leurs factures en ligne par carte. Connectez d'abord cette instance à Celerp Connect, puis liez un compte Stripe.",
   "perm.page_no_access": "Vous n'avez pas accès à cette page.",
   "reason_export.gift": "Cadeau",

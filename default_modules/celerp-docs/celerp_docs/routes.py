@@ -2625,7 +2625,8 @@ async def _alloc_payment_index(session, company_id, payments: list,
 
 async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
                             *, source: str, actor_id, idempotency_key: str,
-                            request: str | None = None, commit: bool = True):
+                            request: str | None = None, commit: bool = True,
+                            books: tuple[str, Decimal] | None = None):
     """Record a payment against a doc: guard, emit doc.payment.received, post the cash
     JE, fire the payment lifecycle hook. Shared by the manual route and online payment
     so a Stripe payment lands identically to a hand-entered one. Commits per success and
@@ -2635,7 +2636,11 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     Takes the doc row under SELECT ... FOR UPDATE and validates against that fresh,
     committed read: the doc-row lock is the single serializer across every payment
     path and across connections, so two recorders on one doc are ordered at the row
-    and cannot compute a duplicate or colliding payment_index."""
+    and cannot compute a duplicate or colliding payment_index.
+
+    *books* is the (base currency, document rate) the payment posts on when the caller
+    already holds them - an online payment keeps the books its payment page opened with;
+    otherwise they are the company's and the document's now."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:
@@ -2653,7 +2658,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     if doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
         raise HTTPException(status_code=409, detail="Cannot record payment in current status")
     # Replay guard for referenced (online) payments: the same Stripe intent
-    # arriving twice (return leg + webhook push) records exactly once.
+    # delivered twice records exactly once.
     reference = body.get("reference")
     # Deleted tombstones do not hold the reference: deleting a mistaken
     # payment frees its charge to be re-recorded, as removal always did.
@@ -2693,9 +2698,12 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     # company's own currency there is nothing to convert, so any rate other
     # than 1 restates the receipt: 100 banked as 3500. Refused before the
     # event is written, the same way finalization refuses it on the document.
-    _company = await session.get(Company, company_id)
-    _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
-    _document_rate = float(_require_doc_rate_http(doc_state, _base_currency))
+    if books is not None:
+        _base_currency, _document_rate = books[0], float(books[1])
+    else:
+        _company = await session.get(Company, company_id)
+        _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
+        _document_rate = float(_require_doc_rate_http(doc_state, _base_currency))
     if body.get("currency") == _base_currency and body.get("conversion_rate") not in (None, "") \
             and to_decimal(body["conversion_rate"]) != 1:
         raise HTTPException(

@@ -2,18 +2,26 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Online invoice payment via Stripe Connect, brokered by Celerp Connect (mocked).
 
-The instance holds no Stripe credentials - checkout creation, session status and
-Connect onboarding are all cloud calls, mocked here at the payments-service boundary.
+The instance holds no Stripe credentials - checkout creation and Connect onboarding
+are cloud calls, mocked here at the payments-service boundary. A payment is recorded
+only when Celerp Cloud delivers it, on the books its payment page opened with.
 The "payments enabled" gate is the gateway feature flag delivered on the handshake.
 """
 
 from __future__ import annotations
+
+import datetime
 
 import pytest
 from httpx import AsyncClient
 
 from celerp.services.company_lock import locked_company
 from celerp.services.money import to_minor_units
+
+
+# When Stripe reported a payment paid, and the books its page opened with.
+PAID = datetime.datetime(2026, 7, 13, 9, 0, tzinfo=datetime.timezone.utc)
+BOOKS = {"deposit_account": "1110", "timezone": "UTC", "base_currency": "USD", "rate": "1"}
 
 
 def _h(token: str) -> dict:
@@ -93,6 +101,28 @@ async def test_checkout_sends_balance_due_and_reconcile_metadata(client, payment
     assert captured["company_id"] == _company_id(tok)
     assert captured["share_token"] == token
     assert captured["generation"] == 0  # the installation's payment generation
+    assert captured["context"] == BOOKS  # the books the payment will be recorded on
+
+
+@pytest.mark.asyncio
+async def test_checkout_request_to_cloud_carries_generation_and_books(client, payments_on, monkeypatch):
+    """Celerp Cloud opens a payment page only for a request that names the
+    installation's payment generation and the books the payment will be recorded on."""
+    import httpx
+    sent = []
+    async def _cloud(method, path, *, json=None, **kw):
+        sent.append((method, path, json))
+        return httpx.Response(200, json={"url": "https://stripe.test/cs_1"})
+    monkeypatch.setattr("celerp.services.cloud_entitlement.authenticated_request", _cloud)
+
+    tok = await _register(client)
+    _, token = await _payable_invoice(client, tok)
+    r = await client.get(f"/pay/{token}", follow_redirects=False)
+
+    assert r.status_code == 303
+    (body,) = [json for method, path, json in sent if path == "/billing/connect/checkout"]
+    assert body["generation"] == 0
+    assert body["context"] == BOOKS
 
 
 @pytest.mark.asyncio
@@ -115,67 +145,25 @@ async def test_checkout_502_when_cloud_unavailable(client, payments_on, monkeypa
     assert r.status_code == 502
 
 
-# ── reconcile on the customer's return (idempotent) ──────────────────────────
-
-def _paid_status(company_id: str, entity_id: str, token: str, reference: str = "pi_123"):
-    import hashlib
-    return {
-        "paid": True,
-        "reference": reference,
-        "amount_minor": 107000,
-        "currency": "usd",
-        "company_id": company_id,
-        "entity_id": entity_id,
-        "share_token_hash": hashlib.sha256(token.encode()).hexdigest(),
-    }
-
+# ── the customer's return from Stripe ────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_return_reconciles_payment(client, payments_on, monkeypatch):
+async def test_the_return_from_stripe_shows_the_invoice_and_records_nothing(client, payments_on, monkeypatch):
+    received = []
+
+    async def receive(payload):
+        received.append(payload)
+        return True
+    monkeypatch.setattr("celerp.services.payments.receive_payment", receive)
     tok = await _register(client)
     eid, token = await _payable_invoice(client, tok)
-    status = _paid_status(_company_id(tok), eid, token)
-    monkeypatch.setattr(
-        "celerp.services.payments.checkout_status",
-        lambda _sid: _async(status),
-    )
+
     r = await client.get(f"/pay/{token}/return?session_id=cs_1", follow_redirects=False)
-    assert r.status_code == 303
-    assert r.headers["location"] == f"/share/{token}"
 
+    assert r.status_code == 303 and r.headers["location"] == f"/share/{token}"
+    assert received == []
     doc = await _doc_state(client, tok, eid)
-    assert doc["status"] == "paid"
-    assert doc["amount_paid"] == 1070.0
-    assert any(p.get("reference") == "pi_123" and p.get("method") == "stripe"
-               for p in doc.get("payments", []))
-
-
-@pytest.mark.asyncio
-async def test_return_is_idempotent(client, payments_on, monkeypatch):
-    tok = await _register(client)
-    eid, token = await _payable_invoice(client, tok)
-    status = _paid_status(_company_id(tok), eid, token)
-    monkeypatch.setattr(
-        "celerp.services.payments.checkout_status",
-        lambda _sid: _async(status),
-    )
-    await client.get(f"/pay/{token}/return?session_id=cs_1", follow_redirects=False)
-    await client.get(f"/pay/{token}/return?session_id=cs_1", follow_redirects=False)
-    doc = await _doc_state(client, tok, eid)
-    assert len([p for p in doc["payments"] if p.get("reference") == "pi_123"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_return_ignores_unpaid_session(client, payments_on, monkeypatch):
-    monkeypatch.setattr("celerp.services.payments.checkout_status",
-                        lambda _sid: _async({"paid": False, "reference": None,
-                                             "amount_minor": 0, "currency": "usd"}))
-    tok = await _register(client)
-    eid, token = await _payable_invoice(client, tok)
-    await client.get(f"/pay/{token}/return?session_id=cs_1", follow_redirects=False)
-    doc = await _doc_state(client, tok, eid)
-    assert doc["status"] != "paid"
-    assert not doc.get("payments")
+    assert doc["status"] != "paid" and not doc.get("payments")
 
 
 def _async(value):
@@ -200,37 +188,51 @@ async def test_backup_push_records_and_is_idempotent(client, session, payments_o
 
     row = await session.get(Projection, (cid, eid))
     await record_stripe_payment(session, cid, eid, dict(row.state),
-                                reference="pi_push", amount_minor=107000, currency="usd")
+                                reference="pi_push", amount_minor=107000, currency="usd",
+                                paid_at=PAID, context=BOOKS)
     doc = await _doc_state(client, tok, eid)
     assert doc["status"] == "paid"
     assert len([p for p in doc["payments"] if p.get("reference") == "pi_push"]) == 1
 
     row2 = await session.get(Projection, (cid, eid))
     await record_stripe_payment(session, cid, eid, dict(row2.state),
-                                reference="pi_push", amount_minor=107000, currency="usd")
+                                reference="pi_push", amount_minor=107000, currency="usd",
+                                paid_at=PAID, context=BOOKS)
     doc2 = await _doc_state(client, tok, eid)
     assert len([p for p in doc2["payments"] if p.get("reference") == "pi_push"]) == 1
 
 
 @pytest.mark.asyncio
-async def test_backup_push_uses_company_deposit_account(client, session, payments_on):
-    """The deposit GL account is the company setting, defaulting to Cash."""
+async def test_a_payment_clears_to_the_deposit_account_its_page_opened_with(client, session, payments_on,
+                                                                          monkeypatch):
+    """The deposit GL account is the company setting when the payment page opens,
+    defaulting to Cash; changing the setting later does not move the payment."""
     from celerp.models.projections import Projection
     from celerp_docs.routes_payments import record_stripe_payment
+    opened = {}
 
+    async def checkout(**kw):
+        opened.update(kw["context"])
+        return {"url": "https://stripe.test/cs_1"}
+    monkeypatch.setattr("celerp.services.payments.create_checkout", checkout)
     tok = await _register(client)
     eid, token = await _payable_invoice(client, tok)
     cid = _company_id(tok)
-    company = await locked_company(session, cid)
-    company.settings = {**(company.settings or {}), "stripe_deposit_account": "1055"}
-    await session.commit()
+
+    async def deposit_to(code):
+        company = await locked_company(session, cid)
+        company.settings = {**(company.settings or {}), "stripe_deposit_account": code}
+        await session.commit()
+    await deposit_to("1111")
+    assert (await client.get(f"/pay/{token}", follow_redirects=False)).status_code == 303
+    await deposit_to("1110")
 
     row = await session.get(Projection, (cid, eid))
-    await record_stripe_payment(session, cid, eid, dict(row.state),
-                                reference="pi_acct", amount_minor=107000, currency="usd")
+    await record_stripe_payment(session, cid, eid, dict(row.state), reference="pi_acct", amount_minor=107000,
+                                currency="usd", paid_at=PAID, context=opened)
     doc = await _doc_state(client, tok, eid)
     pay_entry = next(p for p in doc["payments"] if p.get("reference") == "pi_acct")
-    assert pay_entry["bank_account"] == "1055"
+    assert opened["deposit_account"] == "1111" and pay_entry["bank_account"] == "1111"
 
 
 # ── the whole journey, end to end ─────────────────────────────────────────────
@@ -242,9 +244,10 @@ async def test_full_online_payment_journey(client, session, payments_on, monkeyp
 
     Chains every hop of the real flow: send email (Pay leads with the amount
     due) -> share page carries the pay bar -> /pay creates the checkout with
-    the exact balance in minor units and reconcile metadata -> the return leg
-    records the payment -> status paid, journal entry posted, pay bar gone,
-    /pay refuses further charges -> a replayed return records nothing."""
+    the exact balance in minor units and the books it is recorded on -> the
+    return from Stripe records nothing -> Celerp Cloud's delivery records the payment ->
+    status paid, journal entry posted, pay bar gone, /pay refuses further
+    charges -> a repeated return or delivery records nothing."""
     import asyncio as _asyncio
 
     sent = {}
@@ -276,29 +279,29 @@ async def test_full_online_payment_journey(client, session, payments_on, monkeyp
     html = (await client.get(f"/share/{token}")).text
     assert f"/pay/{token}" in html and "Pay $1,070.00 now" in html
 
-    # 3. Customer clicks Pay: checkout for the exact balance, with reconcile metadata.
+    # 3. Customer clicks Pay: checkout for the exact balance, with the books it records on.
     r = await client.get(f"/pay/{token}", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "https://stripe.test/cs_journey"
     assert checkout["amount_minor"] == 107000 and checkout["currency"] == "USD"
     assert checkout["entity_id"] == eid
     assert checkout["company_id"] == _company_id(tok)
-    assert checkout["share_token"] == token
+    assert checkout["share_token"] == token and checkout["context"] == BOOKS
 
-    # 4. Stripe confirms; the customer returns; the payment reconciles.
-    status = _paid_status(
-        _company_id(tok), eid, token, reference="pi_journey"
-    )
-    monkeypatch.setattr(
-        "celerp.services.payments.checkout_status",
-        lambda sid: _async(status),
-    )
+    # 4. The customer returns from Stripe: the invoice shows, nothing is recorded yet.
     r = await client.get(f"/pay/{token}/return?session_id=cs_j", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == f"/share/{token}"
+    assert not (await _doc_state(client, tok, eid)).get("payments")
+    # Celerp Cloud delivers the payment Stripe reported paid.
+    from celerp.services.payments import receive_payment
+    delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_journey",
+                "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                "context": checkout["context"]}
+    assert await receive_payment(delivery) is True
 
     # 5. Money truth: invoice paid, exactly one payment, exactly one posted JE.
     doc = await _doc_state(client, tok, eid)
     assert doc["status"] == "paid" and doc["amount_outstanding"] == 0
-    assert [p["reference"] for p in doc["payments"]] == ["pi_journey"]
+    assert [(p["reference"], p["payment_date"]) for p in doc["payments"]] == [("pi_journey", "2026-07-13")]
     cid = _company_id(tok)
     assert await _pay_je_entities(session, cid, eid) == [f"je:auto:{eid}:pay:0"]
 
@@ -307,8 +310,9 @@ async def test_full_online_payment_journey(client, session, payments_on, monkeyp
     assert f"/pay/{token}" not in html
     assert (await client.get(f"/pay/{token}", follow_redirects=False)).status_code == 409
 
-    # 7. Replayed return (re-opened tab): nothing records twice.
+    # 7. A re-opened return tab, or the same delivery again: nothing records twice.
     await client.get(f"/pay/{token}/return?session_id=cs_j", follow_redirects=False)
+    assert await receive_payment(delivery) is True
     doc = await _doc_state(client, tok, eid)
     assert len(doc["payments"]) == 1
     assert await _pay_je_entities(session, cid, eid) == [f"je:auto:{eid}:pay:0"]
@@ -339,15 +343,16 @@ async def test_online_payment_posts_exactly_one_journal_entry(client, session, p
     cid = _company_id(tok)
     row = await session.get(Projection, (cid, eid))
     await record_stripe_payment(session, cid, eid, dict(row.state),
-                                reference="pi_je", amount_minor=107000, currency="usd")
+                                reference="pi_je", amount_minor=107000, currency="usd",
+                                paid_at=PAID, context=BOOKS)
     assert await _pay_je_entities(session, cid, eid) == [f"je:auto:{eid}:pay:0"]
 
 
 @pytest.mark.asyncio
 async def test_manual_payment_racing_online_confirm(client, session, payments_on):
     """A manual payment lands while the customer is at Stripe checkout. The online
-    confirm then arrives holding a STALE snapshot (as both the return leg and the
-    gateway push do) and a charge larger than what is still owed.
+    delivery then arrives holding a STALE snapshot and a charge larger than what is
+    still owed.
 
     The invoice refuses the charge whole, against what it owes under its row lock:
     nothing is clamped onto it and the manual payment stands alone (the intake then
@@ -360,7 +365,7 @@ async def test_manual_payment_racing_online_confirm(client, session, payments_on
     eid, token = await _payable_invoice(client, tok)
     cid = _company_id(tok)
 
-    # Snapshot BEFORE the manual payment: this is what the confirm leg holds.
+    # Snapshot BEFORE the manual payment: this is what the delivery holds.
     stale = dict((await session.get(Projection, (cid, eid))).state)
 
     r = await client.post(f"/docs/{eid}/payment", json={
@@ -370,7 +375,8 @@ async def test_manual_payment_racing_online_confirm(client, session, payments_on
 
     with pytest.raises(HTTPException) as refused:
         await record_stripe_payment(session, cid, eid, stale,
-                                    reference="pi_race", amount_minor=107000, currency="usd")
+                                    reference="pi_race", amount_minor=107000, currency="usd",
+                                    paid_at=PAID, context=BOOKS)
     assert refused.value.status_code == 409
     assert "exceeds amount outstanding" in refused.value.detail
     await session.rollback()
@@ -381,8 +387,8 @@ async def test_manual_payment_racing_online_confirm(client, session, payments_on
 
 
 @pytest.mark.asyncio
-async def test_stale_replay_after_return_recorded_is_noop(client, session, payments_on):
-    """Gateway push arrives with a snapshot older than the return leg's record:
+async def test_stale_repeated_delivery_is_noop(client, session, payments_on):
+    """A repeated delivery arrives with a snapshot older than the first one's record:
     the fresh re-read inside the lock sees the reference and quietly no-ops."""
     from celerp.models.projections import Projection
     from celerp_docs.routes_payments import record_stripe_payment
@@ -393,11 +399,13 @@ async def test_stale_replay_after_return_recorded_is_noop(client, session, payme
     stale = dict((await session.get(Projection, (cid, eid))).state)
 
     await record_stripe_payment(session, cid, eid, dict((await session.get(Projection, (cid, eid))).state),
-                                reference="pi_dup", amount_minor=107000, currency="usd")
+                                reference="pi_dup", amount_minor=107000, currency="usd",
+                                paid_at=PAID, context=BOOKS)
     # Replay with the PRE-payment snapshot (worst case: passes the caller's own
     # stale pre-check, must be stopped by the locked fresh read).
     assert await record_stripe_payment(session, cid, eid, stale,
-                                       reference="pi_dup", amount_minor=107000, currency="usd") is None
+                                       reference="pi_dup", amount_minor=107000, currency="usd",
+                                       paid_at=PAID, context=BOOKS) is None
     doc = await _doc_state(client, tok, eid)
     assert len([p for p in doc["payments"] if p.get("reference") == "pi_dup"]) == 1
     assert await _pay_je_entities(session, cid, eid) == [f"je:auto:{eid}:pay:0"]

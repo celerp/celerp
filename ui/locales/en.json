@@ -1359,7 +1359,7 @@
   "pay.unmatched_head": "Payments not matched to an invoice",
   "pay.unmatched_hint": "These online payments arrived for a company or invoice that no longer exists, or one that could not take the payment. Record each where it belongs, or refund it from your Stripe dashboard.",
   "pay.unmatched_paid_on": "Paid on",
-  "pay.unmatched_received": "Received",
+  "pay.unmatched_received": "Recorded on",
   "pay.upgrade_desc": "Let customers pay invoices online by card. Connect this instance to Celerp Connect first, then link a Stripe account.",
   "perm.page_no_access": "You do not have access to this page.",
   "reason_export.gift": "Gift",

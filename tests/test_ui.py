@@ -11163,6 +11163,7 @@ class TestPaymentsSettingsPage:
         assert r.text.index("pi_new") < r.text.index("pi_old")  # newest first
         assert "c-old" in r.text and "doc:1" in r.text and "2026-09-28" in r.text
         assert "Paid on" in r.text and "2026-09-25" in r.text  # when the customer paid
+        assert "Recorded on" in r.text  # when this installation recorded it
         assert '<td>--</td>' in r.text  # not known for pi_new
         assert 'class="cell--number"' in r.text and 'class="cell--money"' in r.text
 

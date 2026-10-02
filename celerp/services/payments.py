@@ -3,9 +3,9 @@
 """Online invoice payment via Stripe, brokered by Celerp Connect.
 
 The instance stores no Stripe credentials: it asks Celerp Connect to create a Checkout
-Session on the merchant's connected account and to report its status. Payment
-surfaces are gated on a "payments enabled" flag; confirmed payments record through
-the same path as a manual payment.
+Session on the merchant's connected account. Payment surfaces are gated on a
+"payments enabled" flag; Celerp Cloud delivers each confirmed payment, which records
+through the same path as a manual payment.
 """
 from __future__ import annotations
 
@@ -71,6 +71,8 @@ async def checkout_generation() -> int:
     try:
         async with _own_session() as session:
             generation = await report_recoveries(session)
+    except PaymentsNotClosed:
+        generation = None
     except Exception:
         log.warning("Checking for unconfirmed System Recovery restores failed", exc_info=True)
         generation = None
@@ -81,9 +83,10 @@ async def checkout_generation() -> int:
 
 async def create_checkout(*, amount_minor: int, currency: str, description: str,
                           company_id: str, entity_id: str,
-                          share_token: str, generation: int) -> dict | None:
+                          share_token: str, generation: int, context: dict) -> dict | None:
     """Ask Cloud to open a Checkout Session on the merchant's connected account, for
-    the installation's payment *generation*.
+    the installation's payment *generation*. *context* is the books the payment will
+    be recorded on; Cloud keeps it and returns it with every delivery of the payment.
 
     Returns {"url": <stripe checkout url>} (redirect the customer there), or None on
     failure. Raises CheckoutPaused when Cloud holds new payments for a restore.
@@ -96,7 +99,7 @@ async def create_checkout(*, amount_minor: int, currency: str, description: str,
         "amount_minor": amount_minor, "currency": currency,
         "description": description[:250],
         "company_id": company_id, "entity_id": entity_id,
-        "share_token": share_token, "generation": generation,
+        "share_token": share_token, "generation": generation, "context": context,
     })
     if answer is not None and answer[0] == 409 and answer[1].get("detail") in ("generation_stale", "recovery_pending"):
         raise CheckoutPaused
@@ -106,7 +109,9 @@ async def create_checkout(*, amount_minor: int, currency: str, description: str,
 class PaymentsNotClosed(Exception):
     """Celerp Cloud did not confirm that a company's online payments are closing.
 
-    ``reason`` is "disconnected", "payment_settling", "payment_unrecorded" or "unconfirmed".
+    ``reason`` is "disconnected", "payment_settling", "payment_unrecorded",
+    "reconnect_required" (a payment can be checked only once the merchant reconnects
+    the Stripe account they withdrew) or "unconfirmed".
     """
 
     def __init__(self, reason: str) -> None:
@@ -117,7 +122,7 @@ class PaymentsNotClosed(Exception):
 _CLOSURE = "/billing/connect/companies/retire"
 _RECOVERY = "/billing/connect/recovery"
 _PREPARED = ("prepared", "retired")
-_REFUSED = ("payment_settling", "payment_unrecorded")
+_REFUSED = ("payment_settling", "payment_unrecorded", "reconnect_required")
 # Answers after which a step can never succeed: the request is forgotten, and Celerp
 # Cloud keeps the company's payments closed.
 _FINAL = {"finalize": ("generation_stale", "cancelled", "not_prepared"),
@@ -157,11 +162,11 @@ def _reached(answer: tuple[int, dict] | None, closure: PaymentClosure, states: t
 
 
 async def receive_payment(payload: dict) -> bool:
-    """Record an online payment, delivered by Celerp Cloud or confirmed on the
-    customer's return from Stripe: on its invoice, on the day it was paid, when the
-    invoice can take the whole charge, otherwise among the unmatched payments,
-    whole (the company or the invoice no longer exists, the invoice is already
-    paid, it owes less than the charge, or it refuses it). True once recorded
+    """Record an online payment delivered by Celerp Cloud: on its invoice, on the
+    books its payment page opened with and the day it was paid, when the invoice can
+    take the whole charge, otherwise among the unmatched payments, whole (the company
+    or the invoice no longer exists, the invoice is already paid, it owes less than
+    the charge, or it refuses it, as it does a delivery without usable books). True once recorded
     either way (Cloud is then told it arrived), False for a delivery that names no
     payment. Raises when nothing could be recorded, so Cloud delivers it again.
     Recording the same payment twice changes nothing."""
@@ -192,7 +197,8 @@ async def receive_payment(payload: dict) -> bool:
         if row is not None:
             try:
                 await record_stripe_payment(session, cid, entity_id, dict(row.state), reference=reference,
-                                            amount_minor=amount_minor, currency=currency, paid_at=paid_at)
+                                            amount_minor=amount_minor, currency=currency, paid_at=paid_at,
+                                            context=payload.get("context"))
                 return True
             except HTTPException as exc:
                 if exc.status_code >= 500:
@@ -216,7 +222,8 @@ async def unmatched_payments(session) -> list[UnmatchedPayment]:
 async def report_recoveries(session) -> int | None:
     """Tell Celerp Cloud of every System Recovery restore it has not confirmed, oldest
     first, and return the installation's current payment generation. None while a
-    restore is still unconfirmed: no company's payments can be closed until it is."""
+    restore is still unconfirmed: no company's payments can be closed until it is.
+    Raises PaymentsNotClosed when Cloud holds a restore back for a payment in flight."""
     from celerp.config import settings
     pending = (await session.scalars(select(PaymentRecovery).where(
         PaymentRecovery.generation.is_(None)).order_by(PaymentRecovery.created_at))).all()
@@ -225,6 +232,8 @@ async def report_recoveries(session) -> int | None:
             return None
         answer = await _cloud_answer(_RECOVERY, {
             "recovery_id": str(recovery.recovery_id), "company_ids": recovery.company_ids})
+        if answer is not None and answer[0] == 409 and answer[1].get("detail") in _REFUSED:
+            raise PaymentsNotClosed(answer[1]["detail"])
         generation = answer[1].get("generation") if answer is not None and answer[0] == 200 else None
         if (type(generation) is not int or generation < 1
                 or answer[1].get("recovery_id") != str(recovery.recovery_id)):
@@ -336,7 +345,10 @@ async def reconcile_payments() -> None:
     the companies concerned keep their payments closed."""
     try:
         async with _own_session() as session:
-            await report_recoveries(session)
+            try:
+                await report_recoveries(session)
+            except PaymentsNotClosed:
+                pass  # reported again next time; leftover closings settle meanwhile
             pending = (await session.scalars(select(PaymentClosure.operation_id))).all()
     except Exception:
         log.warning("Reconciling online payments with Celerp Cloud failed", exc_info=True)
@@ -351,15 +363,6 @@ async def reconcile_payments_loop() -> None:
     while True:
         await reconcile_payments()
         await asyncio.sleep(RECONCILE_INTERVAL_S)
-
-
-async def checkout_status(session_id: str) -> dict | None:
-    """Session status for reconcile-on-return.
-
-    Returns {"paid": bool, "reference": <intent id|None>, "amount_minor": int,
-    "currency": str} or None.
-    """
-    return await _cloud_get(f"/billing/connect/checkout/{session_id}")
 
 
 # ── Connect onboarding (merchant-facing, from Settings → Payments) ───────────

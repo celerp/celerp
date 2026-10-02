@@ -1201,7 +1201,7 @@
   "pay.unmatched_head": "Pembayaran yang tidak cocok dengan faktur",
   "pay.unmatched_hint": "Pembayaran online ini masuk untuk perusahaan atau faktur yang sudah tidak ada, atau yang tidak dapat menerima pembayaran. Catat masing-masing di tempat yang tepat, atau kembalikan dananya dari dasbor Stripe Anda.",
   "pay.unmatched_paid_on": "Dibayar pada",
-  "pay.unmatched_received": "Diterima pada",
+  "pay.unmatched_received": "Dicatat pada",
   "pay.upgrade_desc": "Izinkan pelanggan membayar faktur secara online dengan kartu. Hubungkan instans ini ke Celerp Connect terlebih dahulu, lalu tautkan akun Stripe.",
   "perm.page_no_access": "Anda tidak memiliki akses ke halaman ini.",
   "reason_export.gift": "Hadiah",

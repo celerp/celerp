@@ -10,7 +10,10 @@ back; until Cloud confirms it, no company can be reset. A payment Celerp Cloud d
 for a company or invoice that no longer exists is kept among the unmatched payments, and
 holds the company's closing until it is recorded. A restore has Celerp Cloud deliver again
 the payments recorded since its backup started; no new payment opens until they are
-recorded, and none opens while Cloud has not confirmed the restore."""
+recorded, and none opens while Cloud has not confirmed the restore. Each payment is
+recorded only from Cloud's delivery, on the books its payment page opened with, so one
+recorded again after a restore posts exactly as it first did; a delivery without usable
+books is kept among the unmatched payments."""
 
 from __future__ import annotations
 
@@ -41,7 +44,11 @@ LOST = object()  # Cloud takes the step, but its answer never arrives
 NO_ANSWER = object()  # the request returns nothing
 
 
-_PAYMENT = ("company_id", "entity_id", "reference", "amount_minor", "currency", "paid_at", "delivery_id")
+_PAYMENT = ("company_id", "entity_id", "reference", "amount_minor", "currency", "paid_at", "context",
+            "delivery_id")
+# The books a payment page opened with, for a payment whose page the test does not open.
+BOOKS = {"deposit_account": "1110", "timezone": "UTC", "base_currency": "USD", "rate": "1"}
+OPENED = object()  # the books the invoice's last payment page opened with
 
 
 class _Crash(BaseException):
@@ -66,8 +73,10 @@ class _Cloud:
         self.recoveries: dict[str, tuple[int, list[str]]] = {}
         self.confirmed: set[str] = set()  # recoveries confirmed
         self.checkouts: list[tuple[str, int, int]] = []  # (company, generation, status) per payment asked to open
+        self.opened: dict[str, dict] = {}  # invoice -> the books its last payment page opened with
         self.scripted: dict[str, list] = {"prepare": [], "finalize": [], "cancel": [], "recovery": []}
         self.calls: list[tuple[str, str]] = []  # (step, operation or recovery)
+        self.reads: list[str] = []  # anything the installation asked to read
         self.generations: list[int] = []  # the generation each closing step carried
         self.company_present: list[bool] = []
         self.on_prepared = None
@@ -85,12 +94,14 @@ class _Cloud:
         return sorted(o["state"] for o in self.ops.values())
 
     def pay(self, company_id, entity_id: str = "doc:gone", reference: str = "pi_late",
-            amount_minor: int = 107000, paid_at: datetime | None = None) -> None:
+            amount_minor: int = 107000, paid_at: datetime | None = None, books=OPENED) -> None:
         """A customer pays: Celerp Cloud delivers the payment, with when Stripe reported
-        it paid, until the installation acknowledges it."""
+        it paid and the books its page opened with, until the installation acknowledges
+        it."""
         self.deliveries.append({"company_id": str(company_id), "entity_id": entity_id, "reference": reference,
                                 "amount_minor": amount_minor, "currency": "usd",
                                 "paid_at": (paid_at or datetime.now(timezone.utc)).isoformat(),
+                                "context": self.opened.get(entity_id, BOOKS) if books is OPENED else books,
                                 "delivery_id": str(uuid.uuid4()), "acked": False})
 
     async def deliver(self) -> None:
@@ -161,20 +172,24 @@ class _Cloud:
         self.confirmed.add(recovery_id)
         return httpx.Response(200, json={"recovery_id": recovery_id, "generation": self.recoveries[recovery_id][0]})
 
-    def _checkout(self, company_id: str, generation: int) -> httpx.Response:
+    def _checkout(self, body: dict) -> httpx.Response:
+        company_id, generation = body["company_id"], body["generation"]
         if not set(self.recoveries) <= self.confirmed:
             response = self._refuse("recovery_pending")
         elif generation != self.generation:
             response = self._refuse("generation_stale")
         else:
+            self.opened[body["entity_id"]] = body["context"]
             response = httpx.Response(200, json={"url": "https://checkout.stripe.test/cs_1"})
         self.checkouts.append((company_id, generation, response.status_code))
         return response
 
     async def _request(self, method, path, *, total_s=None, json=None, params=None, api_key=None):
-        assert method == "POST"
+        if method != "POST":
+            self.reads.append(path)
+            return httpx.Response(404, json={"detail": "Not Found"})
         if path == CHECKOUT:
-            return self._checkout(json["company_id"], json["generation"])
+            return self._checkout(json)
         if path == RECOVERY:
             step, key = "recovery", json["recovery_id"]
         else:
@@ -207,9 +222,14 @@ class _Cloud:
 
 
 async def _harbor(engine):
+    from celerp_accounting.routes import seed_chart_of_accounts_hook
     boss = await owner(engine)
     a = await company(engine, boss, NAME, "alpha")
     b = await company(engine, boss, "Hillside Supply Co", "bravo")
+    async with maker(engine)() as s:  # each keeps books, as a company made in Celerp does
+        for cid in (a, b):
+            await seed_chart_of_accounts_hook(session=s, company_id=cid)
+        await s.commit()
     return boss, a, b
 
 
@@ -258,13 +278,14 @@ async def test_a_reset_prepares_the_closing_then_closes_the_payments_once_the_co
     (httpx.Response(500, text="Internal Server Error"), 503, "could not confirm"),
     (httpx.Response(409, json={"detail": "payment_settling"}), 409, "still being processed."),
     (httpx.Response(409, json={"detail": "payment_unrecorded"}), 409, "has not reached Celerp"),
+    (httpx.Response(409, json={"detail": "reconnect_required"}), 409, "Reconnect this Stripe account"),
     (httpx.Response(409, json={"detail": "something else"}), 503, "could not confirm"),
     (httpx.Response(200, json={"company_id": "another-company", "operation_id": "x", "state": "prepared"}),
      503, "could not confirm"),
     (httpx.Response(200, json={"state": "cancelled"}), 503, "could not confirm"),
     (httpx.Response(200, text="<html>proxy</html>"), 503, "could not confirm"),
 ], ids=["no-answer", "unreachable", "stripe-unconfirmed", "server-error", "settling", "unrecorded",
-        "unknown-refusal", "other-company", "not-prepared", "not-json"])
+        "reconnect", "unknown-refusal", "other-company", "not-prepared", "not-json"])
 async def test_nothing_is_deleted_unless_cloud_confirms_the_closing_is_prepared(
         real_engine, real_client, monkeypatch, answer, status, says):
     boss, a, b = await _harbor(real_engine)
@@ -543,6 +564,32 @@ async def test_a_reset_refused_while_a_payment_settles_succeeds_once_it_has(real
     assert await _companies(real_engine) == {str(b)}
 
 
+RECONNECT = "Reconnect this Stripe account to finish checking payments already in progress. Nothing was deleted."
+SETTLING = ("A payment on one of this company's invoices is still being processed. "
+            "Try again once it has finished. Nothing was deleted.")
+
+
+@pytest.mark.parametrize("step, says", [("prepare", SETTLING), ("recovery", SETTLING),
+                                        ("prepare", RECONNECT), ("recovery", RECONNECT)])
+async def test_a_reset_held_by_a_payment_says_whether_stripe_must_be_reconnected(
+        real_engine, real_client, monkeypatch, step, says):
+    """A payment still settling only needs time; one Celerp Cloud can check only once
+    the withdrawn Stripe account is reconnected says so, and nothing else."""
+    boss, a, b = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    if step == "recovery":
+        await _record_restore(real_engine, [a, b])
+    cloud.scripted[step] = [httpx.Response(409, json={
+        "detail": "reconnect_required" if says == RECONNECT else "payment_settling"})]
+    tok = await token(real_engine, boss, a)
+    before = await snapshot(real_engine)
+
+    r = await real_client.post(RESET, json={"company_name": NAME}, headers=auth(tok))
+
+    assert r.status_code == 409 and r.json()["detail"] == says
+    assert await snapshot(real_engine) == before
+
+
 async def test_payments_are_closed_only_after_every_local_check_passes(real_engine, real_client, monkeypatch):
     boss, a, b = await _harbor(real_engine)
     cloud = _Cloud(monkeypatch, real_engine)
@@ -597,12 +644,12 @@ async def _unmatched(engine) -> list[tuple]:
             "ORDER BY received_at"))).all()]
 
 
-async def _invoice(client, engine, boss, cid) -> str:
+async def _invoice(client, engine, boss, cid, **doc) -> str:
     tok = auth(await token(engine, boss, cid))
     r = await client.post("/docs", json={
         "doc_type": "invoice", "contact_name": "Buyer",
         "line_items": [{"description": "Widget", "quantity": 2, "unit_price": 500.0}],
-        "subtotal": 1000.0, "tax": 70.0, "total": 1070.0, "currency": "USD"}, headers=tok)
+        "subtotal": 1000.0, "tax": 70.0, "total": 1070.0, "currency": "USD", **doc}, headers=tok)
     eid = r.json()["id"]
     assert (await client.post(f"/docs/{eid}/finalize", headers=tok)).status_code == 200
     return eid
@@ -717,17 +764,6 @@ async def _pay_by_hand(client, engine, boss, cid, entity_id, amount: float):
     assert r.status_code == 200, r.text
 
 
-def _returns_paid(monkeypatch, cid, entity_id, share, reference, amount_minor=107000) -> None:
-    """The customer comes back from Stripe, where the session was paid."""
-    import hashlib
-
-    async def status(_session_id):
-        return {"paid": True, "reference": reference, "amount_minor": amount_minor, "currency": "usd",
-                "company_id": str(cid), "entity_id": entity_id,
-                "share_token_hash": hashlib.sha256(share.encode()).hexdigest()}
-    monkeypatch.setattr("celerp.services.payments.checkout_status", status)
-
-
 async def test_a_stripe_payment_for_an_invoice_paid_another_way_is_kept_whole_among_the_unmatched(
         real_engine, real_client, monkeypatch):
     boss, a, b = await _harbor(real_engine)
@@ -758,44 +794,42 @@ async def test_a_stripe_payment_larger_than_what_is_still_owed_is_kept_whole_amo
     assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(a), invoice)]
 
 
-@pytest.mark.parametrize("second_by", ["delivery", "return"])
 async def test_two_payment_pages_both_paid_record_the_second_among_the_unmatched(
-        real_engine, real_client, monkeypatch, second_by):
+        real_engine, real_client, monkeypatch):
     boss, a, b = await _harbor(real_engine)
-    invoice, share = await _shared_invoice(real_client, real_engine, boss, a)
+    invoice = await _invoice(real_client, real_engine, boss, a)
     cloud = _Cloud(monkeypatch, real_engine)
     cloud.pay(a, invoice, "pi_first")
     await cloud.deliver()
 
-    if second_by == "delivery":
-        cloud.pay(a, invoice, "pi_second")
-        await cloud.deliver()
-    else:
-        _returns_paid(monkeypatch, a, invoice, share, "pi_second")
-        r = await real_client.get(f"/pay/{share}/return?session_id=cs_2", follow_redirects=False)
-        assert r.status_code == 303
+    cloud.pay(a, invoice, "pi_second")
+    await cloud.deliver()
 
     assert await _paid(real_engine, invoice) == [("pi_first", 1070.0)]
     assert await _unmatched(real_engine) == [("pi_second", 107000, "USD", str(a), invoice)]
 
 
-@pytest.mark.parametrize("first", ["return", "delivery"])
-async def test_a_payment_reported_by_the_return_and_the_delivery_is_recorded_once(
-        real_engine, real_client, monkeypatch, first):
+async def test_the_customers_return_from_stripe_records_nothing_and_the_delivery_records_the_payment(
+        real_engine, real_client, monkeypatch):
+    _payments_on(monkeypatch)
     boss, a, b = await _harbor(real_engine)
+    await _company_settings(real_engine, a, timezone="Asia/Bangkok")
     invoice, share = await _shared_invoice(real_client, real_engine, boss, a)
     cloud = _Cloud(monkeypatch, real_engine)
-    _returns_paid(monkeypatch, a, invoice, share, "pi_1")
-    cloud.pay(a, invoice, "pi_1")
+    assert (await real_client.get(f"/pay/{share}", follow_redirects=False)).status_code == 303
+    month_end = datetime(2025, 10, 31, 17, 30, tzinfo=timezone.utc)  # already November 1 in Bangkok
+    cloud.pay(a, invoice, "pi_1", paid_at=month_end)
 
-    async def returned():
-        r = await real_client.get(f"/pay/{share}/return?session_id=cs_1", follow_redirects=False)
-        assert r.status_code == 303
-    for leg in ([returned, cloud.deliver] if first == "return" else [cloud.deliver, returned]):
-        await leg()
+    r = await real_client.get(f"/pay/{share}/return?session_id=cs_1", follow_redirects=False)
+
+    assert r.status_code == 303 and r.headers["location"] == f"/share/{share}"
+    assert cloud.reads == []
+    assert await _paid(real_engine, invoice) == [] and await _unmatched(real_engine) == []
+
+    await cloud.deliver()
 
     assert [d["acked"] for d in cloud.deliveries] == [True]
-    assert await _paid(real_engine, invoice) == [("pi_1", 1070.0)]
+    assert await _payment_dates(real_engine, invoice) == [("pi_1", "2025-11-01", "2025-11-01", "2025-11-01")]
     assert await _unmatched(real_engine) == []
 
 
@@ -1081,8 +1115,8 @@ def _payments_on(monkeypatch) -> None:
     monkeypatch.setattr("celerp.services.payments.payments_enabled", lambda: True)
 
 
-async def _shared_invoice(client, engine, boss, cid) -> tuple[str, str]:
-    eid = await _invoice(client, engine, boss, cid)
+async def _shared_invoice(client, engine, boss, cid, **doc) -> tuple[str, str]:
+    eid = await _invoice(client, engine, boss, cid, **doc)
     r = await client.post(f"/docs/{eid}/share", headers=auth(await token(engine, boss, cid)))
     return eid, r.json()["token"]
 
@@ -1161,38 +1195,160 @@ async def _payment_dates(engine, entity_id) -> list[tuple[str, str, str]]:
 _OCTOBER_3 = datetime(2025, 10, 3, 3, 0, tzinfo=timezone.utc)
 
 
-async def _restore_losing_a_payment(tmp_path, monkeypatch, engine, client, paid_at: datetime,
-                                    timezone_name: str, **settings):
-    """A payment made after the last backup, which a System Recovery restore then loses
-    and Celerp Cloud delivers again."""
+async def _posting(engine, entity_id) -> list[tuple]:
+    """How each payment on the invoice posted: its reference, day, bank account and
+    rate, the day and bank account its doc.payment.received event carries, and its
+    journal entry's day and lines."""
+    async with maker(engine)() as s:
+        state = await s.scalar(text("SELECT state FROM projections WHERE entity_id = :e"), {"e": entity_id})
+        events = {e["reference"]: e for e in (await s.scalars(text(
+            "SELECT data FROM ledger WHERE entity_id = :e AND event_type = 'doc.payment.received'"),
+            {"e": entity_id})).all()}
+        journal = dict((await s.execute(text("SELECT entity_id, state FROM projections WHERE entity_id LIKE :j"),
+                                        {"j": f"je:auto:{entity_id}:pay:%"})).all())
+    posted = []
+    for p in [p for p in state.get("payments", []) if p.get("status") != "deleted"]:
+        event, je = events[p["reference"]], journal[f"je:auto:{entity_id}:pay:{p['index']}"]
+        posted.append((p["reference"], p["payment_date"], p["bank_account"], p.get("conversion_rate"),
+                       event["payment_date"], event["bank_account"], str(je.get("ts"))[:10],
+                       sorted((e["account"], e["debit"], e["credit"]) for e in je["entries"])))
+    return posted
+
+
+async def _restore_losing_a_payment(tmp_path, monkeypatch, engine, client, paid_at: datetime, *,
+                                    opened: dict, account: str | None = None, restored: dict | None = None,
+                                    company_settings: dict | None = None, **invoice):
+    """After the last backup, the company's settings change to *opened* (and *account*
+    is added to its chart), a customer opens the invoice's payment page and pays. A
+    System Recovery restore of the backup loses the payment; the settings then change
+    to *restored*, and Celerp Cloud delivers the payment again. Returns how it first
+    posted."""
     from celerp.services import backup_export, backup_import
     _system_recovery(tmp_path, monkeypatch)
+    _payments_on(monkeypatch)
     boss, a, b = await _harbor(engine)
-    await _company_settings(engine, a, timezone=timezone_name)
+    if company_settings:
+        await _company_settings(engine, a, **company_settings)
     cloud = _Cloud(monkeypatch, engine)
-    eid = await _invoice(client, engine, boss, a)
+    eid, share = await _shared_invoice(client, engine, boss, a, **invoice)
     source = await backup_export.export_full()
     try:
+        await _company_settings(engine, a, **opened)
+        if account:
+            await _add_account(engine, a, account)
+        assert (await client.get(f"/pay/{share}", follow_redirects=False)).status_code == 303
         cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=paid_at)
         await cloud.deliver()
+        first = await _posting(engine, eid)
         result = await backup_import.run_recovery(source)
     finally:
         source.unlink(missing_ok=True)
     assert result.ok is True, result.error
     assert await _references(engine, eid) == []
-    if settings:
-        await _company_settings(engine, a, **settings)
+    if restored:
+        await _company_settings(engine, a, **restored)
     await cloud.deliver()
     assert all(d["acked"] for d in cloud.deliveries)
-    return boss, a, eid
+    return boss, a, eid, first
+
+
+async def _add_account(engine, cid, code: str) -> None:
+    from celerp_accounting.models import Account
+    async with maker(engine)() as s:
+        s.add(Account(id=uuid.uuid4(), company_id=cid, code=code, name="Online payments clearing",
+                      account_type="asset", parent_code="1110"))
+        await s.commit()
 
 
 async def test_a_payment_recorded_again_after_a_restore_keeps_the_day_it_was_paid(
         tmp_path, monkeypatch, code_config, real_engine, real_client):
-    boss, a, eid = await _restore_losing_a_payment(
-        tmp_path, monkeypatch, real_engine, real_client, _OCTOBER_3, "Asia/Bangkok")
+    boss, a, eid, first = await _restore_losing_a_payment(
+        tmp_path, monkeypatch, real_engine, real_client, _OCTOBER_3, opened={"timezone": "Asia/Bangkok"})
     # The payment, its event and its journal entry all stay on October 3.
     assert await _payment_dates(real_engine, eid) == [("pi_paid", "2025-10-03", "2025-10-03", "2025-10-03")]
+
+
+async def test_a_payment_recorded_again_after_a_restore_posts_as_its_page_opened(
+        tmp_path, monkeypatch, code_config, real_engine, real_client):
+    """The company keeps its books in baht and invoices in dollars. After the backup it
+    moves online payments to another bank account and its calendar to Bangkok; a
+    customer then opens the payment page and pays at the end of October, already
+    November 1 in Bangkok. The restore brings back the old settings and loses the
+    payment; recorded again, it posts on the same day, to the same account, at the same
+    rates, exactly as it first did."""
+    month_end = datetime(2025, 10, 31, 17, 30, tzinfo=timezone.utc)
+    boss, a, eid, first = await _restore_losing_a_payment(
+        tmp_path, monkeypatch, real_engine, real_client, month_end,
+        company_settings={"currency": "THB", "timezone": "America/New_York"},
+        opened={"timezone": "Asia/Bangkok", "stripe_deposit_account": "1111"},
+        restored={"currency": "THB"}, conversion_rate=35.125)
+    async with maker(real_engine)() as s:
+        settings = await s.scalar(text("SELECT settings FROM companies WHERE id = :c"), {"c": a})
+    assert settings.get("timezone") == "America/New_York" and "stripe_deposit_account" not in settings
+
+    assert first == [("pi_paid", "2025-11-01", "1111", 35.125, "2025-11-01", "1111", "2025-11-01",
+                      [("1111", 17562.5, 0.0), ("1120", 0.0, 17562.5)])]
+    assert await _posting(real_engine, eid) == first
+
+
+async def test_a_payment_whose_bank_account_a_restore_removed_is_kept_among_the_unmatched(
+        tmp_path, monkeypatch, code_config, real_engine, real_client):
+    """The account online payments clear to was added after the backup: the payment is
+    never posted to another account in its place."""
+    boss, a, eid, first = await _restore_losing_a_payment(
+        tmp_path, monkeypatch, real_engine, real_client, _OCTOBER_3,
+        opened={"stripe_deposit_account": "1119"}, account="1119")
+    assert [p[2] for p in first] == ["1119"]
+    assert await _references(real_engine, eid) == []
+    assert await _unmatched(real_engine) == [("pi_paid", 50000, "USD", str(a), eid)]
+    async with maker(real_engine)() as s:
+        assert await s.scalar(text("SELECT paid_at FROM unmatched_payments")) == _OCTOBER_3
+
+
+@pytest.mark.parametrize("books", [
+    None,
+    {k: v for k, v in BOOKS.items() if k != "deposit_account"},
+    {**BOOKS, "timezone": "Mars/Olympus"},
+    {**BOOKS, "rate": "0"},
+    {**BOOKS, "deposit_account": "9999"},
+], ids=["none", "no-account", "bad-timezone", "bad-rate", "unknown-account"])
+async def test_a_payment_without_usable_books_from_its_page_is_kept_among_the_unmatched(
+        real_engine, real_client, monkeypatch, books):
+    """A payment whose page did not record the books it opened with (or recorded books
+    this company cannot post to) is never recorded from today's settings instead."""
+    boss, a, b = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    eid = await _invoice(real_client, real_engine, boss, a)
+    cloud.pay(a, eid, "pi_1", paid_at=_OCTOBER_3, books=books)
+
+    await cloud.deliver()
+
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+    assert await _paid(real_engine, eid) == []
+    assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(a), eid)]
+
+
+@pytest.mark.parametrize("without", ["none", "absent"])
+async def test_a_payment_delivered_without_a_time_it_was_paid_is_kept_among_the_unmatched(
+        real_engine, real_client, monkeypatch, without):
+    """Celerp Cloud found the payment by reading Stripe back and Stripe gave no time
+    the funds moved: it is never dated today in its place."""
+    boss, a, b = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    eid = await _invoice(real_client, real_engine, boss, a)
+    cloud.pay(a, eid, "pi_1")
+    if without == "none":
+        cloud.deliveries[0]["paid_at"] = None
+    else:
+        del cloud.deliveries[0]["paid_at"]
+
+    await cloud.deliver()
+
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+    assert await _paid(real_engine, eid) == []
+    assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(a), eid)]
+    async with maker(real_engine)() as s:
+        assert await s.scalar(text("SELECT paid_at FROM unmatched_payments")) is None
 
 
 @pytest.mark.parametrize("paid_at,timezone_name,business_day", [
@@ -1200,13 +1356,18 @@ async def test_a_payment_recorded_again_after_a_restore_keeps_the_day_it_was_pai
     (datetime(2025, 10, 3, 18, 30, tzinfo=timezone.utc), "Asia/Bangkok", "2025-10-04"),
     # Still the previous evening in New York.
     (datetime(2025, 10, 4, 2, 0, tzinfo=timezone.utc), "America/New_York", "2025-10-03"),
+    # The last evening of the month in New York, already the next month in Bangkok.
+    (datetime(2025, 10, 31, 23, 30, tzinfo=timezone.utc), "America/New_York", "2025-10-31"),
+    (datetime(2025, 10, 31, 23, 30, tzinfo=timezone.utc), "Asia/Bangkok", "2025-11-01"),
 ])
 async def test_an_online_payment_is_dated_on_the_companys_own_calendar(
         real_engine, real_client, monkeypatch, paid_at, timezone_name, business_day):
+    _payments_on(monkeypatch)
     boss, a, b = await _harbor(real_engine)
     await _company_settings(real_engine, a, timezone=timezone_name)
     cloud = _Cloud(monkeypatch, real_engine)
-    eid = await _invoice(real_client, real_engine, boss, a)
+    eid, share = await _shared_invoice(real_client, real_engine, boss, a)
+    assert (await real_client.get(f"/pay/{share}", follow_redirects=False)).status_code == 303
     cloud.pay(a, eid, "pi_edge", amount_minor=50000, paid_at=paid_at)
     await cloud.deliver()
     assert await _payment_dates(real_engine, eid) == [("pi_edge", business_day, business_day, business_day)]
@@ -1218,9 +1379,9 @@ async def test_a_payment_recorded_again_into_a_locked_period_is_refused_like_any
     on October 3 is refused, as recording any payment on October 3 now is. It is kept
     whole among the unmatched payments with the day it was paid, never moved to an
     open day."""
-    boss, a, eid = await _restore_losing_a_payment(
-        tmp_path, monkeypatch, real_engine, real_client, _OCTOBER_3, "Asia/Bangkok",
-        lock_date="2025-10-31")
+    boss, a, eid, first = await _restore_losing_a_payment(
+        tmp_path, monkeypatch, real_engine, real_client, _OCTOBER_3,
+        opened={"timezone": "Asia/Bangkok"}, restored={"lock_date": "2025-10-31"})
     assert await _references(real_engine, eid) == []
     assert await _unmatched(real_engine) == [("pi_paid", 50000, "USD", str(a), eid)]
     async with maker(real_engine)() as s:
@@ -1249,8 +1410,9 @@ async def test_a_payment_cloud_refuses_until_a_restore_is_confirmed_reads_as_pau
     assert cloud.checkouts == [(str(a), 0, 409)]
 
 
-@pytest.mark.parametrize("answer", [httpx.ConnectError("unreachable"), NO_ANSWER],
-                         ids=["unreachable", "no-answer"])
+@pytest.mark.parametrize("answer", [httpx.ConnectError("unreachable"), NO_ANSWER,
+                                    httpx.Response(409, json={"detail": "reconnect_required"})],
+                         ids=["unreachable", "no-answer", "reconnect"])
 async def test_new_payments_wait_until_cloud_confirms_a_restore(real_engine, real_client, monkeypatch, answer):
     _payments_on(monkeypatch)
     boss, a, b = await _harbor(real_engine)
