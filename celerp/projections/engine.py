@@ -128,9 +128,15 @@ class ProjectionEngine:
         was removed (an undone import, a deleted draft) after the change read it, and
         writing the change would bring it back."""
         projection = await ProjectionEngine._locked_projection(session, entry)
-        if projection is None and entry.entity_type == "item" and entry.event_type not in _ITEM_BIRTHS:
+        if ProjectionEngine._changes_missing_item(entry, projection):
             raise HTTPException(status_code=404, detail="Item not found")
         await ProjectionEngine._write(session, entry, projection)
+
+    @staticmethod
+    def _changes_missing_item(entry: LedgerEntry, projection: Projection | None) -> bool:
+        """A change, not a birth, to an item with no projection: writing it would make
+        an item out of the change alone."""
+        return projection is None and entry.entity_type == "item" and entry.event_type not in _ITEM_BIRTHS
 
     @staticmethod
     async def _write(session, entry: LedgerEntry, projection: Projection | None) -> None:
@@ -192,5 +198,9 @@ class ProjectionEngine:
         if company_id:
             query = query.where(LedgerEntry.company_id == company_id)
         for entry in (await session.execute(query)).scalars().all():
-            # A rebuild replays the ledger as it stands, so it writes every event.
-            await ProjectionEngine._write(session, entry, await ProjectionEngine._locked_projection(session, entry))
+            projection = await ProjectionEngine._locked_projection(session, entry)
+            # A change to an item with no birth before it is skipped, as apply_event refuses
+            # it live: replaying it would bring back a removed item as a ghost.
+            if ProjectionEngine._changes_missing_item(entry, projection):
+                continue
+            await ProjectionEngine._write(session, entry, projection)

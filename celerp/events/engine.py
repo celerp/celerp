@@ -342,15 +342,20 @@ async def emit_event(
 
     entry = LedgerEntry(**kwargs)
 
+    # The event and its effect on the projection are one SAVEPOINT: a refused projection
+    # change (a change to an item that is gone) takes its ledger row with it, even when
+    # the caller catches the refusal and commits the rest of its work. A duplicate-
+    # idempotency collision likewise rolls back only this insert, NOT the caller's whole
+    # transaction. (A bare session.rollback() here would silently undo everything the
+    # caller already emitted, e.g. the doc.finalized event before its auto-JE.)
+    savepoint = await session.begin_nested()
     try:
-        # Insert inside a SAVEPOINT so a duplicate-idempotency collision only
-        # rolls back this insert — NOT the caller's whole transaction. (A bare
-        # session.rollback() here would silently undo everything the caller
-        # already emitted, e.g. the doc.finalized event before its auto-JE.)
-        async with session.begin_nested():
-            session.add(entry)
-            await session.flush()
-    except IntegrityError:
+        session.add(entry)
+        await session.flush()
+    except BaseException as exc:
+        await savepoint.rollback()
+        if not isinstance(exc, IntegrityError):
+            raise
         # Idempotency is per-company, so dedup within this company only.
         row = (
             await session.execute(
@@ -366,8 +371,12 @@ async def emit_event(
         # instead of inferring from entity ids.
         original.was_deduped = True
         return original
-
-    await ProjectionEngine.apply_event(session, entry)
+    try:
+        await ProjectionEngine.apply_event(session, entry)
+    except BaseException:
+        await savepoint.rollback()
+        raise
+    await savepoint.commit()
 
     # Durable connector work is recorded in the same transaction as the item event.
     # No network I/O occurs here; the worker re-reads current state before sending.
