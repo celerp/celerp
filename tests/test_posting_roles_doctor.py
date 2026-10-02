@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """The books check lists what posting cannot proceed on without a decision.
 
-A posting account the company needs but has not set, older stock with no provable
-inventory account, and an older document whose receivable sits on more than one
-account are each reported with what to fix. An older entry posted before lines
+A posting account the company needs but has not set, and an older document whose
+receivable sits on more than one account, are each reported with what to fix. An older entry posted before lines
 recorded their role still settles on the account its history proves.
 """
 from __future__ import annotations
@@ -14,7 +13,6 @@ import pytest
 from celerp.models.projections import Projection
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_posting_roles_autoje import _account, _invoice, _pay, _remap, _unmap
-from test_posting_roles_lots import _forget_origin, _lot
 
 
 async def _doctor(client, auth) -> dict:
@@ -56,17 +54,6 @@ async def test_a_needed_posting_account_that_is_not_set_is_reported(session, cli
     (finding,) = [d for d in result["details"] if d.get("role") == "receivable"]
     assert finding["kind"] == "posting_account"
     assert "receivable" in finding["problem"].lower()
-    assert finding["fix"] == "/settings/accounting?tab=posting-accounts"
-
-
-@pytest.mark.asyncio
-async def test_older_stock_with_no_provable_inventory_account_is_reported(session, client, auth):
-    lot = await _lot(client, auth, 30.0, sku="OLD-1")
-    await _forget_origin(session, auth, lot)
-    result = await _doctor(client, auth)
-    (finding,) = result["details"]
-    assert (finding["kind"], finding["entity_id"]) == ("lot_origin", lot)
-    assert "OLD-1 has no recorded inventory account" in finding["problem"]
     assert finding["fix"] == "/settings/accounting?tab=posting-accounts"
 
 

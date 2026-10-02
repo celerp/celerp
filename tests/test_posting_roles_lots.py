@@ -6,7 +6,7 @@ A lot entered by hand takes the company's current opening inventory account, and
 stock received or produced takes the current purchased inventory account; selling,
 fulfilling, returning or splitting a lot moves its value on that same account whatever the
 account is set to by then. A lot from before lots recorded their account
-refuses to move its cost until its account is proven or chosen, rather than guess.
+refuses to move its cost until its account is placed or chosen, rather than guess.
 """
 from __future__ import annotations
 
@@ -279,10 +279,6 @@ async def test_an_older_lot_waits_for_its_account_and_only_one_that_holds_it_can
     assert "OLD-2 has no recorded inventory account" in r.json()["detail"]
     assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
     await session.rollback()  # the refused request's work ends with it, as its own session would
-
-    r = await client.post("/admin/doctor?checks=posting_origins", headers=auth["headers"])
-    (finding,) = r.json()["results"][0]["details"]
-    assert (finding["kind"], finding["entity_id"]) == ("lot_origin", lot)
 
     for code in ("1131", "1130-P"):  # today's purchased account, and one that held purchases, hold none of it
         r = await client.put(f"/accounting/posting-accounts/older-stock/{lot}", headers=auth["headers"],

@@ -991,15 +991,13 @@ async def _check_posting_origins(
     session: AsyncSession, company_id, user_id, *, fix: bool,
 ) -> dict:
     """Find what automatic posting cannot proceed on without a decision: a posting
-    account the company needs but has not set or cannot use, stock on hand with no
-    inventory account (none recorded and none its history proves), and an older document
+    account the company needs but has not set or cannot use, and an older document
     whose receivable or payable was recorded on more than one account. Report-only: each needs the user to choose
     an account, never a guess."""
     from celerp.accounting_roles import POSTING_ACCOUNTS_PATH
     from celerp.models.company import Company
-    from celerp.services.account_roles import AmbiguousOriginError, LotOriginError, current_settings
+    from celerp.services.account_roles import AmbiguousOriginError, current_settings
     from celerp.services.auto_je import _control_role, party_origin
-    from celerp.services.lot_origin import unrecorded_lots
     from celerp.services.posting_readiness import panel
 
     findings: list[dict] = []
@@ -1009,10 +1007,6 @@ async def _check_posting_origins(
             if row["required"] and row["status"] != "ready":
                 findings.append({"kind": "posting_account", "role": row["role"], "problem": row["problem"],
                                  "fix": POSTING_ACCOUNTS_PATH})
-
-        for lot in await unrecorded_lots(session, company_id):
-            findings.append({"kind": "lot_origin", "entity_id": lot["item_id"],
-                             "problem": LotOriginError(lot["sku"]).detail, "fix": POSTING_ACCOUNTS_PATH})
 
         settings = await current_settings(session, company_id)
         docs = {row.entity_id: (row.state or {}).get("doc_type") for row in (await session.execute(
