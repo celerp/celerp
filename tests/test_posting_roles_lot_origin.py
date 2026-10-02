@@ -17,6 +17,7 @@ from sqlalchemy import select
 from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
 from celerp.services.fulfill import execute_fulfill, execute_unfulfill
+from celerp.services.lot_origin import held_value
 from celerp.services.pick import compute_pick_plan
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_fulfillment import _barcode_allocator
@@ -28,8 +29,6 @@ from test_receipt_accounting import _doc, _receive
 pytestmark = pytest.mark.asyncio
 
 _FIELD = "inventory_account_code"
-_NOT_HELD = frozenset({"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired", "draft",
-                       "disposed"})
 
 
 async def _remap(session, auth, role: str, code: str) -> None:
@@ -50,10 +49,10 @@ async def _books_match_lots(session, auth, *accounts: str) -> dict[str, float]:
         Projection.company_id == auth["company_id"], Projection.entity_type == "item"))).scalars().all()
     held = dict.fromkeys(accounts, 0.0)
     for row in rows:
-        s = row.state
-        if str(s.get("status") or "").lower() in _NOT_HELD or s.get(_FIELD) not in held:
+        s, value = row.state, held_value(row)
+        if value is None or s.get(_FIELD) not in held:
             continue
-        held[s[_FIELD]] = round(held[s[_FIELD]] + float(s.get("cost_total") or 0), 2)
+        held[s[_FIELD]] = round(held[s[_FIELD]] + float(value), 2)
     books = {a: await _account_net(session, auth["company_id"], a) for a in accounts}
     assert books == held
     return books

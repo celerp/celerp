@@ -42,6 +42,12 @@ LOT_ACCOUNT_FIELD = "inventory_account_code"
 # predates lots recording their account.
 INVENTORY_ORIGIN_KEY = "inventory_origin_schema"
 INVENTORY_ORIGIN_SCHEMA = 1
+# The item-state field set while an archived or expired lot still holds the company's
+# stock (celerp.services.lot_origin.in_stock). Only the system writes it.
+ON_BOOKS_FIELD = "inventory_on_books"
+# Company.settings key set once the lots an older release archived or expired have been
+# recognized as still holding stock (lot_origin.record_kept_stock).
+KEPT_STOCK_KEY = "kept_stock_schema"
 
 # Where a user fixes a missing or invalid role.
 POSTING_ACCOUNTS_PATH = "/settings/accounting?tab=posting-accounts"

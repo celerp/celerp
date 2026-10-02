@@ -20,6 +20,7 @@ from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_helpers import sell_item
 from test_money_stock_and_contact_invariants import (
     _account_net,
     _cleanup,
@@ -181,11 +182,8 @@ async def _receive_return(client, session, auth):
         "status": "available", "sku": sku, "name": "Widget", "quantity": 2, "cost_price": 40.0,
         "sell_by": "piece"})
     assert r.status_code == 200, r.text
-    await client.post(f"/items/{r.json()['id']}/status", headers=auth["headers"], json={"new_status": "sold"})
+    inv = await sell_item(client, auth["headers"], r.json()["id"], unit_price=50.0)
     line = {"name": "Widget", "sku": sku, "quantity": 2, "unit_price": 50.0}
-    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "invoice", "line_items": [line]})
-    inv = r.json()["id"]
-    await client.post(f"/docs/{inv}/finalize", headers=auth["headers"])
     cn = await _final(client, auth, "credit_note", 100.0, original_doc_id=inv, line_items=[line])
     return "POST", f"/docs/{cn}/receive-return", \
         {"items": [{"sku": sku, "quantity": 1}]}, {"items": [{"sku": sku, "quantity": 2}]}

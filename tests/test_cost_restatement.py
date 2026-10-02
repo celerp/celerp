@@ -400,9 +400,18 @@ async def test_broken_lineage_refuses_correction_atomically(client, session, aut
 
 @pytest.mark.asyncio
 async def test_sale_without_an_exact_invoice_line_refuses_correction(client, session, auth):
+    # Sold by converting a memo to an invoice: no invoice line ever fulfilled it.
     item = await _item(client, auth, 100.0)
-    r = await client.post(f"/items/{item}/status", headers=auth["headers"], json={"new_status": "sold"})
+    sku = (await _state(session, auth, item))["sku"]
+    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "memo", "line_items": [
+        {"entity_id": item, "sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "sell_by": "piece"}]})
     assert r.status_code == 200, r.text
+    memo = r.json()["id"]
+    for path, body in ((f"/docs/{memo}/finalize", {}), (f"/docs/{memo}/fulfill-lines", {"line_entity_ids": [item]}),
+                       (f"/docs/{memo}/convert", {})):
+        r = await client.post(path, headers=auth["headers"], json=body)
+        assert r.status_code == 200, r.text
+    assert (await _state(session, auth, item))["status"] == "sold"
     await _assert_refused(client, session, auth, item, [], fragment="invoice line")
 
 

@@ -122,6 +122,24 @@ async def merge_items(client, *, json: dict, headers: dict | None = None):
     return await client.post("/items/merge", headers=headers, json=json)
 
 
+async def sell_item(client, headers: dict, item_id: str, unit_price: float = 150.0) -> str:
+    """Sell all of a lot the way a user does: an invoice for it, finalized, then
+    fulfilled. A status edit cannot mark stock sold. Returns the invoice id."""
+    r = await client.get(f"/items/{item_id}", headers=headers)
+    assert r.status_code == 200, r.text
+    item = r.json()
+    qty = float(item.get("quantity") or 1)
+    r = await client.post("/docs", headers=headers, json={"doc_type": "invoice", "total": unit_price * qty, "line_items": [
+        {"entity_id": item_id, "sku": item.get("sku"), "name": item.get("name") or "Item", "quantity": qty,
+         "unit_price": unit_price, "sell_by": item.get("sell_by") or "piece"}]})
+    assert r.status_code == 200, r.text
+    inv = r.json()["id"]
+    for path, body in ((f"/docs/{inv}/finalize", {}), (f"/docs/{inv}/fulfill-lines", {"line_entity_ids": [item_id]})):
+        r = await client.post(path, headers=headers, json=body)
+        assert r.status_code == 200, r.text
+    return inv
+
+
 async def create_location(client, headers: dict, name: str = "Warehouse 2") -> str:
     """Create a real location and return its id (for transfer-target tests)."""
     r = await client.post("/companies/me/locations", headers=headers,

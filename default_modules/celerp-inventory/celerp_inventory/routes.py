@@ -49,9 +49,9 @@ from .services import (
     preview_import_rows,
     source_header_semantics,
 )
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
 from celerp.services.company_lock import lock_projections
-from celerp.services.lot_origin import is_authoring_event
+from celerp.services.lot_origin import RETIRED, in_stock, is_authoring_event, record_kept_stock
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.business_time import business_date_at
@@ -393,16 +393,50 @@ ITEM_STATUSES: frozenset[str] = frozenset({
     "merged", "expired", "memo_out", "returned", "disposed",
 })
 
+# Statuses a generic status edit cannot set: each records an outcome its own action
+# books (Expire is administrative but has its own action and permission).
+_ACTION_OWNED_STATUSES: dict[str, str] = {
+    "sold": "An item is sold by fulfilling its invoice, not a direct status edit.",
+    "merged": "An item is merged through the Merge action, not a direct status edit.",
+    "expired": "Use the Expire action to expire an item, not a direct status edit.",
+}
+
+# Why stock that has left the books cannot come back through a status edit, by the
+# status it left them in; each names the action that undoes it.
+_LEFT_THE_BOOKS: dict[str, str] = {
+    "disposed": "This stock was written off; use Undo write-off to bring it back.",
+    "merged": "This item was merged into another; use Undo merge to bring it back.",
+    "sold": "This item was sold; reverse its fulfilment to bring it back.",
+    "fulfilled": "This item was sold; reverse its fulfilment to bring it back.",
+    "void": "This item was deleted.",
+    "deleted": "This item was deleted.",
+}
+_GAVE_UP_ITS_STOCK = ("This item holds no stock on the books: it was sold, or its stock went into other items "
+                      "(a split, transform or merge), or its receipt or return was undone, so a status edit "
+                      "cannot bring it back.")
+# A sold item can still be archived to tidy the catalog; it stays off the books.
+_ARCHIVABLE_AFTER_SALE = frozenset({"sold", "fulfilled"})
+
+
+def _kept(status: str | None) -> dict:
+    """What an Archive or Expire event says: the company keeps the stock on its books."""
+    return {ON_BOOKS_FIELD: True} if str(status or "").lower() in RETIRED else {}
+
+
 async def assert_status_change_allowed(
     session: AsyncSession, company_id, entity_id: str, new_status: str,
     role: str, settings: dict,
 ) -> None:
     """Function-level validation shared by every item-status write path (single,
-    bulk, and PATCH). Unknown values are rejected with the allowed list. A draft
-    item's amounts and costs are freely editable, so an item that has circulated
-    must never quietly become one again: reverting a committed item to draft
-    requires the revert_items_to_draft permission AND a clean history, and every
-    rejection names its reason instead of hiding the control.
+    bulk, and PATCH). Unknown values are rejected with the allowed list. A status
+    edit is administrative: it never records an outcome another action books
+    (written off, sold, merged, expired), and stock that has left the books (written
+    off, sold, merged, or used up by a split or transform) comes back only through the
+    action that undoes it, judged on the locked row. A draft item's amounts and costs
+    are freely editable, so an item that has circulated must never quietly become one
+    again: reverting a committed item to draft requires the revert_items_to_draft
+    permission AND a clean history, and every rejection names its reason instead of
+    hiding the control.
     """
     ns = str(new_status or "").lower()
     if ns not in ITEM_STATUSES:
@@ -418,7 +452,16 @@ async def assert_status_change_allowed(
             status_code=422,
             detail="Disposal is recorded through the Write off stock action, not a direct status edit.",
         )
+    if ns in _ACTION_OWNED_STATUSES:
+        raise HTTPException(status_code=422, detail=_ACTION_OWNED_STATUSES[ns])
     if ns != "draft":
+        row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+        state = (row.state if row else {}) or {}
+        current = str(state.get("status") or "").lower()
+        if ns == "archived" and current in _ARCHIVABLE_AFTER_SALE:
+            return
+        if current not in ("", "draft", ns) and not in_stock(state):
+            raise HTTPException(status_code=422, detail=_LEFT_THE_BOOKS.get(current, _GAVE_UP_ITS_STOCK))
         return
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     state = (row.state if row else {}) or {}
@@ -514,6 +557,19 @@ async def assert_make_available_allowed(session: AsyncSession, company_id, entit
         status_code=409,
         detail=f"Only a draft item can be made available; this item is {current}",
     )
+
+
+async def assert_expirable(session: AsyncSession, company_id, entity_id: str) -> None:
+    """Expire retires stock the company still owns, so the lot must hold stock on the
+    books when its row lock is taken."""
+    await assert_not_draft(session, company_id, entity_id, "expire")
+    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+    state = (row.state if row else {}) or {}
+    if row is not None and not in_stock(state):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only stock on hand can be expired; this item is {state.get('status') or 'unknown'}.",
+        )
 
 
 async def assert_not_draft(session: AsyncSession, company_id, entity_id: str, action: str) -> None:
@@ -2576,7 +2632,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     event = dict(
         entity_id=entity_id,
         event_type="item.updated",
-        data=payload.model_dump(exclude_none=True),
+        data={**payload.model_dump(exclude_none=True),
+              **(_kept((payload.fields_changed.get("status") or {}).get("new")) if "status" in changed_keys else {})},
         actor_id=user.id,
         source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
@@ -2616,8 +2673,10 @@ class BulkDeleteBody(BaseModel):
 async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
-    # Validated per item BEFORE any event is emitted: one blocked item rejects the
-    # whole bulk with the reason, nothing is half-applied (the session never commits).
+    # Locked, then validated per item BEFORE any event is emitted: one blocked item
+    # rejects the whole bulk with the reason, nothing is half-applied (the session
+    # never commits).
+    await _lock_selected_items(session, company_id, payload.entity_ids)
     for entity_id in payload.entity_ids:
         await reject_draft_status_change_via_generic_path(session, company_id, entity_id, payload.status)
         await assert_status_change_allowed(session, company_id, entity_id, payload.status, role, settings)
@@ -2629,7 +2688,7 @@ async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_curren
             entity_id=entity_id,
             entity_type="item",
             event_type="item.status.set",
-            data={"new_status": payload.status},
+            data={"new_status": payload.status, **_kept(payload.status)},
             actor_id=user.id,
             location_id=None,
             source="api",
@@ -2847,8 +2906,9 @@ class BulkExpireBody(BaseModel):
 async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await _lock_selected_items(session, company_id, payload.entity_ids)
     for eid in payload.entity_ids:
-        await assert_not_draft(session, company_id, eid, "expire")
+        await assert_expirable(session, company_id, eid)
     for eid in payload.entity_ids:
         await emit_event(
             session,
@@ -2856,7 +2916,7 @@ async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_co
             entity_id=eid,
             entity_type="item",
             event_type="item.expired",
-            data={},
+            data=_kept("expired"),
             actor_id=user.id,
             location_id=None,
             source="api",
@@ -4503,7 +4563,7 @@ async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depend
         entity_id=entity_id,
         entity_type="item",
         event_type="item.status.set",
-        data=payload.model_dump(exclude_none=True),
+        data={**payload.model_dump(exclude_none=True), **_kept(payload.new_status)},
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -4555,14 +4615,14 @@ async def unreserve_item(entity_id: str, payload: ReserveBody, company_id=Depend
 
 @router.post("/{entity_id}/expire")
 async def expire_item(entity_id: str, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    await assert_not_draft(session, company_id, entity_id, "expire")
+    await assert_expirable(session, company_id, entity_id)
     entry = await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
         entity_type="item",
         event_type="item.expired",
-        data={},
+        data=_kept("expired"),
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -4839,3 +4899,14 @@ def setup_api_routes(app) -> None:
     from celerp_inventory.migration_sink import SINK
     register_sink(SINK)
 
+
+async def record_kept_stock_hook(*, session: AsyncSession) -> None:
+    """on_modules_ready: recognize the archived and expired stock older releases left
+    every company (lot_origin.record_kept_stock). A company staged for a data migration
+    is left alone until the migration finishes."""
+    from celerp.models.company import Company
+    from celerp.services import migrations
+
+    for company_id in (await session.execute(select(Company.id).order_by(Company.id))).scalars().all():
+        if not await migrations.is_company_migration_staged(session, company_id):
+            await record_kept_stock(session, company_id)

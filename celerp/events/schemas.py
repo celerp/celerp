@@ -129,6 +129,8 @@ def _normalize_updated_codes(fields_changed: dict) -> None:
 
 class ItemUpdated(BaseModel):
     fields_changed: dict[str, dict[str, Any]]
+    # Set by an edit that archives stock the company keeps (lot_origin.in_stock).
+    inventory_on_books: bool | None = None
 
     @classmethod
     def normalize_for_storage(cls, data: dict) -> None:
@@ -153,6 +155,8 @@ class ItemStatusSet(BaseModel):
     reason: str | None = None
     # When a move between draft and stock happened: the business day its entry carries.
     ts: str | None = None
+    # Set by Archive: the lot keeps its stock on the books (lot_origin.in_stock).
+    inventory_on_books: bool | None = None
 
 
 class ItemTransferred(BaseModel):
@@ -206,6 +210,8 @@ class ItemFulfillmentReversed(BaseModel):
 
 class ItemExpired(BaseModel):
     reason: str | None = None
+    # Set by Expire: the lot keeps its stock on the books (lot_origin.in_stock).
+    inventory_on_books: bool | None = None
 
 
 class ItemWrittenOff(BaseModel):
@@ -325,6 +331,12 @@ class ItemInventoryAccountRecorded(BaseModel):
     # A lot from before lots recorded their inventory account: the account the upgrade
     # placed it on, or the one the user picked for it. Only a lot with no account can take one.
     inventory_account_code: str
+
+
+class ItemInventoryOnBooksRecorded(BaseModel):
+    # A lot an older release archived or expired at the user's request: it still holds
+    # the company's stock, recognized once on upgrade (lot_origin.record_kept_stock).
+    pass
 
 
 # --- Manufacturing recipe (materials + labor + overhead) attached to an item ---
@@ -1253,6 +1265,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.produced": ItemProduced,
     "item.cost_adjusted": ItemCostAdjusted,
     "item.inventory_account.recorded": ItemInventoryAccountRecorded,
+    "item.inventory_on_books.recorded": ItemInventoryOnBooksRecorded,
     "item.recipe.set": ItemRecipeSet,
     "item.workflow.set": ItemWorkflowSet,
     "item.reserved": ItemReserved,

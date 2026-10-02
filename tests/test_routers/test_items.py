@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from test_helpers import merge_items
+from test_helpers import merge_items, sell_item
 
 
 async def _token(client) -> str:
@@ -139,7 +139,7 @@ async def test_list_items_default_excludes_sold_and_archived(client):
     arch_id = r3.json()["id"]
 
     # Set statuses
-    await client.post(f"/items/{sold_id}/status", json={"new_status": "sold"}, headers=headers)
+    await sell_item(client, headers, sold_id)
     await client.post(f"/items/{arch_id}/status", json={"new_status": "archived"}, headers=headers)
 
     # Default list: must include available, exclude sold + archived
@@ -192,7 +192,7 @@ async def test_list_items_status_filter_sold(client):
     avail_id = r1.json()["id"]
     sold_id = r2.json()["id"]
 
-    await client.post(f"/items/{sold_id}/status", json={"new_status": "sold"}, headers=headers)
+    await sell_item(client, headers, sold_id)
 
     r = await client.get("/items?status=sold", headers=headers)
     assert r.status_code == 200
@@ -214,7 +214,7 @@ async def test_list_items_status_all_shows_everything(client):
     sold_id = r2.json()["id"]
     arch_id = r3.json()["id"]
 
-    await client.post(f"/items/{sold_id}/status", json={"new_status": "sold"}, headers=headers)
+    await sell_item(client, headers, sold_id)
     await client.post(f"/items/{arch_id}/status", json={"new_status": "archived"}, headers=headers)
 
     r = await client.get("/items?status=all", headers=headers)
@@ -239,7 +239,7 @@ async def test_valuation_excludes_sold_and_archived(client):
     sold_id = r2.json()["id"]
     arch_id = r3.json()["id"]
 
-    await client.post(f"/items/{sold_id}/status", json={"new_status": "sold"}, headers=headers)
+    await sell_item(client, headers, sold_id)
     await client.post(f"/items/{arch_id}/status", json={"new_status": "archived"}, headers=headers)
 
     r = await client.get("/items/valuation", headers=headers)

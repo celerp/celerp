@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from celerp.services.field_schema import get_effective_field_schema
 
-from test_helpers import create_item as _create_item, perm_setup as _perm_setup
+from test_helpers import create_item as _create_item, perm_setup as _perm_setup, sell_item
 
 
 def _session_for(settings: dict):
@@ -80,10 +80,10 @@ async def _seed_lifecycle_items(client, admin_h, location_id: str, category: str
         )
         assert r.status_code == 200, r.text
         ids[label] = r.json()["id"]
-    for label in ("sold", "archived"):
-        sr = await client.post(f"/items/{ids[label]}/status",
-                               json={"new_status": label}, headers=admin_h)
-        assert sr.status_code == 200, sr.text
+    await sell_item(client, admin_h, ids["sold"])
+    sr = await client.post(f"/items/{ids['archived']}/status",
+                           json={"new_status": "archived"}, headers=admin_h)
+    assert sr.status_code == 200, sr.text
     return skus
 
 

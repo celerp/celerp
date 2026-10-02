@@ -253,6 +253,28 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
         )
 
 
+# Item events whose writer may say an archived or expired lot keeps its stock on the
+# books: Archive, Expire, and the upgrade that recognizes what older releases archived.
+_ON_BOOKS_WRITERS = frozenset({"item.status.set", "item.expired", "item.updated", "item.inventory_on_books.recorded"})
+
+
+def _guard_on_books(kwargs: dict) -> None:
+    """Whether retired stock stays on the books follows from the action that retired it
+    (projections._keep_on_books); nothing may enter it, an import or a field edit least
+    of all."""
+    from celerp.accounting_roles import ON_BOOKS_FIELD
+
+    data = kwargs["data"]
+    changed = data.get("fields_changed")
+    if (ON_BOOKS_FIELD in data and kwargs["event_type"] not in _ON_BOOKS_WRITERS) or (
+            isinstance(changed, dict) and ON_BOOKS_FIELD in changed):
+        raise HTTPException(
+            status_code=422,
+            detail="Whether archived or expired stock stays on the books is set by Archive and Expire "
+                   "and cannot be entered.",
+        )
+
+
 async def emit_event(
     session, *, preserve_external_code_conflicts: bool = False, **kwargs
 ) -> LedgerEntry:
@@ -368,6 +390,7 @@ async def emit_event(
 
     item = kwargs.get("entity_type") == "item"
     if item:
+        _guard_on_books(kwargs)
         await _record_lot_account(session, kwargs, previous_item_state)
 
     # An item event is checked again on the state its row lock applied it to; a refusal

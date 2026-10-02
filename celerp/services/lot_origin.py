@@ -45,7 +45,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import (
     INVENTORY_ORIGIN_KEY,
     INVENTORY_ORIGIN_SCHEMA,
+    KEPT_STOCK_KEY,
     LOT_ACCOUNT_FIELD,
+    ON_BOOKS_FIELD,
     SCHEMA_KEY,
     SOURCE_CONTROLS_KEY,
     AccountRole,
@@ -65,10 +67,15 @@ from celerp.services.business_time import business_date_of
 from celerp.services.money import round_money
 
 RECORDED = "item.inventory_account.recorded"
+KEPT = "item.inventory_on_books.recorded"
 
 # Statuses of lots whose stock is not on the books: no longer owned, or (draft) not yet
-# committed. Must match get_valuation()'s filter.
-NOT_HELD = frozenset({"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired", "draft", "disposed"})
+# committed.
+OFF_BOOKS = frozenset({"deleted", "void", "sold", "fulfilled", "merged", "draft", "disposed"})
+# Statuses that retire a lot from the catalog. Archive and Expire keep the stock on the
+# books (ON_BOOKS_FIELD); a lot a split, transform, merge or undone receipt or return
+# left archived gave its value up and holds none.
+RETIRED = frozenset({"archived", "expired"})
 
 _INVENTORY = (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
 
@@ -80,11 +87,20 @@ def _owned_stock(row: Projection) -> bool:
             and (s.get("inventory_type") or "stocked") == "stocked")
 
 
+def in_stock(state: dict | None) -> bool:
+    """Whether a lot's status keeps its stock on the books (the ownership test is
+    ``_owned_stock``)."""
+    s = state or {}
+    status = str(s.get("status") or "").lower()
+    return status not in OFF_BOOKS and (status not in RETIRED or s.get(ON_BOOKS_FIELD) is True)
+
+
 def held_value(row: Projection) -> Decimal | None:
     """The value of the goods a lot holds on the books, or None when it holds none on
-    them (not owned, not committed, consigned in, or not stocked)."""
+    them (not owned, not committed, retired with its value given up, consigned in, or not
+    stocked). The one definition the books, the dashboard and the opening entry use."""
     s = row.state or {}
-    if str(s.get("status") or "").lower() in NOT_HELD or not _owned_stock(row):
+    if not in_stock(s) or not _owned_stock(row):
         return None
     if float(s.get("cost_total") or 0):
         return Decimal(str(s["cost_total"]))
@@ -231,6 +247,62 @@ async def _period_open(session: AsyncSession, company_id, day: str) -> bool:
     return True
 
 
+def _kept_by_user(entry: LedgerEntry) -> bool:
+    """Whether an older release's event retired a lot at the user's request: Archive or
+    Expire, or an edit to either status. Every other writer that leaves a lot archived
+    says why (a split, transform or undone receipt or return), merges and write-offs have
+    their own events, and an import or snapshot authors the lot rather than retiring it."""
+    data, why = entry.data or {}, (entry.metadata_ or {}).get("reason")
+    if entry.event_type == "item.expired":
+        return True
+    if entry.event_type == "item.status.set":
+        return str(data.get("new_status") or "").lower() in RETIRED and not data.get("reason") and not why
+    if entry.event_type == "item.updated":
+        change = (data.get("fields_changed") or {}).get("status")
+        return isinstance(change, dict) and str(change.get("new") or "").lower() in RETIRED
+    return False
+
+
+async def record_kept_stock(session: AsyncSession, company_id) -> None:
+    """Older releases archived and expired lots without saying whether the stock stayed
+    the company's. Each archived or expired lot is replayed from its own events, reading
+    every Archive and Expire the user made as keeping the stock (``_kept_by_user``), and a
+    lot that ends up holding its stock records so in an event, which a rebuild replays.
+    Runs once per company; the company is marked when done."""
+    from celerp.events.engine import emit_event
+    from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import locked_company
+
+    async with session.begin_nested():
+        company = await locked_company(session, company_id)
+        if company is None or KEPT_STOCK_KEY in (company.settings or {}):
+            return
+        retired = sorted((r for r in await _items(session, company_id)
+                          if str((r.state or {}).get("status") or "").lower() in RETIRED
+                          and not (r.state or {}).get(ON_BOOKS_FIELD)), key=lambda r: r.entity_id)
+        for row in retired:
+            entries = (await session.execute(select(LedgerEntry).where(
+                LedgerEntry.company_id == company_id, LedgerEntry.entity_type == "item",
+                LedgerEntry.entity_id == row.entity_id)
+                .order_by(LedgerEntry.id))).scalars().all()
+            state: dict = {}
+            for e in entries:
+                data = {**e.data, ON_BOOKS_FIELD: True} if _kept_by_user(e) else e.data
+                state = ProjectionEngine._apply(state, e.event_type, data)
+            if state.get(ON_BOOKS_FIELD):
+                await emit_event(session, company_id=company_id, entity_id=row.entity_id, entity_type="item",
+                                 event_type=KEPT, data={}, actor_id=None, location_id=None, source="system",
+                                 idempotency_key=f"kept-stock:{row.entity_id}", metadata_={})
+        company.settings = {**(company.settings or {}), KEPT_STOCK_KEY: 1}
+        await session.flush()
+
+
+def _kept_value(items: list[Projection]) -> Decimal:
+    """The value of the archived and expired stock the company keeps."""
+    return sum((held_value(r) or Decimal("0") for r in items
+                if str((r.state or {}).get("status") or "").lower() in RETIRED), Decimal("0"))
+
+
 async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) -> bool:
     """Give the older stock of a company Celerp built itself the inventory account it sits
     in (module docstring), all in one savepoint. The purchased (P) and opening (OB)
@@ -264,14 +336,20 @@ async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) 
         balance = {code: sum((Decimal(str(e.get("debit") or 0)) - Decimal(str(e.get("credit") or 0))
                               for _, e in entries if e.get("account") == code), Decimal("0")) for code in (p, ob)}
         value = sum((v for _, v in held), Decimal("0"))
+        day = business_date_of(None, settings.get("timezone"))
         if round_money(balance[p] + balance[ob], currency) != round_money(value, currency):
-            await _mark(session, company_id)
-            return True
+            kept = await _put_back_kept_stock(session, company_id, settings, items, balance[p] + balance[ob], value,
+                                              ob, day)
+            if kept is None:
+                await _mark(session, company_id)
+                return True
+            if kept is False:
+                return False
+            balance[ob] += kept
         on_opening = sum((v for r, v in held if (r.state or {}).get(LOT_ACCOUNT_FIELD) == ob), Decimal("0"))
         moved = round_money(balance[ob] - on_opening, currency)
         je_id = f"je:auto:inventory-origin:{company_id}"
         if moved:
-            day = business_date_of(None, settings.get("timezone"))
             if await session.get(Projection, {"company_id": company_id, "entity_id": je_id}) is not None:
                 await _mark(session, company_id)  # moved once already; the books have changed since
                 return True
@@ -290,6 +368,52 @@ async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) 
         if moved:
             await _notify_moved(session, company_id, p, ob, abs(moved), currency, day)
     return True
+
+
+async def _put_back_kept_stock(session: AsyncSession, company_id, settings: dict, items: list[Projection],
+                               books: Decimal, value: Decimal, ob: str, day: str) -> Decimal | bool | None:
+    """Older releases recomputed the opening inventory entry without archived and expired
+    stock, so archiving or expiring a lot took its value off the books though the company
+    still owned it (record_kept_stock). When the purchased and opening inventory accounts
+    (``books``) fall short of the stock on hand (``value``) by exactly the archived and
+    expired stock the company keeps, one entry dated ``day`` puts that value back on the
+    opening inventory account against retained earnings, where the opening entry had
+    taken it from. Returns the amount put back; None when the books cannot vouch for it
+    (the shortfall is anything else, or retained earnings cannot take the entry), so
+    nothing is posted and the stock is left for the user to place; False when a period
+    lock forbids the entry, to retry on a later start."""
+    from celerp.services.account_roles import PostingRoleError
+    from celerp.services.auto_je import _emit_auto_posted_je, _line
+
+    currency = settings.get("currency", "USD")
+    kept = round_money(_kept_value(items), currency)
+    if not kept or round_money(books + kept, currency) != round_money(value, currency):
+        return None
+    je_id = f"je:auto:kept-stock:{company_id}"
+    if await session.get(Projection, {"company_id": company_id, "entity_id": je_id}) is not None:
+        return None  # put back once already; the books have changed since
+    retained = AccountRole.RETAINED_EARNINGS.value
+    try:
+        code = (await resolve_many(session, company_id, [retained]))[retained]
+    except PostingRoleError:
+        return None
+    if not await _period_open(session, company_id, day):
+        return False
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=None, je_id=je_id,
+        idem_create=f"kept-stock:{company_id}:c", idem_posted=f"kept-stock:{company_id}:p",
+        memo="Archived and expired stock the company still owns, put back on the books",
+        entries=[_line(ob, AccountRole.INVENTORY_OPENING.value, debit=float(kept)),
+                 _line(code, retained, credit=float(kept))],
+        metadata_={"trigger": "inventory_origin.kept_stock"}, ts=day)
+    from celerp.notifications import service as notification_service
+
+    await notification_service.create(
+        session, company_id, "accounting", "Archived stock put back on the books",
+        f"Earlier releases left archived and expired stock out of opening inventory, though it is still yours. "
+        f"One entry dated {day} put {kept} {currency} back on {ob} against {code}. Archive and Expire now keep "
+        f"stock on the books; use Write off stock to take it off.")
+    return kept
 
 
 async def _notify_moved(session: AsyncSession, company_id, p: str, ob: str, amount: Decimal, currency: str,

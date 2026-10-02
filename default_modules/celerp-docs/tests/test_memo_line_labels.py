@@ -82,8 +82,8 @@ async def test_line_label_sold(client):
     assert (await client.post(f"/docs/{memo}/finalize", headers=h)).status_code == 200
     assert (await client.post(f"/docs/{memo}/fulfill-lines", headers=h, json={"line_entity_ids": [sold]})).status_code == 200
 
-    # The shipped item is sold (memo->invoice finalize promotes memo_out to sold).
-    r = await client.post("/items/bulk/status", headers=h, json={"entity_ids": [sold], "status": "sold"})
+    # The customer keeps it: converting the memo to an invoice sells the shipped item.
+    r = await client.post(f"/docs/{memo}/convert", headers=h)
     assert r.status_code == 200, r.text
 
     doc = (await client.get(f"/docs/{memo}", headers=h)).json()
@@ -153,7 +153,7 @@ async def test_line_label_sold_survives_archive(client):
     memo = await _memo(client, h, [sold])
     assert (await client.post(f"/docs/{memo}/finalize", headers=h)).status_code == 200
     assert (await client.post(f"/docs/{memo}/fulfill-lines", headers=h, json={"line_entity_ids": [sold]})).status_code == 200
-    assert (await client.post("/items/bulk/status", headers=h, json={"entity_ids": [sold], "status": "sold"})).status_code == 200
+    assert (await client.post(f"/docs/{memo}/convert", headers=h)).status_code == 200
 
     doc = (await client.get(f"/docs/{memo}", headers=h)).json()
     assert _label_for(doc, sold) == "Sold", f"expected Sold before archive; got {_label_for(doc, sold)!r}"

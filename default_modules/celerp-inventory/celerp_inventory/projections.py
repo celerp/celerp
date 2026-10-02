@@ -3,7 +3,7 @@
 
 from copy import deepcopy
 
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
 from celerp.services.money import round_basis
 
 # Maps old weight_unit abbreviations to new unit names
@@ -52,6 +52,8 @@ CORE_ITEM_KEYS: frozenset[str] = frozenset({
     "is_expired", "expires_at", "landed_cost_kind", "recoverable",
     # the inventory account the lot's value sits in (celerp.accounting_roles)
     LOT_ACCOUNT_FIELD,
+    # whether an archived or expired lot still holds its stock (celerp.services.lot_origin)
+    ON_BOOKS_FIELD,
     # purchase side
     "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor",
     # free-text core fields
@@ -301,6 +303,32 @@ def _stamp_status_doc(current: dict, data: dict) -> None:
 
 
 def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
+    current = _apply_item_event(state, event_type, data)
+    _keep_on_books(state, current, event_type, data)
+    return current
+
+
+def _keep_on_books(before: dict, after: dict, event_type: str, data: dict) -> None:
+    """Archive and Expire retire a lot from the catalog while the company still owns its
+    stock: the event says so, and the lot keeps holding its value (lot_origin.in_stock).
+    Any other change of status, including the archived row a split, transform, merge or
+    undone receipt leaves behind, clears it, so it can never hold value it gave up."""
+    from celerp.services.lot_origin import RETIRED, in_stock
+
+    status = str(after.get("status") or "").lower()
+    if event_type == "item.inventory_on_books.recorded":
+        kept = status in RETIRED
+    elif data.get(ON_BOOKS_FIELD) is True and status in RETIRED:
+        kept = in_stock(before)
+    else:
+        kept = bool(before.get(ON_BOOKS_FIELD)) and status == str(before.get("status") or "").lower()
+    if kept:
+        after[ON_BOOKS_FIELD] = True
+    else:
+        after.pop(ON_BOOKS_FIELD, None)
+
+
+def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
     if event_type in {"item.created", "item.snapshot"}:
         current.update(data)
@@ -413,6 +441,8 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         _recompute_cost(current)
     elif event_type == "item.inventory_account.recorded":
         current[LOT_ACCOUNT_FIELD] = data[LOT_ACCOUNT_FIELD]
+    elif event_type == "item.inventory_on_books.recorded":
+        pass  # _keep_on_books
     elif event_type == "item.landed_cost.applied":
         # Absolute per-unit landed contribution for one (source bill, kind); overwrite-safe so
         # re-running allocation with changed freight self-corrects. amount=0 clears the contribution.
