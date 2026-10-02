@@ -1724,7 +1724,7 @@ def client_scripts(lang: str = "en") -> list:
 
 
 def _favicon_links() -> tuple[FT, ...]:
-    """The Celerp shield icon set, the same files the website and relay use."""
+    """The Celerp shield icon set, made from the same master as the desktop app icon."""
     return (
         Link(rel="icon", type="image/x-icon", href="/static/favicon.ico"),
         Link(rel="icon", type="image/png", sizes="32x32", href="/static/favicon-32x32.png"),
