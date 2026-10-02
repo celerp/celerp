@@ -96,16 +96,21 @@ async def payment_books(session: AsyncSession, company_id, state: dict) -> dict:
     the company's books (no usable timezone or rate)."""
     company = await session.get(Company, company_id)
     settings = (company.settings or {}) if company else {}
-    base = str(settings.get("currency") or "USD").upper()
+    base = _base_currency(settings)
     return {"deposit_account": await deposit_account(session, company_id),
             "timezone": business_timezone(settings.get("timezone")).key,
             "base_currency": base, "rate": str(require_doc_rate(state, base))}
 
 
-async def _checked_books(session: AsyncSession, company_id, books) -> tuple[str, str, str, Decimal]:
+def _base_currency(settings: dict) -> str:
+    return str(settings.get("currency") or "USD").upper()
+
+
+async def _checked_books(session: AsyncSession, company_id, books, doc_state: dict) -> tuple[str, str, str, Decimal]:
     """(deposit account, timezone, base currency, rate) from the books a payment page
-    opened with, or 422 when they are missing, unusable, or name a deposit account
-    the company no longer has."""
+    opened with, or 422 when they are missing, unusable, name a deposit account the
+    company no longer has, or no longer describe its ledger: the company now keeps its
+    books in another currency, or the document now converts into them at another rate."""
     from celerp_accounting.models import Account
     if not (isinstance(books, dict) and all(isinstance(books.get(k), str) and books[k] for k in _BOOKS)):
         raise HTTPException(status_code=422, detail="The payment carries no books to record it on")
@@ -117,7 +122,18 @@ async def _checked_books(session: AsyncSession, company_id, books) -> tuple[str,
     if (await session.execute(select(Account.id).where(
             Account.company_id == company_id, Account.code == account))).scalar_one_or_none() is None:
         raise HTTPException(status_code=422, detail=f"Account '{account}' is not in the chart of accounts")
-    return account, timezone, books["base_currency"].upper(), rate
+    base = books["base_currency"].upper()
+    company = await session.get(Company, company_id)
+    current = _base_currency((company.settings or {}) if company else {})
+    if base != current:
+        raise HTTPException(status_code=422, detail=f"The payment is on {base} books; the company keeps them in {current}")
+    try:
+        current_rate = require_doc_rate(doc_state, current)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if rate != current_rate:
+        raise HTTPException(status_code=422, detail=f"The payment is at rate {rate}; the document is now at {current_rate}")
+    return account, timezone, base, rate
 
 
 async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
@@ -139,7 +155,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     if any(p.get("reference") == reference and p.get("status") != "deleted"
            for p in doc_state.get("payments", [])):
         return None  # already recorded - a repeated delivery
-    account, timezone, base, rate = await _checked_books(session, company_id, context)
+    account, timezone, base, rate = await _checked_books(session, company_id, context, doc_state)
     if paid_at is None:
         raise HTTPException(status_code=422, detail="The payment carries no time it was paid")
     amount = amount_minor / (10 ** currency_dp(currency))
