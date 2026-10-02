@@ -22,7 +22,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from celerp.accounting_roles import LEGACY_LOT_ACCOUNT_KEY
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
@@ -44,9 +44,8 @@ from celerp_inventory.routes import (
 async def _seed_company(factory):
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        # The stock is older than recorded inventory accounts; the company names where it is valued.
         s.add(Company(id=company_id, name="Restructure Co", slug=f"restructure-{company_id.hex[:8]}",
-                      settings={LEGACY_LOT_ACCOUNT_KEY: "1130-P"}))
+                      settings={}))
         s.add(User(id=user_id, email=f"race-{user_id.hex[:8]}@restructure.test", name="Race User",
                    auth_hash="x"))
         await s.commit()
@@ -60,7 +59,7 @@ async def _seed_item(factory, company_id, user, sku: str, quantity: float) -> st
             s, company_id=company_id, entity_id=entity_id, entity_type="item",
             event_type="item.created",
             data={"sku": sku, "name": sku, "quantity": quantity, "sell_by": "piece",
-                  "cost_total": quantity * 10, "status": "available"},
+                  "cost_total": quantity * 10, "status": "available", LOT_ACCOUNT_FIELD: "1130-P"},
             actor_id=user.id, location_id=None, source="test",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )

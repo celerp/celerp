@@ -4144,7 +4144,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
         create_data["catalog_item_id"] = merged_catalog_id
     # The merged lot keeps the surviving lot's inventory account; value held in any
     # other account moves into it with the merge.
-    reclass = merge_reclassification(settings, target_state, [p.state for p in source_projections], currency)
+    reclass = merge_reclassification(target_state, [p.state for p in source_projections], currency)
     create_data[LOT_ACCOUNT_FIELD] = reclass.destination
 
     # The merged item is the same product as the target, so carry the target's product

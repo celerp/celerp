@@ -114,19 +114,6 @@ async def test_a_part_fulfilled_then_returned_after_a_remap_sells_from_its_lots_
     assert await _account_net(session, auth["company_id"], new) == 0.0
 
 
-async def test_a_part_of_an_older_lot_keeps_its_lots_unrecorded_account(session, client, auth):
-    lot = await _lot(client, auth, 50.0, qty=10, sku="OLD")
-    await _forget_origin(session, auth, lot)
-    new = await _new_inventory_account(client, auth)
-    for role in ("inventory_purchased", "inventory_opening"):
-        await _remap(session, auth, role, new)
-
-    order = await _order(client, auth, "OLD", 3)
-    part = await _fulfil(session, auth, order, lot)
-    state = await _state(session, auth, part["item_id"])
-    assert _FIELD in state and state[_FIELD] is None
-
-
 # --- Opening stock records the opening account and keeps it -----------------------------
 
 

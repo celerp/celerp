@@ -5,9 +5,8 @@
 A lot entered by hand takes the company's current opening inventory account, and
 stock received or produced takes the current purchased inventory account; selling,
 fulfilling, returning or splitting a lot moves its value on that same account whatever the
-account is set to by then. A lot from before lots recorded their account uses
-the account the company's history proves, and one with no provable account
-refuses to move its cost rather than guess.
+account is set to by then. A lot from before lots recorded their account
+refuses to move its cost until its account is proven or chosen, rather than guess.
 """
 from __future__ import annotations
 
@@ -124,21 +123,9 @@ async def test_a_split_lot_keeps_its_account_in_every_part(session, client, auth
 
 
 @pytest.mark.asyncio
-async def test_an_older_lot_relieves_the_account_the_company_history_proves(session, client, auth):
-    lot = await _lot(client, auth, 30.0)
-    await _forget_origin(session, auth, lot)
-    await _remap(session, auth, await _new_inventory_account(client, auth), "inventory_purchased")
-    inv = await _sell(client, auth, (lot, 1))
-    assert _credits(await _state(session, auth, f"je:auto:{inv}:fin")) == {"1130-P": 30.0}
-
-
-@pytest.mark.asyncio
 async def test_an_older_lot_with_no_provable_account_refuses_to_move_its_cost(session, client, auth):
     lot = await _lot(client, auth, 30.0)
     await _forget_origin(session, auth, lot)
-    company = await locked_company(session, auth["company_id"])
-    company.settings = {k: v for k, v in company.settings.items() if k != "posting_legacy_lot_account"}
-    await session.commit()
     r = await client.post("/docs", headers=auth["headers"], json={
         "doc_type": "invoice", "total": 50.0,
         "line_items": [{"entity_id": lot, "name": "Lot", "quantity": 1, "unit_price": 50.0, "sell_by": "piece"}]})
@@ -276,13 +263,12 @@ async def test_manufacturing_relieves_inputs_on_their_account_and_books_output_w
 
 
 @pytest.mark.asyncio
-async def test_an_older_lot_whose_stock_sat_in_more_than_one_account_waits_for_a_choice(session, client, auth):
+async def test_an_older_lot_waits_for_its_account_and_only_one_that_holds_it_can_be_chosen(session, client, auth):
     lot = await _lot(client, auth, 30.0, sku="OLD-2")
     await _forget_origin(session, auth, lot)
     await _remap(session, auth, await _new_inventory_account(client, auth), "inventory_purchased")
-    company = await locked_company(session, auth["company_id"])
-    company.settings = {k: v for k, v in company.settings.items() if k != "posting_legacy_lot_account"}
-    await session.commit()
+    # Viewing the balance sheet posts the opening inventory entry, which carries it on 1130-OB.
+    assert (await client.get("/accounting/balance-sheet", headers=auth["headers"])).status_code == 200
     r = await client.post("/docs", headers=auth["headers"], json={
         "doc_type": "invoice", "total": 50.0,
         "line_items": [{"entity_id": lot, "name": "Lot", "quantity": 1, "unit_price": 50.0, "sell_by": "piece"}]})
@@ -290,17 +276,23 @@ async def test_an_older_lot_whose_stock_sat_in_more_than_one_account_waits_for_a
     inv = r.json()["id"]
     r = await client.post(f"/docs/{inv}/finalize", headers=auth["headers"])
     assert r.status_code == 409, r.text
-    assert "OLD-2 was valued in more than one inventory account (1130-P, 1131)" in r.json()["detail"]
+    assert "OLD-2 has no recorded inventory account" in r.json()["detail"]
     assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
     await session.rollback()  # the refused request's work ends with it, as its own session would
 
     r = await client.post("/admin/doctor?checks=posting_origins", headers=auth["headers"])
     (finding,) = r.json()["results"][0]["details"]
     assert (finding["kind"], finding["entity_id"]) == ("lot_origin", lot)
-    assert "more than one inventory account (1130-P, 1131)" in finding["problem"]
 
-    r = await client.put("/accounting/posting-accounts/older-stock", headers=auth["headers"], json={"code": "1131"})
+    for code in ("1131", "1130-P"):  # today's purchased account, and one that held purchases, hold none of it
+        r = await client.put(f"/accounting/posting-accounts/older-stock/{lot}", headers=auth["headers"],
+                             json={"code": code})
+        assert r.status_code == 422, r.text
+        assert "does not hold" in r.json()["detail"]
+    r = await client.put(f"/accounting/posting-accounts/older-stock/{lot}", headers=auth["headers"],
+                         json={"code": "1130-OB"})
     assert r.status_code == 200, r.text
+    assert r.json()["older_stock"]["lots"] == []
     r = await client.post(f"/docs/{inv}/finalize", headers=auth["headers"])
     assert r.status_code == 200, r.text
-    assert _credits(await _state(session, auth, f"je:auto:{inv}:fin")) == {"1131": 30.0}
+    assert _credits(await _state(session, auth, f"je:auto:{inv}:fin")) == {"1130-OB": 30.0}

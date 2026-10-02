@@ -3228,15 +3228,21 @@ async def set_period_lock(token: str, lock_date: str | None) -> dict:
 
 
 async def get_posting_accounts(token: str) -> dict:
-    """GET each posting role's account and status, and the older-stock account."""
+    """GET each posting role's account and status, and older stock with no provable inventory account."""
     async with _api_client(token) as c:
         return _raise(await c.get("/accounting/posting-accounts")).json()
 
 
 async def set_posting_account(token: str, role: str, code: str) -> dict:
-    """PUT a posting role's account ("older-stock" names the older-stock account)."""
+    """PUT a posting role's account."""
     async with _api_client(token) as c:
         return _raise(await c.put(f"/accounting/posting-accounts/{role}", json={"code": code})).json()
+
+
+async def set_older_stock_account(token: str, item_id: str, code: str) -> dict:
+    """PUT the inventory account of older stock whose history proves none."""
+    async with _api_client(token) as c:
+        return _raise(await c.put(f"/accounting/posting-accounts/older-stock/{item_id}", json={"code": code})).json()
 
 
 async def close_fiscal_year(token: str, fiscal_year_end: str) -> dict:

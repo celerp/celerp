@@ -29,6 +29,7 @@ from celerp.services.account_roles import (
 )
 from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.line_measures import splitting_allowed
+from celerp.services.lot_origin import held_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.pick import doc_bound_lots, plan_lot_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line
@@ -311,7 +312,6 @@ async def compute_doc_cogs(
     correctly costed siblings.
     """
     result = CogsResult()
-    settings = await current_settings(session, company_id)
     line_items = doc.get("line_items", [])
     bound = doc_bound_lots(line_items)
     span_consumed: set[str] = set()
@@ -348,12 +348,12 @@ async def compute_doc_cogs(
         # A lot's cost can only move on the account it is valued in, so a costed line
         # names it, and refuses when the lot's account cannot be proven.
         for lot in lots:
-            lot["account"] = lot_account(settings, states[lot["lot_entity_id"]]) if amount > 0 else None
+            lot["account"] = lot_account(states[lot["lot_entity_id"]]) if amount > 0 else None
         if amount > 0:
             parts = {lot["lot_entity_id"]: lot["qty"] * lot["unit_cost"] for lot in lots}
             parts[str(item_id)] = parts.get(str(item_id), 0.0) + provisional_qty * unit_cost
             for lot_id, share in _shares(parts, amount).items():
-                code = lot_account(settings, states[lot_id])
+                code = lot_account(states[lot_id])
                 result.by_account[code] = result.by_account.get(code, 0.0) + share
         result.allocations[str(index)] = {
             "lots": lots, "provisional_qty": provisional_qty, "amount": amount}
@@ -1370,13 +1370,12 @@ async def _cogs_entries(session, company_id, by_account: dict[str, float], *, ex
 
 async def lots_by_account(session, company_id, amounts: dict[str, float]) -> dict[str, float]:
     """{lot entity id: amount} summed onto the inventory account each lot is valued in."""
-    settings = await current_settings(session, company_id)
     out: dict[str, float] = {}
     for lot_id, amount in amounts.items():
         if not amount:
             continue
         row = await session.get(Projection, {"company_id": company_id, "entity_id": lot_id})
-        code = lot_account(settings, (row.state or {}) if row is not None else {})
+        code = lot_account((row.state or {}) if row is not None else {})
         out[code] = out.get(code, 0.0) + amount
     return out
 
@@ -1496,7 +1495,7 @@ class MergeReclassification:
                 "moves": [{"account": code, "amount": to_stored_float(a)} for code, a in self.moves.items()]}
 
 
-def merge_reclassification(settings: dict, survivor: dict, sources: list[dict], currency: str) -> MergeReclassification:
+def merge_reclassification(survivor: dict, sources: list[dict], currency: str) -> MergeReclassification:
     """The inventory account a merge keeps and the value it moves into it.
 
     The merged lot keeps the surviving lot's own account, never the account new stock
@@ -1510,10 +1509,10 @@ def merge_reclassification(settings: dict, survivor: dict, sources: list[dict], 
         # merged lot records the survivor's own account, unknown included, as any lot
         # carved from it would.
         return MergeReclassification(survivor.get(LOT_ACCOUNT_FIELD), {}, currency)
-    destination = lot_account(settings, survivor)
+    destination = lot_account(survivor)
     by_account: dict[str, _Dec] = {}
     for state in sources:
-        code = lot_account(settings, state)
+        code = lot_account(state)
         if code != destination:
             by_account[code] = by_account.get(code, _Dec(0)) + to_decimal(lot_cost_of_sale(state))
     rounded = {code: round_money(v, currency) for code, v in sorted(by_account.items())}
@@ -1711,20 +1710,20 @@ async def reconcile_doc_cogs(
             raise ValueError("cannot safely identify the invoice line of every shipped lot")
         cost = lot_cost_of_sale(lot.state or {})
         if cost:
-            _add({lot_account(settings, lot.state or {}): cost})
+            _add({lot_account(lot.state or {}): cost})
         shipped_qty[idx] = shipped_qty.get(idx, 0.0) + float((lot.state or {}).get("quantity") or 0)
     repriced = await _recorded_repricings(session, company_id, doc_id, recognized.cycle)
     for idx, alloc in recognized.allocations.items():
         amount = float(alloc.get("amount") or 0)
         if int(idx) not in shipped_qty:
-            _add(await _allocation_by_account(session, company_id, settings, alloc,
+            _add(await _allocation_by_account(session, company_id, alloc,
                                               amount + repriced.get(int(idx), 0.0)))
             continue
         allocated = sum(float(lot.get("qty") or 0) for lot in alloc.get("lots", [])) + float(
             alloc.get("provisional_qty") or 0)
         unshipped = allocated - shipped_qty[int(idx)]
         if allocated > 0 and unshipped > 1e-9:
-            _add(await _allocation_by_account(session, company_id, settings, alloc, amount * unshipped / allocated))
+            _add(await _allocation_by_account(session, company_id, alloc, amount * unshipped / allocated))
     booked: dict[str, float] = {}
     for row in (await _doc_recognition_jes(session, company_id, doc_id)).values():
         if (row.state or {}).get("status") != "posted":
@@ -1741,7 +1740,7 @@ async def reconcile_doc_cogs(
     )
 
 
-async def _allocation_by_account(session, company_id, settings: dict, alloc: dict, amount: float) -> dict[str, float]:
+async def _allocation_by_account(session, company_id, alloc: dict, amount: float) -> dict[str, float]:
     """``amount`` of a line's finalize allocation, split over the inventory accounts its
     lots are valued in, by each lot's share of the allocated cost. The quantity no lot
     covered is priced at the bound lot's cost, so it sits with the first lot."""
@@ -1753,7 +1752,7 @@ async def _allocation_by_account(session, company_id, settings: dict, alloc: dic
         code = lot.get("account")
         if not code:
             row = await session.get(Projection, {"company_id": company_id, "entity_id": lot["lot_entity_id"]})
-            code = lot_account(settings, (row.state or {}) if row is not None else {})
+            code = lot_account((row.state or {}) if row is not None else {})
         qty = float(lot.get("qty") or 0) + (float(alloc.get("provisional_qty") or 0) if position == 0 else 0.0)
         parts[code] = parts.get(code, 0.0) + qty * float(lot.get("unit_cost") or 0)
     return _shares(parts, amount)
@@ -2158,33 +2157,15 @@ async def upsert_opening_inventory_je(
         )
     ).scalars().all()
 
-    # Inactive statuses: items whose stock is not counted - no longer owned, or
-    # (draft) not yet committed. Must match get_valuation()'s filter.
-    _INACTIVE = frozenset({"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired", "draft", "disposed"})
-
     catalog_total = _Dec("0")
     by_lot_account: dict[str, _Dec] = {}  # catalog cost per recorded inventory account
     for row in item_rows:
-        s = row.state
-        status = str(s.get("status") or "").lower()
-        if status in _INACTIVE:
+        value = held_value(row)
+        if value is None:
             continue
-        if s.get("consignment_flag") == "in" or row.consignment_flag == "in":
-            continue
-        if (s.get("inventory_type") or "stocked") != "stocked":
-            continue
-        cost_total = float(s.get("cost_total") or 0)
-        value = _Dec("0")
-        if cost_total:
-            value = _Dec(str(cost_total))
-        else:
-            cost = s.get("cost_price") or s.get("cost price")
-            qty = s.get("quantity") or 0
-            if cost is not None:
-                value = _Dec(str(cost)) * _Dec(str(qty))
         catalog_total += value
-        if s.get(LOT_ACCOUNT_FIELD):
-            by_lot_account[s[LOT_ACCOUNT_FIELD]] = by_lot_account.get(s[LOT_ACCOUNT_FIELD], _Dec("0")) + value
+        if row.state.get(LOT_ACCOUNT_FIELD):
+            by_lot_account[row.state[LOT_ACCOUNT_FIELD]] = by_lot_account.get(row.state[LOT_ACCOUNT_FIELD], _Dec("0")) + value
 
     # --- JE-backed inventory: every posted line that holds the value of goods on hand ---
     je_rows = (

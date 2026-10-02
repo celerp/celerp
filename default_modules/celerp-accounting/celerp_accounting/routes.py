@@ -249,13 +249,16 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     created (e.g. first-run with no modules, then preset applied), and a deactivated
     company then works when it is reactivated. Then every company's posting accounts are
     reconciled with its chart (account_roles.reconcile_company), and a company left
-    without an account its workflows need gets one notice pointing at the fix. A company
+    without an account its workflows need gets one notice pointing at the fix. Stock from
+    before lots recorded their inventory account then records the account its own history
+    proves (lot_origin.prove_lot_accounts). A company
     staged for a migration is left alone: its chart and posting accounts come from the
     imported books when the migration is finalized.
     """
     from celerp.models.company import Company
     from celerp.services import migrations
     from celerp.services.account_roles import reconcile_company
+    from celerp.services.lot_origin import prove_lot_accounts
     from celerp.services.posting_readiness import notify_unmapped
     from sqlalchemy import select as _select
 
@@ -270,6 +273,7 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
             await _seed_default_bank_account(session, company_id)
         if await reconcile_company(session, company_id):
             await notify_unmapped(session, company_id)
+        await prove_lot_accounts(session, company_id)
 
 
 def _account_to_dict(acc: Account) -> dict:
@@ -4128,7 +4132,7 @@ class PostingAccountIn(BaseModel):
 async def _posting_accounts(session: AsyncSession, company_id) -> dict:
     from celerp.services.posting_readiness import panel
 
-    return await panel(session, company_id) or {"roles": [], "older_stock": {}}
+    return await panel(session, company_id) or {"roles": [], "older_stock": {"lots": [], "candidates": []}}
 
 
 @router.get("/posting-accounts")
@@ -4141,16 +4145,19 @@ async def get_posting_accounts(
     return await _posting_accounts(session, company_id)
 
 
-@router.put("/posting-accounts/older-stock")
+@router.put("/posting-accounts/older-stock/{item_id}")
 async def set_older_stock_posting_account(
+    item_id: str,
     payload: PostingAccountIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    from celerp.services.account_roles import set_older_stock_account
+    """Record the inventory account of older stock whose history proves none."""
+    from celerp.services.lot_origin import choose_lot_account
 
-    await set_older_stock_account(session, company_id, payload.code)
+    await choose_lot_account(session, company_id, item_id, payload.code, user.id)
     await session.commit()
     return await _posting_accounts(session, company_id)
 

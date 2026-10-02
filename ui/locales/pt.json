@@ -3513,7 +3513,8 @@
   "posting.status_inactive": "Inativa",
   "posting.status_wrong_type": "Tipo incorreto",
   "posting.status_unused": "Ainda não usada",
-  "posting.older_stock": "Conta de estoque para estoque antigo",
-  "posting.older_stock_hint": "O estoque antigo sem conta de estoque própria retira seu custo desta conta.",
+  "posting.older_stock": "Estoque antigo {sku} {name}",
+  "posting.older_stock_hint": "Valor de {value}. O histórico não mostra qual conta de estoque o mantém, então seu custo não pode ser movido até você escolher a conta em que foi lançado. Só pode ser escolhida uma conta que mantenha esse valor, e a escolha é definitiva.",
+  "posting.older_stock_recorded": "Registrado. O custo deste estoque agora sai desta conta.",
   "posting.unknown_role": "Conta de lançamento desconhecida."
 }

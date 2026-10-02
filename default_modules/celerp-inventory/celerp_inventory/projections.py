@@ -411,6 +411,8 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # payload is the new absolute cost_base; landed contributions rescale from it.
         current["cost_base"] = float(data["cost_total"])
         _recompute_cost(current)
+    elif event_type == "item.inventory_account.recorded":
+        current[LOT_ACCOUNT_FIELD] = data[LOT_ACCOUNT_FIELD]
     elif event_type == "item.landed_cost.applied":
         # Absolute per-unit landed contribution for one (source bill, kind); overwrite-safe so
         # re-running allocation with changed freight self-corrects. amount=0 clears the contribution.

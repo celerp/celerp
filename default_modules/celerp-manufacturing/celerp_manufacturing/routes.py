@@ -31,7 +31,7 @@ from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
 from celerp.services import auto_je, migrations
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, AccountRole
-from celerp.services.account_roles import current_settings, lot_account, new_lot_account
+from celerp.services.account_roles import lot_account, new_lot_account
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_basis
 from celerp.services.auth import get_current_company_id, get_current_user
@@ -1544,18 +1544,17 @@ async def _close_run(session: AsyncSession, company_id, user, order_id: str, run
     )
     # Components leave the inventory accounts their lots are valued in; the output goes to the
     # accounts the run's output lots recorded when they were received.
-    settings = await current_settings(session, company_id)
     inputs: dict[str, float] = {}
     for item_id, cost in _input_costs(run_state, states):
         if cost:
-            code = lot_account(settings, states.get(item_id) or {})
+            code = lot_account(states.get(item_id) or {})
             inputs[code] = inputs.get(code, 0.0) + cost
     fresh = await _all_item_states(session, company_id)
     outputs: dict[str, float] = {}
     for lot_id in run_state.get("received_lots") or []:
         lot = fresh.get(lot_id)
         if lot is not None and float(lot.get("quantity") or 0) > 0:
-            code = lot_account(settings, lot)
+            code = lot_account(lot)
             outputs[code] = outputs.get(code, 0.0) + float(lot["quantity"])
     await auto_je.create_for_mfg_completed(
         session, company_id=company_id, user_id=user.id, order_id=order_id,

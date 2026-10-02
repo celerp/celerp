@@ -3513,7 +3513,8 @@
   "posting.status_inactive": "Inactif",
   "posting.status_wrong_type": "Type incorrect",
   "posting.status_unused": "Pas encore utilisé",
-  "posting.older_stock": "Compte de stock pour le stock ancien",
-  "posting.older_stock_hint": "Le stock ancien sans compte de stock propre sort son coût de ce compte.",
+  "posting.older_stock": "Stock ancien {sku} {name}",
+  "posting.older_stock_hint": "Valeur {value}. Son historique n'indique pas quel compte de stock le porte, donc son coût ne peut pas sortir tant que vous n'avez pas choisi le compte où il a été comptabilisé. Seul un compte qui porte cette valeur peut être choisi, et ce choix est définitif.",
+  "posting.older_stock_recorded": "Enregistré. Le coût de ce stock sort désormais de ce compte.",
   "posting.unknown_role": "Compte d'imputation inconnu."
 }

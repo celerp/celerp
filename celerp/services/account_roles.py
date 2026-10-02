@@ -17,8 +17,6 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import (
-    LEGACY_LOT_ACCOUNT,
-    LEGACY_LOT_ACCOUNT_KEY,
     LOT_ACCOUNT_FIELD,
     POSTING_ACCOUNTS_PATH,
     POSTING_ROLES_SCHEMA,
@@ -109,9 +107,6 @@ def reconciled_settings(settings: dict, accounts: dict[str, dict]) -> dict:
     for role, code in SEEDED_TARGETS.items():
         if not current.get(role.value) and target_problem(role.value, trial, accounts.get(code)) is None:
             out = with_role(out, role.value, code)
-    if not out.get(LEGACY_LOT_ACCOUNT_KEY) and LEGACY_LOT_ACCOUNT in scope_codes(
-            out, AccountRole.INVENTORY_PURCHASED.value):
-        out[LEGACY_LOT_ACCOUNT_KEY] = LEGACY_LOT_ACCOUNT
     return out
 
 
@@ -176,17 +171,14 @@ async def record_source_control(session: AsyncSession, company_id, role, code: s
 
 
 class LotOriginError(HTTPException):
-    """A lot's inventory account cannot be proven, so its cost cannot move. ``codes``
-    are the inventory accounts the company's stock has been valued in, when more than
-    one could hold it."""
+    """A lot recorded no inventory account and its history proves none, so its cost
+    cannot move until the user picks the account (lot_origin.choose_lot_account)."""
 
-    def __init__(self, sku: str, codes=()):
-        why = (f"was valued in more than one inventory account ({', '.join(sorted(codes))}), so Celerp "
-               "cannot tell which one holds it" if len(codes) > 1 else
-               "has no recorded inventory account, so its cost cannot be moved without guessing")
+    def __init__(self, sku: str):
         super().__init__(
             status_code=409,
-            detail=(f"Stock {sku or 'item'} {why}. Choose the inventory account for older stock in "
+            detail=(f"Stock {sku or 'item'} has no recorded inventory account, so its cost cannot be moved "
+                    "without guessing. Choose its inventory account under Older stock in "
                     "Settings > Accounting > Posting accounts."),
             headers={"X-Celerp-Fix": POSTING_ACCOUNTS_PATH},
         )
@@ -205,14 +197,13 @@ class AmbiguousOriginError(HTTPException):
         )
 
 
-def lot_account(settings: dict | None, state: dict) -> str:
+def lot_account(state: dict) -> str:
     """The inventory account a lot's value sits in: the one it recorded when it first
-    took on stock, else, for a lot from before lots recorded it, the account the
-    company's history proves. Never today's role target."""
-    code = state.get(LOT_ACCOUNT_FIELD) or (settings or {}).get(LEGACY_LOT_ACCOUNT_KEY)
+    took on stock, or the one its own history proved for a lot from before lots recorded
+    it (celerp.services.lot_origin). Never today's role target, never a company-wide guess."""
+    code = state.get(LOT_ACCOUNT_FIELD)
     if not code:
-        raise LotOriginError(str(state.get("sku") or ""),
-                             scope_codes(settings, AccountRole.INVENTORY_PURCHASED.value))
+        raise LotOriginError(str(state.get("sku") or ""))
     return code
 
 
@@ -310,30 +301,3 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str) -> d
     company.settings = settings
     await session.flush()
     return settings
-
-
-async def set_older_stock_account(session: AsyncSession, company_id, code: str) -> dict:
-    """Name the inventory account that older stock, which recorded no account of its
-    own, moves its cost out of. Only an account that has held purchased inventory can
-    be it, so the choice can never send cost out of an account it was never in."""
-    from celerp.services.company_lock import locked_company
-    from celerp.services.journal_accounts import lock_accounts
-
-    code = (code or "").strip()
-    if not code:
-        raise HTTPException(status_code=422, detail="Choose an account.")
-    company = await locked_company(session, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found.")
-    settings = dict(company.settings or {})
-    if code not in scope_codes(settings, AccountRole.INVENTORY_PURCHASED.value):
-        raise HTTPException(status_code=422, detail=(
-            f"Account {code} has never held inventory, so older stock cannot be in it."))
-    accounts = await lock_accounts(session, company_id, {code})
-    if accounts is None:
-        raise HTTPException(status_code=409, detail="Posting accounts need the accounting module.")
-    if code not in accounts:
-        raise HTTPException(status_code=422, detail=f"Account {code} is not in the chart of accounts.")
-    company.settings = {**settings, LEGACY_LOT_ACCOUNT_KEY: code}
-    await session.flush()
-    return company.settings

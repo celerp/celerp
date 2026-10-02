@@ -12,7 +12,6 @@ from __future__ import annotations
 import pytest
 
 from celerp.models.projections import Projection
-from celerp.services.company_lock import locked_company
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_posting_roles_autoje import _account, _invoice, _pay, _remap, _unmap
 from test_posting_roles_lots import _forget_origin, _lot
@@ -64,11 +63,6 @@ async def test_a_needed_posting_account_that_is_not_set_is_reported(session, cli
 async def test_older_stock_with_no_provable_inventory_account_is_reported(session, client, auth):
     lot = await _lot(client, auth, 30.0, sku="OLD-1")
     await _forget_origin(session, auth, lot)
-    assert (await _doctor(client, auth))["found"] == 0  # the older-stock account covers it
-
-    company = await locked_company(session, auth["company_id"])
-    company.settings = {k: v for k, v in company.settings.items() if k != "posting_legacy_lot_account"}
-    await session.commit()
     result = await _doctor(client, auth)
     (finding,) = result["details"]
     assert (finding["kind"], finding["entity_id"]) == ("lot_origin", lot)

@@ -23,7 +23,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import (
-    LEGACY_LOT_ACCOUNT_KEY,
     POSTING_ACCOUNTS_PATH,
     POSTING_ROLES_SCHEMA,
     POSTABLE_ROLES,
@@ -350,12 +349,14 @@ def _status(role: str, current: dict[str, str], chart: dict[str, dict], required
     return ("inactive" if not account.get("is_active", True) else "wrong_type"), problem
 
 
-def _older_stock(settings: dict, chart: dict[str, dict]) -> dict:
-    """The inventory account older stock with no recorded account moves its cost out
-    of, and the accounts it may be: those that have held purchased inventory."""
-    code = settings.get(LEGACY_LOT_ACCOUNT_KEY) or None
-    held = scope_list(settings, AccountRole.INVENTORY_PURCHASED.value)
-    return {"code": code, "name": (chart.get(code) or {}).get("name") if code else None,
+async def _older_stock(session: AsyncSession, company_id, settings: dict, chart: dict[str, dict]) -> dict:
+    """Stock on hand whose history proves no inventory account (lot_origin), and the
+    accounts each may be picked from: those that have held purchased or opening inventory."""
+    from celerp.services.lot_origin import unrecorded_lots
+
+    held = {c for role in (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
+            for c in scope_list(settings, role)}
+    return {"lots": await unrecorded_lots(session, company_id),
             "candidates": [{k: chart[c][k] for k in ("code", "name", "account_type")}
                            for c in sorted(held) if c in chart]}
 
@@ -363,7 +364,7 @@ def _older_stock(settings: dict, chart: dict[str, dict]) -> dict:
 async def panel(session: AsyncSession, company_id) -> dict | None:
     """Settings > Accounting > Posting accounts: every role with its account, status,
     the accounts it served before (``earlier``, where existing balances stay) and the
-    accounts that can serve it; plus the older-stock inventory account. None when
+    accounts that can serve it; plus older stock with no provable inventory account. None when
     accounting is not running."""
     chart = await _chart(session, company_id)
     if chart is None:
@@ -383,4 +384,4 @@ async def panel(session: AsyncSession, company_id) -> dict | None:
             "earlier": [c for c in scope_list(settings, role.value) if c != code],
             "candidates": _ranked(role.value, chart, []),
         })
-    return {"roles": rows, "older_stock": _older_stock(settings, chart)}
+    return {"roles": rows, "older_stock": await _older_stock(session, company_id, settings, chart)}

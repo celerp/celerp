@@ -5,7 +5,7 @@
 The plan decides which items may merge, what the merged item holds, and which
 inventory account its value sits in. A retry of a merge is recognised by what it
 asks for, not only by its key. A merge never changes the value of the stock it
-combines, and stock whose account cannot be proven, or stock that is not on hand,
+combines, and stock that records no inventory account, or stock that is not on hand,
 is refused before anything is written.
 """
 from __future__ import annotations
@@ -17,7 +17,6 @@ from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services.company_lock import locked_company
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_posting_roles_merge import _FIELD, _lot, _merge, _remap, _two_accounts
 
@@ -51,12 +50,6 @@ async def _forget_origin(session, auth, *item_ids: str) -> None:
         row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": item_id},
                                 populate_existing=True)
         row.state = {k: v for k, v in row.state.items() if k != _FIELD}
-    await session.commit()
-
-
-async def _no_older_stock_account(session, auth) -> None:
-    company = await locked_company(session, auth["company_id"])
-    company.settings = {k: v for k, v in company.settings.items() if k != "posting_legacy_lot_account"}
     await session.commit()
 
 
@@ -161,19 +154,17 @@ async def test_a_merge_confirmed_without_its_preview_is_refused(session, client,
     assert await _ledger_count(session, auth) == before
 
 
-# --- Stock whose account cannot be proven waits; proven older stock merges -------------
+# --- Stock whose account is not recorded waits -----------------------------------------
 
 
 async def test_older_stock_with_no_provable_account_is_refused_before_anything_changes(session, client, auth):
     a, b = await _lot(client, auth, 600.0, sku="OLD-A"), await _lot(client, auth, 400.0, sku="OLD-B")
-    await _remap(session, client, auth, "1131", role="inventory_purchased")
     await _forget_origin(session, auth, a, b)
-    await _no_older_stock_account(session, auth)
     items, before = await _items(session, auth), await _ledger_count(session, auth)
 
     r = await _merge(client, auth, [a, b])
     assert r.status_code == 409, r.text
-    assert "more than one inventory account (1130-P, 1131)" in r.json()["detail"]
+    assert "Stock OLD-A has no recorded inventory account" in r.json()["detail"]
     assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
     await session.rollback()
     assert await _items(session, auth) == items
@@ -181,17 +172,6 @@ async def test_older_stock_with_no_provable_account_is_refused_before_anything_c
     preview = await client.post("/items/merge/preview", headers=auth["headers"],
                                 json={"source_entity_ids": [a, b], "target_sku_from": a})
     assert preview.status_code == 409, preview.text
-
-
-async def test_older_stock_with_a_proven_account_merges_and_the_result_records_it(session, client, auth):
-    a, b = await _lot(client, auth, 600.0, sku="OLD-A"), await _lot(client, auth, 400.0, sku="OLD-B")
-    await _remap(session, client, auth, "1131", role="inventory_purchased")
-    await _forget_origin(session, auth, a, b)
-    r = await _merge(client, auth, [a, b])
-    assert r.status_code == 200, r.text
-    assert r.json()["inventory_reclassification"] is None
-    merged = await _state(session, auth, r.json()["id"])
-    assert (merged[_FIELD], merged["cost_total"]) == ("1130-P", 1000.0)
 
 
 # --- Only stock on hand merges ---------------------------------------------------------

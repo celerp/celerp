@@ -3513,7 +3513,8 @@
   "posting.status_inactive": "ንቁ ያልሆነ",
   "posting.status_wrong_type": "የተሳሳተ ዓይነት",
   "posting.status_unused": "ገና ጥቅም ላይ አልዋለም",
-  "posting.older_stock": "ለቆየ ክምችት የእቃ ሂሳብ",
-  "posting.older_stock_hint": "የራሱ የእቃ ሂሳብ የሌለው የቆየ ክምችት ወጪውን ከዚህ ሂሳብ ያወጣል።",
+  "posting.older_stock": "የቆየ ክምችት {sku} {name}",
+  "posting.older_stock_hint": "ዋጋው {value}። ታሪኩ በየትኛው የእቃ ሂሳብ እንደተያዘ አያሳይም፣ ስለዚህ የተመዘገበበትን ሂሳብ እስኪመርጡ ድረስ ወጪው ሊንቀሳቀስ አይችልም። ይህን ዋጋ የያዘ ሂሳብ ብቻ ሊመረጥ ይችላል፣ ምርጫውም የመጨረሻ ነው።",
+  "posting.older_stock_recorded": "ተመዝግቧል። የዚህ ክምችት ወጪ አሁን ከዚህ ሂሳብ ይወጣል።",
   "posting.unknown_role": "ያልታወቀ የመመዝገቢያ ሂሳብ።"
 }

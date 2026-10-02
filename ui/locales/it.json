@@ -3513,7 +3513,8 @@
   "posting.status_inactive": "Inattivo",
   "posting.status_wrong_type": "Tipo errato",
   "posting.status_unused": "Non ancora usato",
-  "posting.older_stock": "Conto di magazzino per le giacenze precedenti",
-  "posting.older_stock_hint": "Le giacenze precedenti senza un proprio conto di magazzino prelevano il costo da questo conto.",
+  "posting.older_stock": "Giacenza precedente {sku} {name}",
+  "posting.older_stock_hint": "Valore {value}. Lo storico non indica quale conto di magazzino la contiene, quindi il suo costo non può essere spostato finché non scegli il conto su cui è stata registrata. Si può scegliere solo un conto che contiene questo valore, e la scelta è definitiva.",
+  "posting.older_stock_recorded": "Registrato. Il costo di questa giacenza ora esce da questo conto.",
   "posting.unknown_role": "Conto di registrazione sconosciuto."
 }

@@ -21,7 +21,7 @@ from migration_support import auth, maker, real_client, real_engine  # noqa: F40
 from test_helpers import merge_items
 from test_restored_connector_safety import _local
 
-_POSTING_KEYS = ("posting_roles_schema", "posting_roles", "posting_role_scopes", "posting_legacy_lot_account")
+_POSTING_KEYS = ("posting_roles_schema", "posting_roles", "posting_role_scopes")
 
 
 async def _post(client, tok: str, path: str, body: dict | None = None, status: int = 200) -> dict:
@@ -142,11 +142,16 @@ async def test_a_restored_copy_keeps_posting_accounts_and_every_origin(real_engi
     lot_ids = {sku: eid for eid, sku in await _rows(
         real_engine, copy, "SELECT entity_id, state ->> 'sku' FROM projections WHERE company_id = :c "
                            "AND entity_type = 'item'")}
-    sale = await _invoice(real_client, copy_tok, 50.0, (lot_ids["LOT-OLD"], lot_ids["LOT-OLDER"], lot_ids["LOT-NEW"]))
+    sale = await _invoice(real_client, copy_tok, 50.0, (lot_ids["LOT-OLD"], lot_ids["LOT-NEW"]))
     sold = await _entry(real_engine, copy, f"je:auto:{sale}:fin")
     assert {code: amounts[1] for code, amounts in sold.items() if code.startswith("113")} == {
-        "1130-OB": 30.0, "1130-P": 25.0, "1131": 20.0}
-    assert sold["1122"] == (150.0, 0)
+        "1130-OB": 30.0, "1131": 20.0}
+    assert sold["1122"] == (100.0, 0)
+    # A lot with no recorded account stays that way in the copy, and still waits for its account.
+    doc = await _post(real_client, copy_tok, "/docs", {"doc_type": "invoice", "total": 50.0, "line_items": [
+        {"entity_id": lot_ids["LOT-OLDER"], "name": "Lot", "quantity": 1, "unit_price": 50.0, "sell_by": "piece"}]})
+    r = await real_client.post(f"/docs/{doc['id']}/finalize", headers=auth(copy_tok))
+    assert r.status_code == 409 and "Stock LOT-OLDER has no recorded inventory account" in r.json()["detail"]
     await _lot(real_client, copy_tok, "LOT-COPY", 5.0)
     assert (await _lots(real_engine, copy))["LOT-COPY"] == "1131"
 

@@ -250,6 +250,11 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
                 data[LOT_ACCOUNT_FIELD] = code
         return
     current = (previous_state or {}).get(LOT_ACCOUNT_FIELD)
+    if kwargs["event_type"] == "item.inventory_account.recorded":
+        # An older lot that recorded none takes the one its history proves or the user picks.
+        if current:
+            raise HTTPException(status_code=409, detail="This stock already records its inventory account.")
+        return
     changed = data.get("fields_changed")
     if LOT_ACCOUNT_FIELD in data:
         written = data[LOT_ACCOUNT_FIELD]

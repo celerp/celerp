@@ -3513,7 +3513,8 @@
   "posting.status_inactive": "غير نشط",
   "posting.status_wrong_type": "نوع غير صحيح",
   "posting.status_unused": "غير مستخدم بعد",
-  "posting.older_stock": "حساب المخزون للمخزون القديم",
-  "posting.older_stock_hint": "المخزون القديم الذي ليس له حساب مخزون خاص به ينقل تكلفته من هذا الحساب.",
+  "posting.older_stock": "مخزون قديم {sku} {name}",
+  "posting.older_stock_hint": "قيمته {value}. لا يوضح سجله أي حساب مخزون يحمله، لذا لا يمكن نقل تكلفته حتى تختار الحساب الذي قُيّد فيه. لا يمكن اختيار إلا حساب يحمل هذه القيمة، والاختيار نهائي.",
+  "posting.older_stock_recorded": "تم التسجيل. تخرج تكلفة هذا المخزون الآن من هذا الحساب.",
   "posting.unknown_role": "حساب ترحيل غير معروف."
 }

@@ -31,11 +31,6 @@ POSTING_ROLES_SCHEMA = 1
 ROLES_KEY = "posting_roles"
 SCOPES_KEY = "posting_role_scopes"
 SCHEMA_KEY = "posting_roles_schema"
-# The inventory account every lot without its own origin was valued in. Set once,
-# only when the company's history proves it: before lots carried their origin,
-# every automatic goods movement posted to the seeded inventory leaf.
-LEGACY_LOT_ACCOUNT_KEY = "posting_legacy_lot_account"
-LEGACY_LOT_ACCOUNT = "1130-P"
 # The accounts a migrated company's source books marked as its controls, per role,
 # in import order. A migration fills it; finishing the migration maps the roles from it.
 SOURCE_CONTROLS_KEY = "posting_source_controls"

@@ -3513,7 +3513,8 @@
   "posting.status_inactive": "Ngừng hoạt động",
   "posting.status_wrong_type": "Sai loại",
   "posting.status_unused": "Chưa dùng",
-  "posting.older_stock": "Tài khoản tồn kho cho hàng tồn cũ",
-  "posting.older_stock_hint": "Hàng tồn cũ không có tài khoản tồn kho riêng sẽ chuyển giá vốn ra từ tài khoản này.",
+  "posting.older_stock": "Hàng tồn cũ {sku} {name}",
+  "posting.older_stock_hint": "Giá trị {value}. Lịch sử không cho biết tài khoản tồn kho nào đang giữ hàng này, nên không thể chuyển giá vốn cho đến khi bạn chọn tài khoản đã ghi nhận nó. Chỉ có thể chọn tài khoản đang giữ giá trị này, và lựa chọn là cuối cùng.",
+  "posting.older_stock_recorded": "Đã ghi nhận. Giá vốn của hàng này giờ được chuyển ra từ tài khoản này.",
   "posting.unknown_role": "Tài khoản hạch toán không xác định."
 }

@@ -298,9 +298,9 @@ def _cash_flow_edit_cell(a: dict) -> FT:
     )
 
 
-# The older-stock inventory account edits through the same routes as a role, under
-# this key (the accounting API's path for it).
-_OLDER_STOCK = "older-stock"
+# Older stock whose history proves no inventory account edits through the same routes
+# as a role, keyed "older-stock:<item id>".
+_OLDER_STOCK = "older-stock:"
 _POSTING_BADGE = {"ready": "active", "unused": "inactive"}
 
 
@@ -350,19 +350,30 @@ def _posting_role_row(row: dict, error: str | None = None) -> FT:
     )
 
 
-def _older_stock_row(older: dict, error: str | None = None) -> FT:
+def _older_lot(data: dict, key: str) -> dict | None:
+    item_id = key.removeprefix(_OLDER_STOCK)
+    return next((lot for lot in (data.get("older_stock") or {}).get("lots", []) if lot["item_id"] == item_id), None)
+
+
+def _older_stock_row(lot: dict, error: str | None = None, recorded: dict | None = None) -> FT:
+    """One lot whose history proves no inventory account. Once its account is chosen the
+    row shows it and is no longer editable: the lot's cost then moves through that
+    account, and moving the lot to another account later would leave its value behind."""
+    key = f"{_OLDER_STOCK}{lot['item_id']}"
     return Tr(
-        Td(t("posting.older_stock")),
-        _posting_display_cell(_OLDER_STOCK, older.get("code"), older.get("name"), error),
-        Td(P(t("posting.older_stock_hint"), cls="text-muted")),
+        Td(t("posting.older_stock", sku=lot["sku"], name=lot["name"])),
+        Td(Span(_posting_account_text(recorded.get("code"), recorded.get("name")))) if recorded
+        else _posting_display_cell(key, None, None, error),
+        Td(P(t("posting.older_stock_recorded") if recorded else t("posting.older_stock_hint", value=lot["value"]),
+             cls="text-muted")),
         Td(EMPTY),
-        id=f"posting-{_OLDER_STOCK}",
     )
 
 
 def _posting_row(data: dict, key: str, error: str | None = None) -> FT | None:
-    if key == _OLDER_STOCK:
-        return _older_stock_row(data.get("older_stock") or {}, error)
+    if key.startswith(_OLDER_STOCK):
+        lot = _older_lot(data, key)
+        return _older_stock_row(lot, error) if lot else None
     row = next((r for r in data.get("roles", []) if r["role"] == key), None)
     return _posting_role_row(row, error) if row else None
 
@@ -375,8 +386,7 @@ def _posting_accounts_tab(data: dict) -> FT:
             Thead(Tr(Th(t("posting.col_role")), Th(t("posting.col_account")), Th(t("th.status")),
                      Th(t("posting.col_earlier")))),
             Tbody(*[_posting_role_row(r) for r in data.get("roles", [])],
-                  *([_older_stock_row(data["older_stock"])] if (data.get("older_stock") or {}).get("candidates")
-                    else [])),
+                  *[_older_stock_row(lot) for lot in (data.get("older_stock") or {}).get("lots", [])]),
             cls="data-table posting-accounts",
         ), cls="table-scroll-wrap"),
         cls="settings-card",
@@ -1026,9 +1036,12 @@ def setup_routes(app):
             data = await api.get_posting_accounts(token)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        if key == _OLDER_STOCK:
-            older = data.get("older_stock") or {}
-            return _posting_edit_cell(key, older.get("candidates", []), older.get("code"), t("posting.older_stock"))
+        if key.startswith(_OLDER_STOCK):
+            lot = _older_lot(data, key)
+            if lot is None:
+                return P(t("posting.unknown_role"), cls="cell-error")
+            return _posting_edit_cell(key, (data.get("older_stock") or {}).get("candidates", []), None,
+                                      t("posting.older_stock", sku=lot["sku"], name=lot["name"]))
         row = next((r for r in data.get("roles", []) if r["role"] == key), None)
         if row is None:
             return P(t("posting.unknown_role"), cls="cell-error")
@@ -1044,7 +1057,7 @@ def setup_routes(app):
             data = await api.get_posting_accounts(token)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        current = data.get("older_stock") if key == _OLDER_STOCK else next(
+        current = _older_lot(data, key) if key.startswith(_OLDER_STOCK) else next(
             (r for r in data.get("roles", []) if r["role"] == key), None)
         if current is None:
             return P(t("posting.unknown_role"), cls="cell-error")
@@ -1058,8 +1071,17 @@ def setup_routes(app):
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
+        code = str(form.get("value", "")).strip()
         try:
-            data = await api.set_posting_account(token, key, str(form.get("value", "")).strip())
+            if key.startswith(_OLDER_STOCK):
+                lot = _older_lot(await api.get_posting_accounts(token), key)
+                data = await api.set_older_stock_account(token, key.removeprefix(_OLDER_STOCK), code)
+                if lot is not None:
+                    chosen = next((c for c in (data.get("older_stock") or {}).get("candidates", [])
+                                   if c["code"] == code), {"code": code})
+                    return _older_stock_row(lot, recorded=chosen)
+            else:
+                data = await api.set_posting_account(token, key, code)
             error = None
         except APIError as e:
             error = str(e.detail)

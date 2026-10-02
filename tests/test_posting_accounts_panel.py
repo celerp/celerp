@@ -6,7 +6,8 @@ Each posting role shows its current account and whether that account can take ne
 postings. Changing one is checked by the API itself: an account from another company,
 an inactive one, or one of the wrong type is refused with the reason, whatever the
 screen offered. The earlier account stays with the role for the balances already on it.
-The inventory account for older stock can only be one that has held inventory.
+Older stock whose history proves no inventory account is listed lot by lot, and its
+account can only be one that has held inventory and holds the lot's value.
 """
 from __future__ import annotations
 
@@ -150,25 +151,25 @@ async def test_only_users_who_manage_accounting_change_posting_accounts(session,
 
 
 @pytest.mark.asyncio
-async def test_older_stock_can_only_use_an_account_that_has_held_inventory(session, client, auth):
-    from celerp.accounting_roles import LEGACY_LOT_ACCOUNT_KEY
-    from celerp.models.company import Company
+async def test_older_stock_lists_each_lot_and_the_accounts_that_held_inventory(session, client, auth):
+    from test_posting_roles_lots import _forget_origin, _lot
 
-    cid = auth["company_id"]
     await _account(client, auth, "1135", "asset", "1100")
     assert (await _put(client, auth, "inventory_purchased", "1135")).status_code == 200
-    panel = await _panel(client, auth)
-    assert panel["older_stock"]["code"] == "1130-P"
-    assert [c["code"] for c in panel["older_stock"]["candidates"]] == ["1130-P", "1135"]
+    assert (await _panel(client, auth))["older_stock"]["lots"] == []
+    lot = await _lot(client, auth, 30.0, sku="OLD-1")
+    await _forget_origin(session, auth, lot)
+    older = (await _panel(client, auth))["older_stock"]
+    assert older["lots"] == [{"item_id": lot, "sku": "OLD-1", "name": "Lot", "value": 30.0}]
+    assert [c["code"] for c in older["candidates"]] == ["1130-OB", "1130-P", "1135"]
 
-    r = await client.put("/accounting/posting-accounts/older-stock", headers=auth["headers"], json={"code": "1120"})
+    r = await client.put(f"/accounting/posting-accounts/older-stock/{lot}", headers=auth["headers"],
+                         json={"code": "1120"})
     assert r.status_code == 422
     assert "has never held inventory" in r.json()["detail"]
-    r = await client.put("/accounting/posting-accounts/older-stock", headers=auth["headers"], json={"code": "1135"})
-    assert r.status_code == 200, r.text
-    assert r.json()["older_stock"]["code"] == "1135"
-    company = await session.get(Company, cid, populate_existing=True)
-    assert company.settings[LEGACY_LOT_ACCOUNT_KEY] == "1135"
+    r = await client.put("/accounting/posting-accounts/older-stock/item:missing", headers=auth["headers"],
+                         json={"code": "1130-OB"})
+    assert r.status_code == 404
 
 
 # ── Screen ───────────────────────────────────────────────────────────────────
@@ -186,8 +187,8 @@ _PANEL = {
          "code": None, "name": None, "status": "unused", "problem": None,
          "earlier": [], "candidates": []},
     ],
-    "older_stock": {"code": "1130-P", "name": "Inventory purchased", "candidates": [
-        {"code": "1130-P", "name": "Inventory purchased", "account_type": "asset"}]},
+    "older_stock": {"lots": [{"item_id": "item:old-1", "sku": "OLD-1", "name": "Older lot", "value": 30.0}],
+                    "candidates": [{"code": "1130-OB", "name": "Inventory opening", "account_type": "asset"}]},
 }
 
 
@@ -224,7 +225,8 @@ async def test_the_panel_lists_each_role_with_its_account_and_status(ui_client):
     assert ">1121<" in body
     assert ">--<" in body
     assert 'hx-get="/settings/accounting/posting-accounts/general_expense/edit"' in body
-    assert 'hx-get="/settings/accounting/posting-accounts/older-stock/edit"' in body
+    assert "Older stock OLD-1 Older lot" in body and "Valued at 30.0." in body
+    assert 'hx-get="/settings/accounting/posting-accounts/older-stock:item:old-1/edit"' in body
 
 
 @pytest.mark.asyncio
@@ -262,3 +264,32 @@ async def test_saving_updates_the_row_in_place_and_shows_a_refusal(ui_client):
     assert r.status_code == 200
     assert "it must be expense." in r.content.decode()
     assert "<tr" in r.content.decode()
+
+
+@pytest.mark.asyncio
+async def test_choosing_an_older_lots_account_shows_it_recorded_or_the_refusal(ui_client):
+    from ui.api_client import APIError
+
+    key = "older-stock:item:old-1"
+    with patch("ui.api_client.get_posting_accounts", new=AsyncMock(return_value=_PANEL)):
+        edit = await ui_client.get(f"/settings/accounting/posting-accounts/{key}/edit", cookies=_cookies())
+    assert edit.status_code == 200
+    assert f'hx-patch="/settings/accounting/posting-accounts/{key}"' in edit.content.decode()
+
+    put = AsyncMock(return_value={**_PANEL, "older_stock": {**_PANEL["older_stock"], "lots": []}})
+    with patch("ui.api_client.get_posting_accounts", new=AsyncMock(return_value=_PANEL)), \
+         patch("ui.api_client.set_older_stock_account", new=put):
+        r = await ui_client.patch(f"/settings/accounting/posting-accounts/{key}", cookies=_cookies(),
+                                  data={"value": "1130-OB"})
+    body = r.content.decode()
+    assert put.await_args.args[1:] == ("item:old-1", "1130-OB")
+    assert "1130-OB Inventory opening" in body and "Recorded." in body
+    assert "hx-get" not in body  # the choice is final
+
+    refused = AsyncMock(side_effect=APIError(422, "Account 1130-P does not hold this stock's value of 30.00"))
+    with patch("ui.api_client.get_posting_accounts", new=AsyncMock(return_value=_PANEL)), \
+         patch("ui.api_client.set_older_stock_account", new=refused):
+        r = await ui_client.patch(f"/settings/accounting/posting-accounts/{key}", cookies=_cookies(),
+                                  data={"value": "1130-P"})
+    body = r.content.decode()
+    assert "does not hold this stock" in body and f"/settings/accounting/posting-accounts/{key}/edit" in body

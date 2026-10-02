@@ -65,7 +65,6 @@ async def _pay(client, auth, doc_id: str, amount: float, **extra):
 async def test_a_new_company_starts_with_every_role_mapped_to_its_seeded_account(session, auth):
     settings = (await session.get(Company, auth["company_id"], populate_existing=True)).settings
     assert settings[ROLES_KEY] == {r.value: c for r, c in SEEDED_TARGETS.items()}
-    assert settings["posting_legacy_lot_account"] == "1130-P"
 
 
 @pytest.mark.asyncio

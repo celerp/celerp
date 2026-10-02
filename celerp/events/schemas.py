@@ -319,6 +319,12 @@ class ItemCostAdjusted(BaseModel):
     manufacturing_order_id: str | None = None   # the run that re-costed the lot (audit trail)
 
 
+class ItemInventoryAccountRecorded(BaseModel):
+    # A lot from before lots recorded their inventory account: the account its own history
+    # proves, or the one the user picked for it. Only a lot with no account can take one.
+    inventory_account_code: str
+
+
 # --- Manufacturing recipe (materials + labor + overhead) attached to an item ---
 # The recipe is the single source of truth for how a manufactured item is built.
 # Interpretation (cost roll-up, expansion) lives in celerp-manufacturing; the schema
@@ -1244,6 +1250,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.consumed": ItemConsumed,
     "item.produced": ItemProduced,
     "item.cost_adjusted": ItemCostAdjusted,
+    "item.inventory_account.recorded": ItemInventoryAccountRecorded,
     "item.recipe.set": ItemRecipeSet,
     "item.workflow.set": ItemWorkflowSet,
     "item.reserved": ItemReserved,

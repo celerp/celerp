@@ -992,13 +992,14 @@ async def _check_posting_origins(
 ) -> dict:
     """Find what automatic posting cannot proceed on without a decision: a posting
     account the company needs but has not set or cannot use, stock on hand with no
-    provable inventory account (none recorded, or several it could sit in), and an older document whose receivable or payable
-    was recorded on more than one account. Report-only: each needs the user to choose
+    inventory account (none recorded and none its history proves), and an older document
+    whose receivable or payable was recorded on more than one account. Report-only: each needs the user to choose
     an account, never a guess."""
-    from celerp.accounting_roles import LEGACY_LOT_ACCOUNT_KEY, POSTING_ACCOUNTS_PATH
+    from celerp.accounting_roles import POSTING_ACCOUNTS_PATH
     from celerp.models.company import Company
-    from celerp.services.account_roles import AmbiguousOriginError, LotOriginError, current_settings, lot_account
+    from celerp.services.account_roles import AmbiguousOriginError, LotOriginError, current_settings
     from celerp.services.auto_je import _control_role, party_origin
+    from celerp.services.lot_origin import unrecorded_lots
     from celerp.services.posting_readiness import panel
 
     findings: list[dict] = []
@@ -1009,21 +1010,11 @@ async def _check_posting_origins(
                 findings.append({"kind": "posting_account", "role": row["role"], "problem": row["problem"],
                                  "fix": POSTING_ACCOUNTS_PATH})
 
-        settings = await current_settings(session, company_id)
-        if not settings.get(LEGACY_LOT_ACCOUNT_KEY):
-            items = (await session.execute(select(Projection).where(
-                Projection.company_id == company_id, Projection.entity_type == "item",
-            ))).scalars().all()
-            for row in items:
-                state = row.state or {}
-                if Decimal(str(state.get("quantity") or 0)) <= 0:
-                    continue
-                try:
-                    lot_account(settings, state)
-                except LotOriginError as exc:
-                    findings.append({"kind": "lot_origin", "entity_id": row.entity_id, "problem": exc.detail,
-                                     "fix": POSTING_ACCOUNTS_PATH})
+        for lot in await unrecorded_lots(session, company_id):
+            findings.append({"kind": "lot_origin", "entity_id": lot["item_id"],
+                             "problem": LotOriginError(lot["sku"]).detail, "fix": POSTING_ACCOUNTS_PATH})
 
+        settings = await current_settings(session, company_id)
         docs = {row.entity_id: (row.state or {}).get("doc_type") for row in (await session.execute(
             select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "doc")
         )).scalars().all()}

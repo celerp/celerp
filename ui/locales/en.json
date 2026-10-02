@@ -3513,7 +3513,8 @@
   "posting.status_inactive": "Inactive",
   "posting.status_wrong_type": "Wrong type",
   "posting.status_unused": "Not used yet",
-  "posting.older_stock": "Inventory account for older stock",
-  "posting.older_stock_hint": "Older stock that has no inventory account of its own moves its cost out of this account.",
+  "posting.older_stock": "Older stock {sku} {name}",
+  "posting.older_stock_hint": "Valued at {value}. Its history does not show which inventory account holds it, so its cost cannot move until you choose the account it was booked to. Only an account that holds this value can be chosen, and the choice is final.",
+  "posting.older_stock_recorded": "Recorded. This stock's cost now moves out of this account.",
   "posting.unknown_role": "Unknown posting account."
 }

@@ -3513,7 +3513,8 @@
   "posting.status_inactive": "Inactiva",
   "posting.status_wrong_type": "Tipo incorrecto",
   "posting.status_unused": "Aún no se usa",
-  "posting.older_stock": "Cuenta de inventario para existencias antiguas",
-  "posting.older_stock_hint": "Las existencias antiguas sin cuenta de inventario propia sacan su costo de esta cuenta.",
+  "posting.older_stock": "Existencias antiguas {sku} {name}",
+  "posting.older_stock_hint": "Valoradas en {value}. Su historial no muestra qué cuenta de inventario las contiene, así que su costo no puede moverse hasta que elija la cuenta en la que se registraron. Solo se puede elegir una cuenta que contenga este valor, y la elección es definitiva.",
+  "posting.older_stock_recorded": "Registrado. El costo de estas existencias ahora sale de esta cuenta.",
   "posting.unknown_role": "Cuenta de contabilización desconocida."
 }

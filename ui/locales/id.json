@@ -3513,7 +3513,8 @@
   "posting.status_inactive": "Nonaktif",
   "posting.status_wrong_type": "Jenis salah",
   "posting.status_unused": "Belum digunakan",
-  "posting.older_stock": "Akun persediaan untuk stok lama",
-  "posting.older_stock_hint": "Stok lama yang tidak memiliki akun persediaan sendiri memindahkan biayanya dari akun ini.",
+  "posting.older_stock": "Stok lama {sku} {name}",
+  "posting.older_stock_hint": "Bernilai {value}. Riwayatnya tidak menunjukkan akun persediaan mana yang menyimpannya, sehingga biayanya tidak dapat dipindahkan sampai Anda memilih akun tempat stok ini dibukukan. Hanya akun yang menyimpan nilai ini yang dapat dipilih, dan pilihan ini bersifat final.",
+  "posting.older_stock_recorded": "Tercatat. Biaya stok ini sekarang dipindahkan dari akun ini.",
   "posting.unknown_role": "Akun posting tidak dikenal."
 }

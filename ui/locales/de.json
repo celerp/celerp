@@ -3513,7 +3513,8 @@
   "posting.status_inactive": "Inaktiv",
   "posting.status_wrong_type": "Falscher Typ",
   "posting.status_unused": "Noch nicht verwendet",
-  "posting.older_stock": "Lagerkonto für älteren Bestand",
-  "posting.older_stock_hint": "Älterer Bestand ohne eigenes Lagerkonto bucht seine Kosten von diesem Konto ab.",
+  "posting.older_stock": "Älterer Bestand {sku} {name}",
+  "posting.older_stock_hint": "Wert {value}. Aus seiner Historie geht nicht hervor, auf welchem Lagerkonto er steht, daher kann sein Wert erst bewegt werden, wenn Sie das Konto wählen, auf das er gebucht wurde. Wählbar ist nur ein Konto, das diesen Wert hält, und die Wahl ist endgültig.",
+  "posting.older_stock_recorded": "Erfasst. Der Wert dieses Bestands wird jetzt von diesem Konto abgebucht.",
   "posting.unknown_role": "Unbekanntes Buchungskonto."
 }
