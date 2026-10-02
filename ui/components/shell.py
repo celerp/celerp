@@ -1723,6 +1723,15 @@ def client_scripts(lang: str = "en") -> list:
     ]
 
 
+def _favicon_links() -> tuple[FT, ...]:
+    """The Celerp shield icon set, the same files the website and relay use."""
+    return (
+        Link(rel="icon", type="image/x-icon", href="/static/favicon.ico"),
+        Link(rel="icon", type="image/png", sizes="32x32", href="/static/favicon-32x32.png"),
+        Link(rel="apple-touch-icon", sizes="180x180", href="/static/apple-touch-icon.png"),
+    )
+
+
 def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
     """The outer HTML document shared by every full-chrome page: head assets, the
     supplied nav, top bar, banners, main content, and footer.
@@ -1737,7 +1746,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         Meta(charset="utf-8"),
         Meta(name="viewport", content="width=device-width, initial-scale=1"),
         Title(title),
-        Link(rel="icon", type="image/png", href="/static/icon.png"),
+        *_favicon_links(),
         Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
         *client_scripts(lang),
         Script(_idle_logout_js()),
@@ -2394,7 +2403,7 @@ def auth_shell(*content, title: str = "Celerp") -> FT:
             Meta(charset="utf-8"),
             Meta(name="viewport", content="width=device-width, initial-scale=1"),
             Title(title),
-            Link(rel="icon", type="image/png", href="/static/icon.png"),
+            *_favicon_links(),
             Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
         ),
         Body(
