@@ -1954,16 +1954,21 @@ function _populateMergeTargets(){
     note.id='merge-reclass-note';
     note.style.fontSize='0.85rem';
     note.style.display='none';
-    var pf=new FormData();
-    CelerpSelection.ids().forEach(function(id){pf.append('selected',id);});
-    pf.append('target_sku_from',survivor);
-    // The confirmation carries the preview's fingerprint, so the merge refuses if the
-    // items change after the user saw this.
-    var planned=fetch('/api/items/merge/preview',{method:'POST',body:pf})
-      .then(function(r){return r.json();})
-      .then(function(d){var m=d&&(d.message||d.error);if(m){note.textContent=m;note.style.display='';}
-        return (d&&d.plan_fingerprint)||'';})
-      .catch(function(){return '';});
+    // The confirmation carries the fingerprint of a preview of exactly what it asks
+    // for, so the merge refuses if the items change after the user saw this.
+    function preview(resultingSku){
+      var pf=new FormData();
+      CelerpSelection.ids().forEach(function(id){pf.append('selected',id);});
+      pf.append('target_sku_from',survivor);
+      if(resultingSku) pf.append('resulting_sku',resultingSku);
+      return fetch('/api/items/merge/preview',{method:'POST',body:pf})
+        .then(function(r){return r.json();})
+        .then(function(d){return {message:(d&&(d.message||d.error))||'',fingerprint:(d&&d.plan_fingerprint)||''};})
+        .catch(function(){return {message:'',fingerprint:''};});
+    }
+    function show(p){note.textContent=p.message;note.style.display=p.message?'':'none';}
+    var planned=preview('');
+    planned.then(show);
     // One key per confirmation, so a repeated click merges once.
     var mergeKey='merge-'+(window.crypto&&crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());
     var btnRow=document.createElement('div');
@@ -1980,7 +1985,19 @@ function _populateMergeTargets(){
         return;
       }
       var resultingSku=isNewSku?skuEl.value.trim():'';
-      planned.then(function(fingerprint){
+      // The typed SKU is part of the merge, so it is previewed with it. If what the
+      // merge moves changed since the user read it, show the new note and wait for
+      // another click.
+      var reviewed=planned;
+      if(resultingSku){
+        reviewed=preview(resultingSku).then(function(p){
+          if(p.message!==note.textContent){show(p);return null;}
+          return p;
+        });
+      }
+      reviewed.then(function(p){
+        if(!p) return;
+        var fingerprint=p.fingerprint;
         var form=document.createElement('form');
         CelerpSelection.ids().forEach(function(id){
           var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;

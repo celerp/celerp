@@ -88,11 +88,10 @@ async def test_a_merge_key_reused_for_a_different_merge_is_refused(session, clie
 async def test_an_exact_retry_of_a_merge_returns_the_first_result(session, client, auth):
     a, b = await _two_accounts(session, client, auth)
     key = f"merge-{uuid.uuid4().hex}"
-    preview = await client.post("/items/merge/preview", headers=auth["headers"],
-                                json={"source_entity_ids": [a, b], "target_sku_from": a})
+    asked = {"source_entity_ids": [a, b], "target_sku_from": a, "resulting_name": "Pair"}
+    preview = await client.post("/items/merge/preview", headers=auth["headers"], json=asked)
     assert preview.status_code == 200, preview.text
-    sent = {"source_entity_ids": [a, b], "target_sku_from": a, "idempotency_key": key,
-            "resulting_name": "Pair", "plan_fingerprint": preview.json()["plan_fingerprint"]}
+    sent = {**asked, "idempotency_key": key, "plan_fingerprint": preview.json()["plan_fingerprint"]}
     first = await client.post("/items/merge", headers=auth["headers"], json=sent)
     assert first.status_code == 200, first.text
     before = await _ledger_count(session, auth)
@@ -103,6 +102,47 @@ async def test_an_exact_retry_of_a_merge_returns_the_first_result(session, clien
         r = await client.post("/items/merge", headers=auth["headers"], json=again)
         assert r.status_code == 200, r.text
         assert r.json() == first.json()
+    assert await _ledger_count(session, auth) == before
+
+
+async def _graded_lot(client, auth, cost: float, grade: str) -> str:
+    r = await client.post("/items", headers=auth["headers"], json={
+        "sku": f"LOT-{uuid.uuid4().hex[:6]}", "name": "Lot", "quantity": 1, "sell_by": "piece",
+        "status": "available", "cost_total": cost, "attributes": {"grade": grade}})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+@pytest.mark.parametrize("change", [
+    {"source_entity_ids": "ABC"},
+    {"target_sku_from": "B"},
+    {"resulting_quantity": 3},
+    {"resulting_cost_total": 1000.0},
+    {"resulting_name": "Renamed"},
+    {"resulting_sku": "OTHER-SKU"},
+    {"resolved_attributes": {"grade": "B"}},
+])
+async def test_a_merge_confirmed_with_another_requests_preview_is_refused(session, client, auth, change):
+    a, b = await _graded_lot(client, auth, 600.0, "A"), await _graded_lot(client, auth, 400.0, "B")
+    c = await _graded_lot(client, auth, 0.0, "A")
+    reviewed = {"source_entity_ids": [a, b], "target_sku_from": a, "resolved_attributes": {"grade": "A"}}
+    preview = await client.post("/items/merge/preview", headers=auth["headers"], json=reviewed)
+    assert preview.status_code == 200, preview.text
+    confirmed = {**reviewed, **change, "plan_fingerprint": preview.json()["plan_fingerprint"],
+                 "idempotency_key": f"merge-{uuid.uuid4().hex}"}
+    confirmed["source_entity_ids"] = [a, b, c] if change.get("source_entity_ids") == "ABC" else [a, b]
+    if confirmed["target_sku_from"] == "B":
+        confirmed["target_sku_from"] = b
+    # The changed request is itself a valid merge: previewed on its own, it would go through.
+    alone = await client.post("/items/merge/preview", headers=auth["headers"],
+                              json={k: v for k, v in confirmed.items() if k != "plan_fingerprint"})
+    assert alone.status_code == 200, alone.text
+    items, before = await _items(session, auth), await _ledger_count(session, auth)
+    r = await client.post("/items/merge", headers=auth["headers"], json=confirmed)
+    assert r.status_code == 409, r.text
+    assert "Review the merge again" in r.json()["detail"]
+    await session.rollback()
+    assert await _items(session, auth) == items
     assert await _ledger_count(session, auth) == before
 
 
@@ -203,7 +243,7 @@ async def test_a_merge_confirmed_after_its_items_changed_is_refused(session, cli
     items, before = await _items(session, auth), await _ledger_count(session, auth)
     r = await _merge(client, auth, [a, b], plan_fingerprint=fingerprint)
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == "The inventory changed since this merge was reviewed. Review the merge again."
+    assert r.json()["detail"] == "The merge or its items changed since it was reviewed. Review the merge again."
     await session.rollback()
     assert await _items(session, auth) == items
     assert await _ledger_count(session, auth) == before

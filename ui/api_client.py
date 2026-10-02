@@ -2468,6 +2468,15 @@ async def split_preview(token: str, entity_id: str, child_sku: str | None = None
         return _raise(await c.get(f"/items/{entity_id}/split-preview", params=params)).json()
 
 
+def _merge_body(source_entity_ids: list[str], target_sku_from: str, resulting_sku: str | None) -> dict:
+    """What a merge asks for. The preview and the confirmation send the same body, so
+    the fingerprint the preview returns matches only the merge the user reviewed."""
+    body: dict = {"source_entity_ids": source_entity_ids, "target_sku_from": target_sku_from}
+    if resulting_sku is not None:
+        body["resulting_sku"] = resulting_sku
+    return body
+
+
 async def merge_items(
     token: str,
     source_entity_ids: list[str],
@@ -2477,21 +2486,20 @@ async def merge_items(
     idempotency_key: str | None = None,
 ) -> dict:
     """Confirm a merge with the fingerprint of the preview the user reviewed."""
-    body: dict = {"source_entity_ids": source_entity_ids, "target_sku_from": target_sku_from}
+    body = _merge_body(source_entity_ids, target_sku_from, resulting_sku)
     if plan_fingerprint:
         body["plan_fingerprint"] = plan_fingerprint
-    if resulting_sku is not None:
-        body["resulting_sku"] = resulting_sku
     if idempotency_key:
         body["idempotency_key"] = idempotency_key
     async with _api_client(token) as c:
         return _raise(await c.post("/items/merge", json=body)).json()
 
 
-async def preview_merge(token: str, source_entity_ids: list[str], target_sku_from: str) -> dict:
+async def preview_merge(token: str, source_entity_ids: list[str], target_sku_from: str,
+                        resulting_sku: str | None = None) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post("/items/merge/preview", json={
-            "source_entity_ids": source_entity_ids, "target_sku_from": target_sku_from})).json()
+        return _raise(await c.post("/items/merge/preview",
+                                   json=_merge_body(source_entity_ids, target_sku_from, resulting_sku))).json()
 
 
 async def undo_merge(token: str, entity_id: str) -> dict:

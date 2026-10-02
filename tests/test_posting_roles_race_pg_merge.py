@@ -170,7 +170,7 @@ async def test_a_cost_correction_landing_between_preview_and_confirm_refuses_the
     r1, r2 = await asyncio.wait_for(asyncio.gather(t1, t2), timeout=60)
     assert r1.status_code == 200, r1.text
     assert r2.status_code == 409, r2.text
-    assert r2.json()["detail"] == "The inventory changed since this merge was reviewed. Review the merge again."
+    assert r2.json()["detail"] == "The merge or its items changed since it was reviewed. Review the merge again."
     # The correction went through; the merge left nothing behind.
     assert await _rows(real_engine, cid, created) == [created_before]
     assert await _rows(real_engine, cid, "SELECT id FROM ledger WHERE company_id = :c AND event_type IN "

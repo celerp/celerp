@@ -3468,15 +3468,16 @@ function celerpPrintLabel(entityId, templateId) {
     async def item_merge_preview(request: Request):
         """The inventory accounts the pending merge moves value between, as one sentence
         for the merge confirmation (empty when the items share an account), and the
-        fingerprint the confirmation sends back so a changed item stops the merge."""
+        fingerprint the confirmation sends back so a changed item or request stops the merge."""
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
         target_sku_from = str(form.get("target_sku_from", "")).strip()
+        resulting_sku = str(form.get("resulting_sku", "")).strip() or None
         try:
-            preview = await api.preview_merge(token, entity_ids, target_sku_from)
+            preview = await api.preview_merge(token, entity_ids, target_sku_from, resulting_sku)
         except APIError as e:
             return JSONResponse({"error": str(e.detail)}, status_code=e.status)
         return JSONResponse({"message": _merge_reclass_sentence(preview.get("inventory_reclassification")),

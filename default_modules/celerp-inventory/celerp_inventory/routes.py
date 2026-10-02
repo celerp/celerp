@@ -3756,7 +3756,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
 # delivery of the same merge names the same item and the same journal entry.
 _MERGE_ID_NAMESPACE = uuid.UUID("6f1d3c52-9a1e-4c55-9d1e-2a7f5b0e8c41")
 
-_STALE_MERGE = "The inventory changed since this merge was reviewed. Review the merge again."
+_STALE_MERGE = "The merge or its items changed since it was reviewed. Review the merge again."
 _UNREVIEWED_MERGE = "Preview this merge first, then confirm it with the plan_fingerprint the preview returned."
 
 
@@ -3791,13 +3791,13 @@ def _merge_request_digest(payload: MergeBody) -> str:
     return hashlib.sha256(json.dumps(canonical, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _merge_fingerprint(target_id: str, sources: list[Projection], reclass) -> str:
-    """Names the stock a merge plan was made from and where its value goes. Keyed, so
-    it reveals nothing about cost to a role that cannot see cost."""
+def _merge_fingerprint(payload: MergeBody, sources: list[Projection], reclass) -> str:
+    """Names what the merge asks for, the stock its plan was made from, and where its
+    value goes. Keyed, so it reveals nothing about cost to a role that cannot see cost."""
     from celerp.config import settings as app_settings
 
     basis = {
-        "target": target_id,
+        "request": _merge_request_digest(payload),
         "sources": [[p.entity_id, p.state] for p in sorted(sources, key=lambda p: p.entity_id)],
         "destination": reclass.destination,
         "moves": {code: str(amount) for code, amount in reclass.moves.items()},
@@ -4193,14 +4193,16 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
         location_id=uuid.UUID(str(raw_loc)) if raw_loc else None,
         reclass=reclass,
         disclosure=await _merge_disclosure(session, company_id, reclass, settings, role),
-        fingerprint=_merge_fingerprint(payload.target_sku_from, source_projections, reclass),
+        fingerprint=_merge_fingerprint(payload, source_projections, reclass),
     )
 
 
 @router.post("/merge/preview")
 async def preview_merge(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
-    """What merging these items would do to the books, before the user confirms. The
-    merge refuses if the items change between this preview and the confirmation."""
+    """What merging these items would do to the books, before the user confirms. Send
+    the same body the merge will be confirmed with (every field but ``idempotency_key``
+    and ``plan_fingerprint`` counts): the merge refuses if the request or its items
+    change between this preview and the confirmation."""
     _check_merge_request(payload)
     rows = {p.entity_id: p for p in (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "item",

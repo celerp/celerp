@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from test_ui import _authed, ui_client  # noqa: F401  (ui_client is a fixture)
@@ -66,7 +67,42 @@ async def test_the_merge_preview_returns_the_sentence(ui_client):
     assert r.json() == {"message": _merge_reclass_sentence(_TWO), "plan_fingerprint": "fp-1"}
 
 
-_STALE = "The inventory changed since this merge was reviewed. Review the merge again."
+@pytest.mark.asyncio
+async def test_the_merge_preview_asks_for_the_typed_sku(ui_client):
+    preview = AsyncMock(return_value={"inventory_reclassification": None, "plan_fingerprint": "fp-2"})
+    with patch("ui.api_client.preview_merge", new=preview):
+        r = await ui_client.post("/api/items/merge/preview", data={
+            "selected": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_sku": "NEW-1"},
+            cookies=_authed())
+    assert r.json()["plan_fingerprint"] == "fp-2"
+    assert preview.await_args.args[1:] == (["item:a", "item:b"], "item:a", "NEW-1")
+
+
+@pytest.mark.asyncio
+async def test_the_preview_and_the_confirmation_send_the_same_merge():
+    from ui import api_client
+
+    sent = {}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, path, json):
+            sent[path] = json
+            return httpx.Response(200, json={"plan_fingerprint": "fp"}, request=httpx.Request("POST", path))
+
+    with patch("ui.api_client._api_client", new=lambda token: _Client()):
+        await api_client.preview_merge("t", ["item:a", "item:b"], "item:a", "NEW-1")
+        await api_client.merge_items("t", ["item:a", "item:b"], "item:a", "fp", "NEW-1", "key-1")
+    confirmed = {k: v for k, v in sent["/items/merge"].items() if k not in ("plan_fingerprint", "idempotency_key")}
+    assert confirmed == sent["/items/merge/preview"]
+
+
+_STALE = "The merge or its items changed since it was reviewed. Review the merge again."
 
 
 @pytest.mark.asyncio
