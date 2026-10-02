@@ -3,7 +3,8 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 """
 Browser test conftest.
-Starts FastAPI (port 18000) + FastHTML UI (port 18080) in background threads.
+Starts FastAPI and the FastHTML UI in background threads, on per-worker ports from 18000
+(API) and 18100 (UI), or from BROWSER_TEST_PORT_BASE when set.
 Seeds one admin user + company. Provides a Playwright browser context with auth cookie.
 
 Run: pytest tests/test_browser/ -m browser --tb=short
@@ -33,10 +34,12 @@ os.environ.setdefault("ENABLED_MODULES", _ALL_MODULES)
 # Per-xdist-worker ports so the browser suite can SHARD with `-n` (each worker boots its own API +
 # UI servers and browser against its own worker database — see the root conftest's per-worker DB).
 # gw0 -> +0, gw1 -> +1, ...; "" / "master" (no xdist) -> +0. API and UI ranges never overlap.
+# BROWSER_TEST_PORT_BASE moves both ranges so two suites can run on one machine at once.
 _worker = os.environ.get("PYTEST_XDIST_WORKER", "")
 _offset = int(_worker[2:]) if _worker[2:].isdigit() else 0
-_API_PORT = 18000 + _offset
-_UI_PORT = 18100 + _offset
+_PORT_BASE = int(os.environ.get("BROWSER_TEST_PORT_BASE", "18000"))
+_API_PORT = _PORT_BASE + _offset
+_UI_PORT = _PORT_BASE + 100 + _offset
 _API_BASE = f"http://127.0.0.1:{_API_PORT}"
 _UI_BASE = f"http://127.0.0.1:{_UI_PORT}"
 
@@ -58,12 +61,16 @@ def _wait_for_port(port: int, timeout: float = 15.0) -> None:
     raise RuntimeError(f"Port {port} did not open within {timeout}s")
 
 
-def _is_port_free(port: int) -> bool:
+def _require_free_port(port: int) -> None:
+    """A server already on the port is not this run's: its code and database would be
+    tested instead, so refuse to start rather than use it."""
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-            return False
+            pass
     except OSError:
-        return True
+        return
+    raise RuntimeError(f"Port {port} is already in use by another server; set BROWSER_TEST_PORT_BASE "
+                       "to a free range to run the browser suite alongside it")
 
 
 def _reset_pg_database() -> None:
@@ -87,12 +94,8 @@ def _reset_pg_database() -> None:
 
 @pytest.fixture(scope="session")
 def api_server():
-    """Start FastAPI on port 18000 against the (Postgres) test database."""
-    if not _is_port_free(_API_PORT):
-        # Already running (e.g. re-run within same process) - skip restart
-        yield _API_BASE
-        return
-
+    """Start FastAPI on this worker's API port against the (Postgres) test database."""
+    _require_free_port(_API_PORT)
     import uvicorn
     # Start from a clean schema; the app rebuilds tables on startup (create_all).
     _reset_pg_database()
@@ -110,11 +113,8 @@ def api_server():
 
 @pytest.fixture(scope="session")
 def ui_server(api_server):
-    """Start FastHTML UI on port 18080 pointing at the API server."""
-    if not _is_port_free(_UI_PORT):
-        yield _UI_BASE
-        return
-
+    """Start FastHTML UI on this worker's UI port pointing at the API server."""
+    _require_free_port(_UI_PORT)
     import uvicorn
     os.environ["API_URL"] = api_server
     os.environ["CELERP_API_URL"] = api_server
