@@ -95,20 +95,21 @@ async def adopt_legacy_connector_configs() -> None:
         await session.commit()
 
 
-async def enqueue_item_change(session, entry, *, previous_state: dict | None = None) -> None:
-    """Queue every affected enabled Woo identity in the caller's transaction."""
+async def enqueue_item_change(session, entry, *, previous_state: dict | None = None) -> bool:
+    """Queue every affected enabled Woo identity in the caller's transaction; True
+    when any was queued."""
     if entry.entity_type != "item" or entry.source == "connector":
-        return
+        return False
     company_id = str(entry.company_id)
     if not await _pushes_outbound(session, company_id, "woocommerce"):
-        return
+        return False
     from celerp_inventory.services import external_link_for_state
 
     row = await session.get(
         Projection, {"company_id": entry.company_id, "entity_id": entry.entity_id}
     )
     if row is None or row.entity_type != "item":
-        return
+        return False
 
     current_state = dict(row.state or {})
     states = [state for state in (previous_state, current_state) if state]
@@ -194,6 +195,7 @@ async def enqueue_item_change(session, entry, *, previous_state: dict | None = N
             status="pending",
             retry_count=0,
         ))
+    return bool(identities)
 
 
 class OutboundRejected(Exception):

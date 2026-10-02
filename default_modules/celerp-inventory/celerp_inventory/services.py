@@ -1731,8 +1731,7 @@ class BatchImportResult(BaseModel):
     batch_id: str | None = None
     # Rows an earlier run of this same import already wrote; nothing was duplicated.
     already_imported: int = 0
-    # True when undoing the batch returns the company to its state before this
-    # import: it only created items (no updates, new locations or category fields).
+    # The import's Import History entry can be undone (ImportBatch.reversible).
     reversible: bool = False
 
 
@@ -3216,6 +3215,7 @@ async def import_items(
             session, company_id, user, role, settings, body, operation_key=batch_key,
         )
         outcome.records.extend(chunk_outcome.records)
+        outcome.lasting_effects |= chunk_outcome.lasting_effects
         batch_id = chunk_batch_id or batch_id
 
     # Mutating category schemas is a settings change, so the caller's role must
@@ -3226,15 +3226,25 @@ async def import_items(
         inferred = _infer_category_schemas(_collect_category_attributes(written))
         if inferred:
             schema_changed = await _merge_category_schemas(session, company_id, inferred)
-    await session.commit()
 
     counts = outcome.route_counts(cap_rejections=False)
+    reversible = False
+    if batch_id:
+        from celerp_inventory.models_import_batch import ImportBatch
+
+        batch = await session.get(ImportBatch, uuid.UUID(batch_id))
+        if counts["created"] or counts["updated"]:
+            # Reversible only when this run wrote the whole entry and did nothing but
+            # create its items; an entry that grew over several runs cannot show that.
+            batch.reversible = (
+                batch.row_count == counts["created"] and not counts["updated"]
+                and not plan.locations_to_create and not schema_changed and not outcome.lasting_effects
+            )
+        reversible = batch.reversible
+    await session.commit()
+
     return BatchImportResult(
-        **counts, batch_id=batch_id, already_imported=outcome.count("skipped"),
-        reversible=bool(
-            batch_id and counts["created"] and not counts["updated"]
-            and not plan.locations_to_create and not schema_changed
-        ),
+        **counts, batch_id=batch_id, already_imported=outcome.count("skipped"), reversible=reversible,
     )
 
 
@@ -3590,6 +3600,8 @@ async def write_import_batch(
         if getattr(entry, "was_deduped", False):
             outcome.add(entity_id, "skipped")
             continue
+        if getattr(entry, "outbound_queued", False):
+            outcome.lasting_effects.add("connector")
 
         if event_type == "item.patched":
             outcome.add(entity_id, "updated")
@@ -3627,7 +3639,9 @@ async def write_import_batch(
         batch.idempotency_keys = [*batch.idempotency_keys, *created_keys]
 
         # The first real import clears the demo items the user never edited or used.
-        await delete_untouched_demo_items(session, company_id)
+        cleared, _kept = await delete_untouched_demo_items(session, company_id)
+        if cleared:
+            outcome.lasting_effects.add("demo_items")
 
     return outcome, (str(batch.id) if batch is not None else None)
 

@@ -47,6 +47,8 @@ from .services import (
     build_import_plan,
     source_header_semantics,
 )
+from celerp.services.company_lock import lock_projections
+from celerp.services.item_erasure import erase_items, mentioned_elsewhere
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
@@ -4444,6 +4446,7 @@ async def list_import_batches(
             "filename": b.filename,
             "row_count": b.row_count,
             "status": b.status,
+            "reversible": b.reversible,
             "imported_at": b.imported_at.isoformat(),
             "undone_at": b.undone_at.isoformat() if b.undone_at else None,
         }
@@ -4460,72 +4463,62 @@ async def undo_import_batch(
     __: None = require_permission("edit_inventory"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Undo an import batch only when none of its created items changed later."""
+    """Undo an import: remove the items it created, in one step. Refused, with nothing
+    changed, when the import did more than create those items (it is not reversible),
+    or an item was changed or used since."""
     from datetime import datetime, timezone as _tz
-
-    from sqlalchemy import delete as _delete
-    from sqlalchemy import select as _select
 
     from celerp_inventory.models_import_batch import ImportBatch
     from celerp.models.ledger import LedgerEntry
-    from celerp.models.projections import Projection
+    from celerp.services.company_lock import lock_company
 
     try:
         batch_uuid = uuid.UUID(batch_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Import batch not found")
-    batch = await session.get(ImportBatch, batch_uuid)
+    # The company lock serialises this with any chunk still adding to the batch.
+    await lock_company(session, company_id)
+    batch = (await session.execute(
+        select(ImportBatch).where(ImportBatch.id == batch_uuid).with_for_update()
+        .execution_options(populate_existing=True))).scalar_one_or_none()
     if batch is None or batch.company_id != company_id:
         raise HTTPException(status_code=404, detail="Import batch not found")
     if batch.status == "undone":
         raise HTTPException(status_code=409, detail="Batch already undone")
+    if not batch.reversible:
+        raise HTTPException(status_code=409, detail={
+            "code": "import_not_reversible",
+            "message": (
+                "This import cannot be undone because it did more than add new items: it changed existing "
+                "records, added locations or category fields, cleared the sample items, or sent changes to a "
+                "connected store."
+            ),
+        })
 
     entity_ids = batch.entity_ids or []
+    rows = await lock_projections(session, company_id, entity_ids)
 
-    # Check for modified-since: any ledger event after the import that isn't item.created
-    modified: list[str] = []
-    for eid in entity_ids:
-        extra = (await session.execute(
-            _select(LedgerEntry.entity_id)
-            .where(
-                LedgerEntry.company_id == company_id,
-                LedgerEntry.entity_id == eid,
-                LedgerEntry.event_type != "item.created",
-                LedgerEntry.ts > batch.imported_at,
-            )
-            .limit(1)
-        )).scalar_one_or_none()
-        if extra:
-            modified.append(eid)
-
+    # Only what the import itself wrote may be on the items: their creation.
+    created_by_import = set(batch.idempotency_keys or [])
+    modified = {eid for eid, row in rows.items() if row.entity_type != "item"}
+    for eid, event_type, key in (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.idempotency_key)
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(entity_ids)))).all():
+        if event_type == "item.created" and key in created_by_import:
+            continue
+        modified.add(eid)
+    modified |= await mentioned_elsewhere(session, company_id, {e: [e] for e in entity_ids})
     if modified:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "import_items_modified",
-                "message": "This import cannot be undone because imported items were modified later.",
-                "entity_ids": modified,
+                "message": "This import cannot be undone because imported items were changed or used later.",
+                "entity_ids": sorted(modified),
             },
         )
 
-    # Delete projections for all entities in this batch
-    if entity_ids:
-        await session.execute(
-            _delete(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_id.in_(entity_ids),
-            )
-        )
-        # Purge ledger entries so re-import works cleanly
-        ikeys = batch.idempotency_keys or []
-        if ikeys:
-            await session.execute(
-                _delete(LedgerEntry).where(
-                    LedgerEntry.company_id == company_id,
-                    LedgerEntry.idempotency_key.in_(ikeys),
-                )
-            )
-
+    await erase_items(session, company_id, entity_ids)
     batch.status = "undone"
     # Release the operation so the same source can be imported again as a new entry.
     batch.operation_key = None
@@ -4536,7 +4529,6 @@ async def undo_import_batch(
     return {
         "ok": True,
         "removed": len(entity_ids),
-        "modified_items": modified,
     }
 
 

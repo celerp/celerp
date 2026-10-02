@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
@@ -19,6 +20,9 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
 log = logging.getLogger(__name__)
+
+# The only events that may start an item: every other change needs the item to exist.
+_ITEM_BIRTHS = frozenset({"item.created", "item.snapshot"})
 
 
 def _resolve_module_handler(dotted: str):
@@ -120,7 +124,16 @@ class ProjectionEngine:
 
     @staticmethod
     async def apply_event(session, entry: LedgerEntry) -> None:
+        """Apply a new event. A change to an item that is gone is refused: the item
+        was removed (an undone import, a deleted draft) after the change read it, and
+        writing the change would bring it back."""
         projection = await ProjectionEngine._locked_projection(session, entry)
+        if projection is None and entry.entity_type == "item" and entry.event_type not in _ITEM_BIRTHS:
+            raise HTTPException(status_code=404, detail="Item not found")
+        await ProjectionEngine._write(session, entry, projection)
+
+    @staticmethod
+    async def _write(session, entry: LedgerEntry, projection: Projection | None) -> None:
         if projection is None:
             fields = ProjectionEngine._next_fields({}, entry, 0)
             try:
@@ -179,4 +192,5 @@ class ProjectionEngine:
         if company_id:
             query = query.where(LedgerEntry.company_id == company_id)
         for entry in (await session.execute(query)).scalars().all():
-            await ProjectionEngine.apply_event(session, entry)
+            # A rebuild replays the ledger as it stands, so it writes every event.
+            await ProjectionEngine._write(session, entry, await ProjectionEngine._locked_projection(session, entry))

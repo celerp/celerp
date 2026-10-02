@@ -9,8 +9,8 @@ the response names that entry, an exact retry resolves to it and appends
 nothing, an interrupted import leaves nothing behind, and Undo removes every
 item it created. Undo releases the operation so the same source can be
 imported again as a new history entry. The raw event batch endpoint keeps its
-per-call history. Every import and undo route stays behind the canonical
-permission gate.
+per-call history and cannot be undone. Every import and undo route stays behind
+the canonical permission gate.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from celerp.services import import_stage
 from httpx import ASGITransport, AsyncClient
 
 from celerp.events.types import EventType
-from test_helpers import grant_permission, perm_setup
+from test_helpers import clear_sample_items, grant_permission, perm_setup
 
 # The shared semantic importer's writer chunk, made small here so a few rows
 # cross the same chunk boundaries a large import does.
@@ -64,6 +64,7 @@ async def ctx(client, session, data_dir):
         s[f"{role}_token"] = token
         s[f"{role}_user_id"] = claims["sub"]
         s["company_id"] = claims["company_id"]
+    await clear_sample_items(session, s["company_id"])
     return s
 
 
@@ -512,11 +513,11 @@ class TestRawBatchHistory:
         assert retry.status_code == 200 and retry.json()["created"] == 0, retry.text
         assert await _snapshot(session, ctx["company_id"]) == before
 
-        # Each call is undone on its own.
+        # A raw call cannot show it only added items, so it cannot be undone.
+        assert {x["id"]: x["reversible"] for x in history} == {a["batch_id"]: False, b["batch_id"]: False}
         r = await client.post(f"/items/import/batches/{a['batch_id']}/undo", headers=h)
-        assert r.status_code == 200 and r.json()["removed"] == 3, r.text
-        statuses = {x["id"]: x["status"] for x in await _history(client, h)}
-        assert statuses == {a["batch_id"]: "undone", b["batch_id"]: "active"}
+        assert r.status_code == 409 and r.json()["detail"]["code"] == "import_not_reversible", r.text
+        assert await _snapshot(session, ctx["company_id"]) == before
 
 
 # ---------------------------------------------------------------------------

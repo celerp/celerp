@@ -817,9 +817,10 @@ async def test_import_reports_undo_only_for_a_pure_create_and_counts_a_repeat(se
                                filename=None, idempotency_key="op-1")
     assert (first.created, first.reversible, first.already_imported) == (1, True, 0)
 
+    # An exact repeat names the same Import History entry, which can still be undone.
     again = await import_items(session, company_id, user_id, "admin", {}, rows, upsert=False,
                                filename=None, idempotency_key="op-1")
-    assert (again.created, again.reversible, again.already_imported) == (0, False, 1)
+    assert (again.created, again.reversible, again.already_imported) == (0, True, 1)
 
     update = await import_items(session, company_id, user_id, "admin", {}, [{**rows[0], "quantity": "4"}],
                                 upsert=True, filename=None, idempotency_key=None)
@@ -831,3 +832,137 @@ async def test_import_reports_undo_only_for_a_pure_create_and_counts_a_repeat(se
         upsert=False, filename=None, idempotency_key=None,
     )
     assert (new_place.created, new_place.reversible) == (1, False)
+
+
+# ---------------------------------------------------------------------------
+# Undo: an import that did anything besides adding its items cannot be undone
+# ---------------------------------------------------------------------------
+
+
+async def _woo_linked_item(session, company_id, sku: str) -> None:
+    """A connected store, and an item already linked to one of its products."""
+    from datetime import datetime, timezone
+
+    from celerp.models.connector_config import ConnectorConfig
+
+    now = datetime.now(timezone.utc)
+    session.add(ConnectorConfig(company_id=str(company_id), connector="woocommerce", direction="both"))
+    session.add(Projection(
+        company_id=company_id, entity_id=f"item:linked-{uuid.uuid4().hex[:8]}", entity_type="item",
+        version=1, created_at=now, updated_at=now,
+        state={"sku": sku, "name": "Linked", "quantity": 1, "status": "available", "sell_by": "piece",
+               "external_links": {"woocommerce": {"product_id": "17", "sync_enabled": True, "manage_stock": True}}},
+    ))
+    await session.commit()
+
+
+async def _sample_items(session, company_id, user_id) -> None:
+    from celerp.services.demo import demo_item_ids, seed_demo_items
+    await seed_demo_items(session, company_id, user_id)
+    await session.commit()
+    assert await demo_item_ids(session, company_id)
+
+
+async def _existing(session, company_id, user_id) -> None:
+    await import_items(session, company_id, user_id, "admin", {},
+                       [{"name": "Old", "sku": "SE-OLD", "sell_by": "piece", "quantity": "1"}],
+                       upsert=False, filename=None, idempotency_key=None)
+
+
+_NEW = {"name": "New", "sku": "SE-NEW", "sell_by": "piece", "quantity": "1"}
+
+# name -> (setup, rows, upsert)
+_SIDE_EFFECTS = {
+    "updates_an_existing_item": (_existing, [_NEW, {"name": "Old", "sku": "SE-OLD", "sell_by": "piece", "quantity": "5"}], True),
+    "adds_a_location": (None, [{**_NEW, "location_name": "Annex"}], False),
+    "adds_category_fields": (None, [{**_NEW, "category": "Rings", "ring_size": "7"}], False),
+    "clears_the_sample_items": (_sample_items, [_NEW], False),
+    "sends_stock_to_a_connected_store": (
+        lambda s, c, u: _woo_linked_item(s, c, "SE-NEW"), [_NEW], False),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effect", list(_SIDE_EFFECTS))
+async def test_an_import_with_a_side_effect_cannot_be_undone(session, effect):
+    from celerp_inventory import routes as inventory
+    from celerp_inventory.models_import_batch import ImportBatch
+    from fastapi import HTTPException
+
+    setup, rows, upsert = _SIDE_EFFECTS[effect]
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main", "is_default": True}])
+    if setup:
+        await setup(session, company_id, user_id)
+    result = await import_items(session, company_id, user_id, "admin", {}, rows, upsert=upsert,
+                                filename=None, idempotency_key=f"op-{effect}")
+    assert result.created == 1 and result.batch_id, result
+    assert result.reversible is False
+    batch = await session.get(ImportBatch, uuid.UUID(result.batch_id))
+    assert batch.reversible is False
+
+    items = sorted(p.entity_id for p in await _item_projections(session, company_id))
+    with pytest.raises(HTTPException) as refused:
+        await inventory.undo_import_batch(result.batch_id, company_id=company_id,
+                                          user=SimpleNamespace(id=user_id), session=session)
+    assert refused.value.status_code == 409
+    assert refused.value.detail["code"] == "import_not_reversible"
+    await session.rollback()
+    assert sorted(p.entity_id for p in await _item_projections(session, company_id)) == items
+    assert (await session.get(ImportBatch, uuid.UUID(result.batch_id))).status == "active"
+
+
+@pytest.mark.asyncio
+async def test_an_import_that_only_adds_items_is_undone_whole(session):
+    from celerp_inventory import routes as inventory
+    from celerp_inventory.models_import_batch import ImportBatch
+    from celerp.models.ledger import LedgerEntry
+
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main", "is_default": True}])
+    result = await import_items(session, company_id, user_id, "admin", {},
+                                [_NEW, {**_NEW, "name": "Second", "sku": "SE-2"}], upsert=False,
+                                filename=None, idempotency_key="op-pure")
+    assert (result.created, result.reversible) == (2, True)
+    assert (await session.get(ImportBatch, uuid.UUID(result.batch_id))).reversible is True
+
+    done = await inventory.undo_import_batch(result.batch_id, company_id=company_id,
+                                             user=SimpleNamespace(id=user_id), session=session)
+    assert done == {"ok": True, "removed": 2}
+    assert await _item_projections(session, company_id) == []
+    assert (await session.execute(select(LedgerEntry).where(LedgerEntry.company_id == company_id))).all() == []
+
+
+@pytest.mark.asyncio
+async def test_undo_refuses_an_item_changed_or_used_after_the_import(session):
+    """Proof from the ledger: any event on an imported item that the import did not
+    write, and any other record naming the item, keep the import in place."""
+    from fastapi import HTTPException
+
+    from celerp.events.engine import emit_event
+    from celerp_inventory import routes as inventory
+
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main", "is_default": True}])
+    changed = await import_items(session, company_id, user_id, "admin", {}, [_NEW], upsert=False,
+                                 filename=None, idempotency_key="op-changed")
+    used = await import_items(session, company_id, user_id, "admin", {},
+                              [{**_NEW, "name": "Used", "sku": "SE-USED"}], upsert=False,
+                              filename=None, idempotency_key="op-used")
+    assert changed.reversible and used.reversible
+    by_sku = {p.state["sku"]: p.entity_id for p in await _item_projections(session, company_id)}
+    await emit_event(session, company_id=company_id, entity_id=by_sku["SE-NEW"], entity_type="item",
+                     event_type="item.updated", data={"fields_changed": {"name": {"old": "New", "new": "Renamed"}}},
+                     actor_id=user_id, location_id=None, source="api", idempotency_key=uuid.uuid4().hex)
+    await emit_event(session, company_id=company_id, entity_id="doc:INV-1", entity_type="doc",
+                     event_type="doc.created",
+                     data={"doc_type": "invoice", "line_items": [{"item_id": by_sku["SE-USED"], "quantity": 1}]},
+                     actor_id=user_id, location_id=None, source="api", idempotency_key=uuid.uuid4().hex)
+    await session.commit()
+
+    for result, sku in ((changed, "SE-NEW"), (used, "SE-USED")):
+        with pytest.raises(HTTPException) as refused:
+            await inventory.undo_import_batch(result.batch_id, company_id=company_id,
+                                              user=SimpleNamespace(id=user_id), session=session)
+        await session.rollback()
+        assert refused.value.status_code == 409
+        assert refused.value.detail["code"] == "import_items_modified"
+        assert refused.value.detail["entity_ids"] == [by_sku[sku]]
+    assert {p.state["sku"] for p in await _item_projections(session, company_id)} == {"SE-NEW", "SE-USED"}

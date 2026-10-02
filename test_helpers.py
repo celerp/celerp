@@ -99,6 +99,14 @@ async def ensure_company(session, company_id=None):
     return cid
 
 
+async def clear_sample_items(session, company_id) -> None:
+    """Remove the sample items a new company starts with, so the test's next item
+    import only adds items (an import that clears them cannot be undone)."""
+    from celerp.services.demo import delete_untouched_demo_items
+    await delete_untouched_demo_items(session, uuid.UUID(str(company_id)))
+    await session.commit()
+
+
 async def default_location_id(client, headers: dict) -> str:
     """Return the company's real default (or first) location id.
 

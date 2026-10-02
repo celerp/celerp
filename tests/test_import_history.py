@@ -64,6 +64,26 @@ async def _import_items(client, token: str, count: int = 3) -> dict:
     return r.json()
 
 
+async def _import_rows(client, session, token: str, count: int = 3) -> dict:
+    """Import ``count`` new items the way a file import does, into a company whose
+    sample items are already gone, so the import only adds items."""
+    from celerp.services.auth import decode_access_token
+    from test_helpers import clear_sample_items
+
+    await clear_sample_items(session, decode_access_token(token)["company_id"])
+    rows = [{"name": f"History Item {i}", "sku": f"HIST-{i:04d}", "sell_by": "piece", "quantity": "1"}
+            for i in range(count)]
+    key = f"hist-{uuid.uuid4().hex}"
+    r = await client.post("/items/import/rows/preview", headers=_h(token),
+                          json={"rows": rows, "upsert": False, "idempotency_key": key})
+    assert r.status_code == 200 and r.json()["errors"] == [], r.text
+    r = await client.post("/items/import/rows", headers=_h(token), json={
+        "rows": rows, "upsert": False, "idempotency_key": key,
+        "preview_hash": r.json()["preview_hash"], "filename": "history_test.csv"})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 # ---------------------------------------------------------------------------
 # List batches
 # ---------------------------------------------------------------------------
@@ -96,6 +116,8 @@ async def test_list_batches_after_import(client):
     assert b["filename"] == "history_test.csv"
     assert b["status"] == "active"
     assert b["undone_at"] is None
+    # A raw event batch cannot show it only added items, so it is not offered for undo.
+    assert b["reversible"] is False
 
 
 @pytest.mark.asyncio
@@ -141,25 +163,22 @@ async def test_multiple_imports_all_listed(client):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_undo_batch_removes_items(client):
+async def test_undo_batch_removes_items(client, session):
     token = await _register(client)
-    result = await _import_items(client, token, count=3)
+    result = await _import_rows(client, session, token, count=3)
     batch_id = result["batch_id"]
+    assert result["reversible"] is True
 
-    # Verify items exist
+    listed = (await client.get("/items/import/batches", headers=_h(token))).json()["batches"]
+    assert next(b for b in listed if b["id"] == batch_id)["reversible"] is True
     items_before = (await client.get("/items", headers=_h(token))).json()["items"]
     imported = [i for i in items_before if "History Item" in i.get("name", "")]
     assert len(imported) == 3
 
-    # Undo
     r = await client.post(f"/items/import/batches/{batch_id}/undo", headers=_h(token))
     assert r.status_code == 200
-    data = r.json()
-    assert data["ok"] is True
-    assert data["removed"] == 3
-    assert isinstance(data["modified_items"], list)
+    assert r.json() == {"ok": True, "removed": 3}
 
-    # Verify items gone
     items_after = (await client.get("/items", headers=_h(token))).json()["items"]
     after_names = {i.get("name", "") for i in items_after}
     for i_name in ["History Item 0", "History Item 1", "History Item 2"]:
@@ -167,9 +186,9 @@ async def test_undo_batch_removes_items(client):
 
 
 @pytest.mark.asyncio
-async def test_undo_batch_marks_status_undone(client):
+async def test_undo_batch_marks_status_undone(client, session):
     token = await _register(client)
-    result = await _import_items(client, token, count=2)
+    result = await _import_rows(client, session, token, count=2)
     batch_id = result["batch_id"]
 
     await client.post(f"/items/import/batches/{batch_id}/undo", headers=_h(token))
@@ -182,14 +201,44 @@ async def test_undo_batch_marks_status_undone(client):
 
 
 @pytest.mark.asyncio
-async def test_undo_batch_twice_returns_409(client):
+async def test_undo_batch_twice_returns_409(client, session):
     token = await _register(client)
-    result = await _import_items(client, token, count=1)
+    result = await _import_rows(client, session, token, count=1)
     batch_id = result["batch_id"]
 
     await client.post(f"/items/import/batches/{batch_id}/undo", headers=_h(token))
     r2 = await client.post(f"/items/import/batches/{batch_id}/undo", headers=_h(token))
     assert r2.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_a_raw_batch_is_never_undone(client):
+    token = await _register(client)
+    result = await _import_items(client, token, count=2)
+    before = (await client.get("/items", headers=_h(token))).json()["items"]
+
+    r = await client.post(f"/items/import/batches/{result['batch_id']}/undo", headers=_h(token))
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "import_not_reversible"
+    assert (await client.get("/items", headers=_h(token))).json()["items"] == before
+
+
+@pytest.mark.asyncio
+async def test_the_first_import_that_clears_the_sample_items_is_not_undone(client):
+    """A new company starts with sample items; the first import clears them, which
+    Undo cannot put back, so that import is refused."""
+    token = await _register(client)
+    rows = [{"name": "First", "sku": "FIRST-1", "sell_by": "piece", "quantity": "1"}]
+    r = await client.post("/items/import/rows/preview", headers=_h(token),
+                          json={"rows": rows, "upsert": False, "idempotency_key": "first"})
+    r = await client.post("/items/import/rows", headers=_h(token), json={
+        "rows": rows, "upsert": False, "idempotency_key": "first", "preview_hash": r.json()["preview_hash"]})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    assert r.json()["reversible"] is False
+
+    undo = await client.post(f"/items/import/batches/{r.json()['batch_id']}/undo", headers=_h(token))
+    assert undo.status_code == 409
+    assert undo.json()["detail"]["code"] == "import_not_reversible"
 
 
 @pytest.mark.asyncio
@@ -227,33 +276,13 @@ async def test_undo_batch_requires_auth(client):
 
 
 @pytest.mark.asyncio
-async def test_undo_purges_idempotency_keys_allowing_reimport(client):
-    """After undo, the same idempotency keys can be re-imported."""
+async def test_undo_releases_the_import_so_it_can_run_again(client, session):
+    """After undo, the same import can be run again as a new history entry."""
     token = await _register(client)
-    ikey = f"test:reimport:{uuid.uuid4()}"
-    entity_id = f"item:reimport-{uuid.uuid4()}"
-    records = [{
-        "entity_id": entity_id,
-        "entity_type": "item",
-        "event_type": EventType.ITEM_CREATED,
-        "data": {"sku": "REIMP-001", "name": "Reimportable", "category": "Test",
-                 "sell_by": "piece",
-                 "quantity": 1, "cost_price": 1.0, "wholesale_price": 1.5, "retail_price": 2.0, "status": "available"},
-        "idempotency_key": ikey,
-        "source": "csv_import",
-        "source_ts": None,
-    }]
+    first = await _import_rows(client, session, token, count=1)
+    r = await client.post(f"/items/import/batches/{first['batch_id']}/undo", headers=_h(token))
+    assert r.status_code == 200, r.text
 
-    r1 = await client.post("/items/import/batch", headers=_h(token),
-                           json={"records": records, "filename": "test.csv"})
-    batch_id = r1.json()["batch_id"]
-
-    # Undo
-    await client.post(f"/items/import/batches/{batch_id}/undo", headers=_h(token))
-
-    # Re-import same key with new entity_id
-    records[0]["entity_id"] = f"item:reimport-{uuid.uuid4()}"
-    r2 = await client.post("/items/import/batch", headers=_h(token),
-                           json={"records": records, "filename": "test.csv"})
-    assert r2.status_code == 200
-    assert r2.json()["created"] == 1
+    again = await _import_rows(client, session, token, count=1)
+    assert again["created"] == 1
+    assert again["batch_id"] != first["batch_id"]

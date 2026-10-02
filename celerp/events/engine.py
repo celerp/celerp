@@ -371,9 +371,10 @@ async def emit_event(
 
     # Durable connector work is recorded in the same transaction as the item event.
     # No network I/O occurs here; the worker re-reads current state before sending.
+    # ``outbound_queued`` tells the caller the event will reach a connected store.
     if entry.entity_type == "item":
         from celerp.connectors.outbound_queue import enqueue_item_change
-        await enqueue_item_change(
+        entry.outbound_queued = await enqueue_item_change(
             session, entry, previous_state=previous_item_state
         )
 
