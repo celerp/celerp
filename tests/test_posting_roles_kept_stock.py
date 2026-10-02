@@ -13,9 +13,8 @@ A plain status change cannot fake a sale, a merge, a write-off or a draft, and c
 bring back stock that left the books that way.
 
 Companies that archived or expired stock in an older release have those lots
-recognized once on upgrade from what the user did, never from the status alone; when
-the older release's opening inventory entry had dropped their value, one entry puts
-it back.
+recognized once on upgrade only where the books still carry their value, never from
+the status alone; no entry is ever posted to invent it.
 """
 from __future__ import annotations
 
