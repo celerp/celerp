@@ -163,6 +163,11 @@ def checked_exchange_rate(v: _MoneyInput) -> Decimal:
     return stored
 
 
+def books_currency(settings: dict) -> str:
+    """The currency a company with *settings* keeps its books in."""
+    return str(settings.get("currency") or "USD").upper()
+
+
 def doc_rate(doc: dict, base_currency: str) -> Decimal | None:
     """The rate that converts *doc*'s amounts into the books' currency, or None if unknown.
 

@@ -45,7 +45,7 @@ from celerp.services.permissions import assert_role_permission, get_current_comp
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
-from celerp.services.money import checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
+from celerp.services.money import books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
@@ -2623,6 +2623,25 @@ async def _alloc_payment_index(session, company_id, payments: list,
     return idx
 
 
+async def _books_still_kept(session, company_id, doc_state: dict, books: tuple[str, Decimal]) -> tuple[str, float]:
+    """The (base currency, document rate) a payment's *books* post on, or 422 when they no
+    longer describe the ledger: the company now keeps its books in another currency, or
+    the document now converts into them at another rate. Called under the document's row
+    lock with its locked state; the company is read FOR SHARE in the same step, so a
+    settings change either committed first and is seen here, or waits for this payment."""
+    company = (await session.execute(
+        select(Company).where(Company.id == company_id).with_for_update(read=True)
+        .execution_options(populate_existing=True))).scalar_one_or_none()
+    base, rate = books
+    current = books_currency((company.settings or {}) if company else {})
+    if base != current:
+        raise HTTPException(status_code=422, detail=f"The payment is on {base} books; the company keeps them in {current}")
+    current_rate = _require_doc_rate_http(doc_state, current)
+    if rate != current_rate:
+        raise HTTPException(status_code=422, detail=f"The payment is at rate {rate}; the document is now at {current_rate}")
+    return base, float(rate)
+
+
 async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
                             *, source: str, actor_id, idempotency_key: str,
                             request: str | None = None, commit: bool = True,
@@ -2639,8 +2658,9 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     and cannot compute a duplicate or colliding payment_index.
 
     *books* is the (base currency, document rate) the payment posts on when the caller
-    already holds them - an online payment keeps the books its payment page opened with;
-    otherwise they are the company's and the document's now."""
+    already holds them - an online payment keeps the books its payment page opened with,
+    while they still match the company's and the document's (_books_still_kept); otherwise
+    they are the company's and the document's now."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:
@@ -2699,7 +2719,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     # than 1 restates the receipt: 100 banked as 3500. Refused before the
     # event is written, the same way finalization refuses it on the document.
     if books is not None:
-        _base_currency, _document_rate = books[0], float(books[1])
+        _base_currency, _document_rate = await _books_still_kept(session, company_id, doc_state, books)
     else:
         _company = await session.get(Company, company_id)
         _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
