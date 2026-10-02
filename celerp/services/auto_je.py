@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from decimal import Decimal as _Dec
 
 from celerp.accounting_roles import INVENTORY_VALUE_ROLES, LANDED_ROLE_BY_KIND, LOT_ACCOUNT_FIELD, AccountRole
@@ -28,7 +27,7 @@ from celerp.services.account_roles import (
     resolve_many,
     scope_codes,
 )
-from celerp.services.business_time import business_date_at
+from celerp.services.business_time import business_date_of
 from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value
@@ -138,6 +137,19 @@ async def company_currency(session, company_id) -> str:
     from celerp.models.company import Company
     company = await session.get(Company, company_id)
     return str((company.settings or {}).get("currency") or "USD").upper() if company else "USD"
+
+
+async def entry_day(session, company_id, recorded: object = None) -> str:
+    """The date an automatic entry carries, and so the date its period lock is checked
+    against: the company's business day of the operation it records, from the date or
+    timestamp the operation recorded, or today in the company's timezone when it recorded
+    none (business_date_of). Never the server's own date."""
+    from fastapi import HTTPException
+
+    try:
+        return business_date_of(recorded, (await current_settings(session, company_id)).get("timezone"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 async def _emit_auto_posted_je(
@@ -1171,7 +1183,7 @@ async def create_for_bill_conversion(
         idem_create=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}", "p"),
         memo=f"Auto JE for {doc_id} converted to bill",
-        ts=doc.get("issue_date") or doc.get("finalized_at") or __import__("datetime").date.today().isoformat(),
+        ts=await entry_day(session, company_id, doc.get("issue_date") or doc.get("finalized_at")),
         entries=entries,
         metadata_={"trigger": "doc.converted_to_bill", "doc_id": doc_id},
     )
@@ -1931,12 +1943,14 @@ async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, c
         )
 
 
-async def create_for_return_received(session, *, company_id, user_id, cn_id: str, lot_costs: dict[str, float], je_suffix: str) -> None:
+async def create_for_return_received(session, *, company_id, user_id, cn_id: str, lot_costs: dict[str, float], je_suffix: str,
+                                     received_at: str) -> None:
     """Reversing COGS JE when goods are returned via credit note: Debit Inventory / Credit COGS.
 
     lot_costs is each returned lot's cost, put back on the inventory account that lot is valued in.
 
     je_suffix names the receive-return call, so each return received on the credit note has its own entry.
+    received_at is when the return recorded the goods received; the entry is dated its business day.
     """
     if sum(lot_costs.values()) <= 0:
         return
@@ -1948,19 +1962,21 @@ async def create_for_return_received(session, *, company_id, user_id, cn_id: str
         idem_create=je_idempotency_key(cn_id, f"return:{je_suffix}", "c"),
         idem_posted=je_idempotency_key(cn_id, f"return:{je_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return received (COGS reversal)",
-        ts=__import__("datetime").date.today().isoformat(),
+        ts=await entry_day(session, company_id, received_at),
         entries=await _cogs_entries(session, company_id, await lots_by_account(session, company_id, lot_costs),
                                     expense=False),
         metadata_={"trigger": "doc.return_received", "cn_id": cn_id},
     )
 
 
-async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, lot_costs: dict[str, float], unique_suffix: str) -> None:
+async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, lot_costs: dict[str, float], unique_suffix: str,
+                                   undone_at: str) -> None:
     """Reverse the COGS reversal JE when a receive-return is undone: Debit COGS / Credit Inventory.
 
     lot_costs is each returned lot's cost, taken off the inventory account that lot is valued in.
 
     unique_suffix must be unique per call (e.g. a UUID) so repeated undo attempts each get their own JE.
+    undone_at is when the undo was recorded; the entry is dated its business day.
     """
     if sum(lot_costs.values()) <= 0:
         return
@@ -1972,7 +1988,7 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
         idem_create=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "c"),
         idem_posted=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return undone (COGS re-reversal)",
-        ts=__import__("datetime").date.today().isoformat(),
+        ts=await entry_day(session, company_id, undone_at),
         entries=await _cogs_entries(session, company_id, await lots_by_account(session, company_id, lot_costs)),
         metadata_={"trigger": "doc.return_undone", "cn_id": cn_id},
     )
@@ -2018,7 +2034,7 @@ async def create_for_mfg_completed(session, *, company_id, user_id, order_id: st
         idem_create=je_idempotency_key(order_id, "mfg.completed", "c"),
         idem_posted=je_idempotency_key(order_id, "mfg.completed", "p"),
         memo=f"Auto JE for {order_id} completion",
-        ts=__import__("datetime").date.today().isoformat(),
+        ts=await entry_day(session, company_id),
         entries=[
             *(_inventory_lines(settings, output_amt, outputs, currency, debit=True) if output_amt else []),
             _line(cogs, R.COGS, debit=to_stored_float(waste_amt)),
@@ -2057,7 +2073,7 @@ async def create_for_line_adjustment(
         idem_create=je_idempotency_key(list_id, f"{kind}.adjusted:{cycle}", "c"),
         idem_posted=je_idempotency_key(list_id, f"{kind}.adjusted:{cycle}", "p"),
         memo=f"{_ADJUST_MEMO.get(kind, kind)} {list_id}",
-        ts=__import__("datetime").date.today().isoformat(),
+        ts=await entry_day(session, company_id),
         entries=entries,
         metadata_={"trigger": f"{kind}.adjusted", "list_id": list_id},
     )
@@ -2257,7 +2273,7 @@ async def upsert_opening_inventory_je(
     from celerp.events.engine import _check_period_lock
 
     try:
-        today = business_date_at(datetime.now(timezone.utc), settings.get("timezone"))
+        today = business_date_of(None, settings.get("timezone"))
     except ValueError:
         return
     try:

@@ -27,7 +27,6 @@ beyond the stock already recorded on it.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import HTTPException
@@ -44,7 +43,7 @@ from celerp.accounting_roles import (
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.account_roles import role_map, scope_codes, target_problems
-from celerp.services.business_time import business_date_at
+from celerp.services.business_time import business_date_of
 from celerp.services.money import round_money
 
 RECORDED = "item.inventory_account.recorded"
@@ -168,12 +167,6 @@ async def _mark(session: AsyncSession, company_id) -> None:
     await session.flush()
 
 
-def _business_day(settings: dict) -> str:
-    """Today in the company's own timezone: the date the entries here carry, and the one
-    the period lock is checked against."""
-    return business_date_at(datetime.now(timezone.utc), settings.get("timezone"))
-
-
 async def _period_open(session: AsyncSession, company_id, day: str) -> bool:
     from celerp.events.engine import _check_period_lock
 
@@ -225,7 +218,7 @@ async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) 
         moved = round_money(balance[ob] - on_opening, currency)
         je_id = f"je:auto:inventory-origin:{company_id}"
         if moved:
-            day = _business_day(settings)
+            day = business_date_of(None, settings.get("timezone"))
             if await session.get(Projection, {"company_id": company_id, "entity_id": je_id}) is not None:
                 await _mark(session, company_id)  # moved once already; the books have changed since
                 return True
@@ -277,7 +270,7 @@ async def open_inventory_origins(session: AsyncSession, company_id, user_id=None
         if codes is None or not pending or await _foreign(session, company_id, settings):
             await _mark(session, company_id)
             return True
-        if not await _period_open(session, company_id, _business_day(settings)):
+        if not await _period_open(session, company_id, business_date_of(None, settings.get("timezone"))):
             return False
         inventory = {code for role in _INVENTORY for code in scope_codes(settings, role)}
         if any(e.get("account") in inventory for _, e in await _posted_entries(session, company_id)):

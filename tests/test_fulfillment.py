@@ -3442,8 +3442,8 @@ async def test_live_fulfillment_business_date_controls_lock_and_adjustment(
 async def test_split_fulfillment_period_lock_uses_company_timezone(
     client, session, auth, _setup_ids, monkeypatch
 ):
-    from datetime import date, timezone
-    import celerp.events.engine as event_engine
+    from datetime import timezone
+    import celerp.services.business_time as business_time
     import celerp_docs.routes as doc_routes
 
     cid = _setup_ids["company_id"]
@@ -3464,14 +3464,8 @@ async def test_split_fulfillment_period_lock_uses_company_timezone(
         def now(cls, tz=None):
             return fixed if tz is not None else fixed.replace(tzinfo=None)
 
-    class FixedDate(date):
-        @classmethod
-        def today(cls):
-            return cls(2026, 9, 24)
-
     monkeypatch.setattr(doc_routes, "datetime", FixedDateTime)
-    monkeypatch.setattr(event_engine, "datetime", FixedDateTime)
-    monkeypatch.setattr(event_engine, "date", FixedDate)
+    monkeypatch.setattr(business_time, "datetime", FixedDateTime)
 
     r = await client.post(
         f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],

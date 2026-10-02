@@ -7695,6 +7695,7 @@ async def receive_return(
         cn_id=entity_id,
         lot_costs=lot_costs,
         je_suffix=key,
+        received_at=now,
     )
 
     await session.commit()
@@ -7796,6 +7797,7 @@ async def undo_receive_return(
             cn_id=entity_id,
             lot_costs=lot_costs,
             unique_suffix=undo_suffix,
+            undone_at=now,
         )
 
     await session.commit()

@@ -14,7 +14,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.document_lines import assert_document_item_uniqueness
-from celerp.services.business_time import business_timezone
+from celerp.services.business_time import business_date_of
 
 
 def apply_event(state: dict, event: LedgerEntry) -> dict:
@@ -67,29 +67,10 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
     except (ValueError, TypeError):
         return
     event_date_str = data.get("ts") or data.get("issue_date") or data.get("date")
-    if event_date_str:
-        try:
-            raw = str(event_date_str)
-            if "T" not in raw:
-                event_date = date.fromisoformat(raw[:10])
-            else:
-                instant = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-                if instant.tzinfo is None or instant.utcoffset() is None:
-                    event_date = date.fromisoformat(raw[:10])
-                else:
-                    try:
-                        zone = business_timezone((company.settings or {}).get("timezone"))
-                    except ValueError as exc:
-                        raise HTTPException(status_code=422, detail=str(exc)) from exc
-                    event_date = instant.astimezone(zone).date()
-        except (ValueError, TypeError):
-            raise HTTPException(status_code=422, detail=f"{event_date_str} is not a date. Enter it as YYYY-MM-DD.") from None
-    else:
-        try:
-            zone = business_timezone((company.settings or {}).get("timezone"))
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        event_date = datetime.now(timezone.utc).astimezone(zone).date()
+    try:
+        event_date = date.fromisoformat(business_date_of(event_date_str, (company.settings or {}).get("timezone")))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if event_date <= lock_date:
         raise HTTPException(
             status_code=422,
