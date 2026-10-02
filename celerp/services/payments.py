@@ -139,9 +139,11 @@ def _reached(answer: tuple[int, dict] | None, closure: PaymentClosure, states: t
 
 
 async def receive_payment(payload: dict) -> bool:
-    """Record an online payment Celerp Cloud delivered: on its invoice, or, when the
-    company or the invoice no longer exists or the invoice refuses it, among the
-    unmatched payments. True once recorded either way (Cloud is then told it
+    """Record an online payment, delivered by Celerp Cloud or confirmed on the
+    customer's return from Stripe: on its invoice when the invoice can take the
+    whole charge, otherwise among the unmatched payments, whole (the company or the
+    invoice no longer exists, the invoice is already paid, it owes less than the
+    charge, or it refuses it). True once recorded either way (Cloud is then told it
     arrived), False for a delivery that names no payment. Raises when nothing could
     be recorded, so Cloud delivers it again. Recording the same payment twice
     changes nothing."""
@@ -159,6 +161,8 @@ async def receive_payment(payload: dict) -> bool:
     except ValueError:
         cid = None
     async with _own_session() as session:
+        if await session.get(UnmatchedPayment, reference) is not None:
+            return True
         # A reset waits for this hold; once it has deleted the company, the payment is unmatched.
         row = await session.get(Projection, (cid, entity_id)) if cid and await hold_company(session, cid) else None
         if row is not None:

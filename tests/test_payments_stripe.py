@@ -50,10 +50,14 @@ async def _doc_state(client, tok, eid):
 
 
 @pytest.fixture
-def payments_on(monkeypatch):
+def payments_on(monkeypatch, session):
     """Merchant has a connected account: the cloud feature flag is on and the
-    instance is cloud-connected (public URL set)."""
+    instance is cloud-connected (public URL set). The payment intake's own sessions
+    join the test's transaction, so it sees what the test wrote."""
+    from sqlalchemy.ext.asyncio import AsyncSession
     from celerp.config import settings as cfg
+    monkeypatch.setattr("celerp.services.payments._own_session", lambda: AsyncSession(
+        bind=session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint"))
     monkeypatch.setattr(cfg, "celerp_public_url", "https://acme.celerp.com")
     monkeypatch.setattr("celerp.services.payments.payments_enabled", lambda: True)
 
@@ -340,14 +344,14 @@ async def test_online_payment_posts_exactly_one_journal_entry(client, session, p
 
 @pytest.mark.asyncio
 async def test_manual_payment_racing_online_confirm(client, session, payments_on):
-    """The race that silently loses money from the books: a manual payment lands
-    while the customer is at Stripe checkout. The online confirm then arrives
-    holding a STALE snapshot (as both the return leg and the gateway push do).
+    """A manual payment lands while the customer is at Stripe checkout. The online
+    confirm then arrives holding a STALE snapshot (as both the return leg and the
+    gateway push do) and a charge larger than what is still owed.
 
-    Required outcome: the online charge still records (clamped to the fresh
-    outstanding, with the real charged amount kept on the payment record) and
-    posts its own journal entry at the NEXT payment index - never colliding
-    with the manual payment's JE and never silently deduping away."""
+    The invoice refuses the charge whole, against what it owes under its row lock:
+    nothing is clamped onto it and the manual payment stands alone (the intake then
+    keeps the whole charge among the unmatched payments)."""
+    from fastapi import HTTPException
     from celerp.models.projections import Projection
     from celerp_docs.routes_payments import record_stripe_payment
 
@@ -363,19 +367,16 @@ async def test_manual_payment_racing_online_confirm(client, session, payments_on
     }, headers=_h(tok))
     assert r.status_code == 200, r.text
 
-    # Online confirm arrives with the stale snapshot and the full charge.
-    await record_stripe_payment(session, cid, eid, stale,
-                                reference="pi_race", amount_minor=107000, currency="usd")
+    with pytest.raises(HTTPException) as refused:
+        await record_stripe_payment(session, cid, eid, stale,
+                                    reference="pi_race", amount_minor=107000, currency="usd")
+    assert refused.value.status_code == 409
+    assert "exceeds amount outstanding" in refused.value.detail
+    await session.rollback()
 
     doc = await _doc_state(client, tok, eid)
-    assert doc["status"] == "paid"
-    stripe_pay = next(p for p in doc["payments"] if p.get("reference") == "pi_race")
-    assert stripe_pay["amount"] == 570.0            # clamped to fresh outstanding
-    assert stripe_pay["charged_amount"] == 1070.0   # the real charge is on record
-    # Both payments posted their own JE - distinct indexes, nothing deduped away.
-    assert await _pay_je_entities(session, cid, eid) == [
-        f"je:auto:{eid}:pay:0", f"je:auto:{eid}:pay:1",
-    ]
+    assert [p["amount"] for p in doc["payments"] if p.get("status") != "deleted"] == [500.0]
+    assert await _pay_je_entities(session, cid, eid) == [f"je:auto:{eid}:pay:0"]
 
 
 @pytest.mark.asyncio

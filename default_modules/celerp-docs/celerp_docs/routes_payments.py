@@ -4,7 +4,8 @@
 Celerp Connect.
 
 Public: /pay/{token} (start), /pay/{token}/return (reconcile on the customer's
-return); a backup confirmation covers a closed tab. Authed: the merchant's payment
+return); Celerp Cloud's delivery covers a closed tab. Both record through
+``payments.receive_payment``. Authed: the merchant's payment
 connection status + connect/disconnect. The instance stores no Stripe credentials;
 all money records through the same path as a manual payment.
 """
@@ -93,13 +94,13 @@ async def deposit_account(
 
 async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
                                 reference: str, amount_minor: int, currency: str):
-    """Record a confirmed online charge as a payment. Idempotent on the reference
-    (Stripe payment_intent). Shared by the customer-return and the gateway-push paths.
+    """Record a confirmed online charge as a payment on its invoice. Only
+    ``payments.receive_payment`` calls it.
 
-    Passes the raw charged amount: apply_doc_payment re-reads the document
-    under its row lock and clamps against the FRESH outstanding, so a manual
-    payment racing the checkout can't reject or double-book the charge.
-    Replays (same reference) come back as a quiet None."""
+    The same charge (Stripe payment_intent) recorded again is a quiet None. A charge
+    the invoice cannot take whole (it is already paid, or owes less than the charge)
+    raises the invoice's 409: apply_doc_payment decides that under the document's
+    row lock, against what it owes at that moment."""
     if not reference:
         return None
     if any(p.get("reference") == reference and p.get("status") != "deleted"
@@ -117,9 +118,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
             idempotency_key=reference,
         )
     except HTTPException as exc:
-        if exc.status_code == 409 and exc.detail in {
-            "Payment already recorded", "Invoice already fully paid",
-        }:
+        if exc.status_code == 409 and exc.detail == "Payment already recorded":
             return None
         raise
     if getattr(entry, "was_deduped", False):
@@ -171,12 +170,11 @@ async def return_from_payment(token: str, session_id: str = Query(""),
                     == hashlib.sha256(token.encode()).hexdigest()
             )
             if cs and cs.get("paid") and binding_matches:
-                await record_stripe_payment(
-                    session, company_id, entity_id, state,
-                    reference=cs.get("reference"),
-                    amount_minor=int(cs.get("amount_minor") or 0),
-                    currency=cs.get("currency", state.get("currency", "USD")),
-                )
+                await pay.receive_payment({
+                    "company_id": str(company_id), "entity_id": entity_id,
+                    "reference": cs.get("reference"), "amount_minor": cs.get("amount_minor"),
+                    "currency": cs.get("currency") or state.get("currency", "USD"),
+                })
         except Exception:
             log.warning("Payment reconcile-on-return failed", exc_info=True)
     return RedirectResponse(f"/share/{token}", status_code=303)

@@ -694,6 +694,123 @@ async def test_a_payment_that_cannot_be_recorded_is_not_acknowledged(real_engine
     assert [d["acked"] for d in cloud.deliveries] == [True]
 
 
+# ── One intake for every online payment ──────────────────────────────────────
+
+async def _paid(engine, entity_id) -> list[tuple]:
+    """(reference, amount) of each payment on the invoice, oldest first."""
+    async with maker(engine)() as s:
+        state = await s.scalar(text("SELECT state FROM projections WHERE entity_id = :e"), {"e": entity_id})
+    return [(p.get("reference"), p["amount"]) for p in state.get("payments", []) if p.get("status") != "deleted"]
+
+
+async def _pay_by_hand(client, engine, boss, cid, entity_id, amount: float):
+    r = await client.post(f"/docs/{entity_id}/payment", headers=auth(await token(engine, boss, cid)), json={
+        "amount": amount, "payment_date": "2026-10-01", "bank_account": "1110"})
+    assert r.status_code == 200, r.text
+
+
+def _returns_paid(monkeypatch, cid, entity_id, share, reference, amount_minor=107000) -> None:
+    """The customer comes back from Stripe, where the session was paid."""
+    import hashlib
+
+    async def status(_session_id):
+        return {"paid": True, "reference": reference, "amount_minor": amount_minor, "currency": "usd",
+                "company_id": str(cid), "entity_id": entity_id,
+                "share_token_hash": hashlib.sha256(share.encode()).hexdigest()}
+    monkeypatch.setattr("celerp.services.payments.checkout_status", status)
+
+
+async def test_a_stripe_payment_for_an_invoice_paid_another_way_is_kept_whole_among_the_unmatched(
+        real_engine, real_client, monkeypatch):
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    cloud = _Cloud(monkeypatch, real_engine)
+    await _pay_by_hand(real_client, real_engine, boss, a, invoice, 1070.0)
+
+    cloud.pay(a, invoice, "pi_1")
+    await cloud.deliver()
+
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+    assert await _paid(real_engine, invoice) == [(None, 1070.0)]
+    assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(a), invoice)]
+
+
+async def test_a_stripe_payment_larger_than_what_is_still_owed_is_kept_whole_among_the_unmatched(
+        real_engine, real_client, monkeypatch):
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    cloud = _Cloud(monkeypatch, real_engine)
+    await _pay_by_hand(real_client, real_engine, boss, a, invoice, 500.0)
+
+    cloud.pay(a, invoice, "pi_1")
+    await cloud.deliver()
+
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+    assert await _paid(real_engine, invoice) == [(None, 500.0)]
+    assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(a), invoice)]
+
+
+@pytest.mark.parametrize("second_by", ["delivery", "return"])
+async def test_two_payment_pages_both_paid_record_the_second_among_the_unmatched(
+        real_engine, real_client, monkeypatch, second_by):
+    boss, a, b = await _harbor(real_engine)
+    invoice, share = await _shared_invoice(real_client, real_engine, boss, a)
+    cloud = _Cloud(monkeypatch, real_engine)
+    cloud.pay(a, invoice, "pi_first")
+    await cloud.deliver()
+
+    if second_by == "delivery":
+        cloud.pay(a, invoice, "pi_second")
+        await cloud.deliver()
+    else:
+        _returns_paid(monkeypatch, a, invoice, share, "pi_second")
+        r = await real_client.get(f"/pay/{share}/return?session_id=cs_2", follow_redirects=False)
+        assert r.status_code == 303
+
+    assert await _paid(real_engine, invoice) == [("pi_first", 1070.0)]
+    assert await _unmatched(real_engine) == [("pi_second", 107000, "USD", str(a), invoice)]
+
+
+@pytest.mark.parametrize("first", ["return", "delivery"])
+async def test_a_payment_reported_by_the_return_and_the_delivery_is_recorded_once(
+        real_engine, real_client, monkeypatch, first):
+    boss, a, b = await _harbor(real_engine)
+    invoice, share = await _shared_invoice(real_client, real_engine, boss, a)
+    cloud = _Cloud(monkeypatch, real_engine)
+    _returns_paid(monkeypatch, a, invoice, share, "pi_1")
+    cloud.pay(a, invoice, "pi_1")
+
+    async def returned():
+        r = await real_client.get(f"/pay/{share}/return?session_id=cs_1", follow_redirects=False)
+        assert r.status_code == 303
+    for leg in ([returned, cloud.deliver] if first == "return" else [cloud.deliver, returned]):
+        await leg()
+
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+    assert await _paid(real_engine, invoice) == [("pi_1", 1070.0)]
+    assert await _unmatched(real_engine) == []
+
+
+async def test_a_payment_delivered_again_after_it_was_kept_among_the_unmatched_changes_nothing(
+        real_engine, real_client, monkeypatch):
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    cloud = _Cloud(monkeypatch, real_engine)
+    await _pay_by_hand(real_client, real_engine, boss, a, invoice, 1070.0)
+    cloud.pay(a, invoice, "pi_1")
+    await cloud.deliver()
+    # The hand-entered payment was a mistake and is removed: the invoice is owed again.
+    r = await real_client.delete(f"/docs/{invoice}/payments/0", headers=auth(await token(real_engine, boss, a)))
+    assert r.status_code == 200, r.text
+    cloud.deliveries[0]["acked"] = False  # the acknowledgement was lost
+
+    await cloud.deliver()
+
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+    assert await _paid(real_engine, invoice) == []
+    assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(a), invoice)]
+
+
 @pytest.mark.parametrize("detail", ["generation_stale", "cancelled", "not_prepared"])
 async def test_a_finalize_cloud_refuses_for_good_is_forgotten_and_the_payments_stay_closed(
         real_engine, real_client, monkeypatch, detail):
