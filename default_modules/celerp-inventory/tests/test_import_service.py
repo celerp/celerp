@@ -675,6 +675,79 @@ async def test_an_item_named_total_with_a_sku_is_an_item(session):
     assert plan.summary_rows == [] and plan.errors == []
 
 
+_SECTIONED_ROWS = [
+    {"name": "A", "sku": "", "sell_by": "piece", "quantity": "2"},
+    {"name": "Subtotal", "sku": "", "sell_by": "piece", "quantity": "2"},
+    {"name": "B", "sku": "", "sell_by": "piece", "quantity": "3"},
+    {"name": "Total", "sku": "", "sell_by": "piece", "quantity": "5"},
+]
+
+
+@pytest.mark.asyncio
+async def test_a_subtotal_and_its_grand_total_each_block(session):
+    company_id, _user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    plan = await svc.build_import_plan(session, company_id, "admin", {}, _SECTIONED_ROWS, upsert=False)
+    assert plan.summary_rows == [2, 4]
+    assert _codes(plan) == [(2, "summary_row"), (4, "summary_row")]
+
+
+@pytest.mark.asyncio
+async def test_every_subtotal_of_several_sections_blocks(session):
+    company_id, _user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    rows = [
+        {"name": "A", "sku": "", "sell_by": "piece", "quantity": "1"},
+        {"name": "Sub total:", "sku": "", "sell_by": "piece", "quantity": "1"},
+        {"name": "B", "sku": "", "sell_by": "piece", "quantity": "4"},
+        {"name": "C", "sku": "", "sell_by": "piece", "quantity": "6"},
+        {"name": "SUBTOTAL", "sku": "", "sell_by": "piece", "quantity": "10"},
+        {"name": "D", "sku": "", "sell_by": "piece", "quantity": "7"},
+        {"name": "Sub-total", "sku": "", "sell_by": "piece", "quantity": "7"},
+        {"name": "Grand Total", "sku": "", "sell_by": "piece", "quantity": "18"},
+        {"name": "รวมทั้งสิ้น", "sku": "", "sell_by": "piece", "quantity": "99"},
+    ]
+    plan = await svc.build_import_plan(session, company_id, "admin", {}, rows, upsert=False)
+    assert plan.summary_rows == [2, 5, 7, 8, 9]
+
+
+@pytest.mark.asyncio
+async def test_a_total_label_blocks_whatever_its_numbers_say(session):
+    company_id, _user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    rows = [
+        {"name": "A", "sku": "", "sell_by": "piece", "quantity": "2"},
+        {"name": "Totals", "sku": "", "sell_by": "piece"},
+        {"name": "Sum", "sku": " ", "sell_by": "piece", "quantity": "41"},
+    ]
+    plan = await svc.build_import_plan(session, company_id, "admin", {}, rows, upsert=False)
+    assert plan.summary_rows == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_excluding_rows_around_a_total_leaves_the_total_blocked(session):
+    company_id, _user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    around = await svc.build_import_plan(session, company_id, "admin", {}, _SECTIONED_ROWS, upsert=False,
+                                         decisions={"exclude": [1, 3]})
+    assert around.summary_rows == [2, 4] and _codes(around) == [(2, "summary_row"), (4, "summary_row")]
+    one_out = await svc.build_import_plan(session, company_id, "admin", {}, _SECTIONED_ROWS, upsert=False,
+                                          decisions={"exclude": [2]})
+    assert one_out.summary_rows == [4] and _codes(one_out) == [(4, "summary_row")]
+    both_out = await svc.build_import_plan(session, company_id, "admin", {}, _SECTIONED_ROWS, upsert=False,
+                                           decisions={"exclude": [2, 4]})
+    assert both_out.errors == [] and both_out.counts["create"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_total_imports_as_an_item_only_when_chosen_row_by_row(session):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    with pytest.raises(svc.ImportRejected):
+        await import_items(session, company_id, user_id, "admin", {}, _SECTIONED_ROWS, upsert=False,
+                           filename=None, idempotency_key=None, decisions={"import_summary": [4]})
+    await session.rollback()
+    assert await _item_projections(session, company_id) == []
+    result = await import_items(session, company_id, user_id, "admin", {}, _SECTIONED_ROWS, upsert=False,
+                                filename=None, idempotency_key=None, decisions={"import_summary": [2, 4]})
+    assert result.created == 4
+
+
 @pytest.mark.asyncio
 async def test_shared_sku_needs_a_lots_decision_and_disagreeing_rows_block(session):
     company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])

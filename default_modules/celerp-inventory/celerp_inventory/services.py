@@ -2749,7 +2749,7 @@ class ImportPlan:
     errors: list[dict]               # {"row", "field", "code", "message"}; every blocker, row 0 for the whole file
     locations_to_create: list[str]
     decisions: dict                  # the canonical row decisions the plan applied
-    summary_rows: list[int]          # rows that read as a total of the other rows
+    summary_rows: list[int]          # rows named like a total, with no SKU
     duplicate_groups: list[dict]     # {"sku", "rows", "quantity", "conflict"} for each SKU on several rows
     operation_key: str
     semantic_fingerprint: str        # changes whenever what the rows would write changes
@@ -2924,36 +2924,28 @@ def _semantic_fingerprint(build: ImportBuild, errors: list[dict], decisions: dic
     return import_preview_hash({"records": canonical, "errors": errors, "decisions": decisions})
 
 
-# Item names that mark a row as a total of the rows above it, compared casefolded.
+# Item names that mark a row as a total or subtotal, compared casefolded with
+# colons and hyphens read as spaces.
 _SUMMARY_LABELS = frozenset({
     "total", "totals", "subtotal", "sub total", "grand total", "sum",
     "รวม", "รวมทั้งหมด", "รวมทั้งสิ้น", "ยอดรวม",
 })
-# Numeric row keys that can show a row is the sum of the others.
-_SUMMARY_NUMBER_KEYS = (*_AMOUNT_SOURCE_KEYS, "gross_weight")
 
 
 def _summary_rows(rows: list[dict], included: list[int]) -> list[int]:
-    """Rows that read as a total of the other included rows.
+    """Included rows named like a total or subtotal that carry no SKU.
 
-    A row qualifies only with a summary label as its name, no SKU, and a number
-    equal to the sum of that column over the other rows. An item that is merely
-    named ``TOTAL`` fails the shape test and imports as usual.
+    Such a row never imports unless the user chooses to import it as an item,
+    whatever its numbers add up to: subtotals of sections, grand totals and
+    totals of a filtered sheet all look different arithmetically. An item that
+    is merely named ``TOTAL`` has a SKU and imports as usual.
     """
     found: list[int] = []
     for n in included:
         row = rows[n - 1]
-        label = " ".join(str(row.get("name") or "").casefold().replace(":", " ").split())
-        if label not in _SUMMARY_LABELS or str(row.get("sku") or "").strip():
-            continue
-        price_keys = [k for k in row if k.endswith(("_price", "_price_total"))]
-        for key in (*_SUMMARY_NUMBER_KEYS, *price_keys):
-            value = _to_float(row.get(key))
-            others = [_to_float(rows[m - 1].get(key)) for m in included if m != n]
-            others = [v for v in others if v is not None]
-            if value is not None and others and math.isclose(value, math.fsum(others), rel_tol=1e-9, abs_tol=1e-9):
-                found.append(n)
-                break
+        label = " ".join(str(row.get("name") or "").casefold().replace(":", " ").replace("-", " ").split())
+        if label in _SUMMARY_LABELS and not str(row.get("sku") or "").strip():
+            found.append(n)
     return found
 
 
@@ -3067,7 +3059,7 @@ async def build_import_plan(
     for n in summary_rows:
         if n not in decisions["import_summary"]:
             errors.append({"row": n, "field": "name", "code": "summary_row", "message": (
-                "This row looks like a total of the rows above it; exclude it, or import it as an item"
+                "This row is named like a total and has no SKU; exclude it, or import it as an item"
             )})
 
     build = await build_import_records(
