@@ -810,3 +810,18 @@ def test_switcher_has_aria_combobox_semantics():
     assert 'aria-autocomplete="list"' in html, "combobox input must declare aria-autocomplete=list"
     assert 'role="listbox"' in html, "the option list must carry role=listbox"
     assert 'role="option"' in html, "each option must carry role=option"
+
+
+def test_the_stripe_payment_states_are_worded_in_every_locale():
+    """The disconnecting and reconnect lines are whole sentences in every shipped
+    locale, and translated rather than left in English."""
+    en = _load_locale("en")
+    assert en["pay.settings_disconnecting"] == "Stripe is disconnecting while existing payments finish."
+    assert en["pay.settings_revoked"] == (
+        "Reconnect this Stripe account to finish checking payments already in progress.")
+    for code in _shipped_locales():
+        loc = _load_locale(code)
+        for key in ("pay.settings_disconnecting", "pay.settings_revoked", "pay.reconnect_stripe"):
+            assert loc.get(key), (code, key)
+            if code != "en":
+                assert loc[key] != en[key], (code, key)

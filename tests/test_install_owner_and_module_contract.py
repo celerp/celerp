@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -76,74 +75,36 @@ async def test_module_ai_api_keeps_explicit_session_contract(monkeypatch):
     assert exc.value.status_code == 401
 
 
-@pytest.mark.asyncio
-async def test_invoice_delivery_ack_only_after_local_record(monkeypatch):
-    client = GatewayClient("key", "instance", "ws://example.test")
+class _WS:
+    def __init__(self):
+        self.sent = []
 
-    class _WS:
-        def __init__(self):
-            self.sent = []
-        async def send(self, raw):
-            import json
-            self.sent.append(json.loads(raw))
+    async def send(self, raw):
+        import json
+        self.sent.append(json.loads(raw))
 
-    class _Session:
-        async def get(self, _model, _key):
-            return SimpleNamespace(state={"total": 10})
 
-    @asynccontextmanager
-    async def _session_ctx():
-        yield _Session()
-
-    record = AsyncMock(return_value=None)
-    monkeypatch.setattr("celerp.db.get_session_ctx", _session_ctx)
-    monkeypatch.setattr("celerp_docs.routes_payments.record_stripe_payment", record)
-    client._ws = _WS()
-
-    await client._handle_invoice_payment({
-        "company_id": "company-1", "entity_id": "invoice-1",
-        "reference": "pi_1", "amount_minor": 1000, "currency": "USD",
-        "delivery_id": "delivery-1",
-    })
-
-    record.assert_awaited_once()
-    assert client._ws.sent[-1]["type"] == "event.ack"
-    assert client._ws.sent[-1]["payload"] == {"delivery_id": "delivery-1"}
-
+_DELIVERY = {"company_id": "company-1", "entity_id": "invoice-1", "reference": "pi_1",
+             "amount_minor": 1000, "currency": "USD", "delivery_id": "delivery-1"}
 
 
 @pytest.mark.asyncio
-async def test_invoice_delivery_is_not_acked_when_recording_fails(monkeypatch):
+@pytest.mark.parametrize("recorded,acked", [
+    (AsyncMock(return_value=True), True),
+    (AsyncMock(return_value=False), False),
+    (AsyncMock(side_effect=RuntimeError("write failed")), False),
+], ids=["recorded", "names-no-payment", "recording-fails"])
+async def test_invoice_delivery_is_acked_only_once_recorded(monkeypatch, recorded, acked):
     client = GatewayClient("key", "instance", "ws://example.test")
-
-    class _WS:
-        def __init__(self):
-            self.sent = []
-        async def send(self, raw):
-            import json
-            self.sent.append(json.loads(raw))
-
-    class _Session:
-        async def get(self, _model, _key):
-            return SimpleNamespace(state={"total": 10})
-
-    @asynccontextmanager
-    async def _session_ctx():
-        yield _Session()
-
-    record = AsyncMock(side_effect=RuntimeError("write failed"))
-    monkeypatch.setattr("celerp.db.get_session_ctx", _session_ctx)
-    monkeypatch.setattr("celerp_docs.routes_payments.record_stripe_payment", record)
+    monkeypatch.setattr("celerp.services.payments.receive_payment", recorded)
     client._ws = _WS()
 
-    await client._handle_invoice_payment({
-        "company_id": "company-1", "entity_id": "invoice-1",
-        "reference": "pi_1", "amount_minor": 1000, "currency": "USD",
-        "delivery_id": "delivery-1",
-    })
+    await client._handle_invoice_payment(dict(_DELIVERY))
 
-    record.assert_awaited_once()
-    assert client._ws.sent == []
+    recorded.assert_awaited_once_with(_DELIVERY)
+    assert client._ws.sent == ([{"type": "event.ack", "id": client._ws.sent[0]["id"],
+                                 "payload": {"delivery_id": "delivery-1"}}] if acked else [])
+
 
 def test_install_owner_backfill_uses_existing_data_reconcile_path():
     from celerp.migrations._data_reconcile import data_backfill_scripts

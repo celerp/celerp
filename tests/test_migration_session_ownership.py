@@ -181,3 +181,31 @@ async def test_login_prefers_an_active_company_over_a_staged_one(real_client, re
     r = await real_client.post("/auth/login", json={"email": OWNER_EMAIL, "password": OWNER_PASSWORD})
     assert r.status_code == 200, r.text
     assert decode_access_token(r.json()["access_token"])["company_id"] == str(working)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("working_active", [True, False], ids=["active", "deactivated"])
+async def test_login_passes_over_an_older_deactivated_company(real_client, real_engine, migration_env,
+                                                              working_active):
+    """A sign-in lands on an active company, else on one still being moved in, and only
+    then on a deactivated company its owner can reactivate."""
+    from celerp.models.company import Company, User
+    from celerp.services.auth import decode_access_token
+
+    await real_client.post("/auth/register", json={
+        "company_name": "Working Co", "email": OWNER_EMAIL, "name": "Owner", "password": OWNER_PASSWORD})
+    async with maker(real_engine)() as s:
+        user = await s.scalar(select(User).where(User.email == OWNER_EMAIL))
+        working = await s.scalar(select(Company).where(Company.name == "Working Co"))
+        working.is_active = working_active
+        closed = Company(name="Closed Co", slug=f"closed-{uuid.uuid4().hex[:8]}", settings={}, is_active=False)
+        staged = Company(name="Staged Co", slug=f"staged-{uuid.uuid4().hex[:8]}", settings={},
+                         is_active=False, is_migration_staged=True)
+        s.add_all([closed, staged])
+        await s.commit()
+    await _link(real_engine, user.id, closed.id, link_id=uuid.UUID(int=0))
+    await _link(real_engine, user.id, staged.id, link_id=uuid.UUID(int=1))
+    r = await real_client.post("/auth/login", json={"email": OWNER_EMAIL, "password": OWNER_PASSWORD})
+    assert r.status_code == 200, r.text
+    landed = decode_access_token(r.json()["access_token"])["company_id"]
+    assert landed == str(working.id if working_active else staged.id)

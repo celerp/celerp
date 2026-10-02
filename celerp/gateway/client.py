@@ -747,29 +747,12 @@ class GatewayClient:
             log.warning("woocommerce webhook handling failed (topic=%s): %s", topic, exc)
 
     async def _handle_invoice_payment(self, payload: dict) -> None:
-        """Record a delivered invoice payment and acknowledge durable completion."""
-        company_id = payload.get("company_id")
-        entity_id = payload.get("entity_id")
-        reference = payload.get("reference")
+        """Record a delivered invoice payment and acknowledge it once recorded."""
         delivery_id = payload.get("delivery_id")
-        if not (company_id and entity_id and reference):
-            return
+        entity_id = payload.get("entity_id")
         try:
-            from celerp.db import get_session_ctx
-            from celerp.models.projections import Projection
-            from celerp_docs.routes_payments import record_stripe_payment
-
-            async with get_session_ctx() as session:
-                row = await session.get(Projection, (company_id, entity_id))
-                if row is None:
-                    return
-                await record_stripe_payment(
-                    session, company_id, entity_id, dict(row.state),
-                    reference=reference,
-                    amount_minor=int(payload.get("amount_minor") or 0),
-                    currency=payload.get("currency", "USD"),
-                )
-            if delivery_id and self._ws is not None:
+            from celerp.services.payments import receive_payment
+            if await receive_payment(payload) and delivery_id and self._ws is not None:
                 await self._send(self._ws, {
                     "type": "event.ack",
                     "id": str(uuid.uuid4()),

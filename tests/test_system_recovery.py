@@ -379,7 +379,7 @@ async def test_cloud_snapshot_relay_payload_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _client)
     monkeypatch.setattr(backup_repo, "_relay", _relay)
     monkeypatch.setattr(backup_repo, "dump_database", lambda url: dump)
-    monkeypatch.setattr(backup_repo, "_build_meta", _meta)
+    monkeypatch.setattr("celerp.services.backup_export.archive_meta", _meta)
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "backup_encryption_key", _key())
     monkeypatch.setattr(settings, "cloud_disconnected", False)

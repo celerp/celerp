@@ -835,13 +835,16 @@ def _keep_for_retry(prepared: PreparedRecovery) -> Path:
 async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], bool]:
     """Replace the database, file roots and enabled modules with *prepared*'s.
 
-    Clears the restored connectors and ends every session. Returns the enabled
+    Clears the restored connectors, records the restore for Celerp Cloud
+    (``payments.record_recovery``) and ends every session. Returns the enabled
     modules and whether a restart was scheduled. The caller holds the recovery locks and the recovery marker.
     """
     import asyncio
+    import sqlalchemy as sa
     from celerp.config import settings
     from celerp.db import get_session_ctx
-    from celerp.services import session_tracker
+    from celerp.models.company import Company
+    from celerp.services import payments, session_tracker
     from celerp.services.backup_export import required_installation_modules
 
     await _dispose_engine()
@@ -849,10 +852,14 @@ async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], 
     await _reconcile_schema()
     async with get_session_ctx() as session:
         await _clear_restored_connector_state(session)
+        # The restored companies take online payments again, closings from before the
+        # restore can no longer finish, companies it did not bring back stay closed, and
+        # every payment it ever recorded is delivered again.
+        payments.record_recovery(session, (await session.scalars(sa.select(Company.id))).all())
         # Backups without module metadata take the set from every restored company.
         modules = prepared.meta.enabled_modules or sorted(await required_installation_modules(session))
         # No session from before the replacement stays valid; this also
-        # commits the connector cleanup.
+        # commits the connector cleanup and the recorded restore.
         await session_tracker.end_all_sessions(session)
     await asyncio.to_thread(_swap_roots, prepared)
     return modules, _apply_modules(modules)
@@ -923,6 +930,10 @@ async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | Non
                     log.exception("The installation could not be put back from %s", safety_archive)
             return _failed(_commit_failure(exc, safety, restored), safety_archive=safety)
         _mark_recovery_finished()
+        # Celerp Cloud learns of the restore now; until it has, no company can be reset,
+        # and the reconciliation at start and every few minutes keeps trying.
+        from celerp.services.payments import reconcile_payments
+        await reconcile_payments()
         warnings = _missing_module_warnings(modules)
         _write_restore_notice(prepared.meta.company_name, warnings, safety, restart_scheduled)
         return BackupResult(ok=True, size_bytes=prepared.files[_STAGED_DUMP], warnings=warnings,

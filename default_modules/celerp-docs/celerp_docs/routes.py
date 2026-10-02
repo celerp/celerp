@@ -2675,17 +2675,13 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     if amount_d <= 0:
         raise HTTPException(status_code=422, detail="Payment amount must be positive")
     if amount_d > outstanding_d:
-        if source == "stripe":
-            body["charged_amount"] = to_stored_float(amount_d)
-            amount_d = outstanding_d
-        else:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Payment {to_stored_float(amount_d)} exceeds amount outstanding "
-                    f"{to_stored_float(outstanding_d)}"
-                ),
-            )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Payment {to_stored_float(amount_d)} exceeds amount outstanding "
+                f"{to_stored_float(outstanding_d)}"
+            ),
+        )
     amount = to_stored_float(amount_d)
     body["amount"] = amount
     bank_code = body.get("bank_account")

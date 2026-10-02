@@ -11,7 +11,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
@@ -344,6 +344,10 @@ HAS_COMPANY = "This login already has a company. Sign in instead."
 # company, so the owner can reactivate it or finish the move.
 USABLE_LINK = and_(UserCompany.is_active.is_(True),
                    or_(Company.is_active.is_(True), UserCompany.role == "owner"))
+# Which usable link a sign-in lands on first: active, then still being moved in, then
+# deactivated (an owner's, to reactivate).
+_LANDING = case((and_(Company.is_active.is_(True), Company.is_migration_staged.is_(False)), 0),
+                (Company.is_migration_staged.is_(True), 1), else_=2)
 
 
 def _usable_links(user_id):
@@ -355,19 +359,26 @@ async def first_usable_company_link(session: AsyncSession, user_id) -> UserCompa
     """The company a sign-in lands on: the user's first usable company link, or None when
     the login has no company it can work in.
 
-    A user in several companies uses /switch-company afterwards. A company still
-    being moved in is picked only when the user has no other company, so a sign-in
-    never lands on a staged company while a working one exists."""
+    A user in several companies uses /switch-company afterwards. An active company
+    comes first, then one still being moved in, and only then a deactivated company
+    its owner can reactivate, so a sign-in lands on a working company whenever one
+    exists."""
     return (await session.execute(
-        _usable_links(user_id).order_by(Company.is_migration_staged, UserCompany.id).limit(1)
+        _usable_links(user_id).order_by(_LANDING, UserCompany.id).limit(1)
     )).scalar_one_or_none()
 
 
 async def hold_companyless_login(session: AsyncSession, user_id) -> bool:
-    """Hold the login until the transaction ends and say whether it has no company, so two
-    requests giving it one cannot both find it without. The hold still lets the same
-    transaction add the login's membership."""
-    await session.execute(select(User.id).where(User.id == user_id).with_for_update(key_share=True))
+    """Lock the login FOR UPDATE until the transaction ends, then say whether it has no
+    company. The answer stays true until the transaction ends: another request holding
+    the login (a second start, a backup restore) waits and then reads the membership this
+    one committed, and adding a membership for the login from another transaction waits
+    too, since its foreign key needs a share lock on the row. The same transaction still
+    adds the login's own membership.
+
+    Taken after the direct sign-in lock and before any company or ``UserAuthState`` row,
+    and only by transactions that have not yet written a row referencing the login."""
+    await session.execute(select(User.id).where(User.id == user_id).with_for_update())
     return await first_usable_company_link(session, user_id) is None
 
 
@@ -392,8 +403,10 @@ async def lock_issuance_company(session: AsyncSession, user_id, company_id) -> U
 
     The row is taken FOR KEY SHARE: a company reset takes it FOR UPDATE before deleting
     anything, so a session issued under this lock either commits before the reset starts
-    (and the reset then ends it) or waits and finds the company gone. Lock order is the
-    company first, then ``UserAuthState``; every issuance path follows it."""
+    (and the reset then ends it) or waits and finds the company gone. Lock order, kept by
+    every issuance path: the direct sign-in lock, then the login FOR UPDATE when the path
+    gives it a company (``hold_companyless_login``), then the company, then
+    ``UserAuthState``."""
     link = await usable_company_link(session, user_id, company_id) if await hold_company(session, company_id) else None
     if link is None:
         raise CompanyUnavailable()
