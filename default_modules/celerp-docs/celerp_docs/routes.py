@@ -4409,7 +4409,8 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         )
         ref = next_doc_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
-        new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type"}}
+        # The invoice is a new draft: none of the quotation's own lifecycle carries over.
+        new_data = {k: v for k, v in state.items() if k not in LIFECYCLE_OWNED_FIELDS}
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_quotation_id": entity_id, "status": "draft"})
         await emit_event(
             session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,
@@ -4537,9 +4538,11 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
 
         filtered_state = {**state, "line_items": qualifying_line_items}
         # Strip monetary totals: invoice may have fewer items than memo, so memo totals are stale.
-        # The invoice will recompute totals from its own line items.
+        # The invoice will recompute totals from its own line items. It is a new draft, so none
+        # of the memo's own lifecycle (finalized, sent, fulfilled) carries over: finalizing the
+        # invoice is what books its revenue and the cost of the goods sold.
         _MEMO_TOTAL_FIELDS = frozenset({"total", "outstanding", "tax_total", "discount_total", "subtotal", "amount_due"})
-        new_data = {k: v for k, v in filtered_state.items() if k not in {"status", "entity_type"} | _MEMO_TOTAL_FIELDS}
+        new_data = {k: v for k, v in filtered_state.items() if k not in LIFECYCLE_OWNED_FIELDS | _MEMO_TOTAL_FIELDS}
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_memo_id": entity_id, "status": "draft"})
         await emit_event(
             session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,

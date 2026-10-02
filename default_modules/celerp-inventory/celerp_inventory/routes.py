@@ -461,6 +461,8 @@ async def assert_status_change_allowed(
         current = str(state.get("status") or "").lower()
         if ns == "archived" and current in _ARCHIVABLE_AFTER_SALE:
             return
+        if ns == "archived":
+            _reject_document_held(state, "archived")
         if current not in ("", "draft", ns) and not in_stock(state):
             raise HTTPException(status_code=422, detail=_LEFT_THE_BOOKS.get(current, _GAVE_UP_ITS_STOCK))
         return
@@ -523,6 +525,18 @@ async def assert_status_change_allowed(
         )
 
 
+def _reject_document_held(state: dict, action: str) -> None:
+    """Goods a document holds (out on memo, or any status a document stamped) are
+    settled by that document: returned, converted or closed there. Archive and Expire
+    would retire them behind its back, so they wait until the document lets go."""
+    if not state.get("status_doc_id") and str(state.get("status") or "").lower() != "memo_out":
+        return
+    holder = state.get("status_doc_number") or state.get("status_doc_id") or "that holds it"
+    raise HTTPException(status_code=409, detail=(
+        f"This item is held by document {holder}; resolve the document first (return the goods "
+        f"or convert the document), then the item can be {action}."))
+
+
 async def reject_draft_status_change_via_generic_path(
     session: AsyncSession, company_id, entity_id: str, new_status: str,
 ) -> None:
@@ -566,6 +580,7 @@ async def assert_expirable(session: AsyncSession, company_id, entity_id: str) ->
     await assert_not_draft(session, company_id, entity_id, "expire")
     row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     state = (row.state if row else {}) or {}
+    _reject_document_held(state, "expired")
     if row is not None and not in_stock(state):
         raise HTTPException(
             status_code=409,
