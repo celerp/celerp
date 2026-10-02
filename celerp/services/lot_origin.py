@@ -9,13 +9,16 @@ Those releases booked pre-system stock to the opening inventory account and ever
 goods movement, including the cost of opening stock sold, to the purchased inventory
 account, so neither account alone says where a lot's value sits; together they hold all
 of it. On upgrade, a company Celerp built itself has its opening inventory balance moved
-into purchased inventory by one entry, and every older lot, on hand or not (sold, merged,
-archived and the rest), records purchased inventory, so a lot brought back into stock
-later (a sale undone, a merge split) still records its account
+into purchased inventory by one entry, and every older lot that has held stock, on hand
+or not (sold, merged, archived and the rest), records purchased inventory, so a lot
+brought back into stock later (a sale undone, a merge split) still records its account
 (normalize_legacy_inventory_origins). Stock entered before Accounting was turned on is
 opening stock, booked by the opening inventory entry; where an older release already
 posted that company's goods movements, its books are upgraded the same way instead
-(open_inventory_origins).
+(open_inventory_origins). An older draft has never held stock, so nothing is booked for
+it yet: in every case it records the account a new draft records today
+(account_roles.new_lot_account), opening inventory, where the opening inventory entry
+books it once it is made available.
 
 Nothing else is assumed. Stock in a company whose books came from elsewhere (a
 migration, a bundle import, a restored backup), or whose two accounts do not add up to
@@ -42,7 +45,7 @@ from celerp.accounting_roles import (
 )
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services.account_roles import role_map, scope_codes, target_problems
+from celerp.services.account_roles import new_lot_account, role_map, scope_codes, target_problems
 from celerp.services.business_time import business_date_of
 from celerp.services.money import round_money
 
@@ -100,11 +103,16 @@ def unrecorded(items: list[Projection]) -> list[Projection]:
     return [r for r in items if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and held_value(r) is not None]
 
 
+def _draft(row: Projection) -> bool:
+    return str((row.state or {}).get("status") or "").lower() == "draft"
+
+
 def _legacy(items: list[Projection]) -> list[Projection]:
-    """Every lot of the company's own stock that records no inventory account, on hand or
-    not: a sold, merged or archived lot can come back into stock and must then know its
-    account."""
-    return [r for r in items if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and _owned_stock(r)]
+    """Every lot of the company's own stock that has held stock and records no inventory
+    account, on hand or not: a sold, merged or archived lot can come back into stock and
+    must then know its account. Drafts, which have never held stock, are placed by
+    ``_mark``."""
+    return [r for r in items if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and _owned_stock(r) and not _draft(r)]
 
 
 async def unrecorded_lots(session: AsyncSession, company_id) -> list[dict]:
@@ -160,8 +168,16 @@ async def _locked(session: AsyncSession, company_id, roles: list[str]) -> tuple[
 
 
 async def _mark(session: AsyncSession, company_id) -> None:
+    """Mark the company upgraded. Its older drafts first record the account a new draft
+    records today, so none is left without one."""
     from celerp.services.company_lock import locked_company
 
+    code = await new_lot_account(session, company_id)
+    if code:
+        drafts = [r for r in await _items(session, company_id)
+                  if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and _owned_stock(r) and _draft(r)]
+        for row in sorted(drafts, key=lambda r: r.entity_id):
+            await _record(session, company_id, row.entity_id, code, "draft", None)
     company = await locked_company(session, company_id)
     company.settings = {**(company.settings or {}), INVENTORY_ORIGIN_KEY: INVENTORY_ORIGIN_SCHEMA}
     await session.flush()
@@ -184,11 +200,12 @@ async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) 
     in (module docstring), all in one savepoint. The purchased (P) and opening (OB)
     inventory accounts must both take entries, and together hold exactly the stock on
     hand (V); then one entry dated the company's business day moves OB, beyond the stock
-    recording OB, into P, every older lot records P, on hand or not, and the company is
-    marked upgraded. Retained earnings, cost
+    recording OB, into P, every older lot that has held stock records P, on hand or not,
+    and the company is marked upgraded. An older draft holds no stock, so it counts
+    toward neither V nor the proof and records OB (``_mark``). Retained earnings, cost
     of sales, total inventory and older documents are untouched. When the books cannot
     vouch for the stock, nothing moves and the company is still marked, leaving each older
-    lot for the user to place. A period lock that forbids the entry writes nothing and
+    lot that has held stock for the user to place. A period lock that forbids the entry writes nothing and
     leaves the company unmarked, to retry on a later start. Running it again changes
     nothing. Returns whether the company was marked."""
     from celerp.services.auto_je import _emit_auto_posted_je, _line
@@ -252,8 +269,9 @@ async def _notify_moved(session: AsyncSession, company_id, p: str, ob: str, amou
 
 async def open_inventory_origins(session: AsyncSession, company_id, user_id=None) -> bool:
     """When Accounting is first turned on for a company Celerp built itself, its older
-    stock is opening stock: each such lot, on hand or not, records the opening inventory
-    account and the opening inventory entry books the stock on hand, in one savepoint.
+    stock is opening stock: each such lot, on hand or not, and each older draft
+    (``_mark``) records the opening inventory account and the opening inventory entry
+    books the stock on hand, in one savepoint.
     Older releases posted goods movements to purchased inventory even without a chart of
     accounts; a company whose books already carry them gets the opening entry for the
     stock those books never booked, and is then upgraded like any older company
