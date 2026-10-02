@@ -532,6 +532,7 @@ def _clock(monkeypatch, instant: datetime, host_day: date) -> None:
 
     import celerp.events.engine as event_engine
     import celerp.services.auto_je as auto_je
+    import celerp.services.business_time as business_time
     import celerp.services.lot_origin as lot_origin
 
     class FixedDateTime(datetime):
@@ -544,7 +545,7 @@ def _clock(monkeypatch, instant: datetime, host_day: date) -> None:
         def today(cls):
             return cls(host_day.year, host_day.month, host_day.day)
 
-    for module in (event_engine, auto_je, lot_origin):
+    for module in (event_engine, auto_je, business_time, lot_origin):
         monkeypatch.setattr(module, "datetime", FixedDateTime, raising=False)
         monkeypatch.setattr(module, "date", FixedDate, raising=False)
     monkeypatch.setattr(datetime_module, "date", FixedDate)
