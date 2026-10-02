@@ -124,14 +124,17 @@ async def reconcile_company(session: AsyncSession, company_id) -> list[str]:
     """Map the company's unmapped roles to the seeded chart's accounts where they
     exist and fit (see ``reconciled_settings``). Returns the roles left unmapped.
     Does nothing when accounting is not running."""
-    from celerp.services.company_lock import locked_company
+    from celerp.services.company_lock import lock_chart, locked_company
     from celerp.services.journal_accounts import lock_accounts
 
-    accounts = await lock_accounts(session, company_id, set(SEEDED_TARGETS.values()))
-    if accounts is None:
-        return []
+    # The same lock order as set_role: a child added under a seeded account meanwhile
+    # would turn it into a header.
     company = await locked_company(session, company_id)
     if company is None:
+        return []
+    await lock_chart(session, company_id)
+    accounts = await lock_accounts(session, company_id, set(SEEDED_TARGETS.values()))
+    if accounts is None:
         return []
     before = dict(company.settings or {})
     after = reconciled_settings(before, accounts)

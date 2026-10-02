@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.services.account_roles import reconcile_company, resolve_many, set_role
+from celerp.services.company_lock import locked_company
 from celerp_accounting.chart_rules import change_account
 from celerp_accounting.models import Account
 from celerp_accounting.routes import seed_chart_of_accounts
@@ -317,3 +318,31 @@ async def test_a_role_moved_onto_a_parent_while_a_child_is_placed_is_refused(com
     assert isinstance(out, HTTPException) and out.status_code == 422, out
     assert "header account" in out.detail
     assert (await _settings(factory, cid))["posting_roles"]["receivable"] == "1120"
+
+
+# --- Startup mapping meets a chart change one at a time --------------------------------
+
+
+@pytest.mark.parametrize("first", ["reconcile", "child"])
+async def test_startup_mapping_and_a_new_child_never_leave_a_role_on_a_header(committed_engine, first):
+    factory = _factory(committed_engine)
+    cid = await _seed(factory)
+    async with factory() as s:
+        company = await locked_company(s, cid)
+        roles = dict(company.settings["posting_roles"])
+        roles.pop("receivable")
+        company.settings = {**company.settings, "posting_roles": roles}
+        await s.commit()
+
+    steps = {"reconcile": lambda s: reconcile_company(s, cid), "child": lambda s: _create(s, cid, "1121", "1120")}
+    order = [first, "child" if first == "reconcile" else "reconcile"]
+    _, out = await _second(committed_engine, factory, steps[order[0]], steps[order[1]])
+    mapped = (await _settings(factory, cid))["posting_roles"].get("receivable")
+    children = await _children(factory, cid, "1120")
+    assert not (mapped == "1120" and children), (mapped, children, out)
+    if first == "reconcile":
+        assert mapped == "1120" and children == []
+        assert isinstance(out, HTTPException) and out.status_code == 422, out
+    else:
+        assert children == ["1121"] and mapped is None
+        assert not isinstance(out, BaseException), out
