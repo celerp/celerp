@@ -500,6 +500,7 @@ async def test_connect_endpoint_502_when_cloud_unavailable(client, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("answer", [{"disconnected": False, "state": "disconnecting"},
+                                    {"disconnected": False, "state": "revoked"},
                                     {"disconnected": True, "state": "disconnected"}])
 async def test_disconnect_endpoint_answers_what_cloud_did(client, monkeypatch, answer):
     sent = []

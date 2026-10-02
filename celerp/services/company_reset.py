@@ -50,8 +50,9 @@ FAILED = "The company could not be reset. Nothing was deleted."
 PAYMENTS_NOT_CLOSED = {
     "disconnected": (503, "Reconnect Celerp Cloud so this company's online invoice payments can be "
                           "closed, then reset it. Nothing was deleted."),
-    "payment_settling": (409, "A payment on one of this company's invoices is still being processed by "
-                              "the bank. Try again once it has cleared. Nothing was deleted."),
+    "payment_settling": (409, "A payment on one of this company's invoices is still being processed. "
+                              "Try again once it has finished; if Payments settings ask you to "
+                              "reconnect Stripe, do that first. Nothing was deleted."),
     "payment_unrecorded": (409, "A payment on one of this company's invoices has not reached Celerp yet. "
                                 "Try again once it shows on the invoice. Nothing was deleted."),
     "unconfirmed": (503, "Celerp could not confirm with Celerp Cloud that this company's online invoice "

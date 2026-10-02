@@ -11114,11 +11114,25 @@ class TestPaymentsSettingsPage:
         with self._mocks(relay=True, enabled=False, state="disconnecting"):
             r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
         assert r.status_code == 200
-        assert "Stripe is disconnecting while existing payments finish" in r.text
+        assert "Stripe is disconnecting while existing payments finish." in r.text
         # Neither connect (Cloud refuses it until the disconnect finishes) nor disconnect again.
         assert "/settings/payments/connect" not in r.text
         assert "/settings/payments/disconnect" not in r.text
         assert "stripe_deposit_account" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_revoked_access_asks_to_reconnect_the_same_account(self, ui_client):
+        with self._mocks(relay=True, enabled=False, state="revoked"):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Reconnect this Stripe account to finish checking payments already in progress." in r.text
+        # One action: reconnect. No sales pitch, no disconnect, no deposit settings.
+        assert r.text.count('action="/settings/payments/connect"') == 1
+        assert "Reconnect Stripe" in r.text
+        assert "Connect with Stripe" not in r.text
+        assert "/settings/payments/disconnect" not in r.text
+        assert "stripe_deposit_account" not in r.text
+        assert "Stripe is disconnecting" not in r.text
 
     _UNMATCHED = [
         {"reference": "pi_new", "amount": 5000, "currency": "JPY", "company_id": "c-new",
@@ -11129,7 +11143,8 @@ class TestPaymentsSettingsPage:
     ]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("enabled, state", [(True, None), (False, "disconnecting"), (False, None)])
+    @pytest.mark.parametrize("enabled, state", [
+        (True, None), (False, "disconnecting"), (False, "revoked"), (False, None)])
     async def test_unmatched_payments_are_listed_in_every_state(self, ui_client, enabled, state):
         with self._mocks(relay=True, enabled=enabled, state=state, unmatched=self._UNMATCHED):
             r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
@@ -11166,7 +11181,7 @@ class TestPaymentsSettingsPage:
             r = await ui_client.post("/settings/payments/disconnect", cookies=_authed(role="admin"))
             assert r.status_code == 302 and r.headers["location"] == "/settings/payments"
             r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
-        assert "Stripe is disconnecting while existing payments finish" in r.text
+        assert "Stripe is disconnecting while existing payments finish." in r.text
         assert "/settings/payments/connect" not in r.text
 
     @pytest.mark.asyncio

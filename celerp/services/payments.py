@@ -372,7 +372,7 @@ async def connect_start() -> dict | None:
 
 async def connect_status() -> dict:
     """Authoritative status for the settings page: {"enabled": bool, "state":
-    "connected" | "disconnecting" | "disconnected"}. Falls back to the cached feature
+    "connected" | "disconnecting" | "revoked" | "disconnected"}. Falls back to the cached feature
     flag, with no state, if Cloud is unreachable."""
     return (await _cloud_get("/billing/connect/status")) or {"enabled": payments_enabled()}
 
@@ -381,10 +381,10 @@ async def disconnect() -> dict | None:
     """Disconnect the merchant's account via Cloud. New payments stop at once; Cloud
     finishes the disconnect once every payment already started has been recorded.
     Returns Cloud's answer, {"disconnected": bool, "state": "disconnecting" |
-    "disconnected"}, or None when Cloud gave none."""
+    "revoked" | "disconnected"}, or None when Cloud gave none."""
     answer = await _cloud_post("/billing/connect/disconnect", {})
     if (answer is None or type(answer.get("disconnected")) is not bool
-            or answer.get("state") not in ("disconnecting", "disconnected")):
+            or answer.get("state") not in ("disconnecting", "revoked", "disconnected")):
         return None
     return {"disconnected": answer["disconnected"], "state": answer["state"]}
 

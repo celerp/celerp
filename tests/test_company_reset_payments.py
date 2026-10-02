@@ -254,7 +254,7 @@ async def test_a_reset_prepares_the_closing_then_closes_the_payments_once_the_co
     (httpx.ConnectError("unreachable"), 503, "could not confirm"),
     (httpx.Response(502, json={"detail": "Could not confirm"}), 503, "could not confirm"),
     (httpx.Response(500, text="Internal Server Error"), 503, "could not confirm"),
-    (httpx.Response(409, json={"detail": "payment_settling"}), 409, "still being processed"),
+    (httpx.Response(409, json={"detail": "payment_settling"}), 409, "still being processed."),
     (httpx.Response(409, json={"detail": "payment_unrecorded"}), 409, "has not reached Celerp"),
     (httpx.Response(409, json={"detail": "something else"}), 503, "could not confirm"),
     (httpx.Response(200, json={"company_id": "another-company", "operation_id": "x", "state": "prepared"}),
