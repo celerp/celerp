@@ -161,10 +161,10 @@ async def receive_payment(payload: dict) -> bool:
     customer's return from Stripe: on its invoice, on the day it was paid, when the
     invoice can take the whole charge, otherwise among the unmatched payments,
     whole (the company or the invoice no longer exists, the invoice is already
-    paid, it owes less than the charge, or it refuses it). True once recorded either way (Cloud is then told it
-    arrived), False for a delivery that names no payment. Raises when nothing could
-    be recorded, so Cloud delivers it again. Recording the same payment twice
-    changes nothing."""
+    paid, it owes less than the charge, or it refuses it). True once recorded
+    either way (Cloud is then told it arrived), False for a delivery that names no
+    payment. Raises when nothing could be recorded, so Cloud delivers it again.
+    Recording the same payment twice changes nothing."""
     from fastapi import HTTPException
     from celerp.models.projections import Projection
     from celerp.services.company_lock import hold_company
