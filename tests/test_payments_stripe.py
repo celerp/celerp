@@ -16,7 +16,6 @@ import pytest
 from httpx import AsyncClient
 
 from celerp.services.company_lock import locked_company
-from celerp.services.money import to_minor_units
 
 
 # When Stripe reported a payment paid, and the books its page opened with.
@@ -70,13 +69,166 @@ def payments_on(monkeypatch, session):
     monkeypatch.setattr("celerp.services.payments.payments_enabled", lambda: True)
 
 
-# ── minor units ──────────────────────────────────────────────────────────────
+# ── Stripe amount units ──────────────────────────────────────────────────────
+# Stripe's own rules (docs.stripe.com/currencies), not the accounting precision:
+# ordinary currencies, IDR among them, are two-decimal; the zero-decimal list is
+# charged as is; ISK and UGX are two-decimal in the API but whole units only; HUF and
+# TWD charge two decimals; three-decimal amounts end in 0.
 
-@pytest.mark.parametrize("amount,currency,expected", [
-    (12.34, "USD", 1234), (1070.0, "THB", 107000), (1234, "JPY", 1234), (3.0, "KWD", 3000),
-])
-def test_to_minor_units(amount, currency, expected):
-    assert to_minor_units(amount, currency) == expected
+_STRIPE_ZERO_DECIMAL = ("BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF",
+                        "VND", "VUV", "XAF", "XOF", "XPF")
+_STRIPE_THREE_DECIMAL = ("BHD", "JOD", "KWD", "OMR", "TND")
+
+_EXACT = [
+    ("12.34", "USD", 1234), ("1070.00", "THB", 107000), ("100000", "IDR", 10000000),
+    ("10.45", "HUF", 1045), ("800.45", "TWD", 80045),
+    ("5", "ISK", 500), ("5", "UGX", 500),
+    *[("1234", c, 1234) for c in _STRIPE_ZERO_DECIMAL],
+    *[("5.120", c, 5120) for c in _STRIPE_THREE_DECIMAL],
+]
+
+
+@pytest.mark.parametrize("amount,currency,api", _EXACT, ids=[f"{c}-{a}" for a, c, _ in _EXACT])
+def test_an_amount_converts_to_stripe_and_back_exactly(amount, currency, api):
+    from decimal import Decimal
+    from celerp.services.payments import from_stripe_amount, to_stripe_amount
+    assert to_stripe_amount(Decimal(amount), currency) == api
+    assert to_stripe_amount(Decimal(amount), currency.lower()) == api
+    assert from_stripe_amount(api, currency) == Decimal(amount)
+
+
+_NOT_CHARGEABLE = [
+    ("12.345", "USD"), ("0.5", "IDR"), ("5.5", "ISK"), ("5.5", "UGX"),
+    *[("1234.5", c) for c in _STRIPE_ZERO_DECIMAL],
+    *[("5.124", c) for c in _STRIPE_THREE_DECIMAL],
+    ("0", "USD"), ("-1", "USD"),
+]
+
+
+@pytest.mark.parametrize("amount,currency", _NOT_CHARGEABLE, ids=[f"{c}-{a}" for a, c in _NOT_CHARGEABLE])
+def test_an_amount_stripe_cannot_charge_exactly_is_refused_not_rounded(amount, currency):
+    from decimal import Decimal
+    from celerp.services.payments import to_stripe_amount
+    with pytest.raises(ValueError):
+        to_stripe_amount(Decimal(amount), currency)
+
+
+_NOT_RECORDABLE = [
+    (550, "UGX"),        # 5.50 UGX: Stripe charges whole shillings only
+    (550, "ISK"),        # 5.50 ISK: likewise
+    (10000050, "IDR"),   # 100000.50 IDR: finer than the books keep IDR
+    *[(5124, c) for c in _STRIPE_THREE_DECIMAL],  # a three-decimal amount not ending in 0
+    (0, "USD"), (-100, "USD"),
+]
+
+
+@pytest.mark.parametrize("api,currency", _NOT_RECORDABLE, ids=[f"{c}-{a}" for a, c in _NOT_RECORDABLE])
+def test_a_stripe_amount_that_does_not_convert_exactly_is_refused(api, currency):
+    from celerp.services.payments import from_stripe_amount
+    with pytest.raises(ValueError):
+        from_stripe_amount(api, currency)
+
+
+async def _idr_invoice(client: AsyncClient, tok: str, total: float = 100000.0) -> tuple[str, str]:
+    """A finalized, shared invoice for *total* IDR in a company that keeps its books in IDR."""
+    assert (await client.patch("/companies/me", json={"settings": {"currency": "IDR"}},
+                               headers=_h(tok))).status_code == 200
+    r = await client.post("/docs", json={
+        "doc_type": "invoice", "contact_name": "Buyer",
+        "line_items": [{"description": "Widget", "quantity": 1, "unit_price": total}],
+        "subtotal": total, "tax": 0.0, "total": total, "currency": "IDR",
+    }, headers=_h(tok))
+    eid = r.json()["id"]
+    assert (await client.post(f"/docs/{eid}/finalize", headers=_h(tok))).status_code == 200
+    token = (await client.post(f"/docs/{eid}/share", headers=_h(tok))).json()["token"]
+    return eid, token
+
+
+@pytest.mark.asyncio
+async def test_a_100000_idr_invoice_opens_a_payment_for_100000_idr(client, payments_on, monkeypatch):
+    """Stripe reads IDR as two-decimal: 100,000 IDR is the API amount 10000000."""
+    captured = {}
+
+    async def _mk(**kw):
+        captured.update(kw)
+        return {"url": "https://stripe.test/cs_idr"}
+    monkeypatch.setattr("celerp.services.payments.create_checkout", _mk)
+    tok = await _register(client)
+    _, token = await _idr_invoice(client, tok)
+
+    r = await client.get(f"/pay/{token}", follow_redirects=False)
+
+    assert r.status_code == 303
+    assert captured["amount_minor"] == 10000000 and captured["currency"] == "IDR"
+
+
+@pytest.mark.asyncio
+async def test_a_payment_of_a_hundredth_of_an_idr_invoice_does_not_mark_it_paid(client, session, payments_on):
+    """Cloud reports amount_total 100000 for an IDR payment: that is 1,000 IDR, not the
+    invoice's 100,000."""
+    from celerp.services.payments import receive_payment
+    tok = await _register(client)
+    eid, _ = await _idr_invoice(client, tok)
+    delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_idr",
+                "amount_minor": 100000, "currency": "idr", "paid_at": PAID.isoformat(),
+                "context": {**BOOKS, "base_currency": "IDR"}}
+
+    assert await receive_payment(delivery) is True
+
+    doc = await _doc_state(client, tok, eid)
+    assert doc["status"] != "paid"
+    assert [p["amount"] for p in doc["payments"]] == [1000.0]
+    assert doc["amount_outstanding"] == 99000
+
+
+@pytest.mark.asyncio
+async def test_a_stripe_amount_the_books_cannot_hold_is_kept_among_the_unmatched(client, session, payments_on):
+    """100,000.50 IDR cannot be recorded on books that keep IDR in whole rupiah: the
+    whole charge is kept among the unmatched payments, never rounded onto the invoice."""
+    from celerp.services.payments import receive_payment
+    tok = await _register(client)
+    eid, _ = await _idr_invoice(client, tok)
+    delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_idr_frac",
+                "amount_minor": 10000050, "currency": "idr", "paid_at": PAID.isoformat(),
+                "context": {**BOOKS, "base_currency": "IDR"}}
+
+    assert await receive_payment(delivery) is True
+
+    doc = await _doc_state(client, tok, eid)
+    assert not doc.get("payments") and doc["status"] != "paid"
+    assert await _pay_je_entities(session, _company_id(tok), eid) == []
+    r = await client.get("/payments/unmatched", headers=_h(tok))
+    assert [(p["reference"], p["amount"], p["currency"]) for p in r.json()["items"]] == [
+        ("pi_idr_frac", 100000.5, "IDR")]
+
+
+@pytest.mark.asyncio
+async def test_an_invoice_stripe_cannot_charge_exactly_does_not_open_a_payment(client, payments_on, monkeypatch):
+    """A balance of 1,000.50 CLP: Stripe charges CLP in whole pesos, so the payment page
+    is refused with a reason rather than charging a rounded amount."""
+    opened = []
+
+    async def _mk(**kw):
+        opened.append(kw)
+        return {"url": "https://stripe.test/cs_clp"}
+    monkeypatch.setattr("celerp.services.payments.create_checkout", _mk)
+    tok = await _register(client)
+    assert (await client.patch("/companies/me", json={"settings": {"currency": "CLP"}},
+                               headers=_h(tok))).status_code == 200
+    r = await client.post("/docs", json={
+        "doc_type": "invoice", "contact_name": "Buyer",
+        "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 1000.5}],
+        "subtotal": 1000.5, "tax": 0.0, "total": 1000.5, "currency": "CLP",
+    }, headers=_h(tok))
+    eid = r.json()["id"]
+    assert (await client.post(f"/docs/{eid}/finalize", headers=_h(tok))).status_code == 200
+    token = (await client.post(f"/docs/{eid}/share", headers=_h(tok))).json()["token"]
+
+    r = await client.get(f"/pay/{token}", follow_redirects=False)
+
+    assert r.status_code == 409
+    assert "CLP" in r.json()["detail"] and "online" in r.json()["detail"]
+    assert opened == []
 
 
 # ── checkout (the contract Cloud fulfils) ────────────────────────────────────
@@ -233,6 +385,139 @@ async def test_a_payment_clears_to_the_deposit_account_its_page_opened_with(clie
     doc = await _doc_state(client, tok, eid)
     pay_entry = next(p for p in doc["payments"] if p.get("reference") == "pi_acct")
     assert opened["deposit_account"] == "1111" and pay_entry["bank_account"] == "1111"
+
+
+# ── where online payments are deposited ──────────────────────────────────────
+
+async def _bank(client: AsyncClient, tok: str, *, active: bool = True) -> str:
+    """A bank account's chart code; deactivated when not *active*."""
+    r = await client.post("/accounting/bank-accounts", json={
+        "bank_name": "Harbor Bank", "account_number": "0001", "bank_type": "checking",
+        "currency": "USD"}, headers=_h(tok))
+    assert r.status_code == 200, r.text
+    bank = r.json()
+    if not active:
+        assert (await client.patch(f"/accounting/bank-accounts/{bank['id']}", json={"is_active": False},
+                                   headers=_h(tok))).status_code == 200
+    return bank["chart_account_code"]
+
+
+async def _deposit_to(session, tok: str, code: str) -> None:
+    """Store the online deposit account directly, as any writer of the company's settings could."""
+    company = await locked_company(session, _company_id(tok))
+    company.settings = {**(company.settings or {}), "stripe_deposit_account": code}
+    await session.commit()
+
+
+_REFUSED_DEPOSITS = ["revenue", "inactive-bank"]
+
+
+async def _refused_deposit(client, tok, kind: str) -> str:
+    return "4100" if kind == "revenue" else await _bank(client, tok, active=False)
+
+
+@pytest.mark.parametrize("kind", _REFUSED_DEPOSITS)
+@pytest.mark.asyncio
+async def test_a_payment_page_is_refused_when_payments_would_deposit_outside_cash_or_an_active_bank(
+        client, session, payments_on, monkeypatch, kind):
+    opened = []
+
+    async def _mk(**kw):
+        opened.append(kw)
+        return {"url": "https://stripe.test/cs_1"}
+    monkeypatch.setattr("celerp.services.payments.create_checkout", _mk)
+    tok = await _register(client)
+    _, token = await _payable_invoice(client, tok)
+    await _deposit_to(session, tok, await _refused_deposit(client, tok, kind))
+
+    r = await client.get(f"/pay/{token}", follow_redirects=False)
+
+    assert r.status_code == 409
+    assert r.json()["detail"] == "Online payment is not set up for this invoice. Please contact the business that sent it."
+    assert opened == []
+
+
+@pytest.mark.parametrize("kind", ["cash", "active-bank"])
+@pytest.mark.asyncio
+async def test_a_payment_page_opens_for_cash_or_an_active_bank(client, session, payments_on, monkeypatch, kind):
+    opened = {}
+
+    async def _mk(**kw):
+        opened.update(kw["context"])
+        return {"url": "https://stripe.test/cs_1"}
+    monkeypatch.setattr("celerp.services.payments.create_checkout", _mk)
+    tok = await _register(client)
+    _, token = await _payable_invoice(client, tok)
+    code = "1110" if kind == "cash" else await _bank(client, tok)
+    await _deposit_to(session, tok, code)
+
+    assert (await client.get(f"/pay/{token}", follow_redirects=False)).status_code == 303
+    assert opened["deposit_account"] == code
+
+
+@pytest.mark.parametrize("kind", _REFUSED_DEPOSITS)
+@pytest.mark.asyncio
+async def test_a_payment_whose_deposit_account_is_not_cash_or_an_active_bank_is_kept_among_the_unmatched(
+        client, session, payments_on, kind):
+    """Delivered on books naming Revenue, or a bank account deactivated while the
+    customer was paying: never posted there, kept whole among the unmatched, and
+    Cloud is told it arrived."""
+    from celerp.services.payments import receive_payment
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    code = await _refused_deposit(client, tok, kind)
+    delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_dep",
+                "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                "context": {**BOOKS, "deposit_account": code}}
+
+    assert await receive_payment(delivery) is True
+
+    doc = await _doc_state(client, tok, eid)
+    assert not doc.get("payments") and doc["status"] != "paid"
+    assert await _pay_je_entities(session, _company_id(tok), eid) == []
+    r = await client.get("/payments/unmatched", headers=_h(tok))
+    assert [p["reference"] for p in r.json()["items"]] == ["pi_dep"]
+
+
+@pytest.mark.asyncio
+async def test_a_payment_to_an_active_bank_is_recorded_there(client, session, payments_on):
+    from celerp.services.payments import receive_payment
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    code = await _bank(client, tok)
+    delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_bank",
+                "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                "context": {**BOOKS, "deposit_account": code}}
+
+    assert await receive_payment(delivery) is True
+
+    doc = await _doc_state(client, tok, eid)
+    assert doc["status"] == "paid" and [p["bank_account"] for p in doc["payments"]] == [code]
+
+
+@pytest.mark.parametrize("value", ["4100", "9999"])
+@pytest.mark.asyncio
+async def test_the_online_deposit_setting_refuses_an_account_that_is_not_cash_or_an_active_bank(
+        client, value):
+    tok = await _register(client)
+    r = await client.patch("/companies/me", json={"settings": {"stripe_deposit_account": value}},
+                           headers=_h(tok))
+    assert r.status_code == 422
+    assert "Cash (1110) or an active bank account" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_the_online_deposit_setting_takes_cash_an_active_bank_or_the_default(client):
+    tok = await _register(client)
+    code = await _bank(client, tok)
+    inactive = await _bank(client, tok, active=False)
+    for value in ("1110", code, ""):
+        r = await client.patch("/companies/me", json={"settings": {"stripe_deposit_account": value}},
+                               headers=_h(tok))
+        assert r.status_code == 200, (value, r.text)
+    r = await client.patch("/companies/me", json={"settings": {"stripe_deposit_account": inactive}},
+                           headers=_h(tok))
+    assert r.status_code == 422
 
 
 # ── the whole journey, end to end ─────────────────────────────────────────────
