@@ -409,11 +409,32 @@ async def _deposit_to(session, tok: str, code: str) -> None:
     await session.commit()
 
 
-_REFUSED_DEPOSITS = ["revenue", "inactive-bank"]
+async def _chart_changed(session, tok: str, code: str, **values) -> None:
+    """Change the chart account behind *code* directly, as books written before the
+    chart refused it can hold: archived, or given another type."""
+    import uuid
+    from sqlalchemy import update
+    from celerp_accounting.models import Account
+    await session.execute(update(Account).where(
+        Account.company_id == uuid.UUID(_company_id(tok)), Account.code == code).values(**values))
+    await session.commit()
 
 
-async def _refused_deposit(client, tok, kind: str) -> str:
-    return "4100" if kind == "revenue" else await _bank(client, tok, active=False)
+_REFUSED_DEPOSITS = ["revenue", "inactive-bank", "bank-on-archived-account", "bank-on-revenue-account",
+                     "archived-cash", "cash-made-liability"]
+
+
+async def _refused_deposit(client, session, tok, kind: str) -> str:
+    if kind == "revenue":
+        return "4100"
+    if kind == "inactive-bank":
+        return await _bank(client, tok, active=False)
+    code = "1110" if "cash" in kind else await _bank(client, tok)
+    if "archived" in kind:
+        await _chart_changed(session, tok, code, is_active=False)
+    else:
+        await _chart_changed(session, tok, code, account_type="liability" if code == "1110" else "revenue")
+    return code
 
 
 @pytest.mark.parametrize("kind", _REFUSED_DEPOSITS)
@@ -428,7 +449,7 @@ async def test_a_payment_page_is_refused_when_payments_would_deposit_outside_cas
     monkeypatch.setattr("celerp.services.payments.create_checkout", _mk)
     tok = await _register(client)
     _, token = await _payable_invoice(client, tok)
-    await _deposit_to(session, tok, await _refused_deposit(client, tok, kind))
+    await _deposit_to(session, tok, await _refused_deposit(client, session, tok, kind))
 
     r = await client.get(f"/pay/{token}", follow_redirects=False)
 
@@ -465,7 +486,7 @@ async def test_a_payment_whose_deposit_account_is_not_cash_or_an_active_bank_is_
     from celerp.services.payments import receive_payment
     tok = await _register(client)
     eid, _ = await _payable_invoice(client, tok)
-    code = await _refused_deposit(client, tok, kind)
+    code = await _refused_deposit(client, session, tok, kind)
     delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_dep",
                 "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
                 "context": {**BOOKS, "deposit_account": code}}
@@ -503,6 +524,19 @@ async def test_the_online_deposit_setting_refuses_an_account_that_is_not_cash_or
     r = await client.patch("/companies/me", json={"settings": {"stripe_deposit_account": value}},
                            headers=_h(tok))
     assert r.status_code == 422
+    assert "Cash (1110) or an active bank account" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("change", [{"is_active": False}, {"account_type": "revenue"}])
+@pytest.mark.asyncio
+async def test_the_online_deposit_setting_refuses_a_bank_whose_chart_account_cannot_hold_money(
+        client, session, change):
+    tok = await _register(client)
+    code = await _bank(client, tok)
+    await _chart_changed(session, tok, code, **change)
+    r = await client.patch("/companies/me", json={"settings": {"stripe_deposit_account": code}},
+                           headers=_h(tok))
+    assert r.status_code == 422, r.text
     assert "Cash (1110) or an active bank account" in r.json()["detail"]
 
 
