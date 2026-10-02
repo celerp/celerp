@@ -41,7 +41,7 @@ LOST = object()  # Cloud takes the step, but its answer never arrives
 NO_ANSWER = object()  # the request returns nothing
 
 
-_PAYMENT = ("company_id", "entity_id", "reference", "amount_minor", "currency", "delivery_id")
+_PAYMENT = ("company_id", "entity_id", "reference", "amount_minor", "currency", "paid_at", "delivery_id")
 
 
 class _Crash(BaseException):
@@ -85,11 +85,12 @@ class _Cloud:
         return sorted(o["state"] for o in self.ops.values())
 
     def pay(self, company_id, entity_id: str = "doc:gone", reference: str = "pi_late",
-            amount_minor: int = 107000) -> None:
-        """A customer pays: Celerp Cloud delivers the payment until the installation
-        acknowledges it."""
+            amount_minor: int = 107000, paid_at: datetime | None = None) -> None:
+        """A customer pays: Celerp Cloud delivers the payment, with when Stripe reported
+        it paid, until the installation acknowledges it."""
         self.deliveries.append({"company_id": str(company_id), "entity_id": entity_id, "reference": reference,
                                 "amount_minor": amount_minor, "currency": "usd",
+                                "paid_at": (paid_at or datetime.now(timezone.utc)).isoformat(),
                                 "delivery_id": str(uuid.uuid4()), "acked": False})
 
     async def deliver(self) -> None:
@@ -1126,6 +1127,105 @@ async def test_every_payment_a_restore_may_have_lost_is_recorded_again_before_a_
 
     r = await real_client.get(f"/pay/{share}", follow_redirects=False)
     assert r.status_code == 303 and cloud.checkouts == [(str(a), 1, 200)]
+
+
+async def _company_settings(engine, cid, **changes) -> None:
+    async with maker(engine)() as s:
+        settings = await s.scalar(text("SELECT settings FROM companies WHERE id = :c"), {"c": cid}) or {}
+        await s.execute(text("UPDATE companies SET settings = CAST(:s AS json) WHERE id = :c"),
+                        {"s": json.dumps({**settings, **changes}), "c": cid})
+        await s.commit()
+
+
+async def _payment_dates(engine, entity_id) -> list[tuple[str, str, str]]:
+    """(reference, payment date, its journal entry's date) of each payment on the
+    invoice, and the date its doc.payment.received event carries."""
+    async with maker(engine)() as s:
+        state = await s.scalar(text("SELECT state FROM projections WHERE entity_id = :e"), {"e": entity_id})
+        events = {e["reference"]: e["payment_date"] for e in (await s.scalars(text(
+            "SELECT data FROM ledger WHERE entity_id = :e AND event_type = 'doc.payment.received'"),
+            {"e": entity_id})).all()}
+        journal = {}
+        for je_id, je in (await s.execute(text(
+                "SELECT entity_id, state FROM projections WHERE entity_id LIKE :j"),
+                {"j": f"je:auto:{entity_id}:pay:%"})).all():
+            journal[je_id] = str(je.get("ts"))[:10]
+    paid = [p for p in state.get("payments", []) if p.get("status") != "deleted"]
+    return [(p["reference"], p["payment_date"], events[p["reference"]],
+             journal[f"je:auto:{entity_id}:pay:{p['index']}"]) for p in paid]
+
+
+# October 3 in Bangkok; the backup that loses it is restored weeks later.
+_OCTOBER_3 = datetime(2025, 10, 3, 3, 0, tzinfo=timezone.utc)
+
+
+async def _restore_losing_a_payment(tmp_path, monkeypatch, engine, client, paid_at: datetime,
+                                    timezone_name: str, **settings):
+    """A payment made after the last backup, which a System Recovery restore then loses
+    and Celerp Cloud delivers again."""
+    from celerp.services import backup_export, backup_import
+    _system_recovery(tmp_path, monkeypatch)
+    boss, a, b = await _harbor(engine)
+    await _company_settings(engine, a, timezone=timezone_name)
+    cloud = _Cloud(monkeypatch, engine)
+    eid = await _invoice(client, engine, boss, a)
+    source = await backup_export.export_full()
+    try:
+        cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=paid_at)
+        await cloud.deliver()
+        result = await backup_import.run_recovery(source)
+    finally:
+        source.unlink(missing_ok=True)
+    assert result.ok is True, result.error
+    assert await _references(engine, eid) == []
+    if settings:
+        await _company_settings(engine, a, **settings)
+    await cloud.deliver()
+    assert all(d["acked"] for d in cloud.deliveries)
+    return boss, a, eid
+
+
+async def test_a_payment_recorded_again_after_a_restore_keeps_the_day_it_was_paid(
+        tmp_path, monkeypatch, code_config, real_engine, real_client):
+    boss, a, eid = await _restore_losing_a_payment(
+        tmp_path, monkeypatch, real_engine, real_client, _OCTOBER_3, "Asia/Bangkok")
+    # The payment, its event and its journal entry all stay on October 3.
+    assert await _payment_dates(real_engine, eid) == [("pi_paid", "2025-10-03", "2025-10-03", "2025-10-03")]
+
+
+@pytest.mark.parametrize("paid_at,timezone_name,business_day", [
+    # Already the next morning in Bangkok.
+    (datetime(2025, 10, 3, 18, 30, tzinfo=timezone.utc), "Asia/Bangkok", "2025-10-04"),
+    # Still the previous evening in New York.
+    (datetime(2025, 10, 4, 2, 0, tzinfo=timezone.utc), "America/New_York", "2025-10-03"),
+])
+async def test_an_online_payment_is_dated_on_the_companys_own_calendar(
+        real_engine, real_client, monkeypatch, paid_at, timezone_name, business_day):
+    boss, a, b = await _harbor(real_engine)
+    await _company_settings(real_engine, a, timezone=timezone_name)
+    cloud = _Cloud(monkeypatch, real_engine)
+    eid = await _invoice(real_client, real_engine, boss, a)
+    cloud.pay(a, eid, "pi_edge", amount_minor=50000, paid_at=paid_at)
+    await cloud.deliver()
+    assert await _payment_dates(real_engine, eid) == [("pi_edge", business_day, business_day, business_day)]
+
+
+async def test_a_payment_recorded_again_into_a_locked_period_is_refused_like_any_other(
+        tmp_path, monkeypatch, code_config, real_engine, real_client):
+    """The books were locked through October after the payment: recording it again
+    on October 3 is refused, as recording any payment on October 3 now is. It is kept
+    whole among the unmatched payments with the day it was paid, never moved to an
+    open day."""
+    boss, a, eid = await _restore_losing_a_payment(
+        tmp_path, monkeypatch, real_engine, real_client, _OCTOBER_3, "Asia/Bangkok",
+        lock_date="2025-10-31")
+    assert await _references(real_engine, eid) == []
+    assert await _unmatched(real_engine) == [("pi_paid", 50000, "USD", str(a), eid)]
+    async with maker(real_engine)() as s:
+        assert await s.scalar(text("SELECT paid_at FROM unmatched_payments")) == _OCTOBER_3
+    r = await real_client.post(f"/docs/{eid}/payment", headers=auth(await token(real_engine, boss, a)),
+                               json={"amount": 500.0, "payment_date": "2025-10-03", "bank_account": "1110"})
+    assert r.status_code == 422 and r.json()["detail"].startswith("Period is locked through 2025-10-31")
 
 
 @pytest.mark.parametrize("refusal", ["generation_stale", "recovery_pending"])

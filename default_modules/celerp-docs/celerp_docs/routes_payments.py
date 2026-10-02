@@ -26,6 +26,7 @@ from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken
 from celerp.services import payments as pay
 from celerp.services.auth import get_current_user, require_install_owner
+from celerp.services.business_time import business_date_at
 from celerp.services.doc_balance import outstanding_balance
 from celerp.services.money import currency_dp, to_minor_units
 from celerp.services.permissions import require_permission
@@ -93,9 +94,12 @@ async def deposit_account(
 
 
 async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
-                                reference: str, amount_minor: int, currency: str):
+                                reference: str, amount_minor: int, currency: str,
+                                paid_at: datetime.datetime | None = None):
     """Record a confirmed online charge as a payment on its invoice. Only
-    ``payments.receive_payment`` calls it.
+    ``payments.receive_payment`` calls it. The payment is dated the company's
+    business day at *paid_at*, when Stripe reported it paid, so a payment recorded
+    again after a System Recovery keeps its own day; without one, today.
 
     The same charge (Stripe payment_intent) recorded again is a quiet None. A charge
     the invoice cannot take whole (it is already paid, or owes less than the charge)
@@ -107,8 +111,14 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
            for p in doc_state.get("payments", [])):
         return None  # already recorded - replayed push / re-opened return page
     amount = amount_minor / (10 ** currency_dp(currency))
+    company = await session.get(Company, company_id)
+    try:
+        payment_date = business_date_at(paid_at or datetime.datetime.now(datetime.timezone.utc),
+                                        ((company.settings or {}) if company else {}).get("timezone"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     from celerp_docs.routes import apply_doc_payment
-    body = {"amount": amount, "payment_date": datetime.date.today().isoformat(),
+    body = {"amount": amount, "payment_date": payment_date,
             "currency": currency.upper(), "bank_account": await deposit_account(session, company_id),
             "method": "stripe", "reference": reference}
     try:

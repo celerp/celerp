@@ -158,10 +158,10 @@ def _reached(answer: tuple[int, dict] | None, closure: PaymentClosure, states: t
 
 async def receive_payment(payload: dict) -> bool:
     """Record an online payment, delivered by Celerp Cloud or confirmed on the
-    customer's return from Stripe: on its invoice when the invoice can take the
-    whole charge, otherwise among the unmatched payments, whole (the company or the
-    invoice no longer exists, the invoice is already paid, it owes less than the
-    charge, or it refuses it). True once recorded either way (Cloud is then told it
+    customer's return from Stripe: on its invoice, on the day it was paid, when the
+    invoice can take the whole charge, otherwise among the unmatched payments,
+    whole (the company or the invoice no longer exists, the invoice is already
+    paid, it owes less than the charge, or it refuses it). True once recorded either way (Cloud is then told it
     arrived), False for a delivery that names no payment. Raises when nothing could
     be recorded, so Cloud delivers it again. Recording the same payment twice
     changes nothing."""
@@ -178,6 +178,8 @@ async def receive_payment(payload: dict) -> bool:
         paid_at = datetime.fromisoformat(str(payload.get("paid_at")))
     except ValueError:
         paid_at = None
+    if paid_at is not None and paid_at.utcoffset() is None:
+        paid_at = None  # no zone, so no business day it can be placed on
     try:
         cid = uuid.UUID(company_id)
     except ValueError:
@@ -190,7 +192,7 @@ async def receive_payment(payload: dict) -> bool:
         if row is not None:
             try:
                 await record_stripe_payment(session, cid, entity_id, dict(row.state), reference=reference,
-                                            amount_minor=amount_minor, currency=currency)
+                                            amount_minor=amount_minor, currency=currency, paid_at=paid_at)
                 return True
             except HTTPException as exc:
                 if exc.status_code >= 500:
