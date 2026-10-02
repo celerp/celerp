@@ -1414,10 +1414,6 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
             # never fabricate a label.
             for li in doc.get("line_items") or []:
                 li.pop("shipped_label", None)
-    if doc.get("doc_type") == "invoice":
-        from celerp.services.payments import expired_payments
-        from celerp_docs.routes_payments import expiry_view
-        doc["payment_expiries"] = [expiry_view(p) for p in await expired_payments(session, company_id, entity_id)]
     return doc
 
 

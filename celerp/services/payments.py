@@ -15,7 +15,7 @@ from datetime import datetime
 
 from sqlalchemy import func, select
 
-from celerp.models.payment_closure import ExpiredPayment, PaymentClosure, PaymentRecovery, UnmatchedPayment
+from celerp.models.payment_closure import PaymentClosure, PaymentRecovery, UnmatchedPayment
 
 log = logging.getLogger(__name__)
 
@@ -174,7 +174,10 @@ async def receive_payment(payload: dict) -> bool:
         return False
     amount_minor = int(payload.get("amount_minor") or 0)
     currency = str(payload.get("currency") or "USD").upper()
-    paid_at = _reported_time(payload, "paid_at")
+    try:
+        paid_at = datetime.fromisoformat(str(payload.get("paid_at")))
+    except ValueError:
+        paid_at = None
     try:
         cid = uuid.UUID(company_id)
     except ValueError:
@@ -200,43 +203,6 @@ async def receive_payment(payload: dict) -> bool:
             former_company=company_id, document=entity_id, paid_at=paid_at).on_conflict_do_nothing())
         await session.commit()
     return True
-
-
-def _reported_time(payload: dict, key: str) -> datetime | None:
-    """A time Celerp Cloud reported, or None when it reported none it could read."""
-    try:
-        return datetime.fromisoformat(str(payload.get(key)))
-    except ValueError:
-        return None
-
-
-async def record_expiry(payload: dict) -> bool:
-    """Record that Celerp Cloud cancelled an invoice's online payment page because it
-    was still unpaid: the invoice shows it, and so does the list of payments. True once
-    recorded (Cloud is then told it arrived), False for a delivery that names no
-    payment. Raises when nothing could be recorded, so Cloud delivers it again.
-    Recording the same expiry twice changes nothing."""
-    company_id, entity_id, reference = (str(payload.get(k) or "") for k in ("company_id", "entity_id", "reference"))
-    if not (company_id and entity_id and reference):
-        return False
-    from sqlalchemy.dialects.postgresql import insert
-    async with _own_session() as session:
-        await session.execute(insert(ExpiredPayment).values(
-            reference=reference, amount_minor=int(payload.get("amount_minor") or 0),
-            currency=str(payload.get("currency") or "USD").upper(), company=company_id, document=entity_id,
-            age_days=int(payload.get("age_days") or 0), opened_at=_reported_time(payload, "opened_at"),
-            expired_at=_reported_time(payload, "expired_at")).on_conflict_do_nothing())
-        await session.commit()
-    return True
-
-
-async def expired_payments(session, company_id: str | None = None, document: str | None = None) -> list[ExpiredPayment]:
-    """Every online payment page cancelled unpaid, newest first; only one invoice's
-    when *company_id* and *document* are given."""
-    query = select(ExpiredPayment).order_by(ExpiredPayment.received_at.desc())
-    if company_id is not None:
-        query = query.where(ExpiredPayment.company == str(company_id), ExpiredPayment.document == document)
-    return list((await session.scalars(query)).all())
 
 
 async def unmatched_payments(session) -> list[UnmatchedPayment]:

@@ -810,17 +810,3 @@ def test_switcher_has_aria_combobox_semantics():
     assert 'aria-autocomplete="list"' in html, "combobox input must declare aria-autocomplete=list"
     assert 'role="listbox"' in html, "the option list must carry role=listbox"
     assert 'role="option"' in html, "each option must carry role=option"
-
-
-_EXPIRY_KEYS = ("pay.expired_head", "pay.expired_hint", "pay.expired_opened", "pay.expired_on",
-                "pay.expired_open_for", "pay.expired_days", "pay.expired_notice")
-
-
-def test_expired_payment_copy_in_every_locale():
-    """The notice for a payment page that expired unpaid reads in every shipped
-    locale, plainly: no em dash."""
-    for code in _shipped_locales():
-        loc = _load_locale(code)
-        missing = [k for k in _EXPIRY_KEYS if not loc.get(k)]
-        assert not missing, f"{code} lacks {missing}"
-        assert not [k for k in _EXPIRY_KEYS if "—" in loc[k]], code

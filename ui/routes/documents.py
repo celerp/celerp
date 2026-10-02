@@ -5537,15 +5537,9 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                 cls="payment-form-section",
             )
 
-    # Online payment pages Celerp Cloud cancelled unpaid: the invoice was not paid by them.
-    expiries = [P(t("pay.expired_notice", days=e["age_days"], date=(e.get("expired_at") or "")[:10] or EMPTY,
-                    reference=e["reference"]), cls="form-hint payment-expired")
-                for e in doc.get("payment_expiries") or []]
-
     return Div(
         Div(Span(section_icon, cls="section-icon"), H3(section_title, cls="section-title"), cls="section-header"),
         history_table,
-        *expiries,
         summary_line,
         add_form,
         cls="doc-section payment-section",

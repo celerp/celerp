@@ -11057,7 +11057,7 @@ class TestPaymentsSettingsPage:
     no relay = Web Access upsell; relay without Stripe = a single-CTA sales
     pitch with no admin controls; connected = deposit selector + disconnect."""
 
-    def _mocks(self, relay=True, enabled=False, banks=None, deposit="", state=None, unmatched=None, expired=None):
+    def _mocks(self, relay=True, enabled=False, banks=None, deposit="", state=None, unmatched=None):
         from contextlib import ExitStack
         stack = ExitStack()
         for name, val in (
@@ -11066,7 +11066,6 @@ class TestPaymentsSettingsPage:
             ("get_company", {"stripe_deposit_account": deposit, "current_role": "admin"}),
             ("get_bank_accounts", {"items": banks or []}),
             ("get_unmatched_payments", {"items": unmatched or []}),
-            ("get_expired_payments", {"items": expired or []}),
         ):
             stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
         return stack
@@ -11158,62 +11157,6 @@ class TestPaymentsSettingsPage:
         assert r.status_code == 200
         assert "Payments not matched to an invoice" not in r.text
         assert "/settings/payments/disconnect" in r.text
-
-    _EXPIRED = [
-        {"reference": "pi_new", "amount": 5000, "currency": "JPY", "company_id": "c-new",
-         "document_id": "doc:2", "age_days": 25, "opened_at": None, "expired_at": None},
-        {"reference": "pi_old", "amount": 1070.0, "currency": "USD", "company_id": "c-old",
-         "document_id": "doc:1", "age_days": 25, "opened_at": "2026-09-03T09:00:00+00:00",
-         "expired_at": "2026-09-28T09:00:00+00:00"},
-    ]
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("enabled, state", [(True, None), (False, "disconnecting"), (False, None)])
-    async def test_expired_payment_pages_are_listed_in_every_state(self, ui_client, enabled, state):
-        with self._mocks(relay=True, enabled=enabled, state=state, expired=self._EXPIRED):
-            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
-        assert r.status_code == 200
-        assert "Payment pages that expired unpaid" in r.text
-        # What happens to money that arrives later, and what to do next.
-        assert "refund it or apply it from your Stripe dashboard" in r.text
-        assert "send the customer a new payment link" in r.text
-        assert r.text.index("pi_new") < r.text.index("pi_old")  # newest first
-        assert "c-old" in r.text and "doc:1" in r.text and "2026-09-28" in r.text and "2026-09-03" in r.text
-        assert "25 days" in r.text
-        assert r.text.count('<td>--</td>') >= 2  # opened and expired not known for pi_new
-        assert "\u2014" not in r.text.split("Payment pages that expired unpaid", 1)[1]
-
-    @pytest.mark.asyncio
-    async def test_no_expired_payment_pages_shows_nothing(self, ui_client):
-        with self._mocks(relay=True, enabled=True):
-            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
-        assert "Payment pages that expired unpaid" not in r.text
-
-    @pytest.mark.asyncio
-    async def test_expired_payment_pages_hidden_from_a_login_that_may_not_see_them(self, ui_client):
-        from ui.api_client import APIError
-        with self._mocks(relay=True, enabled=True), \
-                patch("ui.api_client.get_expired_payments",
-                      new=AsyncMock(side_effect=APIError(403, "Installation owner only"))):
-            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
-        assert r.status_code == 200
-        assert "Payment pages that expired unpaid" not in r.text
-        assert "/settings/payments/disconnect" in r.text
-
-    @pytest.mark.parametrize("expired_at, shown", [
-        ("2026-09-28T09:00:00+00:00", "2026-09-28"), (None, "--")])
-    def test_an_invoice_shows_its_expired_payment_page_as_not_paid(self, expired_at, shown):
-        from fasthtml.common import to_xml
-        from ui.routes.documents import _payment_section
-        html = to_xml(_payment_section({
-            "entity_id": "doc:1", "doc_type": "invoice", "status": "final", "currency": "USD",
-            "total": 1070.0, "amount_paid": 0, "amount_outstanding": 1070.0, "payments": [],
-            "payment_expiries": [{"reference": "pi_exp", "amount": 1070.0, "currency": "USD",
-                                  "age_days": 25, "opened_at": None, "expired_at": expired_at}],
-        }, bank_accounts=[]))
-        assert "The online payment page expired unpaid after 25 days" in html
-        assert shown in html and "pi_exp" in html
-        assert "send the customer a new payment link" in html
 
     @pytest.mark.asyncio
     async def test_a_disconnect_that_waits_for_payments_shows_it(self, ui_client):

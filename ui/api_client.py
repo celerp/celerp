@@ -2868,11 +2868,6 @@ async def get_unmatched_payments(token: str) -> dict:
         return _raise(await c.get("/payments/unmatched")).json()
 
 
-async def get_expired_payments(token: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.get("/payments/expired")).json()
-
-
 async def get_payments_enabled(token: str) -> bool:
     """Cached payments flag - cheap per-render gate (no cloud round-trip)."""
     async with _api_client(token) as c:

@@ -74,30 +74,3 @@ class UnmatchedPayment(Base):
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False)
     # When the customer paid, as the payment provider reported it; None when not reported.
     paid_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
-
-
-class ExpiredPayment(Base):
-    """An online payment page Celerp Cloud cancelled because the customer had not paid
-    it in time. The invoice was not paid by it; the merchant is told so on the invoice
-    and among the payments, since money that still reaches their Stripe account for it
-    is not recorded here.
-
-    Recorded before Cloud is told the expiry arrived. Not company data: it stays in
-    view after the company it names is gone, so the company and invoice are plain
-    values, not references."""
-
-    __tablename__ = "expired_payments"
-
-    reference: Mapped[str] = mapped_column(sa.String(255), primary_key=True)
-    amount_minor: Mapped[int] = mapped_column(sa.BigInteger, nullable=False)
-    currency: Mapped[str] = mapped_column(sa.String(8), nullable=False)
-    company: Mapped[str] = mapped_column(sa.String(64), nullable=False)
-    document: Mapped[str] = mapped_column(sa.String(255), nullable=False)
-    # How many days the page stayed unpaid before Cloud cancelled it.
-    age_days: Mapped[int] = mapped_column(sa.Integer, nullable=False)
-    # As Celerp Cloud reported them; None when not reported.
-    opened_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
-    expired_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
-    received_at: Mapped[datetime] = mapped_column(
-        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False)
-    __table_args__ = (sa.Index("ix_expired_payments_company_document", "company", "document"),)

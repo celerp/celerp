@@ -186,22 +186,6 @@ async def test_invoice_payment_dispatched_to_handler(client, monkeypatch):
     assert seen.get("reference") == "pi_9"
 
 
-@pytest.mark.asyncio
-async def test_invoice_payment_expired_dispatched_to_handler(client, monkeypatch):
-    """A Cloud invoice.payment_expired push -> routed to the expiry handler."""
-    import asyncio
-    seen = {}
-
-    async def _handler(payload):
-        seen.update(payload)
-
-    monkeypatch.setattr(client, "_handle_payment_expired", _handler)
-    await client._dispatch({"type": "invoice.payment_expired", "payload": {
-        "company_id": "c1", "entity_id": "doc:e1", "reference": "pi_9", "amount_minor": 500, "currency": "usd"}})
-    await asyncio.sleep(0)  # let the spawned task run
-    assert seen.get("reference") == "pi_9"
-
-
 # ── ping ──────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

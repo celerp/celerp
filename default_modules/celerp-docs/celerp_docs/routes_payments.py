@@ -223,20 +223,3 @@ async def payments_unmatched(session: AsyncSession = Depends(get_session)) -> di
         "received_at": p.received_at.isoformat(),
         "paid_at": p.paid_at.isoformat() if p.paid_at else None,
     } for p in await pay.unmatched_payments(session)]}
-
-
-def expiry_view(p) -> dict:
-    """One online payment page cancelled unpaid, as the API shows it."""
-    return {
-        "reference": p.reference, "amount": p.amount_minor / 10 ** currency_dp(p.currency),
-        "currency": p.currency, "age_days": p.age_days,
-        "opened_at": p.opened_at.isoformat() if p.opened_at else None,
-        "expired_at": p.expired_at.isoformat() if p.expired_at else None,
-    }
-
-
-@router.get("/payments/expired", dependencies=[Depends(require_install_owner)])
-async def payments_expired(session: AsyncSession = Depends(get_session)) -> dict:
-    """Online payment pages cancelled because they were still unpaid, newest first."""
-    return {"items": [expiry_view(p) | {"company_id": p.company, "document_id": p.document}
-                      for p in await pay.expired_payments(session)]}
