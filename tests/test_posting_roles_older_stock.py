@@ -7,8 +7,10 @@ including the cost of opening stock sold, to 1130-P. On upgrade a company built
 by Celerp itself moves its opening inventory balance into purchased inventory in
 one entry, when the two accounts together hold exactly the stock on hand, and
 every older lot then records 1130-P, including lots already sold, so a sale undone
-later brings the lot back on its account. Nothing else changes: total inventory,
-retained earnings, cost of sales and older documents stay as they were.
+later brings the lot back on its account. An older draft has never held stock, so it
+records 1130-OB, as a new draft does, and is booked there once it is made available.
+Nothing else changes: total inventory, retained earnings, cost of sales and older
+documents stay as they were.
 
 Anything the books cannot vouch for (a migration, a restored backup, an import,
 accounts that do not add up) is left alone, and each such lot waits for the
@@ -800,3 +802,25 @@ async def test_an_older_draft_records_opening_inventory_when_accounting_is_turne
     assert await _accounts(session, auth, sold) == ["1130-P"]
     assert await _marked(session, auth)
     await _draft_becomes_opening_stock_and_sells(session, client, auth, draft, purchased=0.0)
+
+
+async def _books_short(session, client, auth) -> None:
+    await _opening_entry(session, auth, 20.0)  # the opening entry predates 10 of the stock
+
+
+async def _books_restored(session, client, auth) -> None:
+    await _opening_entry(session, auth, 30.0)
+    await _restored(session, client, auth)
+
+
+@pytest.mark.parametrize("books", [_books_short, _books_restored])
+async def test_an_older_draft_records_opening_inventory_where_the_books_cannot_vouch_for_the_stock(
+        session, client, auth, books):
+    lot = await _lot(client, auth, 30.0)
+    draft = await _draft(client, auth, 200.0, 2)
+    await _as_older_release(session, auth, [lot, draft], [])
+    await books(session, client, auth)
+    await _startup(session)
+    assert await _reclassification(session, auth) is None
+    assert await _accounts(session, auth, lot, draft) == [None, "1130-OB"]
+    assert await _marked(session, auth)
