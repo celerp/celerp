@@ -1676,12 +1676,8 @@ def setup_routes(app):
         try:
             result = await api.undo_import_batch(token, batch_id)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
+            return _R("", status_code=200, headers={"HX-Reswap": "none", **toast_header(str(e.detail), "error")})
         removed = result.get("removed", 0)
-        modified = result.get("modified_items", [])
-        msg = f"Undone: {removed} item(s) removed."
-        if modified:
-            msg += f" Warning: {len(modified)} item(s) were modified since import and may need manual review."
         return _R("", status_code=204, headers={"HX-Redirect": f"/settings/inventory?tab=import-history&msg={removed}+undone"})
 
     # ── Cloud status HTMX fragment ───────────────────────────────────
@@ -4332,7 +4328,9 @@ def _import_history_tab(batches: list[dict]) -> FT:
                     hx_post=f"/settings/import-history/{bid}/undo",
                     hx_confirm=t("settings.confirm_undo_import", n=b.get("row_count", 0)),
                     hx_swap="none",
-                ) if status == "active" else Span(undone_display, cls="settings-hint"),
+                ) if status == "active" and b.get("reversible")
+                else Span(t("settings.import_not_undoable"), cls="settings-hint") if status == "active"
+                else Span(undone_display, cls="settings-hint"),
                 cls="cell",
             ),
             cls="data-row",

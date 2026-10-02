@@ -20475,3 +20475,34 @@ class TestReviewedListRoutes:
             assert await _export_columns("tok", {"cols": ["thumbnail", "name", "sku"]}) == ["name", "sku"]
             resolved = await _export_columns("tok", {})
         assert "thumbnail" not in resolved and "sku" in resolved and "name" in resolved
+
+
+class TestImportHistoryUndo:
+    """Settings > Import History offers Undo only for an import the server says can be
+    undone, and shows the server's reason when it refuses one anyway."""
+
+    @pytest.mark.parametrize("reversible", [True, False])
+    def test_undo_is_offered_only_for_a_reversible_import(self, reversible):
+        from fasthtml.common import to_xml
+        from ui.i18n import t
+        from ui.routes.settings import _import_history_tab
+
+        html = to_xml(_import_history_tab([{
+            "id": "b-1", "entity_type": "item", "filename": "a.csv", "row_count": 2,
+            "imported_at": "2026-10-01T00:00:00", "status": "active", "undone_at": None,
+            "reversible": reversible,
+        }]))
+        assert ('hx-post="/settings/import-history/b-1/undo"' in html) is reversible
+        assert (t("settings.import_not_undoable") in html) is not reversible
+
+    @pytest.mark.asyncio
+    async def test_a_refused_undo_shows_the_reason(self, ui_client):
+        import json
+
+        from ui.api_client import APIError
+
+        reason = "This import cannot be undone because imported items were changed or used later."
+        with patch("ui.api_client.undo_import_batch", new=AsyncMock(side_effect=APIError(409, reason))):
+            r = await ui_client.post("/settings/import-history/b-1/undo", cookies=_authed())
+        assert r.headers.get("HX-Reswap") == "none"
+        assert json.loads(r.headers["HX-Trigger"])["celerpToast"] == {"message": reason, "type": "error"}
