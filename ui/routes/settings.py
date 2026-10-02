@@ -1686,10 +1686,6 @@ def setup_routes(app):
         except APIError as e:
             return P(str(e.detail), cls="error-banner")
         removed = result.get("removed", 0)
-        modified = result.get("modified_items", [])
-        msg = f"Undone: {removed} item(s) removed."
-        if modified:
-            msg += f" Warning: {len(modified)} item(s) were modified since import and may need manual review."
         return _R("", status_code=204, headers={"HX-Redirect": f"/settings/inventory?tab=import-history&msg={removed}+undone"})
 
     # ── Cloud status HTMX fragment ───────────────────────────────────

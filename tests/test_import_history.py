@@ -157,7 +157,6 @@ async def test_undo_batch_removes_items(client):
     data = r.json()
     assert data["ok"] is True
     assert data["removed"] == 3
-    assert isinstance(data["modified_items"], list)
 
     # Verify items gone
     items_after = (await client.get("/items", headers=_h(token))).json()["items"]

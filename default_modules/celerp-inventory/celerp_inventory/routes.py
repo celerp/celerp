@@ -51,7 +51,8 @@ from .services import (
 )
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
 from celerp.services.company_lock import lock_projections
-from celerp.services.lot_origin import RETIRED, in_stock, is_authoring_event, record_kept_stock
+from celerp.services.item_erasure import erase_items, mentioned_elsewhere
+from celerp.services.lot_origin import RECORDED, RETIRED, in_stock, is_authoring_event, record_kept_stock
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.business_time import business_date_at
@@ -2893,28 +2894,38 @@ async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_curren
 
 @router.post("/bulk/delete")
 async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    """Delete drafts that were a mistake, without a trace. Every selected item must be a
+    draft that never became stock and is used nowhere; otherwise nothing is deleted and
+    the answer names the items and the actions that fit them instead."""
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
-    import sqlalchemy as _sa
-    from celerp.models.projections import Projection as _Proj
-    from celerp.models.ledger import LedgerEntry as _LE
-    # Hard delete: remove projection rows and all ledger events for these items.
-    # This is the correct behaviour for a user-initiated "Delete" action —
-    # the item should vanish from the catalog entirely (hard delete, no event trail).
-    await session.execute(
-        _sa.delete(_Proj).where(
-            _Proj.company_id == company_id,
-            _Proj.entity_id.in_(payload.entity_ids),
-        )
-    )
-    await session.execute(
-        _sa.delete(_LE).where(
-            _LE.company_id == company_id,
-            _LE.entity_id.in_(payload.entity_ids),
-        )
-    )
+    rows = await _lock_selected_items(session, company_id, payload.entity_ids)
+    blocked = await _not_deletable(session, company_id, rows)
+    if blocked:
+        skus = ", ".join(sorted(str((rows[e].state or {}).get("sku") or e) for e in blocked))
+        raise HTTPException(status_code=409, detail=(
+            f"Nothing was deleted. Only a draft that never became stock and is used nowhere can be deleted, "
+            f"and these cannot: {skus}. Use Revert to Draft for stock made available by mistake, "
+            f"Archive to retire a product, or Write Off Stock for goods that left the company."))
+    await erase_items(session, company_id, rows)
     await session.commit()
-    return {"deleted": len(payload.entity_ids)}
+    return {"deleted": len(rows)}
+
+
+async def _not_deletable(session: AsyncSession, company_id, rows: dict[str, Projection]) -> set[str]:
+    """The selected items that are not a draft mistake: anything not a draft now, a draft
+    with an inventory account, one that was ever stock (any event leaving draft or
+    recording its books) or circulated, and one another record uses."""
+    from celerp.models.ledger import LedgerEntry
+
+    blocked = {e for e, row in rows.items() if not _row_is_draft(row) or (row.state or {}).get(LOT_ACCOUNT_FIELD)}
+    events = (await session.execute(select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(list(rows))))).all()
+    for eid, event_type, data in events:
+        status = str((data or {}).get("status") or "draft").lower()
+        if event_type == RECORDED or not is_authoring_event(event_type) or status != "draft":
+            blocked.add(eid)
+    return blocked | await mentioned_elsewhere(session, company_id, {e: [e] for e in rows})
 
 
 class BulkExpireBody(BaseModel):
@@ -4721,72 +4732,78 @@ async def undo_import_batch(
     __: None = require_permission("edit_inventory"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Undo an import batch only when none of its created items changed later."""
+    """Undo an import: remove the items it created and take off the books exactly the
+    opening stock it booked for them, in one step. Refused, with nothing changed, when an
+    item was changed or used since, or its opening stock was booked another way, or the
+    import's entry cannot be voided (a locked period)."""
     from datetime import datetime, timezone as _tz
-
-    from sqlalchemy import delete as _delete
-    from sqlalchemy import select as _select
 
     from celerp_inventory.models_import_batch import ImportBatch
     from celerp.models.ledger import LedgerEntry
-    from celerp.models.projections import Projection
+    from celerp.services.auto_je import _void_je_if_posted
+    from celerp.services.company_lock import lock_company
 
     try:
         batch_uuid = uuid.UUID(batch_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Import batch not found")
-    batch = await session.get(ImportBatch, batch_uuid)
+    # The company lock serialises this with any chunk still adding to the batch.
+    await lock_company(session, company_id)
+    batch = (await session.execute(
+        select(ImportBatch).where(ImportBatch.id == batch_uuid).with_for_update()
+        .execution_options(populate_existing=True))).scalar_one_or_none()
     if batch is None or batch.company_id != company_id:
         raise HTTPException(status_code=404, detail="Import batch not found")
     if batch.status == "undone":
         raise HTTPException(status_code=409, detail="Batch already undone")
 
     entity_ids = batch.entity_ids or []
+    rows = await lock_projections(session, company_id, entity_ids)
+    entries = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_id.startswith(f"je:auto:opening-stock:{batch.id}:")))).scalars().all()
+    unexpected = sorted(e.entity_id for e in entries if (e.state or {}).get("status") != "posted")
+    if unexpected:
+        raise HTTPException(status_code=409, detail={
+            "code": "import_entry_changed",
+            "message": "This import cannot be undone because the entry booking its opening stock was changed.",
+            "entity_ids": unexpected,
+        })
 
-    # Check for modified-since: any ledger event after the import that isn't item.created
-    modified: list[str] = []
-    for eid in entity_ids:
-        extra = (await session.execute(
-            _select(LedgerEntry.entity_id)
-            .where(
-                LedgerEntry.company_id == company_id,
-                LedgerEntry.entity_id == eid,
-                LedgerEntry.event_type != "item.created",
-                LedgerEntry.ts > batch.imported_at,
-            )
-            .limit(1)
-        )).scalar_one_or_none()
-        if extra:
-            modified.append(eid)
-
+    # Only what the import itself wrote may be on the items: their creation, and the
+    # inventory account the import's own entry booked them into.
+    created_by_import = set(batch.idempotency_keys or [])
+    booked_by_import: set[str] = set()
+    modified = {eid for eid, row in rows.items() if row.entity_type != "item"}
+    for eid, event_type, key, meta in (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.idempotency_key, LedgerEntry.metadata_)
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(entity_ids)))).all():
+        if event_type == "item.created" and key in created_by_import:
+            continue
+        if event_type == RECORDED and (meta or {}).get("recorded_by") == "opening stock":
+            booked_by_import.add(eid)
+            continue
+        modified.add(eid)
+    modified |= {eid for eid, row in rows.items()
+                 if (row.state or {}).get(LOT_ACCOUNT_FIELD) and eid not in booked_by_import}
+    modified |= await mentioned_elsewhere(session, company_id, {e: [e] for e in entity_ids},
+                                          besides=[e.entity_id for e in entries])
     if modified:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "import_items_modified",
-                "message": "This import cannot be undone because imported items were modified later.",
-                "entity_ids": modified,
+                "message": "This import cannot be undone because imported items were changed or used later.",
+                "entity_ids": sorted(modified),
             },
         )
 
-    # Delete projections for all entities in this batch
-    if entity_ids:
-        await session.execute(
-            _delete(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_id.in_(entity_ids),
-            )
-        )
-        # Purge ledger entries so re-import works cleanly
-        ikeys = batch.idempotency_keys or []
-        if ikeys:
-            await session.execute(
-                _delete(LedgerEntry).where(
-                    LedgerEntry.company_id == company_id,
-                    LedgerEntry.idempotency_key.in_(ikeys),
-                )
-            )
-
+    # The entry comes off first: a locked period refuses it before anything is removed.
+    for entry in entries:
+        await _void_je_if_posted(
+            session, company_id=company_id, user_id=user.id, doc_id=str(batch.id), je_id=entry.entity_id,
+            idem_key=f"import-undo:{entry.entity_id}", reason="Import undone", trigger="item.import-undone")
+    await erase_items(session, company_id, entity_ids)
     batch.status = "undone"
     # Release the operation so the same source can be imported again as a new entry.
     batch.operation_key = None
@@ -4797,7 +4814,6 @@ async def undo_import_batch(
     return {
         "ok": True,
         "removed": len(entity_ids),
-        "modified_items": modified,
     }
 
 

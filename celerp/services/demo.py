@@ -1613,20 +1613,13 @@ async def delete_demo_items(session: AsyncSession, company_id: uuid.UUID, entity
     taking the stock they hold off the books (lot_origin.remove_opening_lots).
 
     Runs inside the caller's transaction and does not commit."""
-    import sqlalchemy as sa
-    from celerp.models.ledger import LedgerEntry
-    from celerp.models.projections import Projection
+    from celerp.services.item_erasure import erase_items
     from celerp.services.lot_origin import remove_opening_lots
 
     if not entity_ids:
         return
     await remove_opening_lots(session, company_id, entity_ids, None, _SAMPLE_STOCK)
-    await session.execute(sa.delete(Projection).where(
-        Projection.company_id == company_id, Projection.entity_id.in_(entity_ids),
-    ))
-    await session.execute(sa.delete(LedgerEntry).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(entity_ids),
-    ))
+    await erase_items(session, company_id, entity_ids)
 
 
 async def _untouched_demo_items(session: AsyncSession, company_id: uuid.UUID, entity_ids: list[str]) -> list[str]:
@@ -1634,12 +1627,12 @@ async def _untouched_demo_items(session: AsyncSession, company_id: uuid.UUID, en
 
     An item is touched when any of its ledger rows came from somewhere other than
     the demo seeder, the books recording where its stock sits aside, and used when
-    another record (a document line, a movement, a note) mentions its id or its SKU.
-    Demo ids and SKUs all contain "demo-", so one case-insensitive pass per table
-    finds every candidate mention."""
+    another record (a document line, a movement, a note) mentions its id or its SKU
+    (item_erasure.mentioned_elsewhere)."""
     import sqlalchemy as sa
     from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
+    from celerp.services.item_erasure import mentioned_elsewhere
     from celerp.services.lot_origin import KEPT, RECORDED
 
     touched = set((await session.execute(
@@ -1655,21 +1648,9 @@ async def _untouched_demo_items(session: AsyncSession, company_id: uuid.UUID, en
             Projection.company_id == company_id, Projection.entity_id.in_(entity_ids),
         )
     )).all())
-    mentions: list[str] = []
-    for model, column in ((Projection, Projection.state), (LedgerEntry, LedgerEntry.data)):
-        mentions.extend((await session.execute(
-            sa.select(sa.cast(column, sa.Text)).where(
-                model.company_id == company_id,
-                model.entity_id.not_in(entity_ids),
-                sa.cast(column, sa.Text).ilike("%demo-%"),
-            )
-        )).scalars().all())
-
-    def used(entity_id: str) -> bool:
-        needles = [entity_id] + ([f'"{skus[entity_id]}"'] if skus.get(entity_id) else [])
-        return any(needle in text for text in mentions for needle in needles)
-
-    return [eid for eid in entity_ids if eid not in touched and not used(eid)]
+    used = await mentioned_elsewhere(session, company_id, {
+        eid: [eid] + ([f'"{skus[eid]}"'] if skus.get(eid) else []) for eid in entity_ids})
+    return [eid for eid in entity_ids if eid not in touched and eid not in used]
 
 
 async def delete_untouched_demo_items(session: AsyncSession, company_id: uuid.UUID) -> tuple[int, int]:

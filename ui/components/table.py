@@ -2072,6 +2072,8 @@ function sendToTypeChanged(docType, docLabel){
     var revertOpt=document.querySelector('#bulk-action-select option[value="revert_to_draft"]');
     if(makeAvailOpt) makeAvailOpt.hidden=!hasDraft;
     if(revertOpt) revertOpt.hidden=!hasNonDraft;
+    var deleteOpt=document.querySelector('#bulk-action-select option[value="delete"]');
+    if(deleteOpt) deleteOpt.hidden=!(hasDraft&&!hasNonDraft);
   }
   var table=document.getElementById('data-table');
   if(!table) return;

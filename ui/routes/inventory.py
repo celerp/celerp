@@ -4859,12 +4859,13 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     action_options.append(Option(t("inv.expire"), value="expire"))
     if role_has_permission(settings or {}, role, "edit_inventory"):
         action_options.append(Option(t("inv.duplicate"), value="duplicate"))
-    # Restore and Delete only shown when viewing archived/expired items
+    # Restore only shown when viewing archived/expired items
     active_status = (p or {}).get("status", "")
     if active_status in ("archived", "expired"):
         action_options.append(Option(t("inv.restore"), value="restore"))
+    # JS shows/hides these three based on the actual checked rows' statuses (updateBulkToolbar).
+    if role_has_permission(settings or {}, role, "adjust_inventory"):
         action_options.append(Option(t("btn.delete"), value="delete"))
-    # JS shows/hides these two based on the actual checked rows' statuses (updateBulkToolbar).
     if role_has_permission(settings or {}, role, "edit_inventory"):
         action_options.append(Option(t("inventory.make_available"), value="make_available"))
     if role_has_permission(settings or {}, role, "revert_items_to_draft"):

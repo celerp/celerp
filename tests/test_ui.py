@@ -6610,8 +6610,9 @@ class TestBulkActionsPhase1to5:
         assert b"Merge" in r.content
         assert b"Archive" in r.content
         assert b"Expire" in r.content
-        # Delete only visible when viewing archived/expired items
-        assert b"Delete" not in r.content
+        # Delete is in the dropdown on every view; the table script shows it only while
+        # every selected row is a draft (test_browser/test_bulk_delete_drafts.py).
+        assert b'value="delete"' in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_toolbar_module_action_in_dropdown(self, ui_client):
