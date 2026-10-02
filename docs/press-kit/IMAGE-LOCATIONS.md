@@ -59,6 +59,15 @@ Screen names per folder:
 - Jewelry (15): `dashboard`, `inventory`, `manufacturing-worksheet`, `worksheet-print`, `invoices`, `production-planning`, `chart-of-accounts`, `trial-balance`, `general-ledger`, `balance-sheet`, `audit-log`, `permissions`, `rest-api`, `statement-of-account`, `memo-holdings`
 <!-- PRESS_KIT:screen-names end -->
 
+## Website page sets
+
+Screens picked for one page of the Celerp website, in WebP (q82, 1280x800). The page embeds them by
+jsDelivr URL, so renaming or removing a file breaks that page.
+
+| Page | Folder | Screens | CDN base |
+|---|---|---|---|
+| Accountants | `accountants/` | `migration-verify`, `new-company`, `company-backup` | .../screenshots/accountants/`<name>.webp` |
+
 ## Artwork (hand-illustrated brand graphics)
 
 Creative brand art (not screenshots) lives under **`docs/press-kit/artwork/`** — for blog posts,
