@@ -3514,7 +3514,7 @@
   "posting.status_wrong_type": "Falscher Typ",
   "posting.status_unused": "Noch nicht verwendet",
   "posting.older_stock": "Älterer Bestand {sku} {name}",
-  "posting.older_stock_hint": "Wert {value}. Aus seiner Historie geht nicht hervor, auf welchem Lagerkonto er steht, daher kann sein Wert erst bewegt werden, wenn Sie das Konto wählen, auf das er gebucht wurde. Wählbar ist nur ein Konto, das diesen Wert hält, und die Wahl ist endgültig.",
+  "posting.older_stock_hint": "Wert {value}. Aus den Büchern geht nicht hervor, auf welchem Lagerkonto er steht, daher kann sein Wert erst bewegt werden, wenn Sie das Konto wählen, das ihn trägt. Wählbar ist nur ein Konto, das diesen Wert hält, und die Wahl ist endgültig. Hält ihn keines, müssen zuerst die Bücher abgestimmt werden.",
   "posting.older_stock_recorded": "Erfasst. Der Wert dieses Bestands wird jetzt von diesem Konto abgebucht.",
   "posting.unknown_role": "Unbekanntes Buchungskonto."
 }

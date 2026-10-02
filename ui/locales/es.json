@@ -3514,7 +3514,7 @@
   "posting.status_wrong_type": "Tipo incorrecto",
   "posting.status_unused": "Aún no se usa",
   "posting.older_stock": "Existencias antiguas {sku} {name}",
-  "posting.older_stock_hint": "Valoradas en {value}. Su historial no muestra qué cuenta de inventario las contiene, así que su costo no puede moverse hasta que elija la cuenta en la que se registraron. Solo se puede elegir una cuenta que contenga este valor, y la elección es definitiva.",
+  "posting.older_stock_hint": "Valoradas en {value}. Los libros no muestran qué cuenta de inventario las contiene, así que su costo no puede moverse hasta que elija la cuenta que las contiene. Solo se puede elegir una cuenta que contenga este valor, y la elección es definitiva. Si ninguna lo contiene, primero hay que conciliar los libros.",
   "posting.older_stock_recorded": "Registrado. El costo de estas existencias ahora sale de esta cuenta.",
   "posting.unknown_role": "Cuenta de contabilización desconocida."
 }

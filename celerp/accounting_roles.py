@@ -37,6 +37,11 @@ SOURCE_CONTROLS_KEY = "posting_source_controls"
 
 # The item-state field holding the inventory account a lot's value sits in.
 LOT_ACCOUNT_FIELD = "inventory_account_code"
+# Company.settings key set once every lot's stock records its inventory account or has
+# been left for the user to place (celerp.services.lot_origin). A company without it
+# predates lots recording their account.
+INVENTORY_ORIGIN_KEY = "inventory_origin_schema"
+INVENTORY_ORIGIN_SCHEMA = 1
 
 # Where a user fixes a missing or invalid role.
 POSTING_ACCOUNTS_PATH = "/settings/accounting?tab=posting-accounts"

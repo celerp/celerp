@@ -3514,7 +3514,7 @@
   "posting.status_wrong_type": "種類が不適切",
   "posting.status_unused": "未使用",
   "posting.older_stock": "旧在庫 {sku} {name}",
-  "posting.older_stock_hint": "評価額 {value}。履歴からどの在庫勘定に計上されているか判断できないため、計上された勘定を選択するまで原価を移せません。この金額を保有している勘定のみ選択でき、選択は確定です。",
+  "posting.older_stock_hint": "評価額 {value}。帳簿からどの在庫勘定に計上されているか判断できないため、これを保有する勘定を選択するまで原価を移せません。この金額を保有している勘定のみ選択でき、選択は確定です。該当する勘定がない場合は、先に帳簿の照合が必要です。",
   "posting.older_stock_recorded": "記録しました。この在庫の原価は今後この勘定から移されます。",
   "posting.unknown_role": "不明な転記勘定です。"
 }

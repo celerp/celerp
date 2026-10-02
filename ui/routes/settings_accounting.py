@@ -298,7 +298,7 @@ def _cash_flow_edit_cell(a: dict) -> FT:
     )
 
 
-# Older stock whose history proves no inventory account edits through the same routes
+# Older stock with no inventory account edits through the same routes
 # as a role, keyed "older-stock:<item id>".
 _OLDER_STOCK = "older-stock:"
 _POSTING_BADGE = {"ready": "active", "unused": "inactive"}
@@ -356,7 +356,7 @@ def _older_lot(data: dict, key: str) -> dict | None:
 
 
 def _older_stock_row(lot: dict, error: str | None = None, recorded: dict | None = None) -> FT:
-    """One lot whose history proves no inventory account. Once its account is chosen the
+    """One older lot with no inventory account. Once its account is chosen the
     row shows it and is no longer editable: the lot's cost then moves through that
     account, and moving the lot to another account later would leave its value behind."""
     key = f"{_OLDER_STOCK}{lot['item_id']}"

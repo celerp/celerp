@@ -3240,7 +3240,7 @@ async def set_posting_account(token: str, role: str, code: str) -> dict:
 
 
 async def set_older_stock_account(token: str, item_id: str, code: str) -> dict:
-    """PUT the inventory account of older stock whose history proves none."""
+    """PUT the inventory account of older stock that records none."""
     async with _api_client(token) as c:
         return _raise(await c.put(f"/accounting/posting-accounts/older-stock/{item_id}", json={"code": code})).json()
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -41,6 +42,8 @@ from celerp.services.money import (
 )
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -233,12 +236,18 @@ async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUI
 
 
 async def seed_chart_of_accounts_hook(*, session: AsyncSession, company_id: uuid.UUID) -> None:
-    """Lifecycle hook called via on_company_created slot."""
+    """Lifecycle hook called via on_company_created slot. A new company's lots record
+    their inventory account from the start, so it is marked as never needing the
+    older-stock upgrade."""
+    from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, INVENTORY_ORIGIN_SCHEMA
+    from celerp.models.company import Company
     from celerp.services.account_roles import reconcile_company
 
     await seed_chart_of_accounts(session, company_id)
     await _seed_default_bank_account(session, company_id)
     await reconcile_company(session, company_id)
+    company = await session.get(Company, company_id)
+    company.settings = {**(company.settings or {}), INVENTORY_ORIGIN_KEY: INVENTORY_ORIGIN_SCHEMA}
 
 
 async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
@@ -250,15 +259,18 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     company then works when it is reactivated. Then every company's posting accounts are
     reconciled with its chart (account_roles.reconcile_company), and a company left
     without an account its workflows need gets one notice pointing at the fix. Stock from
-    before lots recorded their inventory account then records the account its own history
-    proves (lot_origin.prove_lot_accounts). A company
+    before lots recorded their inventory account is then placed once: as opening stock
+    when Accounting is being turned on now (lot_origin.open_inventory_origins), otherwise
+    by the upgrade of older books (lot_origin.normalize_legacy_inventory_origins). A
+    company that fails to upgrade is logged and retried on the next start. A company
     staged for a migration is left alone: its chart and posting accounts come from the
     imported books when the migration is finalized.
     """
+    from celerp.accounting_roles import INVENTORY_ORIGIN_KEY
     from celerp.models.company import Company
     from celerp.services import migrations
-    from celerp.services.account_roles import reconcile_company
-    from celerp.services.lot_origin import prove_lot_accounts
+    from celerp.services.account_roles import current_settings, reconcile_company
+    from celerp.services.lot_origin import normalize_legacy_inventory_origins, open_inventory_origins
     from celerp.services.posting_readiness import notify_unmapped
     from sqlalchemy import select as _select
 
@@ -273,7 +285,13 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
             await _seed_default_bank_account(session, company_id)
         if await reconcile_company(session, company_id):
             await notify_unmapped(session, company_id)
-        await prove_lot_accounts(session, company_id)
+        if INVENTORY_ORIGIN_KEY in await current_settings(session, company_id):
+            continue
+        place = open_inventory_origins if company_id in unseeded else normalize_legacy_inventory_origins
+        try:
+            await place(session, company_id)
+        except Exception:
+            logger.exception("Older stock of company %s was not placed; retrying on the next start", company_id)
 
 
 def _account_to_dict(acc: Account) -> dict:
@@ -4154,7 +4172,7 @@ async def set_older_stock_posting_account(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Record the inventory account of older stock whose history proves none."""
+    """Record the inventory account of older stock that records none."""
     from celerp.services.lot_origin import choose_lot_account
 
     await choose_lot_account(session, company_id, item_id, payload.code, user.id)

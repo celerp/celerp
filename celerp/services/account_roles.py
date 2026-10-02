@@ -171,8 +171,9 @@ async def record_source_control(session: AsyncSession, company_id, role, code: s
 
 
 class LotOriginError(HTTPException):
-    """A lot recorded no inventory account and its history proves none, so its cost
-    cannot move until the user picks the account (lot_origin.choose_lot_account)."""
+    """A lot from before lots recorded their inventory account was left unplaced by the
+    upgrade (celerp.services.lot_origin), so its cost cannot move until the user picks
+    the account (lot_origin.choose_lot_account)."""
 
     def __init__(self, sku: str):
         super().__init__(
@@ -199,8 +200,9 @@ class AmbiguousOriginError(HTTPException):
 
 def lot_account(state: dict) -> str:
     """The inventory account a lot's value sits in: the one it recorded when it first
-    took on stock, or the one its own history proved for a lot from before lots recorded
-    it (celerp.services.lot_origin). Never today's role target, never a company-wide guess."""
+    took on stock, or for a lot from before lots recorded it, the one the upgrade or the
+    user placed it on (celerp.services.lot_origin). Never today's role target, never a
+    company-wide guess."""
     code = state.get(LOT_ACCOUNT_FIELD)
     if not code:
         raise LotOriginError(str(state.get("sku") or ""))
@@ -214,8 +216,8 @@ async def new_lot_account(session: AsyncSession, company_id,
     so it takes the opening inventory account; a writer that books the stock itself
     names the role it debits. A company being migrated, which has no posting accounts
     yet, books its stock where the source books kept inventory, when they name exactly
-    one account. Otherwise None, and the lot then moves cost only where its history
-    proves the account (``lot_account``)."""
+    one account. Otherwise None, and the lot moves no cost until its account is placed
+    (``lot_account``)."""
     from sqlalchemy import select
 
     settings = (await session.execute(

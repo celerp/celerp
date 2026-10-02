@@ -3514,7 +3514,7 @@
   "posting.status_wrong_type": "Sai loại",
   "posting.status_unused": "Chưa dùng",
   "posting.older_stock": "Hàng tồn cũ {sku} {name}",
-  "posting.older_stock_hint": "Giá trị {value}. Lịch sử không cho biết tài khoản tồn kho nào đang giữ hàng này, nên không thể chuyển giá vốn cho đến khi bạn chọn tài khoản đã ghi nhận nó. Chỉ có thể chọn tài khoản đang giữ giá trị này, và lựa chọn là cuối cùng.",
+  "posting.older_stock_hint": "Giá trị {value}. Sổ sách không cho biết tài khoản tồn kho nào đang giữ hàng này, nên không thể chuyển giá vốn cho đến khi bạn chọn tài khoản đang giữ nó. Chỉ có thể chọn tài khoản đang giữ giá trị này, và lựa chọn là cuối cùng. Nếu không có tài khoản nào, cần đối chiếu sổ sách trước.",
   "posting.older_stock_recorded": "Đã ghi nhận. Giá vốn của hàng này giờ được chuyển ra từ tài khoản này.",
   "posting.unknown_role": "Tài khoản hạch toán không xác định."
 }

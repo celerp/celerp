@@ -320,8 +320,8 @@ class ItemCostAdjusted(BaseModel):
 
 
 class ItemInventoryAccountRecorded(BaseModel):
-    # A lot from before lots recorded their inventory account: the account its own history
-    # proves, or the one the user picked for it. Only a lot with no account can take one.
+    # A lot from before lots recorded their inventory account: the account the upgrade
+    # placed it on, or the one the user picked for it. Only a lot with no account can take one.
     inventory_account_code: str
 
 

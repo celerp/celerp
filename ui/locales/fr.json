@@ -3514,7 +3514,7 @@
   "posting.status_wrong_type": "Type incorrect",
   "posting.status_unused": "Pas encore utilisé",
   "posting.older_stock": "Stock ancien {sku} {name}",
-  "posting.older_stock_hint": "Valeur {value}. Son historique n'indique pas quel compte de stock le porte, donc son coût ne peut pas sortir tant que vous n'avez pas choisi le compte où il a été comptabilisé. Seul un compte qui porte cette valeur peut être choisi, et ce choix est définitif.",
+  "posting.older_stock_hint": "Valeur {value}. Les livres n'indiquent pas quel compte de stock le porte, donc son coût ne peut pas sortir tant que vous n'avez pas choisi le compte qui le porte. Seul un compte qui porte cette valeur peut être choisi, et ce choix est définitif. Si aucun ne la porte, les livres doivent d'abord être rapprochés.",
   "posting.older_stock_recorded": "Enregistré. Le coût de ce stock sort désormais de ce compte.",
   "posting.unknown_role": "Compte d'imputation inconnu."
 }

@@ -350,7 +350,7 @@ def _status(role: str, current: dict[str, str], chart: dict[str, dict], required
 
 
 async def _older_stock(session: AsyncSession, company_id, settings: dict, chart: dict[str, dict]) -> dict:
-    """Stock on hand whose history proves no inventory account (lot_origin), and the
+    """Older stock on hand that records no inventory account (lot_origin), and the
     accounts each may be picked from: those that have held purchased or opening inventory."""
     from celerp.services.lot_origin import unrecorded_lots
 
@@ -364,7 +364,7 @@ async def _older_stock(session: AsyncSession, company_id, settings: dict, chart:
 async def panel(session: AsyncSession, company_id) -> dict | None:
     """Settings > Accounting > Posting accounts: every role with its account, status,
     the accounts it served before (``earlier``, where existing balances stay) and the
-    accounts that can serve it; plus older stock with no provable inventory account. None when
+    accounts that can serve it; plus older stock that records no inventory account. None when
     accounting is not running."""
     chart = await _chart(session, company_id)
     if chart is None:
