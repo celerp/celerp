@@ -1318,6 +1318,41 @@ async def test_a_payment_whose_page_opened_before_the_company_changed_currency_i
     assert await _unmatched(real_engine) == [("pi_paid", 50000, "USD", str(a), eid)]
 
 
+async def _rate_changed(client, engine, boss, cid, entity_id: str, rate: float) -> None:
+    """The owner gives the invoice another exchange rate, the way the app allows it on a
+    finalized invoice: back to draft, the rate edited, finalized again."""
+    tok = auth(await token(engine, boss, cid))
+    assert (await client.post(f"/docs/{entity_id}/revert-to-draft", json={}, headers=tok)).status_code == 200
+    r = await client.patch(f"/docs/{entity_id}", json={"fields_changed": {"conversion_rate": {"new": rate}}},
+                           headers=tok)
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{entity_id}/finalize", headers=tok)
+    assert r.status_code == 200, r.text
+
+
+async def test_a_payment_whose_page_opened_before_the_invoice_changed_rate_is_kept_among_the_unmatched(
+        monkeypatch, real_engine, real_client):
+    """The company keeps its books in baht and invoices in dollars. A customer opens the
+    payment page at the invoice's rate; before they pay, the owner gives the invoice
+    another rate. The payment is never posted at the rate the invoice no longer has."""
+    _payments_on(monkeypatch)
+    boss, a, b = await _harbor(real_engine)
+    await _company_settings(real_engine, a, currency="THB")
+    cloud = _Cloud(monkeypatch, real_engine)
+    eid, share = await _shared_invoice(real_client, real_engine, boss, a, conversion_rate=35.125)
+    assert (await real_client.get(f"/pay/{share}", follow_redirects=False)).status_code == 303
+    assert cloud.opened[eid]["base_currency"] == "THB" and float(cloud.opened[eid]["rate"]) == 35.125
+
+    await _rate_changed(real_client, real_engine, boss, a, eid, 36.5)
+    cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _references(real_engine, eid) == []
+    assert await _payment_journal(real_engine, eid) == []
+    assert await _unmatched(real_engine) == [("pi_paid", 50000, "USD", str(a), eid)]
+
+
 async def test_a_payment_recorded_again_into_books_a_restore_brought_back_in_another_currency_is_kept_among_the_unmatched(
         tmp_path, monkeypatch, code_config, real_engine, real_client):
     """After the backup the company moves its books from dollars to baht and gives the
@@ -1333,10 +1368,7 @@ async def test_a_payment_recorded_again_into_books_a_restore_brought_back_in_ano
     source = await backup_export.export_full()
     try:
         await _company_settings(real_engine, a, currency="THB")
-        async with maker(real_engine)() as s:
-            await s.execute(text("UPDATE projections SET state = jsonb_set(state::jsonb, '{conversion_rate}', "
-                                 "'35.125')::json WHERE entity_id = :e"), {"e": eid})
-            await s.commit()
+        await _rate_changed(real_client, real_engine, boss, a, eid, 35.125)
         assert (await real_client.get(f"/pay/{share}", follow_redirects=False)).status_code == 303
         assert cloud.opened[eid]["base_currency"] == "THB" and float(cloud.opened[eid]["rate"]) == 35.125
         cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
