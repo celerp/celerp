@@ -1326,6 +1326,29 @@ async def test_a_payment_without_usable_books_from_its_page_is_kept_among_the_un
     assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(a), eid)]
 
 
+@pytest.mark.parametrize("without", ["none", "absent"])
+async def test_a_payment_delivered_without_a_time_it_was_paid_is_kept_among_the_unmatched(
+        real_engine, real_client, monkeypatch, without):
+    """Celerp Cloud found the payment by reading Stripe back and Stripe gave no time
+    the funds moved: it is never dated today in its place."""
+    boss, a, b = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    eid = await _invoice(real_client, real_engine, boss, a)
+    cloud.pay(a, eid, "pi_1")
+    if without == "none":
+        cloud.deliveries[0]["paid_at"] = None
+    else:
+        del cloud.deliveries[0]["paid_at"]
+
+    await cloud.deliver()
+
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+    assert await _paid(real_engine, eid) == []
+    assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(a), eid)]
+    async with maker(real_engine)() as s:
+        assert await s.scalar(text("SELECT paid_at FROM unmatched_payments")) is None
+
+
 @pytest.mark.parametrize("paid_at,timezone_name,business_day", [
     # Already the next morning in Bangkok.
     (datetime(2025, 10, 3, 18, 30, tzinfo=timezone.utc), "Asia/Bangkok", "2025-10-04"),
