@@ -1283,6 +1283,8 @@
   "pay.settings_disconnecting": "ያሉት ክፍያዎች እስኪጠናቀቁ ድረስ Stripe እየተቋረጠ ነው",
   "pay.unmatched_head": "ከደረሰኝ ጋር ያልተዛመዱ ክፍያዎች",
   "pay.unmatched_hint": "እነዚህ የመስመር ላይ ክፍያዎች ከአሁን በኋላ ለሌለ ኩባንያ ወይም ደረሰኝ፣ ወይም ክፍያውን መቀበል ላልቻለ ደረሰኝ ደርሰዋል። እያንዳንዱን በትክክለኛው ቦታ ይመዝግቡ፣ ወይም ከStripe ዳሽቦርድዎ ተመላሽ ያድርጉ።",
+  "pay.unmatched_paid_on": "የተከፈለበት",
+  "pay.unmatched_received": "የደረሰበት",
   "pay.upgrade_desc": "ደንበኞች የሽያጭ ደረሰኞችን በካርድ በመስመር ላይ እንዲከፍሉ ያድርጉ። መጀመሪያ ይህን ተከላ ከCelerp Connect ጋር ያገናኙ፣ ከዚያ የStripe መለያ ያገናኙ።",
   "perm.page_no_access": "ወደዚህ ገጽ የመድረስ ፈቃድ የለዎትም።",
   "reason_export.gift": "ስጦታ",

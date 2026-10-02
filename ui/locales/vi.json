@@ -1197,6 +1197,8 @@
   "pay.settings_disconnecting": "Stripe đang ngắt kết nối trong khi các khoản thanh toán hiện có hoàn tất",
   "pay.unmatched_head": "Khoản thanh toán chưa khớp với hóa đơn",
   "pay.unmatched_hint": "Các khoản thanh toán trực tuyến này đến cho một công ty hoặc hóa đơn không còn tồn tại, hoặc không thể nhận khoản thanh toán. Hãy ghi nhận từng khoản vào đúng nơi, hoặc hoàn tiền từ bảng điều khiển Stripe của bạn.",
+  "pay.unmatched_paid_on": "Ngày thanh toán",
+  "pay.unmatched_received": "Ngày nhận",
   "pay.upgrade_desc": "Cho phép khách hàng thanh toán hóa đơn trực tuyến bằng thẻ. Kết nối phiên bản này với Celerp Connect trước, sau đó liên kết tài khoản Stripe.",
   "perm.page_no_access": "Bạn không có quyền truy cập trang này.",
   "reason_export.gift": "Quà tặng",

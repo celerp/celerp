@@ -127,9 +127,6 @@ class ImportMeta:
     # backups (pre-2026-06-04). Used by the install pass to surface
     # missing modules to the user before they reach a broken dashboard.
     enabled_modules: list[str] = field(default_factory=list)
-    # When the database dump began; nothing recorded after it is in the backup.
-    # None for backups from before it was recorded.
-    snapshot_started_at: str | None = None
 
 
 def _pg_major(version_text: str | None) -> int | None:
@@ -187,7 +184,6 @@ def validate_archive(path: Path) -> ImportMeta:
         created_at=meta_data.get("created_at", "unknown"),
         company_name=meta_data.get("company_name", "unknown"),
         enabled_modules=list(meta_data.get("enabled_modules") or []),
-        snapshot_started_at=meta_data.get("snapshot_started_at"),
     )
 
     # PostgreSQL forward-compatibility: pg_restore cannot read a backup made by a NEWER
@@ -847,16 +843,6 @@ def _keep_for_retry(prepared: PreparedRecovery) -> Path:
     return kept
 
 
-def _started(meta: ImportMeta) -> datetime | None:
-    """When *meta*'s database dump began, or None when the backup does not say (every
-    payment is then delivered again)."""
-    try:
-        started = datetime.fromisoformat(meta.snapshot_started_at or "")
-    except ValueError:
-        return None
-    return started if started.tzinfo else started.replace(tzinfo=timezone.utc)
-
-
 async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], bool]:
     """Replace the database, file roots and enabled modules with *prepared*'s.
 
@@ -879,9 +865,8 @@ async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], 
         await _clear_restored_connector_state(session)
         # The restored companies take online payments again, closings from before the
         # restore can no longer finish, companies it did not bring back stay closed, and
-        # the payments recorded since the backup started are delivered again.
-        payments.record_recovery(session, (await session.scalars(sa.select(Company.id))).all(),
-                                 _started(prepared.meta))
+        # every payment it ever recorded is delivered again.
+        payments.record_recovery(session, (await session.scalars(sa.select(Company.id))).all())
         # Backups without module metadata take the set from every restored company.
         modules = prepared.meta.enabled_modules or sorted(await required_installation_modules(session))
         # No session from before the replacement stays valid; this also

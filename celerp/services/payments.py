@@ -56,33 +56,51 @@ async def _cloud_post(path: str, payload: dict) -> dict | None:
 
 # ── Payment (customer-facing, via the hosted invoice view) ───────────────────
 
-async def checkout_paused() -> bool:
-    """Whether new online payments wait for a System Recovery restore Celerp Cloud has
-    not confirmed: until it has, a payment the restore lost may not be recorded again
-    yet, so an invoice it paid could look unpaid."""
+PAUSED = "Online payment is paused while recent payments are checked. Please try again shortly."
+
+
+class CheckoutPaused(Exception):
+    """New online payments wait for a System Recovery restore Celerp Cloud has not
+    confirmed: until it has, a payment the restore lost may not be recorded again yet,
+    so an invoice it paid could look unpaid."""
+
+
+async def checkout_generation() -> int:
+    """The installation's current payment generation, which every new payment carries.
+    Raises CheckoutPaused while a System Recovery restore is unconfirmed."""
     try:
         async with _own_session() as session:
-            return await report_recoveries(session) is None
+            generation = await report_recoveries(session)
     except Exception:
         log.warning("Checking for unconfirmed System Recovery restores failed", exc_info=True)
-        return True
-
+        generation = None
+    if generation is None:
+        raise CheckoutPaused
+    return generation
 
 
 async def create_checkout(*, amount_minor: int, currency: str, description: str,
                           company_id: str, entity_id: str,
-                          share_token: str) -> dict | None:
-    """Ask Cloud to open a Checkout Session on the merchant's connected account.
+                          share_token: str, generation: int) -> dict | None:
+    """Ask Cloud to open a Checkout Session on the merchant's connected account, for
+    the installation's payment *generation*.
 
     Returns {"url": <stripe checkout url>} (redirect the customer there), or None on
-    failure. `amount_minor` is the balance due in minor units.
+    failure. Raises CheckoutPaused when Cloud holds new payments for a restore.
+    `amount_minor` is the balance due in minor units.
     """
-    return await _cloud_post("/billing/connect/checkout", {
+    from celerp.config import settings
+    if settings.cloud_disconnected:
+        return None
+    answer = await _cloud_answer("/billing/connect/checkout", {
         "amount_minor": amount_minor, "currency": currency,
         "description": description[:250],
         "company_id": company_id, "entity_id": entity_id,
-        "share_token": share_token,
+        "share_token": share_token, "generation": generation,
     })
+    if answer is not None and answer[0] == 409 and answer[1].get("detail") in ("generation_stale", "recovery_pending"):
+        raise CheckoutPaused
+    return answer[1] if answer is not None and answer[0] == 200 else None
 
 
 class PaymentsNotClosed(Exception):
@@ -157,6 +175,10 @@ async def receive_payment(payload: dict) -> bool:
     amount_minor = int(payload.get("amount_minor") or 0)
     currency = str(payload.get("currency") or "USD").upper()
     try:
+        paid_at = datetime.fromisoformat(str(payload.get("paid_at")))
+    except ValueError:
+        paid_at = None
+    try:
         cid = uuid.UUID(company_id)
     except ValueError:
         cid = None
@@ -178,7 +200,7 @@ async def receive_payment(payload: dict) -> bool:
         from sqlalchemy.dialects.postgresql import insert
         await session.execute(insert(UnmatchedPayment).values(
             reference=reference, amount_minor=amount_minor, currency=currency,
-            former_company=company_id, document=entity_id).on_conflict_do_nothing())
+            former_company=company_id, document=entity_id, paid_at=paid_at).on_conflict_do_nothing())
         await session.commit()
     return True
 
@@ -200,8 +222,7 @@ async def report_recoveries(session) -> int | None:
         if settings.cloud_disconnected:
             return None
         answer = await _cloud_answer(_RECOVERY, {
-            "recovery_id": str(recovery.recovery_id), "company_ids": recovery.company_ids,
-            "payments_since": recovery.payments_since and recovery.payments_since.isoformat()})
+            "recovery_id": str(recovery.recovery_id), "company_ids": recovery.company_ids})
         generation = answer[1].get("generation") if answer is not None and answer[0] == 200 else None
         if (type(generation) is not int or generation < 1
                 or answer[1].get("recovery_id") != str(recovery.recovery_id)):
@@ -211,12 +232,11 @@ async def report_recoveries(session) -> int | None:
     return await session.scalar(select(func.max(PaymentRecovery.generation))) or 0
 
 
-def record_recovery(session, company_ids: list, payments_since: datetime | None) -> None:
+def record_recovery(session, company_ids: list) -> None:
     """Record, in the restore's own transaction, that a System Recovery restore brought
-    back *company_ids* from a backup that began at *payments_since* (None when it does
-    not say); ``report_recoveries`` tells Celerp Cloud."""
-    session.add(PaymentRecovery(recovery_id=uuid.uuid4(), company_ids=sorted(str(c) for c in company_ids),
-                                payments_since=payments_since))
+    back *company_ids*; ``report_recoveries`` tells Celerp Cloud, which delivers again
+    every payment the installation ever recorded."""
+    session.add(PaymentRecovery(recovery_id=uuid.uuid4(), company_ids=sorted(str(c) for c in company_ids)))
 
 
 async def _settle(session, closure: PaymentClosure, company_exists: bool) -> bool:

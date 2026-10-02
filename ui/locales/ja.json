@@ -1197,6 +1197,8 @@
   "pay.settings_disconnecting": "既存の支払いが完了するまで、Stripe の接続解除を進めています",
   "pay.unmatched_head": "請求書と照合できない支払い",
   "pay.unmatched_hint": "これらのオンライン支払いは、すでに存在しない会社や請求書、または支払いを受け付けられなかった請求書に対して届きました。それぞれを正しい場所に記録するか、Stripe ダッシュボードから返金してください。",
+  "pay.unmatched_paid_on": "支払日",
+  "pay.unmatched_received": "受信日",
   "pay.upgrade_desc": "顧客がカードで請求書をオンライン決済できるようにします。まずこのインスタンスをCelerp Connectに接続し、次にStripeアカウントを連携してください。",
   "perm.page_no_access": "このページにアクセスする権限がありません。",
   "reason_export.gift": "贈答品",

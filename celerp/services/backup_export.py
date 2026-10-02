@@ -114,20 +114,17 @@ async def export_full() -> Path:
     Returns path to temp file.
     """
     import asyncio
-    import datetime
 
     from celerp.config import settings
     from celerp.services import backup
 
-    started = datetime.datetime.now(datetime.timezone.utc)
     dump = await asyncio.to_thread(backup.dump_database, settings.database_url)
-    meta = await archive_meta(started)
+    meta = await archive_meta()
     return await asyncio.to_thread(_build_archive, dump, list(restore_roots().values()), meta)
 
 
-async def archive_meta(started) -> dict:
-    """meta.json of a full backup whose database dump began at *started*: nothing
-    recorded after that moment is in it."""
+async def archive_meta() -> dict:
+    """meta.json of a full backup."""
     import datetime
 
     from celerp.config import read_config
@@ -139,7 +136,6 @@ async def archive_meta(started) -> dict:
         "celerp_version": _version(),
         "pg_version": _pg_version(),
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "snapshot_started_at": started.isoformat(),
         "company_name": read_config().get("company", {}).get("name", "unknown"),
         "enabled_modules": enabled_modules,
     }

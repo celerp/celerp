@@ -22,7 +22,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.cloud_gate import upgrade_banner
 from ui.components.shell import base_shell, page_header, page_title, flash
-from ui.components.table import add_new_option, bank_account_options, fmt_money
+from ui.components.table import EMPTY, add_new_option, bank_account_options, fmt_money
 from ui.i18n import t
 from ui.routes.settings import _check_permission, _token
 from ui.routes.settings_cloud import (
@@ -92,9 +92,9 @@ def _unmatched(payments: list[dict]) -> FT | str:
         H3(t("pay.unmatched_head"), cls="section-title"),
         P(t("pay.unmatched_hint"), cls="form-hint"),
         Table(
-            Thead(Tr(Th(t("th.date")), Th(t("label.reference")), Th(t("label.amount"), cls="cell--number"),
-                     Th(t("th.company")), Th(t("th.document")))),
-            Tbody(*[Tr(Td(p["received_at"][:10]), Td(p["reference"]),
+            Thead(Tr(Th(t("pay.unmatched_received")), Th(t("pay.unmatched_paid_on")), Th(t("label.reference")),
+                     Th(t("label.amount"), cls="cell--number"), Th(t("th.company")), Th(t("th.document")))),
+            Tbody(*[Tr(Td(p["received_at"][:10]), Td((p.get("paid_at") or "")[:10] or EMPTY), Td(p["reference"]),
                        Td(fmt_money(p["amount"], p["currency"]), cls="cell--money"),
                        Td(p["company_id"]), Td(p["document_id"])) for p in payments]),
             cls="data-table",

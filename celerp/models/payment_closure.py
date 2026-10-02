@@ -42,15 +42,14 @@ class PaymentRecovery(Base):
     requests from before the restore can no longer close payments for good, and the
     restored companies take payments again. Until Cloud has answered (``generation``
     is None) no company's payments can be closed. Rows restored from an older backup
-    keep their generations; the latest generation is the current one."""
+    keep their generations; the latest generation is the current one. Cloud
+    delivers again every payment the installation ever recorded, so none is lost
+    with the restore, and confirms the restore once they are recorded again."""
 
     __tablename__ = "payment_recoveries"
 
     recovery_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True)
     company_ids: Mapped[list] = mapped_column(sa.JSON, nullable=False)
-    # When the restored backup started; Celerp Cloud delivers again every payment
-    # recorded since (every payment when None), so none is lost with the restore.
-    payments_since: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     generation: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False)
@@ -73,3 +72,5 @@ class UnmatchedPayment(Base):
     document: Mapped[str] = mapped_column(sa.String(255), nullable=False)
     received_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False)
+    # When the customer paid, as the payment provider reported it; None when not reported.
+    paid_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)

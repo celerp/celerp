@@ -17,7 +17,6 @@ and feeds the canonical ``run_recovery`` engine, the same importer as a local re
 from __future__ import annotations
 
 import asyncio
-import datetime
 from contextlib import asynccontextmanager
 import hashlib
 import io
@@ -121,7 +120,6 @@ async def run_snapshot(label: str | None = None) -> BackupResult:
         # reads stay served throughout.
         with writes_paused():
             # Hash every member first (streamed) so we only ever upload what's missing.
-            started = datetime.datetime.now(datetime.timezone.utc)
             dump = await asyncio.to_thread(dump_database, settings.database_url)
             db_hash = hashlib.sha256(dump).hexdigest()
             files = []  # manifest entries
@@ -131,7 +129,7 @@ async def run_snapshot(label: str | None = None) -> BackupResult:
                 files.append({"path": arcname, "hash": fhash, "size": size})
                 by_hash.setdefault(fhash, (arcname, path))
 
-            manifest = {"meta": await backup_export.archive_meta(started), "db_dump": db_hash, "files": files}
+            manifest = {"meta": await backup_export.archive_meta(), "db_dump": db_hash, "files": files}
             manifest_bytes = json.dumps(manifest, indent=2).encode()
             manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
 

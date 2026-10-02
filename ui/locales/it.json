@@ -1197,6 +1197,8 @@
   "pay.settings_disconnecting": "Stripe si sta scollegando mentre i pagamenti esistenti vengono completati",
   "pay.unmatched_head": "Pagamenti non abbinati a una fattura",
   "pay.unmatched_hint": "Questi pagamenti online sono arrivati per un'azienda o una fattura che non esiste più, o che non ha potuto accettare il pagamento. Registra ciascuno dove deve stare oppure rimborsalo dalla dashboard di Stripe.",
+  "pay.unmatched_paid_on": "Pagato il",
+  "pay.unmatched_received": "Ricevuto il",
   "pay.upgrade_desc": "Consenti ai clienti di pagare le fatture online con carta. Collega prima questa istanza a Celerp Connect, poi associa un account Stripe.",
   "perm.page_no_access": "Non hai accesso a questa pagina.",
   "reason_export.gift": "Regalo",

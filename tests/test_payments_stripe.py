@@ -92,6 +92,7 @@ async def test_checkout_sends_balance_due_and_reconcile_metadata(client, payment
     assert captured["entity_id"] == eid
     assert captured["company_id"] == _company_id(tok)
     assert captured["share_token"] == token
+    assert captured["generation"] == 0  # the installation's payment generation
 
 
 @pytest.mark.asyncio
@@ -532,7 +533,7 @@ async def test_unmatched_payments_are_listed_newest_first(client, session):
     old = datetime.datetime(2026, 9, 28, 9, 0, tzinfo=datetime.timezone.utc)
     session.add_all([
         UnmatchedPayment(reference="pi_old", amount_minor=107000, currency="USD", former_company="c-old",
-                         document="doc:1", received_at=old),
+                         document="doc:1", received_at=old, paid_at=old - datetime.timedelta(days=3)),
         UnmatchedPayment(reference="pi_new", amount_minor=5000, currency="JPY", former_company="c-new",
                          document="doc:2", received_at=old + datetime.timedelta(days=1)),
     ])
@@ -543,9 +544,10 @@ async def test_unmatched_payments_are_listed_newest_first(client, session):
     assert r.status_code == 200
     assert r.json() == {"items": [
         {"reference": "pi_new", "amount": 5000, "currency": "JPY", "company_id": "c-new",
-         "document_id": "doc:2", "received_at": "2026-09-29T09:00:00+00:00"},
+         "document_id": "doc:2", "received_at": "2026-09-29T09:00:00+00:00", "paid_at": None},
         {"reference": "pi_old", "amount": 1070.0, "currency": "USD", "company_id": "c-old",
-         "document_id": "doc:1", "received_at": "2026-09-28T09:00:00+00:00"},
+         "document_id": "doc:1", "received_at": "2026-09-28T09:00:00+00:00",
+         "paid_at": "2026-09-25T09:00:00+00:00"},
     ]}
 
 

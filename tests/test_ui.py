@@ -11122,9 +11122,10 @@ class TestPaymentsSettingsPage:
 
     _UNMATCHED = [
         {"reference": "pi_new", "amount": 5000, "currency": "JPY", "company_id": "c-new",
-         "document_id": "doc:2", "received_at": "2026-09-29T09:00:00+00:00"},
+         "document_id": "doc:2", "received_at": "2026-09-29T09:00:00+00:00", "paid_at": None},
         {"reference": "pi_old", "amount": 1070.0, "currency": "USD", "company_id": "c-old",
-         "document_id": "doc:1", "received_at": "2026-09-28T09:00:00+00:00"},
+         "document_id": "doc:1", "received_at": "2026-09-28T09:00:00+00:00",
+         "paid_at": "2026-09-25T09:00:00+00:00"},
     ]
 
     @pytest.mark.asyncio
@@ -11136,6 +11137,8 @@ class TestPaymentsSettingsPage:
         assert "Payments not matched to an invoice" in r.text
         assert r.text.index("pi_new") < r.text.index("pi_old")  # newest first
         assert "c-old" in r.text and "doc:1" in r.text and "2026-09-28" in r.text
+        assert "Paid on" in r.text and "2026-09-25" in r.text  # when the customer paid
+        assert '<td>--</td>' in r.text  # not known for pi_new
         assert 'class="cell--number"' in r.text and 'class="cell--money"' in r.text
 
     @pytest.mark.asyncio

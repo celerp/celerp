@@ -372,7 +372,7 @@ async def test_cloud_snapshot_relay_payload_unchanged(tmp_path, monkeypatch):
     (att / "receipt.pdf").write_bytes(b"RECEIPT")
     dump = b"PGDUMP-CUSTOM-FORMAT"
 
-    async def _meta(started):
+    async def _meta():
         return {"celerp_version": "1.0.0", "pg_version": "16", "created_at": "2026-09-29T02:00:00Z",
                 "company_name": "Harbor Goods Ltd", "enabled_modules": []}
 

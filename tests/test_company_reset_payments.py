@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -35,6 +35,7 @@ RESET = "/companies/me/reset"
 CLOSURE = "/billing/connect/companies/retire/"
 RECOVERY = "/billing/connect/recovery"
 CHECKOUT = "/billing/connect/checkout"
+PAUSED = "Online payment is paused while recent payments are checked. Please try again shortly."
 NAME = "Harbor Goods Ltd"
 LOST = object()  # Cloud takes the step, but its answer never arrives
 NO_ANSWER = object()  # the request returns nothing
@@ -51,9 +52,10 @@ class _Cloud:
     """Celerp Cloud as the installation reaches it: each closing request moves from
     prepared to retired or cancelled, as Cloud does, under the installation's payment
     generation, which each reported System Recovery restore advances. A restore has
-    every payment recorded since its backup started (or within the hour before)
-    delivered again, and no new payment opens for its company until the installation
-    records it. A scripted answer replaces the next answer to one step."""
+    every payment the installation ever recorded delivered again, and is confirmed
+    only once the installation has recorded every delivered payment; until then no
+    payment opens, and one opens only for the current generation. A scripted answer
+    replaces the next answer to one step."""
 
     def __init__(self, monkeypatch, engine, *, credential: str = "cloud-credential") -> None:
         from celerp.services import cloud_entitlement
@@ -62,8 +64,8 @@ class _Cloud:
         self.deliveries: list[dict] = []  # payments delivered to the installation, with "acked"
         self.generation = 0
         self.recoveries: dict[str, tuple[int, list[str]]] = {}
-        self.payments_since: list[str | None] = []  # the backup start each restore reported
-        self.checkouts: list[tuple[str, int]] = []  # (company, status) per payment asked to open
+        self.confirmed: set[str] = set()  # recoveries confirmed
+        self.checkouts: list[tuple[str, int, int]] = []  # (company, generation, status) per payment asked to open
         self.scripted: dict[str, list] = {"prepare": [], "finalize": [], "cancel": [], "recovery": []}
         self.calls: list[tuple[str, str]] = []  # (step, operation or recovery)
         self.generations: list[int] = []  # the generation each closing step carried
@@ -144,32 +146,34 @@ class _Cloud:
             row["state"] = "cancelled"
         return httpx.Response(200, json={"company_id": company_id, "operation_id": op, "state": row["state"]})
 
-    def _recover(self, recovery_id: str, company_ids: list[str], since: str | None) -> httpx.Response:
+    def _recover(self, recovery_id: str, company_ids: list[str]) -> httpx.Response:
         if recovery_id not in self.recoveries:
             self.generation += 1
             self.recoveries[recovery_id] = (self.generation, company_ids)
-            self.payments_since.append(since)
             for o in self.ops.values():
                 if o["company"] in company_ids and o["state"] in ("prepared", "retired"):
                     o["state"] = "cancelled"
-            cutoff = since and datetime.fromisoformat(since) - timedelta(hours=1)
             self.deliveries += [{**d, "delivery_id": str(uuid.uuid4()), "acked": False, "replay": True}
-                                for d in self.deliveries
-                                if d["acked"] and (cutoff is None or d["delivered_at"] >= cutoff)]
+                                for d in self.deliveries if d["acked"]]
+        if any(not d["acked"] for d in self.deliveries):
+            return self._refuse("payment_unrecorded")
+        self.confirmed.add(recovery_id)
         return httpx.Response(200, json={"recovery_id": recovery_id, "generation": self.recoveries[recovery_id][0]})
 
-    def _checkout(self, company_id: str) -> httpx.Response:
-        replaying = any(d.get("replay") and not d["acked"] and d["company_id"] == company_id
-                        for d in self.deliveries)
-        response = (self._refuse("A payment for this company is still being recorded") if replaying
-                    else httpx.Response(200, json={"url": "https://checkout.stripe.test/cs_1"}))
-        self.checkouts.append((company_id, response.status_code))
+    def _checkout(self, company_id: str, generation: int) -> httpx.Response:
+        if not set(self.recoveries) <= self.confirmed:
+            response = self._refuse("recovery_pending")
+        elif generation != self.generation:
+            response = self._refuse("generation_stale")
+        else:
+            response = httpx.Response(200, json={"url": "https://checkout.stripe.test/cs_1"})
+        self.checkouts.append((company_id, generation, response.status_code))
         return response
 
     async def _request(self, method, path, *, total_s=None, json=None, params=None, api_key=None):
         assert method == "POST"
         if path == CHECKOUT:
-            return self._checkout(json["company_id"])
+            return self._checkout(json["company_id"], json["generation"])
         if path == RECOVERY:
             step, key = "recovery", json["recovery_id"]
         else:
@@ -188,7 +192,8 @@ class _Cloud:
                 raise answer
             return answer
         if step == "recovery":
-            response = self._recover(key, json["company_ids"], json.get("payments_since"))
+            assert set(json) == {"recovery_id", "company_ids"}
+            response = self._recover(key, json["company_ids"])
         else:
             response = self._take(step, json["company_id"], key, json["generation"])
         if answer is LOST:
@@ -1079,9 +1084,9 @@ async def _shared_invoice(client, engine, boss, cid) -> tuple[str, str]:
     return eid, r.json()["token"]
 
 
-async def test_a_payment_a_restore_lost_is_recorded_again_before_a_new_payment_opens(
+async def test_every_payment_a_restore_may_have_lost_is_recorded_again_before_a_new_payment_opens(
         tmp_path, monkeypatch, code_config, real_engine, real_client):
-    from celerp.services import backup, backup_export, backup_import
+    from celerp.services import backup_export, backup_import
     _system_recovery(tmp_path, monkeypatch)
     _payments_on(monkeypatch)
     boss, a, b = await _harbor(real_engine)
@@ -1091,18 +1096,10 @@ async def test_a_payment_a_restore_lost_is_recorded_again_before_a_new_payment_o
     # Saturday: a deposit, recorded before the backup.
     cloud.pay(a, eid, "pi_saturday", amount_minor=7000)
     await cloud.deliver()
-    # Sunday: the backup, which records when it started, before the database is read.
-    dumped = []
-    dump_database = backup.dump_database
-
-    def dump(url):
-        dumped.append(datetime.now(timezone.utc))
-        return dump_database(url)
-    monkeypatch.setattr(backup, "dump_database", dump)
+    # Sunday: the backup.
     source = await backup_export.export_full()
     try:
-        started = datetime.fromisoformat(backup_import.validate_archive(source).snapshot_started_at)
-        assert started <= dumped[0]
+        assert "snapshot_started_at" not in (await backup_export.archive_meta())
         # Monday: the customer pays half the balance.
         cloud.pay(a, eid, "pi_monday", amount_minor=50000)
         await cloud.deliver()
@@ -1113,12 +1110,14 @@ async def test_a_payment_a_restore_lost_is_recorded_again_before_a_new_payment_o
         source.unlink(missing_ok=True)
 
     assert result.ok is True, result.error
-    assert [datetime.fromisoformat(s) for s in cloud.payments_since] == [started]
     assert await _references(real_engine, eid) == ["pi_saturday"]
+    # Every payment ever recorded is delivered again, whatever its time.
+    assert sorted(d["reference"] for d in cloud.deliveries if d.get("replay")) == ["pi_monday", "pi_saturday"]
 
-    # Until the lost payment is recorded again, no new payment opens.
+    # Until they are recorded again, no new payment opens.
     r = await real_client.get(f"/pay/{share}", follow_redirects=False)
-    assert r.status_code == 502 and cloud.checkouts == [(str(a), 409)]
+    assert r.status_code == 409 and r.json()["detail"] == PAUSED
+    assert cloud.checkouts == []
 
     await cloud.deliver()
     assert all(d["acked"] for d in cloud.deliveries) and len(cloud.deliveries) == 4
@@ -1126,37 +1125,26 @@ async def test_a_payment_a_restore_lost_is_recorded_again_before_a_new_payment_o
     assert await _unmatched(real_engine) == []
 
     r = await real_client.get(f"/pay/{share}", follow_redirects=False)
-    assert r.status_code == 303 and cloud.checkouts[-1] == (str(a), 200)
+    assert r.status_code == 303 and cloud.checkouts == [(str(a), 1, 200)]
 
 
-async def test_a_backup_without_a_start_time_has_every_payment_delivered_again(
-        tmp_path, monkeypatch, code_config, real_engine, real_client):
-    from celerp.services import backup_export, backup_import
-    _system_recovery(tmp_path, monkeypatch)
+@pytest.mark.parametrize("refusal", ["generation_stale", "recovery_pending"])
+async def test_a_payment_cloud_refuses_until_a_restore_is_confirmed_reads_as_paused(
+        real_engine, real_client, monkeypatch, refusal):
+    _payments_on(monkeypatch)
     boss, a, b = await _harbor(real_engine)
     cloud = _Cloud(monkeypatch, real_engine)
-    eid = await _invoice(real_client, real_engine, boss, a)
-    monkeypatch.setattr(backup_export, "archive_meta", _without_start(backup_export.archive_meta))
-    source = await backup_export.export_full()
-    try:
-        assert backup_import.validate_archive(source).snapshot_started_at is None
-        cloud.pay(a, eid, "pi_monday", amount_minor=50000)
-        await cloud.deliver()
-        result = await backup_import.run_recovery(source)
-    finally:
-        source.unlink(missing_ok=True)
+    eid, share = await _shared_invoice(real_client, real_engine, boss, a)
+    # A restore this installation has not heard of yet (another restore of its data).
+    cloud.generation = 1
+    cloud.recoveries["elsewhere"] = (1, [])
+    if refusal == "generation_stale":
+        cloud.confirmed.add("elsewhere")
 
-    assert result.ok is True, result.error
-    assert cloud.payments_since == [None]
-    await cloud.deliver()
-    assert await _references(real_engine, eid) == ["pi_monday"]
+    r = await real_client.get(f"/pay/{share}", follow_redirects=False)
 
-
-def _without_start(archive_meta):
-    """An archive from before backups recorded when they started."""
-    async def meta(started):
-        return {k: v for k, v in (await archive_meta(started)).items() if k != "snapshot_started_at"}
-    return meta
+    assert r.status_code == 409 and r.json()["detail"] == PAUSED
+    assert cloud.checkouts == [(str(a), 0, 409)]
 
 
 @pytest.mark.parametrize("answer", [httpx.ConnectError("unreachable"), NO_ANSWER],
@@ -1171,8 +1159,8 @@ async def test_new_payments_wait_until_cloud_confirms_a_restore(real_engine, rea
 
     r = await real_client.get(f"/pay/{share}", follow_redirects=False)
 
-    assert r.status_code == 409 and "paused" in r.json()["detail"]
+    assert r.status_code == 409 and r.json()["detail"] == PAUSED
     assert cloud.checkouts == []
 
     r = await real_client.get(f"/pay/{share}", follow_redirects=False)
-    assert r.status_code == 303 and cloud.checkouts == [(str(a), 200)]
+    assert r.status_code == 303 and cloud.checkouts == [(str(a), 1, 200)]
