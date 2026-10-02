@@ -185,7 +185,10 @@ async def receive_payment(payload: dict) -> bool:
     except ValueError:
         cid = None
     async with _own_session() as session:
-        if await session.get(UnmatchedPayment, reference) is not None:
+        if (kept := await session.get(UnmatchedPayment, reference)) is not None:
+            if kept.paid_at is None and paid_at is not None:  # first reported by the return, which has no time
+                kept.paid_at = paid_at
+                await session.commit()
             return True
         # A reset waits for this hold; once it has deleted the company, the payment is unmatched.
         row = await session.get(Projection, (cid, entity_id)) if cid and await hold_company(session, cid) else None

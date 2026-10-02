@@ -817,6 +817,26 @@ async def test_a_payment_delivered_again_after_it_was_kept_among_the_unmatched_c
     assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(a), invoice)]
 
 
+async def test_an_unmatched_payment_first_reported_by_the_return_takes_its_paid_date_from_the_delivery(
+        real_engine, real_client, monkeypatch):
+    boss, a, b = await _harbor(real_engine)
+    invoice, share = await _shared_invoice(real_client, real_engine, boss, a)
+    cloud = _Cloud(monkeypatch, real_engine)
+    await _pay_by_hand(real_client, real_engine, boss, a, invoice, 1070.0)
+    _returns_paid(monkeypatch, a, invoice, share, "pi_1")  # the return knows no payment time
+    r = await real_client.get(f"/pay/{share}/return?session_id=cs_1", follow_redirects=False)
+    assert r.status_code == 303
+
+    cloud.pay(a, invoice, "pi_1", paid_at=_OCTOBER_3)
+    await cloud.deliver()
+    await cloud.deliver()
+
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+    assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(a), invoice)]
+    async with maker(real_engine)() as s:
+        assert await s.scalar(text("SELECT paid_at FROM unmatched_payments")) == _OCTOBER_3
+
+
 @pytest.mark.parametrize("detail", ["generation_stale", "cancelled", "not_prepared"])
 async def test_a_finalize_cloud_refuses_for_good_is_forgotten_and_the_payments_stay_closed(
         real_engine, real_client, monkeypatch, detail):
