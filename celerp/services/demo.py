@@ -1628,11 +1628,11 @@ async def _untouched_demo_items(session: AsyncSession, company_id: uuid.UUID, en
     An item is touched when any of its ledger rows came from somewhere other than
     the demo seeder, the books recording where its stock sits aside, and used when
     another record (a document line, a movement, a note) mentions its id or its SKU
-    (item_erasure.mentioned_elsewhere)."""
+    (item_erasure.depended_on)."""
     import sqlalchemy as sa
     from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
-    from celerp.services.item_erasure import mentioned_elsewhere
+    from celerp.services.item_erasure import depended_on
     from celerp.services.lot_origin import KEPT, RECORDED
 
     touched = set((await session.execute(
@@ -1648,7 +1648,7 @@ async def _untouched_demo_items(session: AsyncSession, company_id: uuid.UUID, en
             Projection.company_id == company_id, Projection.entity_id.in_(entity_ids),
         )
     )).all())
-    used = await mentioned_elsewhere(session, company_id, {
+    used = await depended_on(session, company_id, {
         eid: [eid] + ([f'"{skus[eid]}"'] if skus.get(eid) else []) for eid in entity_ids})
     return [eid for eid in entity_ids if eid not in touched and eid not in used]
 

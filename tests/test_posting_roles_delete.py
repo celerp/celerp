@@ -24,7 +24,7 @@ from stock_books import assert_books_carry_stock
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_helpers import sell_item
 from test_posting_roles_draft_stock import _settings
-from test_posting_roles_ingress import _import_rows, _items_by_sku, _row
+from test_posting_roles_ingress import _import_rows, _items_by_sku, _raw_record, _row
 from test_posting_roles_kept_stock import _available, _bulk_status, _ok, _write_off
 from test_posting_roles_older_stock import _without_accounting
 from test_posting_roles_rollout import _startup
@@ -112,6 +112,28 @@ async def test_a_draft_that_was_once_stock_keeps_its_history(session, client, au
     await _ok(client, auth, "POST", "/items/bulk/revert-to-draft", {"entity_ids": [lot]})
     assert (await _state(session, auth, lot))["status"] == "draft"
     await _refused(session, client, auth, lot)
+
+
+async def test_a_draft_once_made_available_with_accounting_off_keeps_its_history(session, client, auth):
+    """With Accounting off no account is recorded, but the draft was still stock once."""
+    await _without_accounting(session, auth)
+    lot = await _draft(client, auth)
+    await _ok(client, auth, "POST", "/items/bulk/make-available", {"entity_ids": [lot]})
+    await _ok(client, auth, "POST", "/items/bulk/revert-to-draft", {"entity_ids": [lot]})
+    assert (await _state(session, auth, lot))["status"] == "draft"
+    await _refused(session, client, auth, lot)
+
+
+async def test_a_draft_with_a_file_is_deleted_only_once_the_file_is_removed(session, client, auth):
+    lot = await _draft(client, auth)
+    r = await client.post(f"/items/{lot}/files", headers=auth["headers"],
+                          files={"file": ("spec.txt", b"carat 1.02", "text/plain")})
+    assert r.status_code == 200, r.text
+    await _refused(session, client, auth, lot)
+    r = await client.delete(f"/items/{lot}/files/{r.json()['file_id']}", headers=auth["headers"])
+    assert r.status_code == 204, r.text
+    assert (await _delete(client, auth, lot)).status_code == 200
+    assert not await _exists(session, auth, lot)
 
 
 async def test_a_draft_on_a_document_is_not_deleted(session, client, auth):
@@ -225,3 +247,16 @@ async def test_an_import_booked_later_by_turning_accounting_on_is_not_undone(ses
     await session.rollback()  # the refused request's work ends with it, as its own session would
     assert len(await _items_by_sku(session, auth["company_id"], "UND-O")) == 1
     assert await assert_books_carry_stock(session, auth["company_id"]) == {"1130-P": 0, "1130-OB": 60}
+
+
+async def test_an_imported_draft_is_removed_by_undoing_its_import_not_by_delete(session, client, auth):
+    record = _raw_record("item.created", 40.0, status="draft")
+    r = await client.post("/items/import/batch", headers=auth["headers"], json={"records": [record]})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    batch, lot = r.json()["batch_id"], record["entity_id"]
+    r = await _delete(client, auth, lot)
+    assert r.status_code == 409 and "Undo Import" in r.text, r.text
+    await session.rollback()  # the refused request's work ends with it, as its own session would
+    assert await _exists(session, auth, lot)
+    assert (await _undo(client, auth, batch)).status_code == 200
+    assert not await _exists(session, auth, lot)

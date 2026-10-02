@@ -156,6 +156,24 @@ def is_authoring_event(event_type: str) -> bool:
     return event_type in AUTHORING_EVENT_TYPES or event_type.startswith("item.file.")
 
 
+def ever_became_stock(events) -> bool:
+    """Whether an item's history, as (event_type, data) pairs, shows it was ever stock:
+    any status other than draft it was created in, set to or edited to, its books
+    recorded, or any event beyond authoring (a movement, a document, a count)."""
+    for event_type, data in events:
+        data = data or {}
+        if event_type == RECORDED or not is_authoring_event(event_type):
+            return True
+        if event_type == "item.status.set":
+            status = data.get("new_status")
+        else:
+            change = (data.get("fields_changed") or {}).get("status")
+            status = change.get("new") if isinstance(change, dict) else data.get("status")
+        if status and str(status).lower() != "draft":
+            return True
+    return False
+
+
 def assert_draft_not_circulated(event_type: str, transition: Transition) -> None:
     """A draft is not stock: only authoring may touch it, and it leaves draft only by
     becoming available. Checked on the state the row lock applied the event to, so a

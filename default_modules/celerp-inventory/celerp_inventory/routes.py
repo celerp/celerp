@@ -51,8 +51,8 @@ from .services import (
 )
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
 from celerp.services.company_lock import lock_projections
-from celerp.services.item_erasure import erase_items, mentioned_elsewhere
-from celerp.services.lot_origin import RECORDED, RETIRED, STOCK_TYPES, in_stock, is_authoring_event, record_kept_stock
+from celerp.services.item_erasure import depended_on, erase_items
+from celerp.services.lot_origin import RECORDED, RETIRED, STOCK_TYPES, ever_became_stock, in_stock, is_authoring_event, record_kept_stock
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.business_time import business_date_at
@@ -2907,7 +2907,8 @@ async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_co
         skus = ", ".join(sorted(str((rows[e].state or {}).get("sku") or e) for e in blocked))
         raise HTTPException(status_code=409, detail=(
             f"Nothing was deleted. Only a draft that never became stock and is used nowhere can be deleted, "
-            f"and these cannot: {skus}. Use Revert to Draft for stock made available by mistake, "
+            f"and these cannot: {skus}. Use Undo Import in Import History for items an import brought in, "
+            f"remove a draft's files before deleting it, Revert to Draft for stock made available by mistake, "
             f"Archive to retire a product, or Write Off Stock for goods that left the company."))
     await erase_items(session, company_id, rows)
     await session.commit()
@@ -2916,18 +2917,19 @@ async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_co
 
 async def _not_deletable(session: AsyncSession, company_id, rows: dict[str, Projection]) -> set[str]:
     """The selected items that are not a draft mistake: anything not a draft now, a draft
-    with an inventory account, one that was ever stock (any event leaving draft or
-    recording its books) or circulated, and one another record uses."""
+    with an inventory account, one that was ever stock or circulated
+    (lot_origin.ever_became_stock), and one something else depends on
+    (item_erasure.depended_on)."""
     from celerp.models.ledger import LedgerEntry
 
     blocked = {e for e, row in rows.items() if not _row_is_draft(row) or (row.state or {}).get(LOT_ACCOUNT_FIELD)}
-    events = (await session.execute(select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(list(rows))))).all()
-    for eid, event_type, data in events:
-        status = str((data or {}).get("status") or "draft").lower()
-        if event_type == RECORDED or not is_authoring_event(event_type) or status != "draft":
-            blocked.add(eid)
-    return blocked | await mentioned_elsewhere(session, company_id, {e: [e] for e in rows})
+    history: dict[str, list] = {e: [] for e in rows}
+    for eid, event_type, data in (await session.execute(
+            select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data).where(
+                LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(list(rows))))).all():
+        history[eid].append((event_type, data))
+    blocked |= {e for e, events in history.items() if ever_became_stock(events)}
+    return blocked | await depended_on(session, company_id, {e: [e] for e in rows})
 
 
 class BulkExpireBody(BaseModel):
@@ -4788,8 +4790,8 @@ async def undo_import_batch(
         modified.add(eid)
     modified |= {eid for eid, row in rows.items()
                  if (row.state or {}).get(LOT_ACCOUNT_FIELD) and eid not in booked_by_import}
-    modified |= await mentioned_elsewhere(session, company_id, {e: [e] for e in entity_ids},
-                                          besides=[e.entity_id for e in entries])
+    modified |= await depended_on(session, company_id, {e: [e] for e in entity_ids},
+                                  besides=[e.entity_id for e in entries], undoing_batch=batch.id)
     if modified:
         raise HTTPException(
             status_code=409,
