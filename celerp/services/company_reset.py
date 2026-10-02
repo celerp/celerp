@@ -29,6 +29,7 @@ from celerp.services import payments
 from celerp.services.auth import first_usable_company_link
 from celerp.services.company_backup import _fk_order, _ident, _schema
 from celerp.services.company_lock import lock_company_for_deletion
+from ui.i18n import t
 
 # Tables that belong to the installation rather than any one company, and why.
 INSTALL_WIDE = {
@@ -51,8 +52,8 @@ PAYMENTS_NOT_CLOSED = {
     "disconnected": (503, "Reconnect Celerp Cloud so this company's online invoice payments can be "
                           "closed, then reset it. Nothing was deleted."),
     "payment_settling": (409, "A payment on one of this company's invoices is still being processed. "
-                              "Try again once it has finished; if Payments settings ask you to "
-                              "reconnect Stripe, do that first. Nothing was deleted."),
+                              "Try again once it has finished. Nothing was deleted."),
+    "reconnect_required": (409, f"{t('pay.settings_revoked', 'en')} Nothing was deleted."),
     "payment_unrecorded": (409, "A payment on one of this company's invoices has not reached Celerp yet. "
                                 "Try again once it shows on the invoice. Nothing was deleted."),
     "unconfirmed": (503, "Celerp could not confirm with Celerp Cloud that this company's online invoice "
