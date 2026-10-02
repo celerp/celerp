@@ -696,7 +696,8 @@ async def test_extended_journal_leaves_a_fulfilment_cost_posting_as_no_items(cli
     doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 60.0)])
     company_id, user_id = _ids(tok)
     r = await client.post("/items", headers=_h(tok), json={
-        "sku": "WIDGET-LOT", "name": "Widget", "quantity": 1, "sell_by": "piece", "cost_total": 42.0})
+        "sku": "WIDGET-LOT", "name": "Widget", "quantity": 1, "sell_by": "piece", "cost_total": 42.0,
+        "status": "available"})  # stock that can be fulfilled, not a draft
     assert r.status_code == 200, r.text
     await create_for_doc_fulfilled(session, company_id=company_id, user_id=user_id,
                                    doc_id=doc, lot_costs={r.json()["id"]: 42.0}, ts="2026-02-02")
