@@ -150,3 +150,38 @@ async def test_undoing_an_older_sale_waits_for_the_upgrade_and_finds_the_lot_on_
     assert (await _net(committed_engine, cid, "1130-P"), await _net(committed_engine, cid, "1130-OB")) == (30.0, 0.0)
     await _post(own_client, tok, f"/docs/{inv}/revert-to-draft")
     assert (await _net(committed_engine, cid, "1130-P"), await _net(committed_engine, cid, "1130-OB")) == (130.0, 0.0)
+
+
+async def test_two_starts_upgrading_the_same_company_upgrade_it_once(committed_engine, own_client):
+    """Two servers start against the same database: the second waits for the first's
+    upgrade, then finds the company done and posts nothing more."""
+    import asyncio
+
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+    from celerp.services.account_roles import reconcile_company
+    from celerp.services.lot_origin import RECORDED, normalize_legacy_inventory_origins
+
+    cid, tok, inv, held, sold = await _older_books(committed_engine, own_client)
+    async with maker(committed_engine)() as first, maker(committed_engine)() as second:
+        await reconcile_company(first, cid)
+        assert await normalize_legacy_inventory_origins(first, cid)
+
+        async def start():
+            await reconcile_company(second, cid)
+            done = await normalize_legacy_inventory_origins(second, cid)
+            await second.commit()
+            return done
+
+        other = asyncio.create_task(start())
+        await _until_blocked(committed_engine, other)
+        await first.commit()
+        assert await asyncio.wait_for(other, timeout=30)
+
+    async with maker(committed_engine)() as s:
+        recorded = (await s.execute(select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == cid, LedgerEntry.event_type == RECORDED))).scalars().all()
+        move = await s.get(Projection, {"company_id": cid, "entity_id": f"je:auto:inventory-origin:{cid}"})
+    assert len(recorded) == len(set(recorded)) and {held, sold} <= set(recorded)
+    assert move.state["status"] == "posted"
+    assert (await _net(committed_engine, cid, "1130-P"), await _net(committed_engine, cid, "1130-OB")) == (30.0, 0.0)
