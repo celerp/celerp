@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from .inline_edit import ready
+
 pytestmark = pytest.mark.browser
 
 SHOTS = Path("context/reviews/journey")
@@ -136,10 +138,17 @@ def test_full_manufacturing_journey(page, ui_server, api):
             _t2.sleep(0.3)
         raise AssertionError(f"work order never reached {want}")
 
-    block.locator(".wo-action-select").first.select_option(value="start")
+    # The action select is swapped in with each transition and HTMX binds it a tick later; a
+    # change fired before then is lost, so act only once HTMX reports it bound.
+    def _act(action: str) -> None:
+        sel = f"#production-block .wo-action-select:has(option[value='{action}'])"
+        page.wait_for_selector(sel, timeout=8000)
+        ready(page, sel)
+        page.locator(sel).first.select_option(value=action)
+
+    _act("start")
     _wait_status("in_progress")
-    page.wait_for_selector("#production-block .wo-action-select", timeout=8000)
-    block.locator(".wo-action-select").first.select_option(value="complete")
+    _act("complete")
     _wait_status("completed")
     # Completed work orders are hidden by default via the Status filter (no toggle), but the row is
     # still rendered (just filtered out of view) — confirm it exists and is hidden. The API can
