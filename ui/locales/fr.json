@@ -3581,5 +3581,7 @@
   "system_recovery.signed_out": "Tout le monde a été déconnecté. Connectez-vous avec un compte de l'installation restaurée.",
   "system_recovery.safety_saved": "Une copie de sécurité de l'installation précédente a été enregistrée dans {path}.",
   "system_recovery.safety_failed_confirm": "Rien n'a été modifié. Vous pouvez restaurer sans copie de sécurité, ce qui est irréversible.",
-  "system_recovery.continue_without_safety": "Restaurer sans copie de sécurité"
+  "system_recovery.continue_without_safety": "Restaurer sans copie de sécurité",
+  "inventory.cogs_adjusted": "Coût des ventes sur {doc} ajusté de {amount}.",
+  "inventory.cogs_unposted": "Aucun document de vente ; aucune écriture passée."
 }

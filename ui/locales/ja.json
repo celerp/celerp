@@ -3581,5 +3581,7 @@
   "system_recovery.signed_out": "全員がサインアウトされました。復元されたインストールのアカウントでサインインしてください。",
   "system_recovery.safety_saved": "以前のインストールの安全コピーを {path} に保存しました。",
   "system_recovery.safety_failed_confirm": "何も変更されていません。安全コピーなしで復元できますが、元に戻すことはできません。",
-  "system_recovery.continue_without_safety": "安全コピーなしで復元"
+  "system_recovery.continue_without_safety": "安全コピーなしで復元",
+  "inventory.cogs_adjusted": "{doc} の売上原価を {amount} 調整しました。",
+  "inventory.cogs_unposted": "販売伝票がないため、仕訳は計上されていません。"
 }

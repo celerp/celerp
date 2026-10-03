@@ -3581,5 +3581,7 @@
   "system_recovery.signed_out": "Todos foram desconectados. Faça login com uma conta da instalação restaurada.",
   "system_recovery.safety_saved": "Uma cópia de segurança da instalação anterior foi salva em {path}.",
   "system_recovery.safety_failed_confirm": "Nada foi alterado. Você pode restaurar sem uma cópia de segurança, o que não pode ser desfeito.",
-  "system_recovery.continue_without_safety": "Restaurar sem cópia de segurança"
+  "system_recovery.continue_without_safety": "Restaurar sem cópia de segurança",
+  "inventory.cogs_adjusted": "Custo das vendas em {doc} ajustado em {amount}.",
+  "inventory.cogs_unposted": "Sem documento de venda; nenhum lançamento registrado."
 }

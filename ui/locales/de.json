@@ -3581,5 +3581,7 @@
   "system_recovery.signed_out": "Alle wurden abgemeldet. Melden Sie sich mit einem Konto aus der wiederhergestellten Installation an.",
   "system_recovery.safety_saved": "Eine Sicherheitskopie der vorherigen Installation wurde unter {path} gespeichert.",
   "system_recovery.safety_failed_confirm": "Es wurde nichts geändert. Sie können ohne Sicherheitskopie wiederherstellen, dies kann nicht rückgängig gemacht werden.",
-  "system_recovery.continue_without_safety": "Ohne Sicherheitskopie wiederherstellen"
+  "system_recovery.continue_without_safety": "Ohne Sicherheitskopie wiederherstellen",
+  "inventory.cogs_adjusted": "Wareneinsatz auf {doc} um {amount} angepasst.",
+  "inventory.cogs_unposted": "Kein Verkaufsbeleg; keine Buchung erstellt."
 }

@@ -3581,5 +3581,7 @@
   "system_recovery.signed_out": "تم تسجيل خروج الجميع. قم بتسجيل الدخول بحساب من التثبيت المستعاد.",
   "system_recovery.safety_saved": "تم حفظ نسخة أمان من التثبيت السابق في {path}.",
   "system_recovery.safety_failed_confirm": "لم يتم تغيير أي شيء. يمكنك الاستعادة بدون نسخة أمان، ولا يمكن التراجع عن ذلك.",
-  "system_recovery.continue_without_safety": "الاستعادة بدون نسخة أمان"
+  "system_recovery.continue_without_safety": "الاستعادة بدون نسخة أمان",
+  "inventory.cogs_adjusted": "تم تعديل تكلفة البضاعة المباعة في {doc} بمقدار {amount}.",
+  "inventory.cogs_unposted": "لا يوجد مستند بيع؛ لم يُسجَّل أي قيد."
 }

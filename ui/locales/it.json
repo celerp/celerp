@@ -3581,5 +3581,7 @@
   "system_recovery.signed_out": "Tutti sono stati disconnessi. Accedi con un account dell'installazione ripristinata.",
   "system_recovery.safety_saved": "Una copia di sicurezza dell'installazione precedente è stata salvata in {path}.",
   "system_recovery.safety_failed_confirm": "Non è stato modificato nulla. Puoi ripristinare senza una copia di sicurezza, operazione che non può essere annullata.",
-  "system_recovery.continue_without_safety": "Ripristina senza copia di sicurezza"
+  "system_recovery.continue_without_safety": "Ripristina senza copia di sicurezza",
+  "inventory.cogs_adjusted": "Costo del venduto su {doc} rettificato di {amount}.",
+  "inventory.cogs_unposted": "Nessun documento di vendita; nessuna scrittura registrata."
 }

@@ -5389,6 +5389,44 @@ class TestItemActionRouteCompleteness:
         assert r.status_code == 200
         assert b"bad price" in r.content
 
+    async def _save_cost(self, ui_client, correction: dict | None):
+        result = {"event_id": "e1", **({"cost_correction": correction} if correction is not None else {})}
+        with (
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Cost"}])),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 1.0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
+            patch("ui.api_client.patch_item", new=AsyncMock(return_value=result)),
+            patch("ui.api_client.recost_dependents", new=AsyncMock(return_value={})),
+        ):
+            return await ui_client.post("/api/items/gc:123/price", data={"cost_price": "130"}, cookies=_authed())
+
+    @staticmethod
+    def _toast(r) -> dict:
+        return json.loads(r.headers["HX-Trigger"])["celerpToast"]
+
+    @pytest.mark.asyncio
+    async def test_cost_save_on_a_sold_item_says_which_invoice_was_adjusted(self, ui_client):
+        r = await self._save_cost(ui_client, {"cogs_adjusted": [{"doc_number": "INV-0007", "amount": 30.0},
+                                                                {"doc_number": "INV-0009", "amount": -12.5}],
+                                              "cogs_unposted": []})
+        assert b"Saved" in r.content
+        toast = self._toast(r)
+        assert toast["message"] == ("Cost of goods sold on INV-0007 adjusted by +$30.00. "
+                                    "Cost of goods sold on INV-0009 adjusted by -$12.50.")
+        assert toast["persist"] is True
+
+    @pytest.mark.asyncio
+    async def test_cost_save_on_an_item_sold_without_a_document_says_nothing_was_posted(self, ui_client):
+        r = await self._save_cost(ui_client, {"cogs_adjusted": [], "cogs_unposted": ["item:1"]})
+        assert self._toast(r)["message"] == "No sale document; no entry posted."
+
+    @pytest.mark.asyncio
+    async def test_cost_save_on_an_unsold_item_raises_no_toast(self, ui_client):
+        for correction in (None, {"cogs_adjusted": [], "cogs_unposted": []}):
+            r = await self._save_cost(ui_client, correction)
+            assert b"Saved" in r.content
+            assert "HX-Trigger" not in r.headers
+
     # ── status ───────────────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
@@ -17007,6 +17045,33 @@ class TestItemRowColumnParity:
         assert unit_td.get("hx-swap-oob") == "true", "cost_price td must have hx-swap-oob=true"
         assert unit_td.get("id") == "cell-item-1-cost_price", \
             f"cost_price td must have id=cell-item-1-cost_price, got {unit_td.get('id')}"
+
+    @pytest.mark.asyncio
+    async def test_inline_cost_edit_on_a_sold_item_says_which_invoice_was_adjusted(self, ui_client):
+        """The table's cost cells report the posting the same way the pricing card does."""
+        item = self._ITEM.copy()
+        correction = {"cogs_adjusted": [{"doc_number": "INV-0007", "amount": 10.0}], "cogs_unposted": []}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=self._SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "current_role": "owner"})),
+            patch("ui.api_client.patch_item", new=AsyncMock(return_value={**item, "cost_correction": correction})),
+        ):
+            responses = [
+                await ui_client.patch(f"/api/items/item:1/field/{field}", data={"value": value}, cookies=_authed())
+                for field, value in (("cost_price_total", "60.00"), ("cost_price", "30"), ("cost_price", ""))
+            ]
+        for r in responses:
+            assert r.status_code == 200, r.text
+            assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == \
+                "Cost of goods sold on INV-0007 adjusted by +$10.00."
+        from bs4 import BeautifulSoup
+        assert len(BeautifulSoup(responses[0].text, "html.parser").find_all("td")) == 2
 
 
 # ---------------------------------------------------------------------------

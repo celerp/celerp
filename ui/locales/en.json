@@ -3581,5 +3581,7 @@
   "system_recovery.signed_out": "Everyone has been signed out. Sign in with an account from the restored installation.",
   "system_recovery.safety_saved": "A safety copy of the previous installation was saved to {path}.",
   "system_recovery.safety_failed_confirm": "Nothing has been changed. You can restore without a safety copy, which cannot be undone.",
-  "system_recovery.continue_without_safety": "Restore without safety copy"
+  "system_recovery.continue_without_safety": "Restore without safety copy",
+  "inventory.cogs_adjusted": "Cost of goods sold on {doc} adjusted by {amount}.",
+  "inventory.cogs_unposted": "No sale document; no entry posted."
 }

@@ -3581,5 +3581,7 @@
   "system_recovery.signed_out": "Semua orang telah dikeluarkan. Silakan masuk dengan akun dari instalasi yang dipulihkan.",
   "system_recovery.safety_saved": "Salinan pengaman dari instalasi sebelumnya disimpan di {path}.",
   "system_recovery.safety_failed_confirm": "Tidak ada yang diubah. Anda dapat memulihkan tanpa salinan pengaman, dan ini tidak dapat dibatalkan.",
-  "system_recovery.continue_without_safety": "Pulihkan tanpa salinan pengaman"
+  "system_recovery.continue_without_safety": "Pulihkan tanpa salinan pengaman",
+  "inventory.cogs_adjusted": "Harga pokok penjualan pada {doc} disesuaikan sebesar {amount}.",
+  "inventory.cogs_unposted": "Tidak ada dokumen penjualan; tidak ada jurnal yang dicatat."
 }

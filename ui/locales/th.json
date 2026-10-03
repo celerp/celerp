@@ -3581,5 +3581,7 @@
   "system_recovery.signed_out": "ทุกคนออกจากระบบแล้ว กรุณาเข้าสู่ระบบด้วยบัญชีจากการติดตั้งที่กู้คืนแล้ว",
   "system_recovery.safety_saved": "บันทึกสำเนาสำรองเพื่อความปลอดภัยของการติดตั้งก่อนหน้าไว้ที่ {path} แล้ว",
   "system_recovery.safety_failed_confirm": "ยังไม่มีการเปลี่ยนแปลงใดๆ คุณสามารถกู้คืนโดยไม่มีสำเนาสำรองเพื่อความปลอดภัยได้ ซึ่งไม่สามารถยกเลิกได้",
-  "system_recovery.continue_without_safety": "กู้คืนโดยไม่มีสำเนาสำรอง"
+  "system_recovery.continue_without_safety": "กู้คืนโดยไม่มีสำเนาสำรอง",
+  "inventory.cogs_adjusted": "ปรับต้นทุนขายใน {doc} แล้ว {amount}",
+  "inventory.cogs_unposted": "ไม่มีเอกสารการขาย จึงไม่มีการบันทึกรายการบัญชี"
 }

@@ -3581,5 +3581,7 @@
   "system_recovery.signed_out": "ሁሉም ሰው ከመለያ ወጥቷል። ከተመለሰው መጫኛ በሆነ መለያ ይግቡ።",
   "system_recovery.safety_saved": "የቀደመው መጫኛ የደህንነት ቅጂ በ {path} ተቀምጧል።",
   "system_recovery.safety_failed_confirm": "ምንም አልተቀየረም። ያለ የደህንነት ቅጂ መመለስ ይችላሉ፣ ይህ ሊቀለበስ አይችልም።",
-  "system_recovery.continue_without_safety": "ያለ የደህንነት ቅጂ መልስ"
+  "system_recovery.continue_without_safety": "ያለ የደህንነት ቅጂ መልስ",
+  "inventory.cogs_adjusted": "በ{doc} ላይ የተሸጡ ዕቃዎች ወጪ በ{amount} ተስተካክሏል።",
+  "inventory.cogs_unposted": "የሽያጭ ሰነድ የለም፤ ምንም ግቤት አልተመዘገበም።"
 }

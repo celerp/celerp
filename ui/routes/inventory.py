@@ -23,7 +23,7 @@ import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
 from ui.components.shell import base_shell, minimal_shell, page_header, search_help, toast_header, page_title
-from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
+from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
 from celerp.services.permissions import role_has_permission
@@ -772,7 +772,6 @@ def _holdings_scope_banner(p: dict, holdings_total: float | None, currency: str 
     figure is never read as a list price. Items with no resolvable value are left out of
     the total, and the banner says how many.
     """
-    from ui.components.table import fmt_money
 
     on_memo, consigned = p.get("on_memo_to", ""), p.get("consigned_from", "")
     if not (on_memo or consigned):
@@ -1225,6 +1224,31 @@ async def _gen_copy_sku(token: str, orig: str, reserved: set[str] | None = None)
     if reserved is not None:
         reserved.add(candidate)
     return candidate
+
+
+async def _cost_correction_toast(token: str, results: list[dict]) -> dict:
+    """The toast header telling the person who changed a sold item's cost what that
+    posted: each cost of goods sold adjustment by document, or that a sale made without
+    a document carries no entry. Empty when the cost change touched no sale."""
+    corrections = [r.get("cost_correction") or {} for r in results]
+    adjusted = [a for c in corrections for a in c.get("cogs_adjusted") or []]
+    unposted = any(c.get("cogs_unposted") for c in corrections)
+    if not adjusted and not unposted:
+        return {}
+    currency = None
+    if adjusted:
+        try:
+            currency = ((await api.get_company(token)).get("currency") or "").strip() or None
+        except APIError:
+            pass  # the amount still reads correctly without its symbol
+    parts = [
+        t("inventory.cogs_adjusted", doc=a.get("doc_number") or EMPTY,
+          amount=("-" if float(a.get("amount") or 0) < 0 else "+") + fmt_money(abs(float(a.get("amount") or 0)), currency))
+        for a in adjusted
+    ]
+    if unposted:
+        parts.append(t("inventory.cogs_unposted"))
+    return toast_header(" ".join(parts), "info", persist=True)
 
 
 def setup_routes(app):
@@ -2473,6 +2497,17 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.patch("/api/items/{entity_id}/field/{field}")
     async def field_patch(request: Request, entity_id: str, field: str):
+        corrections: list[dict] = []
+        out = await _field_patch(request, entity_id, field, corrections)
+        headers = await _cost_correction_toast(_token(request), corrections)
+        if not headers:
+            return out
+        if isinstance(out, Response):
+            out.headers.update(headers)
+            return out
+        return (*(out if isinstance(out, tuple) else (out,)), *(HttpHeader(k, v) for k, v in headers.items()))
+
+    async def _field_patch(request: Request, entity_id: str, field: str, corrections: list[dict]):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
@@ -2608,7 +2643,7 @@ function celerpPrintLabel(entityId, templateId) {
                 else:
                     clear_field = "cost_total" if field == "cost_price" else field
                 old_item = await api.get_item(token, entity_id)
-                await api.patch_item(token, entity_id, {clear_field: {"old": old_item.get(clear_field), "new": None}})
+                corrections.append(await api.patch_item(token, entity_id, {clear_field: {"old": old_item.get(clear_field), "new": None}}))
             elif field == "location_name":
                 # Transfer requires location_id; resolve name → id from locations list
                 locs = (await api.get_locations(token)).get("items", [])
@@ -2626,7 +2661,7 @@ function celerpPrintLabel(entityId, templateId) {
                 if unit_price_field == "cost_price":
                     # cost_total is the primitive; patch it directly
                     old_cost_total = old_item.get("cost_total")
-                    await api.patch_item(token, entity_id, {"cost_total": {"old": old_cost_total, "new": float(value)}})
+                    corrections.append(await api.patch_item(token, entity_id, {"cost_total": {"old": old_cost_total, "new": float(value)}}))
                 else:
                     qty = float(old_item.get("quantity") or 0)
                     if qty == 0:
@@ -2655,7 +2690,7 @@ function celerpPrintLabel(entityId, templateId) {
                 qty = float(flat.get("quantity") or 0)
                 new_cost_total = float(value)
                 new_cost_price = new_cost_total / qty if qty else 0.0
-                from ui.components.table import fmt_money, display_cell
+                from ui.components.table import display_cell
                 # Cell 1: cost_price_total (the edited cell, main swap target)
                 total_formatted = fmt_money(new_cost_total, currency) if new_cost_total != 0 else "--"
                 total_inner = Span(total_formatted, cls="cell-money") if total_formatted != "--" else Span("--")
@@ -2695,7 +2730,7 @@ function celerpPrintLabel(entityId, templateId) {
                     new_unit = float(value)
                     new_total = round(new_unit * qty, 2)
                     old_total = old_item.get("cost_total")
-                    await api.patch_item(token, entity_id, {"cost_total": {"old": old_total, "new": new_total}})
+                    corrections.append(await api.patch_item(token, entity_id, {"cost_total": {"old": old_total, "new": new_total}}))
                 else:
                     old_val = old_item.get(field)
                     await api.patch_item(token, entity_id, {field: {"old": old_val, "new": value}})
@@ -2774,7 +2809,6 @@ function celerpPrintLabel(entityId, templateId) {
                 return split_cell, oob_reload
         # Paired fields: return the combined paired cell after save
         if field in _PAIRED_FIELDS:
-            from ui.components.table import fmt_money
             try:
                 paired_td = await _paired_display(token, entity_id, field, _get_role(request), _fp_company.get("settings") or {})
             except Exception:
@@ -2865,7 +2899,6 @@ function celerpPrintLabel(entityId, templateId) {
                 return paired_td
         # Price fields: re-render with currency symbol + / sell_unit annotation
         if cell_type == "money":
-            from ui.components.table import fmt_money
             sell_by = (item.get("sell_by") or "").strip()
             val = item.get(field, "")
             try:
@@ -4169,6 +4202,7 @@ function celerpPrintLabel(entityId, templateId) {
                 company_for_price = {}
             price_lists = _with_draft_cost_list(price_lists, item_for_price, company_for_price.get("settings") or {}, _get_role(request))
             cost_changed = False
+            corrections: list[dict] = []
             for pl in price_lists:
                 pl_name = pl.get("name", "")
                 conventional_key = price_key(pl_name)
@@ -4179,7 +4213,7 @@ function celerpPrintLabel(entityId, templateId) {
                     # Cleared price → unset it (issue #202). Cost is canonically cost_total. Use
                     # patch_item with new=None so the field is removed, not stored as "" / 0.
                     if conventional_key == "cost_price":
-                        await api.patch_item(token, entity_id, {"cost_total": {"old": item_for_price.get("cost_total"), "new": None}})
+                        corrections.append(await api.patch_item(token, entity_id, {"cost_total": {"old": item_for_price.get("cost_total"), "new": None}}))
                         cost_changed = True
                     else:
                         await api.patch_item(token, entity_id, {conventional_key: {"old": item_for_price.get(conventional_key), "new": None}})
@@ -4193,7 +4227,7 @@ function celerpPrintLabel(entityId, templateId) {
                 # Use patch_item (not set_item_price) so price_type normalization doesn't mangle "cost_total".
                 if conventional_key == "cost_price" and item_qty > 0:
                     old_cost_total = item_for_price.get("cost_total")
-                    await api.patch_item(token, entity_id, {"cost_total": {"old": old_cost_total, "new": round(price * item_qty, 10)}})
+                    corrections.append(await api.patch_item(token, entity_id, {"cost_total": {"old": old_cost_total, "new": round(price * item_qty, 10)}}))
                     cost_changed = True
                 else:
                     await api.set_item_price(token, entity_id, pl_name, price)
@@ -4233,7 +4267,7 @@ function celerpPrintLabel(entityId, templateId) {
                 pass  # refresh is cosmetic; the save itself already succeeded
         # Autosave: a transient saved indicator, no page reload (consistent with the rest of the UI).
         return (Div(t("inventory.saved_check"), id="pricing-save-status", cls="recipe-save-status hint saved", hx_swap_oob="true"),
-                *oob_cells)
+                *oob_cells, *(HttpHeader(k, v) for k, v in (await _cost_correction_toast(token, corrections)).items()))
 
     @app.post("/api/items/{entity_id}/status")
     async def item_status(request: Request, entity_id: str):
@@ -5293,7 +5327,6 @@ def _valuation_bar(aggregates: dict, currency: str | None = None, lang: str = "e
     (the list endpoint's ``aggregates``). Each unit keeps its own chip; units are
     never added together."""
     from ui.components.activity import fmt_qty
-    from ui.components.table import fmt_money
 
     def _amount(value, unit: str) -> str:
         return f"{fmt_qty(value)} {unit}".strip()
@@ -5403,7 +5436,6 @@ def _label_price_cols(schema: list[dict]) -> list[dict]:
 
 def _render_virtual_total_cell(entity_id: str, field: str, unit_price: float | None, qty: float | None, currency: str | None) -> FT:
     """Render a display Td for a virtual total column (unit_price * qty)."""
-    from ui.components.table import fmt_money
     try:
         total = float(unit_price or 0) * float(qty or 0)
         formatted = fmt_money(total, currency) if total != 0 else "--"
@@ -5623,7 +5655,6 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
         renderers["category"] = _cat_renderer
 
     # Price column renderers: show currency symbol + "/ sell_unit" annotation
-    from ui.components.table import fmt_money
     # sold_price is derived and read-only, so it is excluded from the click-to-edit price
     # loop below and gets its own display-only renderer.
     price_keys = [f["key"] for f in schema if f.get("type") == "money" and not f.get("virtual") and f["key"] != "sold_price"]
