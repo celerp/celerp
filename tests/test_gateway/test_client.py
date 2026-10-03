@@ -1094,3 +1094,28 @@ async def test_hello_ack_clears_auth_failure_strikes(client):
     assert client.relay_status != "error"
     await client._dispatch(_auth_failed_frame())
     assert client.relay_status == "error"
+
+
+# ── delivery types declared in hello ─────────────────────────────────────────
+
+def test_hello_declares_exactly_the_delivery_types_dispatch_routes(client):
+    """The delivery types the hello declares are the dispatch table's keys, so Celerp
+    Cloud never sends this install a delivery it would not route to a handler."""
+    payload = client._build_hello_payload(tos_version="v1", app_version="1.0.0")
+    assert payload["delivery_types"] == sorted(client._DELIVERIES)
+    assert set(payload["delivery_types"]) == {"invoice.payment", "invoice.refund"}
+
+
+@pytest.mark.asyncio
+async def test_every_declared_delivery_type_reaches_its_handler(client, monkeypatch):
+    """Each declared type dispatches to the handler the table names for it."""
+    import asyncio
+    seen = []
+    for kind, handler in client._DELIVERIES.items():
+        async def _handler(payload, kind=kind):
+            seen.append((kind, payload["reference"]))
+        monkeypatch.setattr(client, handler, _handler)
+    for kind in client._build_hello_payload(tos_version="v1", app_version="1.0.0")["delivery_types"]:
+        await client._dispatch({"type": kind, "payload": {"reference": kind}})
+    await asyncio.sleep(0)
+    assert sorted(seen) == [(k, k) for k in sorted(client._DELIVERIES)]

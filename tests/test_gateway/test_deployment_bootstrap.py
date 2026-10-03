@@ -486,8 +486,8 @@ def _make_gateway_client(*, credential: str = "", associated: bool = False):
 
 @pytest.mark.parametrize("credential", ["", _CREDENTIAL])
 def test_hello_payload_never_carries_deployment_credential(credential):
-    """The hello payload carries only the four base keys for both a direct install
-    and a partner install: the credential is never sent through the handshake."""
+    """The hello payload carries only the base keys for both a direct install and a
+    partner install: the credential is never sent through the handshake."""
     client = _make_gateway_client(credential=credential)
     payload = client._build_hello_payload(tos_version="v2025", app_version="9.9.9")
     assert payload == {
@@ -495,6 +495,7 @@ def test_hello_payload_never_carries_deployment_credential(credential):
         "instance_id": "test-instance-id",
         "tos_version": "v2025",
         "version": "9.9.9",
+        "delivery_types": ["invoice.payment", "invoice.refund"],
     }
 
 

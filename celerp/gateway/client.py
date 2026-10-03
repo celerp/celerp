@@ -513,11 +513,18 @@ class GatewayClient:
                 and self._relay_status not in ("tos_required", "active_elsewhere")):
             raise ConnectionError("Gateway connection ended before activation.")
 
+    # Each Celerp Cloud delivery type this install records, and its handler. The
+    # hello declares exactly these keys, so Cloud holds back any type not listed.
+    _DELIVERIES = {
+        "invoice.payment": "_handle_invoice_payment",
+        "invoice.refund": "_handle_invoice_refund",
+    }
+
     def _build_hello_payload(self, tos_version: str, app_version: str) -> dict:
         """Build the hello frame payload.
 
-        The four base keys match a direct install byte for byte. Partner
-        deployment association happens separately, before the gateway starts
+        The base keys match a direct install byte for byte. Partner deployment
+        association happens separately, before the gateway starts
         (celerp.gateway.bootstrap) - the handshake never carries the credential.
         """
         return {
@@ -525,6 +532,7 @@ class GatewayClient:
             "instance_id": self._instance_id,
             "tos_version": tos_version,
             "version": app_version,
+            "delivery_types": sorted(self._DELIVERIES),
         }
 
     async def _dispatch(self, msg: dict) -> None:
@@ -665,11 +673,8 @@ class GatewayClient:
         elif msg_type == "woocommerce.webhook":
             self._spawn(self._handle_woocommerce_webhook(payload))
 
-        elif msg_type == "invoice.payment":
-            self._spawn(self._handle_invoice_payment(payload))
-
-        elif msg_type == "invoice.refund":
-            self._spawn(self._handle_invoice_refund(payload))
+        elif msg_type in self._DELIVERIES:
+            self._spawn(getattr(self, self._DELIVERIES[msg_type])(payload))
 
         elif msg_type == "commercial_updated":
             # The payload is the context itself (flat, like subscription_updated);

@@ -277,13 +277,14 @@ async def test_a_reset_prepares_the_closing_then_closes_the_payments_once_the_co
     (httpx.Response(409, json={"detail": "payment_settling"}), 409, "still being processed."),
     (httpx.Response(409, json={"detail": "payment_unrecorded"}), 409, "has not reached Celerp"),
     (httpx.Response(409, json={"detail": "reconnect_required"}), 409, "Reconnect this Stripe account"),
+    (httpx.Response(409, json={"detail": "update_required"}), 409, "Update Celerp"),
     (httpx.Response(409, json={"detail": "something else"}), 503, "could not confirm"),
     (httpx.Response(200, json={"company_id": "another-company", "operation_id": "x", "state": "prepared"}),
      503, "could not confirm"),
     (httpx.Response(200, json={"state": "cancelled"}), 503, "could not confirm"),
     (httpx.Response(200, text="<html>proxy</html>"), 503, "could not confirm"),
 ], ids=["no-answer", "unreachable", "stripe-unconfirmed", "server-error", "settling", "unrecorded",
-        "reconnect", "unknown-refusal", "other-company", "not-prepared", "not-json"])
+        "reconnect", "update", "unknown-refusal", "other-company", "not-prepared", "not-json"])
 async def test_nothing_is_deleted_unless_cloud_confirms_the_closing_is_prepared(
         real_engine, real_client, monkeypatch, answer, status, says):
     boss, a, b = await _harbor(real_engine)

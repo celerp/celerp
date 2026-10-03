@@ -57,6 +57,9 @@ PAYMENTS_NOT_CLOSED = {
     "reconnect_required": (409, f"{t('pay.settings_revoked', 'en')} Nothing was deleted."),
     "payment_unrecorded": (409, "A payment on one of this company's invoices has not reached Celerp yet. "
                                 "Try again once it shows on the invoice. Nothing was deleted."),
+    "update_required": (409, "A refund of an online payment on one of this company's invoices can only be "
+                             "recorded by a newer version of Celerp. Update Celerp, then try again. "
+                             "Nothing was deleted."),
     "unconfirmed": (503, "Celerp could not confirm with Celerp Cloud that this company's online invoice "
                          "payments are closed. Try again in a moment. Nothing was deleted."),
 }
