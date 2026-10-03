@@ -2489,7 +2489,7 @@ async def test_reserved_conflict_detail_structured(client, session, auth, _setup
         assert c["doc_number"] == owner_number
         assert "release it there first" in c["message"]
 
-    # PATCH guard (_assert_no_foreign_reserved).
+    # Edit path.
     rd = await client.post("/docs", headers=auth["headers"], json={
         "doc_type": "invoice", "line_items": [],
     })
@@ -2502,7 +2502,7 @@ async def test_reserved_conflict_detail_structured(client, session, auth, _setup
     assert rp.status_code == 422, rp.text
     _check_detail(rp.json()["detail"])
 
-    # List-convert path (its own 422 raise from _scan_reserved_lines).
+    # List-convert path.
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
         "contact_name": "Buyer",
