@@ -891,6 +891,9 @@ class MfgOrderStarted(BaseModel):
 
 class MfgOrderCompleted(BaseModel):
     completed_by: str | None = None
+    # Value moved out of work in progress at completion: into the finished lots, and to waste.
+    transferred: str | None = None
+    wasted: str | None = None
 
 
 class MfgOrderCancelled(BaseModel):
@@ -909,6 +912,9 @@ class MfgOrderIssued(BaseModel):
     # Components issued from stock into a run (decrements the components). Partial issues allowed.
     items: list[dict[str, Any]] = Field(default_factory=list)
     issued_by: str | None = None
+    # The stock value that left with the components, and the account it went to.
+    value: str | None = None
+    wip_account_code: str | None = None
 
 
 class MfgOrderReceived(BaseModel):
@@ -917,6 +923,21 @@ class MfgOrderReceived(BaseModel):
     quantity: float
     lot_item_id: str | None = None
     received_by: str | None = None
+    # The work in progress value the received lot carries.
+    value: str | None = None
+
+
+class MfgOrderWipOpened(BaseModel):
+    # An older run's work in progress, reconstructed from its own history.
+    issued: str
+    transferred: str
+    receipts: list[dict[str, Any]] = Field(default_factory=list)
+    wip_account_code: str | None = None
+
+
+class MfgOrderWipUnresolved(BaseModel):
+    # An older run whose work in progress cannot be proved from its history.
+    reason: str
 
 
 class MfgOrderScheduled(BaseModel):
@@ -1360,6 +1381,8 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "mfg.order.issued": MfgOrderIssued,
     "mfg.order.received": MfgOrderReceived,
     "mfg.order.scheduled": MfgOrderScheduled,
+    "mfg.order.wip_opened": MfgOrderWipOpened,
+    "mfg.order.wip_unresolved": MfgOrderWipUnresolved,
 
     # Scanning
     "scan.barcode": ScanBarcode,

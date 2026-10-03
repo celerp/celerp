@@ -44,7 +44,7 @@ from .costing import RecipeError, labor_hours, roll_up_cost, where_used
 # Default hours-per-day for converting daily labor lines into the est-hours column.
 # Set per work center; the company's default center supplies the value.
 DEFAULT_HOURS_PER_DAY = 8.0
-from .expansion import expand_recipe, explode_demand, is_manufacturable
+from .expansion import expand_recipe, explode_demand, is_manufacturable, merge_inputs
 from .labor import apply_labor_providers
 from .search import _INCOMPLETE_STATUSES, search_orders
 
@@ -989,6 +989,18 @@ async def import_manufacturing_template():
     )
 
 
+# What an imported run may say about itself: what it makes and from what, and its planning
+# fields. Progress, status and value come only from the run's own movements.
+_IMPORTED_FIELDS = ("output_item_id", "planned_start", "priority", "source_doc_id", "source_doc_number",
+                    "source_doc_type", "source_contact_name", "source_due")
+
+
+def _imported_order(data: dict) -> dict:
+    order = MfgOrderCreate(**data).model_dump(exclude_none=True, exclude={"idempotency_key"})
+    order["inputs"] = merge_inputs(order.get("inputs", []))
+    return {**order, **{k: data[k] for k in _IMPORTED_FIELDS if data.get(k) not in (None, "")}}
+
+
 @router.post("/import/batch", response_model=BatchImportResult)
 async def batch_import_manufacturing(
     body: MfgBatchImportRequest,
@@ -1039,7 +1051,7 @@ async def batch_import_manufacturing(
                 entity_id=rec.entity_id,
                 entity_type="mfg_order",
                 event_type=rec.event_type,
-                data=rec.data,
+                data=_imported_order(rec.data),
                 actor_id=user.id,
                 location_id=None,
                 source=rec.source,
@@ -1648,7 +1660,7 @@ async def create_order(
         entity_id=entity_id,
         entity_type="mfg_order",
         event_type="mfg.order.created",
-        data=payload.model_dump(exclude_none=True),
+        data={**payload.model_dump(exclude_none=True), "inputs": merge_inputs(i.model_dump() for i in payload.inputs)},
         actor_id=user.id,
         location_id=uuid.UUID(payload.location_id) if payload.location_id else None,
         source="api",

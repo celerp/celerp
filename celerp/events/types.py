@@ -96,6 +96,8 @@ class EventType(StrEnum):
     MFG_ORDER_ISSUED = "mfg.order.issued"
     MFG_ORDER_RECEIVED = "mfg.order.received"
     MFG_ORDER_SCHEDULED = "mfg.order.scheduled"
+    MFG_ORDER_WIP_OPENED = "mfg.order.wip_opened"
+    MFG_ORDER_WIP_UNRESOLVED = "mfg.order.wip_unresolved"
 
     # Scanning
     SCAN_BARCODE = "scan.barcode"

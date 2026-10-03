@@ -32,6 +32,18 @@ def mfg_idem_key(source_doc_id: str, source_line_id: str, fulfill_cycle: int = 0
     return f"mfg-from-doc:{source_doc_id}:{source_line_id}:{fulfill_cycle}"
 
 
+def merge_inputs(inputs) -> list[dict]:
+    """One line per component, in first-seen order: a component listed twice needs both amounts."""
+    merged: dict[str, dict] = {}
+    for line in inputs:
+        key = line["item_id"]
+        if key in merged:
+            merged[key]["quantity"] = round(merged[key]["quantity"] + float(line["quantity"]), 6)
+        else:
+            merged[key] = {**line, "quantity": float(line["quantity"])}
+    return list(merged.values())
+
+
 def expand_recipe(item_state: dict, build_qty: float) -> tuple[list[dict], list[dict]]:
     """One finished item + build quantity → (inputs, expected_outputs) for a manufacturing order.
 
@@ -43,10 +55,10 @@ def expand_recipe(item_state: dict, build_qty: float) -> tuple[list[dict], list[
     if not components:
         raise RecipeError("item has no recipe to expand")
     factor = float(build_qty) / (float(recipe.get("output_qty") or 1) or 1)
-    inputs = [
+    inputs = merge_inputs(
         {"item_id": c["item_id"], "quantity": round(float(c.get("quantity") or 0) * factor, 6)}
         for c in components if c.get("item_id")
-    ]
+    )
     expected_outputs = [{
         "sku": item_state.get("sku", ""),
         "name": item_state.get("name", ""),
