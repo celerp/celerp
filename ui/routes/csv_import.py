@@ -1036,7 +1036,7 @@ _INLINE_FIX_CSS = """
 .csv-fix-table input.input--error { border-color: var(--c-red, #ef4444);
   background: rgba(239,68,68,0.06); }
 .csv-ok-count { font-size: 12px; color: var(--c-text2); margin-top: 6px; }
-.csv-fix-actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
+.csv-fix-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 14px; }
 </style>
 """
 

@@ -85,3 +85,4 @@ def test_product_import_upload_mapping_and_review(sized, ui_server):
     assert _right_edge(page, ".import-steps .import-step") <= width, "a step of the indicator is off screen"
     # The review grid scrolls inside its own box, so every price cell can be reached.
     assert _right_edge(page, ".table-scroll") <= width
+    assert _right_edge(page, ".csv-fix-actions > *") <= width, "an import action is off screen"
