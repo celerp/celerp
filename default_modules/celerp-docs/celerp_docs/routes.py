@@ -40,7 +40,7 @@ from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
-from celerp.services.document_lines import line_item_id
+from celerp.services.document_lines import line_item_id, linked_items
 from celerp.services.attachments import attach_file, store_upload
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
@@ -733,32 +733,24 @@ async def _validate_list_line_quantities(
 
     A List line linked by item_id takes the item's STORED unit, never the submitted one:
     a stocked piece cannot be smuggled past the positive/decimal rule by submitting a
-    service unit. A linked item_id that resolves to no real item is rejected 422 with an
-    invalid_reference body rather than silently dropping to the free-text finiteness gate.
+    service unit. A linked item_id that resolves to no real item is rejected 422 by
+    linked_items (the rule every line writer shares) rather than silently dropping to the
+    free-text finiteness gate.
     Delegates each line to the shared _check_line_quantity gate; an unlinked / free-text
     line (no id) uses its own submitted sell_by.
     """
     if not line_items:
         return
     unit_map = await _get_unit_map(session, company_id)
-    id_sell_by = await _line_sell_by_map(session, company_id, line_items)
+    items = await linked_items(session, company_id, line_items)
     for li in line_items:
         if not isinstance(li, dict):
             continue
         label = li.get("name") or li.get("sku") or "Line item"
         lid = line_item_id(li)
         if lid is not None:
-            if lid not in id_sell_by:
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "code": "invalid_reference",
-                        "message": f"Line references an unknown item: {lid}",
-                        "item_id": lid,
-                    },
-                )
             # Linked line: the stored unit governs; a submitted sell_by is ignored.
-            resolved_sell_by = id_sell_by.get(lid)
+            resolved_sell_by = items[lid].state.get("sell_by")
         else:
             resolved_sell_by = li.get("sell_by")
         _check_line_quantity(

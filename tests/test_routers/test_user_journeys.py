@@ -2108,9 +2108,10 @@ async def test_rpt_sales_group_by_item(client):
     token = await _reg(client)
     h = _h(token)
     past = (date.today() - timedelta(days=3)).isoformat()
+    item_id = await _item(client, token, qty=2)
     r = await client.post("/docs", headers=h, json={
         "doc_type": "invoice", "contact_id": "c1", "contact_name": "C1",
-        "line_items": [{"item_id": "i1", "name": "Prod", "quantity": 2, "line_total": 200}],
+        "line_items": [{"item_id": item_id, "name": "Prod", "quantity": 2, "line_total": 200}],
         "subtotal": 200, "tax": 0, "total": 200, "date": past,
     })
     assert (await client.post(f"/docs/{r.json()['id']}/finalize", headers=h)).status_code == 200

@@ -28,6 +28,15 @@ async def test_reports_all_branches(client):
     past_40 = (today - timedelta(days=40)).isoformat()
     past_100 = (today - timedelta(days=100)).isoformat()
 
+    # Real items for the document lines to link to.
+    async def _item(sku: str) -> str:
+        r = await client.post("/items", headers=_h(token), json={
+            "status": "available", "sku": sku, "name": sku, "quantity": 5, "sell_by": "piece"})
+        assert r.status_code == 200, r.text
+        return r.json()["id"]
+
+    i1, i2, p1 = await _item("I1"), await _item("I2"), await _item("P1")
+
     # docs to feed reports
     async def _issued(body: dict) -> str:
         r = await client.post("/docs", headers=_h(token), json=body)
@@ -36,14 +45,14 @@ async def test_reports_all_branches(client):
         assert ri.status_code == 200, ri.text
         return doc_id
 
-    await _issued({"doc_type": "invoice", "contact_id": "c1", "contact_name": "C1", "line_items": [{"item_id": "i1", "name": "Item1", "quantity": 2, "unit_price": 25, "line_total": 50, "cost_total": 30}], "subtotal": 50, "tax": 0, "total": 50, "date": past_10, "due_date": past_10})
-    partial = await _issued({"doc_type": "invoice", "contact_id": "c2", "contact_name": "C2", "line_items": [{"item_id": "i2", "name": "Item2", "quantity": 1, "unit_price": 80, "line_total": 80, "cost_total": 20}], "subtotal": 80, "tax": 0, "total": 80, "date": past_40, "due_date": past_40})
+    await _issued({"doc_type": "invoice", "contact_id": "c1", "contact_name": "C1", "line_items": [{"item_id": i1, "name": "Item1", "quantity": 2, "unit_price": 25, "line_total": 50, "cost_total": 30}], "subtotal": 50, "tax": 0, "total": 50, "date": past_10, "due_date": past_10})
+    partial = await _issued({"doc_type": "invoice", "contact_id": "c2", "contact_name": "C2", "line_items": [{"item_id": i2, "name": "Item2", "quantity": 1, "unit_price": 80, "line_total": 80, "cost_total": 20}], "subtotal": 80, "tax": 0, "total": 80, "date": past_40, "due_date": past_40})
     rp = await client.post(f"/docs/{partial}/payment", headers=_h(token), json={"amount": 30.0, "payment_date": past_40, "bank_account": "1111"})
     assert rp.status_code == 200, rp.text
     await import_sent_po(
         client, _h(token), contact_id="s1", contact_name="S1", subtotal=100, total=100,
         date=past_100, expected_delivery=past_100,
-        line_items=[{"item_id": "p1", "name": "P1", "quantity": 5, "unit_price": 20, "line_total": 100}],
+        line_items=[{"item_id": p1, "name": "P1", "quantity": 5, "unit_price": 20, "line_total": 100}],
     )
 
     # AR/AP aging

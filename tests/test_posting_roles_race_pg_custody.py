@@ -139,6 +139,8 @@ async def test_a_quotation_waiting_on_an_import_undo_never_names_an_erased_item(
         assert await s.get(Projection, {"company_id": cid, "entity_id": lot}) is None
         named = [row.entity_id for row in (await s.execute(select(Projection).where(
             Projection.company_id == cid, Projection.entity_type == "doc"))).scalars()
-            if any(li.get("entity_id") == lot for li in row.state.get("line_items") or [])]
-    assert quote.status_code != 200 or not named, (quote.status_code, named)
+            if any(li.get("item_id") == lot for li in row.state.get("line_items") or [])]
+    # LineItem stores a linked line's id as item_id (entity_id is normalized away).
+    assert not named, (quote.status_code, named)
+    assert quote.status_code == 422 and quote.json()["detail"]["code"] == "invalid_reference", quote.text
     assert sum((await _books(committed_engine, cid)).values()) == 0
