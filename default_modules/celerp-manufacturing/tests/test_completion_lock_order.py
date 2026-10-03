@@ -36,7 +36,7 @@ import types
 import uuid
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
@@ -187,9 +187,10 @@ async def _seed_buildable(factory, company_id, user, i: int) -> str:
 async def test_concurrent_one_tap_builds_no_deadlock(_db_engine):
     """Two real one-tap builds of two independent products (each with its own component, so
     the company row is the only lock they share) run concurrently on separately committed
-    sessions. Each emits mfg.order.created and then locks the company to mint its output lot -
-    the exact create-and-complete lock upgrade. Both must complete with no deadlock; before
-    the fix this pair aborts one side with 40P01."""
+    sessions. Each creates its run and then locks the company to mint its output lot - the
+    create-and-complete lock upgrade. Both must complete with no deadlock; before the fix this
+    pair aborts one side with 40P01. Creating a run now locks the company (and its items) up
+    front, so the second build may instead wait for the first to commit; either way both finish."""
     from celerp_manufacturing.routes import build_item, BuildBody
     from celerp_manufacturing import movements
 
@@ -200,18 +201,27 @@ async def test_concurrent_one_tap_builds_no_deadlock(_db_engine):
     results: dict[str, dict | BaseException] = {}
 
     # By the time a completion takes the company lock it has already emitted
-    # mfg.order.created, so it holds the company KEY SHARE. Barrier the FIRST company-lock
-    # acquisition per session so both builds hold KEY SHARE before either takes the lock,
+    # mfg.order.created, so it holds the company KEY SHARE. Hold the FIRST company-lock
+    # acquisition per session until both builds hold KEY SHARE before either takes the lock,
     # making the upgrade contention deterministic instead of a matter of scheduling luck. This
-    # wraps the real lock (never delays it beyond the barrier).
-    both_hold_key_share = asyncio.Barrier(2)
+    # wraps the real lock (never delays it beyond that point).
+    # The wait also ends when the other build is already waiting on a lock this one holds,
+    # since that build can never arrive while this one waits for it.
     orig_lock = movements.lock_company
     synced: set[int] = set()
+
+    async def _other_is_waiting() -> bool:
+        async with _db_engine.connect() as conn:
+            return bool((await conn.execute(text(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+            ))).scalar_one())
 
     async def _barrier_then_lock(session, cid):
         if cid == company_id and id(session) not in synced:
             synced.add(id(session))
-            await both_hold_key_share.wait()
+            while len(synced) < 2 and not await _other_is_waiting():
+                await asyncio.sleep(0.02)
         return await orig_lock(session, cid)
 
     async def _one_tap(label: str, product_id: str) -> None:

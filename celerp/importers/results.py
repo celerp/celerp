@@ -61,3 +61,14 @@ class ImportOutcome:
             "updated": self.count("updated"),
             "errors": errors,
         }
+
+
+def failure_reason(exc: BaseException) -> str:
+    """The reason a refused row gives the reader: a refusal's own message (an
+    HTTPException's detail, or the message of a structured detail), else the error text."""
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, dict) and detail.get("message"):
+        return str(detail["message"])
+    if detail is not None:
+        return str(detail)
+    return str(exc)
