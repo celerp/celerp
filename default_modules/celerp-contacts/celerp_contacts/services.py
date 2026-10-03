@@ -54,7 +54,6 @@ async def import_contact_records(
     records: Sequence[CRMImportRecord],
     *,
     match_identity: bool,
-    entity_type: str = "contact",
 ) -> ImportOutcome:
     """Create each imported contact, or update the contact it already is.
 
@@ -110,7 +109,7 @@ async def import_contact_records(
                     outcome.add(contact_id, "skipped")
                     continue
                 await emit_event(
-                    session, company_id=company_id, entity_id=contact_id, entity_type=entity_type,
+                    session, company_id=company_id, entity_id=contact_id, entity_type="contact",
                     event_type="crm.contact.updated", data={"fields_changed": changes},
                     actor_id=actor_id, location_id=None, source=rec.source,
                     idempotency_key=str(uuid.uuid4()),
@@ -121,7 +120,7 @@ async def import_contact_records(
                 continue
             data = {"contact_type": "customer", **{k: v for k, v in rec.data.items() if v is not None}}
             entry = await emit_event(
-                session, company_id=company_id, entity_id=rec.entity_id, entity_type=entity_type,
+                session, company_id=company_id, entity_id=rec.entity_id, entity_type="contact",
                 event_type=rec.event_type, data=data, actor_id=actor_id, location_id=None,
                 source=rec.source, idempotency_key=rec.idempotency_key,
                 metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
