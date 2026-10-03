@@ -44,10 +44,8 @@ def line_item_id(line: dict) -> str | None:
 
 def line_id_counts(line_items) -> Counter:
     """How many lines of a line set link to each item id (free-text lines are not counted)."""
-    return Counter(
-        ident for line in line_items or []
-        if isinstance(line, dict) and (ident := line_item_id(line))
-    )
+    ids = (line_item_id(line) for line in line_items or [] if isinstance(line, dict))
+    return Counter(ident for ident in ids if ident)
 
 
 async def linked_items(session, company_id, line_items, *, known: Counter | None = None) -> dict[str, Projection]:
