@@ -16,6 +16,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# Boot reads and maintains the real database; it needs the schema to exist whichever
+# test runs first.
+pytestmark = pytest.mark.usefixtures("_db_engine")
+
 
 async def _boom_hook(session=None, **kwargs):
     """An on_modules_ready hook that fails, standing in for one whose DB work

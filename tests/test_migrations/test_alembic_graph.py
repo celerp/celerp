@@ -28,6 +28,7 @@ from sqlalchemy import create_engine, text
 
 from celerp.alembic_config import build_alembic_config
 from celerp.cli import _apply_migrations
+from celerp.migrations.compatibility import NEWEST_CELERP_KEY, running_version
 
 from .conftest import head_rev, schema_of, throwaway_db, upgrade_to
 
@@ -77,6 +78,21 @@ def test_this_release_runs_in_order_after_the_last_release():
     script = ScriptDirectory.from_config(build_alembic_config())
     walked = [r.revision for r in script.walk_revisions(base=RELEASE_HEAD, head="heads")]
     assert list(reversed(walked)) == [RELEASE_HEAD, *RELEASE_CHAIN]
+
+
+def _without_instance_meta(schema: dict[str, set]) -> dict[str, set]:
+    return {kind: {row for row in rows if not (isinstance(row, tuple) and row[0] == "instance_meta")}
+            for kind, rows in schema.items()}
+
+
+def _newest_celerp(sync_url: str) -> str | None:
+    eng = create_engine(sync_url)
+    try:
+        with eng.connect() as conn:
+            return conn.execute(text("SELECT value FROM instance_meta WHERE key = :k"),
+                                {"k": NEWEST_CELERP_KEY}).scalar()
+    finally:
+        eng.dispose()
 
 
 def _downgrade_to(sync_url: str, revision: str) -> None:
@@ -162,7 +178,10 @@ def test_upgrade_downgrade_and_fresh_install_agree_on_the_schema():
             eng.dispose()
 
         _downgrade_to(up_sync, RELEASE_HEAD)
-        assert schema_of(up_sync) == at_release
+        # The record of the newest Celerp that opened the database is not part of any
+        # revision, so going back a release keeps it: that copy is still refused.
+        assert _without_instance_meta(schema_of(up_sync)) == at_release
+        assert _newest_celerp(up_sync) == running_version()
         assert _business_data(up_sync, ids) == kept
 
         _apply_migrations(up_async)
