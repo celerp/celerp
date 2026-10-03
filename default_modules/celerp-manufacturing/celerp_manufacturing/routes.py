@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event
+from celerp.importers.results import failure_reason
 from celerp.events.schemas import (
     _WORKFLOW_TIME_UNITS,
     RecipeSpec,
@@ -839,7 +840,8 @@ async def bulk_run_action(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Apply a lifecycle action (start/issue/complete/hold/resume/cancel) to many runs at once.
-    Runs in a state that does not permit the action are skipped (not a hard error)."""
+    Runs in a state that does not permit the action, or refused part way, are skipped whole with
+    their reason (not a hard error); the other runs are still actioned."""
     action = payload.action
     if action not in _BULK_RUN_ACTIONS:
         raise HTTPException(status_code=422, detail=f"Unknown bulk action: {action}")
@@ -862,37 +864,40 @@ async def bulk_run_action(
             continue
         st = row.state or {}
         status = (st.get("status") or "").lower()
+        # A run is one unit: an action refused part way (a draft output, a refused completion
+        # entry) rolls back everything it wrote for that run, and the run is reported skipped.
         try:
-            if action in ("start", "hold", "cancel", "issue", "complete") and status in _CLOSED_RUN_STATUSES:
-                raise ValueError("run is already closed")
-            if action == "start":
-                await _emit(run_id, "mfg.order.started", {"started_by": str(user.id)})
-            elif action == "hold":
-                await _emit(run_id, "mfg.order.on_hold", {"reason": None})
-            elif action == "resume":
-                if status != "on_hold":
-                    raise ValueError("only an on-hold run can be resumed")
-                await _emit(run_id, "mfg.order.resumed", {"resumed_by": str(user.id)})
-            elif action == "cancel":
-                await _emit(run_id, "mfg.order.cancelled", {})
-            elif action == "issue":
-                await _issue_and_record(session, company_id, user, run_id, _outstanding_inputs(st), states)
-            elif action == "complete":
-                outstanding = _outstanding_inputs(st)
-                if outstanding:
-                    if require_issued:
-                        raise ValueError("components must be issued before completing (required by settings)")
-                    await _lock_code_namespace_for_completion(session, company_id)
-                    await _issue_and_record(session, company_id, user, run_id, outstanding, states)
-                    st = (await _get_order(session, company_id, run_id)).state
-                qty = _outstanding_output(st)
-                if qty > 0:
-                    await _receive(session, company_id, user, run_id, st, qty, states)
-                    st = (await _get_order(session, company_id, run_id)).state
-                await _close_run(session, company_id, user, run_id, st, states)
+            async with session.begin_nested():
+                if action in ("start", "hold", "cancel", "issue", "complete") and status in _CLOSED_RUN_STATUSES:
+                    raise ValueError("run is already closed")
+                if action == "start":
+                    await _emit(run_id, "mfg.order.started", {"started_by": str(user.id)})
+                elif action == "hold":
+                    await _emit(run_id, "mfg.order.on_hold", {"reason": None})
+                elif action == "resume":
+                    if status != "on_hold":
+                        raise ValueError("only an on-hold run can be resumed")
+                    await _emit(run_id, "mfg.order.resumed", {"resumed_by": str(user.id)})
+                elif action == "cancel":
+                    await _emit(run_id, "mfg.order.cancelled", {})
+                elif action == "issue":
+                    await _issue_and_record(session, company_id, user, run_id, _outstanding_inputs(st), states)
+                elif action == "complete":
+                    outstanding = _outstanding_inputs(st)
+                    if outstanding:
+                        if require_issued:
+                            raise ValueError("components must be issued before completing (required by settings)")
+                        await _lock_code_namespace_for_completion(session, company_id)
+                        await _issue_and_record(session, company_id, user, run_id, outstanding, states)
+                        st = (await _get_order(session, company_id, run_id)).state
+                    qty = _outstanding_output(st)
+                    if qty > 0:
+                        await _receive(session, company_id, user, run_id, st, qty, states)
+                        st = (await _get_order(session, company_id, run_id)).state
+                    await _close_run(session, company_id, user, run_id, st, states)
             done.append(run_id)
-        except ValueError as e:
-            skipped.append({"id": run_id, "reason": str(e)})
+        except (ValueError, HTTPException) as e:
+            skipped.append({"id": run_id, "reason": failure_reason(e)})
     await session.commit()
     return {"done": done, "skipped": skipped}
 
