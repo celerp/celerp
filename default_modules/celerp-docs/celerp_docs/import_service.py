@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event, find_event_by_idempotency
-from celerp.importers.results import ImportOutcome
+from celerp.importers.results import ImportOutcome, OutcomeStatus, failure_reason
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -32,7 +32,7 @@ from celerp_docs.routes import (
     _import_metadata,
     _lock_imported_contact,
     _require_doc_rate_http,
-    patch_doc,
+    write_doc_patch,
 )
 
 DOC_CREATED = "doc.created"
@@ -102,62 +102,71 @@ async def import_doc_records(
             if not upsert:
                 outcome.add(rec.entity_id, "skipped")
                 continue
-        if rec.idempotency_key in existing_keys or rec.entity_id in existing_entities:
-            try:
-                row = await _get_doc(session, company_id, rec.entity_id)
-                fields_changed = _doc_import_fields_changed(row.state, rec.data)
-                if not fields_changed:
-                    outcome.add(rec.entity_id, "skipped")
-                    continue
-                canonical_patch = json.dumps(fields_changed, sort_keys=True, separators=(",", ":"), default=str)
-                upsert_idem = (
-                    f"{rec.idempotency_key}:upsert:"
-                    f"{hashlib.sha256(canonical_patch.encode()).hexdigest()}"
-                )
-                result = await patch_doc(
-                    rec.entity_id,
-                    DocPatch(fields_changed=fields_changed, idempotency_key=upsert_idem),
-                    company_id=company_id,
-                    _=None,
-                    role=role,
-                    settings=settings,
-                    user=user,
-                    session=session,
-                )
-                outcome.add(rec.entity_id, "skipped" if result.get("event_id") is None else "updated")
-            except Exception as exc:
-                outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {exc}")
-            continue
-
+        upserting = rec.idempotency_key in existing_keys or rec.entity_id in existing_entities
+        # A row is one unit: the document and its accounting entry are written together
+        # in one savepoint, so a row refused part way leaves nothing behind and the rows
+        # around it are unaffected.
         try:
-            await _lock_imported_contact(session, company_id, "doc", rec.data)
-            await _assert_import_number_free(session, company_id, "doc", rec.data)
-            if auto_je.import_auto_je_kind(rec.data) is not None:
-                _require_doc_rate_http(rec.data, base_currency)
-            entry = await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=rec.entity_id,
-                entity_type="doc",
-                event_type=DOC_CREATED,
-                data=rec.data,
-                actor_id=user.id,
-                location_id=None,
-                source=rec.source,
-                idempotency_key=rec.idempotency_key,
-                metadata_=_import_metadata(rec.source_ts),
-            )
-            existing_keys.add(rec.idempotency_key)
-            existing_entities.add(entry.entity_id)
-            if not getattr(entry, "was_deduped", False):
-                if post_ledger:
-                    await _import_auto_je(
-                        session, company_id, user.id, entry.entity_id, rec.data,
-                        base_currency=base_currency,
+            async with session.begin_nested():
+                if upserting:
+                    status = await _upsert_doc(session, company_id, user, role, settings, rec)
+                else:
+                    status = await _create_doc(
+                        session, company_id, user, rec, base_currency, post_ledger=post_ledger,
                     )
-                outcome.add(entry.entity_id, "created")
-            else:
-                outcome.add(entry.entity_id, "skipped")
         except Exception as exc:
-            outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {exc}")
+            outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {failure_reason(exc)}")
+            continue
+        existing_keys.add(rec.idempotency_key)
+        existing_entities.add(rec.entity_id)
+        outcome.add(rec.entity_id, status)
     return outcome
+
+
+async def _upsert_doc(session, company_id, user, role, settings, rec: DocImportRecord) -> OutcomeStatus:
+    """Refresh an imported document's editable fields through the normal document edit."""
+    row = await _get_doc(session, company_id, rec.entity_id)
+    fields_changed = _doc_import_fields_changed(row.state, rec.data)
+    if not fields_changed:
+        return "skipped"
+    canonical_patch = json.dumps(fields_changed, sort_keys=True, separators=(",", ":"), default=str)
+    upsert_idem = (
+        f"{rec.idempotency_key}:upsert:"
+        f"{hashlib.sha256(canonical_patch.encode()).hexdigest()}"
+    )
+    result = await write_doc_patch(
+        session, company_id, role, settings, user, rec.entity_id,
+        DocPatch(fields_changed=fields_changed, idempotency_key=upsert_idem),
+    )
+    return "skipped" if result.get("event_id") is None else "updated"
+
+
+async def _create_doc(
+    session, company_id, user, rec: DocImportRecord, base_currency: str, *, post_ledger: bool,
+) -> OutcomeStatus:
+    """Write one imported document and, when it is issued, its accounting entry."""
+    await _lock_imported_contact(session, company_id, "doc", rec.data)
+    await _assert_import_number_free(session, company_id, "doc", rec.data)
+    if auto_je.import_auto_je_kind(rec.data) is not None:
+        _require_doc_rate_http(rec.data, base_currency)
+    entry = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=rec.entity_id,
+        entity_type="doc",
+        event_type=DOC_CREATED,
+        data=rec.data,
+        actor_id=user.id,
+        location_id=None,
+        source=rec.source,
+        idempotency_key=rec.idempotency_key,
+        metadata_=_import_metadata(rec.source_ts),
+    )
+    if getattr(entry, "was_deduped", False):
+        return "skipped"
+    if post_ledger:
+        await _import_auto_je(
+            session, company_id, user.id, entry.entity_id, rec.data,
+            base_currency=base_currency,
+        )
+    return "created"

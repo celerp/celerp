@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
+from celerp.importers.results import failure_reason
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
@@ -1743,6 +1744,13 @@ async def create_doc(
 
 @router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    result = await write_doc_patch(session, company_id, role, settings, user, entity_id, payload)
+    await session.commit()
+    return result
+
+
+async def write_doc_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: DocPatch) -> dict:
+    """Apply a document edit without committing, so an import can make it part of a larger unit."""
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
@@ -1901,7 +1909,6 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     )
     if getattr(entry, "was_deduped", False):
         return _patch_replay(entry, "doc.updated", entity_id, digest)
-    await session.commit()
     # entry.id is the document's new version, so the client's next versioned write pins
     # exactly the state this patch produced, as patch_list does.
     return {"event_id": entry.id, "version": entry.id}
@@ -5413,6 +5420,13 @@ async def patch_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    result = await write_list_patch(session, company_id, role, settings, user, entity_id, payload)
+    await session.commit()
+    return result
+
+
+async def write_list_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: ListPatch) -> dict:
+    """Apply a List edit without committing, so an import can make it part of a larger unit."""
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
@@ -5480,7 +5494,6 @@ async def patch_list(
                              {"fields_changed": fields_changed}, user, idem_key, meta={"request": digest})
     if getattr(entry, "was_deduped", False):
         return _patch_replay(entry, "list.updated", entity_id, digest)
-    await session.commit()
     # entry.id is the list's new version (the projection version tracks the latest entry id), so the
     # client refreshes its cached version from here and its next save pins the value it just wrote.
     return {"event_id": entry.id, "version": entry.id}
@@ -6442,14 +6455,13 @@ async def batch_import_lists(
                     continue
                 canonical = json.dumps(fields_changed, sort_keys=True, separators=(",", ":"), default=str)
                 upsert_idem = f"{rec.idempotency_key}:upsert:{hashlib.sha256(canonical.encode()).hexdigest()}"
-                result = await patch_list(
-                    replay.entity_id,
+                result = await write_list_patch(
+                    session, company_id, role, settings, user, replay.entity_id,
                     ListPatch(
                         fields_changed=fields_changed,
                         idempotency_key=upsert_idem,
                         expected_version=row.version if "line_items" in fields_changed else None,
                     ),
-                    company_id=company_id, _=None, role=role, settings=settings, user=user, session=session,
                 )
                 if result.get("event_id") is None:
                     skipped += 1
@@ -6457,7 +6469,7 @@ async def batch_import_lists(
                     updated += 1
             except Exception as exc:
                 if len(errors) < 10:
-                    errors.append(f"{replay.entity_id}: {exc}")
+                    errors.append(f"{replay.entity_id}: {failure_reason(exc)}")
             continue
         if rec.entity_id in existing_entities:
             skipped += 1
@@ -6479,7 +6491,7 @@ async def batch_import_lists(
                 created += 1
         except Exception as exc:
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {exc}")
+                errors.append(f"{rec.entity_id}: {failure_reason(exc)}")
 
     await session.commit()
     return BatchImportResult(created=created, skipped=skipped, updated=updated, errors=errors)
