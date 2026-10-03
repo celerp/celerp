@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 """Which chart accounts can take money, and which changes to the chart would leave a
-bank account or online payments posting to an account that cannot."""
+bank account posting to an account that cannot."""
 
 from __future__ import annotations
 
@@ -43,8 +43,7 @@ async def check_account_change(
     account_type: str | None, is_active: bool | None,
 ) -> None:
     """422 when archiving *acc* or changing its type away from asset would leave an active
-    bank account, or online payments to Cash, posting to it. The caller holds *acc* FOR
-    UPDATE."""
+    bank account posting to it. The caller holds *acc* FOR UPDATE."""
     archives = is_active is False and acc.is_active
     retypes = account_type is not None and account_type != acc.account_type and acc.account_type == "asset"
     if not (archives or retypes):
@@ -58,10 +57,3 @@ async def check_account_change(
         raise HTTPException(status_code=422, detail=(
             f"Account {acc.code} belongs to the active bank account {', '.join(banks)}. Archive the bank "
             "account before archiving this account or changing its type."))
-    # Cash has no bank account to archive first; while online payments default to it,
-    # the payment setting stands in for one. A bank's code is guarded by its bank account.
-    from celerp_docs.routes_payments import DEFAULT_DEPOSIT_ACCOUNT, deposit_account
-    if acc.code == DEFAULT_DEPOSIT_ACCOUNT and await deposit_account(session, company_id) == acc.code:
-        raise HTTPException(status_code=422, detail=(
-            f"Online payments are deposited to account {acc.code}. Choose another account for online "
-            "payments before archiving this account or changing its type."))
