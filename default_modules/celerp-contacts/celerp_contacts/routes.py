@@ -239,6 +239,14 @@ async def tag_contact(contact_id: str, payload: TagBody, company_id: str = Depen
 # ── Files ─────────────────────────────────────────────────────────────────────
 
 
+async def _locked_contact(session: AsyncSession, company_id, contact_id: str) -> Projection:
+    """The contact a file change applies to, read once no other write to it is in flight."""
+    row = (await lock_contacts(session, company_id, [contact_id])).get(contact_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return row
+
+
 def _get_contact_file(files: list[dict], file_id: str) -> dict:
     match = next((f for f in files if f.get("id") == file_id), None)
     if match is None:
@@ -255,15 +263,14 @@ async def upload_contact_file(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
-
     async with storing(session, company_id) as store:
         try:
             meta = await store.upload(file)
         except ValueError as exc:
             raise HTTPException(status_code=413, detail=str(exc))
+        # Read after the upload so a contact deleted meanwhile, or an uploader who has
+        # lost access, leaves no file behind.
+        await _locked_contact(session, company_id, contact_id)
         entry = await attach_file(session, company_id, "contact", contact_id, meta, user.id)
     return {"event_id": entry.id, **meta}
 
@@ -279,9 +286,7 @@ async def tag_contact_file(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Update the document_tag on an existing uploaded file."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
+    row = await _locked_contact(session, company_id, contact_id)
     f = _get_contact_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
@@ -311,9 +316,7 @@ async def update_contact_file_description(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
+    row = await _locked_contact(session, company_id, contact_id)
     f = _get_contact_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
@@ -371,9 +374,7 @@ async def delete_contact_file(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
+    row = await _locked_contact(session, company_id, contact_id)
     f = _get_contact_file(row.state.get("files", []), file_id)
 
     entry = await emit_event(

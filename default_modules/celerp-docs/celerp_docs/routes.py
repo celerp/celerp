@@ -2325,7 +2325,7 @@ async def renumber_doc(
 
     Voided documents are immutable records and cannot be renumbered.
     """
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("status") == "void":
         raise HTTPException(status_code=409, detail="Voided documents cannot be renumbered")
@@ -2354,7 +2354,7 @@ async def renumber_doc(
         actor_id=user.id,
         location_id=None,
         source="api",
-        idempotency_key=f"renumber:{entity_id}:{new_ref}",
+        idempotency_key=str(uuid.uuid4()),
         metadata_={},
     )
     await session.commit()
@@ -7960,12 +7960,14 @@ async def upload_doc_file(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
     async with storing(session, company_id) as store:
         try:
             meta = await store.upload(file)
         except ValueError as exc:
             raise HTTPException(status_code=413, detail=str(exc))
+        # Read after the upload so a document deleted meanwhile, or an uploader who has
+        # lost access, leaves no file behind.
+        await _get_doc(session, company_id, entity_id, for_update=True)
         entry = await attach_file(session, company_id, "doc", entity_id, meta, user.id)
     return {"event_id": entry.id, **meta}
 
@@ -8016,7 +8018,7 @@ async def tag_doc_file(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     f = _get_doc_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
@@ -8046,7 +8048,7 @@ async def update_doc_file_description(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     f = _get_doc_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
@@ -8075,7 +8077,7 @@ async def delete_doc_file(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     f = _get_doc_file(row.state.get("files", []), file_id)
     entry = await emit_event(
         session,

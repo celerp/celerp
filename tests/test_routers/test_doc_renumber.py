@@ -159,6 +159,19 @@ async def test_renumber_chain_frees_old_number(client, session):
     assert r.json()["ref_id"] == ref_a
 
 
+@pytest.mark.asyncio
+async def test_renumber_back_to_a_number_the_doc_had_before(client, session):
+    """A -> B -> A -> B: every step takes effect, including the repeated ones."""
+    token = await _register(client)
+    ref_a, ref_b = f"BACK-A-{uuid.uuid4().hex[:6].upper()}", f"BACK-B-{uuid.uuid4().hex[:6].upper()}"
+    doc = await _create_doc(client, token, ref_id=ref_a)
+    for ref in (ref_b, ref_a, ref_b):
+        r = await client.post(f"/docs/{doc['id']}/renumber", headers=_h(token), json={"ref_id": ref})
+        assert r.status_code == 200, r.text
+        assert r.json()["ref_id"] == ref
+    assert (await client.get(f"/docs/{doc['id']}", headers=_h(token))).json()["ref_id"] == ref_b
+
+
 # ---------------------------------------------------------------------------
 # Voided docs blocked
 # ---------------------------------------------------------------------------
