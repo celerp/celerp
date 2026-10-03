@@ -193,6 +193,17 @@ def _order_item_ids(data: dict) -> list[str]:
     return [*ids, output]
 
 
+async def _created_before(session: AsyncSession, company_id, key: str, fingerprint: str):
+    """The run a creation key already made for this same request, or None when the key is new.
+    A key that made something else, or a run from a different request, is refused."""
+    stored = await find_event_by_idempotency(session, company_id, key)
+    if stored is not None and (stored.event_type != "mfg.order.created"
+                               or (stored.metadata_ or {}).get("request") != fingerprint):
+        raise movements.refuse(409, "key_reused", "This request key was already used for a different run. "
+                               "Send the request again without reusing the key.")
+    return stored
+
+
 async def _emit_order_created(session: AsyncSession, company_id, order_id: str, data: dict, *, quantity: float,
                               request: dict, actor_id, idempotency_key: str | None, location_id=None,
                               source: str = "api", metadata_: dict | None = None,
@@ -211,11 +222,8 @@ async def _emit_order_created(session: AsyncSession, company_id, order_id: str, 
     await lock_company(session, company_id)
     key = f"mfg:created:{idempotency_key or uuid.uuid4().hex}"
     fingerprint = movements._fingerprint(request)
-    stored = await find_event_by_idempotency(session, company_id, key)
+    stored = await _created_before(session, company_id, key, fingerprint)
     if stored is not None:
-        if stored.event_type != "mfg.order.created" or (stored.metadata_ or {}).get("request") != fingerprint:
-            raise movements.refuse(409, "key_reused", "This request key was already used for a different run. "
-                                   "Send the request again without reusing the key.")
         return stored
     if not quantity > 0:
         raise HTTPException(status_code=422, detail="A run must make a quantity greater than zero")
@@ -1084,6 +1092,22 @@ def _imported_order(data: dict) -> tuple[dict, float]:
     return {**order, **{k: data[k] for k in _IMPORTED_FIELDS if data.get(k) not in (None, "")}}, quantity
 
 
+async def _imported_before(session: AsyncSession, company_id, rec, fingerprint: str) -> bool:
+    """Whether this record is already imported: its key made this same run (the same key with
+    anything different is refused), or an older release imported this exact record under it.
+    Any other record whose id is already taken is refused, never skipped."""
+    if await _created_before(session, company_id, f"mfg:created:{rec.idempotency_key}", fingerprint) is not None:
+        return True
+    older = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
+    if older is not None and older.event_type == "mfg.order.created" and older.entity_id == rec.entity_id \
+            and older.data == rec.data:
+        return True
+    if await session.get(Projection, {"company_id": company_id, "entity_id": rec.entity_id}) is not None:
+        raise HTTPException(status_code=409, detail="A record with this id already exists and differs from this "
+                                                    "one; it was not imported again.")
+    return False
+
+
 @router.post("/import/batch", response_model=BatchImportResult)
 async def batch_import_manufacturing(
     body: MfgBatchImportRequest,
@@ -1093,29 +1117,9 @@ async def batch_import_manufacturing(
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    from sqlalchemy import select as _select
-    from celerp.models.ledger import LedgerEntry
-
-    # A record already imported is skipped by its key, as the run's creation stored it.
-    keys = [f"mfg:created:{r.idempotency_key}" for r in body.records]
-    existing_keys = set((await session.execute(
-        _select(LedgerEntry.idempotency_key).where(
-            LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key.in_(keys)
-        )
-    )).scalars().all())
-
-    create_entity_ids = [r.entity_id for r in body.records if r.event_type == "mfg.order.created"]
-    existing_entities: set[str] = set()
-    if create_entity_ids:
-        existing_entities = set((await session.execute(
-            _select(Projection.entity_id).where(
-                Projection.company_id == company_id,
-                Projection.entity_id.in_(create_entity_ids),
-            )
-        )).scalars().all())
-
-    # Every item any record names is locked in one sorted pass before the first write, so
-    # the import never takes item locks out of order with another writer.
+    # The company, then every item any record names in one sorted pass, before the first
+    # check or write: the order every other writer takes them in.
+    await lock_company(session, company_id)
     named: set[str] = set()
     for rec in body.records:
         try:
@@ -1132,22 +1136,17 @@ async def batch_import_manufacturing(
                 errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
             skipped += 1
             continue
-        if f"mfg:created:{rec.idempotency_key}" in existing_keys:
-            skipped += 1
-            continue
-        if rec.event_type == "mfg.order.created" and rec.entity_id in existing_entities:
-            skipped += 1
-            continue
         try:
             order, quantity = _imported_order(rec.data)
+            request = {"import": rec.entity_id, **order, "quantity": quantity}
+            if await _imported_before(session, company_id, rec, movements._fingerprint(request)):
+                skipped += 1
+                continue
             await _emit_order_created(
-                session, company_id, rec.entity_id, order, quantity=quantity, request=rec.data,
+                session, company_id, rec.entity_id, order, quantity=quantity, request=request,
                 actor_id=user.id, source=rec.source, idempotency_key=rec.idempotency_key,
                 metadata_={"source_ts": rec.source_ts} if rec.source_ts else {}, locked=locked,
             )
-            existing_keys.add(f"mfg:created:{rec.idempotency_key}")
-            if rec.event_type == "mfg.order.created":
-                existing_entities.add(rec.entity_id)
             created += 1
         except Exception as exc:
             if len(errors) < 10:
