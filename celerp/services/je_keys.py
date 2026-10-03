@@ -28,3 +28,34 @@ def je_idempotency_key(doc_id: str, je_type: str, suffix: str) -> str:
     Doc-scoped so the same JE can't be emitted twice regardless of trigger source.
     """
     return f"je:{doc_id}:{je_type}:{suffix}"
+
+
+async def je_minted(session, company_id, doc_id: str, je_type: str) -> bool:
+    """Whether an auto-JE was ever created under *je_type* for *doc_id*.
+
+    Payment JE keys embed the payment's index. Deletions used to compact a document's
+    payments, renumbering the later ones, so on such a document an index can already
+    have keyed another payment's entry; a new entry under that key would silently
+    dedupe into it and post nothing.
+    """
+    from sqlalchemy import select
+
+    from celerp.models.ledger import LedgerEntry
+    return (await session.execute(select(LedgerEntry.id).where(
+        LedgerEntry.company_id == company_id,
+        LedgerEntry.idempotency_key == je_idempotency_key(doc_id, je_type, "c"),
+    ).limit(1))).first() is not None
+
+
+async def unminted_payment_key(session, company_id, doc_id: str, op: str, key: str) -> str:
+    """*key*, or its first ``~n`` variant no auto-JE of *op* on *doc_id* was created under.
+
+    For a payment give-back's entry, called once per fresh event: an entry already under
+    the key was another payment's, before an older deletion renumbered this one
+    (je_minted).
+    """
+    base, n = key, 0
+    while await je_minted(session, company_id, doc_id, f"{op}:{key}"):
+        n += 1
+        key = f"{base}~{n}"
+    return key

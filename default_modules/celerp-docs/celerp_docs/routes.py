@@ -2617,12 +2617,8 @@ async def _alloc_payment_index(session, company_id, payments: list,
     idx = max(len(payments),
               1 + max((int(p.get("index") or 0) for p in payments), default=-1))
     if key_doc_id and key_type:
-        from celerp.models.ledger import LedgerEntry as _LE
-        from celerp.services.je_keys import je_idempotency_key as _je_k
-        while (await session.execute(select(_LE.id).where(
-                _LE.company_id == company_id,
-                _LE.idempotency_key == _je_k(key_doc_id, f"{key_type}:{idx}", "c"),
-        ).limit(1))).first() is not None:
+        from celerp.services.je_keys import je_minted
+        while await je_minted(session, company_id, key_doc_id, f"{key_type}:{idx}"):
             idx += 1
     return idx
 
@@ -2956,9 +2952,8 @@ async def reverse_payment_refund(session, company_id, entity_id: str, row: Proje
     *books*. Undoing the latest refund mirrors its entry; undoing an earlier one still
     leaves the books at what the refunds left in place convert to. The caller commits.
     Returns the event, flagged ``was_deduped`` when *idempotency_key* already recorded it."""
-    from celerp.services.je_keys import je_idempotency_key
+    from celerp.services.je_keys import je_idempotency_key, unminted_payment_key
     index, number = payment.get("index"), refund["refund_number"]
-    key = f"refund_{index}_{number}"
     amount = to_decimal(refund["amount"])
     left_given_back = to_stored_float(to_decimal(payment.get("refunded") or 0) - amount)
     entry = await emit_event(
@@ -2970,6 +2965,8 @@ async def reverse_payment_refund(session, company_id, entity_id: str, row: Proje
     )
     if getattr(entry, "was_deduped", False):
         return entry
+    key = await unminted_payment_key(session, company_id, entity_id, "payment.refund_reversed",
+                                     f"refund_{index}_{number}")
     lines = auto_je.payment_return_entries(
         doc_type=row.state.get("doc_type", "invoice"), bank_account_code=books.bank_account,
         amount=to_stored_float(amount),
