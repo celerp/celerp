@@ -582,13 +582,12 @@ def _apply_migrations(db_url: str) -> None:
     # False negatives are safe: the re-applied revision fails with
     # DuplicateColumn, which _run_upgrade_with_auto_stamp catches.
     sync_url = _sync_url(db_url)
+    # A database a newer Celerp already opened is refused before anything below
+    # can restamp it back to this copy's head.
+    from celerp.migrations.compatibility import refuse_incompatible
+    refuse_incompatible(sync_url)
     engine = _sa.create_engine(sync_url, pool_pre_ping=True)
     try:
-        # A database a newer Celerp already upgraded is refused before anything
-        # below can restamp it back to this copy's head.
-        from celerp.migrations._newer_schema import refuse_newer_schema
-        with engine.connect() as conn:
-            refuse_newer_schema(conn)
         inspector = _sa.inspect(engine)
         existing_tables = set(inspector.get_table_names())
         if "alembic_version" in existing_tables:
@@ -631,8 +630,12 @@ def _apply_migrations(db_url: str) -> None:
 
 def _run_migrations(db_url: str) -> None:
     """CLI entrypoint: apply migrations, exiting non-zero with a readable message."""
+    from celerp.migrations.compatibility import IncompatibleDatabase
     try:
         _apply_migrations(db_url)
+    except IncompatibleDatabase as e:
+        click.echo(f"  ✗ {e}", err=True)
+        sys.exit(1)
     except Exception as e:
         click.echo(f"  ✗ Migration failed: {e}", err=True)
         sys.exit(1)
@@ -1403,6 +1406,25 @@ def migrate(db_url):
     click.echo("Running migrations...")
     if _migrate_to_head(url):
         click.echo("  ✓ Done")
+
+
+# `celerp compatibility` exit status when this copy must not open the database.
+COMPATIBILITY_REFUSED_EXIT = 3
+
+
+@main.command()
+@click.option("--db-url", required=True, help="Database to check.")
+def compatibility(db_url):
+    """Say, without changing anything, whether this copy may open the database.
+
+    Prints the decision as JSON; exits 0 when compatible and 3 when refused. The
+    desktop launcher runs this before it changes anything.
+    """
+    from celerp.migrations.compatibility import check_url
+    result = check_url(_sync_url(db_url))
+    click.echo(result.to_json())
+    if not result.ok:
+        sys.exit(COMPATIBILITY_REFUSED_EXIT)
 
 
 @main.command()

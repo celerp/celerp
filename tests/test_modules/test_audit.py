@@ -145,7 +145,6 @@ class TestBackupExportWritesEnabledModules:
         import celerp.config as cfg_mod
         monkeypatch.setattr(be, "_build_archive", fake_build)
         monkeypatch.setattr(backup_mod, "dump_database", lambda url: b"FAKE_DUMP")
-        monkeypatch.setattr(be, "_version", lambda: "1.0.0")
         monkeypatch.setattr(be, "required_installation_modules", fake_required_installation_modules)
         monkeypatch.setattr(cfg_mod, "read_config", lambda: {"company": {"name": "Test"}})
 
@@ -159,11 +158,12 @@ class TestBackupExportWritesEnabledModules:
         """End-to-end: build a real archive on disk with enabled_modules, then
         validate_archive must read it back."""
         import tarfile
-        from celerp.services.backup_import import validate_archive, _safe_test_version
+        from celerp import __version__
+        from celerp.services.backup_import import validate_archive
 
         archive_path = tmp_path / "test.celerp-backup"
         meta = {
-            "celerp_version": _safe_test_version(),
+            "celerp_version": __version__,
             "pg_version": "16",
             "created_at": "2026-06-04T00:00:00Z",
             "company_name": "Round-trip Co",
