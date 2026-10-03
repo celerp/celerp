@@ -1570,8 +1570,8 @@ async def create_doc(
         if replay is not None:
             return _replay_result(replay, event_type="doc.created", digest=digest)
 
-    # Contact before company, the lock order every contact-reference writer takes. The
-    # company lock comes before any line check: Revert to Draft and Reserve take it too, so
+    # The contact first, as every contact-reference writer takes it (its lock takes the
+    # company lock, then the contact row). The company lock comes before any line check: Revert to Draft and Reserve take it too, so
     # the lines are checked as the last of them left the items, and numbering is serialized.
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
     company = await locked_company(session, company_id)
@@ -5395,7 +5395,8 @@ async def create_list(
     if (done := await _replay()) is not None:
         return done
     require_currency_code(payload.currency)
-    # Contact before company, the lock order every contact-reference writer takes.
+    # The contact first, as every contact-reference writer takes it (its lock takes the
+    # company lock, then the contact row).
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
     # Lock the company row so concurrent creates cannot read the same numbering counter, then
     # re-check the key under that lock: a retry racing the first request returns the original
