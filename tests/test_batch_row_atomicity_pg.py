@@ -145,12 +145,14 @@ async def _import_racing_the_same_file(engine, factory, company_id, record: dict
                 waiting = (await probe.execute(text(
                     "SELECT count(*) FROM pg_stat_activity "
                     "WHERE datname = current_database() AND wait_event_type = 'Lock'"))).scalar_one()
+                await probe.rollback()  # the activity view holds still for the length of a transaction
                 if waiting:
                     break
                 await asyncio.sleep(0.02)
+        await a.commit()  # before any assert, so a failure reports instead of leaving B waiting on A
+        counts = await importing
         assert waiting, "the import never reached its write"
-        await a.commit()
-        return await importing
+        return counts
 
 
 def _record(entity_id: str, event_type: str, data: dict) -> dict:
