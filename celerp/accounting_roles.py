@@ -23,7 +23,7 @@ from celerp.compat import StrEnum
 
 # Bumped when a release adds a role. Older companies and backups stay readable:
 # an unmapped role only fails the operation that needs it.
-POSTING_ROLES_SCHEMA = 1
+POSTING_ROLES_SCHEMA = 2
 
 # Company.settings keys. ``posting_roles`` is the current target per role;
 # ``posting_role_scopes`` is every account that has legitimately served the role,
@@ -73,6 +73,7 @@ class AccountRole(StrEnum):
     FX_GAIN = "fx_gain"
     FX_LOSS = "fx_loss"
     STOCK_SHRINKAGE = "stock_shrinkage"
+    WORK_IN_PROGRESS = "work_in_progress"
 
 
 R = AccountRole
@@ -100,6 +101,7 @@ ROLE_LABELS: dict[AccountRole, str] = {
     R.FX_GAIN: "Exchange gain",
     R.FX_LOSS: "Exchange loss",
     R.STOCK_SHRINKAGE: "Stock shrinkage and write-offs",
+    R.WORK_IN_PROGRESS: "Work in Progress",
 }
 
 _ASSET = frozenset({"asset"})
@@ -129,6 +131,7 @@ ROLE_TYPES: dict[AccountRole, frozenset[str]] = {
     R.FX_GAIN: _REVENUE,
     R.FX_LOSS: _EXPENSE,
     R.STOCK_SHRINKAGE: _EXPENSE,
+    R.WORK_IN_PROGRESS: _ASSET,
 }
 
 # Roles a posting lands on directly, so the target must be a concrete account,
@@ -162,6 +165,7 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
     R.FX_GAIN: "6960",
     R.FX_LOSS: "6960",
     R.STOCK_SHRINKAGE: "6970",
+    R.WORK_IN_PROGRESS: "1130-WIP",
 }
 
 # Landed-cost clearing role per landed-cost kind, and back.
@@ -174,7 +178,9 @@ LANDED_ROLE_BY_KIND: dict[str, AccountRole] = {
 LANDED_KIND_BY_ROLE: dict[str, str] = {role.value: kind for kind, role in LANDED_ROLE_BY_KIND.items()}
 
 # Roles whose accounts hold the value of goods on hand: stock itself, its opening
-# balance, and landed cost waiting to be capitalized into it.
+# balance, and landed cost waiting to be capitalized into it. Work in progress is not
+# one of them: it carries material issued to a production run, which is no longer a
+# lot on hand, and is checked against the open runs instead.
 INVENTORY_VALUE_ROLES: frozenset[AccountRole] = frozenset({
     R.INVENTORY, R.INVENTORY_PURCHASED, R.INVENTORY_OPENING, *LANDED_ROLE_BY_KIND.values()})
 
@@ -189,7 +195,13 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
     "landed_cost": (R.LANDED_FREIGHT, R.LANDED_INSURANCE, R.LANDED_DUTY, R.LANDED_IMPORT_VAT),
     "fx": (R.FX_GAIN, R.FX_LOSS),
     "fixed_assets": (R.FIXED_ASSETS,),
+    "manufacturing": (R.WORK_IN_PROGRESS,),
 }
+
+# Roles a company whose chart came from elsewhere (a migration or a restored backup)
+# never has mapped by default code: its chart predates the role, so an account that
+# happens to carry the default number proves nothing about what it holds.
+UNGUESSED_ROLES: frozenset[AccountRole] = frozenset({R.WORK_IN_PROGRESS})
 
 
 def is_role(value: object) -> bool:

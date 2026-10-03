@@ -26,6 +26,7 @@ from celerp.accounting_roles import (
     SCOPES_KEY,
     SEEDED_TARGETS,
     SOURCE_CONTROLS_KEY,
+    UNGUESSED_ROLES,
     AccountRole,
     is_role,
     target_problem,
@@ -98,13 +99,17 @@ def reconciled_settings(settings: dict, accounts: dict[str, dict]) -> dict:
     account leaves its role unmapped, and no account is ever created. Running it
     again changes nothing. A company whose roles come from its source books (a
     migration) keeps its own chart's numbering: a default number its chart happens
-    to hold proves nothing there."""
+    to hold proves nothing there, and neither does it for a role added after a
+    restored backup's chart was written (UNGUESSED_ROLES)."""
     out = {**settings, SCHEMA_KEY: POSTING_ROLES_SCHEMA}
     if SOURCE_CONTROLS_KEY in out:
         return out
     current = role_map(out)
     trial = {**{r.value: c for r, c in SEEDED_TARGETS.items()}, **current}
+    restored = bool(out.get("restored_backup"))
     for role, code in SEEDED_TARGETS.items():
+        if restored and role in UNGUESSED_ROLES:
+            continue
         if not current.get(role.value) and target_problem(role.value, trial, accounts.get(code)) is None:
             out = with_role(out, role.value, code)
     return out

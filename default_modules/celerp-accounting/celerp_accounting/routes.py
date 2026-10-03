@@ -62,6 +62,7 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "1130-INS", "name": "Inventory - Insurance Clearing", "account_type": "asset", "parent_code": "1130"},
     {"code": "1130-DTY", "name": "Inventory - Import Duty Clearing", "account_type": "asset", "parent_code": "1130"},
     {"code": "1130-IVT", "name": "Inventory - Non-Recoverable Import VAT Clearing", "account_type": "asset", "parent_code": "1130"},
+    {"code": "1130-WIP", "name": "Inventory - Work in Progress", "account_type": "asset", "parent_code": "1130"},
     {"code": "1140", "name": "Prepaid Expenses", "account_type": "asset", "parent_code": "1100"},
     {"code": "1150", "name": "VAT Receivable (Input VAT)", "account_type": "asset", "parent_code": "1100"},
     {"code": "1200", "name": "Non-Current Assets", "account_type": "asset", "parent_code": "1000", "cash_flow_category": "investing"},
@@ -235,6 +236,43 @@ async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUI
     session.add(bank)
 
 
+# The seeded inventory accounts whose presence, exactly as seeded, shows a chart is
+# Celerp's own and can take a seeded account added after it was created.
+_NATIVE_INVENTORY = ("1130", "1130-P", "1130-OB")
+
+
+async def _add_seeded_wip_account(session: AsyncSession, company_id: uuid.UUID) -> None:
+    """Add the seeded work-in-progress account to a chart written before it existed,
+    only when the chart is provably Celerp's own seeded one: its inventory accounts
+    are present exactly as seeded and nothing holds the work-in-progress code yet.
+    A chart from a migration or a restored backup is never extended; its company
+    chooses the account in Posting Accounts. An existing account is never changed."""
+    from celerp.accounting_roles import ROLES_KEY, SOURCE_CONTROLS_KEY, SEEDED_TARGETS, AccountRole
+    from celerp.services.company_lock import lock_chart, locked_company
+    from sqlalchemy import select as _select
+
+    company = await locked_company(session, company_id)
+    settings = dict(company.settings or {}) if company is not None else {}
+    role = AccountRole.WORK_IN_PROGRESS
+    if (company is None or SOURCE_CONTROLS_KEY in settings or settings.get("restored_backup")
+            or (settings.get(ROLES_KEY) or {}).get(role.value)):
+        return
+    await lock_chart(session, company_id)
+    entry = next(e for e in THAI_CHART_OF_ACCOUNTS if e["code"] == SEEDED_TARGETS[role])
+    seeded = {e["code"]: e for e in THAI_CHART_OF_ACCOUNTS if e["code"] in _NATIVE_INVENTORY}
+    rows = {a.code: a for a in (await session.execute(_select(Account).where(
+        Account.company_id == company_id, Account.code.in_([*_NATIVE_INVENTORY, entry["code"]])))).scalars()}
+    if entry["code"] in rows:
+        return
+    for code, want in seeded.items():
+        row = rows.get(code)
+        if row is None or not row.is_active or (row.account_type, row.parent_code) != (
+                want["account_type"], want["parent_code"]):
+            return
+    session.add(_seeded_account(company_id, entry))
+    await session.flush()
+
+
 async def seed_chart_of_accounts_hook(*, session: AsyncSession, company_id: uuid.UUID) -> None:
     """Lifecycle hook called via on_company_created slot. A new company's lots record
     their inventory account from the start, so it is marked as never needing the
@@ -256,7 +294,9 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     Seeds the chart of accounts for every company, active or deactivated, that has none
     yet. This handles the case where accounting is enabled after the company was already
     created (e.g. first-run with no modules, then preset applied), and a deactivated
-    company then works when it is reactivated. Then every company's posting accounts are
+    company then works when it is reactivated. A chart seeded by an older release gets
+    the accounts seeded since, where it is provably Celerp's own (_add_seeded_wip_account).
+    Then every company's posting accounts are
     reconciled with its chart (account_roles.reconcile_company), and a company left
     without an account its workflows need gets one notice pointing at the fix. Stock from
     before lots recorded their inventory account is then placed once, in one savepoint per
@@ -288,6 +328,8 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
         if company_id in unseeded:
             await seed_chart_of_accounts(session, company_id)
             await _seed_default_bank_account(session, company_id)
+        else:
+            await _add_seeded_wip_account(session, company_id)
         if await reconcile_company(session, company_id):
             await notify_unmapped(session, company_id)
         if INVENTORY_ORIGIN_KEY in await current_settings(session, company_id):

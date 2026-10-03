@@ -5,8 +5,9 @@
 user when one is missing.
 
 Only the roles of workflows the company actually uses are needed: sales and purchasing
-always, tax once taxes appear, inventory once stock exists, and landed cost, foreign
-currency and fixed assets once the books hold them. Any other role stays unmapped until
+always, tax once taxes appear, inventory once stock exists, work in progress once a
+production run exists, and landed cost, foreign currency and fixed assets once the
+books hold them. Any other role stays unmapped until
 its first use asks for it.
 
 A migrated company arrives with its source's chart and no posting accounts. Finishing
@@ -76,9 +77,12 @@ async def used_groups(session: AsyncSession, company_id, settings: dict) -> set[
             groups.add(group)
     base = str(settings.get("currency") or "USD").upper()
     rows = await session.execute(select(Projection.entity_type, Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type.in_(("item", "doc"))))
+        Projection.company_id == company_id, Projection.entity_type.in_(("item", "doc", "mfg_order"))))
     for entity_type, state in rows:
         state = state or {}
+        if entity_type == "mfg_order":
+            groups.add("manufacturing")
+            continue
         if entity_type == "item":
             groups.add("inventory")
             if state.get("landed_contributions"):
