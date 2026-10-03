@@ -50,6 +50,7 @@
       "config-writer.js",
       "migrate_cmd.js",
       "update-state.js",
+      "data-version.js",
       "preload.js",
       "assets/**"
     ],

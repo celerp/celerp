@@ -20,6 +20,7 @@ const fs = require("fs");
 const childProcess = require("child_process");
 const { execFileSync } = childProcess;
 const net = require("net");
+const { MARKER_NAME, guardDataVersion, writeMarker } = require("./data-version");
 let EmbeddedPostgres; // loaded via dynamic import() - embedded-postgres is ESM-only
 
 // ── Asar path fix for embedded-postgres ─────────────────────────────────────
@@ -408,7 +409,7 @@ function seedDefaultModules() {
 
   fs.mkdirSync(MODULE_DIR, { recursive: true });
 
-  const markerPath = path.join(MODULE_DIR, ".default-modules-version");
+  const markerPath = path.join(MODULE_DIR, MARKER_NAME);
   const appVersion = app.getVersion();
   let seededVersion = "";
   try {
@@ -435,7 +436,7 @@ function seedDefaultModules() {
 
   if (refresh) {
     try {
-      fs.writeFileSync(markerPath, appVersion);
+      writeMarker(markerPath, appVersion);
     } catch (e) {
       console.warn("[modules] could not record seeded module version:", e.message);
     }
@@ -1195,6 +1196,20 @@ app.whenReady().then(async () => {
       app.exit(0);
       return;
     }
+  }
+
+  // ── Data version guard ────────────────────────────────────────────────────
+  // An older copy (an old installer or download run again) must not open data a
+  // newer Celerp has already upgraded: its migrations and module seeding would
+  // rewind it. Checked before anything below touches the data directory.
+  if (!DEV_MODE && !guardDataVersion({
+    markerPath: path.join(MODULE_DIR, MARKER_NAME),
+    runningVersion: app.getVersion(),
+    dialog,
+    shell,
+  })) {
+    app.exit(0);
+    return;
   }
 
   setupAppMenu();
