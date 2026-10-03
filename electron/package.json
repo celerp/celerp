@@ -50,7 +50,8 @@
       "config-writer.js",
       "migrate_cmd.js",
       "update-state.js",
-      "data-version.js",
+      "compatibility.js",
+      "boot.js",
       "preload.js",
       "assets/**"
     ],

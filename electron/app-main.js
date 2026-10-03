@@ -20,7 +20,6 @@ const fs = require("fs");
 const childProcess = require("child_process");
 const { execFileSync } = childProcess;
 const net = require("net");
-const { MARKER_NAME, guardDataVersion, writeMarker } = require("./data-version");
 let EmbeddedPostgres; // loaded via dynamic import() - embedded-postgres is ESM-only
 
 // ── Asar path fix for embedded-postgres ─────────────────────────────────────
@@ -182,6 +181,8 @@ const {
   PREFLIGHT_UNREACHABLE,
 } = require("./db-mode");
 const { migrateArgs } = require("./migrate_cmd");
+const { compatibilityArgs, mayOpenData } = require("./compatibility");
+const { openData, reopenData } = require("./boot");
 const { writeConfig: writeLockedConfig } = require("./config-writer");
 const { serveUpdateState } = require("./update-state");
 
@@ -341,8 +342,8 @@ async function startPostgres(dbPort) {
   }
 }
 
-function runMigrations(dbUrl) {
-  const env = {
+function databaseCommandEnv(dbUrl) {
+  return {
     ...process.env,
     // Force UTF-8 file I/O — Windows defaults to cp1252, which crashes on the
     // app's UTF-8 data files (locales, config). Harmless on macOS/Linux.
@@ -352,11 +353,35 @@ function runMigrations(dbUrl) {
     // The data dir holds the unfinished-recovery marker, which migrate must see.
     CELERP_DATA_DIR: DATA_DIR,
   };
+}
+
+function runMigrations(dbUrl) {
   execFileSync(pythonBin(), migrateArgs(dbUrl), {
     cwd: APP_DIR,
-    env,
+    env: databaseCommandEnv(dbUrl),
     stdio: "pipe",
   });
+}
+
+/**
+ * Whether this copy may open the database (see compatibility.js). On a refusal the
+ * user has been told why; the bundled database is stopped and the app quits.
+ */
+async function mayOpenDatabase(dbUrl) {
+  const allowed = mayOpenData({
+    check: () => childProcess.spawnSync(pythonBin(), compatibilityArgs(dbUrl), {
+      cwd: APP_DIR,
+      env: databaseCommandEnv(dbUrl),
+      encoding: "utf8",
+    }),
+    dialog,
+    shell,
+  });
+  if (!allowed) {
+    if (pgInstance) await pgInstance.stop().catch(() => {});
+    app.exit(0);
+  }
+  return allowed;
 }
 
 /**
@@ -409,7 +434,8 @@ function seedDefaultModules() {
 
   fs.mkdirSync(MODULE_DIR, { recursive: true });
 
-  const markerPath = path.join(MODULE_DIR, MARKER_NAME);
+  // The app version that last seeded the bundle; it decides only whether to re-seed.
+  const markerPath = path.join(MODULE_DIR, ".default-modules-version");
   const appVersion = app.getVersion();
   let seededVersion = "";
   try {
@@ -436,7 +462,9 @@ function seedDefaultModules() {
 
   if (refresh) {
     try {
-      writeMarker(markerPath, appVersion);
+      // Written whole (temp file + rename), never half.
+      fs.writeFileSync(`${markerPath}.tmp`, appVersion);
+      fs.renameSync(`${markerPath}.tmp`, markerPath);
     } catch (e) {
       console.warn("[modules] could not record seeded module version:", e.message);
     }
@@ -1198,20 +1226,6 @@ app.whenReady().then(async () => {
     }
   }
 
-  // ── Data version guard ────────────────────────────────────────────────────
-  // An older copy (an old installer or download run again) must not open data a
-  // newer Celerp has already upgraded: its migrations and module seeding would
-  // rewind it. Checked before anything below touches the data directory.
-  if (!DEV_MODE && !guardDataVersion({
-    markerPath: path.join(MODULE_DIR, MARKER_NAME),
-    runningVersion: app.getVersion(),
-    dialog,
-    shell,
-  })) {
-    app.exit(0);
-    return;
-  }
-
   setupAppMenu();
   try {
     if (DEV_MODE) {
@@ -1286,19 +1300,6 @@ app.whenReady().then(async () => {
       }
     }
 
-    // When grace has expired (external was selected but neither entitlement nor
-    // grace remains) persist db_mode=local before the API and gateway start, so
-    // the next boot opens the local database and this write cannot race the
-    // gateway feature-flag persister. external_db_url is preserved untouched.
-    applyDbModePersist(cfg, dbConfig, writeConfig);
-
-    // Same fallback for external storage, off the SAME re-read decision the gate
-    // resolved against (not a fresh recompute of a stale cfg): when grace has
-    // expired, persist storage_mode=local so the next boot uses local storage.
-    // The storage_s3_* settings are preserved so the customer can reselect S3
-    // after renewing.
-    applyStoragePersist(cfg, storageDecision, writeConfig);
-
     // Create the main window immediately so user sees the loading page (no white frame).
     createWindow();
 
@@ -1307,31 +1308,59 @@ app.whenReady().then(async () => {
       setLoadingStatus("Your Celerp Team subscription has lapsed. External database remains active for up to 15 days. Please renew at celerp.com/subscribe.");
     }
 
-    if (dbConfig.useBundledPg) {
-      setLoadingStatus("Starting database…");
-      await startPostgres(dbPort);
-    }
-    setLoadingStatus("Loading modules…");
-    seedDefaultModules();
-    runModuleSetup();
-    setLoadingStatus("Running migrations…");
-    runMigrations(dbConfig.url);
-    // Pre-allocate both ports so each process env carries both values.
-    // GatewayClient runs inside the API process and needs to know the UI port
-    // for its reverse-proxy routing; allocating upfront avoids a null race.
-    // CELERP_API_PORT lets the CI boot-smoke (and debugging / firewalled installs)
-    // pin the API port; unset -> a free port, i.e. unchanged behavior for users.
-    const _pinApi = parseInt(process.env.CELERP_API_PORT || "", 10);
-    apiPort = Number.isInteger(_pinApi) && _pinApi > 0 ? _pinApi : await getFreePort();
-    uiPort = await getFreePort();
-    // Publish the chosen API port so external tooling (the CI boot smoke,
-    // local debugging) can discover it without having to dictate it — needed when
-    // the app self-de-elevated into a fresh process that didn't inherit our env.
-    try { fs.writeFileSync(path.join(DATA_DIR, "api-port"), String(apiPort)); } catch { /* non-fatal */ }
-    setLoadingStatus("Starting API server…");
-    await startApi(dbConfig.url, cfg);
-    setLoadingStatus("Starting UI server…");
-    await startUi(dbConfig.url, cfg);
+    const opened = await openData({
+      startPostgres: dbConfig.useBundledPg && (async () => {
+        setLoadingStatus("Starting database…");
+        await startPostgres(dbPort);
+      }),
+      // An older copy (an old installer or download run again) must not open data a
+      // newer Celerp has used: its migrations and module seeding would rewind it.
+      mayOpenData: () => {
+        setLoadingStatus("Checking your data…");
+        return mayOpenDatabase(dbConfig.url);
+      },
+      // When grace has expired (external was selected but neither entitlement nor
+      // grace remains) persist db_mode=local before the API and gateway start, so
+      // the next boot opens the local database and this write cannot race the
+      // gateway feature-flag persister. external_db_url is preserved untouched.
+      applyDbModePersist: () => applyDbModePersist(cfg, dbConfig, writeConfig),
+      // Same fallback for external storage, off the SAME re-read decision the gate
+      // resolved against (not a fresh recompute of a stale cfg): when grace has
+      // expired, persist storage_mode=local so the next boot uses local storage.
+      // The storage_s3_* settings are preserved so the customer can reselect S3
+      // after renewing.
+      applyStoragePersist: () => applyStoragePersist(cfg, storageDecision, writeConfig),
+      seedDefaultModules: () => {
+        setLoadingStatus("Loading modules…");
+        seedDefaultModules();
+      },
+      runModuleSetup,
+      runMigrations: () => {
+        setLoadingStatus("Running migrations…");
+        runMigrations(dbConfig.url);
+      },
+      startApi: async () => {
+        // Pre-allocate both ports so each process env carries both values.
+        // GatewayClient runs inside the API process and needs to know the UI port
+        // for its reverse-proxy routing; allocating upfront avoids a null race.
+        // CELERP_API_PORT lets the CI boot-smoke (and debugging / firewalled installs)
+        // pin the API port; unset -> a free port, i.e. unchanged behavior for users.
+        const _pinApi = parseInt(process.env.CELERP_API_PORT || "", 10);
+        apiPort = Number.isInteger(_pinApi) && _pinApi > 0 ? _pinApi : await getFreePort();
+        uiPort = await getFreePort();
+        // Publish the chosen API port so external tooling (the CI boot smoke,
+        // local debugging) can discover it without having to dictate it — needed when
+        // the app self-de-elevated into a fresh process that didn't inherit our env.
+        try { fs.writeFileSync(path.join(DATA_DIR, "api-port"), String(apiPort)); } catch { /* non-fatal */ }
+        setLoadingStatus("Starting API server…");
+        await startApi(dbConfig.url, cfg);
+      },
+      startUi: async () => {
+        setLoadingStatus("Starting UI server…");
+        await startUi(dbConfig.url, cfg);
+      },
+    });
+    if (!opened) return;
 
     watchForRestart(dbConfig.url, {
       getApiProcess: () => apiProcess,
@@ -1340,13 +1369,18 @@ app.whenReady().then(async () => {
       startApi: async (url) => {
         if (uiPort) formerUiPorts.add(uiPort);  // remember the dying port: see classifyNavigation
         // A restart can follow a backup restore that replaced the database wholesale
-        // (possibly with an older schema). Reconcile it before the servers come back,
-        // exactly like a cold boot; skipping this leaves the code querying columns
-        // the restored schema does not have.
-        runMigrations(url);
-        apiPort = await getFreePort();
-        uiPort = await getFreePort();
-        return startApi(url, readConfig());
+        // (possibly with an older schema). Check and reconcile it before the servers
+        // come back, exactly like a cold boot; skipping this leaves the code querying
+        // columns the restored schema does not have.
+        await reopenData({
+          mayOpenData: () => mayOpenDatabase(url),
+          runMigrations: () => runMigrations(url),
+          startApi: async () => {
+            apiPort = await getFreePort();
+            uiPort = await getFreePort();
+            await startApi(url, readConfig());
+          },
+        });
       },
       startUi: (url) => startUi(url, readConfig()),
       // Sentinel must live next to PYTHON_CONFIG_PATH so Python's config_path().parent

@@ -20,8 +20,9 @@ const SET_MAIN_WINDOW = "\n;module.exports.setMainWindow = (win) => { mainWindow
 // Runs app-main.js as Node would (it has a top-level return), resolving the
 // modules below to fakes and everything else normally. `app` and `extraFakes`
 // override the defaults; `resourcesPath` stands in for the packaged app's resources
-// folder. By default the app never becomes ready, so only the load-time wiring runs.
-function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resourcesPath } = {}) {
+// folder; `BrowserWindow` the window class. By default the app never becomes ready, so only the load-time wiring runs.
+function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resourcesPath,
+                      BrowserWindow = function BrowserWindow() {} } = {}) {
   const handlers = {};
   const updater = new EventEmitter();
   const fakes = {
@@ -41,7 +42,7 @@ function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resou
         handle: (channel, fn) => { handlers[channel] = fn; },
         on: () => {},
       },
-      BrowserWindow: function BrowserWindow() {},
+      BrowserWindow,
       shell,
       dialog,
       Menu: { buildFromTemplate: () => ({}), setApplicationMenu: () => {} },

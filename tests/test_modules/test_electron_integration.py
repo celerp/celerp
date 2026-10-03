@@ -128,10 +128,8 @@ class TestElectronMainJS:
         """seedDefaultModules must re-seed bundled modules when the app version
         changes, so shipped module fixes reach users who upgrade in place."""
         assert "app.getVersion()" in self._src
-        # The version record's name is shared with the startup data-version guard.
-        assert "writeMarker(markerPath, appVersion)" in self._src
-        assert 'MARKER_NAME = ".default-modules-version"' in (
-            ELECTRON_MAIN.parent / "data-version.js").read_text()
+        assert '".default-modules-version"' in self._src
+        assert "fs.renameSync(`${markerPath}.tmp`, markerPath)" in self._src
         # A version change replaces the installed copy (remove + re-copy).
         assert "fs.rmSync(dst" in self._src
 
@@ -287,10 +285,13 @@ class TestSecondBootGuards:
         assert "continue" in self._src
 
     def test_migrations_see_the_data_dir(self):
-        """migrate runs with the data dir, where an unfinished recovery is marked."""
-        body = self._src[self._src.find("function runMigrations("):]
-        body = body[: body.find("\n}\n")]
-        assert "CELERP_DATA_DIR: DATA_DIR" in body
+        """migrate and the compatibility check run with the data dir, where an unfinished
+        recovery is marked."""
+        env = self._src[self._src.find("function databaseCommandEnv("):]
+        assert "CELERP_DATA_DIR: DATA_DIR" in env[: env.find("\n}\n")]
+        for fn in ("function runMigrations(", "async function mayOpenDatabase("):
+            body = self._src[self._src.find(fn):]
+            assert "env: databaseCommandEnv(dbUrl)" in body[: body.find("\n}\n")]
 
     def test_migrations_are_idempotent_upgrade_head(self):
         """runMigrations uses alembic upgrade head which is a no-op if already current."""
