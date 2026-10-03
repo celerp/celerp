@@ -516,40 +516,43 @@ async def test_a_payment_to_an_active_bank_is_recorded_there(client, session, pa
     assert doc["status"] == "paid" and [p["bank_account"] for p in doc["payments"]] == [code]
 
 
+@pytest.mark.parametrize("key", ["stripe_deposit_account", "woocommerce_deposit_account"])
 @pytest.mark.parametrize("value", ["4100", "9999"])
 @pytest.mark.asyncio
 async def test_the_online_deposit_setting_refuses_an_account_that_is_not_cash_or_an_active_bank(
-        client, value):
+        client, key, value):
     tok = await _register(client)
-    r = await client.patch("/companies/me", json={"settings": {"stripe_deposit_account": value}},
+    r = await client.patch("/companies/me", json={"settings": {key: value}},
                            headers=_h(tok))
     assert r.status_code == 422
     assert "Cash (1110) or an active bank account" in r.json()["detail"]
 
 
+@pytest.mark.parametrize("key", ["stripe_deposit_account", "woocommerce_deposit_account"])
 @pytest.mark.parametrize("change", [{"is_active": False}, {"account_type": "revenue"}])
 @pytest.mark.asyncio
 async def test_the_online_deposit_setting_refuses_a_bank_whose_chart_account_cannot_hold_money(
-        client, session, change):
+        client, session, key, change):
     tok = await _register(client)
     code = await _bank(client, tok)
     await _chart_changed(session, tok, code, **change)
-    r = await client.patch("/companies/me", json={"settings": {"stripe_deposit_account": code}},
+    r = await client.patch("/companies/me", json={"settings": {key: code}},
                            headers=_h(tok))
     assert r.status_code == 422, r.text
     assert "Cash (1110) or an active bank account" in r.json()["detail"]
 
 
+@pytest.mark.parametrize("key", ["stripe_deposit_account", "woocommerce_deposit_account"])
 @pytest.mark.asyncio
-async def test_the_online_deposit_setting_takes_cash_an_active_bank_or_the_default(client):
+async def test_the_online_deposit_setting_takes_cash_an_active_bank_or_the_default(client, key):
     tok = await _register(client)
     code = await _bank(client, tok)
     inactive = await _bank(client, tok, active=False)
     for value in ("1110", code, ""):
-        r = await client.patch("/companies/me", json={"settings": {"stripe_deposit_account": value}},
+        r = await client.patch("/companies/me", json={"settings": {key: value}},
                                headers=_h(tok))
         assert r.status_code == 200, (value, r.text)
-    r = await client.patch("/companies/me", json={"settings": {"stripe_deposit_account": inactive}},
+    r = await client.patch("/companies/me", json={"settings": {key: inactive}},
                            headers=_h(tok))
     assert r.status_code == 422
 
