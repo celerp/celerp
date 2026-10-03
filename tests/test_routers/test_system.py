@@ -121,6 +121,7 @@ def _reset_session(real):
 
         def __init__(self) -> None:
             self.recorded_sql: list[str] = []
+            self.info: dict = {}  # a real session's per-session store (request authority lives here)
 
         def get_bind(self):
             return real.get_bind()
