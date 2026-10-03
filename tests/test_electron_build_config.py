@@ -356,24 +356,13 @@ def test_main_js_cmd_q_quits_fully():
 # CI build identity
 # ---------------------------------------------------------------------------
 
-def test_build_workflow_stamps_electron_version_for_non_tag_builds():
-    """Develop/PR binaries must never inherit electron/package.json's 1.0.0."""
+def test_build_workflow_stamps_the_electron_version_with_the_tested_script():
+    """Every build, tag or not, stamps electron/package.json through one script."""
     workflow = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
     start = workflow.index("- name: Set Electron version from git tag or development commit")
-    step = workflow[start:start + 1800]
-    assert "if: startsWith(github.ref, 'refs/tags/')" not in step
-    assert "git describe --tags" in step
-    assert "-dev." in step
-    assert "git rev-list --count HEAD" in step
-    assert "data['version'] = os.environ['VERSION']" in step
-
-
-def test_build_workflow_keeps_exact_release_tag_version():
-    workflow = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
-    start = workflow.index("- name: Set Electron version from git tag or development commit")
-    step = workflow[start:start + 1800]
-    assert 'if [[ "$GITHUB_REF" == refs/tags/v* ]]' in step
-    assert 'VERSION="${GITHUB_REF_NAME#v}"' in step
+    step = workflow[start:workflow.index("- name:", start + 1)]
+    assert "if:" not in step
+    assert "run: python3 scripts/electron_version.py" in step
 
 
 def test_build_workflow_signs_all_non_pr_macos_dev_builds():

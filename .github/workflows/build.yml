@@ -148,32 +148,11 @@ jobs:
         working-directory: electron
         run: pnpm install --frozen-lockfile
 
+      # A release tag must be vX.Y.Z: the Windows installer compares dotted numbers
+      # only, so a suffixed release would look identical to the plain one.
       - name: Set Electron version from git tag or development commit
         shell: bash
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            DESC="$(git describe --tags --match 'v[0-9]*' --long --abbrev=7 HEAD 2>/dev/null || true)"
-            if [[ "$DESC" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)-([0-9]+)-g([0-9a-f]+)$ ]]; then
-              NEXT_PATCH=$((10#${BASH_REMATCH[3]} + 1))
-              VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${NEXT_PATCH}-dev.${BASH_REMATCH[4]}+g${BASH_REMATCH[5]}"
-            else
-              COUNT="$(git rev-list --count HEAD)"
-              SHORT_SHA="$(git rev-parse --short=7 HEAD)"
-              VERSION="0.0.1-dev.${COUNT}+g${SHORT_SHA}"
-            fi
-          fi
-          VERSION="$VERSION" python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          path = Path('electron/package.json')
-          data = json.loads(path.read_text())
-          data['version'] = os.environ['VERSION']
-          path.write_text(json.dumps(data, indent=2) + '\n')
-          PY
-          echo "Electron package version set to $VERSION"
+        run: python3 scripts/electron_version.py
 
       # Download + SHA256-verify (against the release's SHA256SUMS) before extract.
       - name: Download Python standalone (arm64)
