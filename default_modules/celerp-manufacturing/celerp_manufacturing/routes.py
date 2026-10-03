@@ -42,7 +42,7 @@ from .costing import RecipeError, labor_hours, roll_up_cost, where_used
 # Default hours-per-day for converting daily labor lines into the est-hours column.
 # Set per work center; the company's default center supplies the value.
 DEFAULT_HOURS_PER_DAY = 8.0
-from .expansion import expand_recipe, explode_demand, is_manufacturable, merge_inputs, output_line
+from .expansion import expand_recipe, explode_demand, is_manufacturable, merge_inputs, mfg_idem_key, output_line
 from . import movements
 from .labor import apply_labor_providers
 from .search import _INCOMPLETE_STATUSES, search_orders
@@ -722,19 +722,30 @@ class BulkBuildBody(BaseModel):
 
 
 async def _emit_work_order(session, company_id, actor_id, item_id: str, item_state: dict, qty: float,
-                           source: dict | None = None) -> str:
+                           source: dict | None = None, *, key: str | None = None,
+                           request: dict | None = None) -> str:
     """Create a work order (mfg_order) to build qty of item_id, optionally linked 1:1 to a source
-    order line via source_doc_* fields. Returns the new order id; the caller commits."""
-    order_id = f"mfg:{uuid.uuid4()}"
+    order line via source_doc_* fields. With ``key`` the run's id follows the key and ``request``
+    identifies it, so the same request names the same run. Returns the order id; the caller commits."""
+    order_id = f"mfg:{uuid.uuid5(movements.MFG_LOT_NS, key) if key else uuid.uuid4()}"
     data = {
         "description": f"Build {qty:g} x {item_state.get('sku', '')}",
         "order_type": "assembly", "inputs": expand_recipe(item_state, qty), "output_item_id": item_id,
     }
     if source:
         data.update({k: v for k, v in source.items() if v not in (None, "")})
-    await _emit_order_created(session, company_id, order_id, data, quantity=qty, request=data, actor_id=actor_id,
-                              idempotency_key=None)
+    await _emit_order_created(session, company_id, order_id, data, quantity=qty, request=request or data,
+                              actor_id=actor_id, idempotency_key=key)
     return order_id
+
+
+def _reserve(row: dict, qty: float) -> None:
+    """Count ``qty`` more in progress for a Demand Planning row, as the board would show once
+    a run for it exists: what is left to make, and each document's FIFO-pegged shortfall."""
+    row["in_progress"] += qty
+    supply = row["on_hand"] + row["in_progress"]
+    row["to_make"] = max(0.0, row["demand"] - supply)
+    _peg(supply, row["docs"])
 
 
 def _line_source(doc: dict) -> dict:
@@ -754,6 +765,7 @@ class WorkOrderLineRef(BaseModel):
 class MakeWorkOrdersBody(BaseModel):
     lines: list[WorkOrderLineRef] = Field(default_factory=list)
     complete: bool = False  # one-tap: also issue components, receive output and close each work order
+    idempotency_key: str | None = None
 
 
 @router.post("/to-make/make")
@@ -767,30 +779,58 @@ async def make_work_orders(
     """Create one work order per selected demand line, linked 1:1 to its source order, for the
     line's net shortfall (the FIFO-pegged uncovered quantity). With ``complete=true`` each is also
     issued, received and closed. This is Demand Planning's 'Make selected' / 'Make & complete'."""
-    if not payload.lines:
+    out = await make_selected(session, company_id, user.id, payload.lines, payload.complete,
+                              payload.idempotency_key or uuid.uuid4().hex)
+    await session.commit()
+    return out
+
+
+async def make_selected(session: AsyncSession, company_id, user_id, lines: list[WorkOrderLineRef],
+                        complete: bool, operation: str) -> dict:
+    """Make selected: the shortfall is judged under the company lock, from demand and supply
+    as they stand once any other Make selected has finished, and each run made counts as
+    supply for the lines after it. Each selected line makes at most one run per action
+    ``operation``: the same action sent again returns the runs it made. The caller commits."""
+    selected = list(dict.fromkeys((ln.item_id, ln.doc_id) for ln in lines))
+    if not selected:
         return {"created": [], "skipped": []}
+    await lock_company(session, company_id)
     at = datetime.now(timezone.utc).isoformat()
     rows = {r["item_id"]: r for r in await _compute_to_make(session, company_id)}
     states = await _all_item_states(session, company_id)
     created: list[dict] = []
     skipped: list[dict] = []
-    for ln in payload.lines:
-        row = rows.get(ln.item_id)
-        st = states.get(ln.item_id)
-        if not row or not is_manufacturable(st):
-            skipped.append({"item_id": ln.item_id, "doc_id": ln.doc_id, "reason": "not manufacturable"})
+    # Each product's orders are made in the order supply is pegged to them, soonest due
+    # first, and stock last, so each run covers the order it is made for.
+    first = {item_id: n for n, (item_id, _) in reversed(list(enumerate(selected)))}
+    due = {(r["item_id"], d["doc_id"]): d.get("due") for r in rows.values() for d in r["docs"]}
+
+    def pegged(line):
+        item_id, doc_id = line
+        return first[item_id], not doc_id, due.get(line) is None, due.get(line) or ""
+    for item_id, doc_id in sorted(selected, key=pegged):
+        key = mfg_idem_key(doc_id, item_id, operation)
+        request = {"make": item_id, "doc": doc_id, "complete": complete}
+        made = await _created_before(session, company_id, f"mfg:created:{key}", movements._fingerprint(request))
+        if made is not None:
+            qty = float(made.data["expected_outputs"][0]["quantity"])
+            created.append({"item_id": item_id, "doc_id": doc_id, "run_id": made.entity_id, "quantity": qty})
             continue
-        doc = next((d for d in row.get("docs", []) if d.get("doc_id") == ln.doc_id), None) if ln.doc_id else None
+        row, st = rows.get(item_id), states.get(item_id)
+        if not row or not is_manufacturable(st):
+            skipped.append({"item_id": item_id, "doc_id": doc_id, "reason": "not manufacturable"})
+            continue
+        doc = next((d for d in row["docs"] if d.get("doc_id") == doc_id), None) if doc_id else None
         qty = float((doc.get("shortfall") if doc else row.get("to_make")) or 0)
         if qty <= 0:
-            skipped.append({"item_id": ln.item_id, "doc_id": ln.doc_id, "reason": "nothing to make"})
+            skipped.append({"item_id": item_id, "doc_id": doc_id, "reason": "nothing to make"})
             continue
-        order_id = await _emit_work_order(session, company_id, user.id, ln.item_id, st, qty,
-                                          _line_source(doc) if doc else None)
-        if payload.complete:
-            await movements.complete(session, company_id, user.id, order_id, {}, "make", at=at, quantity=qty)
-        created.append({"item_id": ln.item_id, "doc_id": ln.doc_id, "run_id": order_id, "quantity": qty})
-    await session.commit()
+        order_id = await _emit_work_order(session, company_id, user_id, item_id, st, qty,
+                                          _line_source(doc) if doc else None, key=key, request=request)
+        if complete:
+            await movements.complete(session, company_id, user_id, order_id, {}, key, at=at, quantity=qty)
+        _reserve(row, qty)
+        created.append({"item_id": item_id, "doc_id": doc_id, "run_id": order_id, "quantity": qty})
     return {"created": created, "skipped": skipped}
 
 

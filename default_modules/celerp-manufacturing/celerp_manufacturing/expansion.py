@@ -23,14 +23,13 @@ def is_manufacturable(item_state: dict | None) -> bool:
     return bool(recipe.get("components"))
 
 
-def mfg_idem_key(source_doc_id: str, source_line_id: str, fulfill_cycle: int = 0) -> str:
-    """Deterministic idempotency key for an order created from a document line.
-
-    Same (doc, line, cycle) → same key, so re-invoking "Create manufacturing order(s)"
-    never double-creates. The fulfill_cycle lets a re-opened/re-fulfilled doc legitimately
-    create a fresh order.
+def mfg_idem_key(source_doc_id: str, item_id: str, operation: str) -> str:
+    """The identity of the run one request makes for one demand line: the product ``item_id``
+    for the document ``source_doc_id`` (blank when made to stock), within the user's action
+    ``operation``. The same action sent again names the same run, so it is never made twice;
+    a new action may make another run for the same line when the line is short again.
     """
-    return f"mfg-from-doc:{source_doc_id}:{source_line_id}:{fulfill_cycle}"
+    return f"mfg-from-doc:{source_doc_id}:{item_id}:{operation}"
 
 
 def merge_inputs(inputs) -> list[dict]:

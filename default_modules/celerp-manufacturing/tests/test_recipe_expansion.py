@@ -103,6 +103,7 @@ def test_is_manufacturable() -> None:
 
 
 def test_idem_key_deterministic_and_distinct() -> None:
-    assert mfg_idem_key("doc:1", "line:a") == mfg_idem_key("doc:1", "line:a")
-    assert mfg_idem_key("doc:1", "line:a") != mfg_idem_key("doc:1", "line:b")
-    assert mfg_idem_key("doc:1", "line:a", 0) != mfg_idem_key("doc:1", "line:a", 1)
+    assert mfg_idem_key("doc:1", "item:a", "op1") == mfg_idem_key("doc:1", "item:a", "op1")
+    assert mfg_idem_key("doc:1", "item:a", "op1") != mfg_idem_key("doc:1", "item:b", "op1")
+    assert mfg_idem_key("doc:1", "item:a", "op1") != mfg_idem_key("doc:2", "item:a", "op1")
+    assert mfg_idem_key("doc:1", "item:a", "op1") != mfg_idem_key("doc:1", "item:a", "op2")
