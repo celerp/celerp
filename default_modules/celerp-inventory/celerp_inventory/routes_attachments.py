@@ -142,7 +142,9 @@ async def upload_attachment(
         existing_preview: str | None = row.state.get("preview_image_id")
         new_preview = resolve_preview_image_id(existing_preview, updated)
         await _patch_item_attachments(session, company_id, entity_id, user.id, updated, new_preview)
-        await session.commit()
+    # Committed outside the discard: a commit that lands and then reports a failure
+    # leaves the item pointing at the file, so the file must stay.
+    await session.commit()
     return att
 
 

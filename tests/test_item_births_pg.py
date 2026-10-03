@@ -215,3 +215,37 @@ async def test_two_attachment_uploads_at_once_both_stay_on_the_item(committed_en
     async with maker(committed_engine)() as s:
         listed = sorted(a["id"] for a in (await s.get(Projection, {"company_id": cid, "entity_id": lot})).state["attachments"])
     assert listed == sorted([first.json()["id"], second.json()["id"]])
+
+
+async def test_an_attachment_whose_commit_fails_after_landing_keeps_its_file(committed_engine, race, tmp_path, monkeypatch):
+    """The database commits the attachment and only then reports a failure (the
+    connection drops before the confirmation): the item lists the attachment, so the
+    stored file it points to stays where it is."""
+    from celerp.db import get_session
+    from celerp.main import app
+    from celerp.models.projections import Projection
+
+    monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
+    client, _ = race
+    cid, tok = await _company(committed_engine)
+    lot = await _draft(client, tok, 10)
+
+    async def _session():
+        async with maker(committed_engine)() as s:
+            commit = s.commit
+
+            async def committed_then_lost():
+                await commit()
+                raise ConnectionResetError("connection lost after commit")
+
+            s.commit = committed_then_lost
+            yield s
+
+    app.dependency_overrides[get_session] = _session
+    with pytest.raises(ConnectionResetError):
+        await _attach(client, tok, lot)()
+
+    async with maker(committed_engine)() as s:
+        listed = [a["id"] for a in (await s.get(Projection, {"company_id": cid, "entity_id": lot})).state["attachments"]]
+    assert len(listed) == 1
+    assert any(name.startswith(listed[0]) for name in _stored_files(cid)), (listed, _stored_files(cid))
