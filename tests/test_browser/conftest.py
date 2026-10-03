@@ -217,6 +217,10 @@ def browser_context(playwright, ui_server, seeded_user):
         "domain": "127.0.0.1",
         "path": "/",
     }])
+    # The health banner reports the real host's RAM/CPU/disk. Under a parallel suite the CPU
+    # passes its warning line, and the banner, shown just after load, pushes the page down
+    # under whatever a test is hovering. No browser test is about the host's load.
+    ctx.route("**/health/system", lambda route: route.fulfill(json={"overall": "ok"}))
     yield ctx
     browser.close()
 
