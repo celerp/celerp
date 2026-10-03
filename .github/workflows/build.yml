@@ -798,6 +798,48 @@ jobs:
           }
           Write-Host "boot smoke OK on Windows (port $port)"
 
+      # The installer reads the installed version from the uninstall entry. A file
+      # older than the installed Celerp must stop without touching it, also when run
+      # silently; the in-app updater (--updated) must never be stopped or prompted.
+      - name: Installer version check (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = (Resolve-Path "electron/dist/Celerp-Setup.exe").Path
+          function Install([string[]]$installerArgs) {
+            $p = Start-Process -FilePath $setup -ArgumentList $installerArgs -Wait -PassThru
+            return $p.ExitCode
+          }
+          function Entry {
+            Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" |
+              Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like "Celerp*" } |
+              Select-Object -First 1
+          }
+          $code = Install @("/S", "/currentuser")
+          if ($code -ne 0) { Write-Host "::error::fresh install exited $code"; exit 1 }
+          $entry = Entry
+          if (-not $entry) { Write-Host "::error::no Celerp uninstall entry after install"; exit 1 }
+          $built = (Get-ItemProperty $entry.PSPath).DisplayVersion
+          Write-Host "installed $built"
+
+          Set-ItemProperty $entry.PSPath -Name DisplayVersion -Value "999.0.0"
+          $code = Install @("/S", "/currentuser")
+          $after = (Get-ItemProperty $entry.PSPath).DisplayVersion
+          if ($code -ne 2 -or $after -ne "999.0.0") { Write-Host "::error::older installer over 999.0.0: exit $code, entry now $after (want exit 2, entry unchanged)"; exit 1 }
+          Write-Host "older installer stopped (exit 2), installed entry unchanged"
+
+          $code = Install @("--updated", "/S", "/currentuser")
+          $after = (Get-ItemProperty (Entry).PSPath).DisplayVersion
+          if ($code -ne 0 -or $after -ne $built) { Write-Host "::error::in-app update run: exit $code, entry $after (want exit 0, $built)"; exit 1 }
+          Write-Host "in-app update run proceeded without a prompt"
+
+          Set-ItemProperty (Entry).PSPath -Name DisplayVersion -Value "0.0.1"
+          $code = Install @("/S", "/currentuser")
+          $after = (Get-ItemProperty (Entry).PSPath).DisplayVersion
+          if ($code -ne 0 -or $after -ne $built) { Write-Host "::error::newer installer over 0.0.1: exit $code, entry $after (want exit 0, $built)"; exit 1 }
+          Write-Host "installer version check OK on Windows"
+
       - name: Verify YML artifact names
         if: "!startsWith(github.ref, 'refs/tags/v')"
         shell: bash
