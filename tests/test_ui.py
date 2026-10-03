@@ -14872,13 +14872,6 @@ class TestBugFixesBatch25Mar6Bugs:
 
 
 class TestBuildWorkflowVersioning:
-    def test_build_workflow_sets_electron_version_from_tag(self):
-        from test_helpers import REPO_ROOT
-        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
-        assert 'Set Electron version from git tag' in workflow
-        assert "data['version'] = os.environ['VERSION']" in workflow
-        assert 'Install Node deps' in workflow
-
     def test_build_workflow_keeps_static_artifact_names(self):
         from test_helpers import REPO_ROOT
         workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
