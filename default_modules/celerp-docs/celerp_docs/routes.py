@@ -1478,7 +1478,8 @@ async def _scan_reserved_lines(
 ) -> tuple[list[str], list[dict]]:
     """Partition the reserved items among ``eids``: entity_ids reserved by THIS
     document (``entity_id``) vs conflict records for items reserved elsewhere,
-    each naming the owning document."""
+    each naming the owning document. With no ``entity_id`` (a document not yet
+    created) every reserved item is a conflict, including one no document holds."""
     own: list[str] = []
     conflicts: list[dict] = []
     for eid in sorted({e for e in eids if e}):
@@ -1488,7 +1489,7 @@ async def _scan_reserved_lines(
         st = proj.state
         if st.get("status") != "reserved":
             continue
-        if st.get("status_doc_id") == entity_id:
+        if entity_id is not None and st.get("status_doc_id") == entity_id:
             own.append(eid)
         else:
             owner = st.get("status_doc_number") or st.get("status_doc_id") or "another document"
@@ -1573,8 +1574,13 @@ async def create_doc(
         if payload.total > original_total + 1e-9:
             raise HTTPException(status_code=409, detail="Credit note total cannot exceed original invoice total")
 
-    # Contact before company, the lock order every contact-reference writer takes.
+    # Contact before company, the lock order every contact-reference writer takes. The
+    # company lock comes before the line checks, so a concurrent Revert to Draft or
+    # reservation of a line's item is either seen by them or waits for this document.
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
+    # Concurrent doc creation must not read the same numbering counter and
+    # mint duplicate refs (e.g. two CN-2606-0002).
+    company = await locked_company(session, company_id)
     require_currency_code(payload.currency)
 
     _assert_date_order(payload.model_dump(exclude_none=True))
@@ -1607,9 +1613,6 @@ async def create_doc(
                 [li.model_dump() for li in payload.line_items], None,
             )
 
-    # Concurrent doc creation must not read the same numbering counter and
-    # mint duplicate refs (e.g. two CN-2606-0002).
-    company = await locked_company(session, company_id)
     # Re-check under the same serialization lock that owns numbering. A concurrent
     # retry can only reach this point before the first request commits; once it does,
     # the second request observes the original event and returns without consuming a
@@ -6082,7 +6085,9 @@ async def reserve_list_lines(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Set selected lines reserved/available on a draft or finalized list of any type (ledger-neutral)."""
-    row = await _get_list(session, company_id, entity_id)
+    # Company first, as the document path does, so a document being created with one of
+    # these items either sees the reservation or is seen by it.
+    row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") not in (DRAFT, FINALIZED):
         raise HTTPException(status_code=409, detail=f"Cannot reserve on a list in status '{row.state.get('status')}'")
     return await _reserve_lines_impl(row, entity_id, body.new_status, body.line_entity_ids, user, session)

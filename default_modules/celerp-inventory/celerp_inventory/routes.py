@@ -47,7 +47,7 @@ from .services import (
     build_import_plan,
     source_header_semantics,
 )
-from celerp.services.company_lock import lock_projections
+from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.item_erasure import erase_items, mentioned_elsewhere
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
@@ -400,6 +400,11 @@ _AUTHORING_EVENT_TYPES: frozenset[str] = frozenset({
 })
 
 
+# Item statuses a new document or List line is refused for: draft on any record, reserved
+# (by another record) on an invoice or memo.
+_LINE_REFUSED_STATUSES: frozenset[str] = frozenset({"draft", "reserved"})
+
+
 async def assert_status_change_allowed(
     session: AsyncSession, company_id, entity_id: str, new_status: str,
     role: str, settings: dict,
@@ -425,9 +430,14 @@ async def assert_status_change_allowed(
             status_code=422,
             detail="Disposal is recorded through the Write off stock action, not a direct status edit.",
         )
+    if ns in _LINE_REFUSED_STATUSES:
+        # Document and List writers check their lines for these statuses under the company
+        # lock; taking it here too means a concurrent create either sees the change or is
+        # seen by it (below: "the item is on document ...").
+        await lock_company(session, company_id)
     if ns != "draft":
         return
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}, populate_existing=True)
     state = (row.state if row else {}) or {}
     current = str(state.get("status") or "").lower()
     if current in ("", "draft"):
@@ -4470,7 +4480,6 @@ async def undo_import_batch(
 
     from celerp_inventory.models_import_batch import ImportBatch
     from celerp.models.ledger import LedgerEntry
-    from celerp.services.company_lock import lock_company
 
     try:
         batch_uuid = uuid.UUID(batch_id)
