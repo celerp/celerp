@@ -435,7 +435,8 @@ async def lock_item(session: AsyncSession, company_id, entity_id: str) -> Projec
     item) has either committed and is read here, or waits for this write and is then
     judged against it.
     """
-    return (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+    return row if row is not None and row.entity_type == "item" else None
 
 
 def _status_of(row: Projection | None) -> str:
@@ -586,7 +587,7 @@ async def assert_expirable(session: AsyncSession, company_id, entity_id: str) ->
     """Expire retires stock the company still owns, so the lot must hold stock on the
     books when its row lock is taken."""
     await assert_not_draft(session, company_id, entity_id, "expire")
-    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+    row = await lock_item(session, company_id, entity_id)
     state = (row.state if row else {}) or {}
     _reject_document_held(state, "expired")
     if row is not None and not in_stock(state):
@@ -2850,6 +2851,7 @@ async def bulk_shopify_sync(payload: BulkShopifySyncBody, company_id=Depends(get
     shop.sync.enabled/disabled, which sets is_sync_to_shopify on each item's projection."""
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await _lock_selected_items(session, company_id, payload.entity_ids)
     event_type = "shop.sync.enabled" if payload.enable else "shop.sync.disabled"
     event_ids = []
     for entity_id in payload.entity_ids:
@@ -2897,6 +2899,7 @@ async def _build_transfer_data(session, company_id, entity_id: str, to_location_
 async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await _lock_selected_items(session, company_id, payload.entity_ids)
     from celerp.models.company import Location
     loc_rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
     loc_map = {str(r.id): r.name for r in loc_rows}

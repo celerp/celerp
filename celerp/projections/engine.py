@@ -8,6 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
@@ -24,6 +25,13 @@ log = logging.getLogger(__name__)
 
 # The events that bring an item into being; every other item event changes one that exists.
 ITEM_BIRTHS = frozenset({"item.created", "item.snapshot"})
+
+
+_TYPE_LABELS = {"item": "Item", "doc": "Document", "list": "List", "contact": "Contact"}
+
+
+def _not_found(entity_type: str) -> HTTPException:
+    return HTTPException(status_code=404, detail=f"{_TYPE_LABELS.get(entity_type, 'Record')} not found")
 
 
 def _resolve_module_handler(dotted: str):
@@ -134,7 +142,22 @@ class ProjectionEngine:
 
     @staticmethod
     async def apply_event(session, entry: LedgerEntry) -> Transition:
+        """Apply a new event. An event of one kind on a record of another kind (an item
+        change on a document's ID, an item creation over a contact's) is refused as not
+        found: that ID holds no record of the event's kind. Replay (rebuild) keeps applying
+        such rows from older ledgers unchanged, so a rebuild still reproduces the history
+        it was given."""
         projection = await ProjectionEngine._locked_projection(session, entry)
+        ProjectionEngine._refuse_other_kind(entry, projection)
+        return await ProjectionEngine._write(session, entry, projection)
+
+    @staticmethod
+    def _refuse_other_kind(entry: LedgerEntry, projection: Projection | None) -> None:
+        if projection is not None and projection.entity_type != entry.entity_type:
+            raise _not_found(entry.entity_type)
+
+    @staticmethod
+    async def _write(session, entry: LedgerEntry, projection: Projection | None) -> Transition:
         if projection is None:
             fields = ProjectionEngine._next_fields({}, entry, 0)
             try:
@@ -169,6 +192,7 @@ class ProjectionEngine:
                 projection = await ProjectionEngine._locked_projection(session, entry)
                 if projection is None:
                     raise
+                ProjectionEngine._refuse_other_kind(entry, projection)
         before = deepcopy(projection.state or {})
         fields = ProjectionEngine._next_fields(projection.state, entry, projection.version)
         for column, value in fields.items():
@@ -195,4 +219,5 @@ class ProjectionEngine:
         if company_id:
             query = query.where(LedgerEntry.company_id == company_id)
         for entry in (await session.execute(query)).scalars().all():
-            await ProjectionEngine.apply_event(session, entry)
+            projection = await ProjectionEngine._locked_projection(session, entry)
+            await ProjectionEngine._write(session, entry, projection)
