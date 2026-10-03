@@ -1178,3 +1178,27 @@ async def test_a_stripe_payment_moved_into_another_payments_old_place_is_never_d
     await cloud.deliver()
 
     assert await _delete_event(real_engine, a, invoice) == (422, KEPT)
+
+
+async def test_a_refund_reversed_after_its_stripe_payment_moved_is_reversed_on_the_books(
+        real_engine, real_client, monkeypatch):
+    """The payment moved into the place of another Stripe payment whose refund was
+    already reversed; both reversals are posted."""
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    await _pay_by_hand(real_client, real_engine, boss, a, invoice, 170.0)
+    cloud = _RefundCloud(monkeypatch, real_engine)
+    cloud.pay(a, invoice, "pi_0", amount_minor=40000, paid_at=PAID_AT, books=BOOKS)
+    cloud.pay(a, invoice, "pi_1", amount_minor=50000, paid_at=PAID_AT, books=BOOKS)
+    cloud.refund(a, invoice, "re_0", 10000, _at(1), reference="pi_0")
+    cloud.refund(a, invoice, "re_0", 10000, _at(2), reference="pi_0", transition="reversed")
+    await cloud.deliver()
+    await _deleted_before_upgrade(real_engine, a, invoice, 0)
+    cloud.refund(a, invoice, "re_1", 10000, _at(3))
+    cloud.refund(a, invoice, "re_1", 10000, _at(4), transition="reversed")
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    journal = [je for je, _ in await _journal(real_engine, invoice)]
+    assert (sum(":payrefund:" in je for je in journal), sum(":payrefundrev:" in je for je in journal)) == (2, 2)
+    assert not _payment(await _doc(real_engine, invoice)).get("refunded")
