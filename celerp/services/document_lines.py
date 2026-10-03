@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Document-line identity, the linked-item reference rule, and the physical-item
-uniqueness invariant.
+"""Document-line identity, the linked-item reference rule, the new-reference eligibility
+rule, and the physical-item uniqueness invariant.
 
 A line linked to an item must link to a real item of the same company: a stale form
 or an import can carry the id of an item that was removed (an undone import), and a
@@ -28,7 +28,8 @@ from celerp.services.line_measures import splitting_allowed
 # Inbound and internal documents (bill, consignment_in, novel types) legitimately
 # may, so they are not governed. This mirrors the outbound set the codebase already
 # names in celerp_docs.doc_constants.FULFILLABLE_STATUSES and must stay in lockstep
-# with it.
+# with it. The same two types are the ones that claim stock, so they are also the ones
+# that may not newly take an item another record has reserved.
 DOCUMENT_ITEM_UNIQUE_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo"})
 
 
@@ -79,7 +80,7 @@ async def linked_items(session, company_id, line_items, *, known: Counter | None
             Projection.company_id == company_id,
             Projection.entity_type == "item",
             Projection.entity_id.in_(counts),
-        )
+        ).execution_options(populate_existing=True)
     )).scalars().all()
     items = {row.entity_id: row for row in rows}
     carried = Counter()
@@ -100,6 +101,43 @@ async def linked_items(session, company_id, line_items, *, known: Counter | None
                 },
             )
     return items
+
+
+def assert_new_references_eligible(
+    items: dict[str, Projection], line_items, *, known: Counter, doc_type: str | None, entity_id: str | None,
+) -> None:
+    """Refuse a line set that newly references an item the record may not take.
+
+    A draft item is not stock yet, so no document or List may newly reference it. An
+    item reserved by another record, or by a status edit that no record owns, is held,
+    so an invoice or memo (which claim stock) may not newly reference it; quotations,
+    other documents and Lists may. "Newly" counts occurrences: a line beyond the number
+    the stored record (``known``, ``line_id_counts``) held for that id is new, so a second
+    line for an item the record already lists is judged like a first, while the lines it
+    already held stay editable. ``items`` is what ``linked_items`` resolved, read under
+    the company lock it takes for any such increase, which every change to an item's
+    draft or reserved status also takes.
+
+    422 whose message names every refused item; ``conflicts`` lists the reserved ones
+    with the record holding each, for the page to link to.
+    """
+    reasons: list[str] = []
+    conflicts: list[dict] = []
+    for ident in sorted(line_id_counts(line_items) - known):
+        if ident not in items:
+            continue  # linked_items has already judged a line whose item is gone
+        state = items[ident].state or {}
+        sku = state.get("sku") or ident
+        if str(state.get("status") or "").lower() == "draft":
+            reasons.append(f"{sku}: item is a draft - make it available first")
+        elif (doc_type in DOCUMENT_ITEM_UNIQUE_DOC_TYPES and state.get("status") == "reserved"
+              and state.get("status_doc_id") != entity_id):
+            owner = state.get("status_doc_number") or state.get("status_doc_id") or "another document"
+            reasons.append(f"{sku}: reserved on {owner} - release it there first")
+            conflicts.append({"entity_id": ident, "sku": sku, "doc_id": state.get("status_doc_id"),
+                              "doc_number": state.get("status_doc_number"), "message": reasons[-1]})
+    if reasons:
+        raise HTTPException(status_code=422, detail={"message": "; ".join(reasons), "conflicts": conflicts})
 
 
 async def assert_document_item_uniqueness(session, company_id, doc_type, line_items) -> None:

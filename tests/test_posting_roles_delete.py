@@ -17,9 +17,9 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
-from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.projections.engine import ProjectionEngine
 from stock_books import assert_books_carry_stock
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_helpers import sell_item
@@ -141,12 +141,16 @@ async def test_a_draft_on_a_document_is_not_deleted(session, client, auth):
     wrote can still name one, and deleting the draft would leave the line pointing
     at nothing."""
     lot = await _draft(client, auth)
-    await emit_event(session, company_id=auth["company_id"], entity_id=f"doc:{uuid.uuid4()}",
-                     entity_type="doc", event_type="doc.created",
-                     data={"doc_type": "quotation", "status": "draft", "line_items": [
-                         {"entity_id": lot, "name": "Lot", "quantity": 1, "unit_price": 50.0}]},
-                     actor_id=auth["user_id"], location_id=None, source="api",
-                     idempotency_key=str(uuid.uuid4()), metadata_={})
+    # Recorded as the older release wrote it, without today's checks on new lines.
+    legacy = LedgerEntry(company_id=auth["company_id"], entity_id=f"doc:{uuid.uuid4()}",
+                         entity_type="doc", event_type="doc.created",
+                         data={"doc_type": "quotation", "status": "draft", "line_items": [
+                             {"entity_id": lot, "name": "Lot", "quantity": 1, "unit_price": 50.0}]},
+                         actor_id=auth["user_id"], location_id=None, source="api",
+                         idempotency_key=str(uuid.uuid4()), metadata_={})
+    session.add(legacy)
+    await session.flush()
+    await ProjectionEngine.apply_event(session, legacy)
     await session.commit()
     await _refused(session, client, auth, lot)
 

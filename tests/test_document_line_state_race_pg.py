@@ -21,6 +21,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from celerp.events import engine
 from celerp.events.engine import emit_event
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
@@ -137,7 +138,7 @@ async def test_revert_to_draft_while_a_document_checks_its_lines_waits_and_is_re
     company_id, user = await _seed(factory)
 
     async with factory() as creator, factory() as reverter:
-        reached, release = _pause(monkeypatch, docs, "_assert_no_foreign_reserved", creator)
+        reached, release = _pause(monkeypatch, engine, "assert_document_item_uniqueness", creator)
         create = asyncio.create_task(_create(creator, company_id, user))
         await asyncio.wait_for(reached.wait(), timeout=30)
         revert = asyncio.create_task(_revert(reverter, company_id, user))
@@ -184,7 +185,7 @@ async def test_reserving_elsewhere_while_a_document_checks_its_lines_waits_for_i
     holder = await _holder(factory, company_id, user)
 
     async with factory() as creator, factory() as reserver:
-        reached, release = _pause(monkeypatch, docs, "_assert_no_foreign_reserved", creator)
+        reached, release = _pause(monkeypatch, engine, "assert_document_item_uniqueness", creator)
         create = asyncio.create_task(_create(creator, company_id, user))
         await asyncio.wait_for(reached.wait(), timeout=30)
         reserve = asyncio.create_task(_reserve(reserver, company_id, user, holder))
