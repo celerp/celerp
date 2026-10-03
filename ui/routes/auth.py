@@ -32,7 +32,7 @@ from ui.components.shell import auth_shell, flash, page_title, star_supporter_ca
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, get_role, set_session_cookies, clear_session_cookies
 from ui.i18n import t, get_lang
 from ui.routes.csv_import import ONBOARDING_MARKER
-from ui.security import is_app_local_path
+from celerp.services.app_paths import is_app_local_path
 from celerp.config import settings as _settings
 from celerp.services.auth import MIN_PASSWORD_LENGTH, NO_COMPANY
 from celerp.services.permissions import role_has_permission

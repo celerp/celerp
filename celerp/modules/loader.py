@@ -48,6 +48,7 @@ from celerp.modules.importer import PREMIUM_MARKER
 from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
 from celerp.modules.meta import META_FILENAME
 from celerp.modules.slots import register as register_slot, resolve_handler
+from celerp.services.app_paths import is_app_local_path
 from celerp.services.permissions import is_permission_key
 
 log = logging.getLogger(__name__)
@@ -1229,27 +1230,54 @@ _SEARCH_RESULT_KEYS = frozenset({"items", "entries"})
 # row context core fills in; show_on lists row traits, all of which a row must carry.
 # Actions open as a page: the Pricing tab has no in-page host for module content.
 _PRICING_ACTION_SLOT = "pricing_action"
+_PRICING_ACTION_KEYS = frozenset(
+    {"label", "label_key", "href_template", "permission", "show_on", "presentation"}
+)
 _PRICING_ACTION_PLACEHOLDERS = frozenset({"entity_id", "price_list", "field_name"})
+_PLACEHOLDER_RE = re.compile(r"\{([^{}]*)\}")
 _PRICING_ROW_TRAIT_PAIRS = (("editable", "readonly"), ("sell", "cost"), ("manual", "derived"))
 
 
 def _validate_pricing_action(contribution) -> None:
-    """Raise :class:`ModuleLoadError` unless every pricing_action item has an
-    href_template using only the known placeholders, a show_on list of known
-    traits that some row can carry, and no presentation other than "page"."""
+    """Raise :class:`ModuleLoadError` unless every pricing_action item has only the
+    known keys, an app-local href_template whose braces only wrap known
+    placeholders, a show_on list of known traits that some row can carry, and no
+    presentation other than "page".
+
+    The app-local check runs on the template itself. Core fills each placeholder
+    URL-encoded with no safe characters, so a filled value never adds a "/", a
+    backslash or a control character, and a template that is app-local here gives
+    an app-local link for any item id, list name or field name."""
     traits = {trait for pair in _PRICING_ROW_TRAIT_PAIRS for trait in pair}
     for item in contribution if isinstance(contribution, list) else [contribution]:
         if not isinstance(item, dict):
             raise ModuleLoadError(f"Slot {_PRICING_ACTION_SLOT!r} items must be dicts.")
+        unknown_keys = sorted(set(item) - _PRICING_ACTION_KEYS)
+        if unknown_keys:
+            raise ModuleLoadError(
+                f"Slot {_PRICING_ACTION_SLOT!r} has unknown key "
+                f"{', '.join(repr(k) for k in unknown_keys)}; the keys are "
+                f"{', '.join(sorted(_PRICING_ACTION_KEYS))}."
+            )
         href = item.get("href_template")
         if not isinstance(href, str) or not href:
             raise ModuleLoadError(f"Slot {_PRICING_ACTION_SLOT!r} needs an href_template.")
-        unknown = set(re.findall(r"\{([^{}]*)\}", href)) - _PRICING_ACTION_PLACEHOLDERS
+        if not is_app_local_path(href):
+            raise ModuleLoadError(
+                f"Slot {_PRICING_ACTION_SLOT!r} href_template must be a path inside Celerp: "
+                f"one leading /, never //, no backslash and no control character."
+            )
+        unknown = set(_PLACEHOLDER_RE.findall(href)) - _PRICING_ACTION_PLACEHOLDERS
         if unknown:
             raise ModuleLoadError(
                 f"Slot {_PRICING_ACTION_SLOT!r} href_template uses "
                 f"{', '.join('{' + u + '}' for u in sorted(unknown))}; the placeholders are "
                 f"{', '.join('{' + p + '}' for p in sorted(_PRICING_ACTION_PLACEHOLDERS))}."
+            )
+        if set("{}") & set(_PLACEHOLDER_RE.sub("", href)):
+            raise ModuleLoadError(
+                f"Slot {_PRICING_ACTION_SLOT!r} href_template has a stray brace; "
+                f"braces may only wrap a placeholder."
             )
         show_on = item.get("show_on", [])
         if not isinstance(show_on, list) or not set(show_on) <= traits:

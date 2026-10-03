@@ -166,6 +166,79 @@ def test_loader_rejects_a_malformed_pricing_action(tmp_path, contribution, messa
     assert slots.get("pricing_action") == []
 
 
+@pytest.mark.parametrize("href", [
+    "https://evil.example/q/{entity_id}",
+    "javascript:alert(1)",
+    "//evil.example/q/{entity_id}",
+    "/\\evil.example/q/{entity_id}",
+    "/q/{entity_id}\x01",
+    "/q/{entity_id}\x7f",
+    "q/{entity_id}",
+    "{entity_id}",
+])
+def test_loader_rejects_an_href_template_outside_celerp(tmp_path, href):
+    """The link core builds from the template, with the item id, price-list name and
+    field name in it, must stay inside Celerp: the same app-local rule as every other
+    module-supplied link (one leading /, never //, no backslash, no control character)."""
+    with pytest.raises(ModuleLoadError, match="inside Celerp"):
+        _load(tmp_path, {"label": "Quote", "href_template": href})
+    assert slots.get("pricing_action") == []
+
+
+@pytest.mark.parametrize("href", [
+    "/q/{entity_id",
+    "/q/entity_id}",
+    "/q/{entity_id}}",
+    "/q/{{entity_id}}",
+    "/q/{entity_id}?x={",
+    "/q/{price_list{entity_id}",
+])
+def test_loader_rejects_a_stray_brace_in_href_template(tmp_path, href):
+    """A brace that does not wrap a placeholder would reach the browser as a broken link."""
+    with pytest.raises(ModuleLoadError, match="brace"):
+        _load(tmp_path, {"label": "Quote", "href_template": href})
+    assert slots.get("pricing_action") == []
+
+
+@pytest.mark.parametrize("key", ["href", "show", "presentaton", "requires_connector"])
+def test_loader_rejects_an_unknown_pricing_action_key(tmp_path, key):
+    """A misspelled key would otherwise be dead configuration nobody hears about."""
+    with pytest.raises(ModuleLoadError, match=repr(key)):
+        _load(tmp_path, {"label": "Quote", "href_template": "/q/{entity_id}", key: "x"})
+    assert slots.get("pricing_action") == []
+
+
+@pytest.mark.parametrize("contribution", [
+    {"label": "Quote", "href_template": "/q"},
+    {"label_key": "nav.inventory", "href_template": "/q/{entity_id}/{price_list}/{field_name}"},
+    {"label": "Quote", "href_template": "/q/{entity_id}?list={price_list}&f={field_name}#top",
+     "permission": "set_inventory_prices", "show_on": ["sell"], "presentation": "page"},
+])
+def test_loader_still_accepts_well_formed_actions(tmp_path, contribution):
+    _load(tmp_path, [contribution])
+    assert len(slots.get("pricing_action")) == 1
+
+
+@pytest.mark.parametrize("value", [
+    "//evil.example", "/\\evil.example", "https://evil.example", "\\\\evil", "a\x01b",
+    "x/../../y", "?next=//evil", "#frag",
+])
+def test_filled_placeholders_cannot_lead_the_link_out_of_celerp(value):
+    """The template is checked once at load; a value filled in at render is URL-encoded
+    with no safe characters, so it can never add a /, a backslash or a control character
+    and the finished link stays app-local whatever the item id or list name holds."""
+    from celerp.services.app_paths import is_app_local_path
+    from ui.routes.inventory import _slot_action_link
+    encoded = quote(value, safe="")
+    assert not set(encoded) & {"/", "\\", ":"} and encoded.isprintable()
+    for template in ("/{entity_id}", "/q/{entity_id}?l={price_list}&f={field_name}"):
+        link = to_xml(_slot_action_link({"label": "Q", "href_template": template},
+                                        entity_id=value, price_list=value, field_name=value))
+        href = link.split('href="', 1)[1].split('"', 1)[0].replace("&amp;", "&")
+        assert href == template.format(entity_id=encoded, price_list=encoded, field_name=encoded)
+        assert is_app_local_path(href), href
+
+
 # ── the module's own route is still the boundary ─────────────────────────────
 
 @pytest.mark.asyncio

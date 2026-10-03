@@ -32,6 +32,7 @@ from celerp.db import get_session
 from celerp.modules import slots
 from celerp.modules.registry import get_enabled
 from celerp.modules.slots import resolve_handler
+from celerp.services.app_paths import is_app_local_path
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import get_current_company_settings, role_has_permission
 
@@ -78,27 +79,10 @@ _HREF_MAX = 2048
 
 
 def _local_href(href) -> bool:
-    """True only for a non-empty, bounded, app-local path.
-
-    Rejects any scheme, protocol-relative "//host", a backslash (browsers
-    normalise "\\" to "/", so "/\\evil.example" resolves off-site), any ASCII
-    control char, and anything that does not start with a single leading slash,
-    so a third-party provider can only link within this app, never off-site.
-
-    The app-local rule mirrors ui.security.is_app_local_path, which is the
-    single source of truth for app-local path safety. The API layer cannot
-    import the UI layer, so the rule is duplicated here and the two must change
-    together; this function additionally bounds the length for the third-party
-    row contract.
-    """
-    return (
-        isinstance(href, str)
-        and 0 < len(href) <= _HREF_MAX
-        and href.startswith("/")
-        and not href.startswith("//")
-        and "\\" not in href
-        and not any(ord(c) < 0x20 or ord(c) == 0x7F for c in href)
-    )
+    """True only for a bounded app-local path (celerp.services.app_paths), so a
+    third-party provider can only link within this app, never off-site. The
+    length bound is the third-party row contract's own addition."""
+    return isinstance(href, str) and 0 < len(href) <= _HREF_MAX and is_app_local_path(href)
 
 
 def _canonical_third_party_row(row: dict) -> dict:
