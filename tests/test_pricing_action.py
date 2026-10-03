@@ -320,3 +320,44 @@ async def test_hidden_action_route_still_refuses_the_role(client, session):
         assert (r.status_code, r.json()) == (200, {"entity_id": "item:1"})
     finally:
         app.router.routes[:] = before
+
+
+# ── item page: only an item gets module pricing actions ──────────────────────
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_item", [True, False])
+async def test_item_page_offers_pricing_actions_only_for_an_item(is_item):
+    """The item page links a module's pricing action for an item. An id that is not an
+    item (a document, a List or a contact share the id space) is refused by the item
+    API, and the page then shows no price row, so no module link names that id."""
+    from unittest.mock import AsyncMock, patch
+    from httpx import ASGITransport, AsyncClient
+    from test_helpers import make_test_token
+    from ui.api_client import APIError
+    from ui.app import app as ui_app
+    slots.register("pricing_action", _action())
+    item = {"entity_id": "doc:1", "name": "Ruby", "status": "available", "retail_price": 10}
+    get_item = AsyncMock(return_value=item) if is_item else AsyncMock(side_effect=APIError(404, "Not found"))
+    company = {"id": str(uuid.uuid4()), "name": "Test Corp", "currency": "THB", "current_role": "owner",
+               "settings": {}}
+    with (
+        patch("ui.routes.auth.api_get_company", new=AsyncMock(return_value=company)),
+        patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+        patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])),
+        patch("ui.api_client.get_item", new=get_item),
+        patch("ui.api_client.get_company", new=AsyncMock(return_value=company)),
+        patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+        patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+        patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+        patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+        patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}])),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+            r = await c.get("/inventory/doc:1?tab=pricing", cookies={"celerp_token": make_test_token(role="owner")})
+    assert r.status_code == 200, r.headers.get("location")
+    assert (_links(r.text) == ["doc%3A1?list=Retail&amp;f=retail_price"]) is is_item
+    assert ("/quoter/" in r.text) is is_item
