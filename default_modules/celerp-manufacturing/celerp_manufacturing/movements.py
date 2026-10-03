@@ -1108,10 +1108,10 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
                          "stock on hand, or retained earnings for value the books never carried.",
                          total=str(amount), account=account)
         if not amount or retained:
-            # Value from nowhere the books show: only while every inventory account carries exactly
-            # its stock, for an account that does not is where this run's value (or its lots'
-            # excess) already sits.
-            holding = sorted(c for c, v in (await account_rooms(session, company_id, inventory)).items() if v)
+            # Value from nowhere the books show: only while no inventory account holds more than
+            # its stock, for an account that does is where this run's value (or its lots' excess)
+            # already sits. One holding less (goods invoiced before they are on hand) holds none of it.
+            holding = sorted(c for c, v in (await account_rooms(session, company_id, inventory)).items() if v > 0)
             if amount < 0:
                 # The lots already carry more than the value stated: that is stock value the
                 # books hold, never something retained earnings gives up.
@@ -1121,7 +1121,7 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
                              "that carries them.", carried=str(carried), issued=str(total))
             if holding:
                 raise refuse(422, "reconcile_held",
-                             f"{', '.join(holding)} does not carry exactly its stock on hand, so the value of this "
+                             f"{', '.join(holding)} holds more than its stock on hand, so the value of this "
                              "run's materials is already on the books: take it off that account.",
                              total=str(amount), account=account, holding=", ".join(holding))
             equity = -amount

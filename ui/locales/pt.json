@@ -3587,7 +3587,7 @@
   "mfg.reconcile_missing": "Informe o valor de cada componente que ainda está neste ciclo: {items} não tem nenhum.",
   "mfg.reconcile_account": "Escolha a conta de onde sai este valor: uma conta de estoque que detenha pelo menos {total} além do seu estoque disponível, ou lucros acumulados para um valor que a contabilidade nunca registrou.",
   "mfg.output_unknown": "Esta ordem já recebeu produção, mas o histórico não mostra em que lotes ela entrou nem quanto custaram, por isso não pode ser conciliada.",
-  "mfg.reconcile_held": "{holding} não corresponde exatamente ao seu estoque disponível, então o valor dos materiais desta ordem já está nos livros: baixe-o dessa conta.",
+  "mfg.reconcile_held": "{holding} tem mais valor do que o seu estoque disponível, então o valor dos materiais desta ordem já está nos livros: baixe-o dessa conta.",
   "mfg.reconcile_left": "{account} detém {room} além do seu estoque disponível; baixar {total} deixaria {left}, e os livros continuariam sem bater com o estoque. Informe o valor que ela detém.",
   "mfg.reconcile_excess": "Os lotes que esta ordem já recebeu carregam {carried}, mais do que os {issued} informados. Informe o valor requisitado ou baixe a diferença da conta de estoque que os carrega.",
   "mfg.period_locked": "A contabilidade está bloqueada para {day}, por isso este ciclo não pode ser conciliado até esse período estar aberto."

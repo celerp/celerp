@@ -3587,7 +3587,7 @@
   "mfg.reconcile_missing": "Masukkan nilai setiap komponen yang masih ada di proses ini: {items} belum memiliki nilai.",
   "mfg.reconcile_account": "Pilih akun asal nilai ini: akun persediaan yang memegang setidaknya {total} di luar stok yang ada, atau laba ditahan untuk nilai yang tidak pernah dicatat di pembukuan.",
   "mfg.output_unknown": "Pesanan ini sudah menerima hasil produksi, tetapi riwayatnya tidak menunjukkan ke lot mana hasil itu masuk atau berapa biayanya, sehingga tidak dapat direkonsiliasi.",
-  "mfg.reconcile_held": "{holding} tidak tepat sama dengan stok yang ada, jadi nilai bahan pesanan ini sudah tercatat di pembukuan: ambil dari akun tersebut.",
+  "mfg.reconcile_held": "{holding} bernilai lebih dari stok yang ada, jadi nilai bahan pesanan ini sudah tercatat di pembukuan: ambil dari akun tersebut.",
   "mfg.reconcile_left": "{account} memegang {room} di luar stok yang ada; mengambil {total} darinya akan menyisakan {left}, sehingga pembukuan tetap tidak sesuai dengan stok. Masukkan nilai yang dipegangnya.",
   "mfg.reconcile_excess": "Lot yang sudah diterima pesanan ini bernilai {carried}, lebih dari {issued} yang dimasukkan. Masukkan nilai yang dikeluarkan, atau ambil selisihnya dari akun persediaan yang mencatat lot tersebut.",
   "mfg.period_locked": "Pembukuan dikunci untuk {day}, jadi proses ini baru dapat direkonsiliasi setelah periode tersebut dibuka."

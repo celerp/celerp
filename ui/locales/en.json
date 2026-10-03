@@ -3587,7 +3587,7 @@
   "mfg.reconcile_missing": "Give the value of every component still in this run: {items} has none.",
   "mfg.reconcile_account": "Choose the account this value comes off: an inventory account that holds at least {total} beyond its stock on hand, or retained earnings for value the books never carried.",
   "mfg.output_unknown": "Output was received from this run, but its history does not show which lots it went into or what they cost, so it cannot be reconciled.",
-  "mfg.reconcile_held": "{holding} does not carry exactly its stock on hand, so the value of this run's materials is already on the books: take it off that account.",
+  "mfg.reconcile_held": "{holding} holds more than its stock on hand, so the value of this run's materials is already on the books: take it off that account.",
   "mfg.reconcile_left": "{account} holds {room} beyond its stock on hand; taking {total} off it would leave {left}, so the books would still disagree with the stock. Give the value it holds.",
   "mfg.reconcile_excess": "The lots this run already received carry {carried}, more than the {issued} stated. Give the value that was issued, or take the difference off the inventory account that carries them.",
   "mfg.period_locked": "The books are locked for {day}, so this run cannot be reconciled until that period is open."

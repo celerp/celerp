@@ -3587,7 +3587,7 @@
   "mfg.reconcile_missing": "Indiquez la valeur de chaque composant encore dans ce cycle : {items} n'en a pas.",
   "mfg.reconcile_account": "Choisissez le compte d'où provient cette valeur : un compte de stock qui détient au moins {total} au-delà de son stock disponible, ou les résultats reportés pour une valeur que la comptabilité n'a jamais portée.",
   "mfg.output_unknown": "Cet ordre a déjà reçu de la production, mais son historique ne montre ni dans quels lots elle est allée ni ce qu'ils ont coûté : il ne peut donc pas être rapproché.",
-  "mfg.reconcile_held": "{holding} ne correspond pas exactement à son stock disponible : la valeur des matières de cet ordre figure donc déjà dans les livres. Imputez-la sur ce compte.",
+  "mfg.reconcile_held": "{holding} porte plus que son stock disponible : la valeur des matières de cet ordre figure donc déjà dans les livres. Imputez-la sur ce compte.",
   "mfg.reconcile_left": "{account} détient {room} au-delà de son stock disponible ; en retirer {total} laisserait {left}, et les livres ne concorderaient toujours pas avec le stock. Indiquez la valeur qu'il détient.",
   "mfg.reconcile_excess": "Les lots déjà reçus par cet ordre portent {carried}, plus que les {issued} indiqués. Indiquez la valeur sortie, ou imputez la différence sur le compte de stock qui les porte.",
   "mfg.period_locked": "La comptabilité est verrouillée pour le {day}, ce cycle ne peut donc pas être rapproché tant que cette période n'est pas ouverte."

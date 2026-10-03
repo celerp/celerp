@@ -25,6 +25,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import User
 from celerp.models.notification import Notification
 from celerp.services.auto_je import _emit_auto_posted_je
+from celerp.services.lot_origin import LOT_ACCOUNT_FIELD, account_room
 from mfg_runs import OPENING, WIP, give_back, issue, lines, receive, refusal, role, set_settings, snapshot
 from stock_books import assert_settled, older_release_lot
 from test_cost_restatement import TZ, _item, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
@@ -121,6 +122,32 @@ async def test_a_run_with_a_component_without_an_account_is_reconciled_and_carri
     assert r.status_code == 200, r.text
     assert (await _state(session, auth, r.json()["lot_item_id"]))["cost_total"] == 140.0
     await assert_settled(client, session, auth)
+
+
+async def test_stock_sold_before_it_is_on_hand_does_not_stop_reconciling_from_retained_earnings(
+        client, session, auth):
+    """An invoice for goods not yet on hand books their cost ahead of them, so that inventory
+    account holds less than its stock until they arrive. It holds none of the run's value."""
+    ahead = (await client.post("/items", headers=auth["headers"], json={
+        "sku": f"AHEAD-{uuid.uuid4().hex[:6]}", "name": "Made to order", "quantity": 0, "sell_by": "piece",
+        "status": "available", "cost_price": 50})).json()["id"]
+    doc = (await client.post("/docs", headers=auth["headers"], json={"doc_type": "invoice", "total": 200, "line_items": [
+        {"item_id": ahead, "sku": "AHEAD", "name": "Made to order", "quantity": 2, "unit_price": 100}]})).json()["id"]
+    assert (await client.post(f"/docs/{doc}/finalize", headers=auth["headers"])).status_code == 200
+    account = (await _state(session, auth, ahead))[LOT_ACCOUNT_FIELD]
+    assert await account_room(session, auth["company_id"], account) == -100
+    used = await older_release_lot(session, auth["company_id"], auth["user_id"], 40.0, qty=4)
+    raw = await _item(client, auth, 100.0, qty=10)
+    _, order = await _job(client, auth, raw)
+    await _older_issue(session, auth, order, used, 4)
+    await _upgrade(session)
+    re = await role(session, auth, RETAINED)
+
+    r = await reconcile(client, auth, order, [(used, 40.0)], re)
+
+    assert r.status_code == 200, r.text
+    assert not (await _facts(session, auth, order)).get("wip_unresolved")
+    assert await account_room(session, auth["company_id"], account) == -100
 
 
 async def test_a_run_on_books_from_elsewhere_is_reconciled_and_carries_on(client, session, auth):
