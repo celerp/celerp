@@ -195,6 +195,7 @@ def _verify_and_finish(page, run_id: str, company_name: str) -> None:
             "el => getComputedStyle(el).textAlign")
         assert align in ("right", "end"), (header, align)
     page.click('a:has-text("Discard migration")')
+    page.wait_for_url(re.compile(rf"/migrations/{run_id}/discard$"))
     assert f"Discard the migration into {company_name}?" in page.content()
     page.go_back()
     page.wait_for_url(re.compile(rf"/migrations/{run_id}/verify$"))
