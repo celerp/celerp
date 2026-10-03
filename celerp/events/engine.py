@@ -153,7 +153,7 @@ async def _connector_entity_id(
 
 async def connector_upsert(
     session, *, company_id, entity_type: str, event_type: str, idem_key: str, data: dict,
-    external_identity: tuple[str, str] | None = None,
+    external_identity: tuple[str, str] | None = None, update=None,
 ) -> str:
     """Create-or-update a projection from a connector payload.
 
@@ -166,6 +166,10 @@ async def connector_upsert(
     ``idem_key`` (the stable platform id) is stored in projection state so a re-import
     resolves the SAME projection; the event's idempotency key varies with the content,
     so an unchanged re-import dedups (no-op) while a changed one updates.
+
+    ``update(entity_id, data, idempotency_key)``, when given, writes the change to an
+    existing projection as a genuine update and returns the outcome; without it the
+    existing projection receives ``event_type`` again.
     """
     import hashlib
     import json as _json
@@ -190,6 +194,8 @@ async def connector_upsert(
     )).first()
     if seen:
         return "noop"
+    if existing_id and update is not None:
+        return await update(existing_id, data, event_idem)
 
     await emit_event(
         session,

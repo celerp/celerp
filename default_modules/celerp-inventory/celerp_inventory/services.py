@@ -1697,9 +1697,45 @@ async def upsert_from_connector(company_id: str, item) -> str:
         outcome = await connector_upsert(
             session, company_id=company_id, entity_type="item",
             event_type="item.created", idem_key=idem_key, data=data,
+            update=lambda entity_id, data, key: _update_from_connector(session, company_id, entity_id, data, key),
         )
         await session.commit()
         return outcome
+
+
+def _connector_unit_cost(state: dict):
+    """The unit cost an item shows, as a connector reports it (stored as cost_total)."""
+    qty = float(state.get("quantity") or 0)
+    if state.get("cost_total") is not None and qty:
+        return round(float(state["cost_total"]) / qty, 10)
+    return state.get("cost_price")
+
+
+async def _update_from_connector(session, company_id, entity_id: str, data: dict, idempotency_key: str) -> str:
+    """A re-imported product changes the item it already is, as an item edit does.
+
+    Only the fields that differ are written. A cost change carries its merge and COGS
+    consequences; a changed quantity restates the unit cost against it. An item deleted
+    since it was resolved is not brought back.
+    """
+    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+    state = row.state if row is not None else {}
+    current = {**state, "cost_price": _connector_unit_cost(state)}
+    changed = {k: {"old": current.get(k), "new": v} for k, v in data.items() if current.get(k) != v}
+    if row is not None and not changed:
+        return "noop"
+    if "quantity" in changed and "cost_price" in data:
+        changed["cost_price"] = {"old": current.get("cost_price"), "new": data["cost_price"]}
+    event = dict(
+        entity_id=entity_id, event_type="item.updated", data={"fields_changed": changed},
+        actor_id=None, source="connector", idempotency_key=idempotency_key,
+    )
+    if row is not None and changed.keys() & COST_ITEM_KEYS:
+        await restate_item_cost(session, company_id, **event)
+    else:
+        await emit_event(session, company_id=company_id, entity_type="item", location_id=None,
+                         metadata_={}, preserve_external_code_conflicts=True, **event)
+    return "updated"
 
 
 # ---------------------------------------------------------------------------

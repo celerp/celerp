@@ -2872,6 +2872,7 @@ async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_co
     # Hard delete: remove projection rows and all ledger events for these items.
     # This is the correct behaviour for a user-initiated "Delete" action —
     # the item should vanish from the catalog entirely (hard delete, no event trail).
+    await lock_projections(session, company_id, payload.entity_ids)
     await session.execute(
         _sa.delete(_Proj).where(
             _Proj.company_id == company_id,
