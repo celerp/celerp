@@ -39,6 +39,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -900,6 +901,18 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
                     f"closest existing key."
                 )
 
+    # A malformed pricing_action would render a broken link on every item's Pricing
+    # tab; refuse the module with the reason instead.
+    if _PRICING_ACTION_SLOT in slots_manifest:
+        try:
+            _validate_pricing_action(slots_manifest[_PRICING_ACTION_SLOT])
+        except ModuleLoadError:
+            log.error("Module %r rejected: invalid pricing_action slot", pkg_name)
+            for key in list(sys.modules.keys()):
+                if key == pkg_name or key.startswith(pkg_name + "."):
+                    sys.modules.pop(key, None)
+            raise
+
     # Validate the search_provider descriptor and resolve its handler BEFORE any
     # slot is registered, so a broken provider rejects the whole module cleanly
     # (no half-registered slots) rather than first surfacing as a degraded source
@@ -1210,6 +1223,49 @@ def _ast_scan_module_file(pkg_path: Path, dotted_module_path: str) -> set[str]:
 _SEARCH_PROVIDER_SLOT = "search_provider"
 _SEARCH_PROVIDER_KEYS = frozenset({"handler", "result_key", "permission"})
 _SEARCH_RESULT_KEYS = frozenset({"items", "entries"})
+
+
+# pricing_action: a link on rows of an item's Pricing tab. Its placeholders are the
+# row context core fills in; show_on lists row traits, all of which a row must carry.
+# Actions open as a page: the Pricing tab has no in-page host for module content.
+_PRICING_ACTION_SLOT = "pricing_action"
+_PRICING_ACTION_PLACEHOLDERS = frozenset({"entity_id", "price_list", "field_name"})
+_PRICING_ROW_TRAIT_PAIRS = (("editable", "readonly"), ("sell", "cost"), ("manual", "derived"))
+
+
+def _validate_pricing_action(contribution) -> None:
+    """Raise :class:`ModuleLoadError` unless every pricing_action item has an
+    href_template using only the known placeholders, a show_on list of known
+    traits that some row can carry, and no presentation other than "page"."""
+    traits = {trait for pair in _PRICING_ROW_TRAIT_PAIRS for trait in pair}
+    for item in contribution if isinstance(contribution, list) else [contribution]:
+        if not isinstance(item, dict):
+            raise ModuleLoadError(f"Slot {_PRICING_ACTION_SLOT!r} items must be dicts.")
+        href = item.get("href_template")
+        if not isinstance(href, str) or not href:
+            raise ModuleLoadError(f"Slot {_PRICING_ACTION_SLOT!r} needs an href_template.")
+        unknown = set(re.findall(r"\{([^{}]*)\}", href)) - _PRICING_ACTION_PLACEHOLDERS
+        if unknown:
+            raise ModuleLoadError(
+                f"Slot {_PRICING_ACTION_SLOT!r} href_template uses "
+                f"{', '.join('{' + u + '}' for u in sorted(unknown))}; the placeholders are "
+                f"{', '.join('{' + p + '}' for p in sorted(_PRICING_ACTION_PLACEHOLDERS))}."
+            )
+        show_on = item.get("show_on", [])
+        if not isinstance(show_on, list) or not set(show_on) <= traits:
+            raise ModuleLoadError(
+                f"Slot {_PRICING_ACTION_SLOT!r} show_on must be a list of {sorted(traits)}."
+            )
+        for pair in _PRICING_ROW_TRAIT_PAIRS:
+            if set(pair) <= set(show_on):
+                raise ModuleLoadError(
+                    f"Slot {_PRICING_ACTION_SLOT!r} show_on lists both {pair[0]!r} and "
+                    f"{pair[1]!r}, so the action would never show."
+                )
+        if item.get("presentation", "page") != "page":
+            raise ModuleLoadError(
+                f"Slot {_PRICING_ACTION_SLOT!r} presentation must be \"page\"."
+            )
 
 
 def _enclosing_first_party_module(source_file: Path, expected_name: str) -> Path | None:

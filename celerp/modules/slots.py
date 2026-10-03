@@ -12,6 +12,11 @@ settings_tab       Tab in the /settings page
 bulk_action        Action in the inventory bulk toolbar
 catalog_channel    Compact external-channel state in the inventory catalog
 item_action        Button in the item detail actions panel
+pricing_action     Button on rows of an item's Pricing tab. href_template may use
+                   {entity_id}, {price_list} and {field_name} (filled URL-encoded);
+                   optional show_on lists row traits a row must all carry
+                   (editable/readonly, sell/cost, manual/derived); presentation
+                   is "page" (the default and only value). Validated at load.
 doc_action         Button in the document detail actions panel
 dashboard_widget   Widget on the dashboard page
 import_adapter     Source option in the CSV import page

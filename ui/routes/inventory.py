@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import uuid
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 logger = logging.getLogger(__name__)
 
@@ -3586,7 +3586,6 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
 
-        from urllib.parse import quote
         remaining_qty = mother_qty_override if mother_qty_override is not None else (current_qty - child_qty)
         exact_skus = f"{quote(orig_sku)},{quote(child_sku)}"
         return _bulk_destructive_success(
@@ -3812,7 +3811,6 @@ function celerpPrintLabel(entityId, templateId) {
 
         child_sku = result.get("child_sku", "")
         parent_sku = result.get("parent_sku", "")
-        from urllib.parse import quote
         exact_skus = f"{quote(parent_sku)},{quote(child_sku)}"
         return _bulk_destructive_success(
             t("inventory.transformed", parent=parent_sku, child=child_sku),
@@ -4320,7 +4318,6 @@ function celerpPrintLabel(entityId, templateId) {
     @app.post("/api/items/{entity_id}/split")
     async def item_split(request: Request, entity_id: str):
         import json as _json
-        from urllib.parse import quote
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -4804,6 +4801,21 @@ def _module_contribution_visible(
     if required and required not in (connected_connectors or set()):
         return False
     return True
+
+
+def _visible_slot_actions(slot: str, settings: dict, role: str) -> list[dict]:
+    """The contributions to a link-action slot (item_action, pricing_action) this role sees."""
+    from celerp.modules.slots import get as get_slot
+    return [a for a in get_slot(slot) if _module_contribution_visible(a, settings, role)]
+
+
+def _slot_action_link(action: dict, **values: str) -> FT:
+    """A module action's button. Each placeholder value is URL-encoded, so an id or a
+    price-list name holding "/", "?", "&" or a space stays one value in the link."""
+    href = action.get("href_template", "")
+    for name, value in values.items():
+        href = href.replace("{" + name + "}", quote(str(value), safe=""))
+    return A(_slot_label(action, t("inv.action")), href=href, cls="btn btn--secondary btn--sm")
 
 
 async def _connected_connector_ids(company_id: str) -> set[str]:
@@ -7143,7 +7155,8 @@ def _item_detail_tabs(
     if active_tab == "pricing":
         if price_lists:
             # _pricing_form owns its own Cost / Sell-prices grid; no single-column wrapper.
-            panel = _pricing_form(entity_id, item, price_lists, currency, pricing_fields, base_price_list)
+            panel = _pricing_form(entity_id, item, price_lists, currency, pricing_fields, base_price_list,
+                                  role=role, settings=settings)
         else:
             panel = Div(
                 _detail_table(entity_id, item, pricing_fields, title=t("page.pricing"), currency=currency),
@@ -7259,7 +7272,8 @@ def _with_draft_cost_schema(schema: list[dict], item: dict, company_settings: di
 
 
 def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency: str | None,
-                  pricing_fields: list[dict] | None = None, base_price_list: str = "") -> FT:
+                  pricing_fields: list[dict] | None = None, base_price_list: str = "",
+                  role: str = "owner", settings: dict | None = None) -> FT:
     """Pricing tab: Cost on the left, Sell prices on the right. Every field saves automatically.
 
     Each input autosaves on change (no Save button), consistent with the rest of the system.
@@ -7267,6 +7281,9 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     edited on the Manufacturing tab — so the single source of truth stays the recipe.
     Derived price lists render read-only the same way: their values are computed from the base
     price list, and the schema (config-driven) marks their columns non-editable for every role.
+
+    Modules add per-row actions through the pricing_action slot. A card gains an Actions
+    column only when one of its rows shows an action, so without one the tab is unchanged.
     """
     qty = float(item.get("quantity") or 0)
     sell_by = str(item.get("sell_by") or "unit")
@@ -7286,10 +7303,26 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     # Schema editability is config-driven: derived lists' price columns are marked
     # non-editable by the effective field schema for every role.
     schema_editable = {f.get("key") for f in (pricing_fields or []) if f.get("editable")}
+    pricing_actions = _visible_slot_actions("pricing_action", settings or {}, role)
 
-    def _row(pl_name: str, editable: bool) -> FT:
+    def _row_actions(pl: dict, editable: bool) -> list[FT]:
+        pl_name = pl.get("name", "")
+        traits = {
+            "editable" if editable else "readonly",
+            "cost" if is_cost_list_name(pl_name) else "sell",
+            "derived" if is_derived(pl) else "manual",
+        }
+        return [
+            _slot_action_link(action, entity_id=entity_id, price_list=pl_name, field_name=price_key(pl_name))
+            for action in pricing_actions if set(action.get("show_on") or ()) <= traits
+        ]
+
+    def _row(pl: dict, editable: bool) -> tuple[FT, list[FT]]:
+        """The row's value cells and the module actions it shows."""
+        pl_name = pl.get("name", "")
         conventional_key = price_key(pl_name)
         editable = editable and (not pricing_fields or conventional_key in schema_editable)
+        actions = _row_actions(pl, editable)
         price_val = resolve_price(item, pl_name)
         unit_val = _fmt_rate(price_val, rdp) if price_val else ""
         total_val = f"{price_val * qty:.2f}" if price_val and has_qty else ""
@@ -7298,11 +7331,11 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             # or a derived price list (computed from the base price list). The value spans
             # carry ids so a base-price save can refresh them out-of-band.
             unit_span, total_span = _readonly_price_cells(conventional_key, price_val, qty, has_qty, rdp)
-            return Tr(
+            return (
                 Td(pl_name, cls="detail-label"),
                 Td(_cur(unit_span)),
                 Td(_cur(total_span) if has_qty else Span(EMPTY)),
-            )
+            ), actions
         unit_id, total_id = f"unit_{conventional_key}", f"total_{conventional_key}"
         # Enter commits by blurring (which fires `change` → the autosave below), matching the
         # rest of the system where Enter always commits an inline edit.
@@ -7320,14 +7353,20 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
                             onkeydown=enter_commits,
                             # Editing the total back-fills the unit, then re-fires its autosave.
                             onchange=f"document.getElementById('{unit_id}').dispatchEvent(new Event('change'))")
-        return Tr(Td(pl_name, cls="detail-label"), Td(_cur(unit_input)), Td(_cur(total_input)))
+        return (Td(pl_name, cls="detail-label"), Td(_cur(unit_input)), Td(_cur(total_input))), actions
 
     def _card(title: str, lists: list[dict], editable: bool, note: str | None = None) -> FT:
+        rows = [_row(pl, editable) for pl in lists]
+        with_actions = any(actions for _, actions in rows)
+        headers = [Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr)]
+        if with_actions:
+            headers.append(Th(t("th.actions")))
+            body = [Tr(*cells, Td(*actions)) for cells, actions in rows]
+        else:
+            body = [Tr(*cells) for cells, _ in rows]
         return Div(
             H3(title, cls="section-title"),
-            Table(Thead(Tr(Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr))),
-                  Tbody(*[_row(pl.get("name", ""), editable) for pl in lists]),
-                  cls="detail-table"),
+            Table(Thead(Tr(*headers)), Tbody(*body), cls="detail-table"),
             P(note, cls="hint") if note else "",
             cls="detail-card",
         )
@@ -7749,13 +7788,10 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
     """Compact item operations grid: Split, Duplicate, Expire, Dispose."""
     current_qty = float(item.get("quantity", 0) or 0)
 
-    from celerp.modules.slots import get as get_slot
-    module_item_actions = []
-    for action in get_slot("item_action"):
-        href = action.get("href_template", "").replace("{entity_id}", entity_id)
-        module_item_actions.append(
-            A(_slot_label(action, t("inv.action")), href=href, cls="btn btn--secondary btn--sm")
-        )
+    module_item_actions = [
+        _slot_action_link(action, entity_id=entity_id)
+        for action in _visible_slot_actions("item_action", settings or {}, role)
+    ]
 
     safe_id = re.sub(r"[^a-zA-Z0-9]", "_", entity_id)
 
