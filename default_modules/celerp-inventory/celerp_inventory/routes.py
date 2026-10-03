@@ -400,9 +400,20 @@ _AUTHORING_EVENT_TYPES: frozenset[str] = frozenset({
 })
 
 
-# Item statuses a new document or List line is refused for: draft on any record, reserved
-# (by another record) on an invoice or memo.
-_LINE_REFUSED_STATUSES: frozenset[str] = frozenset({"draft", "reserved"})
+async def lock_item(session: AsyncSession, company_id, entity_id: str) -> Projection | None:
+    """The item as last committed, held until this transaction ends; None when absent.
+
+    Every write whose legality or authority depends on the item's current status
+    decides from this row and writes in the same transaction. A concurrent status
+    change (Make Available, Revert to Draft, a status edit, a document reserving the
+    item) has either committed and is read here, or waits for this write and is then
+    judged against it.
+    """
+    return (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+
+
+def _status_of(row: Projection | None) -> str:
+    return str(((row.state if row else {}) or {}).get("status") or "").lower()
 
 
 async def assert_status_change_allowed(
@@ -430,16 +441,14 @@ async def assert_status_change_allowed(
             status_code=422,
             detail="Disposal is recorded through the Write off stock action, not a direct status edit.",
         )
-    if ns in _LINE_REFUSED_STATUSES:
-        # Document and List writers check their lines for these statuses under the company
-        # lock; taking it here too means a concurrent create either sees the change or is
-        # seen by it (below: "the item is on document ...").
-        await lock_company(session, company_id)
+    # Document and List writers check their lines for draft and reserved items under the
+    # same company lock, so a concurrent create either sees this change or is seen by it
+    # (below: "the item is on document ...").
+    row = await lock_item(session, company_id, entity_id)
     if ns != "draft":
         return
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}, populate_existing=True)
     state = (row.state if row else {}) or {}
-    current = str(state.get("status") or "").lower()
+    current = _status_of(row)
     if current in ("", "draft"):
         return  # creating as draft / already draft: harmless no-op
     if not role_has_permission(settings, role, "revert_items_to_draft"):
@@ -514,8 +523,7 @@ async def reject_draft_status_change_via_generic_path(
             status_code=422,
             detail="Use the item's 'Revert to Draft' action, not a direct status edit.",
         )
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    current = str(((row.state if row else {}) or {}).get("status") or "").lower()
+    current = _status_of(await lock_item(session, company_id, entity_id))
     if current == "draft":
         raise HTTPException(
             status_code=422,
@@ -526,8 +534,7 @@ async def reject_draft_status_change_via_generic_path(
 async def assert_make_available_allowed(session: AsyncSession, company_id, entity_id: str) -> None:
     """Already-available is a harmless no-op (mirrors the revert guard's own
     already-draft no-op), so a mixed bulk selection doesn't hard-fail."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    current = str(((row.state if row else {}) or {}).get("status") or "").lower()
+    current = _status_of(await lock_item(session, company_id, entity_id))
     if current in ("draft", "available"):
         return
     raise HTTPException(
@@ -539,8 +546,7 @@ async def assert_make_available_allowed(session: AsyncSession, company_id, entit
 async def assert_not_draft(session: AsyncSession, company_id, entity_id: str, action: str) -> None:
     """A draft isn't stock yet, so stock-circulation operations (reserve, expire, ...)
     make no sense on it until it is committed via Make Available."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    current = str(((row.state if row else {}) or {}).get("status") or "").lower()
+    current = _status_of(await lock_item(session, company_id, entity_id))
     if current == "draft":
         raise HTTPException(
             status_code=422,
@@ -2199,8 +2205,12 @@ def _validate_rfid_epc(rfid_epc) -> None:
         raise HTTPException(status_code=422, detail=str(e))
 
 
-async def get_item_projection(session: AsyncSession, company_id, entity_id: str) -> Projection:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+async def get_item_projection(session: AsyncSession, company_id, entity_id: str, *, lock: bool = False) -> Projection:
+    """The item, or 404. ``lock`` takes it with lock_item, for a write that decides by its status."""
+    if lock:
+        row = await lock_item(session, company_id, entity_id)
+    else:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "item":
         raise HTTPException(status_code=404, detail="Item not found")
     return row
@@ -2463,10 +2473,10 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # Draft carve-out: the circulating-stock gates (cost + amount permissions)
     # attach when the item is committed to available, not at creation. While the
     # CURRENT status is draft, anyone with edit_inventory finishes authoring the
-    # item freely; the status is re-read here on every patch, so an edit landing
-    # after another user commits the item is gated like any available item.
-    _proj = await get_item_projection(session, company_id, entity_id)
-    _is_draft = str((_proj.state or {}).get("status") or "").lower() == "draft"
+    # item freely; the status is read under the item lock on every patch, so an edit
+    # landing after another user commits the item is gated like any available item.
+    _proj = await get_item_projection(session, company_id, entity_id, lock=True)
+    _is_draft = _status_of(_proj) == "draft"
     # Cost fields are gated by set_inventory_prices, not by the schema role floor:
     # a granted operator edits cost, an ungranted manager still cannot.
     restricted -= COST_ITEM_KEYS
@@ -4303,8 +4313,8 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
     # (edit_inventory) authors its cost while it is still a draft - the same carve-out
     # patch_item applies, so the pricing tab's Cost card works for the person entering
     # the item. Sell prices stay gated, and the gate re-arms once the item is available.
-    _proj = await get_item_projection(session, company_id, entity_id)
-    _is_draft = str((_proj.state or {}).get("status") or "").lower() == "draft"
+    _proj = await get_item_projection(session, company_id, entity_id, lock=True)
+    _is_draft = _status_of(_proj) == "draft"
     if not (is_cost_price_type(payload.price_type) and draft_cost_carveout(_is_draft, role, settings)):
         reject_price_change({payload.price_type}, role, settings)
     event = dict(
