@@ -325,14 +325,17 @@ async def lifespan(_app: FastAPI):
             "stale until rebuilt via doctor or /ledger/rebuild"
         )
 
-    # Attachment files of a company restore that stopped before it committed are removed,
-    # so stored files and restored companies agree after a crash, and so are expired
-    # backup uploads and downloads a stopped process left behind. Non-fatal: a later boot
-    # or the next restore retries.
+    # Expired backup uploads and downloads a stopped process left behind are removed, and
+    # so are the attachment files of a company restore that stopped before it committed,
+    # so stored files and restored companies agree after a crash. Each is non-fatal and
+    # independent of the other: a later boot or the next restore retries.
     try:
-        from celerp.services.company_backup import reconcile_landings
         from celerp.services.company_backup_files import sweep_transient_files
         await asyncio.to_thread(sweep_transient_files)
+    except Exception:
+        logging.getLogger(__name__).exception("Removing leftover backup files failed (non-fatal)")
+    try:
+        from celerp.services.company_backup import reconcile_landings
         await reconcile_landings()
     except Exception:
         logging.getLogger(__name__).exception("Cleaning up after unfinished company restores failed (non-fatal)")
