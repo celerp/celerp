@@ -859,9 +859,11 @@ async def make_selected(session: AsyncSession, company_id, user_id, lines: list[
 
 async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, company_id, user_id,
                                               doc_type=None, **kwargs) -> None:
-    """doc_finalize_hook: when the company has work-order auto-creation enabled, create a linked work
-    order for each manufacturable line on the just-finalized order (ordered qty minus on-hand). Runs
-    inside the finalize transaction (the caller commits); failures are logged and non-fatal."""
+    """doc_finalize_hook: when the company has work-order auto-creation enabled, make a linked work
+    order for each manufacturable product on the just-finalized order for what that order is still
+    short. The shortfall is Make selected's, judged under the company lock finalizing holds: stock
+    on hand including lots, production in progress, and supply pegged to orders soonest due first.
+    Runs inside the finalize transaction (the caller commits); failures are reported, never fatal."""
     settings = await movements.mfg_settings(session, company_id)
     if not settings.get("auto_create_work_orders"):
         return
@@ -871,47 +873,33 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
     failed: list[str] = []
     not_created: list[str] = []
     states = await _all_item_states(session, company_id)
-    # Idempotent across re-finalize: skip items already linked to an open work order for this order.
-    existing = (await session.execute(
-        select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "mfg_order")
-    )).scalars().all()
-    linked = {(r.state or {}).get("output_item_id") for r in existing
-              if (r.state or {}).get("source_doc_id") == entity_id
-              and (r.state or {}).get("status") != "cancelled"}
-    doc = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    dstate = (doc.state if doc else None) or doc_state or {}
-    source = {
-        "source_doc_id": entity_id, "source_doc_number": dstate.get("ref_id"),
-        "source_doc_type": dstate.get("doc_type") or doc_type,
-        "source_contact_name": dstate.get("contact_name"),
-        "source_due": dstate.get("due_date") or dstate.get("promised_date"),
-    }
-    for _idx, item_id, _line_id, qty, _label in _doc_lines(doc_state):
-        st = states.get(item_id)
-        if not item_id or qty <= 0 or item_id in linked or not is_manufacturable(st):
-            continue
-        make_qty = max(0.0, qty - float((st or {}).get("quantity") or 0))
-        if make_qty <= 0:
-            continue
+    # One action per finalize: a re-finalize after a revert to draft is a new one.
+    operation = f"finalize:{entity_id}:{int((doc_state or {}).get('revert_count') or 0)}"
+    products = dict.fromkeys(item_id for _idx, item_id, _line_id, qty, _label in _doc_lines(doc_state)
+                             if item_id and qty > 0)
+    for item_id in products:
+        # Each product in a savepoint, so one that cannot be made leaves the others' runs.
         try:
-            order_id = await _emit_work_order(session, company_id, user_id, item_id, st, make_qty, source)
+            async with session.begin_nested():
+                made = await make_selected(session, company_id, user_id,
+                                           [WorkOrderLineRef(item_id=item_id, doc_id=entity_id)], False, operation)
         except HTTPException as exc:
-            # The recipe names something that is no longer an item: nothing was written.
-            not_created.append(f"{st.get('sku') or item_id} ({failure_reason(exc)})")
+            not_created.append(f"{(states.get(item_id) or {}).get('sku') or item_id} ({failure_reason(exc)})")
             continue
-        linked.add(item_id)
-        if auto_complete:
+        if not auto_complete:
+            continue
+        for line in made["created"]:
             # Complete the planned run on the spot, inside a savepoint so a mid-completion failure
             # (e.g. a raised event) rolls back only this line to a surviving planned run and neither
             # aborts the loop nor escapes the hook into the finalize commit.
             try:
                 async with session.begin_nested():
-                    await movements.complete(session, company_id, user_id, order_id, {}, "finalize", at=at,
-                                             quantity=make_qty)
-                completed.append(order_id)
+                    await movements.complete(session, company_id, user_id, line["run_id"], {}, "finalize", at=at,
+                                             quantity=line["quantity"])
+                completed.append(line["run_id"])
             except Exception as exc:
-                failed.append(order_id)
-                log.warning("auto-complete failed for %s: %s", order_id, exc)
+                failed.append(line["run_id"])
+                log.warning("auto-complete failed for %s: %s", line["run_id"], exc)
 
     if not (not_created or (auto_complete and (completed or failed))):
         return
@@ -923,8 +911,8 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
                 await notif_svc.create(
                     session, company_id, category="manufacturing",
                     title="Work orders not created",
-                    body=(f"{len(not_created)} work order(s) could not be created on invoice posting because "
-                          f"the recipe names a missing item: {', '.join(not_created)}. Fix the recipe, "
+                    body=(f"{len(not_created)} work order(s) could not be created on invoice posting: "
+                          f"{', '.join(not_created)}. Fix the recipe, "
                           f"then create the work order from the To-Make board."),
                     priority="high", action_url="/manufacturing/to-make")
             if auto_complete and failed:
