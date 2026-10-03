@@ -48,6 +48,7 @@ from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.document_lines import listing_record
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import (
+    RECORDED,
     account_room,
     books_from_elsewhere,
     consumed_values,
@@ -636,8 +637,11 @@ async def _require_untouched(op: _Op, row: Projection | None, lot_id: str, quant
     from celerp_inventory.projections import is_item_available
 
     s = (row.state or {}) if row is not None and row.entity_type == "item" else {}
+    # Recording which account carries the lot (as turning Accounting on does) changes neither
+    # its stock nor its value.
     marks = (await op.session.execute(select(LedgerEntry.data, LedgerEntry.metadata_).where(
-        LedgerEntry.company_id == op.company_id, LedgerEntry.entity_id == lot_id))).all()
+        LedgerEntry.company_id == op.company_id, LedgerEntry.entity_id == lot_id,
+        LedgerEntry.event_type != RECORDED))).all()
     held = held_value(row) if s else None
     if (not s or await listing_record(op.session, op.company_id, lot_id) is not None or not marks or any(op.order_id not in ((d or {}).get(_ORDER_MARK), (m or {}).get(_ORDER_MARK)) for d, m in marks)
             or abs(float(s.get("quantity") or 0) - quantity) > _EPS or float(s.get("reserved_quantity") or 0) > _EPS

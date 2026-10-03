@@ -339,3 +339,83 @@ async def test_accounting_places_stock_before_manufacturing_settles_its_runs():
     paths = sorted((p for p in root.iterdir() if (p / "__init__.py").exists()), key=lambda p: p.name)
     order = [p.name for p in _topo_sort(paths, {p.name for p in paths})]
     assert order.index("celerp-accounting") < order.index("celerp-manufacturing")
+
+
+# ---------------------------------------------------------------------------
+# Undoing a step across Accounting being turned on
+# ---------------------------------------------------------------------------
+
+async def test_materials_issued_and_returned_while_accounting_was_off_leave_nothing_to_book(
+        client, session, auth):
+    from mfg_runs import give_back
+
+    await _without_accounting(session, auth)
+    raw = await _lot(client, auth, 100.0, qty=10)
+    _, order = await _job(client, auth, raw)
+    assert (await issue(client, auth, order, [(raw, 4)], key="i")).status_code == 200
+    r = await give_back(client, auth, order, key="g")
+    assert r.status_code == 200 and r.json()["value"] == "40.00", r.text
+    assert await _entry(session, auth, f"je:auto:{order}:return:g") is None
+
+    await _upgrade(session)
+
+    assert await _entry(session, auth, f"je:auto:{order}:wip-booked") is None
+    assert round((await _state(session, auth, raw))["cost_total"], 2) == 100.0
+    assert await _account_net(session, auth["company_id"], "1130-OB") == 100.0
+    await _carried(client, session, auth)
+
+
+async def test_materials_issued_while_accounting_was_off_return_onto_the_books_once_it_is_on(
+        client, session, auth):
+    from mfg_runs import give_back
+
+    await _without_accounting(session, auth)
+    raw = await _lot(client, auth, 100.0, qty=10)
+    _, order = await _job(client, auth, raw)
+    assert (await issue(client, auth, order, [(raw, 4)], key="i")).status_code == 200
+    await _upgrade(session)
+
+    r = await give_back(client, auth, order, key="g")
+
+    assert r.status_code == 200, r.text
+    wip = await role(session, auth, WIP)
+    assert await lines(session, auth, f"je:auto:{order}:return:g") == sorted([
+        ("1130-OB", (OPENING,), 40.0, 0.0), (wip, (WIP,), 0.0, 40.0)])
+    assert await _account_net(session, auth["company_id"], "1130-OB") == 100.0
+    await _carried(client, session, auth)
+
+
+async def test_output_received_while_accounting_was_off_is_taken_back_once_it_is_on(client, session, auth):
+    from mfg_runs import undo_receipt
+
+    await _without_accounting(session, auth)
+    raw = await _lot(client, auth, 100.0, qty=10)
+    _, order = await _job(client, auth, raw)
+    assert (await issue(client, auth, order, key="i")).status_code == 200
+    lot = (await receive(client, auth, order, 1, key="r")).json()["lot_item_id"]
+    await _upgrade(session)
+    code = (await _state(session, auth, lot))[LOT_ACCOUNT_FIELD]
+
+    r = await undo_receipt(client, auth, order, lot, key="u")
+
+    assert r.status_code == 200, r.text
+    wip = await role(session, auth, WIP)
+    assert await lines(session, auth, f"je:auto:{order}:unreceive:u") == sorted([
+        (code, (OPENING,), 0.0, 50.0), (wip, (WIP,), 50.0, 0.0)])
+    await _carried(client, session, auth)
+
+
+async def test_a_run_completed_while_accounting_was_off_is_not_reopened_once_it_is_on(client, session, auth):
+    from mfg_runs import reopen
+
+    await _without_accounting(session, auth)
+    raw = await _lot(client, auth, 100.0, qty=10)
+    _, order = await _job(client, auth, raw)
+    assert (await complete(client, auth, order, key="c")).status_code == 200
+    await _upgrade(session)
+    before = await snapshot(session, auth, raw, order)
+
+    refusal(await reopen(client, auth, order, key="o"), 409, "reconciliation_required")
+
+    assert await snapshot(session, auth, raw, order) == before
+    await _carried(client, session, auth)
