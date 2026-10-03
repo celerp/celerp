@@ -119,7 +119,7 @@ async def test_journey_upgrade_during_a_stopped_migration(real_client, real_engi
     r = await real_client.get(f"/migrations/{run_id}", headers=auth(owner_token))
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "failed"
-    assert r.json()["error_summary"]["message"] == RESTART
+    assert r.json()["error"]["message"] == RESTART
 
     r = await real_client.post("/companies/me/locations", headers=auth(owner_token),
                                json={"name": "Back room", "type": "warehouse"})
@@ -158,7 +158,7 @@ async def test_journey_upgrade_during_a_stopped_bootstrap_migration(real_client,
     assert len(sink.events) == calls
 
     r = await real_client.get(f"/migrations/{run_id}", headers=auth(token))
-    assert r.status_code == 200 and r.json()["error_summary"]["message"] == RESTART
+    assert r.status_code == 200 and r.json()["error"]["message"] == RESTART
     r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
     assert r.status_code == 200, r.text
     assert r.json()["redirect"]

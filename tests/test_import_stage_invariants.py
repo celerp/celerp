@@ -24,10 +24,11 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+
+from celerp.services import import_stage
 from httpx import ASGITransport, AsyncClient
 
 from test_helpers import make_test_token
-from ui.routes import csv_import as ci
 
 _REPO = Path(__file__).resolve().parent.parent
 _COMPANY_A = "company-a"
@@ -61,7 +62,7 @@ def _age(path: Path, seconds: float) -> None:
 
 
 def _expired_seconds() -> float:
-    return ci._IMPORT_STAGE_MAX_AGE_SECONDS + 3600
+    return import_stage.MAX_AGE_SECONDS + 3600
 
 
 def _expire_meta(stage_dir: Path, ref: str) -> None:
@@ -249,10 +250,16 @@ async def _post(path: str, data: dict | None = None, files: dict | None = None) 
         return await c.post(path, data=data, files=files, cookies=_cookies())
 
 
+async def _get(path: str) -> httpx.Response:
+    transport = ASGITransport(app=_app_for(path), raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://ui") as c:
+        return await c.get(path, cookies=_cookies())
+
+
 async def _confirm(name: str, writer, *, csv_text: str | None = None, company_id: str = _COMPANY_A):
     """Stage the importer's CSV for company A, then confirm it as ``company_id``."""
     spec = _IMPORTERS[name]
-    ref = ci._write_stage(_COMPANY_A, csv_text or spec["csv"])
+    ref = import_stage.write_stage(_COMPANY_A, csv_text or spec["csv"])
     with _patched_api(company_id, **{spec["writer"]: writer}):
         r = await _post(spec["confirm"], data={"csv_ref": ref, **spec.get("extra", {})})
     return ref, r
@@ -274,7 +281,7 @@ async def _assert_api_error_keeps_stage(name: str, stage_dir: Path) -> None:
     ref, r = await _confirm(name, writer)
     assert r.status_code == 200, r.text
     assert writer.await_count >= 1
-    assert ci._read_stage(_COMPANY_A, ref) == _IMPORTERS[name]["csv"]
+    assert import_stage.read_stage(_COMPANY_A, ref) == _IMPORTERS[name]["csv"]
 
 
 # ---------------------------------------------------------------------------
@@ -325,12 +332,12 @@ class TestStageRetrySafety:
         monkeypatch.setattr("ui.api_client._get_transport", lambda: mock_transport)
         monkeypatch.setattr("ui.api_client._get_bulk_transport", lambda: mock_transport)
 
-        ref = ci._write_stage(_COMPANY_A, spec["csv"])
+        ref = import_stage.write_stage(_COMPANY_A, spec["csv"])
         with _patched_api(_COMPANY_A):
             r = await _post(spec["confirm"], data={"csv_ref": ref, **spec.get("extra", {})})
         assert r.status_code == 200, r.text
         assert writes, "the import never reached the API writer"
-        assert ci._read_stage(_COMPANY_A, ref) == spec["csv"]
+        assert import_stage.read_stage(_COMPANY_A, ref) == spec["csv"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("name", _ALL)
@@ -345,7 +352,7 @@ class TestStageRetrySafety:
         ref, r = await _confirm(name, writer, csv_text=csv_text)
         assert r.status_code == 200, r.text
         assert writer.await_count >= 1
-        assert ci._read_stage(_COMPANY_A, ref) == csv_text
+        assert import_stage.read_stage(_COMPANY_A, ref) == csv_text
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("name", _ALL)
@@ -354,7 +361,7 @@ class TestStageRetrySafety:
         ref, r = await _confirm(name, writer)
         assert r.status_code == 200, r.text
         assert writer.await_count >= 1
-        assert ci._read_stage(_COMPANY_A, ref) is None
+        assert import_stage.read_stage(_COMPANY_A, ref) is None
         assert not (stage_dir / f"{ref}.csv").exists()
         assert not (stage_dir / f"{ref}.meta").exists()
 
@@ -375,7 +382,7 @@ class TestStageRetrySafety:
         if spec["writer"] != "batch_import":
             writer.assert_not_awaited()
         assert spec["marker"] not in r.text
-        assert ci._read_stage(_COMPANY_A, ref) == spec["csv"]
+        assert import_stage.read_stage(_COMPANY_A, ref) == spec["csv"]
 
 
 # ---------------------------------------------------------------------------
@@ -397,27 +404,32 @@ class TestStageSurvivesFlow:
         base = spec["confirm"].rsplit("/", 1)[0]
         cols = spec["csv"].splitlines()[0].split(",")
         writer = _clean_result(name)
-        preview = AsyncMock(return_value={"errors": [], "locations_to_create": [], "preview_hash": "e" * 64})
-        with _patched_api(_COMPANY_A, **{spec["writer"]: writer, "preview_import_rows": preview}):
+        plan = AsyncMock(return_value={"errors": [], "locations_to_create": [], "counts": {"create": 1},
+                                       "preview_hash": "e" * 64})
+        with _patched_api(_COMPANY_A, **{spec["writer"]: writer, "plan_import_rows": plan}):
             r = await _post(f"{base}/preview", files={"csv_file": ("data.csv", spec["csv"].encode())})
             assert r.status_code == 200, r.text
             ref = _last_ref(r.text)
 
             r = await _post(f"{base}/mapped", data={"csv_ref": ref, **{f"map__{c}": c for c in cols}})
+            if name == "inventory":
+                # Inventory saves the mapped rows as a draft and shows its review.
+                assert r.status_code == 303, r.text
+                r = await _get(r.headers["location"])
             assert r.status_code == 200, r.text
             ref = _last_ref(r.text)
 
-            r = await _post(f"{base}/revalidate", data={"csv_ref": ref})
+            revalidate = {"csv_ref": ref}
+            if name == "inventory":
+                revalidate["revision"] = re.search(r'name="revision" value="(\d+)"', r.text).group(1)
+            r = await _post(f"{base}/revalidate", data=revalidate)
             assert r.status_code == 200, r.text
             ref = _last_ref(r.text)
-            assert spec["marker"] in ci._read_stage(_COMPANY_A, ref)
+            assert spec["marker"] in import_stage.read_stage(_COMPANY_A, ref)
 
             confirm = {"csv_ref": ref}
             if name == "inventory":
-                r = await _post(f"{base}/review", data={"csv_ref": ref})
-                assert r.status_code == 200, r.text
-                ref = _last_ref(r.text)
-                confirm = {"csv_ref": ref, "preview_hash": "e" * 64}
+                confirm["preview_hash"] = "e" * 64
 
             r = await _post(spec["confirm"], data=confirm)
         assert r.status_code == 200, r.text
@@ -433,18 +445,18 @@ class TestStageSurvivesFlow:
 
 class TestStagePrivacy:
     def test_stage_directory_is_private(self, stage_dir, open_umask):
-        ci._write_stage(_COMPANY_A, "sku\nA\n")
+        import_stage.write_stage(_COMPANY_A, "sku\nA\n")
         assert stage_dir.is_dir()
         assert _mode(stage_dir) == 0o700
 
     def test_stage_files_are_private(self, stage_dir, open_umask):
-        ref = ci._write_stage(_COMPANY_A, "sku\nA\n")
+        ref = import_stage.write_stage(_COMPANY_A, "sku\nA\n")
         csv_path, meta_path = stage_dir / f"{ref}.csv", stage_dir / f"{ref}.meta"
         assert _mode(csv_path) == 0o600
         assert _mode(meta_path) == 0o600
         # Writes are complete stage pairs; no temporary file is left behind.
         assert sorted(p.name for p in stage_dir.iterdir()) == sorted([csv_path.name, meta_path.name])
-        assert ci._read_stage(_COMPANY_A, ref) == "sku\nA\n"
+        assert import_stage.read_stage(_COMPANY_A, ref) == "sku\nA\n"
 
     def test_preexisting_stage_dir_and_files_are_made_private(self, stage_dir, open_umask):
         stage_dir.mkdir(parents=True)
@@ -456,7 +468,7 @@ class TestStagePrivacy:
         os.chmod(old_csv, 0o666)
         os.chmod(old_meta, 0o644)
 
-        ref = ci._write_stage(_COMPANY_A, "sku\nNEW\n")
+        ref = import_stage.write_stage(_COMPANY_A, "sku\nNEW\n")
 
         assert _mode(stage_dir) == 0o700
         assert _mode(stage_dir / f"{ref}.csv") == 0o600
@@ -464,7 +476,7 @@ class TestStagePrivacy:
         assert _mode(old_csv) == 0o600
         assert _mode(old_meta) == 0o600
         # Tightening modes never costs a user a recent stage.
-        assert ci._read_stage(_COMPANY_A, old_ref) == "sku\nOLD\n"
+        assert import_stage.read_stage(_COMPANY_A, old_ref) == "sku\nOLD\n"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("name", _ALL)
@@ -490,33 +502,33 @@ class TestStagePrivacy:
 
 class TestStageCleanup:
     def test_orphan_csv_is_cleaned_after_ttl(self, stage_dir):
-        old = ci._write_stage(_COMPANY_A, "old")
-        recent = ci._write_stage(_COMPANY_A, "recent")
+        old = import_stage.write_stage(_COMPANY_A, "old")
+        recent = import_stage.write_stage(_COMPANY_A, "recent")
         (stage_dir / f"{old}.meta").unlink()
         (stage_dir / f"{recent}.meta").unlink()
         _age(stage_dir / f"{old}.csv", _expired_seconds())
 
-        assert ci.cleanup_expired_import_refs() == 1
+        assert import_stage.cleanup_expired() == 1
         assert not (stage_dir / f"{old}.csv").exists()
         assert (stage_dir / f"{recent}.csv").exists()
 
     def test_orphan_meta_is_cleaned_after_ttl(self, stage_dir):
-        old = ci._write_stage(_COMPANY_A, "old")
-        recent = ci._write_stage(_COMPANY_A, "recent")
+        old = import_stage.write_stage(_COMPANY_A, "old")
+        recent = import_stage.write_stage(_COMPANY_A, "recent")
         (stage_dir / f"{old}.csv").unlink()
         (stage_dir / f"{recent}.csv").unlink()
         _expire_meta(stage_dir, old)
 
-        assert ci.cleanup_expired_import_refs() == 1
+        assert import_stage.cleanup_expired() == 1
         assert not (stage_dir / f"{old}.meta").exists()
         assert (stage_dir / f"{recent}.meta").exists()
 
     @pytest.mark.asyncio
     async def test_startup_cleanup_removes_expired_stages(self, stage_dir):
         from ui.app import app as ui_app
-        expired = ci._write_stage(_COMPANY_A, "expired")
-        orphan = ci._write_stage(_COMPANY_A, "orphan")
-        fresh = ci._write_stage(_COMPANY_A, "fresh")
+        expired = import_stage.write_stage(_COMPANY_A, "expired")
+        orphan = import_stage.write_stage(_COMPANY_A, "orphan")
+        fresh = import_stage.write_stage(_COMPANY_A, "fresh")
         _expire_meta(stage_dir, expired)
         (stage_dir / f"{orphan}.meta").unlink()
         _age(stage_dir / f"{orphan}.csv", _expired_seconds())
@@ -525,4 +537,4 @@ class TestStageCleanup:
             remaining = {p.name for p in stage_dir.iterdir()}
 
         assert remaining == {f"{fresh}.csv", f"{fresh}.meta"}
-        assert ci._read_stage(_COMPANY_A, fresh) == "fresh"
+        assert import_stage.read_stage(_COMPANY_A, fresh) == "fresh"

@@ -24,17 +24,24 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError, bootstrap_status
 from ui.api_client import login as api_login, login_force as api_login_force, logout as api_logout, register as api_register
+from ui.api_client import start_company as api_start_company
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.api_client import migration_staged_run as api_migration_staged_run
-from ui.components.shell import auth_shell, flash, page_title, star_supporter_card, toast_header
+from ui.components.shell import auth_shell, flash, page_title, toast_header
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, get_role, set_session_cookies, clear_session_cookies
 from ui.i18n import t, get_lang
 from ui.routes.csv_import import ONBOARDING_MARKER
 from ui.security import is_app_local_path
 from celerp.config import settings as _settings
-from celerp.services.auth import MIN_PASSWORD_LENGTH
+from celerp.services.auth import MIN_PASSWORD_LENGTH, NO_COMPANY
 from celerp.services.permissions import role_has_permission
+
+
+# Where a login with no company left signs in and starts a new one.
+START_COMPANY = "/setup/start-company"
+START_COMPANY_RESTORE = f"{START_COMPANY}/restore-backup"
+START_COMPANY_MIGRATE = f"{START_COMPANY}/migrate"
 
 
 def auth_header(title: str, subtitle: str = "") -> FT:
@@ -171,6 +178,8 @@ def setup_routes(app):
                     _direct_connection_gate(email, password),
                     title=page_title("btn.sign_in"),
                 )
+            if e.status == 401 and e.detail == NO_COMPANY:
+                return RedirectResponse(START_COMPANY, status_code=302)
             return auth_shell(_login_form(email=email, error=e.detail, next_url=nxt), title=page_title("btn.sign_in"))
         except Exception as e:
             return auth_shell(_login_form(email=email, error=t("auth.server_error", e=e), next_url=nxt), title=page_title("btn.sign_in"))
@@ -189,10 +198,41 @@ def setup_routes(app):
         try:
             access_token, refresh_token = await api_login_force(email, password)
         except APIError as e:
+            if e.status == 401 and e.detail == NO_COMPANY:
+                return RedirectResponse(START_COMPANY, status_code=302)
             return auth_shell(_login_form(email=email, error=e.detail, next_url=nxt), title=page_title("btn.sign_in"))
         except Exception as e:
             return auth_shell(_login_form(email=email, error=t("auth.server_error", e=e), next_url=nxt), title=page_title("btn.sign_in"))
         resp = RedirectResponse(nxt, status_code=302)
+        set_session_cookies(resp, access_token, refresh_token, request)
+        return resp
+
+    @app.get(START_COMPANY)
+    async def start_company_page(request: Request):
+        return auth_shell(_start_company_form(), title=page_title("setup.start_company_title"))
+
+    @app.post(START_COMPANY)
+    async def start_company_submit(request: Request):
+        form = await request.form()
+        email = str(form.get("email", "")).strip()
+        password = str(form.get("password", ""))
+        company_name = str(form.get("company_name", "")).strip()
+
+        def _fail(msg):
+            return auth_shell(_start_company_form(email=email, company_name=company_name, error=msg),
+                              title=page_title("setup.start_company_title"))
+
+        if not all([email, password, company_name]):
+            return _fail(t("settings.all_fields_required"))
+        try:
+            access_token, refresh_token = await api_start_company(email, password, company_name)
+        except APIError as e:
+            if e.status == 409 and e.detail == "direct_connection_limit":
+                return _fail(t("auth.direct_connection_gate_body"))
+            return _fail(e.detail if isinstance(e.detail, str) else t("auth.server_error", e=e.detail))
+        except Exception as e:
+            return _fail(t("auth.server_error", e=e))
+        resp = RedirectResponse("/setup/company", status_code=302)
         set_session_cookies(resp, access_token, refresh_token, request)
         return resp
 
@@ -604,6 +644,35 @@ def _login_form(email: str = "", error: str | None = None, notice: str = "", nex
     )
 
 
+def _start_company_form(email: str = "", company_name: str = "", error: str | None = None) -> FT:
+    """Sign in and name a new company, move one in from another system, or restore a
+    company backup: the ways back in for a login whose last company was reset."""
+    return Div(
+        auth_header(t("setup.start_company_title"), t("setup.start_company_subtitle")),
+        P(t("setup.start_company_explain"), cls="form-hint"),
+        Form(
+            flash(error) if error else "",
+            Div(Label(t("label.email"), For="email", cls="form-label"),
+                Input(type="email", id="email", name="email", value=email,
+                      required=True, autofocus=True, cls="form-input"),
+                cls="form-group"),
+            Div(Label(t("label.password"), For="password", cls="form-label"),
+                Input(type="password", id="password", name="password", required=True, cls="form-input"),
+                cls="form-group"),
+            Div(Label(t("label.company_name"), For="company_name", cls="form-label"),
+                Input(type="text", id="company_name", name="company_name", value=company_name,
+                      required=True, cls="form-input"),
+                cls="form-group"),
+            Button(t("setup.start_company_title"), type="submit", cls="btn btn--primary btn--full"),
+            P(A(t("setup.card_move"), href=START_COMPANY_MIGRATE, cls="auth-link"), cls="auth-alt-action"),
+            P(A(t("setup.card_restore"), href=START_COMPANY_RESTORE, cls="auth-link"), cls="auth-alt-action"),
+            P(A(t("auth.back_to_login"), href="/login", cls="auth-link"), cls="auth-footer-text"),
+            method="post", action=START_COMPANY, cls="auth-form",
+        ),
+        cls="auth-card",
+    )
+
+
 async def _staged_run_redirect(token: str) -> RedirectResponse | None:
     """A session on a company still being moved in lands on that company's migration run."""
     try:
@@ -772,13 +841,14 @@ def _resumes_onboarding(company: dict, request: Request) -> bool:
     return (company.get("settings") or {}).get("onboarding_pending") is True and _can_set_up(company, request)
 
 
-# Getting-started actions: (page the action opens, title key, description key, is an
-# import). Import pages open with the onboarding marker so their result offers a way back.
-_ONBOARDING_ACTIONS: tuple[tuple[str, str, str, bool], ...] = (
-    ("/inventory/import", "onboarding.products", "onboarding.file_desc", True),
-    ("/crm/import/contacts", "onboarding.contacts", "onboarding.file_desc", True),
-    ("/docs/import", "onboarding.documents", "onboarding.file_desc", True),
-    ("/settings/cloud", "onboarding.connect", "onboarding.connect_desc", False),
+# Getting-started actions: (page path, title key, description key, query string). Imports carry the onboarding
+# marker so they return to this hub; the store connector opens on its own tab.
+_ONBOARDING_ACTIONS: tuple[tuple[str, str, str, str], ...] = (
+    ("/inventory/import", "onboarding.products", "onboarding.file_desc", f"{ONBOARDING_MARKER}=1"),
+    ("/crm/import/contacts", "onboarding.contacts", "onboarding.file_desc", f"{ONBOARDING_MARKER}=1"),
+    ("/docs/import", "onboarding.documents", "onboarding.file_desc", f"{ONBOARDING_MARKER}=1"),
+    ("/setup/new-company/migrate", "setup.card_move", "onboarding.move_desc", ""),
+    ("/settings/cloud", "onboarding.connect", "onboarding.connect_desc", "tab=website"),
 )
 
 
@@ -797,10 +867,10 @@ def _onboarding_view(registered: set[str], error: str | None = None) -> FT:
         A(
             Strong(t(title)),
             P(t(desc), cls="quick-link-desc"),
-            href=f"{path}?{ONBOARDING_MARKER}=1" if is_import else path,
+            href=f"{path}?{query}" if query else path,
             cls="quick-link-card",
         )
-        for path, title, desc, is_import in _ONBOARDING_ACTIONS
+        for path, title, desc, query in _ONBOARDING_ACTIONS
         if path in registered
     ]
     return Div(
@@ -817,7 +887,6 @@ def _onboarding_view(registered: set[str], error: str | None = None) -> FT:
             ),
             cls="mt-lg text-center",
         ),
-        star_supporter_card("onboarding"),
         cls="onboarding-card",
     )
 

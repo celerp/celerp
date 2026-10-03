@@ -89,6 +89,38 @@ async def create(
     return notif
 
 
+async def notify_every_company(
+    session: AsyncSession,
+    category: str,
+    title: str,
+    body: str,
+    *,
+    action_url: str | None = None,
+    priority: str = "medium",
+) -> int:
+    """Create one company-wide notice per company, deduped on an unread notice with the
+    same category and title: a reboot while it is still unread creates nothing new, and
+    a state that persists notifies again only after the notice was dismissed. Caller
+    commits. Returns the number of notifications created."""
+    from celerp.models.company import Company
+
+    created = 0
+    for cid in (await session.execute(select(Company.id))).scalars().all():
+        already = (await session.execute(
+            select(Notification.id).where(
+                Notification.company_id == cid,
+                Notification.category == category,
+                Notification.title == title,
+                Notification.read == False,  # noqa: E712
+            ).limit(1)
+        )).first()
+        if already:
+            continue
+        await create(session, cid, category, title, body, action_url=action_url, priority=priority)
+        created += 1
+    return created
+
+
 async def get_unread_count(
     session: AsyncSession,
     company_id: uuid.UUID,

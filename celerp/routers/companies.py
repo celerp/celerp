@@ -20,6 +20,7 @@ from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.services.auth import (
     AuthContext,
+    first_usable_company_link,
     get_auth_context,
     get_current_company_id,
     get_current_user,
@@ -48,7 +49,7 @@ from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
 from celerp.services.business_time import business_timezone
-from celerp.services.company_lock import lock_company, locked_company
+from celerp.services.company_lock import lock_company, lock_company_for_deletion, locked_company
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -252,9 +253,7 @@ async def create_company(
         raise HTTPException(status_code=400, detail=f"Could not create company: {e}") from e
     # Creating a company is a continuation of the current owner session: pass the
     # snonce it authenticated on so a concurrent revocation cannot be jumped over.
-    return await issue_token_pair(
-        session, user=user, company=company, role="owner", expected_snonce=ctx.snonce
-    )
+    return await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=ctx.snonce)
 
 
 @router.get("/me")
@@ -345,6 +344,11 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
                 business_timezone(payload.settings.get("timezone"))
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
+        from celerp_docs.routes_payments import (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY,
+                                                 require_online_deposit_account)
+        for key in (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY):
+            if payload.settings.get(key):  # empty: the default
+                await require_online_deposit_account(session, company_id, payload.settings[key])
         # Price config must pass the same gate as the dedicated endpoints: the read
         # path trusts stored config, so no door may store what the validator rejects.
         if "price_lists" in payload.settings or "base_price_list" in payload.settings:
@@ -455,7 +459,7 @@ async def batch_import_settings(
             skipped += 1
             continue
         try:
-            await emit_event(
+            entry = await emit_event(
                 session,
                 company_id=company_id,
                 entity_id=str(company_id),
@@ -469,7 +473,11 @@ async def batch_import_settings(
                 metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
             )
             existing_keys.add(rec.idempotency_key)
-            created += 1
+            # A concurrent import of the same file can write the row first.
+            if getattr(entry, "was_deduped", False):
+                skipped += 1
+            else:
+                created += 1
         except Exception as exc:
             if len(errors) < 10:
                 errors.append(f"{rec.entity_id}: {exc}")
@@ -2257,6 +2265,64 @@ async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     staged.unlink(missing_ok=True)
     staged.with_suffix(".json").unlink(missing_ok=True)
     return {"ok": True, **info}
+
+
+class CompanyReset(BaseModel):
+    company_name: str
+
+
+@router.post("/me/reset", dependencies=[require_permission("manage_company_lifecycle")])
+async def reset_company(
+    payload: CompanyReset,
+    ctx: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Remove the current company: its records, settings, chart of accounts, attachments
+    and memberships. Logins and other companies stay.
+
+    The typed name must equal the company's name exactly. All or nothing: files go only
+    after the commit. Returns a token pair for another of the caller's companies, or
+    ``{"next": "start_company"}`` when this was their last one."""
+    from celerp.connectors.ownership import lock_connector_maintenance
+    from celerp.services import company_reset, payments
+    from celerp.services.migrations import run_cleanup_task
+
+    await lock_connector_maintenance(session)
+    await lock_company_for_deletion(session, ctx.company_id)
+    await locked_authority(session, ctx.company_id, ctx.user.id, ("manage_company_lifecycle",))
+    company = await session.get(Company, ctx.company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    closure = None
+    try:
+        try:
+            done = await company_reset.reset(session, company, payload.company_name)
+        except company_reset.ResetRefused as exc:
+            closure = exc.closure
+            if exc.__cause__ is not None:
+                logger.error("Company reset failed: %s", type(exc.__cause__).__name__)
+            raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+        closure = done.closure
+        link = await first_usable_company_link(session, ctx.user.id)
+        if link is None:
+            await session.commit()
+            result = {"next": "start_company"}
+        else:
+            # The new session continues this one, so it cannot jump a concurrent sign-out.
+            result = await issue_token_pair(
+                session, user=ctx.user, company_id=link.company_id,
+                expected_snonce=ctx.snonce,
+            )
+    except BaseException:
+        await session.rollback()
+        # Reopens the company's online payments, or closes them for good if the
+        # deletion committed after all.
+        await payments.settle_company_closure(closure)
+        raise
+    await payments.settle_company_closure(closure)
+    session.expunge_all()
+    await run_cleanup_task(session, done.task_id)
+    return result
 
 
 @router.delete("/me", dependencies=[require_permission("manage_company_lifecycle")])

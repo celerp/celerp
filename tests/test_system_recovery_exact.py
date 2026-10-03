@@ -301,11 +301,11 @@ async def test_local_backup_meta_lists_every_company_module(rec, real_engine):
 
 async def test_cloud_snapshot_meta_lists_every_company_module(rec, real_engine):
     """A cloud recovery point lists the modules of every company in its metadata."""
-    from celerp.services import backup_repo
+    from celerp.services import backup_export
     user = await owner(real_engine)
     await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-labels"]})
     await company(real_engine, user, "Beta Trading", "beta", settings={"enabled_modules": ["celerp-contacts"]})
-    meta = await backup_repo._build_meta()
+    meta = await backup_export.archive_meta()
     assert sorted(meta["enabled_modules"]) == ["celerp-contacts", "celerp-labels"]
 
 

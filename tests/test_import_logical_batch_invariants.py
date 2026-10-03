@@ -9,8 +9,8 @@ the response names that entry, an exact retry resolves to it and appends
 nothing, an interrupted import leaves nothing behind, and Undo removes every
 item it created. Undo releases the operation so the same source can be
 imported again as a new history entry. The raw event batch endpoint keeps its
-per-call history. Every import and undo route stays behind the canonical
-permission gate.
+per-call history and cannot be undone. Every import and undo route stays behind
+the canonical permission gate.
 """
 
 from __future__ import annotations
@@ -23,10 +23,12 @@ from contextlib import asynccontextmanager
 from unittest.mock import patch
 
 import pytest
+
+from celerp.services import import_stage
 from httpx import ASGITransport, AsyncClient
 
 from celerp.events.types import EventType
-from test_helpers import grant_permission, perm_setup
+from test_helpers import clear_sample_items, grant_permission, perm_setup
 
 # The shared semantic importer's writer chunk, made small here so a few rows
 # cross the same chunk boundaries a large import does.
@@ -62,6 +64,7 @@ async def ctx(client, session, data_dir):
         s[f"{role}_token"] = token
         s[f"{role}_user_id"] = claims["sub"]
         s["company_id"] = claims["company_id"]
+    await clear_sample_items(session, s["company_id"])
     return s
 
 
@@ -159,7 +162,6 @@ class _Operation:
 
     async def _browser(self):
         import ui.api_client as ui_api
-        from ui.routes import csv_import as ci
         from ui.routes.inventory import _import_operation_key
 
         # The review step's preview of exactly these rows and this operation key.
@@ -168,7 +170,7 @@ class _Operation:
         })
         assert r.status_code == 200 and r.json()["errors"] == [], r.text
         preview_hash = r.json()["preview_hash"]
-        ref = ci._write_stage(self.ctx["company_id"], self.csv_text)
+        ref = import_stage.write_stage(self.ctx["company_id"], self.csv_text)
 
         results: list[dict] = []
         real_import_rows = ui_api.import_rows
@@ -226,14 +228,16 @@ async def _item_ids(session, company_id: str) -> set[str]:
     )).scalars().all() if not eid.startswith("item:demo-")}
 
 
-async def _commit_rows(client, h, rows: list[dict], *, upsert: bool, key: str | None) -> dict:
+async def _commit_rows(client, h, rows: list[dict], *, upsert: bool, key: str | None,
+                       decisions: dict | None = None) -> dict:
     """Preview and commit mapped rows over the direct API; return the importer's result."""
     r = await client.post("/items/import/rows/preview", headers=h, json={
-        "rows": rows, "upsert": upsert, "idempotency_key": key,
+        "rows": rows, "upsert": upsert, "idempotency_key": key, "decisions": decisions or {},
     })
     assert r.status_code == 200 and r.json()["errors"] == [], r.text
     r = await client.post("/items/import/rows", headers=h, json={
         "rows": rows, "upsert": upsert, "idempotency_key": key, "preview_hash": r.json()["preview_hash"],
+        "decisions": decisions or {},
     })
     assert r.status_code == 200, r.text
     assert r.json()["errors"] == [], r.json()["errors"][:5]
@@ -384,6 +388,7 @@ class TestLogicalImportRetry:
                 for i in range(_CHUNK + 2)]
         rows[0].update(name="First lot", sku="SHARED")
         rows[_CHUNK].update(name="Second lot", sku="SHARED")
+        lots = {"separate_lots": ["SHARED"]}
         key = f"op-{uuid.uuid4().hex}"
         before = await _item_ids(session, ctx["company_id"])
 
@@ -398,12 +403,12 @@ class TestLogicalImportRetry:
 
         monkeypatch.setattr(svc, "write_import_batch", _interrupt_after_first_chunk)
         with pytest.raises(RuntimeError):
-            await _commit_rows(client, ctx["admin_h"], rows, upsert=True, key=key)
+            await _commit_rows(client, ctx["admin_h"], rows, upsert=True, key=key, decisions=lots)
         monkeypatch.setattr(svc, "write_import_batch", real_write)
         await session.rollback()  # the failed request's session closes without committing
         assert await _item_ids(session, ctx["company_id"]) == before
 
-        body = await _commit_rows(client, ctx["admin_h"], rows, upsert=True, key=key)
+        body = await _commit_rows(client, ctx["admin_h"], rows, upsert=True, key=key, decisions=lots)
         assert (body["created"], body["updated"], body["skipped"]) == (_CHUNK + 2, 0, 0)
         assert len(await _item_ids(session, ctx["company_id"]) - before) == _CHUNK + 2
         assert await _names_with_sku(session, ctx["company_id"], "SHARED") == ["First lot", "Second lot"]
@@ -411,11 +416,12 @@ class TestLogicalImportRetry:
     @pytest.mark.asyncio
     async def test_exact_retry_of_upsert_with_a_repeated_new_sku_returns_the_same_batch(self, client, session, ctx):
         rows = [{"name": name, "sku": "TWIN", "sell_by": "piece", "quantity": "1"} for name in ("Lot A", "Lot B")]
-        first = await _commit_rows(client, ctx["admin_h"], rows, upsert=True, key=None)
+        lots = {"separate_lots": ["TWIN"]}
+        first = await _commit_rows(client, ctx["admin_h"], rows, upsert=True, key=None, decisions=lots)
         assert first["created"] == 2 and first["batch_id"]
         after_first = await _snapshot(session, ctx["company_id"])
 
-        again = await _commit_rows(client, ctx["admin_h"], rows, upsert=True, key=None)
+        again = await _commit_rows(client, ctx["admin_h"], rows, upsert=True, key=None, decisions=lots)
         assert (again["created"], again["updated"], again["skipped"]) == (0, 0, 2)
         assert again["batch_id"] == first["batch_id"]
         assert await _snapshot(session, ctx["company_id"]) == after_first
@@ -507,11 +513,11 @@ class TestRawBatchHistory:
         assert retry.status_code == 200 and retry.json()["created"] == 0, retry.text
         assert await _snapshot(session, ctx["company_id"]) == before
 
-        # Each call is undone on its own.
+        # A raw call cannot show it only added items, so it cannot be undone.
+        assert {x["id"]: x["reversible"] for x in history} == {a["batch_id"]: False, b["batch_id"]: False}
         r = await client.post(f"/items/import/batches/{a['batch_id']}/undo", headers=h)
-        assert r.status_code == 200 and r.json()["removed"] == 3, r.text
-        statuses = {x["id"]: x["status"] for x in await _history(client, h)}
-        assert statuses == {a["batch_id"]: "undone", b["batch_id"]: "active"}
+        assert r.status_code == 409 and r.json()["detail"]["code"] == "import_not_reversible", r.text
+        assert await _snapshot(session, ctx["company_id"]) == before
 
 
 # ---------------------------------------------------------------------------
@@ -632,3 +638,45 @@ class TestImportPermissions:
         assert allowed.status_code == 200, allowed.text
         assert allowed.json()["removed"] == 2
         assert await _item_ids(session, ctx["company_id"]) == before_items
+
+
+# ---------------------------------------------------------------------------
+# An import that has done more than create its items never becomes undoable again
+# ---------------------------------------------------------------------------
+
+
+async def _category_schema_keys(session, company_id: str, category: str) -> set[str]:
+    from celerp.models.company import Company
+    session.expire_all()
+    company = await session.get(Company, uuid.UUID(company_id))
+    return {f["key"] for f in ((company.settings or {}).get("category_schemas") or {}).get(category) or []}
+
+
+@pytest.mark.asyncio
+async def test_a_retry_that_adds_category_fields_makes_the_import_not_undoable(client, session, ctx):
+    """A role without settings authority imports an item with a new attribute column: the
+    import only created the item, so it can be undone. The same import retried with settings
+    authority creates nothing new but adds the column to the category's fields, which Undo
+    would leave behind; from then on the import cannot be undone."""
+    rows = [{"name": "Ring", "sell_by": "piece", "quantity": "1", "category": "Rings", "band_metal": "gold"}]
+    key = f"op-{uuid.uuid4().hex}"
+
+    first = await _commit_rows(client, ctx["manager_h"], rows, upsert=False, key=key)
+    assert (first["created"], first["reversible"]) == (1, True)
+    assert "band_metal" not in await _category_schema_keys(session, ctx["company_id"], "Rings")
+
+    retry = await _commit_rows(client, ctx["admin_h"], rows, upsert=False, key=key)
+    assert (retry["created"], retry["updated"], retry["batch_id"]) == (0, 0, first["batch_id"])
+    assert "band_metal" in await _category_schema_keys(session, ctx["company_id"], "Rings")
+    assert retry["reversible"] is False
+    assert {b["id"]: b["reversible"] for b in await _history(client, ctx["admin_h"])} == {first["batch_id"]: False}
+
+    # A later retry that adds nothing lasting does not make it undoable again.
+    again = await _commit_rows(client, ctx["manager_h"], rows, upsert=False, key=key)
+    assert (again["created"], again["batch_id"], again["reversible"]) == (0, first["batch_id"], False)
+    assert {b["id"]: b["reversible"] for b in await _history(client, ctx["admin_h"])} == {first["batch_id"]: False}
+
+    items = await _item_ids(session, ctx["company_id"])
+    undo = await client.post(f"/items/import/batches/{first['batch_id']}/undo", headers=ctx["admin_h"])
+    assert undo.status_code == 409 and undo.json()["detail"]["code"] == "import_not_reversible", undo.text
+    assert await _item_ids(session, ctx["company_id"]) == items

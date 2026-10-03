@@ -54,6 +54,14 @@ async def test_doctor_finalize_repair_includes_cogs(client, session):
     carrying revenue AND the COGS pair, identical to a live finalize."""
     token = await _register(client)
     entity_id = f"doc:doctor-cogs-{uuid.uuid4().hex[:8]}"
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(token))).json()["id"])
+
+    # The stock parcel behind the line item: unit cost 20 (40 total over qty 2).
+    session.add(Projection(
+        company_id=company_id, entity_id="item:doctor-parcel", entity_type="item",
+        state={"cost_total": 40.0, "quantity": 2.0}, version=1,
+        updated_at=datetime.now(timezone.utc)))
+    await session.flush()
 
     r = await client.post("/docs/import", headers=_h(token), json={
         "entity_id": entity_id, "event_type": "doc.created",
@@ -67,18 +75,6 @@ async def test_doctor_finalize_repair_includes_cogs(client, session):
     assert r.status_code == 200
 
     await _emit_legacy_doc_event(client, session, token, entity_id, "doc.finalized", {})
-
-    doc_proj = (await session.execute(select(Projection).where(
-        Projection.entity_id == entity_id,
-        Projection.entity_type == "doc"))).scalar_one()
-    company_id = doc_proj.company_id
-
-    # The stock parcel behind the line item: unit cost 20 (40 total over qty 2).
-    session.add(Projection(
-        company_id=company_id, entity_id="item:doctor-parcel", entity_type="item",
-        state={"cost_total": 40.0, "quantity": 2.0}, version=1,
-        updated_at=datetime.now(timezone.utc)))
-    await session.flush()
 
     r = await client.post("/admin/doctor?checks=missing_jes&fix=true", headers=_h(token))
     data = r.json()

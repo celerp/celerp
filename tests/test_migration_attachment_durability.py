@@ -332,7 +332,8 @@ async def test_attachment_discard_after_failed_or_interrupted_run(real_engine, m
                            {"r": str(run.id)})
 
     async with maker(real_engine)() as s:
-        assert await migrations.discard(s, await s.get(MigrationRun, run.id)) == "/"
+        # The owner has no other company, so the login starts over.
+        assert await migrations.discard(s, await s.get(MigrationRun, run.id)) == migrations.START_COMPANY_PAGE
     assert _stored(tmp_path, run.company_id) == []
     assert not (tmp_path / "data" / "static" / "attachments" / str(run.company_id)).exists()
     assert await _tasks(real_engine, run.company_id) == 0

@@ -36,6 +36,8 @@ async def _seed_company(factory) -> uuid.UUID:
 
 async def _seed_list(factory, company_id) -> str:
     entity_id = "list:LOCKTEST"
+    # A List line must link to a real item.
+    await _seed_item(factory, company_id, "item:x", quantity=1, cost_total=0, sku="X")
     async with factory() as s:
         await emit_event(
             s, company_id=company_id, entity_id=entity_id, entity_type="list",
@@ -60,6 +62,7 @@ async def _cleanup(factory, company_id):
 
 
 async def _seed_typed_list(factory, company_id, entity_id, list_type, status):
+    await _seed_item(factory, company_id, "item:x", quantity=1, cost_total=0, sku="X")
     async with factory() as s:
         await emit_event(
             s, company_id=company_id, entity_id=entity_id, entity_type="list",

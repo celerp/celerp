@@ -22,6 +22,12 @@ class ImportBatch(Base):
     logical import so every chunk adds to this one row. It is unique per company
     and cleared on Undo, so the same source can later be imported as a new row.
     A raw event batch has no operation key and records one row per call.
+
+    ``reversible`` is true only when the import is known to have done nothing but
+    create these items, so Undo returns the company to its state before it. It is
+    false for anything else the import did (updated records, new locations, new
+    category fields, sample items cleared, work queued for a connected store) and
+    for any import that cannot show it, and Undo refuses such an import.
     """
 
     __tablename__ = "import_batches"
@@ -39,6 +45,7 @@ class ImportBatch(Base):
     idempotency_keys: Mapped[list] = mapped_column(sa.JSON, nullable=False)
     operation_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    reversible: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False, server_default=sa.false())
     imported_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

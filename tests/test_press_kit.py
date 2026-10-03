@@ -73,6 +73,11 @@ _NEW_BY_VERTICAL = {
 }
 _VERTICALS = sorted(_NEW_BY_VERTICAL)
 
+# The accountants website page set: hand-picked screens the cloud site's accountants
+# page embeds by jsDelivr URL, so a rename or drop breaks that page.
+_ACCOUNTANTS = _SHOTS / "accountants"
+_ACCOUNTANTS_SCREENS = {"migration-verify", "new-company", "company-backup"}
+
 # Width caps documented for each tier.
 _CANONICAL_MAX_W = 1600
 _GALLERY_MAX_W = 1280
@@ -135,6 +140,31 @@ def test_press_kit_screenshot_set():
                 assert img.width <= _GALLERY_MAX_W, (
                     f"{p} width {img.width} exceeds {_GALLERY_MAX_W}"
                 )
+
+
+def test_press_kit_accountants_set():
+    # Exactly the screens the accountants page embeds, each a 1280x800 WebP (the
+    # page reserves a 1600x1000 box, so the 16:10 ratio is part of the contract).
+    actual = _stems(_ACCOUNTANTS, ".webp")
+    assert actual == _ACCOUNTANTS_SCREENS, (
+        f"accountants set mismatch: missing={_ACCOUNTANTS_SCREENS - actual}, "
+        f"orphan={actual - _ACCOUNTANTS_SCREENS}"
+    )
+    for name in _ACCOUNTANTS_SCREENS:
+        p = _ACCOUNTANTS / f"{name}.webp"
+        with Image.open(p) as img:
+            assert img.format == "WEBP", f"{p} is {img.format}, expected WEBP"
+            assert img.size == (_GALLERY_MAX_W, _GALLERY_MAX_W * 10 // 16), (
+                f"{p} is {img.size}, expected {_GALLERY_MAX_W}x{_GALLERY_MAX_W * 10 // 16}"
+            )
+
+    # The folder README shows every screen, and IMAGE-LOCATIONS points at the folder.
+    readme = (_ACCOUNTANTS / "README.md").read_text()
+    for name in _ACCOUNTANTS_SCREENS:
+        assert f"({name}.webp)" in readme, f"accountants/README.md does not show {name}.webp"
+    assert _EM_DASH not in readme, "accountants/README.md contains an em dash"
+    image_locations = (_PRESS_KIT / "IMAGE-LOCATIONS.md").read_text()
+    assert "`accountants/`" in image_locations, "IMAGE-LOCATIONS does not list accountants/"
 
 
 def test_press_kit_consumers_reference_new_shots():

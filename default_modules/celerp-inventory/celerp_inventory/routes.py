@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.events.schemas import reject_comma_sku
-from celerp.importers.tabular import MAX_CELLS, MAX_ROWS
+from celerp.importers.tabular import HEADER_SEARCH_LINES, MAX_CELLS, MAX_ROWS
 from celerp.inventory_codes import (
     PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
     normalize_rfid_epc,
@@ -33,6 +33,7 @@ from .services import (
     BatchImportRequest,
     BatchImportResult,
     adjust_item_quantity,
+    ImportPlan,
     ImportRejected,
     allocate_internal_codes,
     apply_source_semantics,
@@ -43,9 +44,11 @@ from .services import (
     import_preview_hash,
     is_item_field_key,
     item_price_mutex_groups,
-    preview_import_rows,
+    build_import_plan,
     source_header_semantics,
 )
+from celerp.services.company_lock import lock_company, lock_projections
+from celerp.services.item_erasure import erase_items, mentioned_elsewhere
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
@@ -397,6 +400,37 @@ _AUTHORING_EVENT_TYPES: frozenset[str] = frozenset({
 })
 
 
+async def lock_item(session: AsyncSession, company_id, entity_id: str) -> Projection | None:
+    """The item as last committed, held until this transaction ends; None when absent.
+
+    Every write whose legality or authority depends on the item's current status
+    decides from this row and writes in the same transaction. A concurrent status
+    change (Make Available, Revert to Draft, a status edit, a document reserving the
+    item) has either committed and is read here, or waits for this write and is then
+    judged against it.
+    """
+    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+    return row if row is not None and row.entity_type == "item" else None
+
+
+async def lock_existing_items(session: AsyncSession, company_id, entity_ids: list[str]) -> dict[str, Projection]:
+    """Lock every selected item before any of them changes; 404 naming the first ID that
+    is not an item of this company (absent, or a document, List or contact). A bulk action
+    checks the whole selection first, so it applies to all of it or to none."""
+    if not entity_ids:
+        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    rows = await lock_projections(session, company_id, entity_ids)
+    for entity_id in entity_ids:
+        row = rows.get(entity_id)
+        if row is None or row.entity_type != "item":
+            raise HTTPException(status_code=404, detail=f"Item not found: {entity_id}")
+    return rows
+
+
+def _status_of(row: Projection | None) -> str:
+    return str(((row.state if row else {}) or {}).get("status") or "").lower()
+
+
 async def assert_status_change_allowed(
     session: AsyncSession, company_id, entity_id: str, new_status: str,
     role: str, settings: dict,
@@ -422,11 +456,14 @@ async def assert_status_change_allowed(
             status_code=422,
             detail="Disposal is recorded through the Write off stock action, not a direct status edit.",
         )
+    # Document and List writers check their lines for draft and reserved items under the
+    # same company lock, so a concurrent create either sees this change or is seen by it
+    # (below: "the item is on document ...").
+    row = await lock_item(session, company_id, entity_id)
     if ns != "draft":
         return
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     state = (row.state if row else {}) or {}
-    current = str(state.get("status") or "").lower()
+    current = _status_of(row)
     if current in ("", "draft"):
         return  # creating as draft / already draft: harmless no-op
     if not role_has_permission(settings, role, "revert_items_to_draft"):
@@ -501,8 +538,7 @@ async def reject_draft_status_change_via_generic_path(
             status_code=422,
             detail="Use the item's 'Revert to Draft' action, not a direct status edit.",
         )
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    current = str(((row.state if row else {}) or {}).get("status") or "").lower()
+    current = _status_of(await lock_item(session, company_id, entity_id))
     if current == "draft":
         raise HTTPException(
             status_code=422,
@@ -513,8 +549,7 @@ async def reject_draft_status_change_via_generic_path(
 async def assert_make_available_allowed(session: AsyncSession, company_id, entity_id: str) -> None:
     """Already-available is a harmless no-op (mirrors the revert guard's own
     already-draft no-op), so a mixed bulk selection doesn't hard-fail."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    current = str(((row.state if row else {}) or {}).get("status") or "").lower()
+    current = _status_of(await lock_item(session, company_id, entity_id))
     if current in ("draft", "available"):
         return
     raise HTTPException(
@@ -526,8 +561,7 @@ async def assert_make_available_allowed(session: AsyncSession, company_id, entit
 async def assert_not_draft(session: AsyncSession, company_id, entity_id: str, action: str) -> None:
     """A draft isn't stock yet, so stock-circulation operations (reserve, expire, ...)
     make no sense on it until it is committed via Make Available."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    current = str(((row.state if row else {}) or {}).get("status") or "").lower()
+    current = _status_of(await lock_item(session, company_id, entity_id))
     if current == "draft":
         raise HTTPException(
             status_code=422,
@@ -1534,12 +1568,12 @@ def _bounded_rows(rows: list[dict]) -> list[dict]:
     return rows
 
 
-def _rows_preview_hash(rows: list[dict], upsert: bool, idempotency_key: str | None, semantic_fingerprint: str) -> str:
-    """Binds the rows, the update-existing choice, the operation key, and what
-    the rows meant when previewed."""
+def _rows_preview_hash(rows: list[dict], upsert: bool, idempotency_key: str | None, plan: ImportPlan) -> str:
+    """Binds the rows, the update-existing choice, the operation key, the row
+    decisions, and what the rows meant when previewed."""
     return import_preview_hash({
         "rows": rows, "upsert": upsert, "idempotency_key": idempotency_key,
-        "semantic_fingerprint": semantic_fingerprint,
+        "decisions": plan.decisions, "semantic_fingerprint": plan.semantic_fingerprint,
     })
 
 
@@ -1566,6 +1600,14 @@ async def _write_import(session, company_id, user_id, role: str, settings: dict,
         raise _validation_failed(exc.errors)
 
 
+class ImportDecisions(BaseModel):
+    """The user's row decisions: 1-based rows to leave out, rows that read as a
+    total to import as items anyway, and SKUs whose rows are separate lots."""
+    exclude: list[int] = Field(default_factory=list, max_length=MAX_ROWS)
+    import_summary: list[int] = Field(default_factory=list, max_length=MAX_ROWS)
+    separate_lots: list[str] = Field(default_factory=list, max_length=MAX_ROWS)
+
+
 class InventoryImportRows(BaseModel):
     # The writer commits in batches of 500 internally; the envelope carries the
     # whole import so it is previewed and committed as one operation.
@@ -1573,6 +1615,7 @@ class InventoryImportRows(BaseModel):
     upsert: bool = False
     filename: str | None = None
     idempotency_key: str | None = None
+    decisions: ImportDecisions = Field(default_factory=lambda: ImportDecisions())
     preview_hash: str | None = Field(None, min_length=64, max_length=64)
 
     @field_validator("rows")
@@ -1585,6 +1628,7 @@ class InventoryImportRowsPreviewRequest(BaseModel):
     rows: list[dict] = Field(..., max_length=MAX_ROWS)
     upsert: bool = False
     idempotency_key: str | None = None
+    decisions: ImportDecisions = Field(default_factory=lambda: ImportDecisions())
 
     @field_validator("rows")
     @classmethod
@@ -1595,7 +1639,18 @@ class InventoryImportRowsPreviewRequest(BaseModel):
 class InventoryImportRowsPreview(BaseModel):
     errors: list[dict]
     locations_to_create: list[str]
+    counts: dict[str, int]
+    summary_rows: list[int]
+    duplicate_groups: list[dict]
+    decisions: dict
     preview_hash: str
+
+
+async def _rows_plan(session, company_id, role: str, settings: dict, body) -> ImportPlan:
+    return await build_import_plan(
+        session, company_id, role, settings, body.rows, upsert=body.upsert,
+        decisions=body.decisions.model_dump(), idempotency_key=body.idempotency_key,
+    )
 
 
 @router.post(
@@ -1615,14 +1670,13 @@ async def import_rows_preview(
     key, and what the rows mean now, and /import/rows refuses a commit whose
     hash no longer matches.
     """
-    plan = await preview_import_rows(
-        session, company_id, role, settings, body.rows,
-        upsert=body.upsert, idempotency_key=body.idempotency_key,
-    )
+    plan = await _rows_plan(session, company_id, role, settings, body)
     return InventoryImportRowsPreview(
         errors=plan.errors,
         locations_to_create=plan.locations_to_create,
-        preview_hash=_rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan.semantic_fingerprint),
+        counts=plan.counts, summary_rows=plan.summary_rows, duplicate_groups=plan.duplicate_groups,
+        decisions=plan.decisions,
+        preview_hash=_rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan),
     )
 
 
@@ -1655,18 +1709,15 @@ async def import_rows(
     role, settings = await _import_authority(session, company_id, user.id)
     plan = None
     if body.preview_hash is not None:
-        plan = await preview_import_rows(
-            session, company_id, role, settings, body.rows,
-            upsert=body.upsert, idempotency_key=body.idempotency_key,
-        )
-        if _rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan.semantic_fingerprint) != body.preview_hash:
+        plan = await _rows_plan(session, company_id, role, settings, body)
+        if _rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan) != body.preview_hash:
             raise _preview_stale()
         if plan.errors:
             raise _validation_failed(plan.errors)
     return await _write_import(
         session, company_id, user.id, role, settings, body.rows,
         upsert=body.upsert, filename=body.filename, idempotency_key=body.idempotency_key,
-        plan=plan,
+        decisions=body.decisions.model_dump(), plan=plan,
     )
 
 
@@ -1681,6 +1732,7 @@ _AI_FILE_ID_RE = re.compile(r"^ai_up_[0-9a-f]{32}$")
 class InventoryImportPreview(BaseModel):
     file_id: str
     sheet: str | None
+    header_row: int
     upsert: bool
     columns: list[str]
     mapping: dict[str, str]
@@ -1689,39 +1741,46 @@ class InventoryImportPreview(BaseModel):
     sample: list[dict]
     errors: list[dict]
     locations_to_create: list[str] = Field(default_factory=list)
+    counts: dict[str, int] = Field(default_factory=dict)
+    decisions: dict = Field(default_factory=dict)
     preview_hash: str
 
 
 class InventoryImportPreviewRequest(BaseModel):
     file_id: str = Field(..., min_length=1, max_length=64)
     sheet: str | None = Field(None, max_length=64)
+    header_row: int | None = Field(None, ge=0, le=HEADER_SEARCH_LINES - 1)
     upsert: bool = False
     mapping: dict[str, str] | None = None
+    decisions: ImportDecisions = Field(default_factory=lambda: ImportDecisions())
 
 
 async def _build_item_preview(
     session, company_id, user_id, role: str, settings: dict, *,
     file_id: str, sheet: str | None, upsert: bool, mapping: dict[str, str] | None = None,
-    idempotency_key: str | None = None,
+    decisions: dict | None = None, idempotency_key: str | None = None, header_row: int | None = None,
 ) -> dict:
     """Load an uploaded file, map and validate it, and run the import preflight.
 
     Returns the preview payload plus the mapped rows, the flat error list, the
     original filename, the preview hash, and the semantic fingerprint.
     Recomputed identically by preview and commit so the hash pins the exact
-    bytes, sheet, mapping, row count, and what the rows would write.
+    bytes, sheet, header row, mapping, row count, row decisions, and what the rows would write.
     ``idempotency_key`` is the commit's operation key (None when previewing).
 
     Raises 404 when the file id is malformed, missing, or owned by another
-    company; 422 when the bytes cannot be read as a table.
+    company; 422 when the bytes cannot be read as a table, or with code
+    ``header_row_required`` and the file's leading lines when no line is clearly
+    its header (the caller then sends ``header_row``).
     """
     import hashlib
 
     from celerp.ai.files import load_file
     from celerp.importers.tabular import (
         TabularError,
+        known_headers,
         normalize_and_validate_mapping,
-        read_table,
+        read_table_at_header,
         remap_rows,
         suggest_mapping,
     )
@@ -1735,16 +1794,19 @@ async def _build_item_preview(
         raise HTTPException(status_code=404, detail="File not found")
 
     filename = meta.get("filename") or file_id
+    price_lists, _default_list, _currency = await get_price_config(session, company_id)
+    spec = build_item_import_spec(price_lists)
     try:
-        cols, rows = read_table(data, filename, sheet=sheet)
+        cols, rows, header_row = read_table_at_header(
+            data, filename, sheet=sheet, header_row=header_row, known=known_headers(spec.cols),
+        )
     except TabularError as exc:
         detail: dict = {"code": "unreadable_file", "message": str(exc)}
         if exc.sheets:
             detail["sheets"] = exc.sheets
+        if exc.header_lines:
+            detail.update(code="header_row_required", lines=exc.header_lines)
         raise HTTPException(status_code=422, detail=detail)
-
-    price_lists, _default_list, _currency = await get_price_config(session, company_id)
-    spec = build_item_import_spec(price_lists)
     # The same suggestion the browser mapper renders; the caller's mapping
     # overrides it column by column.
     category_attrs = union_category_attr_keys(all_category_schemas(settings))
@@ -1765,9 +1827,9 @@ async def _build_item_preview(
     if resolved.applicable:
         _new_cols, mapped_rows = remap_rows(cols, rows, mapping)
         mapped_rows = apply_source_semantics(mapped_rows, semantics)
-        plan = await preview_import_rows(
+        plan = await build_import_plan(
             session, company_id, role, settings, mapped_rows,
-            upsert=upsert, idempotency_key=idempotency_key,
+            upsert=upsert, decisions=decisions, idempotency_key=idempotency_key,
         )
         errors += plan.errors
     errors = errors[:50]
@@ -1777,19 +1839,23 @@ async def _build_item_preview(
     preview_hash = import_preview_hash({
         "file_id": file_id,
         "sheet": sheet,
+        "header_row": header_row,
         "upsert": upsert,
         "mapping": mapping,
         "row_count": row_count,
+        "decisions": plan.decisions if plan else None,
         "file_sha256": hashlib.sha256(data).hexdigest(),
         "semantic_fingerprint": plan.semantic_fingerprint if plan else None,
     })
 
     return {
         "payload": InventoryImportPreview(
-            file_id=file_id, sheet=sheet, upsert=upsert, columns=cols,
+            file_id=file_id, sheet=sheet, header_row=header_row, upsert=upsert, columns=cols,
             mapping=mapping, unmapped_required=unmapped_required, row_count=row_count,
             sample=mapped_rows[:5], errors=errors,
-            locations_to_create=plan.locations_to_create if plan else [], preview_hash=preview_hash,
+            locations_to_create=plan.locations_to_create if plan else [],
+            counts=plan.counts if plan else {}, decisions=plan.decisions if plan else {},
+            preview_hash=preview_hash,
         ),
         "errors": errors,
         "mapped_rows": mapped_rows,
@@ -1806,6 +1872,7 @@ async def _build_item_preview(
 async def import_preview(
     file_id: str = Query(..., min_length=1, max_length=64),
     sheet: str | None = Query(None, max_length=64),
+    header_row: int | None = Query(None, ge=0, le=HEADER_SEARCH_LINES - 1),
     upsert: bool = Query(False),
     company_id=Depends(get_current_company_id),
     role: str = Depends(get_current_role),
@@ -1816,7 +1883,7 @@ async def import_preview(
     """Preview an uploaded item import for the browser UI."""
     result = await _build_item_preview(
         session, company_id, user.id, role, settings,
-        file_id=file_id, sheet=sheet, upsert=upsert,
+        file_id=file_id, sheet=sheet, upsert=upsert, header_row=header_row,
     )
     return result["payload"]
 
@@ -1837,7 +1904,8 @@ async def import_preview_agent(
     """Preview an uploaded catalog with an optional caller-corrected mapping."""
     result = await _build_item_preview(
         session, company_id, user.id, role, settings, file_id=body.file_id,
-        sheet=body.sheet, upsert=body.upsert, mapping=body.mapping,
+        sheet=body.sheet, header_row=body.header_row, upsert=body.upsert, mapping=body.mapping,
+        decisions=body.decisions.model_dump(),
     )
     return result["payload"]
 
@@ -1845,8 +1913,10 @@ async def import_preview_agent(
 class InventoryImportCommit(BaseModel):
     file_id: str = Field(..., min_length=1, max_length=64)
     sheet: str | None = Field(None, max_length=64)
+    header_row: int | None = Field(None, ge=0, le=HEADER_SEARCH_LINES - 1)
     upsert: bool = False
     mapping: dict[str, str] | None = None
+    decisions: ImportDecisions = Field(default_factory=lambda: ImportDecisions())
     preview_hash: str = Field(..., min_length=64, max_length=64)
 
 
@@ -1876,7 +1946,8 @@ async def import_commit(
     operation_key = f"preview:{body.preview_hash}"
     result = await _build_item_preview(
         session, company_id, user.id, role, settings, file_id=body.file_id,
-        sheet=body.sheet, upsert=body.upsert, mapping=body.mapping,
+        sheet=body.sheet, header_row=body.header_row, upsert=body.upsert, mapping=body.mapping,
+        decisions=body.decisions.model_dump(),
         idempotency_key=operation_key,
     )
     if result["preview_hash"] != body.preview_hash:
@@ -2149,8 +2220,12 @@ def _validate_rfid_epc(rfid_epc) -> None:
         raise HTTPException(status_code=422, detail=str(e))
 
 
-async def get_item_projection(session: AsyncSession, company_id, entity_id: str) -> Projection:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+async def get_item_projection(session: AsyncSession, company_id, entity_id: str, *, lock: bool = False) -> Projection:
+    """The item, or 404. ``lock`` takes it with lock_item, for a write that decides by its status."""
+    if lock:
+        row = await lock_item(session, company_id, entity_id)
+    else:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "item":
         raise HTTPException(status_code=404, detail="Item not found")
     return row
@@ -2413,10 +2488,10 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # Draft carve-out: the circulating-stock gates (cost + amount permissions)
     # attach when the item is committed to available, not at creation. While the
     # CURRENT status is draft, anyone with edit_inventory finishes authoring the
-    # item freely; the status is re-read here on every patch, so an edit landing
-    # after another user commits the item is gated like any available item.
-    _proj = await get_item_projection(session, company_id, entity_id)
-    _is_draft = str((_proj.state or {}).get("status") or "").lower() == "draft"
+    # item freely; the status is read under the item lock on every patch, so an edit
+    # landing after another user commits the item is gated like any available item.
+    _proj = await get_item_projection(session, company_id, entity_id, lock=True)
+    _is_draft = _status_of(_proj) == "draft"
     # Cost fields are gated by set_inventory_prices, not by the schema role floor:
     # a granted operator edits cost, an ungranted manager still cannot.
     restricted -= COST_ITEM_KEYS
@@ -2631,8 +2706,7 @@ class BulkDeleteBody(BaseModel):
 
 @router.post("/bulk/status")
 async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await lock_existing_items(session, company_id, payload.entity_ids)
     # Validated per item BEFORE any event is emitted: one blocked item rejects the
     # whole bulk with the reason, nothing is half-applied (the session never commits).
     for entity_id in payload.entity_ids:
@@ -2670,8 +2744,7 @@ class RevertToDraftBody(BaseModel):
 @router.post("/bulk/make-available")
 async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Commit one or more drafts into stock. Same authority as authoring the draft (edit_inventory) - no extra permission."""
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await lock_existing_items(session, company_id, payload.entity_ids)
     for entity_id in payload.entity_ids:
         await assert_make_available_allowed(session, company_id, entity_id)
     event_ids = []
@@ -2697,8 +2770,7 @@ async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get
 @router.post("/bulk/revert-to-draft")
 async def bulk_revert_to_draft(payload: RevertToDraftBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     """assert_status_change_allowed does the real gating (revert_items_to_draft + clean history)."""
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await lock_existing_items(session, company_id, payload.entity_ids)
     for entity_id in payload.entity_ids:
         await assert_status_change_allowed(session, company_id, entity_id, "draft", role, settings)
     event_ids = []
@@ -2730,8 +2802,7 @@ class BulkShopifySyncBody(BaseModel):
 async def bulk_shopify_sync(payload: BulkShopifySyncBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Opt the selected items into (or out of) outbound Shopify sync by emitting
     shop.sync.enabled/disabled, which sets is_sync_to_shopify on each item's projection."""
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await lock_existing_items(session, company_id, payload.entity_ids)
     event_type = "shop.sync.enabled" if payload.enable else "shop.sync.disabled"
     event_ids = []
     for entity_id in payload.entity_ids:
@@ -2777,8 +2848,7 @@ async def _build_transfer_data(session, company_id, entity_id: str, to_location_
 
 @router.post("/bulk/transfer")
 async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await lock_existing_items(session, company_id, payload.entity_ids)
     from celerp.models.company import Location
     loc_rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
     loc_map = {str(r.id): r.name for r in loc_rows}
@@ -2804,23 +2874,26 @@ async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_curren
 
 @router.post("/bulk/delete")
 async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await lock_existing_items(session, company_id, payload.entity_ids)
     import sqlalchemy as _sa
     from celerp.models.projections import Projection as _Proj
     from celerp.models.ledger import LedgerEntry as _LE
     # Hard delete: remove projection rows and all ledger events for these items.
-    # This is the correct behaviour for a user-initiated "Delete" action —
+    # This is the correct behaviour for a user-initiated "Delete" action -
     # the item should vanish from the catalog entirely (hard delete, no event trail).
+    # Every ID was locked and checked as an item above, and both deletes stay on item
+    # rows, so no other record's projection or history can go with them.
     await session.execute(
         _sa.delete(_Proj).where(
             _Proj.company_id == company_id,
+            _Proj.entity_type == "item",
             _Proj.entity_id.in_(payload.entity_ids),
         )
     )
     await session.execute(
         _sa.delete(_LE).where(
             _LE.company_id == company_id,
+            _LE.entity_type == "item",
             _LE.entity_id.in_(payload.entity_ids),
         )
     )
@@ -2834,8 +2907,7 @@ class BulkExpireBody(BaseModel):
 
 @router.post("/bulk/expire")
 async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await lock_existing_items(session, company_id, payload.entity_ids)
     for eid in payload.entity_ids:
         await assert_not_draft(session, company_id, eid, "expire")
     for eid in payload.entity_ids:
@@ -4253,8 +4325,8 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
     # (edit_inventory) authors its cost while it is still a draft - the same carve-out
     # patch_item applies, so the pricing tab's Cost card works for the person entering
     # the item. Sell prices stay gated, and the gate re-arms once the item is available.
-    _proj = await get_item_projection(session, company_id, entity_id)
-    _is_draft = str((_proj.state or {}).get("status") or "").lower() == "draft"
+    _proj = await get_item_projection(session, company_id, entity_id, lock=True)
+    _is_draft = _status_of(_proj) == "draft"
     if not (is_cost_price_type(payload.price_type) and draft_cost_carveout(_is_draft, role, settings)):
         reject_price_change({payload.price_type}, role, settings)
     event = dict(
@@ -4406,6 +4478,7 @@ async def list_import_batches(
             "filename": b.filename,
             "row_count": b.row_count,
             "status": b.status,
+            "reversible": b.reversible,
             "imported_at": b.imported_at.isoformat(),
             "undone_at": b.undone_at.isoformat() if b.undone_at else None,
         }
@@ -4422,72 +4495,61 @@ async def undo_import_batch(
     __: None = require_permission("edit_inventory"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Undo an import batch only when none of its created items changed later."""
+    """Undo an import: remove the items it created, in one step. Refused, with nothing
+    changed, when the import did more than create those items (it is not reversible),
+    or an item was changed or used since."""
     from datetime import datetime, timezone as _tz
-
-    from sqlalchemy import delete as _delete
-    from sqlalchemy import select as _select
 
     from celerp_inventory.models_import_batch import ImportBatch
     from celerp.models.ledger import LedgerEntry
-    from celerp.models.projections import Projection
 
     try:
         batch_uuid = uuid.UUID(batch_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Import batch not found")
-    batch = await session.get(ImportBatch, batch_uuid)
+    # The company lock serialises this with any chunk still adding to the batch.
+    await lock_company(session, company_id)
+    batch = (await session.execute(
+        select(ImportBatch).where(ImportBatch.id == batch_uuid).with_for_update()
+        .execution_options(populate_existing=True))).scalar_one_or_none()
     if batch is None or batch.company_id != company_id:
         raise HTTPException(status_code=404, detail="Import batch not found")
     if batch.status == "undone":
         raise HTTPException(status_code=409, detail="Batch already undone")
+    if not batch.reversible:
+        raise HTTPException(status_code=409, detail={
+            "code": "import_not_reversible",
+            "message": (
+                "This import cannot be undone because it did more than add new items: it changed existing "
+                "records, added locations or category fields, cleared the sample items, or sent changes to a "
+                "connected store."
+            ),
+        })
 
     entity_ids = batch.entity_ids or []
+    rows = await lock_projections(session, company_id, entity_ids)
 
-    # Check for modified-since: any ledger event after the import that isn't item.created
-    modified: list[str] = []
-    for eid in entity_ids:
-        extra = (await session.execute(
-            _select(LedgerEntry.entity_id)
-            .where(
-                LedgerEntry.company_id == company_id,
-                LedgerEntry.entity_id == eid,
-                LedgerEntry.event_type != "item.created",
-                LedgerEntry.ts > batch.imported_at,
-            )
-            .limit(1)
-        )).scalar_one_or_none()
-        if extra:
-            modified.append(eid)
-
+    # Only what the import itself wrote may be on the items: their creation.
+    created_by_import = set(batch.idempotency_keys or [])
+    modified = {eid for eid, row in rows.items() if row.entity_type != "item"}
+    for eid, event_type, key in (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.idempotency_key)
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(entity_ids)))).all():
+        if event_type == "item.created" and key in created_by_import:
+            continue
+        modified.add(eid)
+    modified |= await mentioned_elsewhere(session, company_id, {e: [e] for e in entity_ids})
     if modified:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "import_items_modified",
-                "message": "This import cannot be undone because imported items were modified later.",
-                "entity_ids": modified,
+                "message": "This import cannot be undone because imported items were changed or used later.",
+                "entity_ids": sorted(modified),
             },
         )
 
-    # Delete projections for all entities in this batch
-    if entity_ids:
-        await session.execute(
-            _delete(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_id.in_(entity_ids),
-            )
-        )
-        # Purge ledger entries so re-import works cleanly
-        ikeys = batch.idempotency_keys or []
-        if ikeys:
-            await session.execute(
-                _delete(LedgerEntry).where(
-                    LedgerEntry.company_id == company_id,
-                    LedgerEntry.idempotency_key.in_(ikeys),
-                )
-            )
-
+    await erase_items(session, company_id, entity_ids)
     batch.status = "undone"
     # Release the operation so the same source can be imported again as a new entry.
     batch.operation_key = None
@@ -4498,7 +4560,6 @@ async def undo_import_batch(
     return {
         "ok": True,
         "removed": len(entity_ids),
-        "modified_items": modified,
     }
 
 

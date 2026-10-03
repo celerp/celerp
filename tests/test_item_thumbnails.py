@@ -95,7 +95,7 @@ async def test_imported_attachment_id_cannot_place_a_thumbnail_elsewhere(tmp_pat
     (company_dir / "original.png").write_bytes(_png(64, 64))
     attachment = {"id": "..\\..\\escaped", "mime": "image/png",
                   "url": "/static/attachments/co-1/original.png"}
-    assert await att_svc.get_or_create_thumbnail("co-1", attachment) is None
+    assert await att_svc.get_or_create_thumbnail(None, "co-1", attachment) is None
     assert sorted(p.name for p in tmp_path.rglob("*") if p.is_file()) == ["original.png"]
 
 

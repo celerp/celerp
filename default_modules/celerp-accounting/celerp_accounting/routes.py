@@ -25,6 +25,7 @@ from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, rea
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting import import_service
 from celerp_accounting.import_service import AccImportRecord
+from celerp_accounting.ledger_accounts import check_account_change, require_money_account, require_open_account
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
@@ -539,16 +540,18 @@ async def patch_account(
 ) -> dict:
     acc = (
         await session.execute(
-            select(Account).where(Account.company_id == company_id, Account.code == code)
+            select(Account).where(Account.company_id == company_id, Account.code == code).with_for_update()
         )
     ).scalar_one_or_none()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
+    account_type = _checked_account_type(payload.account_type) if payload.account_type is not None else None
+    await check_account_change(session, company_id, acc, account_type=account_type, is_active=payload.is_active)
 
     if payload.name is not None:
         acc.name = _checked_account_name(payload.name)
-    if payload.account_type is not None:
-        acc.account_type = _checked_account_type(payload.account_type)
+    if account_type is not None:
+        acc.account_type = account_type
     if payload.parent_code is not None:
         acc.parent_code = _checked_parent_code(payload.parent_code)
     if payload.is_active is not None:
@@ -650,6 +653,9 @@ async def batch_import_accounting(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
+    # Hold the company lock so two imports naming one entry cannot both see it as new,
+    # and judge the caller's authority as it stands once nothing can change it.
+    await locked_authority(session, company_id, user.id, ("manage_accounting", "import_export_data"))
     outcome = await import_service.import_journal_records(session, company_id, user.id, body.records)
     await session.commit()
     return BatchImportResult(**outcome.route_counts())
@@ -939,6 +945,14 @@ def _id_chunks(ids: list[str], size: int = 10_000):
         yield ids[i:i + size]
 
 
+def _je_memo(memo: str, ref: dict | None) -> str:
+    """A journal memo as people read it: a system memo names its document by Celerp's
+    internal id, which is shown as the document's number. The stored memo is unchanged."""
+    for entity_id, number in ((ref or {}).get("numbers") or {}).items():
+        memo = memo.replace(entity_id, number)
+    return memo
+
+
 async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: list[str]) -> dict[str, dict]:
     """Source-doc display info per journal entry: {je_id: {"doc_id", "doc_ref", "fx"}}.
 
@@ -1004,7 +1018,7 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         currency = state.get("currency")
         rate = state.get("conversion_rate")
         payment_index = meta.get("payment_index")
-        if isinstance(payment_index, int) and meta.get("trigger") in ("doc.payment.received", "doc.payment.voided", "doc.payment.refunded"):
+        if isinstance(payment_index, int) and meta.get("trigger") in ("doc.payment.received", "doc.payment.voided", "doc.payment.refunded", "doc.payment.refund_reversed"):
             payments = state.get("payments", [])
             # Payments are identified by their index FIELD (stable since
             # deletions tombstone in place). Projections compacted before that
@@ -1029,9 +1043,18 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         contact_id = (party_state.get("contact_id") or party_state.get("customer_id")
                       or party_state.get("supplier_id"))
         doc_type = party_state.get("doc_type") or party_state.get("type") or ""
+        numbers = {
+            entity_id: number
+            for entity_id, number in (
+                (doc_id, state.get("ref_id") or state.get("doc_number")),
+                (meta.get("cn_id"), party_state.get("ref_id") or party_state.get("doc_number")),
+            )
+            if entity_id and number
+        }
         refs[je_id] = {
             "doc_id": doc_id,
             "doc_ref": state.get("ref_id") or state.get("doc_number") or doc_id,
+            "numbers": numbers,
             "fx": fx,
             "contact_id": contact_id,
             "doc_type": canonical_doc_type(doc_type),
@@ -1191,7 +1214,7 @@ async def _journal_payload(
         out = {
             "je_id": je_id,
             "ts": ts,
-            "memo": state.get("memo", ""),
+            "memo": _je_memo(state.get("memo", ""), ref),
             "status": state.get("status"),
             "je_type": state.get("je_type"),
             "void_reason": state.get("void_reason"),
@@ -1509,11 +1532,7 @@ async def create_manual_journal_entry(
     total_credit = Decimal(0)
     entries: list[dict] = []
     for index, line in enumerate(payload.entries):
-        acc = account_map.get(line.account)
-        if not acc:
-            raise HTTPException(status_code=422, detail=f"Unknown account {line.account}.")
-        if not acc.is_active:
-            raise HTTPException(status_code=422, detail=f"Account {line.account} is inactive.")
+        acc = require_open_account(account_map.get(line.account), line.account)
         children = children_of.get(line.account)
         if children:
             # Parent accounts are grouping rollups (the balance sheet sums their
@@ -1842,7 +1861,7 @@ async def account_ledger(
             lines.append({
                 "date": ts,
                 "je_id": je_id,
-                "memo": state.get("memo", ""),
+                "memo": _je_memo(state.get("memo", ""), ref),
                 "doc_id": ref.get("doc_id"),
                 "doc_ref": ref.get("doc_ref"),
                 "contact_id": line_contact,
@@ -2016,6 +2035,7 @@ async def general_ledger(
             for line in rows_for_code:
                 ref = detail_refs.get(line["je_id"]) or {}
                 line["source_ref"] = ref.get("doc_ref")
+                line["memo"] = _je_memo(line["memo"], ref)
 
     base = await _base_currency(session, company_id)
     rows_out = []
@@ -2573,6 +2593,8 @@ async def patch_bank_account(
         if normed not in ISO_4217_CURRENCIES:
             raise HTTPException(status_code=422, detail=f"Invalid currency '{payload.currency}'. Must be a valid ISO 4217 code.")
         b.currency = normed
+    if payload.is_active and not b.is_active:
+        await require_money_account(session, company_id, b.chart_account_code)
     if payload.is_active is not None:
         b.is_active = payload.is_active
 
@@ -2807,6 +2829,9 @@ async def _je_entries_for_account(
                     "credit": float(amounts[1]),
                     "amount": float(amounts[0] - amounts[1]),
                 })
+    refs = await _je_doc_refs(session, company_id, sorted({r["je_id"] for r in result}))
+    for r in result:
+        r["memo"] = _je_memo(r["memo"], refs.get(r["je_id"]))
     result.sort(key=lambda x: x["ts"])
     return result
 

@@ -22,6 +22,8 @@ import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from celerp.services import import_stage
 from httpx import ASGITransport, AsyncClient
 
 from test_onboarding_import_invariants import (  # noqa: F401  (fixtures)
@@ -39,7 +41,6 @@ from test_onboarding_import_invariants import (  # noqa: F401  (fixtures)
     perm,
     stage_dir,
 )
-from ui.routes import csv_import as ci
 
 _PRICE_LISTS = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
 _CURRENCY_CODES = {"price_currency_mismatch", "price_currency_ambiguous"}
@@ -112,21 +113,24 @@ async def _file_commit(client, perm, file_id: str, mapping: dict[str, str], prev
 
 
 async def _browser_mapped(csv_text: str, mapping: dict[str, str], currency: str):
-    """Post a column mapping to the browser importer; the next step is replaced by a recorder."""
-    from fasthtml.common import Div
-
+    """Post a column mapping to the browser importer; the draft it saves is recorded, not stored."""
     from ui.app import app as ui_app
-    ref = ci._write_stage(_COMPANY_A, csv_text)
+    ref = import_stage.write_stage(_COMPANY_A, csv_text)
     company = {"id": _COMPANY_A, "currency": currency, "current_role": "owner", "settings": {}}
-    check = AsyncMock(return_value=Div("mapped rows checked"))
+    check = AsyncMock(return_value="recorded-draft")
     with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
          patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=_PRICE_LISTS)), \
          patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
-         patch("ui.routes.inventory._item_import_check", new=check):
+         patch("ui.routes.inventory.stash_import_csv", new=check):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
             r = await c.post("/inventory/import/mapped", data={"csv_ref": ref, **_mapping_form(mapping)}, cookies=_owner_cookies())
-    assert r.status_code == 200, r.text
+    assert r.status_code == (303 if check.await_count else 200), r.text
     return r, check
+
+
+def _drafted_rows(check: AsyncMock) -> list[dict]:
+    """The mapped rows the browser importer saved as its draft."""
+    return list(csv.DictReader(io.StringIO(check.await_args.args[1])))
 
 
 def _csv_text(header: list[str], rows: list[list[str]]) -> str:
@@ -248,7 +252,7 @@ class TestPriceBasisInvariant:
 
         _page, check = await _browser_mapped(_csv_text(cols, rows), mapping, "USD")
         check.assert_awaited_once()
-        assert check.await_args.args[2][0]["retail_price_basis"] == "carat"
+        assert _drafted_rows(check)[0]["retail_price_basis"] == "carat"
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +345,7 @@ class TestWeightHeaderInvariant:
 
         _page, check = await _browser_mapped(_csv_text(cols, [list(source.values())]), mapping, "USD")
         check.assert_awaited_once()
-        browser = check.await_args.args[2][0]
+        browser = _drafted_rows(check)[0]
         assert {k: browser.get(k) for k in expected} == expected
 
     @pytest.mark.asyncio
@@ -377,7 +381,7 @@ class TestWeightHeaderInvariant:
 
         _page, check = await _browser_mapped(_csv_text(cols, [list(source.values())]), mapping, "USD")
         check.assert_awaited_once()
-        assert not check.await_args.args[2][0].get(unit_key)
+        assert not _drafted_rows(check)[0].get(unit_key)
 
 
 # ---------------------------------------------------------------------------

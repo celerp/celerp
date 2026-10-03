@@ -285,6 +285,17 @@ async def lifespan(_app: FastAPI):
                 logging.getLogger(__name__).debug(
                     "Demoted-module notification skipped (non-fatal)", exc_info=True)
 
+            # A module table its manifest does not place in or out of a company backup
+            # blocks the backups of companies holding its rows; say so in the bell.
+            try:
+                from celerp.services.company_backup import notify_undeclared_module_tables
+                async with _LifecycleSession() as _usess:
+                    await notify_undeclared_module_tables(_usess)
+                    await _usess.commit()
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Company backup declaration check skipped (non-fatal)", exc_info=True)
+
     if update_verify:
         await _verify_runtime_dependencies()
         yield
@@ -314,14 +325,27 @@ async def lifespan(_app: FastAPI):
             "stale until rebuilt via doctor or /ledger/rebuild"
         )
 
-    # Attachment files of a company restore that stopped before it committed are removed,
-    # so stored files and restored companies agree after a crash. Non-fatal: a later boot
-    # or the next restore retries.
+    # Expired backup uploads and downloads a stopped process left behind are removed, and
+    # so are the attachment files of a company restore that stopped before it committed,
+    # so stored files and restored companies agree after a crash. Each is non-fatal and
+    # independent of the other: a later boot or the next restore retries.
+    try:
+        from celerp.services.company_backup_files import sweep_transient_files
+        await asyncio.to_thread(sweep_transient_files)
+    except Exception:
+        logging.getLogger(__name__).exception("Removing leftover backup files failed (non-fatal)")
     try:
         from celerp.services.company_backup import reconcile_landings
         await reconcile_landings()
     except Exception:
-        logging.getLogger(__name__).exception("Reconciling unfinished company restores failed (non-fatal)")
+        logging.getLogger(__name__).exception("Cleaning up after unfinished company restores failed (non-fatal)")
+
+    # In the background, and again every few minutes: a System Recovery restore Celerp
+    # Cloud has not confirmed is reported, and a company reset that stopped after Cloud
+    # began closing the company's online payments is settled (a deleted company's
+    # payments close for good, a kept one's reopen). Until then they stay closed.
+    from celerp.services.payments import reconcile_payments_loop
+    payments_reconcile_task = asyncio.create_task(reconcile_payments_loop())
 
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links
@@ -449,17 +473,13 @@ async def lifespan(_app: FastAPI):
     from celerp.notifications.sse import shutdown_all as _sse_shutdown
     _sse_shutdown()
 
-    # Stop background tasks
-    cleanup_task.cancel()
-    jti_cleanup_task.cancel()
-    connector_sched_task.cancel()
-    outbound_connector_task.cancel()
-    reorder_alert_task.cancel()
-    update_task.cancel()
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
+    # Stop background tasks and wait for each to finish its own cleanup (closing its
+    # database session), so none is left part way through when the app is down.
+    background = (cleanup_task, jti_cleanup_task, connector_sched_task, outbound_connector_task,
+                  reorder_alert_task, update_task, payments_reconcile_task)
+    for task in background:
+        task.cancel()
+    await asyncio.gather(*background, return_exceptions=True)
 
     # Stop backup scheduler
     try:

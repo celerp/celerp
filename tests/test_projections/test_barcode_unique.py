@@ -23,6 +23,7 @@ from celerp.inventory_codes import BarcodeConflictError, RfidEpcConflictError
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp_inventory.services import _update_from_connector
 
 
 def _item_kwargs(company_id, entity_id, sku, barcode=None):
@@ -249,6 +250,7 @@ async def test_connector_records_duplicate_barcodes_and_update_heals_lookup(_db_
             outcome = await connector_upsert(
                 s, company_id=company_id, entity_type="item", event_type="item.created",
                 idem_key=idem_key, data={"sku": sku, "name": sku, "quantity": 1, "barcode": barcode},
+                update=lambda entity_id, data, key: _update_from_connector(s, company_id, entity_id, data, key),
             )
             await s.commit()
         return outcome

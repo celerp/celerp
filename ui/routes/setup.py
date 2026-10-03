@@ -20,7 +20,8 @@ import json
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import auth_shell, flash, page_title
+from ui.components.shell import auth_shell, client_scripts, flash, page_title
+from ui.components.table import searchable_select
 from celerp.services.currencies import CURRENCIES, CURRENCY_CODES
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
@@ -70,8 +71,10 @@ def setup_routes(app):
             company = await api.get_company(token)
         except APIError:
             company = {}
+        lang = get_lang(request)
         return auth_shell(
-            _company_details_form(company, lang=get_lang(request)),
+            *client_scripts(lang),
+            _company_details_form(company, lang=lang),
             title=page_title("page.company_setup"),
         )
 
@@ -98,6 +101,7 @@ def setup_routes(app):
 
         def _rerender(error: str):
             return auth_shell(
+                *client_scripts(lang),
                 _company_details_form(submitted, error=error, lang=lang),
                 title=page_title("page.company_setup"),
             )
@@ -261,7 +265,8 @@ def setup_routes(app):
     @app.get("/setup/new-company")
     async def new_company_page(request: Request):
         """Entry point for adding a second (or nth) company workspace: start
-        fresh, move a company in from another system, or restore a company backup."""
+        fresh, move a company in from another system, restore a company backup, or
+        try the sample company."""
         token = request.cookies.get(COOKIE_NAME)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -283,6 +288,7 @@ def setup_routes(app):
                     choice_card(t("setup.card_move"), t("setup.card_move_desc"), href=COMPANY.base),
                     choice_card(t("setup.card_restore_from_backup"), t("setup.card_restore_desc"),
                                 href=NEW_COMPANY.base),
+                    choice_card(t("setup.card_sample"), t("setup.card_sample_desc"), post_to=f"{COMPANY.base}/sample"),
                 ],
                 back,
             ),
@@ -411,16 +417,16 @@ def _company_details_form(company: dict, error: str | None = None, lang: str = "
                 cls="form-group",
             ),
             Div(
-                Label(t("label.business_type"), For="vertical", cls="form-label"),
-                Select(
-                    Option(t("setup.choose_business_type"), value="", disabled=True,
-                           selected=chosen not in offered),
-                    *[Option(label, value=val, selected=(val == chosen)) for val, label in options],
-                    id="vertical", name="vertical", required=True, cls="form-input",
-                ),
+                Label(t("label.business_type"), cls="form-label"),
+                # Searchable: the catalog holds more than ten types (GDR 2i). An empty
+                # choice is refused by the server with a message, never by the browser.
+                searchable_select("vertical", options, value=chosen if chosen in offered else "",
+                                  placeholder=t("setup.choose_business_type"),
+                                  aria_label=t("label.business_type")),
                 cls="form-group",
             ),
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full"),
+            P(A(t("btn.back"), href="/setup/new-company", cls="auth-link"), cls="auth-alt-action"),
             method="post", action="/setup/company", cls="auth-form",
         ),
         cls="auth-card auth-card--wide",

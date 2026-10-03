@@ -47,7 +47,7 @@ async def import_contact_records(
             outcome.add(rec.entity_id, "skipped")
             continue
         try:
-            await emit_event(
+            entry = await emit_event(
                 session,
                 company_id=company_id,
                 entity_id=rec.entity_id,
@@ -61,7 +61,8 @@ async def import_contact_records(
                 metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
             )
             existing.add(rec.idempotency_key)
-            outcome.add(rec.entity_id, "created")
+            # A concurrent import of the same file can write the row first.
+            outcome.add(rec.entity_id, "skipped" if getattr(entry, "was_deduped", False) else "created")
         except Exception as exc:
             outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {exc}")
     return outcome

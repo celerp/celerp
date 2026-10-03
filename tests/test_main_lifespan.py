@@ -142,3 +142,86 @@ async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
     fire.assert_not_awaited()
     associate.assert_not_awaited()
     adopt.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_every_background_task_to_stop(monkeypatch):
+    """A background loop stopped at shutdown finishes its own cleanup (closing its
+    database session) before the app is down, instead of being left mid-way when the
+    event loop ends, which kept its connection open inside a transaction."""
+    import asyncio
+
+    import celerp.main as main_mod
+    from celerp.config import settings
+    from celerp.services import payments
+
+    stopped: list[bool] = []
+
+    async def _loop_with_cleanup():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0.05)  # e.g. rolling back and closing its session
+            stopped.append(True)
+
+    monkeypatch.setattr(payments, "reconcile_payments_loop", _loop_with_cleanup)
+    monkeypatch.setattr("celerp.gateway.has_active_share", AsyncMock(return_value=False))
+    saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
+    settings.gateway_token = ""
+    settings.celerp_public_url = None
+    try:
+        with _mock_db():
+            async with main_mod.lifespan(MagicMock()):
+                await asyncio.sleep(0)
+    finally:
+        settings.gateway_token = saved_token
+        settings.celerp_public_url = saved_public
+
+    assert stopped == [True]
+
+
+async def _boot_with(monkeypatch, *, sweep, reconcile) -> bool:
+    import celerp.main as main_mod
+    from celerp.config import settings
+    from celerp.services import company_backup, company_backup_files
+
+    monkeypatch.setattr(company_backup_files, "sweep_transient_files", sweep)
+    monkeypatch.setattr(company_backup, "reconcile_landings", reconcile)
+    monkeypatch.setattr("celerp.gateway.has_active_share", AsyncMock(return_value=False))
+    saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
+    settings.gateway_token = ""
+    settings.celerp_public_url = None
+    entered = False
+    try:
+        with _mock_db():
+            async with main_mod.lifespan(MagicMock()):
+                entered = True
+    finally:
+        settings.gateway_token = saved_token
+        settings.celerp_public_url = saved_public
+    return entered
+
+
+@pytest.mark.asyncio
+async def test_a_failed_backup_file_sweep_still_cleans_up_unfinished_restores(monkeypatch):
+    """The two startup clean-ups are independent: the restore clean-up still runs when the
+    sweep of leftover backup files fails, and neither stops boot."""
+    swept: list[bool] = []
+
+    def _sweep():
+        swept.append(True)
+        raise OSError("backup folder unreadable")
+
+    reconcile = AsyncMock()
+    assert await _boot_with(monkeypatch, sweep=_sweep, reconcile=reconcile)
+    assert swept == [True]
+    reconcile.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_restore_clean_up_does_not_stop_boot(monkeypatch):
+    swept: list[bool] = []
+    reconcile = AsyncMock(side_effect=RuntimeError("database unavailable"))
+    assert await _boot_with(monkeypatch, sweep=lambda: swept.append(True), reconcile=reconcile)
+    assert swept == [True]
+    reconcile.assert_awaited_once()

@@ -13,12 +13,97 @@ from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
-from celerp.services.document_lines import assert_document_item_uniqueness
+from celerp.services.document_lines import (
+    assert_document_item_uniqueness,
+    assert_new_references_eligible,
+    line_id_counts,
+    linked_items,
+)
 from celerp.services.business_time import business_timezone
 
 
 def apply_event(state: dict, event: LedgerEntry) -> dict:
     return ProjectionEngine._apply(state, event.event_type, event.data)
+
+
+STRIPE_OWNED_PAYMENT = (
+    "This payment was received through Stripe, so it can only be refunded or reversed in Stripe."
+)
+STRIPE_RECEIPT_KEPT = (
+    "This payment was received through Stripe, so it was real and cannot be deleted. Void or refund it instead."
+)
+# Every event that takes a received payment back off a document.
+PAYMENT_REMOVAL_EVENTS = frozenset({"doc.payment.voided", "doc.payment.deleted", "doc.payment.refunded"})
+
+
+async def _stripe_receipts(session, company_id, entity_id) -> list[dict]:
+    """The ``doc.payment.received`` events the Stripe intake wrote on this document.
+    The ledger records which writer received each payment; the method is free text
+    that a connector or a person can also set to "stripe"."""
+    return list((await session.execute(
+        select(LedgerEntry.data).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id == entity_id,
+            LedgerEntry.event_type == "doc.payment.received",
+            LedgerEntry.source == "stripe",
+        )
+    )).scalars().all())
+
+
+async def stripe_origin_indexes(session, company_id, entity_id) -> set[int]:
+    """Indexes of the payments on this document received through Stripe, managed or
+    not, linked to Stripe or not. Stripe confirmed the money arrived, so each is real
+    for good and is never deleted."""
+    return {data["index"] for data in await _stripe_receipts(session, company_id, entity_id)
+            if data.get("index") is not None}
+
+
+async def stripe_managed_indexes(session, company_id, entity_id) -> set[int]:
+    """Indexes of the payments on this document that the Stripe intake recorded as
+    Stripe's to manage: paid on a page that carried the books it is recorded on
+    (``stripe_managed``). A payment taken before payment pages carried their books is
+    the company's to manage, like any other."""
+    return {data["index"] for data in await _stripe_receipts(session, company_id, entity_id)
+            if data.get("stripe_managed") is True and data.get("index") is not None}
+
+
+async def stripe_payment_indexes(session, company_id, entity_id, payments: list[dict]) -> set[int]:
+    """Indexes of the payments on this document that Stripe manages
+    (``stripe_managed_indexes``) and that are still linked to Stripe.
+
+    Stripe holds the money for these, so only Stripe can give it back. Once Stripe is
+    disconnected a payment is no longer linked to it (``stripe_released_at``) and is
+    refunded or voided here like any other.
+    """
+    if not any(p.get("method") == "stripe" for p in payments):
+        return set()
+    managed = await stripe_managed_indexes(session, company_id, entity_id)
+    return {p.get("index") for p in payments if p.get("method") == "stripe" and not p.get("stripe_released_at")
+            and p.get("index") in managed}
+
+
+async def refuse_stripe_payment_removal(session, company_id, entity_id, payments: list[dict],
+                                        index, event_type: str) -> None:
+    """422 when *event_type* would take the payment at *index* off the document while
+    Stripe holds its money (``stripe_payment_indexes``), or would delete a payment
+    received through Stripe (``stripe_origin_indexes``)."""
+    if index in await stripe_payment_indexes(session, company_id, entity_id, payments):
+        raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
+    if event_type == "doc.payment.deleted" and index in await stripe_origin_indexes(session, company_id, entity_id):
+        raise HTTPException(status_code=422, detail=STRIPE_RECEIPT_KEPT)
+
+
+async def _refuse_stripe_payment_removal(session, kwargs: dict) -> None:
+    """``refuse_stripe_payment_removal`` for every writer, except a refund Stripe
+    itself reports (``payments.receive_refund``)."""
+    if kwargs.get("event_type") == "doc.payment.refunded" and kwargs.get("source") == "stripe":
+        return
+    row = await session.get(Projection, (kwargs.get("company_id"), kwargs.get("entity_id")))
+    if row is None or row.entity_type != "doc":
+        return
+    await refuse_stripe_payment_removal(session, kwargs["company_id"], kwargs["entity_id"],
+                                        (row.state or {}).get("payments", []),
+                                        (kwargs.get("data") or {}).get("payment_index"), kwargs["event_type"])
 
 
 async def find_event_by_idempotency(session, company_id, idempotency_key: str | None) -> LedgerEntry | None:
@@ -148,7 +233,7 @@ async def _connector_entity_id(
 
 async def connector_upsert(
     session, *, company_id, entity_type: str, event_type: str, idem_key: str, data: dict,
-    external_identity: tuple[str, str] | None = None,
+    external_identity: tuple[str, str] | None = None, update=None,
 ) -> str:
     """Create-or-update a projection from a connector payload.
 
@@ -161,6 +246,10 @@ async def connector_upsert(
     ``idem_key`` (the stable platform id) is stored in projection state so a re-import
     resolves the SAME projection; the event's idempotency key varies with the content,
     so an unchanged re-import dedups (no-op) while a changed one updates.
+
+    ``update(entity_id, data, idempotency_key)``, when given, writes the change to an
+    existing projection as a genuine update and returns the outcome; without it the
+    existing projection receives ``event_type`` again.
     """
     import hashlib
     import json as _json
@@ -185,6 +274,8 @@ async def connector_upsert(
     )).first()
     if seen:
         return "noop"
+    if existing_id and update is not None:
+        return await update(existing_id, data, event_idem)
 
     await emit_event(
         session,
@@ -260,14 +351,20 @@ async def emit_event(
     # Enforce period lock
     await _check_period_lock(session, kwargs.get("company_id"), kwargs.get("data", {}))
 
-    # Enforce physical-item uniqueness on new OUTBOUND doc writes (invoice, memo).
-    # Extract the post-change line set by DATA SHAPE so every doc writer (create,
-    # patch, shared_import, update, conversion, import) is covered by one rule,
-    # keyed on entity_type == "doc" rather than an event list. The doc-type scope
-    # lives in assert_document_item_uniqueness beside the invariant; this boundary
-    # only resolves the doc_type to hand it. Rebuild/replay applies events via
-    # apply_event, never emit_event, so historical events are never re-validated.
-    if kwargs.get("entity_type") == "doc":
+    # Enforce the line rules on every document and List write. Extract the post-change
+    # line set by DATA SHAPE so every writer (create, patch, shared_import, update,
+    # conversion, import) is covered by one rule, keyed on the entity type rather than
+    # an event list:
+    #   - every line a write adds must link to a real item of this company (a stale form
+    #     or an import can carry the id of an item Undo removed); lines already on the
+    #     stored document are carried forward, so an old document stays editable;
+    #   - no line a write adds (counted per occurrence) may reference a draft item, and
+    #     none on an invoice or memo may reference an item reserved elsewhere;
+    #   - an OUTBOUND document (invoice, memo) never repeats a physical item; the
+    #     doc-type scope lives in assert_document_item_uniqueness beside the invariant.
+    # Rebuild/replay applies events via apply_event, never emit_event, so historical
+    # events are never re-validated.
+    if kwargs.get("entity_type") in ("doc", "list"):
         data = kwargs.get("data") or {}
         line_set = None
         if isinstance(data.get("line_items"), list):
@@ -277,21 +374,27 @@ async def emit_event(
             if isinstance(changed, dict):
                 line_set = changed.get("new")
         if line_set is not None:
-            # Prefer the event's own doc_type (present on doc.created and any update
-            # that carries it - zero query). Otherwise resolve it from the persisted
-            # projection, reading state["doc_type"] only when that projection is a doc
-            # (the Projection PK is (company_id, entity_id) with no type discriminator,
-            # so the entity_type check guards against a same-id non-doc projection).
-            doc_type = data.get("doc_type")
-            if doc_type is None:
-                proj = await session.get(
-                    Projection, (kwargs.get("company_id"), kwargs.get("entity_id"))
-                )
-                if proj is not None and proj.entity_type == "doc":
-                    doc_type = (proj.state or {}).get("doc_type")
+            # The stored record, read only when it is of the same type (the Projection PK
+            # is (company_id, entity_id) with no type discriminator).
+            proj = await session.get(
+                Projection, (kwargs.get("company_id"), kwargs.get("entity_id"))
+            )
+            same = proj is not None and proj.entity_type == kwargs.get("entity_type")
+            stored = (proj.state or {}) if same else {}
+            known = line_id_counts(stored.get("line_items"))
+            items = await linked_items(session, kwargs.get("company_id"), line_set, known=known)
+            # Prefer the event's own doc_type; otherwise the stored document's. A List has
+            # none, so the invoice/memo rules never apply to it.
+            doc_type = data.get("doc_type") or stored.get("doc_type")
+            assert_new_references_eligible(
+                items, line_set, known=known, doc_type=doc_type, entity_id=kwargs.get("entity_id"),
+            )
             await assert_document_item_uniqueness(
                 session, kwargs.get("company_id"), doc_type, line_set
             )
+
+    if kwargs.get("entity_type") == "doc" and kwargs.get("event_type") in PAYMENT_REMOVAL_EVENTS:
+        await _refuse_stripe_payment_removal(session, kwargs)
 
     if kwargs.get("event_type") in {"shop.sync.enabled", "shop.sync.disabled"}:
         from celerp.connectors.ownership import lock_connector_key
@@ -342,15 +445,20 @@ async def emit_event(
 
     entry = LedgerEntry(**kwargs)
 
+    # The event and its effect on the projection are one SAVEPOINT: a refused projection
+    # change (a change to an item that is gone) takes its ledger row with it, even when
+    # the caller catches the refusal and commits the rest of its work. A duplicate-
+    # idempotency collision likewise rolls back only this insert, NOT the caller's whole
+    # transaction. (A bare session.rollback() here would silently undo everything the
+    # caller already emitted, e.g. the doc.finalized event before its auto-JE.)
+    savepoint = await session.begin_nested()
     try:
-        # Insert inside a SAVEPOINT so a duplicate-idempotency collision only
-        # rolls back this insert — NOT the caller's whole transaction. (A bare
-        # session.rollback() here would silently undo everything the caller
-        # already emitted, e.g. the doc.finalized event before its auto-JE.)
-        async with session.begin_nested():
-            session.add(entry)
-            await session.flush()
-    except IntegrityError:
+        session.add(entry)
+        await session.flush()
+    except BaseException as exc:
+        await savepoint.rollback()
+        if not isinstance(exc, IntegrityError):
+            raise
         # Idempotency is per-company, so dedup within this company only.
         row = (
             await session.execute(
@@ -366,16 +474,22 @@ async def emit_event(
         # instead of inferring from entity ids.
         original.was_deduped = True
         return original
-
-    await ProjectionEngine.apply_event(session, entry)
-
-    # Durable connector work is recorded in the same transaction as the item event.
-    # No network I/O occurs here; the worker re-reads current state before sending.
-    if entry.entity_type == "item":
-        from celerp.connectors.outbound_queue import enqueue_item_change
-        await enqueue_item_change(
-            session, entry, previous_state=previous_item_state
-        )
+    try:
+        await ProjectionEngine.apply_event(session, entry)
+        # Durable connector work belongs to the same savepoint as the item event, so a
+        # caller that catches a failure here keeps neither. No network I/O occurs here;
+        # the worker re-reads current state before sending. ``outbound_queued`` tells
+        # the caller the event will reach a connected store.
+        if entry.entity_type == "item":
+            from celerp.connectors.outbound_queue import enqueue_item_change
+            entry.outbound_queued = await enqueue_item_change(
+                session, entry, previous_state=previous_item_state
+            )
+            await session.flush()
+    except BaseException:
+        await savepoint.rollback()
+        raise
+    await savepoint.commit()
 
     # Notify listeners (LISTEN/NOTIFY) that an event landed.
     try:

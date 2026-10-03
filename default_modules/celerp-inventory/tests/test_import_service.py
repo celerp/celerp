@@ -230,7 +230,7 @@ async def test_import_keeps_distinct_lots_with_same_sku(session):
     ]
     result = await import_items(
         session, company_id, user_id, "admin", {}, rows, upsert=False,
-        filename=None, idempotency_key="same-sku-batch",
+        filename=None, idempotency_key="same-sku-batch", decisions={"separate_lots": ["LOT-SKU"]},
     )
     assert result.created == 2
     items = await _item_projections(session, company_id)
@@ -265,7 +265,7 @@ async def test_upsert_repeated_sku_requires_barcode_to_choose_lot(session):
     ]
     seeded = await import_items(
         session, company_id, user_id, "admin", {}, seed_rows, upsert=False,
-        filename=None, idempotency_key="amb-seed",
+        filename=None, idempotency_key="amb-seed", decisions={"separate_lots": ["AMB"]},
     )
     assert seeded.created == 2
 
@@ -562,3 +562,407 @@ async def test_weight_unit_canonicalized(session):
     assert build.errors == []
     assert build.records[0]["data"]["weight_unit"] == "gram"
     assert build.records[1]["data"].get("weight_unit") is None
+
+
+# ---------------------------------------------------------------------------
+# The import plan: money, units, quantity, totals, shared SKUs, decisions
+# ---------------------------------------------------------------------------
+
+def _codes(plan) -> list[tuple[int, str]]:
+    return [(e["row"], e["code"]) for e in plan.errors]
+
+
+@pytest.mark.parametrize("cell, expected", [
+    ("65", (65.0, None)),
+    ("฿65.00", (65.0, None)),
+    ("฿ 85", (85.0, None)),
+    ("1,250 THB", (1250.0, None)),
+    ("12 USD", (None, "price_currency_mismatch")),
+    ("€12", (None, "price_currency_mismatch")),
+    ("$12", (None, "price_currency_ambiguous")),
+    ("1,25", (None, "invalid_value")),
+    ("฿12 THB", (None, "invalid_value")),
+    ("12 XYZ", (None, "invalid_value")),
+    ("", (None, None)),
+])
+def test_parse_import_money_reads_only_the_company_currency(cell, expected):
+    assert svc.parse_import_money(cell, "THB") == expected
+
+
+def test_parse_import_money_shared_symbol_needs_the_header_currency():
+    assert svc.parse_import_money("$12", "USD", stated_currency="USD") == (12.0, None)
+    assert svc.parse_import_money("$12", "USD", stated_currency="CAD") == (None, "price_currency_ambiguous")
+
+
+def test_import_unit_lookup_matches_names_in_any_case_and_aliases_only_configured_units():
+    lookup = svc.import_unit_lookup([{"name": "piece"}, {"name": "Box"}])
+    assert lookup["piece"] == "piece" and lookup["box"] == "Box"
+    assert lookup["ชิ้น"] == "piece"
+    assert "litre" not in lookup  # liter is not configured, so its alias means nothing
+
+
+@pytest.mark.asyncio
+async def test_plan_reads_currency_formatted_prices_in_the_company_currency(session):
+    company_id, _user_id, _ = await _seed(session, locations=[{"name": "Main"}], currency="THB")
+    rows = [
+        {"name": "A", "sku": "M-1", "sell_by": "piece", "quantity": "1", "cost_price": "฿1,250.00"},
+        {"name": "B", "sku": "M-2", "sell_by": "piece", "quantity": "1", "cost_price": "$5"},
+    ]
+    plan = await svc.build_import_plan(session, company_id, "admin", {}, rows, upsert=False)
+    assert plan.rows[0]["cost_price"] == "1250.0"
+    assert _codes(plan) == [(2, "price_currency_ambiguous")]
+
+
+@pytest.mark.asyncio
+async def test_unknown_unit_blocks_with_settings_guidance_and_creates_no_unit(session):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    rows = [
+        {"name": "Rope", "sku": "U-1", "sell_by": "fathom", "quantity": "1"},
+        {"name": "Ring", "sku": "U-2", "sell_by": "PIECE", "quantity": "1"},
+    ]
+    plan = await svc.build_import_plan(session, company_id, "admin", {}, rows, upsert=False)
+    assert _codes(plan) == [(1, "sell_by_invalid")]
+    assert "Settings > Units" in plan.errors[0]["message"]
+    with pytest.raises(svc.ImportRejected):
+        await import_items(session, company_id, user_id, "admin", {}, rows, upsert=False,
+                           filename=None, idempotency_key=None)
+    await session.rollback()
+    company = await session.get(Company, company_id)
+    assert "units" not in (company.settings or {})
+    assert await _item_projections(session, company_id) == []
+
+
+@pytest.mark.asyncio
+async def test_blank_mapped_quantity_blocks_but_an_unmapped_quantity_starts_at_zero(session):
+    company_id, _user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    blank = await svc.build_import_plan(
+        session, company_id, "admin", {}, [{"name": "A", "sku": "Q-1", "sell_by": "piece", "quantity": ""}], upsert=False,
+    )
+    assert _codes(blank) == [(1, "quantity_blank")]
+    absent = await svc.build_import_plan(
+        session, company_id, "admin", {}, [{"name": "A", "sku": "Q-1", "sell_by": "piece"}], upsert=False,
+    )
+    assert absent.errors == []
+
+
+_TOTAL_ROWS = [
+    {"name": "A", "sku": "T-1", "sell_by": "piece", "quantity": "2"},
+    {"name": "B", "sku": "T-2", "sell_by": "piece", "quantity": "3"},
+    {"name": "Total:", "sku": "", "sell_by": "piece", "quantity": "5"},
+]
+
+
+@pytest.mark.asyncio
+async def test_total_row_blocks_until_excluded_or_imported_on_purpose(session):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    plan = await svc.build_import_plan(session, company_id, "admin", {}, _TOTAL_ROWS, upsert=False)
+    assert plan.summary_rows == [3] and _codes(plan) == [(3, "summary_row")]
+
+    excluded = await svc.build_import_plan(session, company_id, "admin", {}, _TOTAL_ROWS, upsert=False,
+                                           decisions={"exclude": [3]})
+    assert excluded.errors == [] and excluded.counts == {"create": 2, "update": 0, "excluded": 1, "blocked": 0}
+
+    result = await import_items(session, company_id, user_id, "admin", {}, _TOTAL_ROWS, upsert=False,
+                                filename=None, idempotency_key=None, decisions={"import_summary": [3]})
+    assert result.created == 3
+
+
+@pytest.mark.asyncio
+async def test_an_item_named_total_with_a_sku_is_an_item(session):
+    company_id, _user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    rows = [*_TOTAL_ROWS[:2], {**_TOTAL_ROWS[2], "sku": "T-3"}]
+    plan = await svc.build_import_plan(session, company_id, "admin", {}, rows, upsert=False)
+    assert plan.summary_rows == [] and plan.errors == []
+
+
+_SECTIONED_ROWS = [
+    {"name": "A", "sku": "", "sell_by": "piece", "quantity": "2"},
+    {"name": "Subtotal", "sku": "", "sell_by": "piece", "quantity": "2"},
+    {"name": "B", "sku": "", "sell_by": "piece", "quantity": "3"},
+    {"name": "Total", "sku": "", "sell_by": "piece", "quantity": "5"},
+]
+
+
+@pytest.mark.asyncio
+async def test_a_subtotal_and_its_grand_total_each_block(session):
+    company_id, _user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    plan = await svc.build_import_plan(session, company_id, "admin", {}, _SECTIONED_ROWS, upsert=False)
+    assert plan.summary_rows == [2, 4]
+    assert _codes(plan) == [(2, "summary_row"), (4, "summary_row")]
+
+
+@pytest.mark.asyncio
+async def test_every_subtotal_of_several_sections_blocks(session):
+    company_id, _user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    rows = [
+        {"name": "A", "sku": "", "sell_by": "piece", "quantity": "1"},
+        {"name": "Sub total:", "sku": "", "sell_by": "piece", "quantity": "1"},
+        {"name": "B", "sku": "", "sell_by": "piece", "quantity": "4"},
+        {"name": "C", "sku": "", "sell_by": "piece", "quantity": "6"},
+        {"name": "SUBTOTAL", "sku": "", "sell_by": "piece", "quantity": "10"},
+        {"name": "D", "sku": "", "sell_by": "piece", "quantity": "7"},
+        {"name": "Sub-total", "sku": "", "sell_by": "piece", "quantity": "7"},
+        {"name": "Grand Total", "sku": "", "sell_by": "piece", "quantity": "18"},
+        {"name": "รวมทั้งสิ้น", "sku": "", "sell_by": "piece", "quantity": "99"},
+    ]
+    plan = await svc.build_import_plan(session, company_id, "admin", {}, rows, upsert=False)
+    assert plan.summary_rows == [2, 5, 7, 8, 9]
+
+
+@pytest.mark.asyncio
+async def test_a_total_label_blocks_whatever_its_numbers_say(session):
+    company_id, _user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    rows = [
+        {"name": "A", "sku": "", "sell_by": "piece", "quantity": "2"},
+        {"name": "Totals", "sku": "", "sell_by": "piece"},
+        {"name": "Sum", "sku": " ", "sell_by": "piece", "quantity": "41"},
+    ]
+    plan = await svc.build_import_plan(session, company_id, "admin", {}, rows, upsert=False)
+    assert plan.summary_rows == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_excluding_rows_around_a_total_leaves_the_total_blocked(session):
+    company_id, _user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    around = await svc.build_import_plan(session, company_id, "admin", {}, _SECTIONED_ROWS, upsert=False,
+                                         decisions={"exclude": [1, 3]})
+    assert around.summary_rows == [2, 4] and _codes(around) == [(2, "summary_row"), (4, "summary_row")]
+    one_out = await svc.build_import_plan(session, company_id, "admin", {}, _SECTIONED_ROWS, upsert=False,
+                                          decisions={"exclude": [2]})
+    assert one_out.summary_rows == [4] and _codes(one_out) == [(4, "summary_row")]
+    both_out = await svc.build_import_plan(session, company_id, "admin", {}, _SECTIONED_ROWS, upsert=False,
+                                           decisions={"exclude": [2, 4]})
+    assert both_out.errors == [] and both_out.counts["create"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_total_imports_as_an_item_only_when_chosen_row_by_row(session):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    with pytest.raises(svc.ImportRejected):
+        await import_items(session, company_id, user_id, "admin", {}, _SECTIONED_ROWS, upsert=False,
+                           filename=None, idempotency_key=None, decisions={"import_summary": [4]})
+    await session.rollback()
+    assert await _item_projections(session, company_id) == []
+    result = await import_items(session, company_id, user_id, "admin", {}, _SECTIONED_ROWS, upsert=False,
+                                filename=None, idempotency_key=None, decisions={"import_summary": [2, 4]})
+    assert result.created == 4
+
+
+@pytest.mark.asyncio
+async def test_shared_sku_needs_a_lots_decision_and_disagreeing_rows_block(session):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    lots = [
+        {"name": "Lot A", "sku": "D-1", "sell_by": "piece", "quantity": "1", "cost_price": "10"},
+        {"name": "Lot B", "sku": "D-1", "sell_by": "piece", "quantity": "2", "cost_price": "10"},
+    ]
+    plan = await svc.build_import_plan(session, company_id, "admin", {}, lots, upsert=False)
+    assert _codes(plan) == [(1, "duplicate_sku_lots"), (2, "duplicate_sku_lots")]
+    assert plan.duplicate_groups == [{"sku": "D-1", "rows": [1, 2], "quantity": 3.0, "conflict": False}]
+
+    conflict = [lots[0], {**lots[1], "cost_price": "12"}]
+    plan = await svc.build_import_plan(session, company_id, "admin", {}, conflict, upsert=False,
+                                       decisions={"separate_lots": ["D-1"]})
+    assert _codes(plan) == [(1, "duplicate_sku_conflict"), (2, "duplicate_sku_conflict")]
+
+    result = await import_items(session, company_id, user_id, "admin", {}, lots, upsert=False,
+                                filename=None, idempotency_key=None, decisions={"separate_lots": ["D-1"]})
+    assert result.created == 2
+
+
+@pytest.mark.asyncio
+async def test_two_rows_updating_one_item_block(session):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    await import_items(session, company_id, user_id, "admin", {},
+                       [{"name": "One", "sku": "UT-1", "sell_by": "piece", "quantity": "1"}],
+                       upsert=False, filename=None, idempotency_key=None)
+    rows = [{"name": "One", "sku": "UT-1", "sell_by": "piece", "quantity": "2"},
+            {"name": "One", "sku": "UT-1", "sell_by": "piece", "quantity": "3"}]
+    plan = await svc.build_import_plan(session, company_id, "admin", {}, rows, upsert=True,
+                                       decisions={"separate_lots": ["UT-1"]})
+    assert _codes(plan) == [(1, "duplicate_upsert_target"), (2, "duplicate_upsert_target")]
+
+
+@pytest.mark.asyncio
+async def test_decision_naming_no_row_blocks(session):
+    company_id, _user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    plan = await svc.build_import_plan(session, company_id, "admin", {}, _TOTAL_ROWS[:1], upsert=False,
+                                       decisions={"exclude": [4], "import_summary": ["x"]})
+    assert sorted(e["code"] for e in plan.errors) == ["decision_row_unknown", "decision_row_unknown"]
+    assert all(e["row"] == 0 for e in plan.errors)
+
+
+def test_decisions_are_part_of_the_import_identity():
+    rows = _TOTAL_ROWS
+    base = svc.import_operation_key("k", rows, False)
+    assert svc.import_operation_key("k", rows, False, {"exclude": [3]}) != base
+    assert (svc.import_operation_key("k", rows, False, {"exclude": ["3", 3], "separate_lots": [" A "]})
+            == svc.import_operation_key("k", rows, False, {"exclude": [3], "separate_lots": ["A"]}))
+
+
+@pytest.mark.asyncio
+async def test_excluding_a_row_changes_what_the_plan_writes(session):
+    company_id, _user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    a = await svc.build_import_plan(session, company_id, "admin", {}, _TOTAL_ROWS, upsert=False,
+                                    decisions={"exclude": [3]})
+    b = await svc.build_import_plan(session, company_id, "admin", {}, _TOTAL_ROWS, upsert=False,
+                                    decisions={"exclude": [2, 3]})
+    assert a.semantic_fingerprint != b.semantic_fingerprint
+
+
+@pytest.mark.asyncio
+async def test_import_reports_undo_only_for_a_pure_create_and_counts_a_repeat(session):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    rows = [{"name": "R", "sku": "RV-1", "sell_by": "piece", "quantity": "1"}]
+    first = await import_items(session, company_id, user_id, "admin", {}, rows, upsert=False,
+                               filename=None, idempotency_key="op-1")
+    assert (first.created, first.reversible, first.already_imported) == (1, True, 0)
+
+    # An exact repeat names the same Import History entry, which can still be undone.
+    again = await import_items(session, company_id, user_id, "admin", {}, rows, upsert=False,
+                               filename=None, idempotency_key="op-1")
+    assert (again.created, again.reversible, again.already_imported) == (0, True, 1)
+
+    update = await import_items(session, company_id, user_id, "admin", {}, [{**rows[0], "quantity": "4"}],
+                                upsert=True, filename=None, idempotency_key=None)
+    assert (update.updated, update.reversible) == (1, False)
+
+    new_place = await import_items(
+        session, company_id, user_id, "admin", {},
+        [{"name": "S", "sku": "RV-2", "sell_by": "piece", "quantity": "1", "location_name": "Annex"}],
+        upsert=False, filename=None, idempotency_key=None,
+    )
+    assert (new_place.created, new_place.reversible) == (1, False)
+
+
+# ---------------------------------------------------------------------------
+# Undo: an import that did anything besides adding its items cannot be undone
+# ---------------------------------------------------------------------------
+
+
+async def _woo_linked_item(session, company_id, sku: str) -> None:
+    """A connected store, and an item already linked to one of its products."""
+    from datetime import datetime, timezone
+
+    from celerp.models.connector_config import ConnectorConfig
+
+    now = datetime.now(timezone.utc)
+    session.add(ConnectorConfig(company_id=str(company_id), connector="woocommerce", direction="both"))
+    session.add(Projection(
+        company_id=company_id, entity_id=f"item:linked-{uuid.uuid4().hex[:8]}", entity_type="item",
+        version=1, created_at=now, updated_at=now,
+        state={"sku": sku, "name": "Linked", "quantity": 1, "status": "available", "sell_by": "piece",
+               "external_links": {"woocommerce": {"product_id": "17", "sync_enabled": True, "manage_stock": True}}},
+    ))
+    await session.commit()
+
+
+async def _sample_items(session, company_id, user_id) -> None:
+    from celerp.services.demo import demo_item_ids, seed_demo_items
+    await seed_demo_items(session, company_id, user_id)
+    await session.commit()
+    assert await demo_item_ids(session, company_id)
+
+
+async def _existing(session, company_id, user_id) -> None:
+    await import_items(session, company_id, user_id, "admin", {},
+                       [{"name": "Old", "sku": "SE-OLD", "sell_by": "piece", "quantity": "1"}],
+                       upsert=False, filename=None, idempotency_key=None)
+
+
+_NEW = {"name": "New", "sku": "SE-NEW", "sell_by": "piece", "quantity": "1"}
+
+# name -> (setup, rows, upsert)
+_SIDE_EFFECTS = {
+    "updates_an_existing_item": (_existing, [_NEW, {"name": "Old", "sku": "SE-OLD", "sell_by": "piece", "quantity": "5"}], True),
+    "adds_a_location": (None, [{**_NEW, "location_name": "Annex"}], False),
+    "adds_category_fields": (None, [{**_NEW, "category": "Rings", "ring_size": "7"}], False),
+    "clears_the_sample_items": (_sample_items, [_NEW], False),
+    "sends_stock_to_a_connected_store": (
+        lambda s, c, u: _woo_linked_item(s, c, "SE-NEW"), [_NEW], False),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effect", list(_SIDE_EFFECTS))
+async def test_an_import_with_a_side_effect_cannot_be_undone(session, effect):
+    from celerp_inventory import routes as inventory
+    from celerp_inventory.models_import_batch import ImportBatch
+    from fastapi import HTTPException
+
+    setup, rows, upsert = _SIDE_EFFECTS[effect]
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main", "is_default": True}])
+    if setup:
+        await setup(session, company_id, user_id)
+    result = await import_items(session, company_id, user_id, "admin", {}, rows, upsert=upsert,
+                                filename=None, idempotency_key=f"op-{effect}")
+    assert result.created == 1 and result.batch_id, result
+    assert result.reversible is False
+    batch = await session.get(ImportBatch, uuid.UUID(result.batch_id))
+    assert batch.reversible is False
+
+    items = sorted(p.entity_id for p in await _item_projections(session, company_id))
+    with pytest.raises(HTTPException) as refused:
+        await inventory.undo_import_batch(result.batch_id, company_id=company_id,
+                                          user=SimpleNamespace(id=user_id), session=session)
+    assert refused.value.status_code == 409
+    assert refused.value.detail["code"] == "import_not_reversible"
+    await session.rollback()
+    assert sorted(p.entity_id for p in await _item_projections(session, company_id)) == items
+    assert (await session.get(ImportBatch, uuid.UUID(result.batch_id))).status == "active"
+
+
+@pytest.mark.asyncio
+async def test_an_import_that_only_adds_items_is_undone_whole(session):
+    from celerp_inventory import routes as inventory
+    from celerp_inventory.models_import_batch import ImportBatch
+    from celerp.models.ledger import LedgerEntry
+
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main", "is_default": True}])
+    result = await import_items(session, company_id, user_id, "admin", {},
+                                [_NEW, {**_NEW, "name": "Second", "sku": "SE-2"}], upsert=False,
+                                filename=None, idempotency_key="op-pure")
+    assert (result.created, result.reversible) == (2, True)
+    assert (await session.get(ImportBatch, uuid.UUID(result.batch_id))).reversible is True
+
+    done = await inventory.undo_import_batch(result.batch_id, company_id=company_id,
+                                             user=SimpleNamespace(id=user_id), session=session)
+    assert done == {"ok": True, "removed": 2}
+    assert await _item_projections(session, company_id) == []
+    assert (await session.execute(select(LedgerEntry).where(LedgerEntry.company_id == company_id))).all() == []
+
+
+@pytest.mark.asyncio
+async def test_undo_refuses_an_item_changed_or_used_after_the_import(session):
+    """Proof from the ledger: any event on an imported item that the import did not
+    write, and any other record naming the item, keep the import in place."""
+    from fastapi import HTTPException
+
+    from celerp.events.engine import emit_event
+    from celerp_inventory import routes as inventory
+
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main", "is_default": True}])
+    changed = await import_items(session, company_id, user_id, "admin", {}, [_NEW], upsert=False,
+                                 filename=None, idempotency_key="op-changed")
+    used = await import_items(session, company_id, user_id, "admin", {},
+                              [{**_NEW, "name": "Used", "sku": "SE-USED"}], upsert=False,
+                              filename=None, idempotency_key="op-used")
+    assert changed.reversible and used.reversible
+    by_sku = {p.state["sku"]: p.entity_id for p in await _item_projections(session, company_id)}
+    await emit_event(session, company_id=company_id, entity_id=by_sku["SE-NEW"], entity_type="item",
+                     event_type="item.updated", data={"fields_changed": {"name": {"old": "New", "new": "Renamed"}}},
+                     actor_id=user_id, location_id=None, source="api", idempotency_key=uuid.uuid4().hex)
+    await emit_event(session, company_id=company_id, entity_id="doc:INV-1", entity_type="doc",
+                     event_type="doc.created",
+                     data={"doc_type": "invoice", "line_items": [{"item_id": by_sku["SE-USED"], "quantity": 1}]},
+                     actor_id=user_id, location_id=None, source="api", idempotency_key=uuid.uuid4().hex)
+    await session.commit()
+
+    for result, sku in ((changed, "SE-NEW"), (used, "SE-USED")):
+        with pytest.raises(HTTPException) as refused:
+            await inventory.undo_import_batch(result.batch_id, company_id=company_id,
+                                              user=SimpleNamespace(id=user_id), session=session)
+        await session.rollback()
+        assert refused.value.status_code == 409
+        assert refused.value.detail["code"] == "import_items_modified"
+        assert refused.value.detail["entity_ids"] == [by_sku[sku]]
+    assert {p.state["sku"] for p in await _item_projections(session, company_id)} == {"SE-NEW", "SE-USED"}

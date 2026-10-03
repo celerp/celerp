@@ -16,8 +16,8 @@ def _hub() -> str:
 
 def test_connect_option_links_to_the_cloud_claim_flow():
     out = _hub()
-    assert 'href="/settings/cloud"' in out
-    assert "Connect another system" in out
+    assert 'href="/settings/cloud?tab=website"' in out
+    assert "Connect an online store or accounting system" in out
     assert "Shopify" in out
 
 
@@ -27,6 +27,11 @@ def test_connect_option_is_not_featured_over_imports():
     assert out.index("/inventory/import") < out.index("/settings/cloud")
 
 
+def _connect_card() -> str:
+    from ui.routes.auth import _onboarding_view
+    return to_xml(_onboarding_view({"/settings/cloud"})).lower()
+
+
 def test_connect_option_is_not_described_as_moving_the_business():
-    out = _hub().lower()
+    out = _connect_card()
     assert "migrat" not in out and "move from another system" not in out

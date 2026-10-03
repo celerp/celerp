@@ -54,7 +54,7 @@ BUILTINS: dict[str, tuple[str, str | None, str]] = {
 # cost of the items sold.
 INVENTORY_BUILTINS: dict[str, tuple[str, str | None, str]] = {
     INVENTORY_SALES: ("revenue", None, "Inventory - sales"),
-    INVENTORY_PURCHASES: ("expense", None, "Inventory - cost"),
+    INVENTORY_PURCHASES: ("cogs", None, "Inventory - cost"),
 }
 ROOT_TYPES = {ASSETS: "asset", LIABILITIES: "liability", EQUITY: "equity", INCOME: "revenue", EXPENSES: "expense"}
 

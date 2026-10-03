@@ -1607,18 +1607,9 @@ async def delete_demo_items(session: AsyncSession, company_id: uuid.UUID, entity
     """Remove the given items completely: their projection and every ledger row.
 
     Runs inside the caller's transaction and does not commit."""
-    import sqlalchemy as sa
-    from celerp.models.ledger import LedgerEntry
-    from celerp.models.projections import Projection
+    from celerp.services.item_erasure import erase_items
 
-    if not entity_ids:
-        return
-    await session.execute(sa.delete(Projection).where(
-        Projection.company_id == company_id, Projection.entity_id.in_(entity_ids),
-    ))
-    await session.execute(sa.delete(LedgerEntry).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(entity_ids),
-    ))
+    await erase_items(session, company_id, entity_ids)
 
 
 async def _untouched_demo_items(session: AsyncSession, company_id: uuid.UUID, entity_ids: list[str]) -> list[str]:
@@ -1665,8 +1656,14 @@ async def delete_untouched_demo_items(session: AsyncSession, company_id: uuid.UU
     """Delete the demo items the user never edited or used; the rest stay as they are.
 
     Runs inside the caller's transaction and does not commit. Returns how many demo
-    items were deleted and how many were kept."""
+    items were deleted and how many were kept.
+
+    The items are locked before they are checked, so an edit either commits first and
+    the check sees it (the item is kept), or waits and finds the item gone."""
+    from celerp.services.company_lock import lock_projections
+
     demo_ids = await demo_item_ids(session, company_id)
+    await lock_projections(session, company_id, demo_ids)
     removable = await _untouched_demo_items(session, company_id, demo_ids) if demo_ids else []
     await delete_demo_items(session, company_id, removable)
     return len(removable), len(demo_ids) - len(removable)

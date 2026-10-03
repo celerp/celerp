@@ -959,7 +959,11 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
     ar_labels = json.dumps(list(buckets.keys())) if ar_has_data else "[]"
     ar_data = json.dumps([float(v) for v in buckets.values()]) if ar_has_data else "[]"
 
-    cats = valuation.get("category_counts", {})
+    cats = dict(valuation.get("category_counts", {}))
+    # Items with no category are still stock: chart them under their own bar.
+    uncategorized = int(valuation.get("total_scoped_count") or 0) - sum(int(v or 0) for v in cats.values())
+    if uncategorized > 0:
+        cats[t("label.uncategorized")] = uncategorized
     cat_has_data = any(int(v or 0) > 0 for v in cats.values())
     cat_labels = json.dumps(list(cats.keys())) if cat_has_data else "[]"
     cat_data = json.dumps([int(v) for v in cats.values()]) if cat_has_data else "[]"

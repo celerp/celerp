@@ -32,6 +32,46 @@ def upload_dir() -> Path:
     return path
 
 
+def save_upload(company_id: uuid.UUID, user_id: uuid.UUID, filename: str | None, content_type: str,
+                content: bytes) -> str:
+    """Keep an uploaded file for the assistant and return its file id.
+
+    The metadata naming the company is written before the content, so every stored body
+    carries its company and is deleted with it. A failed write leaves nothing behind."""
+    file_id = f"ai_up_{uuid.uuid4().hex}"
+    d = upload_dir()
+    bin_path, meta_path = d / f"{file_id}.bin", d / f"{file_id}.meta"
+    meta = {"filename": filename, "content_type": content_type, "size": len(content),
+            "company_id": str(company_id), "user_id": str(user_id)}
+    try:
+        meta_path.write_text(json.dumps(meta))
+        bin_path.write_bytes(content)
+    except BaseException:
+        bin_path.unlink(missing_ok=True)
+        meta_path.unlink(missing_ok=True)
+        raise
+    return file_id
+
+
+def delete_company_uploads(company_id) -> None:
+    """Delete every upload kept for ``company_id``; files already gone count as deleted.
+    Raises when a file cannot be deleted."""
+    d = settings.data_dir / "ai_uploads"
+    if not d.is_dir():
+        return
+    for meta_path in d.glob("ai_up_*.meta"):
+        try:
+            owner = json.loads(meta_path.read_text()).get("company_id")
+        except FileNotFoundError:
+            continue
+        except (ValueError, AttributeError):
+            continue  # not written by save_upload: no body was stored after it
+        if owner == str(company_id):
+            # The metadata goes last, so a retry after a failure still finds the upload.
+            meta_path.with_suffix(".bin").unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+
+
 def _file_paths_and_meta(
     file_id: str, company_id: uuid.UUID, user_id: uuid.UUID | None = None,
 ) -> tuple[Path, dict]:

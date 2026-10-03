@@ -579,6 +579,8 @@ class ReconciliationExpectation(BaseModel):
     currency: str | None = None
     expected: CIFDecimal
     tolerance: CIFTolerance
+    label: str = ""                           # display only: the source's own name for the record keyed
+    credit_normal: bool = False               # display only: a credit balance is this figure's normal side
 
 
 class ReconciliationExpectations(BaseModel):

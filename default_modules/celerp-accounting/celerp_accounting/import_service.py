@@ -21,6 +21,7 @@ from celerp.events.engine import emit_event
 from celerp.importers.results import ImportOutcome
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount
 
 JOURNAL_CREATED = "acc.journal_entry.created"
@@ -107,7 +108,7 @@ async def import_journal_records(
             entries = rec.data.get("entries") if isinstance(rec.data, dict) else None
             if isinstance(entries, list):
                 await check_line_contacts(session, company_id, [e for e in entries if isinstance(e, dict)])
-            await emit_event(
+            entry = await emit_event(
                 session,
                 company_id=company_id,
                 entity_id=rec.entity_id,
@@ -122,7 +123,8 @@ async def import_journal_records(
             )
             existing_keys.add(rec.idempotency_key)
             existing_entities.add(rec.entity_id)
-            outcome.add(rec.entity_id, "created")
+            # A concurrent import of the same file can write the row first.
+            outcome.add(rec.entity_id, "skipped" if getattr(entry, "was_deduped", False) else "created")
         except Exception as exc:
             outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {exc}")
     return outcome
@@ -189,11 +191,14 @@ async def add_bank_account(
     currency: str,
     opening_balance: float,
 ) -> BankAccount:
-    """A bank account and, when its chart code is new, its chart row under 1110."""
+    """A bank account and, when its chart code is new, its chart row under 1110. An
+    existing chart code must be an active asset account."""
     existing_acc = (await session.execute(
         select(Account.id).where(Account.company_id == company_id, Account.code == code)
     )).scalar_one_or_none()
-    if not existing_acc:
+    if existing_acc:
+        await require_money_account(session, company_id, code)
+    else:
         await create_chart_account(
             session, company_id, code=code, name=account_name, account_type="asset", parent_code="1110",
         )

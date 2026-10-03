@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
@@ -19,6 +20,20 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
 log = logging.getLogger(__name__)
+
+# The only events that may start an item: every other change needs the item to exist.
+_ITEM_BIRTHS = frozenset({"item.created", "item.snapshot"})
+
+
+_TYPE_LABELS = {"item": "Item", "doc": "Document", "list": "List", "contact": "Contact"}
+
+
+def _item_exists() -> HTTPException:
+    return HTTPException(status_code=409, detail="Item already exists")
+
+
+def _not_found(entity_type: str) -> HTTPException:
+    return HTTPException(status_code=404, detail=f"{_TYPE_LABELS.get(entity_type, 'Record')} not found")
 
 
 def _resolve_module_handler(dotted: str):
@@ -120,7 +135,39 @@ class ProjectionEngine:
 
     @staticmethod
     async def apply_event(session, entry: LedgerEntry) -> None:
+        """Apply a new event. A change to an item that is gone is refused: the item
+        was removed (an undone import, a deleted draft) after the change read it, and
+        writing the change would bring it back. A creation of an item that already
+        exists is refused too: an item is born once, and everything after is a change.
+        An event of one kind on a record of another kind (an item change on a document's
+        ID, an item creation over a contact's) is refused as not found: that ID holds no
+        record of the event's kind. Replay (rebuild) keeps applying such rows from older
+        ledgers unchanged, so a rebuild still reproduces the history it was given."""
         projection = await ProjectionEngine._locked_projection(session, entry)
+        if ProjectionEngine._changes_missing_item(entry, projection):
+            raise _not_found("item")
+        ProjectionEngine._refuse_other_kind(entry, projection)
+        if projection is not None and ProjectionEngine._is_item_birth(entry):
+            raise _item_exists()
+        await ProjectionEngine._write(session, entry, projection)
+
+    @staticmethod
+    def _refuse_other_kind(entry: LedgerEntry, projection: Projection | None) -> None:
+        if projection is not None and projection.entity_type != entry.entity_type:
+            raise _not_found(entry.entity_type)
+
+    @staticmethod
+    def _is_item_birth(entry: LedgerEntry) -> bool:
+        return entry.entity_type == "item" and entry.event_type in _ITEM_BIRTHS
+
+    @staticmethod
+    def _changes_missing_item(entry: LedgerEntry, projection: Projection | None) -> bool:
+        """A change, not a birth, to an item with no projection: writing it would make
+        an item out of the change alone."""
+        return projection is None and entry.entity_type == "item" and not ProjectionEngine._is_item_birth(entry)
+
+    @staticmethod
+    async def _write(session, entry: LedgerEntry, projection: Projection | None) -> None:
         if projection is None:
             fields = ProjectionEngine._next_fields({}, entry, 0)
             try:
@@ -152,9 +199,12 @@ class ProjectionEngine:
                 constraint = getattr(getattr(exc, "orig", None), "constraint_name", None)
                 if constraint not in (None, "projections_pkey"):
                     raise
+                if ProjectionEngine._is_item_birth(entry):
+                    raise _item_exists() from exc  # the other creation of this item landed first
                 projection = await ProjectionEngine._locked_projection(session, entry)
                 if projection is None:
                     raise
+                ProjectionEngine._refuse_other_kind(entry, projection)
         fields = ProjectionEngine._next_fields(projection.state, entry, projection.version)
         for column, value in fields.items():
             setattr(projection, column, value)
@@ -179,4 +229,9 @@ class ProjectionEngine:
         if company_id:
             query = query.where(LedgerEntry.company_id == company_id)
         for entry in (await session.execute(query)).scalars().all():
-            await ProjectionEngine.apply_event(session, entry)
+            projection = await ProjectionEngine._locked_projection(session, entry)
+            # A change to an item with no birth before it is skipped, as apply_event refuses
+            # it live: replaying it would bring back a removed item as a ghost.
+            if ProjectionEngine._changes_missing_item(entry, projection):
+                continue
+            await ProjectionEngine._write(session, entry, projection)

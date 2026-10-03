@@ -184,12 +184,6 @@ async def test_cloud_summary_links_to_system_recovery():
     assert 'href="/settings/general?tab=backup"' not in html
 
 
-async def test_factory_reset_backup_link_unchanged():
-    """The factory reset card still offers the whole-installation export first."""
-    from ui.routes.settings import _factory_reset_card
-    assert 'href="/backup/export"' in to_xml(_factory_reset_card())
-
-
 async def test_legacy_import_on_fresh_install_is_system_recovery(ui, real_engine):
     """On a fresh install the whole-installation restore is a small link and its page states it replaces everything."""
     page = _page(await ui.get("/setup"))
@@ -385,7 +379,7 @@ async def test_cloud_snapshot_relay_payload_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _client)
     monkeypatch.setattr(backup_repo, "_relay", _relay)
     monkeypatch.setattr(backup_repo, "dump_database", lambda url: dump)
-    monkeypatch.setattr(backup_repo, "_build_meta", _meta)
+    monkeypatch.setattr("celerp.services.backup_export.archive_meta", _meta)
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "backup_encryption_key", _key())
     monkeypatch.setattr(settings, "cloud_disconnected", False)

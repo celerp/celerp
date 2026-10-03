@@ -23,6 +23,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from celerp.services import import_stage
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
@@ -43,14 +45,18 @@ async def _rows_preview(client, h, rows, *, upsert=False, key="op-1") -> dict:
     return r.json()
 
 
-async def _rows_commit(client, h, rows, *, upsert=False, key="op-1", preview_hash=None):
+async def _rows_commit(client, h, rows, *, upsert=False, key="op-1", preview_hash=None, decisions=None):
     return await client.post("/items/import/rows", json={
         "rows": rows, "upsert": upsert, "idempotency_key": key, "preview_hash": preview_hash,
+        "decisions": decisions or {},
     }, headers=h)
 
 
 async def _seed_items(client, h, rows, key):
-    r = await _rows_commit(client, h, rows, key=key)
+    """Seed rows as given; rows sharing a SKU are kept as separate lots."""
+    skus = [r.get("sku") for r in rows if r.get("sku")]
+    lots = sorted({s for s in skus if skus.count(s) > 1})
+    r = await _rows_commit(client, h, rows, key=key, decisions={"separate_lots": lots})
     assert r.status_code == 200 and not r.json()["errors"], r.text
 
 
@@ -125,12 +131,12 @@ def _writer_spy(monkeypatch) -> AsyncMock:
 
 
 def _preflight_spy(monkeypatch) -> AsyncMock:
-    """Watch the canonical semantic preflight. Where it does not exist, the spy is
-    never awaited and the caller's call-count assertion fails."""
+    """Watch the one import plan, wherever a transport calls it from."""
+    import celerp_inventory.routes as routes
     import celerp_inventory.services as svc
-    real = getattr(svc, "preflight_import_rows", None)
-    spy = AsyncMock(wraps=real) if real is not None else AsyncMock()
-    monkeypatch.setattr(svc, "preflight_import_rows", spy, raising=False)
+    spy = AsyncMock(wraps=svc.build_import_plan)
+    monkeypatch.setattr(svc, "build_import_plan", spy)
+    monkeypatch.setattr(routes, "build_import_plan", spy)
     return spy
 
 
@@ -202,10 +208,10 @@ async def _rename_sku(client, h, entity_id, old, new) -> None:
 
 
 async def _plan(session, company_id, rows, *, upsert, key="op-1", role="owner"):
-    from celerp_inventory.services import preflight_import_rows
+    from celerp_inventory.services import build_import_plan
     settings = await _company_settings(session, company_id)
-    return await preflight_import_rows(
-        session, uuid.UUID(str(company_id)), role, settings, rows, upsert=upsert, operation_key=key,
+    return await build_import_plan(
+        session, uuid.UUID(str(company_id)), role, settings, rows, upsert=upsert, idempotency_key=key,
     )
 
 
@@ -876,7 +882,6 @@ async def test_all_semantic_transports_write_through_import_items(client, sessio
     import ui.api_client as api
     import ui.config
     from ui.app import app as ui_app
-    from ui.routes import csv_import as ci
     from ui.routes.inventory import _import_operation_key
 
     entry = _import_items_spy(monkeypatch)
@@ -905,7 +910,7 @@ async def test_all_semantic_transports_write_through_import_items(client, sessio
     monkeypatch.setattr(api, "_get_transport", lambda: ASGITransport(app=celerp.main.app))
     text = "name,sell_by,quantity\nBrowsed,piece,1\n"
     browser_rows = list(csv.DictReader(io.StringIO(text)))
-    ref = ci._write_stage(perm["company_id"], text)
+    ref = import_stage.write_stage(perm["company_id"], text)
     preview = await _rows_preview(client, h, browser_rows, key=_import_operation_key(browser_rows, False))
     token = h["Authorization"].split()[1]
     with patch.object(api, "get_company", new=AsyncMock(return_value={

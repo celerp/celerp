@@ -30,8 +30,8 @@ _EVENT_TYPES: tuple[str, ...] = (
     "item.fulfilled", "item.fulfillment_reversed", "item.consumed", "item.produced",
     "doc.created", "doc.updated", "doc.finalized", "doc.paid", "doc.voided",
     "doc.sent", "doc.marked_sent", "doc.converted", "doc.converted_to_bill",
-    "doc.payment.received", "doc.payment.refunded", "doc.payment.voided",
-    "doc.payment.deleted", "doc.received", "doc.fulfilled", "doc.partially_fulfilled",
+    "doc.payment.received", "doc.payment.refunded", "doc.payment.refund_reversed", "doc.payment.stripe_released",
+    "doc.payment.voided", "doc.payment.deleted", "doc.received", "doc.fulfilled", "doc.partially_fulfilled",
     "doc.fulfillment_reversed", "doc.partially_reverted", "doc.line_received",
     "doc.line_returned", "doc.items_returned", "doc.shared", "doc.reverted_to_draft",
     "contact.created", "contact.updated", "deal.created", "deal.updated",
@@ -397,6 +397,12 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         parts = [doc_ref] if doc_ref else []
         if amount is not None:
             parts.append(t("activity.refunded", amount=fmt_money(amount, currency)))
+        return " - ".join(parts) if parts else ""
+    if event_type == "doc.payment.refund_reversed":
+        amount = data.get("amount")
+        parts = [doc_ref] if doc_ref else []
+        if amount is not None:
+            parts.append(t("activity.amount", amount=fmt_money(amount, currency)))
         return " - ".join(parts) if parts else ""
     if event_type in ("doc.payment.voided", "doc.payment.deleted"):
         amount = data.get("amount")
@@ -771,6 +777,12 @@ def format_timestamp(ts: str) -> str:
     return clean[:16].strip()
 
 
+def _is_vendor_doc(entry: dict) -> bool:
+    """True when the entry's document is one the company pays (a bill, PO, ...)."""
+    from celerp_docs.doc_constants import VENDOR_DOC_TYPES
+    return str(entry.get("entity_doc_type") or "") in VENDOR_DOC_TYPES
+
+
 def _event_display(entry: dict) -> tuple[str, str]:
     """Return (display_text, url) for the Event column.
 
@@ -779,6 +791,8 @@ def _event_display(entry: dict) -> tuple[str, str]:
     """
     event_type = str(entry.get("event_type") or "")
     label = event_label(event_type)
+    if event_type == "doc.payment.received" and _is_vendor_doc(entry):
+        label = t("event.doc.payment.made")
     entity_id = str(entry.get("entity_id") or "")
     entity_name = str(entry.get("entity_name") or entry.get("name") or "")
     url = entity_url(entity_id)
@@ -792,6 +806,15 @@ def _is_uuid(s: str) -> bool:
     """Return True if string looks like a raw UUID (should not be shown to users)."""
     import re
     return bool(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", s, re.I))
+
+
+def actor_label(e: dict) -> str:
+    """Who made a change, for display: a name, a name carried in from a company backup
+    marked as such, or "--" when there is none to show."""
+    actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
+    if not actor or _is_uuid(actor):
+        return "--"
+    return t("activity.actor_historical", name=actor) if e.get("actor_historical") else actor
 
 
 def _item_link(entity_id, label: str, anchor=None) -> FT:
@@ -1004,8 +1027,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
 
     def _assemble(e: dict, content, detail: str, suffix: str, *, blank_detail: bool = False) -> FT:
         when_cell = Td(format_timestamp(str(e.get("ts") or "")) or EMPTY)
-        actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
-        user_cell = Td(actor if (actor and not _is_uuid(actor)) else EMPTY)
+        user_cell = Td(actor_label(e))
         if blank_detail:
             detail_cell = Td("")
         else:

@@ -12,23 +12,30 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.services import bootstrap
-from celerp.services.provisioning import provision_registered_company
+from celerp.services.provisioning import provision_additional_company, provision_registered_company
 from celerp.services.auth import (
     AuthContext,
+    CompanyUnavailable,
     decode_refresh_token,
+    NO_COMPANY,
+    HAS_COMPANY,
+    first_usable_company_link,
+    hold_companyless_login,
     get_auth_context,
     MIN_PASSWORD_LENGTH,
     get_current_company_id,
     get_current_user,
     hash_password,
     issue_token_pair,
+    lock_issuance_company,
+    usable_company_link,
     oauth2_scheme_optional,
     validate_access_token,
     validate_password,
@@ -37,28 +44,8 @@ from celerp.services.auth import (
 
 router = APIRouter()
 
+
 logger = logging.getLogger(__name__)
-
-
-async def _issue_tokens(
-    session: AsyncSession,
-    user: User,
-    company: Company,
-    role: str,
-    jti: str | None = None,
-    expected_snonce: str | None = None,
-) -> dict:
-    """Adapter over the central ``issue_token_pair`` for this router's callers.
-
-    Register, login, force-login and switch-company already hold the ``User``
-    and ``Company`` rows they authenticated against, so they pass them straight
-    through to the one issuance point.  A continuation of an authenticated
-    session (refresh, switch-company) passes *expected_snonce* so it cannot mint
-    onto a generation advanced by a concurrent revocation.
-    """
-    return await issue_token_pair(
-        session, user=user, company=company, role=role, jti=jti, expected_snonce=expected_snonce
-    )
 
 
 class RegisterRequest(BaseModel):
@@ -138,7 +125,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         )
         # Single commit point: the central issuer locks the auth state, registers the
         # initial access JTI, and commits the whole bootstrap as one transaction.
-        tokens = await _issue_tokens(session, user, company, "owner")
+        tokens = await issue_token_pair(session, user=user, company_id=company.id)
     except HTTPException:
         await session.rollback()
         raise
@@ -167,61 +154,107 @@ from slowapi.util import get_remote_address
 limiter = Limiter(key_func=get_remote_address)
 
 
+# A sign-in picks again only when a company it picked was removed meanwhile.
+_PICK_ATTEMPTS = 3
+
+
 async def _issue_login_tokens(session: AsyncSession, user: User) -> dict:
-    """Sign *user* in to one of their active company links.
+    """Sign *user* in to the company ``first_usable_company_link`` picks.
 
-    A user in several companies uses /switch-company after login. A company still
-    being moved in is picked only when the user has no other company, so a login
-    never lands on a staged company while a working one exists."""
-    link = (
-        await session.execute(
-            select(UserCompany)
-            .join(Company, Company.id == UserCompany.company_id)
-            .where(
-                UserCompany.user_id == user.id,
-                UserCompany.is_active == True,  # noqa: E712
-            )
-            .order_by(Company.is_migration_staged, UserCompany.id)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if link is None:
-        raise HTTPException(status_code=401, detail="No active company membership")
+    A company removed between the pick and the issuance issues nothing; the pick is
+    made again from what is left."""
+    for _ in range(_PICK_ATTEMPTS):
+        link = await first_usable_company_link(session, user.id)
+        if link is None:
+            raise HTTPException(status_code=401, detail=NO_COMPANY)
+        try:
+            return await issue_token_pair(session, user=user, company_id=link.company_id)
+        except CompanyUnavailable:
+            continue
+    raise CompanyUnavailable()
 
-    company = await session.get(Company, link.company_id)
-    return await _issue_tokens(session, user, company, link.role)
+
+async def authenticate(session: AsyncSession, email: str, password: str) -> User:
+    """The active login these credentials belong to; a neutral 401 otherwise."""
+    user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if not user or not user.auth_hash or not verify_password(password, user.auth_hash) or not user.is_active:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return user
+
+
+async def companyless_login(session: AsyncSession, email: str, password: str) -> User:
+    """The login these credentials belong to, when it has no company left; 409 otherwise."""
+    user = await authenticate(session, email, password)
+    if await first_usable_company_link(session, user.id) is not None:
+        raise HTTPException(status_code=409, detail=HAS_COMPANY)
+    return user
+
+
+async def hold_direct_slot(session: AsyncSession, *, taking_over: bool = False) -> None:
+    """Without the cloud relay only one person may be signed in at a time.
+
+    Takes the sign-in place for this transaction, held until the new session is saved,
+    so two sign-ins cannot both find it free. A sign-in that is *taking_over* ends
+    everyone else's sessions instead of being refused. With the relay nothing is held."""
+    from celerp.gateway.state import get_session_token as _get_session_token
+    from celerp.services.session_tracker import active_user_ids as _active_ids
+    if _get_session_token():
+        return
+    if session.get_bind().dialect.name != "sqlite":
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                              {"k": "direct-sign-in"})
+    if not taking_over and await _active_ids(session):
+        raise HTTPException(status_code=409, detail="direct_connection_limit")
 
 
 @router.post("/login")
 @limiter.limit("10/minute")
 async def login(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
-    user = (await session.execute(select(User).where(User.email == payload.email))).scalar_one_or_none()
-    if not user or not user.auth_hash or not verify_password(payload.password, user.auth_hash) or not user.is_active:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    from celerp.gateway.state import get_session_token as _get_session_token
-    from celerp.services.session_tracker import active_user_ids as _active_ids
-    if not _get_session_token():
-        active = await _active_ids(session)
-        if active:
-            raise HTTPException(status_code=409, detail="direct_connection_limit")
-
+    user = await authenticate(session, payload.email, payload.password)
+    await hold_direct_slot(session)
     return await _issue_login_tokens(session, user)
 
 
 @router.post("/login-force")
 @limiter.limit("5/minute")
 async def login_force(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
-    """Like /login but evicts all other active sessions from the tracker first."""
-    user = (await session.execute(select(User).where(User.email == payload.email))).scalar_one_or_none()
-    if not user or not user.auth_hash or not verify_password(payload.password, user.auth_hash) or not user.is_active:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    """Like /login but evicts all other active sessions from the tracker first, in the
+    same transaction as the new session."""
+    user = await authenticate(session, payload.email, payload.password)
+    await hold_direct_slot(session, taking_over=True)
+    link = await first_usable_company_link(session, user.id)
+    if link is None:
+        raise HTTPException(status_code=401, detail=NO_COMPANY)
+    # The company is held before the auth state rows, the order every issuance keeps.
+    await lock_issuance_company(session, user.id, link.company_id)
 
     from celerp.services.session_tracker import invalidate_all_sessions as _invalidate_all
     evicting_ip = request.client.host if request.client else None
     await _invalidate_all(session, str(user.id), evicting_ip=evicting_ip)
+    return await issue_token_pair(session, user=user, company_id=link.company_id)
 
-    return await _issue_login_tokens(session, user)
+
+class StartCompanyRequest(BaseModel):
+    email: str
+    password: str
+    company_name: str
+
+
+@router.post("/start-company")
+@limiter.limit("5/minute")
+async def start_company(request: Request, payload: StartCompanyRequest,
+                        session: AsyncSession = Depends(get_session)) -> dict:
+    """Create a company for a login that has none left, after its last company was reset,
+    and sign it in as that company's owner."""
+    user = await authenticate(session, payload.email, payload.password)
+    name = payload.company_name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Company name required")
+    await hold_direct_slot(session)
+    if not await hold_companyless_login(session, user.id):
+        raise HTTPException(status_code=409, detail=HAS_COMPANY)
+    company = await provision_additional_company(session, user=user, company_name=name)
+    return await issue_token_pair(session, user=user, company_id=company.id)
 
 
 class RefreshRequest(BaseModel):
@@ -251,26 +284,15 @@ async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    link = await session.scalar(
-        select(UserCompany).where(
-            UserCompany.user_id == user.id,
-            UserCompany.company_id == company_uuid,
-            UserCompany.is_active == True,  # noqa: E712
-        )
-    )
-    if link is None:
+    if await usable_company_link(session, user.id, company_uuid) is None:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    company = await session.get(Company, company_uuid)
-    if company is None or (not company.is_active and link.role != "owner"):
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
-
-    # Nonce equality is enforced once, under the issuance row lock: the refresh
-    # is a continuation, so it presents the snonce it decoded. If a concurrent
-    # revocation advanced the generation, issue_token_pair rejects it (401)
-    # before minting - no separate, unlocked nonce read that could race.
-    return await _issue_tokens(
-        session, user, company, link.role, expected_snonce=claims["snonce"]
+    # Nonce equality and the company are re-checked once, under the issuance locks:
+    # the refresh is a continuation, so it presents the snonce it decoded. If a
+    # concurrent revocation advanced the generation, or the company was removed,
+    # issue_token_pair rejects it (401) before minting - no unlocked read that could race.
+    return await issue_token_pair(
+        session, user=user, company_id=company_uuid, expected_snonce=claims["snonce"]
     )
 
 
@@ -344,7 +366,7 @@ async def switch_company(
         raise HTTPException(status_code=403, detail="Company is deactivated")
     # A company switch is a continuation of the current session: pass the snonce
     # it authenticated on so a concurrent revocation cannot be jumped over.
-    return await _issue_tokens(session, user, company, link.role, expected_snonce=ctx.snonce)
+    return await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=ctx.snonce)
 
 
 # ── Password Reset ────────────────────────────────────────────────────────────

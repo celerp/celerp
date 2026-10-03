@@ -98,6 +98,12 @@ _BASE_FIELDS: list[dict] = [
 _BASE_FIELD_BY_KEY: dict[str, dict] = {f["key"]: f for f in _BASE_FIELDS}
 
 
+def builtin_label_keys() -> dict[str, str]:
+    """The translation key of each built-in item field's label, keyed by field key.
+    The single source every item import screen names its targets from."""
+    return {f["key"]: f["label_key"] for f in _BASE_FIELDS if f.get("label_key")}
+
+
 def _rehydrate_builtin_metadata(schema: list[dict]) -> list[dict]:
     """Reattach canonical label_key/tooltip_key to built-in fields.
 

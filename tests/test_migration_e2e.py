@@ -548,7 +548,8 @@ async def test_discard_after_real_migration_removes_everything(real_engine, monk
         written = [t for t in tables if await s.scalar(
             text(f'SELECT count(*) FROM "{t}" WHERE company_id = :c'), {"c": company})]
         assert "import_batches" in written
-        assert await migrations.discard(s, await s.get(MigrationRun, run.id)) == "/"
+        # The owner has no other company, so the login starts over.
+        assert await migrations.discard(s, await s.get(MigrationRun, run.id)) == migrations.START_COMPANY_PAGE
     async with maker(real_engine)() as s:
         for table in tables:
             assert await s.scalar(text(f'SELECT count(*) FROM "{table}" WHERE company_id = :c'),
@@ -596,7 +597,8 @@ async def test_discard_keeps_attachment_files_until_commit_and_survives_a_storag
     monkeypatch.setattr(attachments.LocalBackend, "delete_company", refuse)
     caplog.set_level(logging.WARNING, logger="celerp.services.migrations")
     async with maker(real_engine)() as s:
-        assert await migrations.discard(s, await s.get(MigrationRun, run.id)) == "/"
+        # The owner has no other company, so the login starts over.
+        assert await migrations.discard(s, await s.get(MigrationRun, run.id)) == migrations.START_COMPANY_PAGE
     assert await count(real_engine, "companies", "id = :c", c=company) == 0
     async with maker(real_engine)() as s:
         task_id = await s.scalar(text("SELECT id FROM migration_cleanup_tasks WHERE company_id = :c"), {"c": company})

@@ -858,10 +858,10 @@ function _notifItemHtml(n) {
     + '</div>';
 }
 
-// A ready-to-install app update is worth one bell count so the user notices it
-// on the icon without opening the panel; the panel's update card carries the
-// version and the restart/upgrade action, so the count needs no list item.
-window._celerpUpdate = window._celerpUpdate || { ready: false, version: '' };
+// A found app update is worth one bell count so the user notices it on the
+// icon without opening the panel; the panel's update card carries the version
+// and the restart/upgrade action, so the count needs no list item.
+window._celerpUpdateLit = window._celerpUpdateLit || false;
 window._lastNotifData = window._lastNotifData || { items: [], unread_count: 0 };
 
 function _renderNotifs(data) {
@@ -869,7 +869,7 @@ function _renderNotifs(data) {
   data = window._lastNotifData;
   var badge = document.getElementById('notif-badge');
   var list = document.getElementById('notif-list');
-  var count = (data.unread_count || 0) + (window._celerpUpdate.ready ? 1 : 0);
+  var count = (data.unread_count || 0) + (window._celerpUpdateLit ? 1 : 0);
   if (badge) {
     if (count > 0) {
       badge.textContent = count > 99 ? '99+' : count;
@@ -887,11 +887,11 @@ function _renderNotifs(data) {
   }
 }
 
-// Light the bell when an update finishes downloading (Electron) or is available
-// on PyPI (pip). Re-renders off the last fetched inbox so no network call is
-// needed; the count clears when the user relaunches into the new version.
-window.celerpSetUpdateReady = function(version) {
-  window._celerpUpdate = { ready: true, version: version || '' };
+// Light or clear the bell's update count: lit while an update is found,
+// downloading or downloaded (Electron) or available on PyPI (pip). Re-renders
+// off the last fetched inbox so no network call is needed.
+window.celerpSetUpdateBell = function(lit) {
+  window._celerpUpdateLit = !!lit;
   _renderNotifs(null);
 };
 
@@ -1032,7 +1032,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   /* ── Update status card ───────────────────────────────────────────── */
-  (function initUpdateCard() {
+  function initUpdateCard() {
     var card = document.getElementById('update-status-card');
     if (!card) return;
 
@@ -1053,17 +1053,12 @@ document.addEventListener('DOMContentLoaded', function() {
       if (checkBtn) checkBtn.style.display = visible ? '' : 'none';
     }
 
-    function appendLog(msg) {
+    // The log is the updater's own lines, kept in the state (capped there),
+    // so a replay shows exactly what the live events showed.
+    function setLog(lines) {
       if (!logEl) return;
-      logEl.style.display = '';
-      // Append via text node (avoids re-reading/rewriting the full textContent string).
-      // Cap at 200 lines to prevent unbounded DOM growth during long downloads.
-      var lines = logEl.querySelectorAll('.log-line');
-      if (lines.length >= 200) lines[0].remove();
-      var line = document.createElement('span');
-      line.className = 'log-line';
-      line.textContent = (logEl.childNodes.length ? '\\n' : '') + msg;
-      logEl.appendChild(line);
+      logEl.textContent = lines.join('\\n');
+      logEl.style.display = lines.length ? '' : 'none';
       logEl.scrollTop = logEl.scrollHeight;
     }
 
@@ -1084,53 +1079,66 @@ document.addEventListener('DOMContentLoaded', function() {
         if (versionEl) versionEl.textContent = 'v' + v;
       }).catch(function() {});
 
-      setState(window.__shellI18n.upToDate, false);
+      // One render for the main process's updater state, used for live events
+      // and for the replay on every page load, so both always look the same.
+      // The bell counts any update the user has been told about: found and
+      // downloading, downloaded, or a download that then failed.
+      // A state older than the one already shown (the page's replay answered
+      // after a live event) is ignored; the revision outlives a Back restore.
+      function renderUpdateState(s) {
+        if (s.revision < (window._celerpUpdateRevision || 0)) return;
+        window._celerpUpdateRevision = s.revision;
+        var i18n = window.__shellI18n;
+        if (s.status === 'downloading') {
+          setState(s.percent > 0 ? i18n.downloadingPct.replace('{pct}', Math.round(s.percent))
+                   : s.version ? i18n.downloadingVersion.replace('{version}', s.version)
+                   : i18n.downloadingUpdate, false);
+          setCheckBtn(false);
+          setProgress(s.percent);
+        } else if (s.status === 'downloaded') {
+          setState(s.version ? i18n.versionReady.replace('{version}', s.version) : i18n.updateReady, true);
+          setCheckBtn(false);
+          setProgress(100);
+        } else if (s.checking) {
+          // A check has started and has no result yet.
+          setState(i18n.checking, false);
+          setCheckBtn(false);
+          setProgress(-1);
+        } else if (s.status === 'error') {
+          setState(i18n.updateCheckFailed, false);
+          resetToIdle();
+        } else {
+          setState(i18n.upToDate, false);
+          resetToIdle();
+        }
+        setLog(s.log);
+        window.celerpSetUpdateBell(s.status === 'downloading' || s.status === 'downloaded'
+                                   || (s.status === 'error' && s.downloadFailed));
+      }
 
-      // Log lines: always show — no isManualCheck gate.
-      window.celerp.onUpdateLog(function(msg) { appendLog(msg); });
+      // Updater events are subscribed once per page load and always reach the
+      // card on screen now, which a Back restore from the htmx history cache
+      // replaces with fresh elements.
+      window._celerpUpdateCard = { render: renderUpdateState };
+      if (!window._celerpUpdateSubscribed) {
+        window._celerpUpdateSubscribed = true;
+        var render = function(s) { window._celerpUpdateCard.render(s); };
+        window.celerp.onUpdateLog(render);
+        window.celerp.onUpdateAvailable(render);
+        window.celerp.onDownloadProgress(render);
+        window.celerp.onUpdateDownloaded(render);
+        window.celerp.onUpdateNotAvailable(render);
+        window.celerp.onUpdateError(render);
+      }
 
-      window.celerp.onUpdateAvailable(function(info) {
-        setState(window.__shellI18n.downloadingVersion.replace('{version}', info && info.version ? info.version : window.__shellI18n.updateWord), false);
-        setCheckBtn(false);
-        setProgress(0);
-      });
-
-      window.celerp.onDownloadProgress(function(progress) {
-        var pct = progress && typeof progress.percent === 'number' ? progress.percent : 0;
-        setProgress(pct);
-        // Also update state text so user sees live percentage
-        setState(window.__shellI18n.downloadingPct.replace('{pct}', Math.round(pct)), false);
-      });
-
-      window.celerp.onUpdateNotAvailable(function() {
-        setState(window.__shellI18n.upToDate, false);
-        appendLog(window.__shellI18n.alreadyLatest);
-        resetToIdle();
-      });
-
-      window.celerp.onUpdateDownloaded(function(info) {
-        var v = info && info.version ? info.version : window.__shellI18n.updateWord;
-        setState(window.__shellI18n.versionReady.replace('{version}', v), false);
-        setProgress(100);
-        setCheckBtn(false);
-        if (restartBtn) restartBtn.style.display = '';
-        appendLog(window.__shellI18n.updateDownloadedLog.replace('{version}', v));
-        window.celerpSetUpdateReady(v);
-      });
-
-      // Errors are always visible — never silently swallowed.
-      window.celerp.onUpdateError(function(info) {
-        var msg = info && info.message ? info.message : window.__shellI18n.unknownError;
-        setState(window.__shellI18n.updateCheckFailed, false);
-        appendLog(window.__shellI18n.errorPrefix + ' ' + msg);
-        resetToIdle();
-      });
+      // Replay whatever the updater did before this card appeared. Until it
+      // answers, the card stays as rendered (no status claimed).
+      window.celerp.getUpdateState().then(renderUpdateState).catch(function() {});
 
       if (checkBtn) {
         checkBtn.addEventListener('click', function() {
           setCheckBtn(false);
           setState(window.__shellI18n.checking, false);
-          if (logEl) { logEl.textContent = ''; logEl.style.display = 'none'; }
           window.celerp.checkForUpdates().catch(function() {
             setState(window.__shellI18n.updateCheckFailed, false);
             resetToIdle();
@@ -1190,7 +1198,7 @@ document.addEventListener('DOMContentLoaded', function() {
           setState(i18n.updateNotChecked, false);
         } else if (s.latest) {
           setState(i18n.updateAvailablePrefix + s.latest, s.can_install);
-          window.celerpSetUpdateReady(s.latest);
+          window.celerpSetUpdateBell(true);
           if (!s.can_install) {
             notes.push(reasonText(s.reason));
             show(upgradeEl, pipReasons.indexOf(s.reason) !== -1);
@@ -1292,7 +1300,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
       refresh(false);
     }
-  })();
+  }
+  initUpdateCard();
+  // Back and Forward can restore a page from the htmx history cache instead of
+  // loading it. The restored card is a saved copy with no listeners that shows
+  // the status from when it was saved, so set it up again.
+  document.addEventListener('htmx:historyRestore', initUpdateCard);
 });
 """
 
@@ -1351,6 +1364,7 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
     # copy stays relay-sourced; the card is hidden in neutral (relay down) or dismissed.
     js = (
         "(function(){"
+        "if(!window.celerpStarFetch)return;"
         "Promise.all(["
         "window.celerpStarFetch('/stars/cta?medium=" + medium + "').catch(function(){return null}),"
         "window.celerpStarFetch('/stars/badge').catch(function(){return null})"
@@ -1649,14 +1663,11 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "noNotifications": t("shell.no_notifications", lang),
         "upToDate": t("shell.up_to_date", lang),
         "downloadingVersion": t("shell.js_downloading_version", lang),
-        "updateWord": t("shell.js_update_word", lang),
+        "downloadingUpdate": t("shell.js_downloading_update", lang),
         "downloadingPct": t("shell.js_downloading_pct", lang),
-        "alreadyLatest": t("shell.js_already_latest", lang),
         "versionReady": t("shell.js_version_ready", lang),
-        "updateDownloadedLog": t("shell.js_update_downloaded_log", lang),
-        "unknownError": t("shell.unknown_error", lang),
+        "updateReady": t("shell.js_update_ready", lang),
         "updateCheckFailed": t("shell.update_check_failed", lang),
-        "errorPrefix": t("shell.error_prefix", lang),
         "checking": t("shell.checking", lang),
         "restarting": t("shell.restarting", lang),
         "updateAvailablePrefix": t("shell.update_available_prefix", lang),
@@ -1712,6 +1723,15 @@ def client_scripts(lang: str = "en") -> list:
     ]
 
 
+def _favicon_links() -> tuple[FT, ...]:
+    """The Celerp shield icon set, made from the same master as the desktop app icon."""
+    return (
+        Link(rel="icon", type="image/x-icon", href="/static/favicon.ico"),
+        Link(rel="icon", type="image/png", sizes="32x32", href="/static/favicon-32x32.png"),
+        Link(rel="apple-touch-icon", sizes="180x180", href="/static/apple-touch-icon.png"),
+    )
+
+
 def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
     """The outer HTML document shared by every full-chrome page: head assets, the
     supplied nav, top bar, banners, main content, and footer.
@@ -1726,7 +1746,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         Meta(charset="utf-8"),
         Meta(name="viewport", content="width=device-width, initial-scale=1"),
         Title(title),
-        Link(rel="icon", type="image/png", href="/static/icon.png"),
+        *_favicon_links(),
         Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
         *client_scripts(lang),
         Script(_idle_logout_js()),
@@ -2383,7 +2403,7 @@ def auth_shell(*content, title: str = "Celerp") -> FT:
             Meta(charset="utf-8"),
             Meta(name="viewport", content="width=device-width, initial-scale=1"),
             Title(title),
-            Link(rel="icon", type="image/png", href="/static/icon.png"),
+            *_favicon_links(),
             Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
         ),
         Body(

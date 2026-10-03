@@ -267,7 +267,7 @@ async def test_export_unreadable_attachment_removes_partial(real_engine, real_cl
     assert err.value.status_code == 409 and url in err.value.detail
     assert list(out.parent.iterdir()) == []
     assert len(seen_while_reading) == 3
-    assert all(len(names) == 1 and names[0].endswith(".celerp-company.partial")
+    assert all(len(names) == 1 and names[0].endswith(".export.partial")
                for names in seen_while_reading[:2]), seen_while_reading
 
 
@@ -354,16 +354,20 @@ async def test_download_routes_use_export_company_snapshot(real_engine, real_cli
         assert r.status_code == 200, r.text
         assert r.content == b"backup"
     assert [(c[0], c[2]) for c in calls] == [(cid, None), (cid, _PROVENANCE)]
-    assert all(c[1].name.endswith(".celerp-company") for c in calls)
+    assert all(c[1].name.endswith(".export") for c in calls)
     assert not hasattr(cb, "export_company")
 
 
 async def test_export_snapshot_sqlite_dialect_uses_one_plain_transaction(tmp_path, monkeypatch):
     """On SQLite the backup reads through its own session in one plain transaction, with no
-    PostgreSQL isolation or time zone statement."""
+    PostgreSQL isolation or time zone statement, and is published only while its company exists."""
     import celerp.db
     cb = _bk_cb()
+    cid = uuid.uuid4()
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'books.sqlite'}")
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE companies (id CHAR(32) PRIMARY KEY)"))
+        await conn.execute(text("INSERT INTO companies (id) VALUES (:c)"), {"c": cid.hex})
     statements: list[str] = []
     event.listen(engine.sync_engine, "before_cursor_execute",
                  lambda conn, cursor, statement, *args: statements.append(statement))
@@ -374,14 +378,17 @@ async def test_export_snapshot_sqlite_dialect_uses_one_plain_transaction(tmp_pat
         seen.update(bind=session.get_bind(), in_transaction=session.in_transaction(),
                     args=(company_id, out, provenance))
         await session.execute(text("SELECT 1"))
+        out.write_bytes(b"backup")
         return {"written": True}
 
     monkeypatch.setattr(cb, "_export_company", export, raising=False)
     out = tmp_path / "books.celerp-company"
     try:
-        assert await cb.export_company_snapshot("company-1", out, provenance=_PROVENANCE) == {"written": True}
+        assert await cb.export_company_snapshot(cid, out, provenance=_PROVENANCE) == {"written": True}
     finally:
         await engine.dispose()
     assert seen["bind"] is engine.sync_engine and seen["in_transaction"]
-    assert seen["args"] == ("company-1", out, _PROVENANCE)
-    assert statements == ["SELECT 1"]
+    assert seen["args"][0] == cid and seen["args"][2] == _PROVENANCE
+    assert statements[0] == "SELECT 1" and len(statements) == 2
+    assert not any(s.lstrip().upper().startswith("SET") for s in statements)
+    assert out.read_bytes() == b"backup" and [p.name for p in tmp_path.iterdir() if "partial" in p.name] == []

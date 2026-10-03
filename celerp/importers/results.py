@@ -34,8 +34,10 @@ class RecordOutcome:
 
 @dataclass
 class ImportOutcome:
-    """Per-record outcomes of one import service call, in input order."""
+    """Per-record outcomes of one import service call, in input order, and what else
+    the call changed that removing the records it created would not take back."""
     records: list[RecordOutcome] = field(default_factory=list)
+    lasting_effects: set[str] = field(default_factory=set)
 
     def add(self, entity_id: str, status: OutcomeStatus, message: str | None = None) -> None:
         self.records.append(RecordOutcome(entity_id, status, message))
@@ -61,3 +63,14 @@ class ImportOutcome:
             "updated": self.count("updated"),
             "errors": errors,
         }
+
+
+def failure_reason(exc: BaseException) -> str:
+    """The reason a refused row gives the reader: a refusal's own message (an
+    HTTPException's detail, or the message of a structured detail), else the error text."""
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, dict) and detail.get("message"):
+        return str(detail["message"])
+    if detail is not None:
+        return str(detail)
+    return str(exc)

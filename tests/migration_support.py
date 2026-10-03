@@ -302,8 +302,11 @@ async def real_engine(_db_engine, monkeypatch):
 
     from celerp.models.base import Base
 
-    # migration_cleanup_tasks and connector_configs have no foreign keys, so the cascade from companies misses them.
-    tables = ", ".join(t for t in ("users", "companies", "migration_cleanup_tasks", "connector_configs")
+    # migration_cleanup_tasks, connector_configs and the payment tables have no foreign keys, so
+    # the cascade from companies misses them.
+    tables = ", ".join(t for t in ("users", "companies", "migration_cleanup_tasks", "connector_configs",
+                                   "payment_closures", "payment_recoveries", "unmatched_payments",
+                                   "unmatched_refunds")
                        if t in Base.metadata.tables)
 
     async def _truncate():
@@ -381,11 +384,14 @@ async def creator_run(session, run_id):
 
 
 @pytest_asyncio.fixture
-async def real_client(real_engine):
+async def real_client(real_engine, monkeypatch):
     """An API client whose request sessions commit for real on `real_engine`, so
-    routes, the runner and concurrent requests all see the same committed state."""
+    routes, the runner and concurrent requests all see the same committed state.
+
+    Patches go through `monkeypatch` (which `real_engine` also holds), so a test that
+    patches one of the same names is undone in order and never leaks a patch."""
     from contextlib import asynccontextmanager
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
 
     from httpx import ASGITransport, AsyncClient
 
@@ -401,13 +407,13 @@ async def real_client(real_engine):
         async with maker(real_engine)() as s:
             yield s
 
+    monkeypatch.setattr("celerp.gateway.client._client", MagicMock())
+    monkeypatch.setattr("celerp.gateway.state.get_session_token", MagicMock(return_value="test-session-token"))
+    monkeypatch.setattr("celerp.middleware.get_session_ctx", _session_ctx)
     app.dependency_overrides[get_session] = _session
     try:
-        with patch("celerp.gateway.client._client", MagicMock()), \
-             patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
-             patch("celerp.middleware.get_session_ctx", _session_ctx):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-                yield c
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            yield c
     finally:
         app.dependency_overrides.pop(get_session, None)
 

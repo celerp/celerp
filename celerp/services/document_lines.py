@@ -1,9 +1,12 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Document-line identity and the physical-item uniqueness invariant.
+"""Document-line identity, the linked-item reference rule, the new-reference eligibility
+rule, and the physical-item uniqueness invariant.
 
-A non-splittable physical inventory item must appear at most once on an outbound
+A line linked to an item must link to a real item of the same company: a stale form
+or an import can carry the id of an item that was removed (an undone import), and a
+document must never keep a reference to it. A non-splittable physical inventory item must appear at most once on an outbound
 customer-stock document (invoice, memo). The rule is enforced once, at the event
 boundary, so every current and future outbound document writer inherits it.
 Inbound and internal documents (bill, consignment_in, novel types), splittable
@@ -17,6 +20,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from celerp.models.projections import Projection
+from celerp.services.company_lock import lock_company
 from celerp.services.line_measures import splitting_allowed
 
 # The uniqueness invariant is an OUTBOUND customer-stock rule: a customer-facing
@@ -24,7 +28,8 @@ from celerp.services.line_measures import splitting_allowed
 # Inbound and internal documents (bill, consignment_in, novel types) legitimately
 # may, so they are not governed. This mirrors the outbound set the codebase already
 # names in celerp_docs.doc_constants.FULFILLABLE_STATUSES and must stay in lockstep
-# with it.
+# with it. The same two types are the ones that claim stock, so they are also the ones
+# that may not newly take an item another record has reserved.
 DOCUMENT_ITEM_UNIQUE_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo"})
 
 
@@ -38,6 +43,103 @@ def line_item_id(line: dict) -> str | None:
     return line.get("item_id") or line.get("entity_id")
 
 
+def line_id_counts(line_items) -> Counter:
+    """How many lines of a line set link to each item id (free-text lines are not counted)."""
+    ids = (line_item_id(line) for line in line_items or [] if isinstance(line, dict))
+    return Counter(ident for ident in ids if ident)
+
+
+async def linked_items(session, company_id, line_items, *, known: Counter | None = None) -> dict[str, Projection]:
+    """Resolve every linked line to its item, refusing a line whose item does not exist.
+
+    The one rule for every document and List line writer: each supplied item_id /
+    entity_id must resolve to an item projection of ``company_id``, else 422
+    ``invalid_reference`` naming the line (1-based) and the id. ``known`` counts the
+    lines per id already on the stored record (``line_id_counts``): a save may carry
+    that many lines for an id forward without re-proving it, so an old record whose item
+    has since gone stays editable, but every line beyond the stored count is a new
+    reference and must exist. Free-text lines (no id) are not checked. One
+    company-scoped query.
+
+    Returns the resolved projections keyed by id. A save that references an id more
+    often than the stored record did takes the company lock before the check (a no-op
+    for a writer that already holds it), so a removal that holds the lock (Undo) either
+    commits first and the add is refused, or waits until the add has committed and then
+    sees it.
+    """
+    known = known or Counter()
+    linked = [(n, line, line_item_id(line)) for n, line in enumerate(line_items or [], 1)
+              if isinstance(line, dict) and line_item_id(line)]
+    counts = Counter(ident for _, _, ident in linked)
+    if not counts:
+        return {}
+    if any(n > known[ident] for ident, n in counts.items()):
+        await lock_company(session, company_id)
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+            Projection.entity_id.in_(counts),
+        ).execution_options(populate_existing=True)
+    )).scalars().all()
+    items = {row.entity_id: row for row in rows}
+    carried = Counter()
+    for n, line, ident in linked:
+        if ident in items:
+            continue
+        carried[ident] += 1
+        if carried[ident] > known[ident]:
+            label = line.get("name") or line.get("sku")
+            where = f"Line {n} ({label})" if label else f"Line {n}"
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_reference",
+                    "message": f"{where} references an item that does not exist: {ident}",
+                    "item_id": ident,
+                    "line": n,
+                },
+            )
+    return items
+
+
+def assert_new_references_eligible(
+    items: dict[str, Projection], line_items, *, known: Counter, doc_type: str | None, entity_id: str | None,
+) -> None:
+    """Refuse a line set that newly references an item the record may not take.
+
+    A draft item is not stock yet, so no document or List may newly reference it. An
+    item reserved by another record, or by a status edit that no record owns, is held,
+    so an invoice or memo (which claim stock) may not newly reference it; quotations,
+    other documents and Lists may. "Newly" counts occurrences: a line beyond the number
+    the stored record (``known``, ``line_id_counts``) held for that id is new, so a second
+    line for an item the record already lists is judged like a first, while the lines it
+    already held stay editable. ``items`` is what ``linked_items`` resolved, read under
+    the company lock it takes for any such increase, which every change to an item's
+    draft or reserved status also takes.
+
+    422 whose message names every refused item; ``conflicts`` lists the reserved ones
+    with the record holding each, for the page to link to.
+    """
+    reasons: list[str] = []
+    conflicts: list[dict] = []
+    for ident in sorted(line_id_counts(line_items) - known):
+        if ident not in items:
+            continue  # linked_items has already judged a line whose item is gone
+        state = items[ident].state or {}
+        sku = state.get("sku") or ident
+        if str(state.get("status") or "").lower() == "draft":
+            reasons.append(f"{sku}: item is a draft - make it available first")
+        elif (doc_type in DOCUMENT_ITEM_UNIQUE_DOC_TYPES and state.get("status") == "reserved"
+              and state.get("status_doc_id") != entity_id):
+            owner = state.get("status_doc_number") or state.get("status_doc_id") or "another document"
+            reasons.append(f"{sku}: reserved on {owner} - release it there first")
+            conflicts.append({"entity_id": ident, "sku": sku, "doc_id": state.get("status_doc_id"),
+                              "doc_number": state.get("status_doc_number"), "message": reasons[-1]})
+    if reasons:
+        raise HTTPException(status_code=422, detail={"message": "; ".join(reasons), "conflicts": conflicts})
+
+
 async def assert_document_item_uniqueness(session, company_id, doc_type, line_items) -> None:
     """Reject an OUTBOUND document line set that repeats a non-splittable physical item.
 
@@ -47,23 +149,17 @@ async def assert_document_item_uniqueness(session, company_id, doc_type, line_it
 
     Fast path: if no linked id repeats, return without touching the database.
     Otherwise resolve the repeated ids in one company-scoped query:
-      - a repeated id with no ``item`` projection -> 422 invalid reference;
       - a repeated id that resolves to a non-splittable item -> 409 duplicate;
-      - a repeated id that resolves to a splittable item -> allowed.
+      - a repeated id that resolves to a splittable item or to none -> allowed here
+        (``linked_items`` has already refused every line for a missing item beyond the
+        number the stored document held).
     """
     if doc_type not in DOCUMENT_ITEM_UNIQUE_DOC_TYPES:
         return
     if not line_items:
         return
 
-    counts = Counter()
-    for line in line_items:
-        if not isinstance(line, dict):
-            continue
-        ident = line_item_id(line)
-        if ident:
-            counts[ident] += 1
-
+    counts = line_id_counts(line_items)
     repeated = [ident for ident, n in counts.items() if n > 1]
     if not repeated:
         return  # fast path: no linked id repeats, no DB read
@@ -79,19 +175,7 @@ async def assert_document_item_uniqueness(session, company_id, doc_type, line_it
 
     for ident in repeated:
         item = items.get(ident)
-        if item is None:
-            # A repeated id that resolves to no item projection cannot be
-            # reasoned about - reject as an invalid reference rather than
-            # silently persist a corrupt document.
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "invalid_reference",
-                    "message": f"Line references an unknown item: {ident}",
-                    "item_id": ident,
-                },
-            )
-        if splitting_allowed(item.state) is False:
+        if item is not None and splitting_allowed(item.state) is False:
             raise HTTPException(
                 status_code=409,
                 detail={

@@ -8,7 +8,7 @@ import hashlib
 import json
 import math
 import uuid
-from dataclasses import dataclass, replace as _dc_replace
+from dataclasses import asdict, dataclass, replace as _dc_replace
 from datetime import datetime, timezone, date as _date
 from decimal import Decimal
 from typing import Literal
@@ -22,7 +22,9 @@ import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.events.engine import emit_event, find_event_by_idempotency
+from celerp.events.engine import (emit_event, find_event_by_idempotency, refuse_stripe_payment_removal,
+                                  stripe_origin_indexes, stripe_payment_indexes)
+from celerp.importers.results import failure_reason
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
@@ -36,8 +38,8 @@ from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
-from celerp.services.document_lines import line_item_id
-from celerp.services.attachments import attach_file, store_upload
+from celerp.services.document_lines import line_id_counts, line_item_id, linked_items
+from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
@@ -45,7 +47,7 @@ from celerp.services.permissions import assert_role_permission, get_current_comp
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
-from celerp.services.money import checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
+from celerp.services.money import books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
@@ -723,38 +725,33 @@ async def _validate_document_line_quantities(
 
 
 async def _validate_list_line_quantities(
-    line_items: list[dict], session: AsyncSession, company_id: str, *, require_positive: bool = True
+    line_items: list[dict], session: AsyncSession, company_id: str, *, require_positive: bool = True,
+    stored: list | None = None,
 ) -> None:
     """Reject malformed List line quantities at the function boundary before a write.
 
     A List line linked by item_id takes the item's STORED unit, never the submitted one:
     a stocked piece cannot be smuggled past the positive/decimal rule by submitting a
-    service unit. A linked item_id that resolves to no real item is rejected 422 with an
-    invalid_reference body rather than silently dropping to the free-text finiteness gate.
+    service unit. A linked item_id that resolves to no real item is rejected 422 by
+    linked_items (the rule every line writer shares) rather than silently dropping to the
+    free-text finiteness gate. ``stored`` is the stored lines these replace: as many lines
+    per id as they held are carried forward even when the item has since gone, and such a
+    line, having no stored unit, is checked as submitted.
     Delegates each line to the shared _check_line_quantity gate; an unlinked / free-text
     line (no id) uses its own submitted sell_by.
     """
     if not line_items:
         return
     unit_map = await _get_unit_map(session, company_id)
-    id_sell_by = await _line_sell_by_map(session, company_id, line_items)
+    items = await linked_items(session, company_id, line_items, known=line_id_counts(stored))
     for li in line_items:
         if not isinstance(li, dict):
             continue
         label = li.get("name") or li.get("sku") or "Line item"
         lid = line_item_id(li)
-        if lid is not None:
-            if lid not in id_sell_by:
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "code": "invalid_reference",
-                        "message": f"Line references an unknown item: {lid}",
-                        "item_id": lid,
-                    },
-                )
+        if lid in items:
             # Linked line: the stored unit governs; a submitted sell_by is ignored.
-            resolved_sell_by = id_sell_by.get(lid)
+            resolved_sell_by = items[lid].state.get("sell_by")
         else:
             resolved_sell_by = li.get("sell_by")
         _check_line_quantity(
@@ -1402,6 +1399,9 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     doc = row.state | {"id": row.entity_id, "version": row.version}
+    # Payments Stripe reported are refunded or reversed in Stripe, never here.
+    if held := await stripe_payment_indexes(session, company_id, entity_id, doc.get("payments") or []):
+        doc["payments"] = [p | {"held_by": "stripe"} if p.get("index") in held else p for p in doc["payments"]]
     if doc.get("doc_type") == "memo":
         try:
             labels = await _derive_shipped_labels(session, company_id, entity_id, doc.get("line_items") or [])
@@ -1477,81 +1477,15 @@ async def get_doc_pdf(
     )
 
 
-async def _scan_reserved_lines(
-    session: AsyncSession, company_id, entity_id: str | None, eids,
-) -> tuple[list[str], list[dict]]:
-    """Partition the reserved items among ``eids``: entity_ids reserved by THIS
-    document (``entity_id``) vs conflict records for items reserved elsewhere,
-    each naming the owning document."""
+async def _reserved_by(session: AsyncSession, company_id, entity_id: str, eids) -> list[str]:
+    """The items among ``eids`` that the record ``entity_id`` holds reserved."""
     own: list[str] = []
-    conflicts: list[dict] = []
     for eid in sorted({e for e in eids if e}):
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
-        if not proj:
-            continue
-        st = proj.state
-        if st.get("status") != "reserved":
-            continue
-        if st.get("status_doc_id") == entity_id:
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid}, populate_existing=True)
+        st = (proj.state or {}) if proj else {}
+        if st.get("status") == "reserved" and st.get("status_doc_id") == entity_id:
             own.append(eid)
-        else:
-            owner = st.get("status_doc_number") or st.get("status_doc_id") or "another document"
-            conflicts.append({
-                "entity_id": eid,
-                "sku": st.get("sku") or eid,
-                "doc_id": st.get("status_doc_id"),
-                "doc_number": st.get("status_doc_number"),
-                "message": f"{st.get('sku') or eid}: reserved on {owner} - release it there first",
-            })
-    return own, conflicts
-
-
-async def _assert_no_foreign_reserved(
-    session: AsyncSession, company_id, doc_type: str, entity_id: str | None, eids,
-) -> None:
-    """Reject putting items reserved by ANOTHER document onto an invoice or memo,
-    naming the owning document. Only invoices and memos claim stock, so quotations
-    and shipping lists keep listing reserved items freely. Function-level validation:
-    the picker never hides these items, the add is what fails with the reason."""
-    if doc_type not in RESERVABLE_DOC_STATUSES:
-        return
-    _, conflicts = await _scan_reserved_lines(session, company_id, entity_id, eids)
-    if conflicts:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": "; ".join(c["message"] for c in conflicts),
-                "conflicts": conflicts,
-            },
-        )
-
-
-async def _assert_no_draft_items(session: AsyncSession, company_id, eids) -> None:
-    """A draft item is not stock yet: it cannot be put on any document or list.
-    Applies to EVERY doc type (a quotation listing a draft would quote phantom
-    stock). Function-level validation: an id can still arrive via scan, import,
-    or a stale form, so the add is what fails, with the reason."""
-    conflicts: list[dict] = []
-    for eid in sorted({e for e in eids if e}):
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
-        if proj is None:
-            continue
-        st = proj.state or {}
-        if str(st.get("status") or "").lower() == "draft":
-            sku = st.get("sku") or eid
-            conflicts.append({
-                "entity_id": eid,
-                "sku": sku,
-                "message": f"{sku}: item is a draft - make it available first",
-            })
-    if conflicts:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": "; ".join(c["message"] for c in conflicts),
-                "conflicts": conflicts,
-            },
-        )
+    return own
 
 
 @router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
@@ -1577,8 +1511,13 @@ async def create_doc(
         if payload.total > original_total + 1e-9:
             raise HTTPException(status_code=409, detail="Credit note total cannot exceed original invoice total")
 
-    # Contact before company, the lock order every contact-reference writer takes.
+    # Contact before company, the lock order every contact-reference writer takes. The
+    # company lock comes before the line checks, so a concurrent Revert to Draft or
+    # reservation of a line's item is either seen by them or waits for this document.
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
+    # Concurrent doc creation must not read the same numbering counter and
+    # mint duplicate refs (e.g. two CN-2606-0002).
+    company = await locked_company(session, company_id)
     require_currency_code(payload.currency)
 
     _assert_date_order(payload.model_dump(exclude_none=True))
@@ -1591,16 +1530,6 @@ async def create_doc(
             resolved_sell_by = li.sell_by or (sell_by_map.get(li.sku) if li.sku else None)
             validate_line_quantity(li.quantity, resolved_sell_by, unit_map, label=li.name or li.sku or "Line item")
 
-        # A brand-new doc cannot own a reservation yet, so any reserved line is foreign.
-        await _assert_no_foreign_reserved(
-            session, company_id, payload.doc_type, None,
-            (li.entity_id or li.item_id for li in payload.line_items),
-        )
-        await _assert_no_draft_items(
-            session, company_id,
-            (li.entity_id or li.item_id for li in payload.line_items),
-        )
-
         # Price-override gate: on a sales document, a new line whose unit_price
         # deviates from the item's catalog price is a price override, rejected when
         # the caller lacks set_sales_doc_prices. This closes the create path so the
@@ -1611,9 +1540,6 @@ async def create_doc(
                 [li.model_dump() for li in payload.line_items], None,
             )
 
-    # Concurrent doc creation must not read the same numbering counter and
-    # mint duplicate refs (e.g. two CN-2606-0002).
-    company = await locked_company(session, company_id)
     # Re-check under the same serialization lock that owns numbering. A concurrent
     # retry can only reach this point before the first request commits; once it does,
     # the second request observes the original event and returns without consuming a
@@ -1751,6 +1677,13 @@ async def create_doc(
 
 @router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    result = await write_doc_patch(session, company_id, role, settings, user, entity_id, payload)
+    await session.commit()
+    return result
+
+
+async def write_doc_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: DocPatch) -> dict:
+    """Apply a document edit without committing, so an import can make it part of a larger unit."""
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
@@ -1855,14 +1788,6 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
                     detail=f"Cannot delete fulfilled line item {eid!r}. Revert fulfillment first.",
                 )
 
-        # Newly added lines must not be reserved by another document; lines already on
-        # the doc (including ones this doc reserved) pass untouched.
-        await _assert_no_foreign_reserved(
-            session, company_id, row.state.get("doc_type") or "", entity_id,
-            incoming_eids - existing_eids,
-        )
-        await _assert_no_draft_items(session, company_id, incoming_eids - existing_eids)
-
     # Money fields are stored at currency precision. The client computes subtotal/tax/total as
     # raw JS floats and legacy values may already carry IEEE-754 tails, so round both old and new
     # here - the single chokepoint for every doc edit - so the ledger and history never record
@@ -1909,7 +1834,6 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     )
     if getattr(entry, "was_deduped", False):
         return _patch_replay(entry, "doc.updated", entity_id, digest)
-    await session.commit()
     # entry.id is the document's new version, so the client's next versioned write pins
     # exactly the state this patch produced, as patch_list does.
     return {"event_id": entry.id, "version": entry.id}
@@ -1950,7 +1874,7 @@ async def _payments_tip_suffix(session, company_id) -> str:
     company.settings = settings
     session.add(company)
     return (" Tip: connect a Stripe account under Web Access, Payments and "
-            "emailed invoices include a Pay button so customers can pay you by card.")
+            "emailed invoices include a Pay button so customers can pay you online.")
 
 
 def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: str,
@@ -2551,12 +2475,12 @@ async def bulk_delete_drafts(
         raise HTTPException(status_code=422, detail="No document IDs specified")
     from celerp.models.ledger import LedgerEntry
     import sqlalchemy as _sa
-    drafts = []
-    for eid in ids:
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
-        if row is None or row.state.get("status") != "draft":
-            continue
-        drafts.append(row)
+    # Locked and read fresh, so a finalize that committed while this waited is seen.
+    # Only a document is deleted here: a draft item or List sharing the ID space
+    # is skipped like any other non-draft-document ID.
+    rows = await lock_projections(session, company_id, ids)
+    drafts = [row for eid in dict.fromkeys(ids)
+              if (row := rows.get(eid)) is not None and row.entity_type == "doc" and row.state.get("status") == "draft"]
 
     posted = [row.state.get("ref_id") or row.state.get("doc_number") or row.entity_id
               for row in drafts
@@ -2581,7 +2505,7 @@ async def bulk_delete_drafts(
 
 @router.delete("/{entity_id}")
 async def delete_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("delete_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Only draft documents can be deleted")
     entries = await _posted_journal_entries(session, company_id, entity_id)
@@ -2623,9 +2547,36 @@ async def _alloc_payment_index(session, company_id, payments: list,
     return idx
 
 
+async def books_currency_still(session, company_id, base: str) -> str:
+    """*base*, or 422 when the company now keeps its books in another currency. The
+    company is read FOR SHARE, so a settings change either committed first and is seen
+    here, or waits for the caller's transaction."""
+    company = (await session.execute(
+        select(Company).where(Company.id == company_id).with_for_update(read=True)
+        .execution_options(populate_existing=True))).scalar_one_or_none()
+    current = books_currency((company.settings or {}) if company else {})
+    if base != current:
+        raise HTTPException(status_code=422, detail=f"The payment is on {base} books; the company keeps them in {current}")
+    return current
+
+
+async def _books_still_kept(session, company_id, doc_state: dict, books: tuple[str, Decimal]) -> tuple[str, float]:
+    """The (base currency, document rate) a payment's *books* post on, or 422 when they no
+    longer describe the ledger: the company now keeps its books in another currency, or
+    the document now converts into them at another rate. Called under the document's row
+    lock with its locked state."""
+    base, rate = books
+    current = await books_currency_still(session, company_id, base)
+    current_rate = _require_doc_rate_http(doc_state, current)
+    if rate != current_rate:
+        raise HTTPException(status_code=422, detail=f"The payment is at rate {rate}; the document is now at {current_rate}")
+    return base, float(rate)
+
+
 async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
                             *, source: str, actor_id, idempotency_key: str,
-                            request: str | None = None, commit: bool = True):
+                            request: str | None = None, commit: bool = True,
+                            books: tuple[str, Decimal] | None = None):
     """Record a payment against a doc: guard, emit doc.payment.received, post the cash
     JE, fire the payment lifecycle hook. Shared by the manual route and online payment
     so a Stripe payment lands identically to a hand-entered one. Commits per success and
@@ -2635,7 +2586,12 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     Takes the doc row under SELECT ... FOR UPDATE and validates against that fresh,
     committed read: the doc-row lock is the single serializer across every payment
     path and across connections, so two recorders on one doc are ordered at the row
-    and cannot compute a duplicate or colliding payment_index."""
+    and cannot compute a duplicate or colliding payment_index.
+
+    *books* is the (base currency, document rate) the payment posts on when the caller
+    already holds them - an online payment keeps the books its payment page opened with,
+    while they still match the company's and the document's (_books_still_kept); otherwise
+    they are the company's and the document's now."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:
@@ -2653,7 +2609,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     if doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
         raise HTTPException(status_code=409, detail="Cannot record payment in current status")
     # Replay guard for referenced (online) payments: the same Stripe intent
-    # arriving twice (return leg + webhook push) records exactly once.
+    # delivered twice records exactly once.
     reference = body.get("reference")
     # Deleted tombstones do not hold the reference: deleting a mistaken
     # payment frees its charge to be re-recorded, as removal always did.
@@ -2675,17 +2631,13 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     if amount_d <= 0:
         raise HTTPException(status_code=422, detail="Payment amount must be positive")
     if amount_d > outstanding_d:
-        if source == "stripe":
-            body["charged_amount"] = to_stored_float(amount_d)
-            amount_d = outstanding_d
-        else:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Payment {to_stored_float(amount_d)} exceeds amount outstanding "
-                    f"{to_stored_float(outstanding_d)}"
-                ),
-            )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Payment {to_stored_float(amount_d)} exceeds amount outstanding "
+                f"{to_stored_float(outstanding_d)}"
+            ),
+        )
     amount = to_stored_float(amount_d)
     body["amount"] = amount
     bank_code = body.get("bank_account")
@@ -2697,9 +2649,14 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     # company's own currency there is nothing to convert, so any rate other
     # than 1 restates the receipt: 100 banked as 3500. Refused before the
     # event is written, the same way finalization refuses it on the document.
-    _company = await session.get(Company, company_id)
-    _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
-    _document_rate = float(_require_doc_rate_http(doc_state, _base_currency))
+    if books is not None:
+        from celerp_docs.routes_payments import require_online_deposit_account
+        await require_online_deposit_account(session, company_id, bank_code)
+        _base_currency, _document_rate = await _books_still_kept(session, company_id, doc_state, books)
+    else:
+        _company = await session.get(Company, company_id)
+        _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
+        _document_rate = float(_require_doc_rate_http(doc_state, _base_currency))
     if body.get("currency") == _base_currency and body.get("conversion_rate") not in (None, "") \
             and to_decimal(body["conversion_rate"]) != 1:
         raise HTTPException(
@@ -2714,6 +2671,16 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         session, company_id, doc_state.get("payments", []),
         key_doc_id=entity_id, key_type="invoice.paid")
     body["index"] = payment_index
+    # The receivable was raised at the document's rate and can only be cleared at that
+    # rate; the bank moves at the rate the cash actually converted at. A payer who
+    # records no rate of their own settled at the document's rate, so the two agree
+    # and no difference arises. Kept with the payment, so every refund and void of it
+    # reverses exactly this (posted_books).
+    books = PaymentBooks(
+        bank_account=bank_code, base_currency=_base_currency, doc_rate=_document_rate,
+        settlement_rate=(float(checked_exchange_rate(body["conversion_rate"]))
+                         if body.get("conversion_rate") not in (None, "") else _document_rate))
+    body["books"] = asdict(books)
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
         data=body, actor_id=actor_id, location_id=None, source=source,
@@ -2726,13 +2693,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         amount=amount, payment_index=payment_index,
         bank_account_code=bank_code, doc_type=doc_state.get("doc_type", "invoice"),
         payment_date=body["payment_date"],
-        base_currency=_base_currency,
-        # The receivable was raised at the document's rate and can only be
-        # cleared at that rate; the bank moves at the rate the cash actually
-        # converted at. A payer who records no rate of their own settled at
-        # the document's rate, so the two agree and no difference arises.
-        doc_rate=_document_rate,
-        settlement_rate=(float(checked_exchange_rate(body["conversion_rate"])) if body.get("conversion_rate") not in (None, "") else _document_rate),
+        base_currency=books.base_currency, doc_rate=books.doc_rate, settlement_rate=books.settlement_rate,
     )
     from celerp.modules.slots import fire_lifecycle
     await fire_lifecycle(
@@ -2758,6 +2719,12 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
     # read, rejecting a closed memo via its status allowlist; the row lock serializes
     # this payment against a concurrent close or a second recorder on the same doc.
     key, digest = _operation("payment", entity_id, payload)
+    if payload.bank_account:
+        # The money goes to one of the company's own active asset accounts. The document is
+        # locked first, the same order every other payment takes the two rows in.
+        from celerp_accounting.ledger_accounts import require_money_account
+        await _get_doc(session, company_id, entity_id, for_update=True)
+        await require_money_account(session, company_id, payload.bank_account)
     entry, _amount = await apply_doc_payment(
         session, company_id, entity_id, payload.model_dump(exclude_none=True),
         source="api", actor_id=user.id, idempotency_key=key, request=digest,
@@ -2784,29 +2751,88 @@ def _refundable(payment: dict, currency: str):
     return round_money(payment.get("amount") or 0, currency) - round_money(payment.get("refunded") or 0, currency)
 
 
-@router.post("/{entity_id}/refund")
-async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id, for_update=True)
-    key, digest = _operation("refund", entity_id, payload)
-    if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.refunded",
-                                   entity_id=entity_id, digest=digest)) is not None:
-        return done
+@dataclass(frozen=True)
+class PaymentBooks:
+    """The books a payment posted on, which every refund and void of it reverses: the
+    bank the payment went to, the company currency and the two rates it posted at.
+    ``apply_doc_payment`` records them with the payment."""
+    bank_account: str
+    base_currency: str
+    doc_rate: float
+    settlement_rate: float
+
+
+UNREADABLE_STRIPE_BOOKS = ("Celerp cannot tell which books this Stripe payment was recorded on, so it cannot be "
+                           "refunded or voided here. Record the refund with a journal entry instead.")
+
+
+async def posted_books(session, company_id, entity_id: str, row: Projection, payment: dict) -> PaymentBooks:
+    """The books *payment* on the document *row* posted on. A payment recorded before
+    payments kept their books: one received through Stripe has them read from its
+    entry (``_books_from_entry``); any other reverses on the company's currency and the
+    document's rate now, as it always did."""
+    if payment.get("books"):
+        return PaymentBooks(**payment["books"])
+    if payment.get("index") in await stripe_origin_indexes(session, company_id, entity_id):
+        return await _books_from_entry(session, company_id, entity_id, row, payment)
+    company = await session.get(Company, company_id)
+    return PaymentBooks(
+        bank_account=payment.get("bank_account") or "1111",
+        base_currency=(company.settings.get("currency", "USD") if company else "USD"),
+        doc_rate=float(row.state.get("conversion_rate") or 1),
+        settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1))
+
+
+async def _books_from_entry(session, company_id, entity_id: str, row: Projection, payment: dict) -> PaymentBooks:
+    """The books an older Stripe payment posted on, read from its posted entry, or 422
+    (``UNREADABLE_STRIPE_BOOKS``) when the entry does not show them. The ledger keeps
+    its entries in the company's currency, so the payment's entry is read in it. A
+    Stripe payment posted at one rate on both sides: its own, or the document's when it
+    carried none. The books are the ones whose lines are exactly the entry's."""
+    company = await session.get(Company, company_id)
+    base = books_currency((company.settings or {}) if company else {})
+    entry = await session.get(Projection, (company_id, f"je:auto:{entity_id}:pay:{payment.get('index')}"))
+
+    def lines(entries) -> list[tuple]:
+        return sorted((e["account"], round_money(e.get("debit") or 0, base), round_money(e.get("credit") or 0, base))
+                      for e in entries)
+
+    if entry is not None and entry.state.get("status") == "posted" and payment.get("bank_account"):
+        posted = lines(entry.state.get("entries", []))
+        for rate in dict.fromkeys(r for r in (payment.get("conversion_rate"), row.state.get("conversion_rate"),
+                                              1 if str(row.state.get("currency") or base).upper() == base else None)
+                                  if r not in (None, "")):
+            books = PaymentBooks(bank_account=payment["bank_account"], base_currency=base,
+                                 doc_rate=float(rate), settlement_rate=float(rate))
+            try:
+                expected = auto_je.payment_entries(
+                    doc_type=row.state.get("doc_type", "invoice"), bank_account_code=books.bank_account,
+                    amount=payment.get("amount") or 0, base_currency=base, doc_rate=books.doc_rate,
+                    settlement_rate=books.settlement_rate)
+            except ValueError:
+                continue
+            if lines(expected) == posted:
+                return books
+    raise HTTPException(status_code=422, detail=UNREADABLE_STRIPE_BOOKS)
+
+
+async def apply_payment_refund(session, company_id, entity_id: str, row: Projection, payment: dict, *,
+                               amount, refund_date: str, books: PaymentBooks, data: dict,
+                               actor_id, source: str, idempotency_key: str, metadata_: dict | None = None):
+    """Give back *amount* of *payment* on the locked document *row*: emit
+    doc.payment.refunded and post the entry that reverses the refunded share of the
+    payment, on *books*. The one refund implementation, for the refund route and for
+    a refund Stripe reports (``payments.receive_refund``). 422/409 when the payment
+    cannot give that much back; the caller commits. Returns the event, flagged
+    ``was_deduped`` when *idempotency_key* already recorded it."""
     _reject_if_closed(row.state, "refund a payment")
     currency = str(row.state.get("currency") or "USD").upper()
-    if payload.currency and str(payload.currency).upper() != currency:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Refund currency {str(payload.currency).upper()} does not match document currency {currency}",
-        )
-    payment = next((p for p in row.state.get("payments", []) if p.get("index") == payload.payment_index), None)
-    if payment is None or payment.get("status") != "active":
-        raise HTTPException(status_code=422, detail="Choose a payment on this document to refund.")
     if payment.get("method") in ("credit_note", "applied"):
         raise HTTPException(
             status_code=422,
             detail="A credit note application moved no money, so it cannot be refunded. Void it instead.",
         )
-    amount_d = round_money(payload.amount, currency)
+    amount_d = round_money(amount, currency)
     if amount_d <= 0:
         raise HTTPException(status_code=422, detail="Refund amount must be positive")
     left = min(_refundable(payment, currency), round_money(row.state.get("amount_paid", 0) or 0, currency))
@@ -2817,26 +2843,94 @@ async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = 
         )
     refund_number = int(payment.get("refund_count", 0))
     given_back = float(payment.get("refunded") or 0)
-    refund_data = payload.model_dump(exclude_none=True, exclude={"payment_date", "idempotency_key"})
-    refund_data.update(amount=to_stored_float(amount_d), currency=currency, refund_date=payload.payment_date,
-                       method=payload.method or payment.get("method"))
+    refund_data = {**data, "amount": to_stored_float(amount_d), "currency": currency, "refund_date": refund_date,
+                   "payment_index": payment.get("index"), "method": data.get("method") or payment.get("method"),
+                   "refund_number": refund_number}
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.refunded",
-        data=refund_data, actor_id=user.id, location_id=None, source="api",
-        idempotency_key=key, metadata_={"request": digest},
+        data=refund_data, actor_id=actor_id, location_id=None, source=source,
+        idempotency_key=idempotency_key, metadata_=metadata_ or {},
     )
-    company = await session.get(Company, company_id)
+    if getattr(entry, "was_deduped", False):
+        return entry
     # The refund gives back this payment's money: the same bank, at the same two rates
     # the payment posted at, in proportion to the amount refunded.
     await auto_je.void_for_doc_payment(
-        session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-        payment_index=payload.payment_index, amount=to_stored_float(amount_d),
-        bank_account_code=payment.get("bank_account") or "1111",
-        doc_type=row.state.get("doc_type", "invoice"), refund_date=payload.payment_date,
-        base_currency=(company.settings.get("currency", "USD") if company else "USD"),
-        doc_rate=float(row.state.get("conversion_rate") or 1),
-        settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1),
+        session, company_id=company_id, user_id=actor_id, doc_id=entity_id,
+        payment_index=payment.get("index"), amount=to_stored_float(amount_d),
+        bank_account_code=books.bank_account, doc_type=row.state.get("doc_type", "invoice"),
+        refund_date=refund_date, base_currency=books.base_currency,
+        doc_rate=books.doc_rate, settlement_rate=books.settlement_rate,
         refund_number=refund_number, already_given_back=given_back,
+    )
+    return entry
+
+
+async def reverse_payment_refund(session, company_id, entity_id: str, row: Projection, payment: dict,
+                                 refund: dict, *, reversal_date: str, books: PaymentBooks, actor_id,
+                                 source: str, idempotency_key: str):
+    """Undo *refund*, the data of a doc.payment.refunded event of *payment* on the locked
+    document *row*, when the money it gave back came back: emit
+    doc.payment.refund_reversed and post the lines that give *refund*'s amount back
+    from the payment's refunded total (``auto_je.payment_return_entries``), swapped, on
+    *books*. Undoing the latest refund mirrors its entry; undoing an earlier one still
+    leaves the books at what the refunds left in place convert to. The caller commits.
+    Returns the event, flagged ``was_deduped`` when *idempotency_key* already recorded it."""
+    from celerp.services.je_keys import je_idempotency_key
+    index, number = payment.get("index"), refund["refund_number"]
+    key = f"refund_{index}_{number}"
+    amount = to_decimal(refund["amount"])
+    left_given_back = to_stored_float(to_decimal(payment.get("refunded") or 0) - amount)
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
+        event_type="doc.payment.refund_reversed",
+        data={"payment_index": index, "refund_number": number, "amount": refund["amount"],
+              "refund_id": refund.get("refund_id"), "reversal_date": reversal_date},
+        actor_id=actor_id, location_id=None, source=source, idempotency_key=idempotency_key,
+    )
+    if getattr(entry, "was_deduped", False):
+        return entry
+    lines = auto_je.payment_return_entries(
+        doc_type=row.state.get("doc_type", "invoice"), bank_account_code=books.bank_account,
+        amount=to_stored_float(amount),
+        already_given_back=left_given_back,
+        base_currency=books.base_currency, doc_rate=books.doc_rate, settlement_rate=books.settlement_rate,
+    )
+    await auto_je._emit_auto_posted_je(
+        session, company_id=company_id, user_id=actor_id,
+        je_id=f"je:auto:{entity_id}:payrefundrev:{key}",
+        idem_create=je_idempotency_key(entity_id, f"payment.refund_reversed:{key}", "c"),
+        idem_posted=je_idempotency_key(entity_id, f"payment.refund_reversed:{key}", "p"),
+        memo=f"Auto JE for {entity_id} payment refund reversed (index {index})",
+        ts=reversal_date, currency=books.base_currency.upper(),
+        entries=[{"account": e["account"], "debit": e.get("credit") or 0.0, "credit": e.get("debit") or 0.0}
+                 for e in lines],
+        metadata_={"trigger": "doc.payment.refund_reversed", "doc_id": entity_id, "payment_index": index},
+    )
+    return entry
+
+
+@router.post("/{entity_id}/refund")
+async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("refund", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.refunded",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
+    currency = str(row.state.get("currency") or "USD").upper()
+    if payload.currency and str(payload.currency).upper() != currency:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Refund currency {str(payload.currency).upper()} does not match document currency {currency}",
+        )
+    payment = next((p for p in row.state.get("payments", []) if p.get("index") == payload.payment_index), None)
+    if payment is None or payment.get("status") != "active":
+        raise HTTPException(status_code=422, detail="Choose a payment on this document to refund.")
+    entry = await apply_payment_refund(
+        session, company_id, entity_id, row, payment, amount=payload.amount, refund_date=payload.payment_date,
+        books=await posted_books(session, company_id, entity_id, row, payment),
+        data=payload.model_dump(exclude_none=True, exclude={"payment_date", "idempotency_key", "amount", "currency"}),
+        actor_id=user.id, source="api", idempotency_key=key, metadata_={"request": digest},
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -2876,6 +2970,10 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
     if payment.get("refunded") and remaining <= 0:
         raise HTTPException(status_code=409, detail="This payment has been refunded in full, so there is nothing left to void.")
     given_back = float(payment.get("refunded") or 0)
+    # The payment's own books, so the reversal is its mirror; read before anything is
+    # written, so a payment whose books cannot be told is refused whole.
+    books = (await posted_books(session, company_id, entity_id, row, payment)
+             if payment.get("method") not in ("credit_note", "applied") else None)
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
@@ -2886,25 +2984,13 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
         idempotency_key=key, metadata_={"request": digest},
     )
     doc_type = row.state.get("doc_type", "invoice")
-    if payment.get("method") not in ("credit_note", "applied"):
-        # Reverse the payment JE - use stored bank_account; fall back to "1111"
-        # (default account that always exists) for historical payments recorded
-        # before bank_account was required.
-        bank_code = payment.get("bank_account") or "1111"
-        _void_company = await session.get(Company, company_id)
-        _void_base_currency = (_void_company.settings.get("currency", "USD") if _void_company else "USD")
+    if books is not None:
         await auto_je.void_for_doc_payment(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id,
             payment_index=payload.payment_index, amount=to_stored_float(remaining),
-            bank_account_code=bank_code, doc_type=doc_type,
-            refund_date=payload.refund_date,
-            base_currency=_void_base_currency,
-            # The same two rates the payment posted at, resolved the same way, so
-            # the reversal is its mirror. Reversing at the document's rate alone
-            # would not undo the numbers this posting made: it would leave the
-            # difference in the receivable and in the bank.
-            doc_rate=float(row.state.get("conversion_rate") or 1),
-            settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1),
+            bank_account_code=books.bank_account, doc_type=doc_type,
+            refund_date=payload.refund_date, base_currency=books.base_currency,
+            doc_rate=books.doc_rate, settlement_rate=books.settlement_rate,
             already_given_back=given_back,
         )
     else:
@@ -3043,6 +3129,9 @@ async def delete_payment(
         raise HTTPException(status_code=422, detail="Invalid payment index")
     if payment.get("status") != "active":
         raise HTTPException(status_code=409, detail="Only active payments can be deleted")
+    # Said before "void it instead": a Stripe payment is voided only in Stripe either.
+    await refuse_stripe_payment_removal(session, company_id, entity_id, payments, payment_index,
+                                        "doc.payment.deleted")
     if payment.get("refunded"):
         raise HTTPException(
             status_code=409,
@@ -3096,32 +3185,45 @@ async def delete_payment(
             ReconciliationSession.company_id == company_id,
         )
     )
-    recon_sessions = recon_result.scalars().all()
+    recon_sessions = [r for r in recon_result.scalars().all() if je_id in (r.reconciled_je_ids or [])]
+    if any(recon.status == "closed" for recon in recon_sessions):
+        raise HTTPException(
+            status_code=409,
+            detail="Payment has been reconciled in a closed period. Unreconcile to delete.",
+        )
+
+    # Emit doc.payment.deleted first - projection tombstones the row in place.
+    # Every refusal the event carries lands before anything else is changed.
+    # tombstone marks the new reducer semantics (pre-flag events compacted, and
+    # replaying them must keep doing so); ts is the payment's own date, so the
+    # period lock rejects the deletion even when no posted JE exists to void.
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
+        event_type="doc.payment.deleted",
+        data={"payment_index": payment_index, "delete_reason": payload.delete_reason,
+              "amount": payment.get("amount"), "method": payment.get("method"),
+              "tombstone": True, "ts": payment.get("payment_date")},
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=key, metadata_={"request": digest},
+    )
 
     for recon in recon_sessions:
-        if je_id in (recon.reconciled_je_ids or []):
-            if recon.status == "closed":
-                raise HTTPException(
-                    status_code=409,
-                    detail="Payment has been reconciled in a closed period. Unreconcile to delete.",
-                )
-            # Open session - auto-unmatch
-            updated_ids = [j for j in (recon.reconciled_je_ids or []) if j != je_id]
-            recon.reconciled_je_ids = updated_ids
-            # Clear matched_je_id on any statement line pointing to this JE
-            sl_result = await session.execute(
-                _sa.select(BankStatementLine).where(
-                    BankStatementLine.reconciliation_session_id == recon.id,
-                    BankStatementLine.matched_je_id == je_id,
-                )
+        # Open session - auto-unmatch
+        recon.reconciled_je_ids = [j for j in (recon.reconciled_je_ids or []) if j != je_id]
+        # Clear matched_je_id on any statement line pointing to this JE
+        sl_result = await session.execute(
+            _sa.select(BankStatementLine).where(
+                BankStatementLine.reconciliation_session_id == recon.id,
+                BankStatementLine.matched_je_id == je_id,
             )
-            for sl in sl_result.scalars().all():
-                sl.matched_je_id = None
-                sl.status = "unmatched"
+        )
+        for sl in sl_result.scalars().all():
+            sl.matched_je_id = None
+            sl.status = "unmatched"
 
-    # Void the original payment JE first so it disappears from the bank ledger
-    # and reports. The void carries the entry's own date, so a payment inside a
-    # locked period is rejected here before anything mutates.
+    # Void the original payment JE so it disappears from the bank ledger
+    # and reports. The void carries the entry's own date, so an entry inside a
+    # locked period refuses the whole deletion.
     if je_row is not None and je_row.state.get("status") == "posted":
         from celerp.services.je_keys import je_void_data as _je_void  # noqa: PLC0415
         await emit_event(
@@ -3136,20 +3238,6 @@ async def delete_payment(
             idempotency_key=f"{je_id}:void:del:{payment_index}",
             metadata_={"trigger": "doc.payment.deleted", "doc_id": entity_id},
         )
-
-    # Emit doc.payment.deleted - projection tombstones the row in place.
-    # tombstone marks the new reducer semantics (pre-flag events compacted, and
-    # replaying them must keep doing so); ts is the payment's own date, so the
-    # period lock rejects the deletion even when no posted JE exists to void.
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
-        event_type="doc.payment.deleted",
-        data={"payment_index": payment_index, "delete_reason": payload.delete_reason,
-              "amount": payment.get("amount"), "method": payment.get("method"),
-              "tombstone": True, "ts": payment.get("payment_date")},
-        actor_id=user.id, location_id=None, source="api",
-        idempotency_key=key, metadata_={"request": digest},
-    )
 
     await session.commit()
     return {"event_id": entry.id}
@@ -3404,6 +3492,9 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
     docs = [(doc_id, dict(rows[doc_id].state)) for doc_id in dict.fromkeys(payload.doc_ids) if doc_id in rows]
     if not docs:
         raise HTTPException(status_code=404, detail="No valid documents found")
+    if payload.bank_account:
+        from celerp_accounting.ledger_accounts import require_money_account
+        await require_money_account(session, company_id, payload.bank_account)
 
     contact_ids = {s.get("contact_id") for _, s in docs if s.get("contact_id")}
     if len(contact_ids) > 1:
@@ -4364,16 +4455,6 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         valid_until = state.get("valid_until")
         if valid_until and valid_until < datetime.now(timezone.utc).date().isoformat():
             raise HTTPException(status_code=409, detail="Cannot convert expired quotation")
-        # Quotation docs never own reservations, so any reserved line belongs to
-        # another document and must be released there before invoicing.
-        await _assert_no_foreign_reserved(
-            session, company_id, "invoice", None,
-            (li.get("entity_id") or li.get("item_id") or "" for li in state.get("line_items") or []),
-        )
-        await _assert_no_draft_items(
-            session, company_id,
-            (li.get("entity_id") or li.get("item_id") or "" for li in state.get("line_items") or []),
-        )
         ref = next_doc_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
         new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type"}}
@@ -5388,10 +5469,6 @@ async def create_list(
             session, company_id, settings, role, data,
             kind="list", contact_id=payload.contact_id, contact=contact, client_values=data, chosen=chosen,
         ))
-    await _assert_no_draft_items(
-        session, company_id,
-        (li.get("item_id") or li.get("entity_id") for li in data.get("line_items") or []),
-    )
     await _validate_list_line_quantities(
         data.get("line_items") or [], session, company_id,
         require_positive=(payload.list_type != "audit"),
@@ -5417,6 +5494,13 @@ async def patch_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    result = await write_list_patch(session, company_id, role, settings, user, entity_id, payload)
+    await session.commit()
+    return result
+
+
+async def write_list_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: ListPatch) -> dict:
+    """Apply a List edit without committing, so an import can make it part of a larger unit."""
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
@@ -5465,14 +5549,10 @@ async def patch_list(
         raise HTTPException(status_code=422, detail="Discount must be a number")
     if isinstance(_new_lines, list):
         _normalize_line_item_ids(_new_lines)  # keep the item link the editable UI sends as entity_id
-        _existing = {li.get("item_id") for li in row.state.get("line_items") or []}
-        await _assert_no_draft_items(
-            session, company_id,
-            {li.get("item_id") for li in _new_lines} - _existing,
-        )
         await _validate_list_line_quantities(
             _new_lines, session, company_id,
             require_positive=((row.state.get("list_type") or DEFAULT_LIST_TYPE) != "audit"),
+            stored=row.state.get("line_items"),
         )
         if is_money_list(row.state.get("list_type")):
             await _assert_sales_line_price_permission(
@@ -5484,7 +5564,6 @@ async def patch_list(
                              {"fields_changed": fields_changed}, user, idem_key, meta={"request": digest})
     if getattr(entry, "was_deduped", False):
         return _patch_replay(entry, "list.updated", entity_id, digest)
-    await session.commit()
     # entry.id is the list's new version (the projection version tracks the latest entry id), so the
     # client refreshes its cached version from here and its next save pins the value it just wrote.
     return {"event_id": entry.id, "version": entry.id}
@@ -5907,11 +5986,6 @@ class ListLinePagePatch(BaseModel):
     expected_version: int | None = None
 
 
-def _line_identity(li: dict) -> str | None:
-    """The stable identity of a catalog-backed line, or None for a free-text line that carries none."""
-    return line_item_id(li)
-
-
 @lists_router.patch("/{entity_id}/line-page")
 async def patch_list_line_page(
     entity_id: str,
@@ -5981,15 +6055,10 @@ async def patch_list_line_page(
     # `stored`. Concurrency is guarded by the version pin (every save bumps the list version), not by
     # matching incoming rows to stored positions, which would falsely reject a mid-window delete.
 
-    # A draft item is not stock and must never reach a list, on this path as on the full save.
-    _existing = {_line_identity(li) for li in stored}
-    await _assert_no_draft_items(
-        session, company_id,
-        {_line_identity(li) for li in page} - _existing,
-    )
     await _validate_list_line_quantities(
         page, session, company_id,
         require_positive=((row.state.get("list_type") or DEFAULT_LIST_TYPE) != "audit"),
+        stored=stored[offset:offset + original_count],
     )
     if is_money_list(row.state.get("list_type")):
         stored_window = stored[offset:offset + original_count]
@@ -6068,7 +6137,9 @@ async def reserve_list_lines(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Set selected lines reserved/available on a draft or finalized list of any type (ledger-neutral)."""
-    row = await _get_list(session, company_id, entity_id)
+    # Company first, as the document path does, so a document being created with one of
+    # these items either sees the reservation or is seen by it.
+    row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") not in (DRAFT, FINALIZED):
         raise HTTPException(status_code=409, detail=f"Cannot reserve on a list in status '{row.state.get('status')}'")
     return await _reserve_lines_impl(row, entity_id, body.new_status, body.line_entity_ids, user, session)
@@ -6084,7 +6155,7 @@ async def revert_list_to_draft(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Go back from finalized to draft, allowed only before a terminal action has run (GDR 2c)."""
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409,
                             detail="Only a finalized list (before its terminal action) can be reverted to draft")
@@ -6105,7 +6176,7 @@ async def void_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     status = row.state.get("status")
     if status == VOID:
         raise HTTPException(status_code=409, detail="Already voided")
@@ -6125,7 +6196,7 @@ async def delete_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Only draft lists can be deleted")
     from celerp.models.ledger import LedgerEntry
@@ -6160,30 +6231,14 @@ async def convert_list(
         raise HTTPException(status_code=409, detail="Finalize the quotation before converting it")
 
     # Reservation ownership moves with the conversion: lines this list reserved are
-    # re-stamped to the new document below; lines reserved elsewhere block it here.
-    to_transfer, _conflicts = await _scan_reserved_lines(
+    # re-stamped to the new document first, so they are its own when it is created;
+    # the create then refuses a line reserved elsewhere or a draft.
+    to_transfer = await _reserved_by(
         session, company_id, entity_id,
         [li.get("item_id") or li.get("entity_id") or "" for li in state.get("line_items") or []],
     )
-    if _conflicts:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": "; ".join(c["message"] for c in _conflicts),
-                "conflicts": _conflicts,
-            },
-        )
-
     ref = next_doc_ref(company, payload.target_type)
     new_doc_id = f"doc:{ref}"
-    new_data = {k: v for k, v in state.items()
-                if k not in {"status", "result", "entity_type", "list_type", "finalized_at", "sent_at", "accepted_at"}}
-    new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft"})
-    await emit_event(
-        session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
-        event_type="doc.created", data=new_data, actor_id=user.id, location_id=None,
-        source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
-    )
     for li_eid in to_transfer:
         await emit_event(
             session, company_id=company_id, entity_id=li_eid, entity_type="item",
@@ -6192,6 +6247,14 @@ async def convert_list(
             actor_id=user.id, location_id=None, source="reservation",
             idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": new_doc_id},
         )
+    new_data = {k: v for k, v in state.items()
+                if k not in {"status", "result", "entity_type", "list_type", "finalized_at", "sent_at", "accepted_at"}}
+    new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft"})
+    await emit_event(
+        session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
+        event_type="doc.created", data=new_data, actor_id=user.id, location_id=None,
+        source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
     entry = await _emit_list(session, company_id, entity_id, "list.closed",
                              {"result": "converted", "converted_to": new_doc_id,
                               "converted_to_type": payload.target_type}, user)
@@ -6446,14 +6509,13 @@ async def batch_import_lists(
                     continue
                 canonical = json.dumps(fields_changed, sort_keys=True, separators=(",", ":"), default=str)
                 upsert_idem = f"{rec.idempotency_key}:upsert:{hashlib.sha256(canonical.encode()).hexdigest()}"
-                result = await patch_list(
-                    replay.entity_id,
+                result = await write_list_patch(
+                    session, company_id, role, settings, user, replay.entity_id,
                     ListPatch(
                         fields_changed=fields_changed,
                         idempotency_key=upsert_idem,
                         expected_version=row.version if "line_items" in fields_changed else None,
                     ),
-                    company_id=company_id, _=None, role=role, settings=settings, user=user, session=session,
                 )
                 if result.get("event_id") is None:
                     skipped += 1
@@ -6461,7 +6523,7 @@ async def batch_import_lists(
                     updated += 1
             except Exception as exc:
                 if len(errors) < 10:
-                    errors.append(f"{replay.entity_id}: {exc}")
+                    errors.append(f"{replay.entity_id}: {failure_reason(exc)}")
             continue
         if rec.entity_id in existing_entities:
             skipped += 1
@@ -6483,7 +6545,7 @@ async def batch_import_lists(
                 created += 1
         except Exception as exc:
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {exc}")
+                errors.append(f"{rec.entity_id}: {failure_reason(exc)}")
 
     await session.commit()
     return BatchImportResult(created=created, skipped=skipped, updated=updated, errors=errors)
@@ -7902,13 +7964,12 @@ async def upload_doc_file(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    try:
-        meta = await store_upload(company_id, file)
-    except ValueError as exc:
-        raise HTTPException(status_code=413, detail=str(exc))
-
-    entry = await attach_file(session, company_id, "doc", entity_id, meta, user.id)
-    await session.commit()
+    async with storing(session, company_id) as store:
+        try:
+            meta = await store.upload(file)
+        except ValueError as exc:
+            raise HTTPException(status_code=413, detail=str(exc))
+        entry = await attach_file(session, company_id, "doc", entity_id, meta, user.id)
     return {"event_id": entry.id, **meta}
 
 
@@ -8998,7 +9059,7 @@ async def send_list(
     """Record a finalized list as sent (sets the `sent_at` milestone; status stays finalized) and,
     if a recipient is given, fire the relay email — the same Send / Mark-as-sent mechanism documents
     use. `sent_via="manual"` (no recipient) is the Mark-as-sent path."""
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Issue the list before sending it")
     now = datetime.now(timezone.utc).isoformat()
@@ -9058,7 +9119,7 @@ async def move_transfer(
     """Transfer action: relocate every item on a finalized transfer to one location, by emitting the
     inventory `item.transferred` event per line (stock is owned by inventory; docs only emits the
     event). Repeatable — the transfer stays finalized so it can be moved again."""
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     if (row.state.get("list_type") or "") != "transfer":
         raise HTTPException(status_code=409, detail="Only transfers can move stock")
     if row.state.get("status") != FINALIZED:

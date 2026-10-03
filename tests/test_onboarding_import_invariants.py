@@ -19,11 +19,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from celerp.services import import_stage
 from httpx import ASGITransport, AsyncClient
 
 from fasthtml.common import to_xml
 
 from test_helpers import make_test_token
+from ui.i18n import t as t_
 from ui.routes import csv_import as ci
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -44,10 +47,10 @@ def stage_dir(tmp_path, monkeypatch):
 
 class TestImportStageInvariant:
     def test_import_ref_accepts_only_canonical_token(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "sku\nA\n")
-        assert ci._IMPORT_REF_RE.fullmatch(ref)
-        assert ci._stage_paths(ref) is not None
-        assert ci._stage_paths(ref.upper()) is None
+        ref = import_stage.write_stage(_COMPANY_A, "sku\nA\n")
+        assert import_stage.REF_RE.fullmatch(ref)
+        assert import_stage.stage_paths(ref) is not None
+        assert import_stage.stage_paths(ref.upper()) is None
 
     @pytest.mark.parametrize("bad", [
         "../etc/passwd", "imp_../../x", "..", "imp_" + "0" * 30 + "/..",
@@ -55,49 +58,49 @@ class TestImportStageInvariant:
     def test_import_ref_rejects_path_traversal_before_filesystem_access(self, bad, monkeypatch):
         def _boom():
             raise AssertionError("filesystem resolver reached for an invalid ref")
-        monkeypatch.setattr(ci, "_stage_dir", _boom)
-        assert ci._stage_paths(bad) is None
-        assert ci._read_stage(_COMPANY_A, bad) is None
-        ci.delete_import_ref(bad)
+        monkeypatch.setattr(import_stage, "stage_dir", _boom)
+        assert import_stage.stage_paths(bad) is None
+        assert import_stage.read_stage(_COMPANY_A, bad) is None
+        import_stage.delete_ref(bad)
 
     @pytest.mark.parametrize("bad", [
         "/tmp/imp_" + "0" * 32, "imp_" + "0" * 31 + "\\", "C:\\imp_" + "0" * 32,
     ])
     def test_import_ref_rejects_absolute_and_backslash_paths(self, bad):
-        assert ci._stage_paths(bad) is None
+        assert import_stage.stage_paths(bad) is None
 
     @pytest.mark.parametrize("bad", [
         "", "0" * 32, "imp_" + "0" * 31, "imp_" + "0" * 33, "xmp_" + "0" * 32,
         "imp_" + "0" * 32 + "\n", " imp_" + "0" * 32, "imp_" + "g" * 32, "imp_" + "0" * 4096,
     ])
     def test_import_ref_rejects_prefix_suffix_and_oversize_tokens(self, bad):
-        assert ci._stage_paths(bad) is None
+        assert import_stage.stage_paths(bad) is None
 
     def test_import_refs_do_not_collide(self, stage_dir):
-        refs = {ci._write_stage(_COMPANY_A, "x") for _ in range(500)}
+        refs = {import_stage.write_stage(_COMPANY_A, "x") for _ in range(500)}
         assert len(refs) == 500
 
     def test_import_stage_same_company_loads(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "sku\nA\n")
-        assert ci._read_stage(_COMPANY_A, ref) == "sku\nA\n"
+        ref = import_stage.write_stage(_COMPANY_A, "sku\nA\n")
+        assert import_stage.read_stage(_COMPANY_A, ref) == "sku\nA\n"
 
     def test_import_stage_wrong_company_fails_closed(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "sku\nA\n")
-        assert ci._read_stage(_COMPANY_B, ref) is None
-        assert ci._read_stage("", ref) is None
+        ref = import_stage.write_stage(_COMPANY_A, "sku\nA\n")
+        assert import_stage.read_stage(_COMPANY_B, ref) is None
+        assert import_stage.read_stage("", ref) is None
 
     def test_import_stage_missing_metadata_fails_closed(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "sku\nA\n")
+        ref = import_stage.write_stage(_COMPANY_A, "sku\nA\n")
         (stage_dir / f"{ref}.meta").unlink()
-        assert ci._read_stage(_COMPANY_A, ref) is None
+        assert import_stage.read_stage(_COMPANY_A, ref) is None
 
     def test_import_stage_requires_company(self, stage_dir):
         with pytest.raises(ValueError):
-            ci._write_stage("", "sku\nA\n")
+            import_stage.write_stage("", "sku\nA\n")
 
     @pytest.mark.asyncio
     async def test_authenticated_load_uses_the_callers_company(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "sku\nA\n")
+        ref = import_stage.write_stage(_COMPANY_A, "sku\nA\n")
         with patch("ui.api_client.get_company", new=AsyncMock(return_value={"id": _COMPANY_B})):
             assert await ci.load_import_csv("tok", ref) is None
             assert await ci.resolve_import_csv("tok", {"csv_ref": ref}) == ""
@@ -105,40 +108,38 @@ class TestImportStageInvariant:
             assert await ci.resolve_import_csv("tok", {"csv_ref": ref}) == "sku\nA\n"
 
     def test_expired_stage_is_rejected_and_removed(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "sku\nA\n")
+        ref = import_stage.write_stage(_COMPANY_A, "sku\nA\n")
         meta = stage_dir / f"{ref}.meta"
-        stale = time.time() - ci._IMPORT_STAGE_MAX_AGE_SECONDS - 1
+        stale = time.time() - import_stage.MAX_AGE_SECONDS - 1
         meta.write_text(json.dumps({"company_id": _COMPANY_A, "created_at": stale}))
-        assert ci._read_stage(_COMPANY_A, ref) is None
+        assert import_stage.read_stage(_COMPANY_A, ref) is None
         assert not meta.exists() and not (stage_dir / f"{ref}.csv").exists()
 
     def test_cleanup_never_removes_recent_stage(self, stage_dir):
-        fresh = ci._write_stage(_COMPANY_A, "fresh")
-        old = ci._write_stage(_COMPANY_A, "old")
-        stale = time.time() - ci._IMPORT_STAGE_MAX_AGE_SECONDS - 1
+        fresh = import_stage.write_stage(_COMPANY_A, "fresh")
+        old = import_stage.write_stage(_COMPANY_A, "old")
+        stale = time.time() - import_stage.MAX_AGE_SECONDS - 1
         (stage_dir / f"{old}.meta").write_text(json.dumps({"company_id": _COMPANY_A, "created_at": stale}))
-        assert ci.cleanup_expired_import_refs() == 1
-        assert ci._read_stage(_COMPANY_A, fresh) == "fresh"
+        assert import_stage.cleanup_expired() == 1
+        assert import_stage.read_stage(_COMPANY_A, fresh) == "fresh"
 
     def test_no_route_constructs_a_staging_path(self):
-        """Only the staging helper may name the stage directory or its private resolvers."""
-        private = {"_stage_dir", "_stage_paths", "_write_stage", "_read_stage"}
+        """Only the staging service names the stage directory or resolves stage paths."""
         offenders = []
-        for path in (_REPO / "ui").rglob("*.py"):
-            if path.name == "csv_import.py":
+        for path in [*(_REPO / "ui").rglob("*.py"), *(_REPO / "celerp").rglob("*.py")]:
+            if path.name == "import_stage.py":
                 continue
             src = path.read_text(encoding="utf-8")
             if "import_staging" in src:
                 offenders.append(f"{path}: import_staging")
             for node in ast.walk(ast.parse(src)):
-                name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
-                if name in private:
-                    offenders.append(f"{path}:{node.lineno}: {name}")
+                if isinstance(node, ast.Attribute) and node.attr == "stage_dir":
+                    offenders.append(f"{path}:{node.lineno}: stage_dir")
         assert not offenders, offenders
 
     async def _confirm(self, stage_dir, import_rows):
         from ui.app import app as ui_app
-        ref = ci._write_stage(_COMPANY_A, "sku,name,sell_by\nA-1,Ruby,piece\n")
+        ref = import_stage.write_stage(_COMPANY_A, "sku,name,sell_by\nA-1,Ruby,piece\n")
         company = {"id": _COMPANY_A, "current_role": "owner", "settings": {}}
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
              patch("ui.api_client.import_rows", new=import_rows):
@@ -156,14 +157,14 @@ class TestImportStageInvariant:
         ok = AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})
         ref = await self._confirm(stage_dir, ok)
         assert ok.await_count == 1
-        assert ci._read_stage(_COMPANY_A, ref) is None
+        assert import_stage.read_stage(_COMPANY_A, ref) is None
 
     @pytest.mark.asyncio
     async def test_failed_commit_keeps_stage_for_retry(self, stage_dir):
         from ui.api_client import APIError
         failing = AsyncMock(side_effect=APIError(500, "boom"))
         ref = await self._confirm(stage_dir, failing)
-        assert ci._read_stage(_COMPANY_A, ref) is not None
+        assert import_stage.read_stage(_COMPANY_A, ref) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -377,18 +378,16 @@ class TestSetupInvariant:
     async def test_setup_company_has_placeholder_selected_when_vertical_absent(self, stored):
         from ui.api_client import APIError
         from ui.app import app as ui_app
-        from test_setup_business_type import _selected_values, _vertical_select
+        from test_setup_business_type import _selected_values, _shows_only_placeholder, _vertical_select
         get_company = AsyncMock(side_effect=APIError(503, "down")) if stored is None else AsyncMock(return_value=stored)
         with patch("ui.api_client.get_company", new=get_company):
             async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
                 r = await c.get("/setup/company", cookies=_owner_cookies())
         select = _vertical_select(r.text)
-        # Only the placeholder is selected, it cannot be submitted, and the field is
-        # required, so no real business type is sent unless the user picks one.
+        # Only the prompt shows and the control submits nothing, so no real business
+        # type is sent unless the user picks one (an empty choice is refused by the server).
         assert _selected_values(select) == [""]
-        placeholder = re.search(r'<option value=""[^>]*>', select).group(0)
-        assert "disabled" in placeholder
-        assert "required" in select.split(">", 1)[0]
+        assert _shows_only_placeholder(select)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("vertical", ["", "   ", None], ids=["empty", "whitespace", "missing"])
@@ -794,20 +793,29 @@ async def _business_snapshot(session, company_id: str) -> dict:
     }
 
 
-async def _rows_preview(client, h, rows, *, upsert=False, key="op-1") -> dict:
-    r = await client.post("/items/import/rows/preview", json={"rows": rows, "upsert": upsert, "idempotency_key": key}, headers=h)
+async def _rows_preview(client, h, rows, *, upsert=False, key="op-1", decisions=None) -> dict:
+    r = await client.post("/items/import/rows/preview", json={
+        "rows": rows, "upsert": upsert, "idempotency_key": key, "decisions": decisions or {},
+    }, headers=h)
     assert r.status_code == 200, r.text
     return r.json()
 
 
-async def _rows_commit(client, h, rows, *, upsert=False, key="op-1", preview_hash=None):
+async def _rows_commit(client, h, rows, *, upsert=False, key="op-1", preview_hash=None, decisions=None):
     return await client.post("/items/import/rows", json={
         "rows": rows, "upsert": upsert, "idempotency_key": key, "preview_hash": preview_hash,
+        "decisions": decisions or {},
     }, headers=h)
 
 
+def _lots(rows) -> dict:
+    """Keep every SKU that repeats in ``rows`` as separate lots."""
+    skus = [r.get("sku") for r in rows if r.get("sku")]
+    return {"separate_lots": sorted({s for s in skus if skus.count(s) > 1})}
+
+
 async def _seed_items(client, h, rows, key):
-    r = await _rows_commit(client, h, rows, key=key)
+    r = await _rows_commit(client, h, rows, key=key, decisions=_lots(rows))
     assert r.status_code == 200 and not r.json()["errors"], r.text
 
 
@@ -916,11 +924,11 @@ class TestPreviewCommitInvariant:
     async def test_commit_recomputes_semantic_preview_before_writer(self, client, perm, monkeypatch):
         import celerp_inventory.routes as routes
         order: list[str] = []
-        real_preview, real_writer = routes.preview_import_rows, routes.import_items
+        real_plan, real_writer = routes.build_import_plan, routes.import_items
 
-        async def preview_spy(*a, **k):
-            order.append("preview")
-            return await real_preview(*a, **k)
+        async def plan_spy(*a, **k):
+            order.append("plan")
+            return await real_plan(*a, **k)
 
         async def writer_spy(*a, **k):
             order.append("writer")
@@ -928,11 +936,11 @@ class TestPreviewCommitInvariant:
 
         rows = [{"name": "Widget", "sell_by": "piece", "quantity": "1"}]
         ph = (await _rows_preview(client, perm["admin_h"], rows))["preview_hash"]
-        monkeypatch.setattr(routes, "preview_import_rows", preview_spy)
+        monkeypatch.setattr(routes, "build_import_plan", plan_spy)
         monkeypatch.setattr(routes, "import_items", writer_spy)
         r = await _rows_commit(client, perm["admin_h"], rows, preview_hash=ph)
         assert r.status_code == 200, r.text
-        assert order == ["preview", "writer"]
+        assert order == ["plan", "writer"]
 
     @pytest.mark.asyncio
     async def test_commit_does_not_call_writer_when_preview_has_errors(self, client, perm, monkeypatch):
@@ -971,16 +979,16 @@ class TestPreviewCommitInvariant:
     @pytest.mark.asyncio
     async def test_browser_row_preview_delegates_to_same_semantic_row_preview(self, client, perm, monkeypatch):
         import celerp_inventory.routes as routes
-        spy = AsyncMock(wraps=routes.preview_import_rows)
-        monkeypatch.setattr(routes, "preview_import_rows", spy)
+        spy = AsyncMock(wraps=routes.build_import_plan)
+        monkeypatch.setattr(routes, "build_import_plan", spy)
         await _rows_preview(client, perm["admin_h"], [{"name": "Widget", "sell_by": "piece"}])
         assert spy.await_count == 1
 
     @pytest.mark.asyncio
     async def test_file_preview_delegates_to_semantic_row_preview(self, client, perm, monkeypatch, write_upload):
         import celerp_inventory.routes as routes
-        spy = AsyncMock(wraps=routes.preview_import_rows)
-        monkeypatch.setattr(routes, "preview_import_rows", spy)
+        spy = AsyncMock(wraps=routes.build_import_plan)
+        monkeypatch.setattr(routes, "build_import_plan", spy)
         fid = write_upload(perm, "sku,name,sell_by\nF-1,Widget,piece\n")
         r = await client.get(f"/items/import/preview?file_id={fid}", headers=perm["admin_h"])
         assert r.status_code == 200, r.text
@@ -1001,25 +1009,31 @@ class TestPreviewCommitInvariant:
 
     # INV-PREVIEW-03 --------------------------------------------------------
 
-    def test_preview_hash_changes_when_row_changes(self):
+    @staticmethod
+    def _hash(rows, upsert=False, key="k", fingerprint="f", decisions=None):
+        from types import SimpleNamespace
+
         from celerp_inventory.routes import _rows_preview_hash
-        assert _rows_preview_hash([{"name": "A"}], False, "k", "f") != _rows_preview_hash([{"name": "B"}], False, "k", "f")
+        plan = SimpleNamespace(decisions=decisions or {"exclude": []}, semantic_fingerprint=fingerprint)
+        return _rows_preview_hash(rows, upsert, key, plan)
+
+    def test_preview_hash_changes_when_row_changes(self):
+        assert self._hash([{"name": "A"}]) != self._hash([{"name": "B"}])
 
     def test_preview_hash_changes_when_upsert_changes(self):
-        from celerp_inventory.routes import _rows_preview_hash
-        assert _rows_preview_hash([{"name": "A"}], False, "k", "f") != _rows_preview_hash([{"name": "A"}], True, "k", "f")
+        assert self._hash([{"name": "A"}]) != self._hash([{"name": "A"}], upsert=True)
 
     def test_preview_hash_changes_when_operation_key_changes(self):
-        from celerp_inventory.routes import _rows_preview_hash
-        assert _rows_preview_hash([{"name": "A"}], False, "k1", "f") != _rows_preview_hash([{"name": "A"}], False, "k2", "f")
+        assert self._hash([{"name": "A"}], key="k1") != self._hash([{"name": "A"}], key="k2")
 
     def test_preview_hash_is_stable_for_equivalent_dict_key_order(self):
-        from celerp_inventory.routes import _rows_preview_hash
-        assert _rows_preview_hash([{"name": "A", "sku": "1"}], False, "k", "f") == _rows_preview_hash([{"sku": "1", "name": "A"}], False, "k", "f")
+        assert self._hash([{"name": "A", "sku": "1"}]) == self._hash([{"sku": "1", "name": "A"}])
 
     def test_preview_hash_changes_when_semantic_fingerprint_changes(self):
-        from celerp_inventory.routes import _rows_preview_hash
-        assert _rows_preview_hash([{"name": "A"}], False, "k", "f1") != _rows_preview_hash([{"name": "A"}], False, "k", "f2")
+        assert self._hash([{"name": "A"}], fingerprint="f1") != self._hash([{"name": "A"}], fingerprint="f2")
+
+    def test_preview_hash_changes_when_row_decisions_change(self):
+        assert self._hash([{"name": "A"}], decisions={"exclude": []}) != self._hash([{"name": "A"}], decisions={"exclude": [1]})
 
     @pytest.mark.asyncio
     async def test_file_preview_hash_changes_when_file_bytes_change(self, client, perm, write_upload):
@@ -1042,9 +1056,32 @@ class TestPreviewCommitInvariant:
         assert hashes[0] != hashes[1]
 
     @pytest.mark.asyncio
+    async def test_file_preview_asks_for_an_unclear_header_row_then_reads_the_chosen_one(self, client, perm, write_upload):
+        fid = write_upload(perm, "Report\nalpha,beta\nsku,name\nA1,Ring\n")
+        r = await client.get(f"/items/import/preview?file_id={fid}", headers=perm["admin_h"])
+        assert r.status_code == 200, r.text  # the line naming known columns is found
+        assert r.json()["header_row"] == 2
+        fid = write_upload(perm, "Report\nalpha,beta\nA1,Ring\n")
+        r = await client.get(f"/items/import/preview?file_id={fid}", headers=perm["admin_h"])
+        assert r.status_code == 422, r.text
+        detail = r.json()["detail"]
+        assert detail["code"] == "header_row_required" and detail["lines"][:2] == [["Report"], ["alpha", "beta"]]
+        r = await client.get(f"/items/import/preview?file_id={fid}&header_row=1", headers=perm["admin_h"])
+        assert r.status_code == 200, r.text
+        assert r.json()["header_row"] == 1
+
+    @pytest.mark.asyncio
+    async def test_file_preview_hash_changes_when_header_row_changes(self, client, perm, write_upload):
+        fid = write_upload(perm, "name,sku\nname,sku\nRing,A1\n")
+        ha = (await client.get(f"/items/import/preview?file_id={fid}&header_row=0", headers=perm["admin_h"])).json()
+        hb = (await client.get(f"/items/import/preview?file_id={fid}&header_row=1", headers=perm["admin_h"])).json()
+        assert ha["preview_hash"] != hb["preview_hash"]
+
+    @pytest.mark.asyncio
     async def test_file_preview_hash_changes_when_sheet_changes(self, client, perm, write_upload, monkeypatch):
         import celerp.importers.tabular as tabular
-        monkeypatch.setattr(tabular, "read_table", lambda data, filename, sheet=None: (["name"], [{"name": "Widget"}]))
+        monkeypatch.setattr(tabular, "read_table_at_header",
+                            lambda data, filename, sheet=None, header_row=None, known=(): (["name"], [{"name": "Widget"}], 0))
         fid = write_upload(perm, "not really a workbook", filename="items.xlsx")
         ha = (await client.get(f"/items/import/preview?file_id={fid}&sheet=One", headers=perm["admin_h"])).json()["preview_hash"]
         hb = (await client.get(f"/items/import/preview?file_id={fid}&sheet=Two", headers=perm["admin_h"])).json()["preview_hash"]
@@ -1075,11 +1112,12 @@ class TestPreviewCommitInvariant:
         rows += [{"name": f"Item {i}", "sell_by": "piece", "quantity": "1"} for i in range(2, 1001)]
         rows.append({"name": "Shared last", "sku": "INV02-SHARED", "sell_by": "piece", "quantity": "2"})
         assert len(rows) == 1001
-        preview = await _rows_preview(client, perm["admin_h"], rows, upsert=True, key="big")
+        preview = await _rows_preview(client, perm["admin_h"], rows, upsert=True, key="big", decisions=_lots(rows))
         assert preview["errors"] == []
         monkeypatch.setattr(svc, "build_import_records", build_spy)
         monkeypatch.setattr(svc, "write_import_batch", write_spy)
-        r = await _rows_commit(client, perm["admin_h"], rows, upsert=True, key="big", preview_hash=preview["preview_hash"])
+        r = await _rows_commit(client, perm["admin_h"], rows, upsert=True, key="big", preview_hash=preview["preview_hash"],
+                               decisions=_lots(rows))
         assert r.status_code == 200, r.text
         body = r.json()
         assert (body["created"], body["updated"], body["errors"]) == (1001, 0, [])
@@ -1195,7 +1233,8 @@ class TestPreviewCommitInvariant:
         company = {"id": _COMPANY_A, "current_role": "owner", "settings": {}}
         import_rows = import_rows or AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
-             patch("ui.api_client.preview_import_rows", new=preview), \
+             patch("ui.api_client.plan_import_rows", new=preview), \
+             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])), \
              patch("ui.api_client.import_rows", new=import_rows):
             async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
                 r = await c.post(path, data=data, cookies=_owner_cookies())
@@ -1204,7 +1243,7 @@ class TestPreviewCommitInvariant:
 
     @pytest.mark.asyncio
     async def test_review_with_row_errors_offers_no_import(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "name,quantity\nWidget,1\n")
+        ref = import_stage.write_stage(_COMPANY_A, "name,quantity\nWidget,1\n")
         preview = AsyncMock(return_value={"errors": [{"row": 1, "field": "sell_by", "code": "sell_by_unresolved", "message": "No selling unit"}],
                                           "locations_to_create": [], "preview_hash": "d" * 64})
         html, _ = await self._ui_post("/inventory/import/review", {"csv_ref": ref}, preview=preview)
@@ -1214,16 +1253,17 @@ class TestPreviewCommitInvariant:
 
     @pytest.mark.asyncio
     async def test_changing_update_existing_reruns_review(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "name,sku,sell_by\nWidget,W-1,piece\n")
+        ref = import_stage.write_stage(_COMPANY_A, "name,sku,sell_by\nWidget,W-1,piece\n")
         preview = AsyncMock(return_value={"errors": [], "locations_to_create": [], "preview_hash": "e" * 64})
-        html, _ = await self._ui_post("/inventory/import/review", {"csv_ref": ref, "upsert": "1"}, preview=preview)
+        html, _ = await self._ui_post("/inventory/import/review", {"csv_ref": ref, "revision": "1", "upsert": "1"},
+                                      preview=preview)
         assert preview.await_args.kwargs["upsert"] is True
         assert 'name="preview_hash" value="' + "e" * 64 in html
         assert 'hx-post="/inventory/import/review"' in html
 
     @pytest.mark.asyncio
     async def test_confirm_without_reviewed_hash_never_imports(self, stage_dir):
-        ref = ci._write_stage(_COMPANY_A, "name,sell_by\nWidget,piece\n")
+        ref = import_stage.write_stage(_COMPANY_A, "name,sell_by\nWidget,piece\n")
         preview = AsyncMock(return_value={"errors": [], "locations_to_create": [], "preview_hash": "f" * 64})
         html, writer = await self._ui_post("/inventory/import/confirm", {"csv_ref": ref}, preview=preview)
         writer.assert_not_awaited()
@@ -1232,13 +1272,13 @@ class TestPreviewCommitInvariant:
     @pytest.mark.asyncio
     async def test_stale_confirm_returns_to_review(self, stage_dir):
         from ui.api_client import APIError
-        ref = ci._write_stage(_COMPANY_A, "name,sell_by\nWidget,piece\n")
+        ref = import_stage.write_stage(_COMPANY_A, "name,sell_by\nWidget,piece\n")
         preview = AsyncMock(return_value={"errors": [], "locations_to_create": [], "preview_hash": "a" * 64})
         stale = AsyncMock(side_effect=APIError(409, {"code": "preview_stale"}))
         html, _ = await self._ui_post("/inventory/import/confirm", {"csv_ref": ref, "preview_hash": "b" * 64},
                                       preview=preview, import_rows=stale)
         assert "a" * 64 in html
-        assert ci._read_stage(_COMPANY_A, ref) is not None
+        assert import_stage.read_stage(_COMPANY_A, ref) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1499,14 +1539,14 @@ class TestUnitAndPriceInvariant:
     @pytest.mark.asyncio
     async def test_browser_mapping_blocks_a_foreign_currency_price_column(self, stage_dir):
         from ui.app import app as ui_app
-        ref = ci._write_stage(_COMPANY_A, "name,sell_by,Price (USD)\nWidget,piece,10\n")
+        ref = import_stage.write_stage(_COMPANY_A, "name,sell_by,Price (USD)\nWidget,piece,10\n")
         company = {"id": _COMPANY_A, "currency": "THB", "current_role": "owner", "settings": {}}
         form = {"csv_ref": ref, "map__name": "name", "map__sell_by": "sell_by", "map__Price (USD)": "retail_price"}
         preview = AsyncMock()
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
              patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}])), \
              patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
-             patch("ui.api_client.preview_import_rows", new=preview):
+             patch("ui.api_client.plan_import_rows", new=preview):
             async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
                 r = await c.post("/inventory/import/mapped", data=form, cookies=_owner_cookies())
         assert r.status_code == 200, r.text
@@ -1552,8 +1592,8 @@ _PARITY_XLSX_ROWS = [
 ]
 
 
-async def _read(data: bytes, filename: str, **fields):
-    return await ci.read_tabular_upload({"csv_file": _Upload(data, filename), **fields})
+async def _read(data: bytes, filename: str, known=(), **fields):
+    return await ci.read_tabular_upload({"csv_file": _Upload(data, filename), **fields}, known=known)
 
 
 class TestTabularParityInvariant:
@@ -1572,7 +1612,7 @@ class TestTabularParityInvariant:
         data = ("sku,name\nA1,Ruby,EXTRA\n".encode() if fmt == "csv"
                 else _xlsx({"Items": [["sku", "name"], ["A1", "Ruby", "EXTRA"]]}))
         rows, err = await _read(data, f"items.{fmt}")
-        assert rows == [] and err == t("import.err_extra_columns")
+        assert rows == [] and err == t("import.err_extra_columns", file=f"items.{fmt}")
 
     @pytest.mark.asyncio
     async def test_bom_csv_still_reads_its_first_header(self):
@@ -1656,6 +1696,88 @@ class TestTabularParityInvariant:
             staged[fmt] = stash.await_args.args[1]
         assert staged["xlsx"] == staged["csv"]
         assert "Ruby, oval" in staged["csv"]
+
+    # A file read by any importer: the header row is found, or chosen, the same
+    # way for both formats, and every choice is made on the stored file.
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fmt", ["csv", "xlsx"])
+    async def test_a_title_row_above_the_header_is_skipped_in_both_formats(self, fmt):
+        from celerp.importers.tabular import known_headers
+        lines = [["Stock list, March"], [], ["sku", "name", "quantity"], ["A1", "Ruby", "2"]]
+        data = (b"Stock list March\n\nsku,name,quantity\nA1,Ruby,2\n" if fmt == "csv"
+                else _xlsx({"Items": [[c or None for c in line] for line in lines]}))
+        rows, err = await _read(data, f"items.{fmt}", known=known_headers(["sku", "name", "quantity"]))
+        assert err is None and rows == [{"sku": "A1", "name": "Ruby", "quantity": "2"}]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fmt", ["csv", "xlsx"])
+    async def test_an_unclear_header_row_asks_with_the_leading_rows(self, fmt, stage_dir):
+        from celerp.importers.tabular import known_headers
+        data = (b"Report\nalpha,beta\nA1,Ruby\n" if fmt == "csv"
+                else _xlsx({"Items": [["Report"], ["alpha", "beta"], ["A1", "Ruby"]]}))
+        stash = AsyncMock()
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value={"id": _COMPANY_A})), \
+             patch("ui.routes.csv_import.stash_import_csv", new=stash):
+            rows, ref, err = await ci.stage_tabular_upload(
+                "tok", {"csv_file": _Upload(data, f"items.{fmt}")}, known=known_headers(["sku", "name"]))
+        assert (rows, ref) == ([], "") and err.header_lines[:2] == [["Report"], ["alpha", "beta"]]
+        stash.assert_not_awaited()
+        html = to_xml(ci.upload_form(template_href="/t", preview_action="/p", error=err))
+        assert f'name="source_ref" value="{err.source_ref}"' in html
+        assert 'name="header_row"' in html and "alpha | beta" in html and f"items.{fmt}" in html
+
+    @pytest.mark.asyncio
+    async def test_the_header_row_is_chosen_on_the_stored_file(self, stage_dir):
+        from celerp.importers.tabular import known_headers
+        known = known_headers(["sku", "name"])
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value={"id": _COMPANY_A})):
+            _rows, _ref, asked = await ci.stage_tabular_upload(
+                "tok", {"csv_file": _Upload(b"Report\nalpha,beta\nA1,Ruby\n", "items.csv")}, known=known)
+            rows, ref, err = await ci.stage_tabular_upload(
+                "tok", {"source_ref": asked.source_ref, "header_row": "1"}, known=known)
+            assert err is None and rows == [{"alpha": "A1", "beta": "Ruby"}]
+            text, draft, _revision = await ci.load_import_draft("tok", ref)
+            assert draft == {"source": {"filename": "items.csv", "sheet": None, "header_row": 1}}
+            assert "A1,Ruby" in text
+            # The stored file is gone once its rows are staged.
+            assert await ci._load_upload_source("tok", asked.source_ref) is None
+
+    @pytest.mark.asyncio
+    async def test_the_sheet_is_chosen_on_the_stored_workbook(self, stage_dir):
+        data = _xlsx({"Rings": [["sku"], ["R1"]], "Stones": [["sku"], ["S1"]]})
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value={"id": _COMPANY_A})):
+            _rows, _ref, asked = await ci.stage_tabular_upload("tok", {"csv_file": _Upload(data, "stock.xlsx")})
+            assert asked.sheets == ["Rings", "Stones"] and asked.source_ref
+            rows, ref, err = await ci.stage_tabular_upload("tok", {"source_ref": asked.source_ref, "sheet": "Stones"})
+        assert err is None and rows == [{"sku": "S1"}] and ref
+
+    @pytest.mark.asyncio
+    async def test_a_stored_upload_is_private_to_its_company_and_never_a_table(self, stage_dir):
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value={"id": _COMPANY_A})):
+            _rows, _ref, asked = await ci.stage_tabular_upload(
+                "tok", {"csv_file": _Upload(b"Report\nalpha,beta\nA1,Ruby\n", "items.csv")},
+                known=frozenset({"sku", "name"}))
+            assert await ci.load_import_csv("tok", asked.source_ref) is None
+            assert await ci.load_import_draft("tok", asked.source_ref) is None
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value={"id": _COMPANY_B})):
+            rows, ref, err = await ci.stage_tabular_upload("tok", {"source_ref": asked.source_ref, "header_row": "1"})
+        assert (rows, ref) == ([], "") and err == t_("import.csv_expired")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", ["extra_columns", "empty", "no_header"])
+    async def test_workbook_errors_name_the_file_and_never_say_csv(self, key):
+        sheet = {"extra_columns": [["sku", "name"], ["A1", "Ruby", "EXTRA"]], "empty": [["sku"]],
+                 "no_header": [["sku", None, "name"], ["A1", "x", "Ruby"]]}[key]
+        rows, err = await _read(_xlsx({"Items": sheet}), "stock.xlsx")
+        assert rows == [] and err == t_(f"import.err_{key}", file="stock.xlsx")
+        assert "stock.xlsx" in err and "CSV" not in err
+
+    @pytest.mark.asyncio
+    async def test_unreadable_workbook_names_the_file(self):
+        rows, err = await _read(_xlsx({"Items": [["sku", "qty"], ["A", "=1+1"]]}), "stock.xlsx")
+        assert rows == [] and err.startswith(t_("import.err_read_file", file="stock.xlsx", detail=""))
+        assert "CSV" not in err
 
     @pytest.mark.asyncio
     async def test_document_line_upload_refuses_a_value_it_would_lose(self):
@@ -1868,13 +1990,25 @@ def _registered_paths() -> set[str]:
 async def _confirm_inventory_import(stage_dir, *, cookies: dict | None = None):
     """Run the inventory confirm step against a stubbed server that accepts the import."""
     from ui.app import app as ui_app
-    ref = ci._write_stage(_COMPANY_A, "name,sell_by\nWidget,piece\n")
     company = _company({})
+    jar = {**_owner_cookies(), **(cookies or {})}
     with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
+         patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])), \
+         patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
          patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+            # The upload records where the import was opened from; mapping carries it into the draft.
+            uploaded = await c.post("/inventory/import/preview", cookies=jar, files={
+                "csv_file": ("stock.csv", io.BytesIO(b"name,sell_by\nWidget,piece\n"), "text/csv")})
+            assert uploaded.status_code == 200, uploaded.text[:2000]
+            ref = re.search(r'name="csv_ref" value="([^"]+)"', uploaded.text).group(1)
+            mapped = await c.post("/inventory/import/mapped",
+                                  data={"csv_ref": ref, "map__name": "name", "map__sell_by": "sell_by"},
+                                  cookies=jar)
+            assert mapped.status_code == 303, mapped.text[:2000]
+            ref = mapped.headers["location"].rsplit("/", 1)[-1]
             return await c.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": "h"},
-                                cookies={**_owner_cookies(), **(cookies or {})})
+                                cookies=jar)
 
 
 class TestEntryOrchestrationInvariant:
@@ -1888,9 +2022,9 @@ class TestEntryOrchestrationInvariant:
             assert href.split("?")[0] in registered, href
 
     @pytest.mark.asyncio
-    async def test_hub_does_not_offer_whole_company_migration_yet(self):
+    async def test_hub_moves_books_only_through_the_new_company_wizard(self):
         r = await _ui_request("GET", "/onboarding")
-        assert "Move from another system" not in r.text
+        assert 'href="/setup/new-company/migrate"' in r.text
         assert "/onboarding/upload/cif" not in r.text
 
     def test_hub_omits_actions_whose_page_is_not_installed(self):
@@ -1901,7 +2035,8 @@ class TestEntryOrchestrationInvariant:
     def test_hub_actions_hand_off_to_the_canonical_import_and_connector_pages(self):
         from ui.routes.auth import _ONBOARDING_ACTIONS
         assert {path for path, *_ in _ONBOARDING_ACTIONS} == {
-            "/inventory/import", "/crm/import/contacts", "/docs/import", "/settings/cloud",
+            "/inventory/import", "/crm/import/contacts", "/docs/import", "/setup/new-company/migrate",
+            "/settings/cloud",
         }
 
     @pytest.mark.asyncio
@@ -1954,7 +2089,7 @@ class TestEntryOrchestrationInvariant:
     async def test_connector_action_is_not_labelled_as_migration(self):
         import html as _html
         r = await _ui_request("GET", "/onboarding", settings={"onboarding_pending": True})
-        connector = re.search(r'<a[^>]*href="/settings/cloud"[^>]*>(.*?)</a>', r.text, re.S)
+        connector = re.search(r'<a[^>]*href="/settings/cloud\?tab=website"[^>]*>(.*?)</a>', r.text, re.S)
         assert connector, r.text
         text = _html.unescape(re.sub(r"<[^>]+>", " ", connector.group(1))).lower()
         for word in ("migrat", "move ", "moving", "switch", "leave", "transfer", "whole company", "everything"):
@@ -2006,13 +2141,16 @@ class _ImportApi:
     async def get_company(self, token):
         return _company({})
 
-    async def import_rows(self, token, rows, *, upsert, idempotency_key, preview_hash):
-        self.calls.append(("import_rows", rows, upsert, idempotency_key, preview_hash))
+    async def import_rows(self, token, rows, *, upsert, idempotency_key, preview_hash, decisions):
+        self.calls.append(("import_rows", rows, upsert, idempotency_key, preview_hash, decisions))
         return self._answer((idempotency_key,), len(rows))
 
-    async def preview_import_rows(self, token, rows, *, upsert, idempotency_key):
-        self.calls.append(("preview_import_rows", rows, upsert, idempotency_key))
-        return {"errors": [], "locations_to_create": [], "preview_hash": "reviewed"}
+    async def plan_import_rows(self, token, rows, *, upsert, idempotency_key, decisions):
+        self.calls.append(("plan_import_rows", rows, upsert, idempotency_key, decisions))
+        return {"errors": [], "locations_to_create": [], "counts": {"create": len(rows)}, "preview_hash": "reviewed"}
+
+    async def get_price_lists(self, token):
+        return []
 
     async def numbered_ids(self, token, resource, number, doc_type=None):
         self.calls.append(("numbered_ids", resource, number, doc_type))
@@ -2044,7 +2182,8 @@ async def _run_import_scenario(importer: str, aspect: str, *, from_hub: bool) ->
     cookies = {"celerp_token": make_test_token(role=role)}
     with patch("ui.api_client.get_company", new=api.get_company), \
          patch("ui.api_client.import_rows", new=api.import_rows), \
-         patch("ui.api_client.preview_import_rows", new=api.preview_import_rows), \
+         patch("ui.api_client.plan_import_rows", new=api.plan_import_rows), \
+         patch("ui.api_client.get_price_lists", new=api.get_price_lists), \
          patch("ui.api_client.numbered_ids", new=api.numbered_ids), \
          patch("ui.api_client.batch_import", new=api.batch_import):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
@@ -2058,7 +2197,7 @@ async def _run_import_scenario(importer: str, aspect: str, *, from_hub: bool) ->
 
             async def submit(path: str, with_hash: bool = True):
                 company = _COMPANY_B if aspect == "cross_company_stage" else _COMPANY_A
-                data = {"csv_ref": ci._write_stage(company, spec["csv"])}
+                data = {"csv_ref": import_stage.write_stage(company, spec["csv"])}
                 if with_hash and importer == "inventory":
                     data["preview_hash"] = "reviewed"
                 return await c.post(path, data=data, cookies=cookies)

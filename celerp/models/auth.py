@@ -13,12 +13,14 @@ from celerp.models.base import Base
 
 
 class SessionRegistry(Base):
-    """Active JTI registry - one row per issued (non-expired) access token."""
+    """Active JTI registry - one row per issued (non-expired) access token, with the
+    company the token is for."""
 
     __tablename__ = "session_registry"
 
     jti: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), index=True)
     expiry: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

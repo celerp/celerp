@@ -105,7 +105,7 @@ def _run_view(run_id: str, *, status: str, source: str = "manager_io",
         "id": run_id, "company_id": str(uuid.uuid4()), "company_name": company_name,
         "source_system": source, "mode": "full_history", "cutover_date": None,
         "status": status, "current_phase": "inventory_masters", "phases": phases,
-        "coverage": [], "error_summary": {}, "retention_until": None,
+        "coverage": [], "error": None, "preparing": False, "retention_until": None,
         "source_deleted": False, "prepared_by": "Example Bookkeeping",
         "is_bootstrap_run": False, "is_sample": is_sample,
     }
@@ -711,7 +711,7 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
         assert re.search(rf"<th\b[^>]*>\s*{header}\s*</th>", verify), header
     for header in ("Source", "Celerp", "Difference"):
         assert re.search(rf'<th\b[^>]*class="[^"]*cell--number[^"]*"[^>]*>\s*{header}', verify), header
-    assert "48210.55" in verify
+    assert "$48,210.55" in verify
     assert re.search(rf'<form\b[^>]*action="/migrations/{run_id}/finalize"', verify)
     assert "Finish migration" in verify
     assert _link(verify, f"/migrations/{run_id}/pack", "Download reconciliation pack")
@@ -725,7 +725,7 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     assert r.status_code == 200
     complete = _visible(r)
     assert "Your company is ready." in complete
-    for total in ("48210.55", "3120.00", "1875.40"):
+    for total in ("$48,210.55", "$3,120.00", "$1,875.40"):
         assert total in complete
     assert _link(complete, f"/migrations/{run_id}/pack", "Download reconciliation pack")
     company_id = fake_api.runs[run_id]["company_id"]
@@ -751,6 +751,54 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     assert _link(page, "/setup/new-company/migrate", "Move your first company")
     assert _link(page, f"/switch-company/{fake_api.runs[sample_id]['company_id']}", "Open")
     assert "Download company backup" not in page
+
+
+_AP_KEY = "5f1c2a90-3b7e-4d21-9a0c-6e8f1d2b3c4a"
+_SUPPLIER_KEY = "0b9d8c7e-6f5a-4e3d-8c2b-1a0f9e8d7c6b"
+_ITEM_KEY = "7c6b5a4f-3e2d-4c1b-9a0f-8e7d6c5b4a39"
+_LABELLED_ROWS = [
+    {"check": "ap_control", "key": _AP_KEY, "currency": "USD", "label": "2100 Accounts payable",
+     "credit_normal": True, "source": "-1875.4000", "celerp": "-1875.4000", "difference": "0.0000",
+     "rule": "exact", "result": "pass"},
+    {"check": "ap_by_supplier", "key": _SUPPLIER_KEY, "currency": "USD", "label": "Northwind Supplies",
+     "credit_normal": True, "source": "-310.5", "celerp": "-310.5", "difference": "0", "rule": "exact",
+     "result": "pass"},
+    {"check": "inventory_quantity", "key": _ITEM_KEY, "currency": None, "label": "Blue widget (WID)",
+     "credit_normal": False, "source": "12.000", "celerp": "12.000", "difference": "0E-3", "rule": "exact",
+     "result": "pass"},
+    {"check": "document_status", "key": "bill:awaiting_payment", "currency": None, "label": "",
+     "credit_normal": False, "source": "3", "celerp": "3", "difference": "0", "rule": "exact", "result": "pass"},
+    {"check": "document_count", "key": "invoice", "currency": "USD", "label": "", "credit_normal": False,
+     "source": "14", "celerp": "14", "difference": "0", "rule": "exact", "result": "pass"},
+    {"check": "settlement_allocation", "key": "payment", "currency": "USD", "label": "", "credit_normal": False,
+     "source": "2200.5", "celerp": "2200.5", "difference": "0", "rule": "exact", "result": "pass"},
+]
+
+
+@pytest.mark.asyncio
+async def test_verify_page_names_records_and_formats_figures(ui, router, fake_api):
+    """RED before the change: rows showed the source key, raw enums and raw decimals."""
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize")
+    fake_api.recon[run_id]["rows"] = copy.deepcopy(_LABELLED_ROWS)
+    r = await ui.get(f"/migrations/{run_id}/verify")
+    assert r.status_code == 200
+    page = _visible(r)
+    for text in ("Payables control: 2100 Accounts payable", "Payables by supplier: Northwind Supplies",
+                 "Inventory quantity: Blue widget (WID)", "Document status: Bill, Awaiting Payment",
+                 "Document count: Invoice (USD)", "Settlement allocation: Payments"):
+        assert text in page, text
+    # Business-normal sign: a payable balance reads as the amount owed, at currency precision.
+    for figure in ("$1,875.40", "$310.50", "$0.00", "$2,200.50"):
+        assert f">{figure}<" in page, figure
+    assert ">12<" in page and ">14<" in page and ">3<" in page
+    for raw in (_AP_KEY, _SUPPLIER_KEY, _ITEM_KEY, "bill:awaiting_payment", "awaiting_payment", "1875.4000",
+                "-1,875.40", "0E-3", "12.000"):
+        assert raw not in page, raw
+
+    r = await ui.get(f"/migrations/{run_id}/complete")
+    assert r.status_code == 200
+    assert _AP_KEY not in _visible(r)
 
 
 @pytest.mark.asyncio
@@ -894,3 +942,46 @@ def test_cancel_offered_only_where_the_run_can_be_cancelled(status):
     shown = "/cancel" in to_xml(_run_actions({"id": "r1", "status": status}))
     assert shown == can_transition(MigrationStatus(status), MigrationStatus.CANCEL_REQUESTED)
 
+
+
+@pytest.mark.asyncio
+async def test_preparing_run_explains_and_waits_without_a_start_button(ui, fake_api):
+    """While Celerp prepares the features a migration needs, the page says so, keeps
+    checking, and offers no Start that would only be refused."""
+    _owner(ui)
+    run_id = fake_api.add_run("ready")
+    fake_api.runs[run_id]["preparing"] = True
+    r = await ui.get(f"/migrations/{run_id}")
+    assert r.status_code == 200
+    assert "Celerp is preparing features for this company" in _visible(r)
+    assert 'hx-trigger="every 2s"' in _page(r)
+    assert f'action="/migrations/{run_id}/start"' not in _page(r)
+
+
+@pytest.mark.asyncio
+async def test_failed_run_shows_plain_message_and_never_says_still_running(ui, fake_api):
+    _owner(ui)
+    run_id = fake_api.add_run("failed")
+    fake_api.runs[run_id]["error"] = {"message": "The migration stopped unexpectedly.",
+                                      "missing": ["INV-0042"], "phase": "Invoices"}
+    r = await ui.get(f"/migrations/{run_id}")
+    text = _visible(r)
+    assert "The migration stopped unexpectedly." in text and "INV-0042" in text
+    assert "The migration keeps running" not in text
+    assert 'hx-trigger="every 2s"' not in _page(r)
+
+
+@pytest.mark.asyncio
+async def test_review_shows_company_currency_scope_and_plain_outcomes(ui, fake_api):
+    """The last step before starting names the file, company, currency and dates, and says
+    in plain words what will move, using the source's own record names."""
+    r = await ui.post("/setup/migrate/scan", files=_UPLOAD, data={"source": "manager_io"})
+    token = _cookie_value(r, SCAN_COOKIE)
+    ui.cookies.set(SCAN_COOKIE, token)
+    fake_api.scans[token]["scan"]["decisions"] = {"mode": "full_history", "cutover_date": None, "mappings": {}}
+    r = await ui.get("/setup/migrate/review")
+    assert r.status_code == 200, r.text
+    text = _visible(r)
+    for expected in ("Harbor Goods Ltd", "USD", "2024-01-01", "Sales invoice", "Will move", "Will not move"):
+        assert expected in text, expected
+    assert "sales_invoices" not in _page(r) and "sales invoices" not in text
