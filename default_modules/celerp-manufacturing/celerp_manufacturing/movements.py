@@ -783,7 +783,8 @@ async def transition(session: AsyncSession, company_id, user_id, order_id: str, 
     """Start, hold, resume or reschedule a run, serialized with every movement on it: the run
     is read under the company lock, so a run completed or cancelled meanwhile is refused rather
     than brought back. Completed and cancelled runs stay closed; a completed run leaves only
-    through reopen."""
+    through reopen. Only a planned run starts, a run on hold is not held again, and only a
+    run on hold resumes."""
     event_type, done = _TRANSITIONS[action]
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
@@ -793,7 +794,12 @@ async def transition(session: AsyncSession, company_id, user_id, order_id: str, 
         return stored
     run = await _run(op)
     _require_open(run.state, done)
-    if action == "resume" and run.state.get("status") != "on_hold":
+    status = run.state.get("status")
+    if action == "start" and status != "planned":
+        raise refuse(409, "not_planned", "Only a planned run can be started. A run on hold carries on through Resume.")
+    if action == "hold" and status == "on_hold":
+        raise refuse(409, "already_on_hold", "This run is already on hold.")
+    if action == "resume" and status != "on_hold":
         raise refuse(409, "not_on_hold", "Only a run on hold can be resumed.")
     return await op.emit_run(event_type, {**data, "request": request}, f"mfg:{order_id}:{action}:{rk}")
 

@@ -3581,6 +3581,8 @@
   "inventory.wo_needs_reconciling": "Precisa de conciliação",
   "mfg.not_unresolved": "Este ciclo não precisa de conciliação.",
   "mfg.not_on_hold": "Só uma ordem em espera pode ser retomada.",
+  "mfg.not_planned": "Só uma ordem planeada pode ser iniciada. Uma ordem em espera continua com Retomar.",
+  "mfg.already_on_hold": "Esta ordem já está em espera.",
   "mfg.reconcile_values": "{item} não é um componente que ainda esteja neste ciclo, aparece duas vezes ou tem valor negativo.",
   "mfg.reconcile_missing": "Informe o valor de cada componente que ainda está neste ciclo: {items} não tem nenhum.",
   "mfg.reconcile_account": "Escolha a conta de onde sai este valor: uma conta de estoque que detenha pelo menos {total} além do seu estoque disponível, ou lucros acumulados para um valor que a contabilidade nunca registrou.",

@@ -3581,6 +3581,8 @@
   "inventory.wo_needs_reconciling": "Needs reconciling",
   "mfg.not_unresolved": "This run does not need reconciling.",
   "mfg.not_on_hold": "Only a run on hold can be resumed.",
+  "mfg.not_planned": "Only a planned run can be started. A run on hold carries on through Resume.",
+  "mfg.already_on_hold": "This run is already on hold.",
   "mfg.reconcile_values": "{item} is not a component still in this run, is named twice, or has a negative value.",
   "mfg.reconcile_missing": "Give the value of every component still in this run: {items} has none.",
   "mfg.reconcile_account": "Choose the account this value comes off: an inventory account that holds at least {total} beyond its stock on hand, or retained earnings for value the books never carried.",

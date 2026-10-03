@@ -108,3 +108,22 @@ async def test_a_bulk_action_sent_again_changes_nothing(client, session, auth):
     assert again["done"] == runs
     assert await _events(session, auth) == events
     assert [(await _state(session, auth, o))["status"] for o in runs] == ["on_hold", "on_hold"]
+
+
+async def test_only_a_planned_run_starts_and_a_run_on_hold_is_not_held_again(client, session, auth):
+    """A run on hold carries on through Resume, which clears why it was held; Start does not."""
+    _, order = await _run(client, auth)
+    assert (await _act(client, auth, order, "start")).status_code == 200
+    refusal(await _act(client, auth, order, "start"), 409, "not_planned")
+    assert (await _act(client, auth, order, "hold", {"reason": "waiting"})).status_code == 200
+    before = await snapshot(session, auth, order)
+
+    refusal(await _act(client, auth, order, "start"), 409, "not_planned")
+    refusal(await _act(client, auth, order, "hold", {"reason": "other"}), 409, "already_on_hold")
+    out = await _bulk(client, auth, [order], "start")
+
+    assert out["done"] == [] and out["skipped"][0]["message_key"] == "mfg.not_planned"
+    assert await snapshot(session, auth, order) == before
+    assert (await _act(client, auth, order, "resume")).status_code == 200
+    state = await _state(session, auth, order)
+    assert state["status"] == "in_progress" and "hold_reason" not in state

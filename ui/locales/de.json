@@ -3581,6 +3581,8 @@
   "inventory.wo_needs_reconciling": "Abstimmung nötig",
   "mfg.not_unresolved": "Dieser Lauf muss nicht abgestimmt werden.",
   "mfg.not_on_hold": "Nur ein angehaltener Auftrag kann fortgesetzt werden.",
+  "mfg.not_planned": "Nur ein geplanter Auftrag kann gestartet werden. Ein angehaltener Auftrag wird mit Fortsetzen weitergeführt.",
+  "mfg.already_on_hold": "Dieser Auftrag ist bereits angehalten.",
   "mfg.reconcile_values": "{item} ist keine Komponente mehr in diesem Lauf, ist doppelt angegeben oder hat einen negativen Wert.",
   "mfg.reconcile_missing": "Geben Sie den Wert jeder noch im Lauf befindlichen Komponente an: {items} hat keinen.",
   "mfg.reconcile_account": "Wählen Sie das Konto, von dem dieser Wert abgeht: ein Bestandskonto, das mindestens {total} über seinen Lagerbestand hinaus hält, oder Gewinnvortrag für einen Wert, den die Bücher nie geführt haben.",

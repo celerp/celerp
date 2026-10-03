@@ -3581,6 +3581,8 @@
   "inventory.wo_needs_reconciling": "照合が必要",
   "mfg.not_unresolved": "この生産ロットは照合の必要がありません。",
   "mfg.not_on_hold": "再開できるのは保留中の製造指図だけです。",
+  "mfg.not_planned": "開始できるのは計画済みの製造指図だけです。保留中の製造指図は再開で続行します。",
+  "mfg.already_on_hold": "この製造指図はすでに保留中です。",
   "mfg.reconcile_values": "{item}はこの生産ロットに残っている部材ではないか、二重に指定されているか、価額がマイナスです。",
   "mfg.reconcile_missing": "この生産ロットに残っているすべての部材の価額を入力してください：{items}の価額がありません。",
   "mfg.reconcile_account": "この価額の振替元の勘定を選択してください：手持ち在庫を超えて{total}以上を保有する棚卸資産勘定、または帳簿に一度も計上されなかった価額については利益剰余金。",

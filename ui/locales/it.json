@@ -3581,6 +3581,8 @@
   "inventory.wo_needs_reconciling": "Da riconciliare",
   "mfg.not_unresolved": "Questa produzione non deve essere riconciliata.",
   "mfg.not_on_hold": "Solo un ordine in sospeso può essere ripreso.",
+  "mfg.not_planned": "Solo un ordine pianificato può essere avviato. Un ordine in sospeso prosegue con Riprendi.",
+  "mfg.already_on_hold": "Questo ordine è già in sospeso.",
   "mfg.reconcile_values": "{item} non è più un componente di questa produzione, è indicato due volte o ha un valore negativo.",
   "mfg.reconcile_missing": "Indica il valore di ogni componente ancora in questa produzione: {items} non ne ha.",
   "mfg.reconcile_account": "Scegli il conto da cui proviene questo valore: un conto di magazzino che detiene almeno {total} oltre alle sue giacenze, oppure utili portati a nuovo per un valore mai registrato in contabilità.",
