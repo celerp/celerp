@@ -29,13 +29,15 @@ PAYMENT_REMOVAL_EVENTS = frozenset({"doc.payment.voided", "doc.payment.deleted",
 
 
 async def stripe_payment_indexes(session, company_id, entity_id, payments: list[dict]) -> set[int]:
-    """Indexes of the payments on this document that the Stripe intake recorded.
+    """Indexes of the payments on this document that the Stripe intake recorded and
+    that are still linked to Stripe.
 
-    Stripe holds the money for these, so only Stripe can give it back. The ledger
-    records which writer received each payment; the method is free text that a
-    connector or a person can also set to "stripe". A payment is matched on the
-    index its event carries, or on its reference for events recorded before
-    payments carried one.
+    Stripe holds the money for these, so only Stripe can give it back. Once Stripe is
+    disconnected a payment is no longer linked to it (``stripe_released_at``) and is
+    changed here like any other. The ledger records which writer received each
+    payment; the method is free text that a connector or a person can also set to
+    "stripe". A payment is matched on the index its event carries, or on its
+    reference for events recorded before payments carried one.
     """
     if not any(p.get("method") == "stripe" for p in payments):
         return set()
@@ -49,7 +51,7 @@ async def stripe_payment_indexes(session, company_id, entity_id, payments: list[
     )).scalars().all()
     indexes = {data["index"] for data in events if data.get("index") is not None}
     references = {data.get("reference") for data in events if data.get("index") is None} - {None}
-    return {p.get("index") for p in payments if p.get("method") == "stripe"
+    return {p.get("index") for p in payments if p.get("method") == "stripe" and not p.get("stripe_released_at")
             and (p.get("index") in indexes or p.get("reference") in references)}
 
 

@@ -6,9 +6,12 @@ reference, once, on the books the payment was recorded on; one Stripe reverses p
 its exact mirror once. A refund that cannot be applied yet (its company, invoice or
 payment is not there, or it gives back more than is left of the payment) is kept,
 whole, with the unmatched payments, and applies, in the order Stripe reported, when its
-payment is recorded on its invoice. A System Recovery restore has Celerp Cloud deliver
-the payment and its refunds again, which rebuilds the books exactly. A payment Stripe
-holds the money for is still never refunded, voided or deleted here."""
+payment is recorded on its invoice. A refund Stripe undoes and later puts through again
+gives the money back again, each time once. A System Recovery restore has Celerp Cloud
+deliver the payment, its refunds and its release again, which rebuilds the books
+exactly. A payment Stripe holds the money for is never refunded, voided or deleted
+here, until Stripe is disconnected: the payment is then no longer linked to Stripe,
+for good, and is refunded here like any other."""
 
 from __future__ import annotations
 
@@ -27,8 +30,9 @@ from test_company_reset_payments import (_PAYMENT, BOOKS, _Cloud, _harbor, _invo
 
 pytestmark = pytest.mark.asyncio
 
-_REFUND = ("company_id", "entity_id", "reference", "refund_id", "transition", "amount_minor", "currency",
-           "occurred_at", "context", "delivery_id")
+_REFUND = ("company_id", "entity_id", "reference", "refund_id", "cycle", "transition", "amount_minor",
+           "currency", "occurred_at", "context", "delivery_id")
+_RELEASE = ("company_id", "entity_id", "reference", "released_at", "delivery_id")
 PAID_AT = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
 STRIPE_OWNED = "This payment was received through Stripe, so it can only be refunded or reversed in Stripe."
 
@@ -42,11 +46,18 @@ class _RefundCloud(_Cloud):
     each until the installation acknowledges it."""
 
     def refund(self, company_id, entity_id: str, refund_id: str, amount_minor: int, occurred_at: datetime, *,
-               reference: str = "pi_1", transition: str = "applied", books=BOOKS) -> None:
+               reference: str = "pi_1", transition: str = "applied", cycle: int = 1, books=BOOKS) -> None:
         self.deliveries.append({"kind": "refund", "company_id": str(company_id), "entity_id": entity_id,
-                                "reference": reference, "refund_id": refund_id, "transition": transition,
+                                "reference": reference, "refund_id": refund_id, "cycle": cycle,
+                                "transition": transition,
                                 "amount_minor": amount_minor, "currency": "usd",
                                 "occurred_at": occurred_at.isoformat(), "context": books,
+                                "delivery_id": str(uuid.uuid4()), "acked": False})
+
+    def release(self, company_id, entity_id: str, released_at: datetime, *, reference: str = "pi_1") -> None:
+        """Stripe was disconnected: the payment is no longer linked to it."""
+        self.deliveries.append({"kind": "release", "company_id": str(company_id), "entity_id": entity_id,
+                                "reference": reference, "released_at": released_at.isoformat(),
                                 "delivery_id": str(uuid.uuid4()), "acked": False})
 
     async def deliver(self) -> None:
@@ -67,6 +78,8 @@ async def _deliver_one(d: dict) -> bool:
     gateway._send = send
     if d.get("kind") == "refund":
         await gateway._handle_invoice_refund({k: v for k, v in d.items() if k in _REFUND})
+    elif d.get("kind") == "release":
+        await gateway._handle_invoice_payment_release({k: v for k, v in d.items() if k in _RELEASE})
     else:
         await gateway._handle_invoice_payment({k: v for k, v in d.items() if k in _PAYMENT})
     return acked == [d["delivery_id"]]
@@ -89,13 +102,15 @@ async def _doc(engine, entity_id) -> dict:
 
 
 async def _books(engine, entity_id) -> dict[str, Decimal]:
-    """Net debit per account across the journal entries of the invoice's payments, its
-    refunds and their reversals."""
+    """Net debit per account across the posted journal entries of the invoice's
+    payments, its refunds and their reversals."""
     async with maker(engine)() as s:
         entries = (await s.scalars(text("SELECT state FROM projections WHERE entity_id LIKE :j"),
                                    {"j": f"je:auto:{entity_id}:pay%"})).all()
     net: dict[str, Decimal] = {}
     for je in entries:
+        if je.get("status") != "posted":
+            continue
         for line in je.get("entries", []):
             net[line["account"]] = (net.get(line["account"], Decimal(0)) + Decimal(str(line.get("debit") or 0))
                                     - Decimal(str(line.get("credit") or 0)))
@@ -120,8 +135,8 @@ async def _ar_account(engine, entity_id) -> str:
 async def _kept_refunds(engine) -> list[tuple]:
     async with maker(engine)() as s:
         return [tuple(r) for r in (await s.execute(text(
-            "SELECT refund_id, transition, reference, amount_minor, former_company, document "
-            "FROM unmatched_refunds ORDER BY occurred_at, refund_id, transition"))).all()]
+            "SELECT refund_id, cycle, transition, reference, amount_minor, former_company, document "
+            "FROM unmatched_refunds ORDER BY occurred_at, refund_id, cycle, transition"))).all()]
 
 
 async def _ledger(engine, entity_id) -> list[str]:
@@ -222,7 +237,7 @@ async def test_a_refund_larger_than_what_is_left_of_the_payment_is_kept_whole_an
 
     assert all(d["acked"] for d in cloud.deliveries)
     await _assert_books(real_engine, invoice, refunded="1000")
-    assert await _kept_refunds(real_engine) == [("re_2", "applied", "pi_1", 10000, str(a), invoice)]
+    assert await _kept_refunds(real_engine) == [("re_2", 1, "applied", "pi_1", 10000, str(a), invoice)]
 
 
 # ── A refund Stripe reverses ─────────────────────────────────────────────────
@@ -254,13 +269,58 @@ async def test_a_reversal_of_a_refund_never_applied_changes_nothing_until_the_re
     assert all(d["acked"] for d in cloud.deliveries)
     assert await _ledger(real_engine, invoice) == before
     await _assert_books(real_engine, invoice, refunded="0")
-    assert await _kept_refunds(real_engine) == [("re_1", "reversed", "pi_1", 20000, str(a), invoice)]
+    assert await _kept_refunds(real_engine) == [("re_1", 1, "reversed", "pi_1", 20000, str(a), invoice)]
 
     cloud.refund(a, invoice, "re_1", 20000, _at(1))  # the refund it reverses, delivered late
     await cloud.deliver()
 
     await _assert_books(real_engine, invoice, refunded="0")
     assert await _kept_refunds(real_engine) == []
+
+
+async def test_a_refund_undone_and_put_through_again_gives_the_money_back_each_time_once(
+        real_engine, real_client, monkeypatch):
+    boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    cloud.refund(a, invoice, "re_1", 20000, _at(1))
+    cloud.refund(a, invoice, "re_1", 20000, _at(2), transition="reversed")
+    cloud.refund(a, invoice, "re_1", 20000, _at(3), cycle=2)
+    await cloud.deliver()
+    for d in cloud.deliveries:  # delivered again: nothing changes
+        d["acked"] = False
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries) and await _kept_refunds(real_engine) == []
+    await _assert_books(real_engine, invoice, refunded="200")
+    ledger = await _ledger(real_engine, invoice)
+    assert ledger.count("doc.payment.refunded") == 2 and ledger.count("doc.payment.refund_reversed") == 1
+
+    cloud.refund(a, invoice, "re_1", 20000, _at(4), transition="reversed", cycle=2)
+    await cloud.deliver()
+
+    await _assert_books(real_engine, invoice, refunded="0")
+    assert (await _ledger(real_engine, invoice)).count("doc.payment.refund_reversed") == 2
+
+
+async def test_a_reversal_waits_for_the_refund_of_its_own_cycle(real_engine, real_client, monkeypatch):
+    boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    cloud.refund(a, invoice, "re_1", 20000, _at(1))
+    cloud.refund(a, invoice, "re_1", 20000, _at(4), transition="reversed", cycle=2)
+    await cloud.deliver()
+
+    await _assert_books(real_engine, invoice, refunded="200")
+    assert await _kept_refunds(real_engine) == [("re_1", 2, "reversed", "pi_1", 20000, str(a), invoice)]
+
+
+async def test_a_refund_with_no_time_it_happened_is_kept_not_posted(real_engine, real_client, monkeypatch):
+    boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    before = await _ledger(real_engine, invoice)
+    cloud.refund(a, invoice, "re_1", 20000, _at(1))
+    cloud.deliveries[-1]["occurred_at"] = None
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _ledger(real_engine, invoice) == before
+    assert await _kept_refunds(real_engine) == [("re_1", 1, "applied", "pi_1", 20000, str(a), invoice)]
 
 
 # ── Kept until its payment is on its invoice ─────────────────────────────────
@@ -277,7 +337,7 @@ async def test_a_refund_for_a_company_that_no_longer_exists_is_kept_with_its_pay
 
     assert all(d["acked"] for d in cloud.deliveries)
     assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(a), invoice)]
-    assert await _kept_refunds(real_engine) == [("re_1", "applied", "pi_1", 20000, str(a), invoice)]
+    assert await _kept_refunds(real_engine) == [("re_1", 1, "applied", "pi_1", 20000, str(a), invoice)]
 
 
 async def test_refunds_delivered_before_their_payment_apply_in_order_when_it_is_recorded(
@@ -322,7 +382,7 @@ async def test_a_reset_and_recovery_replays_the_payment_then_its_refunds_into_ex
         assert (await _reset(real_client, real_engine, boss, a)).status_code == 200
         cloud.refund(a, invoice, "re_3", 10000, _at(4))  # the company is gone: kept
         await cloud.deliver()
-        assert await _kept_refunds(real_engine) == [("re_3", "applied", "pi_1", 10000, str(a), invoice)]
+        assert await _kept_refunds(real_engine) == [("re_3", 1, "applied", "pi_1", 10000, str(a), invoice)]
 
         result = await backup_import.run_recovery(source)
     finally:
@@ -373,6 +433,203 @@ async def test_a_stripe_payment_refunded_in_stripe_still_cannot_be_refunded_void
     assert await _doc(real_engine, invoice) == before and await _ledger(real_engine, invoice) == events
 
 
+# ── Stripe is disconnected: the payment is no longer linked to it ────────────
+
+RELEASED_AT = datetime(2026, 9, 10, 9, 0, tzinfo=timezone.utc)
+
+
+async def _notices(engine, company_id, entity_id) -> list[tuple[str, str]]:
+    async with maker(engine)() as s:
+        return [tuple(r) for r in (await s.execute(text(
+            "SELECT title, priority FROM notifications WHERE company_id = :c AND action_url = :u"),
+            {"c": company_id, "u": f"/docs/{entity_id}"})).all()]
+
+
+async def _held_by(client, engine, boss, company, entity_id) -> list:
+    r = await client.get(f"/docs/{entity_id}", headers=auth(await token(engine, boss, company)))
+    assert r.status_code == 200, r.text
+    return [p.get("held_by") for p in r.json()["payments"]]
+
+
+@pytest.mark.parametrize("action", ["refund", "void", "delete"])
+async def test_a_released_payment_is_refunded_voided_or_deleted_here(real_engine, real_client, monkeypatch, action):
+    boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    assert await _held_by(real_client, real_engine, boss, a, invoice) == ["stripe"]
+    cloud.release(a, invoice, RELEASED_AT)
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert _payment(await _doc(real_engine, invoice))["stripe_released_at"] == RELEASED_AT.isoformat()
+    assert await _held_by(real_client, real_engine, boss, a, invoice) == [None]
+
+    r = await _remove_payment(real_client, auth(await token(real_engine, boss, a)), invoice, action)
+
+    assert r.status_code == 200, r.text
+    if action == "refund":
+        await _assert_books(real_engine, invoice, refunded="100")
+    else:
+        doc = await _doc(real_engine, invoice)
+        assert doc["amount_paid"] == 0 and doc["amount_outstanding"] == 1070.0
+        assert await _books(real_engine, invoice) == {}
+
+
+async def test_the_owner_is_told_once_that_a_payment_is_no_longer_linked_to_stripe(
+        real_engine, real_client, monkeypatch):
+    boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    cloud.release(a, invoice, RELEASED_AT)
+    await cloud.deliver()
+    cloud.deliveries[-1]["acked"] = False  # the acknowledgement was lost
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert (await _ledger(real_engine, invoice)).count("doc.payment.stripe_released") == 1
+    assert await _notices(real_engine, a, invoice) == [("A payment is no longer linked to Stripe", "high")]
+
+
+async def test_a_refund_stripe_reports_for_a_released_payment_is_kept_not_posted(
+        real_engine, real_client, monkeypatch):
+    boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    cloud.release(a, invoice, RELEASED_AT)
+    await cloud.deliver()
+    before = await _ledger(real_engine, invoice)
+    cloud.refund(a, invoice, "re_1", 20000, _at(24 * 10))
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _ledger(real_engine, invoice) == before
+    await _assert_books(real_engine, invoice, refunded="0")
+    assert await _kept_refunds(real_engine) == [("re_1", 1, "applied", "pi_1", 20000, str(a), invoice)]
+
+
+async def test_a_release_for_a_payment_not_recorded_yet_waits_for_it(real_engine, real_client, monkeypatch):
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    cloud = _RefundCloud(monkeypatch, real_engine)
+    cloud.release(a, invoice, RELEASED_AT)
+    await cloud.deliver()
+    assert [d["acked"] for d in cloud.deliveries] == [False]
+
+    cloud.pay(a, invoice, "pi_1", paid_at=PAID_AT, books=BOOKS)
+    await cloud.deliver()  # the payment lands; the release is still waiting
+    assert [d["acked"] for d in cloud.deliveries] == [False, True]
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert _payment(await _doc(real_engine, invoice))["stripe_released_at"] == RELEASED_AT.isoformat()
+    assert await _held_by(real_client, real_engine, boss, a, invoice) == [None]
+
+
+async def test_a_release_of_a_payment_kept_unmatched_applies_when_the_payment_lands_after_its_earlier_refunds(
+        tmp_path, monkeypatch, code_config, real_engine, real_client):
+    from celerp.services import backup_export, backup_import
+    _system_recovery(tmp_path, monkeypatch)
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    cloud = _RefundCloud(monkeypatch, real_engine)
+    source = await backup_export.export_full()
+    try:
+        assert (await _reset(real_client, real_engine, boss, a)).status_code == 200
+        cloud.pay(a, invoice, "pi_1", paid_at=PAID_AT, books=BOOKS)
+        cloud.refund(a, invoice, "re_1", 20000, _at(1))
+        cloud.release(a, invoice, RELEASED_AT)
+        cloud.refund(a, invoice, "re_9", 5000, _at(24 * 12))  # after the release: never posted
+        await cloud.deliver()
+        assert all(d["acked"] for d in cloud.deliveries)
+        async with maker(real_engine)() as s:
+            assert await s.scalar(text("SELECT released_at FROM unmatched_payments")) == RELEASED_AT
+        result = await backup_import.run_recovery(source)
+    finally:
+        source.unlink(missing_ok=True)
+    assert result.ok is True, result.error
+
+    cloud.deliveries[0]["acked"] = False  # Cloud delivers the payment again
+    await cloud.deliver()
+
+    assert await _unmatched(real_engine) == []
+    assert _payment(await _doc(real_engine, invoice))["stripe_released_at"] == RELEASED_AT.isoformat()
+    assert (await _ledger(real_engine, invoice)).count("doc.payment.stripe_released") == 1
+    await _assert_books(real_engine, invoice, refunded="200")
+    assert await _kept_refunds(real_engine) == [("re_9", 1, "applied", "pi_1", 5000, str(a), invoice)]
+
+
+async def test_paid_refunded_in_stripe_disconnected_refunded_here_then_reconnected_counts_each_refund_once(
+        tmp_path, monkeypatch, code_config, real_engine, real_client):
+    """A payment is refunded in part in Stripe, Stripe is disconnected, the rest is
+    refunded here, a System Recovery restore replays everything, and the same Stripe
+    account is reconnected: every refund counts once."""
+    from celerp.services import backup_export, backup_import
+    _system_recovery(tmp_path, monkeypatch)
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    cloud = _RefundCloud(monkeypatch, real_engine)
+    source = await backup_export.export_full()
+    try:
+        cloud.pay(a, invoice, "pi_1", paid_at=PAID_AT, books=BOOKS)
+        cloud.refund(a, invoice, "re_1", 20000, _at(1))
+        cloud.release(a, invoice, RELEASED_AT)
+        await cloud.deliver()
+        r = await _remove_payment(real_client, auth(await token(real_engine, boss, a)), invoice, "refund")
+        assert r.status_code == 200, r.text
+        await _assert_books(real_engine, invoice, refunded="300")
+        books, ledger = await _books(real_engine, invoice), await _ledger(real_engine, invoice)
+
+        for d in cloud.deliveries:  # the same Stripe account is reconnected
+            d["acked"] = False
+        cloud.refund(a, invoice, "re_9", 5000, _at(24 * 12))  # refunded in Stripe after the release
+        await cloud.deliver()
+        assert all(d["acked"] for d in cloud.deliveries)
+        assert await _books(real_engine, invoice) == books and await _ledger(real_engine, invoice) == ledger
+        assert await _kept_refunds(real_engine) == [("re_9", 1, "applied", "pi_1", 5000, str(a), invoice)]
+
+        result = await backup_import.run_recovery(source)
+    finally:
+        source.unlink(missing_ok=True)
+    assert result.ok is True, result.error
+    for d in cloud.deliveries:  # Cloud delivers the payment, its refunds and its release again, in order
+        d["acked"] = False
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    await _assert_books(real_engine, invoice, refunded="200")
+    assert _payment(await _doc(real_engine, invoice))["stripe_released_at"] == RELEASED_AT.isoformat()
+    assert await _held_by(real_client, real_engine, boss, a, invoice) == [None]
+    r = await _remove_payment(real_client, auth(await token(real_engine, boss, a)), invoice, "refund")
+    assert r.status_code == 200, r.text
+    await _assert_books(real_engine, invoice, refunded="300")
+    assert await _books(real_engine, invoice) == books
+
+
+async def test_a_delivery_that_names_no_release_is_not_acknowledged(real_engine, real_client, monkeypatch):
+    boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    for change in ({"reference": ""}, {"released_at": "yesterday"}, {"released_at": "2026-09-10T09:00:00"},
+                   {"company_id": ""}, {"entity_id": ""}):
+        cloud.release(a, invoice, RELEASED_AT)
+        cloud.deliveries[-1].update(change)
+    before = await _ledger(real_engine, invoice)
+
+    await cloud.deliver()
+
+    assert [d["acked"] for d in cloud.deliveries[1:]] == [False] * 5
+    assert await _ledger(real_engine, invoice) == before
+
+
+async def test_the_gateway_hands_a_release_to_the_release_intake_and_says_it_records_them(monkeypatch):
+    from celerp.gateway.client import GatewayClient
+    received = []
+
+    async def receive(payload):
+        received.append(payload)
+        return True
+    monkeypatch.setattr("celerp.services.payments.receive_release", receive)
+    gateway = GatewayClient(gateway_token="t", instance_id="i", gateway_url="wss://relay.invalid/ws")
+
+    await gateway._dispatch({"type": "invoice.payment_release", "payload": {"reference": "pi_1"}})
+    await asyncio.gather(*gateway._bg_tasks)
+
+    assert received == [{"reference": "pi_1"}]
+    assert "invoice.payment_release" in GatewayClient._DELIVERIES
+
+
 # ── Deliveries at once, and deliveries that name no refund ───────────────────
 
 @pytest.mark.parametrize("transition", ["applied", "reversed"])
@@ -412,7 +669,8 @@ async def test_a_refund_and_its_payment_delivered_at_once_both_land(real_engine,
 
 @pytest.mark.parametrize("change", [
     {"refund_id": ""}, {"reference": None}, {"transition": "pending"}, {"amount_minor": 0},
-    {"amount_minor": "200"}, {"company_id": ""}, {"entity_id": ""}])
+    {"amount_minor": "200"}, {"company_id": ""}, {"entity_id": ""}, {"cycle": 0}, {"cycle": "1"},
+    {"cycle": True}, {"cycle": None}])
 async def test_a_delivery_that_names_no_refund_is_not_acknowledged(real_engine, real_client, monkeypatch,
                                                                     change):
     boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
@@ -471,7 +729,7 @@ async def test_the_installation_owner_sees_the_refunds_kept_for_later(real_engin
 
     assert r.status_code == 200, r.text
     assert [{k: v for k, v in item.items() if k != "received_at"} for item in r.json()["refunds"]] == [{
-        "refund_id": "re_1", "transition": "applied", "reference": "pi_1", "amount": 200.0, "currency": "USD",
+        "refund_id": "re_1", "cycle": 1, "transition": "applied", "reference": "pi_1", "amount": 200.0, "currency": "USD",
         "company_id": str(b), "document_id": "doc:gone", "occurred_at": _at(1).isoformat()}]
 
 
@@ -512,4 +770,4 @@ async def test_a_refund_for_books_the_company_no_longer_keeps_is_kept_not_posted
     await cloud.deliver()
 
     assert await _ledger(real_engine, invoice) == before
-    assert await _kept_refunds(real_engine) == [("re_1", "applied", "pi_1", 20000, str(a), invoice)]
+    assert await _kept_refunds(real_engine) == [("re_1", 1, "applied", "pi_1", 20000, str(a), invoice)]

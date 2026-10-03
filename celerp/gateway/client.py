@@ -517,6 +517,7 @@ class GatewayClient:
     # hello declares exactly these keys, so Cloud holds back any type not listed.
     _DELIVERIES = {
         "invoice.payment": "_handle_invoice_payment",
+        "invoice.payment_release": "_handle_invoice_payment_release",
         "invoice.refund": "_handle_invoice_refund",
     }
 
@@ -764,6 +765,12 @@ class GatewayClient:
         it once recorded."""
         from celerp.services.payments import receive_refund
         await self._receive_delivery("invoice.refund", receive_refund, payload)
+
+    async def _handle_invoice_payment_release(self, payload: dict) -> None:
+        """Record that a delivered invoice payment is no longer linked to Stripe and
+        acknowledge it once recorded."""
+        from celerp.services.payments import receive_release
+        await self._receive_delivery("invoice.payment_release", receive_release, payload)
 
     async def _receive_delivery(self, kind: str, receive, payload: dict) -> None:
         """Hand a Celerp Cloud delivery to *receive*; acknowledge it once *receive*

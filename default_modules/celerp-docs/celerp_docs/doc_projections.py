@@ -292,6 +292,10 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["amount_paid"] = to_stored_float(paid)
         current["amount_outstanding"] = to_stored_float(outstanding)
         current["status"] = _payment_status(paid, outstanding)
+    elif event_type == "doc.payment.stripe_released":
+        target = next((p for p in current.get("payments", []) if p.get("index") == data["payment_index"]), None)
+        if target is not None:
+            target["stripe_released_at"] = data["released_at"]
     elif event_type == "doc.converted":
         current["status"] = "converted"
         current["converted_to"] = data["target_doc_id"]

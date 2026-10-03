@@ -1103,7 +1103,7 @@ def test_hello_declares_exactly_the_delivery_types_dispatch_routes(client):
     Cloud never sends this install a delivery it would not route to a handler."""
     payload = client._build_hello_payload(tos_version="v1", app_version="1.0.0")
     assert payload["delivery_types"] == sorted(client._DELIVERIES)
-    assert set(payload["delivery_types"]) == {"invoice.payment", "invoice.refund"}
+    assert set(payload["delivery_types"]) == {"invoice.payment", "invoice.payment_release", "invoice.refund"}
 
 
 @pytest.mark.asyncio

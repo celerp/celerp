@@ -1225,6 +1225,11 @@ class TestActivityFeed:
         assert event_label("doc.payment.refund_reversed") == "Payment refund reversed"
         assert "200.00" in detail_from_entry({"amount": 200.0}, "doc.payment.refund_reversed", "USD")
 
+    def test_a_payment_released_from_stripe_reads_in_the_activity(self):
+        from ui.components.activity import EVENT_TYPE_LABELS, event_label
+        assert "doc.payment.stripe_released" in EVENT_TYPE_LABELS
+        assert event_label("doc.payment.stripe_released") == "Payment no longer linked to Stripe"
+
     def test_detail_from_entry_source_deactivated(self):
         from ui.components.activity import detail_from_entry
         result = detail_from_entry({"merged_into": "item:new123", "merged_into_sku": "SKU-NEW", "original_qty": 5.0}, "item.source_deactivated")
@@ -11111,14 +11116,15 @@ class TestPaymentsSettingsPage:
         assert 'type="text" name="stripe_deposit_account"' not in r.text
 
     @pytest.mark.asyncio
-    async def test_disconnecting_asks_first_and_says_when_later_refunds_arrive(self, ui_client):
+    async def test_disconnecting_asks_first_and_says_where_later_refunds_are_recorded(self, ui_client):
         import html as _html
         from ui.i18n import t
         with self._mocks(relay=True, enabled=True):
             r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
         assert r.status_code == 200
         confirm = t("pay.disconnect_confirm")
-        assert "reconnect the same Stripe account" in confirm
+        assert "no longer linked to Stripe" in confirm and "record any refund of them here" in confirm
+        assert "reconnect" not in confirm
         assert f'data-confirm="{_html.escape(confirm)}"' in r.text
         assert 'onsubmit="return confirm(this.dataset.confirm)"' in r.text
 

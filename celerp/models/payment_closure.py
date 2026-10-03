@@ -74,6 +74,9 @@ class UnmatchedPayment(Base):
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False)
     # When the customer paid, as the payment provider reported it; None when not reported.
     paid_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    # When the payment stopped being linked to Stripe (Stripe was disconnected); applied
+    # with the payment once it is recorded on its invoice. None while it is linked.
+    released_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
 
 
 class UnmatchedRefund(Base):
@@ -85,11 +88,14 @@ class UnmatchedRefund(Base):
     Stripe reported, as soon as its payment is on its invoice.
 
     ``transition`` is "applied" (the refund succeeded) or "reversed" (an applied refund
-    later failed or was canceled)."""
+    later failed or was canceled). ``cycle`` counts the times Stripe put the refund
+    through: a refund undone and put through again is applied again in its next cycle,
+    and a reversal undoes the refund applied in its own cycle."""
 
     __tablename__ = "unmatched_refunds"
 
     refund_id: Mapped[str] = mapped_column(sa.String(255), primary_key=True)
+    cycle: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
     transition: Mapped[str] = mapped_column(sa.String(16), primary_key=True)
     reference: Mapped[str] = mapped_column(sa.String(255), nullable=False, index=True)
     amount_minor: Mapped[int] = mapped_column(sa.BigInteger, nullable=False)

@@ -185,13 +185,17 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
 REFUND_TRANSITIONS = ("applied", "reversed")
 
 
-def stripe_refund_key(refund_id: str, transition: str) -> str:
-    """The ledger idempotency key of one change to a Stripe refund."""
-    return f"stripe-refund:{refund_id}:{transition}"
+NOT_LINKED_TO_STRIPE = "The payment is no longer linked to Stripe"
 
 
-async def record_stripe_refund(session, company_id, row: Projection, *, refund_id: str, transition: str,
-                               reference: str, amount_minor: int, currency: str,
+def stripe_refund_key(refund_id: str, cycle: int, transition: str) -> str:
+    """The ledger name of one change to a Stripe refund, in the *cycle* Stripe put
+    the refund through."""
+    return f"stripe-refund:{refund_id}:{cycle}:{transition}"
+
+
+async def record_stripe_refund(session, company_id, row: Projection, *, refund_id: str, cycle: int,
+                               transition: str, reference: str, amount_minor: int, currency: str,
                                occurred_at: datetime.datetime | None, context):
     """Apply a change Stripe reported to a refund of the online payment *reference* on
     the locked document *row*. Only ``payments.receive_refund`` and the drain of
@@ -199,16 +203,18 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
 
     "applied" gives the money back from the payment (``apply_payment_refund``) on
     *context*, the books the payment was recorded on, dated their business day at
-    *occurred_at*. "reversed" undoes an applied refund with one entry on the same books. The same
-    change recorded again is a quiet None. A change that cannot be applied raises a
-    4xx and is kept for later: the payment is not on the invoice, the refund was never
-    applied, it gives back more than is left of the payment (never cut down to fit),
+    *occurred_at*. "reversed" undoes the refund applied in the same *cycle* with one
+    entry on the same books; a refund Stripe puts through again is applied again in
+    its next cycle. The same change recorded again is a quiet None. A change that
+    cannot be applied raises a 4xx and is kept for later: the payment is not on the
+    invoice or is no longer linked to Stripe, the refund was never applied in that
+    cycle, it gives back more than is left of the payment (never cut down to fit),
     the company now keeps its books in another currency, or it carries no usable
     books, currency or time."""
     from celerp.events.engine import find_event_by_idempotency
     from celerp_docs.routes import RefundBooks, apply_payment_refund, books_currency_still, reverse_payment_refund
     entity_id = row.entity_id
-    key = stripe_refund_key(refund_id, transition)
+    key = stripe_refund_key(refund_id, cycle, transition)
     if await find_event_by_idempotency(session, company_id, key) is not None:
         return None
     account, timezone, base, rate = await _checked_books(session, company_id, context)
@@ -222,6 +228,8 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
                     if p.get("reference") == reference and p.get("status") == "active"), None)
     if payment is None or payment.get("method") != "stripe":
         raise HTTPException(status_code=409, detail="The refunded payment is not on this document")
+    if payment.get("stripe_released_at"):
+        raise HTTPException(status_code=409, detail=NOT_LINKED_TO_STRIPE)
     if payment.get("bank_account") != account or Decimal(str(payment.get("conversion_rate"))) != rate:
         raise HTTPException(status_code=422, detail="The refund carries other books than its payment was recorded on")
     try:
@@ -237,7 +245,7 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
             session, company_id, entity_id, row, payment, amount=float(amount), refund_date=day, books=books,
             data={"method": "stripe", "reference": reference, "refund_id": refund_id},
             actor_id=actor, source="stripe", idempotency_key=key)
-    applied = await find_event_by_idempotency(session, company_id, stripe_refund_key(refund_id, "applied"))
+    applied = await find_event_by_idempotency(session, company_id, stripe_refund_key(refund_id, cycle, "applied"))
     if applied is None:
         raise HTTPException(status_code=409, detail="The refund being reversed was never applied")
     refund = dict(applied.data or {})
@@ -246,6 +254,38 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
     return await reverse_payment_refund(session, company_id, entity_id, row, payment, refund,
                                         reversal_date=day, books=books, actor_id=actor, source="stripe",
                                         idempotency_key=key)
+
+
+async def record_stripe_release(session, company_id, row: Projection, *, reference: str,
+                                released_at: datetime.datetime) -> bool:
+    """Record on the document *row* that the online payment *reference* is no
+    longer linked to Stripe: Stripe was disconnected, so it is refunded, voided or
+    deleted here from now on, for good. Only ``payments.receive_release`` and the
+    payment intake call it; the caller commits. The owner is told, once. False when
+    the payment is not on the document; recording it again is a quiet True."""
+    from celerp.events.engine import emit_event
+    from celerp.notifications import service as notif_service
+    payment = next((p for p in row.state.get("payments", [])
+                    if p.get("reference") == reference and p.get("method") == "stripe"
+                    and p.get("status") != "deleted"), None)
+    if payment is None:
+        return False
+    if payment.get("stripe_released_at"):
+        return True
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=row.entity_id, entity_type="doc",
+        event_type="doc.payment.stripe_released",
+        data={"payment_index": payment["index"], "reference": reference, "released_at": released_at.isoformat()},
+        actor_id=await _company_owner_id(session, company_id), location_id=None, source="stripe",
+        idempotency_key=f"stripe-release:{reference}")
+    if not getattr(entry, "was_deduped", False):
+        ref = row.state.get("ref_id") or row.state.get("doc_number") or row.entity_id
+        await notif_service.create(
+            session, company_id, "connector", "A payment is no longer linked to Stripe",
+            f"Stripe is disconnected, so the online payment on {ref} is no longer linked to it. "
+            "Record any refund of it here in Celerp.",
+            action_url=f"/docs/{row.entity_id}", priority="high")
+    return True
 
 
 # ── Public: pay, and the customer's return ───────────────────────────────────
@@ -341,7 +381,7 @@ async def payments_unmatched(session: AsyncSession = Depends(get_session)) -> di
         "received_at": p.received_at.isoformat(),
         "paid_at": p.paid_at.isoformat() if p.paid_at else None,
     } for p in await pay.unmatched_payments(session)], "refunds": [{
-        "refund_id": r.refund_id, "transition": r.transition, "reference": r.reference,
+        "refund_id": r.refund_id, "cycle": r.cycle, "transition": r.transition, "reference": r.reference,
         "amount": float(pay.stripe_amount(r.amount_minor, r.currency)), "currency": r.currency,
         "company_id": r.former_company, "document_id": r.document, "received_at": r.received_at.isoformat(),
         "occurred_at": r.occurred_at.isoformat() if r.occurred_at else None,

@@ -958,7 +958,7 @@ async def test_a_payment_entered_by_hand_can_still_be_refunded_voided_or_deleted
     assert doc["status"] != "paid"
 
 
-def _payment_history(payment: dict, payments_on: bool = True) -> str:
+def _payment_history(payment: dict) -> str:
     from fasthtml.common import to_xml
     from ui.routes.documents import _payment_section
     return to_xml(_payment_section({
@@ -966,7 +966,7 @@ def _payment_history(payment: dict, payments_on: bool = True) -> str:
         "total": 1070.0, "amount_paid": 1070.0, "amount_outstanding": 0.0,
         "payments": [{"index": 0, "amount": 1070.0, "method": "stripe", "reference": "pi_card",
                       "payment_date": "2026-07-13", "bank_account": "1119", "status": "active"} | payment],
-    }, bank_accounts=[], payments_on=payments_on))
+    }, bank_accounts=[]))
 
 
 def test_a_stripe_payment_offers_no_refund_or_void_and_says_where_to_do_it():
@@ -976,15 +976,14 @@ def test_a_stripe_payment_offers_no_refund_or_void_and_says_where_to_do_it():
     assert t("documents.refund_in_stripe") in html
 
 
-def test_a_stripe_payment_says_a_refund_made_while_disconnected_arrives_on_reconnecting():
+def test_a_payment_no_longer_linked_to_stripe_says_so_and_is_refunded_here():
     from ui.i18n import t
-    html = _payment_history({"held_by": "stripe"}, payments_on=False)
-    assert t("documents.refund_in_stripe") in html
-    assert "reconnect the same Stripe account" in t("documents.refund_in_stripe_reconnect")
-    assert t("documents.refund_in_stripe_reconnect") in html
-    assert "/docs/doc:inv/refund" not in html and "/docs/doc:inv/void-payment" not in html
-    assert t("documents.refund_in_stripe_reconnect") not in _payment_history({"held_by": "stripe"})
-    assert t("documents.refund_in_stripe_reconnect") not in _payment_history({}, payments_on=False)
+    html = _payment_history({"stripe_released_at": "2026-09-10T09:00:00+00:00"})
+    assert t("documents.stripe_released") in html
+    assert "/docs/doc:inv/refund" in html and "/docs/doc:inv/void-payment" in html
+    assert t("documents.refund_in_stripe") not in html
+    assert t("documents.stripe_released") not in _payment_history({"held_by": "stripe"})
+    assert t("documents.stripe_released") not in _payment_history({})
 
 
 def test_a_payment_entered_by_hand_as_stripe_keeps_its_refund_and_void():

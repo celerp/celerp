@@ -659,6 +659,14 @@ class DocPaymentRefundReversed(BaseModel):
     reversal_date: str | None = None
 
 
+class DocPaymentStripeReleased(BaseModel):
+    """Stripe was disconnected: the payment is no longer linked to Stripe, for good, and
+    is refunded, voided or deleted here like any other payment."""
+    payment_index: int
+    reference: str
+    released_at: str
+
+
 class DocPaymentVoided(BaseModel):
     payment_index: int
     void_reason: str | None = None
@@ -1286,6 +1294,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.payment.received": DocPaymentReceived,
     "doc.payment.refunded": DocPaymentRefunded,
     "doc.payment.refund_reversed": DocPaymentRefundReversed,
+    "doc.payment.stripe_released": DocPaymentStripeReleased,
     "payment_batch.recorded": PaymentBatchRecorded,
     "doc.payment.voided": DocPaymentVoided,
     "doc.payment.deleted": DocPaymentDeleted,
