@@ -2983,14 +2983,20 @@ async def test_cogs_negative_line_clamped(client, session, auth, _setup_ids):
     """A negative per-line cost contributes 0, not a negative that cancels a correctly
     costed sibling. Parcel A: cost_total -20 over 5 (unit -4) -> clamped to 0; Parcel B:
     unit cost 4. Two units each: COGS = 0 + 8 = 8, not 8 + (-8) = 0. At merge-base
-    finalize posts no COGS at all."""
+    finalize posts no COGS at all.
+
+    Every writer now refuses a negative cost, so the negative lot is seeded straight
+    into its projection: it stands for a row stored before that validation existed."""
+    from sqlalchemy.orm.attributes import flag_modified
+    from celerp.models.projections import Projection
+
     sku_n = f"COGSNEG-{uuid.uuid4().hex[:6]}"
     sku_p = f"COGSPOS-{uuid.uuid4().hex[:6]}"
-    rn = await client.post("/items", headers=auth["headers"], json={
-        "status": "available", "sku": sku_n, "name": sku_n, "quantity": 5,
-        "cost_total": -20.0, "sell_by": "piece"})
-    assert rn.status_code == 200, rn.text
-    item_n = rn.json()["id"]
+    item_n = await _create_item(client, auth, sku_n, 5)
+    row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_n})
+    row.state = {**row.state, "cost_total": -20.0, "cost_price": -4.0}
+    flag_modified(row, "state")
+    await session.commit()
     item_p = await _create_item(client, auth, sku_p, 5, cost_price=4.0)
     await _create_and_finalize_invoice(client, auth, [
         {"sku": sku_n, "name": sku_n, "quantity": 2, "unit_price": 9.0, "entity_id": item_n},
