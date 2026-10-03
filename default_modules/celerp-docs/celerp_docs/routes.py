@@ -8,7 +8,7 @@ import hashlib
 import json
 import math
 import uuid
-from dataclasses import dataclass, replace as _dc_replace
+from dataclasses import asdict, dataclass, replace as _dc_replace
 from datetime import datetime, timezone, date as _date
 from decimal import Decimal
 from typing import Literal
@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import (emit_event, find_event_by_idempotency, refuse_stripe_payment_removal,
-                                  stripe_payment_indexes)
+                                  stripe_origin_indexes, stripe_payment_indexes)
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
@@ -2751,6 +2751,16 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         session, company_id, doc_state.get("payments", []),
         key_doc_id=entity_id, key_type="invoice.paid")
     body["index"] = payment_index
+    # The receivable was raised at the document's rate and can only be cleared at that
+    # rate; the bank moves at the rate the cash actually converted at. A payer who
+    # records no rate of their own settled at the document's rate, so the two agree
+    # and no difference arises. Kept with the payment, so every refund and void of it
+    # reverses exactly this (posted_books).
+    books = PaymentBooks(
+        bank_account=bank_code, base_currency=_base_currency, doc_rate=_document_rate,
+        settlement_rate=(float(checked_exchange_rate(body["conversion_rate"]))
+                         if body.get("conversion_rate") not in (None, "") else _document_rate))
+    body["books"] = asdict(books)
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
         data=body, actor_id=actor_id, location_id=None, source=source,
@@ -2763,13 +2773,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         amount=amount, payment_index=payment_index,
         bank_account_code=bank_code, doc_type=doc_state.get("doc_type", "invoice"),
         payment_date=body["payment_date"],
-        base_currency=_base_currency,
-        # The receivable was raised at the document's rate and can only be
-        # cleared at that rate; the bank moves at the rate the cash actually
-        # converted at. A payer who records no rate of their own settled at
-        # the document's rate, so the two agree and no difference arises.
-        doc_rate=_document_rate,
-        settlement_rate=(float(checked_exchange_rate(body["conversion_rate"])) if body.get("conversion_rate") not in (None, "") else _document_rate),
+        base_currency=books.base_currency, doc_rate=books.doc_rate, settlement_rate=books.settlement_rate,
     )
     from celerp.modules.slots import fire_lifecycle
     await fire_lifecycle(
@@ -2828,17 +2832,72 @@ def _refundable(payment: dict, currency: str):
 
 
 @dataclass(frozen=True)
-class RefundBooks:
-    """The books a refund of a payment posts on: the bank the payment went to, the
-    company currency and the two rates the payment posted at."""
+class PaymentBooks:
+    """The books a payment posted on, which every refund and void of it reverses: the
+    bank the payment went to, the company currency and the two rates it posted at.
+    ``apply_doc_payment`` records them with the payment."""
     bank_account: str
     base_currency: str
     doc_rate: float
     settlement_rate: float
 
 
+UNREADABLE_STRIPE_BOOKS = ("Celerp cannot tell which books this Stripe payment was recorded on, so it cannot be "
+                           "refunded or voided here. Record the refund with a journal entry instead.")
+
+
+async def posted_books(session, company_id, entity_id: str, row: Projection, payment: dict) -> PaymentBooks:
+    """The books *payment* on the document *row* posted on. A payment recorded before
+    payments kept their books: one received through Stripe has them read from its
+    entry (``_books_from_entry``); any other reverses on the company's currency and the
+    document's rate now, as it always did."""
+    if payment.get("books"):
+        return PaymentBooks(**payment["books"])
+    if payment.get("index") in await stripe_origin_indexes(session, company_id, entity_id):
+        return await _books_from_entry(session, company_id, entity_id, row, payment)
+    company = await session.get(Company, company_id)
+    return PaymentBooks(
+        bank_account=payment.get("bank_account") or "1111",
+        base_currency=(company.settings.get("currency", "USD") if company else "USD"),
+        doc_rate=float(row.state.get("conversion_rate") or 1),
+        settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1))
+
+
+async def _books_from_entry(session, company_id, entity_id: str, row: Projection, payment: dict) -> PaymentBooks:
+    """The books an older Stripe payment posted on, read from its posted entry, or 422
+    (``UNREADABLE_STRIPE_BOOKS``) when the entry does not show them. The ledger keeps
+    its entries in the company's currency, so the payment's entry is read in it. A
+    Stripe payment posted at one rate on both sides: its own, or the document's when it
+    carried none. The books are the ones whose lines are exactly the entry's."""
+    company = await session.get(Company, company_id)
+    base = books_currency((company.settings or {}) if company else {})
+    entry = await session.get(Projection, (company_id, f"je:auto:{entity_id}:pay:{payment.get('index')}"))
+
+    def lines(entries) -> list[tuple]:
+        return sorted((e["account"], round_money(e.get("debit") or 0, base), round_money(e.get("credit") or 0, base))
+                      for e in entries)
+
+    if entry is not None and entry.state.get("status") == "posted" and payment.get("bank_account"):
+        posted = lines(entry.state.get("entries", []))
+        for rate in dict.fromkeys(r for r in (payment.get("conversion_rate"), row.state.get("conversion_rate"),
+                                              1 if str(row.state.get("currency") or base).upper() == base else None)
+                                  if r not in (None, "")):
+            books = PaymentBooks(bank_account=payment["bank_account"], base_currency=base,
+                                 doc_rate=float(rate), settlement_rate=float(rate))
+            try:
+                expected = auto_je.payment_entries(
+                    doc_type=row.state.get("doc_type", "invoice"), bank_account_code=books.bank_account,
+                    amount=payment.get("amount") or 0, base_currency=base, doc_rate=books.doc_rate,
+                    settlement_rate=books.settlement_rate)
+            except ValueError:
+                continue
+            if lines(expected) == posted:
+                return books
+    raise HTTPException(status_code=422, detail=UNREADABLE_STRIPE_BOOKS)
+
+
 async def apply_payment_refund(session, company_id, entity_id: str, row: Projection, payment: dict, *,
-                               amount, refund_date: str, books: RefundBooks, data: dict,
+                               amount, refund_date: str, books: PaymentBooks, data: dict,
                                actor_id, source: str, idempotency_key: str, metadata_: dict | None = None):
     """Give back *amount* of *payment* on the locked document *row*: emit
     doc.payment.refunded and post the entry that reverses the refunded share of the
@@ -2888,7 +2947,7 @@ async def apply_payment_refund(session, company_id, entity_id: str, row: Project
 
 
 async def reverse_payment_refund(session, company_id, entity_id: str, row: Projection, payment: dict,
-                                 refund: dict, *, reversal_date: str, books: RefundBooks, actor_id,
+                                 refund: dict, *, reversal_date: str, books: PaymentBooks, actor_id,
                                  source: str, idempotency_key: str):
     """Undo *refund*, the data of a doc.payment.refunded event of *payment* on the locked
     document *row*, when the money it gave back came back: emit
@@ -2947,14 +3006,9 @@ async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = 
     payment = next((p for p in row.state.get("payments", []) if p.get("index") == payload.payment_index), None)
     if payment is None or payment.get("status") != "active":
         raise HTTPException(status_code=422, detail="Choose a payment on this document to refund.")
-    company = await session.get(Company, company_id)
     entry = await apply_payment_refund(
         session, company_id, entity_id, row, payment, amount=payload.amount, refund_date=payload.payment_date,
-        books=RefundBooks(
-            bank_account=payment.get("bank_account") or "1111",
-            base_currency=(company.settings.get("currency", "USD") if company else "USD"),
-            doc_rate=float(row.state.get("conversion_rate") or 1),
-            settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1)),
+        books=await posted_books(session, company_id, entity_id, row, payment),
         data=payload.model_dump(exclude_none=True, exclude={"payment_date", "idempotency_key", "amount", "currency"}),
         actor_id=user.id, source="api", idempotency_key=key, metadata_={"request": digest},
     )
@@ -2996,6 +3050,10 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
     if payment.get("refunded") and remaining <= 0:
         raise HTTPException(status_code=409, detail="This payment has been refunded in full, so there is nothing left to void.")
     given_back = float(payment.get("refunded") or 0)
+    # The payment's own books, so the reversal is its mirror; read before anything is
+    # written, so a payment whose books cannot be told is refused whole.
+    books = (await posted_books(session, company_id, entity_id, row, payment)
+             if payment.get("method") not in ("credit_note", "applied") else None)
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
@@ -3006,25 +3064,13 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
         idempotency_key=key, metadata_={"request": digest},
     )
     doc_type = row.state.get("doc_type", "invoice")
-    if payment.get("method") not in ("credit_note", "applied"):
-        # Reverse the payment JE - use stored bank_account; fall back to "1111"
-        # (default account that always exists) for historical payments recorded
-        # before bank_account was required.
-        bank_code = payment.get("bank_account") or "1111"
-        _void_company = await session.get(Company, company_id)
-        _void_base_currency = (_void_company.settings.get("currency", "USD") if _void_company else "USD")
+    if books is not None:
         await auto_je.void_for_doc_payment(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id,
             payment_index=payload.payment_index, amount=to_stored_float(remaining),
-            bank_account_code=bank_code, doc_type=doc_type,
-            refund_date=payload.refund_date,
-            base_currency=_void_base_currency,
-            # The same two rates the payment posted at, resolved the same way, so
-            # the reversal is its mirror. Reversing at the document's rate alone
-            # would not undo the numbers this posting made: it would leave the
-            # difference in the receivable and in the bank.
-            doc_rate=float(row.state.get("conversion_rate") or 1),
-            settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1),
+            bank_account_code=books.bank_account, doc_type=doc_type,
+            refund_date=payload.refund_date, base_currency=books.base_currency,
+            doc_rate=books.doc_rate, settlement_rate=books.settlement_rate,
             already_given_back=given_back,
         )
     else:

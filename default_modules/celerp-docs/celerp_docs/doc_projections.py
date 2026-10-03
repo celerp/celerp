@@ -212,6 +212,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             # payment raced the checkout): the applied amount is clamped and
             # the real charge stays on record to refund or credit.
             "charged_amount": data.get("charged_amount"),
+            "books": data.get("books"),
             "status": "active",
         })
     elif event_type == "doc.payment.voided":

@@ -610,6 +610,14 @@ class DocSent(BaseModel):
     sent_to: str | None = None
 
 
+class PaymentBooks(BaseModel):
+    """The books a payment posted on, which every refund and void of it reverses."""
+    bank_account: str
+    base_currency: str
+    doc_rate: float
+    settlement_rate: float
+
+
 class DocPaymentReceived(BaseModel):
     amount: float
     currency: str | None = None
@@ -626,6 +634,7 @@ class DocPaymentReceived(BaseModel):
     # credit-note application.
     index: int | None = None
     paired_index: int | None = None
+    books: PaymentBooks | None = None
 
 
 class PaymentBatchRecorded(BaseModel):

@@ -369,6 +369,31 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     )
 
 
+def payment_entries(*, doc_type: str, bank_account_code: str, amount: float, base_currency: str,
+                    doc_rate: float, settlement_rate: float) -> list[dict]:
+    """The balanced lines a payment of *amount* posts (``create_for_doc_payment``)."""
+    ledger_amount = to_base(float(amount), checked_exchange_rate(doc_rate), base_currency)
+    bank_amount = to_base(float(amount), checked_exchange_rate(settlement_rate), base_currency)
+    if doc_type in ("bill", "purchase_order"):
+        entries = [
+            {"account": "2110", "debit": ledger_amount, "credit": 0.0},
+            {"account": bank_account_code, "debit": 0.0, "credit": bank_amount},
+        ]
+    elif doc_type == "credit_note":
+        # Cash refund of a credit note: money LEAVES the bank and the credit
+        # balance the note held against AR is cleared.
+        entries = [
+            {"account": "1120", "debit": ledger_amount, "credit": 0.0},
+            {"account": bank_account_code, "debit": 0.0, "credit": bank_amount},
+        ]
+    else:
+        entries = [
+            {"account": bank_account_code, "debit": bank_amount, "credit": 0.0},
+            {"account": "1120", "debit": 0.0, "credit": ledger_amount},
+        ]
+    return _balanced_with_fx_difference(entries)
+
+
 async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", doc_rate: float, settlement_rate: float) -> None:
     """Create JE for a payment.
 
@@ -388,27 +413,9 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     one would post a fabricated exchange difference, so a caller that omits either raises
     TypeError at call time instead.
     """
-    ledger_amount = to_base(float(amount), checked_exchange_rate(doc_rate), base_currency)
-    bank_amount = to_base(float(amount), checked_exchange_rate(settlement_rate), base_currency)
     paid_key = str(payment_index)
-    if doc_type in ("bill", "purchase_order"):
-        entries = [
-            {"account": "2110", "debit": ledger_amount, "credit": 0.0},
-            {"account": bank_account_code, "debit": 0.0, "credit": bank_amount},
-        ]
-    elif doc_type == "credit_note":
-        # Cash refund of a credit note: money LEAVES the bank and the credit
-        # balance the note held against AR is cleared.
-        entries = [
-            {"account": "1120", "debit": ledger_amount, "credit": 0.0},
-            {"account": bank_account_code, "debit": 0.0, "credit": bank_amount},
-        ]
-    else:
-        entries = [
-            {"account": bank_account_code, "debit": bank_amount, "credit": 0.0},
-            {"account": "1120", "debit": 0.0, "credit": ledger_amount},
-        ]
-    entries = _balanced_with_fx_difference(entries)
+    entries = payment_entries(doc_type=doc_type, bank_account_code=bank_account_code, amount=amount,
+                              base_currency=base_currency, doc_rate=doc_rate, settlement_rate=settlement_rate)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
