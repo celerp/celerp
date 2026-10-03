@@ -27,8 +27,8 @@ from sqlalchemy import text
 
 from company_backup_support import token
 from migration_support import auth, code_config, maker, real_client, real_engine  # noqa: F401
-from test_company_reset_payments import (_PAYMENT, BOOKS, _Cloud, _harbor, _invoice, _paid, _reset,
-                                         _system_recovery, _unmatched)
+from test_company_reset_payments import (_PAYMENT, BOOKS, _Cloud, _harbor, _invoice, _paid, _pay_by_hand,
+                                         _reset, _system_recovery, _unmatched)
 
 pytestmark = pytest.mark.asyncio
 
@@ -1039,3 +1039,142 @@ async def test_a_refund_kept_until_the_release_is_applied_by_it_once(real_engine
     await _assert_books(real_engine, invoice, refunded="200")
     assert (await _ledger(real_engine, invoice)).count("doc.payment.refunded") == 1
     assert await _kept_refunds(real_engine) == []
+
+
+# ── Payments renumbered by a deletion made before deletions kept their place ──
+
+async def _deleted_before_upgrade(engine, company_id, entity_id, index: int) -> None:
+    """Delete the payment at *index* as Celerp did before deletions kept their place:
+    the payment leaves the list and every later payment moves up one place."""
+    from celerp.models.ledger import LedgerEntry
+    from celerp.projections.engine import ProjectionEngine
+    async with maker(engine)() as s:
+        entry = LedgerEntry(company_id=company_id, entity_id=entity_id, entity_type="doc",
+                            event_type="doc.payment.deleted", data={"payment_index": index},
+                            actor_id=None, location_id=None, source="api",
+                            idempotency_key=f"legacy-delete:{entity_id}:{index}", metadata_={})
+        s.add(entry)
+        await s.flush()
+        await ProjectionEngine.apply_event(s, entry)
+        await s.commit()
+
+
+async def _stripe_then_by_hand(engine, client, monkeypatch):
+    """A customer paid 500.00 of the invoice online, then 570.00 by hand. Before the
+    upgrade, the online payment's record was deleted, so the payment by hand moved to
+    the first place."""
+    boss, a, b = await _harbor(engine)
+    invoice = await _invoice(client, engine, boss, a)
+    cloud = _RefundCloud(monkeypatch, engine)
+    cloud.pay(a, invoice, "pi_1", amount_minor=50000, paid_at=PAID_AT, books=BOOKS)
+    await cloud.deliver()
+    await _pay_by_hand(client, engine, boss, a, invoice, 570.0)
+    await _deleted_before_upgrade(engine, a, invoice, 0)
+    assert [(p["index"], p["method"], p["amount"]) for p in (await _doc(engine, invoice))["payments"]] == [
+        (0, None, 570.0)]
+    return boss, a, invoice
+
+
+@pytest.mark.parametrize("writer", ["route", "event"])
+async def test_a_payment_by_hand_moved_into_a_stripe_payments_old_place_is_deleted_like_any_other(
+        real_engine, real_client, monkeypatch, writer):
+    boss, a, invoice = await _stripe_then_by_hand(real_engine, real_client, monkeypatch)
+    assert await _held_by(real_client, real_engine, boss, a, invoice) == [None]
+
+    if writer == "route":
+        r = await _remove_payment(real_client, auth(await token(real_engine, boss, a)), invoice, "delete")
+        assert r.status_code == 200, r.text
+    else:
+        assert await _delete_event(real_engine, a, invoice) == (200, None)
+
+    doc = await _doc(real_engine, invoice)
+    assert doc["payments"][0]["status"] == "deleted" and doc["amount_paid"] == 0
+
+
+async def test_an_older_payment_by_hand_moved_into_a_stripe_payments_old_place_is_voided_on_todays_books(
+        real_engine, real_client, monkeypatch):
+    """Recorded before payments kept their books, it reverses on the company's currency
+    and the invoice's rate, as any payment by hand does; never on books read as a
+    Stripe payment's."""
+    boss, a, invoice = await _stripe_then_by_hand(real_engine, real_client, monkeypatch)
+    async with maker(real_engine)() as s:
+        state = await s.scalar(text("SELECT state FROM projections WHERE entity_id = :e"), {"e": invoice})
+        state["payments"][0].pop("books", None)
+        await s.execute(text("UPDATE projections SET state = CAST(:s AS json) WHERE entity_id = :e"),
+                        {"s": json.dumps(state), "e": invoice})
+        await s.commit()
+
+    r = await _remove_payment(real_client, auth(await token(real_engine, boss, a)), invoice, "void")
+
+    assert r.status_code == 200, r.text
+    assert (await _doc(real_engine, invoice))["payments"][0]["status"] == "voided"
+
+
+async def _by_hand_then_stripe(engine, client, monkeypatch):
+    """A customer paid 570.00 of the invoice by hand, then 500.00 online. Before the
+    upgrade, the payment by hand was deleted, so the online payment moved to the
+    first place."""
+    boss, a, b = await _harbor(engine)
+    invoice = await _invoice(client, engine, boss, a)
+    await _pay_by_hand(client, engine, boss, a, invoice, 570.0)
+    cloud = _RefundCloud(monkeypatch, engine)
+    cloud.pay(a, invoice, "pi_1", amount_minor=50000, paid_at=PAID_AT, books=BOOKS)
+    await cloud.deliver()
+    await _deleted_before_upgrade(engine, a, invoice, 0)
+    assert [(p["index"], p["reference"]) for p in (await _doc(engine, invoice))["payments"]] == [(0, "pi_1")]
+    return boss, a, invoice, cloud
+
+
+@pytest.mark.parametrize("action", ["refund", "void", "delete"])
+async def test_a_stripe_payment_moved_into_another_payments_old_place_is_still_stripes(
+        real_engine, real_client, monkeypatch, action):
+    boss, a, invoice, cloud = await _by_hand_then_stripe(real_engine, real_client, monkeypatch)
+    assert await _held_by(real_client, real_engine, boss, a, invoice) == ["stripe"]
+    before, events = await _doc(real_engine, invoice), await _ledger(real_engine, invoice)
+
+    r = await _remove_payment(real_client, auth(await token(real_engine, boss, a)), invoice, action)
+
+    assert r.status_code == 422 and r.json()["detail"] == STRIPE_OWNED
+    assert await _doc(real_engine, invoice) == before and await _ledger(real_engine, invoice) == events
+
+
+async def test_a_refund_of_a_stripe_payment_moved_into_another_payments_old_place_gives_the_money_back(
+        real_engine, real_client, monkeypatch):
+    boss, a, invoice, cloud = await _by_hand_then_stripe(real_engine, real_client, monkeypatch)
+    cloud.refund(a, invoice, "re_1", 20000, _at(1))
+    await cloud.deliver()
+    cloud.refund(a, invoice, "re_1", 20000, _at(2), transition="reversed")
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _kept_refunds(real_engine) == []
+    ledger = await _ledger(real_engine, invoice)
+    assert (ledger.count("doc.payment.refunded"), ledger.count("doc.payment.refund_reversed")) == (1, 1)
+    assert not _payment(await _doc(real_engine, invoice)).get("refunded")
+
+
+async def test_a_refund_applied_before_its_stripe_payment_moved_is_reversed_after_it_moved(
+        real_engine, real_client, monkeypatch):
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    await _pay_by_hand(real_client, real_engine, boss, a, invoice, 570.0)
+    cloud = _RefundCloud(monkeypatch, real_engine)
+    cloud.pay(a, invoice, "pi_1", amount_minor=50000, paid_at=PAID_AT, books=BOOKS)
+    cloud.refund(a, invoice, "re_1", 20000, _at(1))
+    await cloud.deliver()
+    await _deleted_before_upgrade(real_engine, a, invoice, 0)
+    cloud.refund(a, invoice, "re_1", 20000, _at(2), transition="reversed")
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _kept_refunds(real_engine) == []
+    assert not _payment(await _doc(real_engine, invoice)).get("refunded")
+
+
+async def test_a_stripe_payment_moved_into_another_payments_old_place_is_never_deleted_once_released(
+        real_engine, real_client, monkeypatch):
+    boss, a, invoice, cloud = await _by_hand_then_stripe(real_engine, real_client, monkeypatch)
+    cloud.release(a, invoice, RELEASED_AT)
+    await cloud.deliver()
+
+    assert await _delete_event(real_engine, a, invoice) == (422, KEPT)

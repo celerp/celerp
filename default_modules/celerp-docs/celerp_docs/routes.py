@@ -22,8 +22,8 @@ import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.events.engine import (emit_event, find_event_by_idempotency, refuse_stripe_payment_removal,
-                                  stripe_origin_indexes, stripe_payment_indexes)
+from celerp.events.engine import (emit_event, find_event_by_idempotency, is_stripe_receipt,
+                                  refuse_stripe_payment_removal, stripe_payment_indexes, stripe_receipt_references)
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
@@ -2853,7 +2853,7 @@ async def posted_books(session, company_id, entity_id: str, row: Projection, pay
     document's rate now, as it always did."""
     if payment.get("books"):
         return PaymentBooks(**payment["books"])
-    if payment.get("index") in await stripe_origin_indexes(session, company_id, entity_id):
+    if is_stripe_receipt(payment, await stripe_receipt_references(session, company_id, entity_id)):
         return await _books_from_entry(session, company_id, entity_id, row, payment)
     company = await session.get(Company, company_id)
     return PaymentBooks(

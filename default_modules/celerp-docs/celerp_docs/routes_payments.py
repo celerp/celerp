@@ -142,7 +142,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     """Record a confirmed online charge as a payment on its invoice. Only
     ``payments.receive_payment`` calls it.
 
-    A *managed* payment is Stripe's to manage (``stripe_managed_indexes``): it is
+    A *managed* payment is Stripe's to manage (``stripe_receipt_references``): it is
     recorded on *context*, the books its payment page opened with
     (``payment_books``), and dated their business day at *paid_at*, when Stripe
     reported it paid, so a payment recorded again after a System Recovery posts
@@ -227,7 +227,7 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
     books, currency or time. A change Stripe made before the payment stopped being
     linked to it applies whenever it arrives; one made after is never applied
     here."""
-    from celerp.events.engine import find_event_by_idempotency, stripe_managed_indexes
+    from celerp.events.engine import find_event_by_idempotency, stripe_receipt_references
     from celerp_docs.routes import PaymentBooks, apply_payment_refund, books_currency_still, reverse_payment_refund
     entity_id = row.entity_id
     key = stripe_refund_key(refund_id, cycle, transition)
@@ -245,7 +245,7 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
     if payment is None or payment.get("method") != "stripe":
         raise HTTPException(status_code=409, detail="The refunded payment is not on this document")
     released_at = payment.get("stripe_released_at")
-    if (payment.get("index") not in await stripe_managed_indexes(session, company_id, entity_id)
+    if (reference not in await stripe_receipt_references(session, company_id, entity_id, managed=True)
             or (released_at and occurred_at >= datetime.datetime.fromisoformat(released_at))):
         raise HTTPException(status_code=409, detail=NOT_LINKED_TO_STRIPE)
     if payment.get("bank_account") != account or Decimal(str(payment.get("conversion_rate"))) != rate:
@@ -267,7 +267,7 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
     if applied is None:
         raise HTTPException(status_code=409, detail="The refund being reversed was never applied")
     refund = dict(applied.data or {})
-    if refund.get("payment_index") != payment.get("index") or Decimal(str(refund.get("amount"))) != amount:
+    if refund.get("reference") != reference or Decimal(str(refund.get("amount"))) != amount:
         raise HTTPException(status_code=422, detail="The reversal does not match the refund it reverses")
     return await reverse_payment_refund(session, company_id, entity_id, row, payment, refund,
                                         reversal_date=day, books=books, actor_id=actor, source="stripe",
