@@ -6,7 +6,8 @@ Every rendered form gets its own key, and the route passes it on unchanged, so t
 same form submitted twice is recorded once. The next page render brings a new key,
 except the page answering an action that failed: whether it happened is not known (its
 answer may have been lost), so that page keeps the action's key, and sending it again
-is the same action.
+is the same action. A key the server says already named a different action is spent: the
+page answering that refusal brings a new one.
 """
 from __future__ import annotations
 
@@ -34,8 +35,12 @@ def operation_key_attrs(kept: str = "") -> dict:
     return {"data-operation-key": kept or str(uuid.uuid4())}
 
 
-def kept_operation_key(form) -> str:
-    """The key a failed action's form carried, for the page answering it to keep."""
+def kept_operation_key(form, error) -> str:
+    """The key a failed action's form carried, for the page answering it to keep; none when
+    the refusal says that key already named a different action, as sending it again could
+    only be refused again."""
+    if str((getattr(error, "data", None) or {}).get("message_key") or "").endswith(".key_reused"):
+        return ""
     return str(form.get(FIELD, "")).strip()
 
 

@@ -161,6 +161,8 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
             current["wip_account_code"] = data["wip_account_code"]
         current.pop("wip_untracked", None)
         current.pop("wip_unresolved", None)
+    elif event_type == "mfg.operation.recorded":
+        current.update({"entity_type": "mfg_operation", **data})
     elif event_type == "mfg.order.wip_unresolved":
         current["wip_unresolved"] = data.get("reason") or "unresolved"
     elif event_type == "mfg.order.cancelled":

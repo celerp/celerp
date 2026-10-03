@@ -3547,6 +3547,7 @@
   "mfg.cancel_moved": "Dieser Produktionslauf enthält noch Material oder Ware und kann daher nicht storniert werden. Geben Sie zuerst das Material zurück und machen Sie die Eingänge rückgängig.",
   "mfg.wip_account_missing": "Produktionsläufe benötigen ein Konto für unfertige Erzeugnisse, das Buchungen annehmen kann. Wählen Sie es unter Einstellungen > Buchhaltung > Buchungskonten.",
   "mfg.issue_first": "Entnehmen Sie alle Komponenten für diesen Produktionslauf, bevor Sie seine Fertigwaren entgegennehmen.",
+  "mfg.key_reused": "Diese Aktion wurde bereits mit anderen Angaben gesendet. Prüfen Sie die Liste und versuchen Sie es dann erneut.",
   "mfg.unaccounted_value": "Aus diesem Produktionslauf wurde nichts entgegengenommen. Das entnommene Material muss daher als Ausschuss erfasst werden, bevor er abgeschlossen werden kann.",
   "mfg.over_return": "Für diesen Produktionslauf wurden nur {issued:g} von {sku} entnommen; mehr kann nicht zurückgegeben werden.",
   "mfg.return_quantity": "Jede zurückgegebene Komponente braucht eine Menge größer als null.",

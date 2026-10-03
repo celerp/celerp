@@ -3547,6 +3547,7 @@
   "mfg.cancel_moved": "Proses produksi ini masih memegang bahan atau hasil, sehingga tidak dapat dibatalkan. Kembalikan bahannya dan batalkan penerimaannya terlebih dahulu.",
   "mfg.wip_account_missing": "Proses produksi memerlukan akun pekerjaan dalam proses yang dapat menerima jurnal. Pilih di Pengaturan > Akuntansi > Akun posting.",
   "mfg.issue_first": "Keluarkan semua komponen untuk proses produksi ini sebelum menerima hasilnya.",
+  "mfg.key_reused": "Tindakan ini sudah dikirim dengan rincian berbeda. Periksa daftar, lalu coba lagi.",
   "mfg.unaccounted_value": "Tidak ada yang diterima dari proses produksi ini, jadi bahan yang dikeluarkan harus dicatat sebagai limbah sebelum dapat diselesaikan.",
   "mfg.over_return": "Hanya {issued:g} {sku} yang dikeluarkan untuk proses produksi ini, sehingga tidak bisa dikembalikan lebih dari itu.",
   "mfg.return_quantity": "Setiap komponen yang dikembalikan harus memiliki jumlah lebih dari nol.",

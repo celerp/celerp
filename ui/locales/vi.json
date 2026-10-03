@@ -3547,6 +3547,7 @@
   "mfg.cancel_moved": "Đợt sản xuất này vẫn còn nguyên vật liệu hoặc thành phẩm nên không thể hủy. Hãy trả lại nguyên vật liệu và hoàn tác các lần nhận trước.",
   "mfg.wip_account_missing": "Các đợt sản xuất cần một tài khoản chi phí sản xuất dở dang có thể nhận bút toán. Hãy chọn tài khoản này trong Cài đặt > Kế toán > Tài khoản ghi sổ.",
   "mfg.issue_first": "Hãy xuất tất cả linh kiện cho đợt sản xuất này trước khi nhận thành phẩm.",
+  "mfg.key_reused": "Thao tác này đã được gửi với thông tin khác. Hãy kiểm tra danh sách rồi thử lại.",
   "mfg.unaccounted_value": "Chưa nhận được gì từ đợt sản xuất này, vì vậy nguyên vật liệu đã xuất phải được ghi nhận là phế liệu trước khi có thể hoàn thành.",
   "mfg.over_return": "Chỉ có {issued:g} {sku} được phát hành cho đợt sản xuất này nên không thể trả lại nhiều hơn.",
   "mfg.return_quantity": "Mỗi thành phần trả lại cần có số lượng lớn hơn 0.",

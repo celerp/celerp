@@ -3547,6 +3547,7 @@
   "mfg.cancel_moved": "Este ciclo ainda contém materiais ou produção, por isso não pode ser cancelado. Primeiro devolva os materiais e desfaça os recebimentos.",
   "mfg.wip_account_missing": "Os ciclos de produção precisam de uma conta de produção em andamento que aceite lançamentos. Escolha-a em Configurações > Contabilidade > Contas de lançamento.",
   "mfg.issue_first": "Emita todos os componentes para este ciclo antes de receber a sua produção.",
+  "mfg.key_reused": "Esta ação já foi enviada com outros dados. Verifique a lista e tente novamente.",
   "mfg.unaccounted_value": "Nada foi recebido deste ciclo, então os materiais emitidos devem ser registrados como perda antes de concluí-lo.",
   "mfg.over_return": "Apenas {issued:g} de {sku} foram emitidos para este ciclo, por isso não é possível devolver mais.",
   "mfg.return_quantity": "Cada componente devolvido precisa de uma quantidade maior que zero.",

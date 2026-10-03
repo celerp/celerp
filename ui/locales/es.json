@@ -3547,6 +3547,7 @@
   "mfg.cancel_moved": "Este ciclo aún contiene materiales o producción, por lo que no se puede cancelar. Primero devuelva sus materiales y deshaga sus recepciones.",
   "mfg.wip_account_missing": "Los ciclos de producción necesitan una cuenta de trabajo en curso que admita asientos. Elíjala en Ajustes > Contabilidad > Cuentas de contabilización.",
   "mfg.issue_first": "Entregue todos los componentes a este ciclo antes de recibir su producción.",
+  "mfg.key_reused": "Esta acción ya se envió con otros datos. Revise la lista e inténtelo de nuevo.",
   "mfg.unaccounted_value": "No se ha recibido nada de este ciclo, así que los materiales entregados deben registrarse como desperdicio antes de completarlo.",
   "mfg.over_return": "Solo se entregaron {issued:g} de {sku} a este ciclo, así que no se puede devolver más.",
   "mfg.return_quantity": "Cada componente devuelto necesita una cantidad mayor que cero.",

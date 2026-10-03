@@ -802,10 +802,36 @@ async def make_work_orders(
     """Create one work order per selected demand line, linked 1:1 to its source order, for the
     line's net shortfall (the FIFO-pegged uncovered quantity). With ``complete=true`` each is also
     issued, received and closed. This is Demand Planning's 'Make selected' / 'Make & complete'."""
-    out = await make_selected(session, company_id, user.id, payload.lines, payload.complete,
-                              payload.idempotency_key or uuid.uuid4().hex)
+    out = await _once(session, company_id, user.id, "make_selected", payload,
+                      lambda key: make_selected(session, company_id, user.id, payload.lines, payload.complete, key))
     await session.commit()
     return out
+
+
+async def _once(session: AsyncSession, company_id, user_id, action: str, payload: BaseModel, act) -> dict:
+    """One keyed action on many runs or demand lines: ``act(key)`` does it, each run or line
+    deriving its own key from ``key``. The key names the whole action: sent again with the
+    same request it returns the first answer and acts on nothing, not even a line or run the
+    first pass skipped that could now be acted on; sent with a different request it is
+    refused. The record is checked and written under the company lock. The caller commits."""
+    if not payload.idempotency_key:
+        return await act(uuid.uuid4().hex)
+    await lock_company(session, company_id)
+    key = f"mfg:operation:{payload.idempotency_key}"
+    fingerprint = movements._fingerprint({action: payload.model_dump(exclude={"idempotency_key"})})
+    stored = await find_event_by_idempotency(session, company_id, key)
+    if stored is not None:
+        if stored.event_type != "mfg.operation.recorded" or (stored.metadata_ or {}).get("request") != fingerprint:
+            raise movements.refuse(409, "key_reused", "This request key was already used for a different action. "
+                                   "Send the request again without reusing the key.")
+        return stored.data["result"]
+    result = await act(payload.idempotency_key)
+    await emit_event(
+        session, company_id=company_id, entity_id=f"mfg_operation:{uuid.uuid5(uuid.NAMESPACE_URL, key)}",
+        entity_type="mfg_operation", event_type="mfg.operation.recorded",
+        data={"action": action, "result": result}, actor_id=user_id, location_id=None, source="api",
+        idempotency_key=key, metadata_={"request": fingerprint})
+    return result
 
 
 async def make_selected(session: AsyncSession, company_id, user_id, lines: list[WorkOrderLineRef],
@@ -1000,14 +1026,20 @@ async def bulk_run_action(
     action = payload.action
     if action not in _BULK_RUN_ACTIONS:
         raise HTTPException(status_code=422, detail=f"Unknown bulk action: {action}")
+    out = await _once(session, company_id, user.id, "bulk_action", payload,
+                      lambda rk: _bulk_run_action(session, company_id, user.id, payload.run_ids, action, rk))
+    await session.commit()
+    return out
+
+
+async def _bulk_run_action(session: AsyncSession, company_id, user_id, run_ids: list[str], action: str,
+                           rk: str) -> dict:
+    """Each run's movements derive their own keys from ``rk`` and the run id."""
     at = datetime.now(timezone.utc).isoformat()
-    # One key for this request: each run's movements derive their own keys from it and the run id,
-    # so sending the same request again changes nothing it already changed.
-    rk = payload.idempotency_key or uuid.uuid4().hex
 
     done: list[str] = []
     skipped: list[dict] = []
-    for run_id in payload.run_ids:
+    for run_id in run_ids:
         try:
             await _get_order(session, company_id, run_id)
         except HTTPException:
@@ -1018,28 +1050,27 @@ async def bulk_run_action(
             # leaves nothing half done and the others still go through.
             async with session.begin_nested():
                 if action == "start":
-                    await movements.transition(session, company_id, user.id, run_id, "start",
-                                               {"started_by": str(user.id)}, rk, at=at)
+                    await movements.transition(session, company_id, user_id, run_id, "start",
+                                               {"started_by": str(user_id)}, rk, at=at)
                 elif action == "hold":
-                    await movements.transition(session, company_id, user.id, run_id, "hold", {"reason": None}, rk, at=at)
+                    await movements.transition(session, company_id, user_id, run_id, "hold", {"reason": None}, rk, at=at)
                 elif action == "resume":
-                    await movements.transition(session, company_id, user.id, run_id, "resume",
-                                               {"resumed_by": str(user.id)}, rk, at=at)
+                    await movements.transition(session, company_id, user_id, run_id, "resume",
+                                               {"resumed_by": str(user_id)}, rk, at=at)
                 elif action == "cancel":
-                    await movements.cancel(session, company_id, user.id, run_id, None, rk, at=at)
+                    await movements.cancel(session, company_id, user_id, run_id, None, rk, at=at)
                 elif action == "issue":
-                    await movements.issue(session, company_id, user.id, run_id, None, rk, at=at)
+                    await movements.issue(session, company_id, user_id, run_id, None, rk, at=at)
                 elif action == "return":
-                    await movements.return_materials(session, company_id, user.id, run_id, None, rk, at=at)
+                    await movements.return_materials(session, company_id, user_id, run_id, None, rk, at=at)
                 elif action == "complete":
-                    await movements.complete(session, company_id, user.id, run_id, {}, rk, at=at)
+                    await movements.complete(session, company_id, user_id, run_id, {}, rk, at=at)
             done.append(run_id)
         except HTTPException as e:
             # A refusal keeps its message_key and params so the UI can say why in the user's language.
             detail = e.detail if isinstance(e.detail, dict) else {"message": str(e.detail)}
             skipped.append({"id": run_id, "reason": detail.get("message"),
                             **{k: v for k, v in detail.items() if k in ("message_key", "params")}})
-    await session.commit()
     return {"done": done, "skipped": skipped}
 
 

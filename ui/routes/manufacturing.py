@@ -605,7 +605,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             # Whether it was made is not known (the answer may have been lost): the board keeps
             # the action's key, so sending it again is the same action.
-            error, kept = refusal_text(e.data or e.detail) or t("manufacturing.err_make"), kept_operation_key(form)
+            error, kept = refusal_text(e.data or e.detail) or t("manufacturing.err_make"), kept_operation_key(form, e)
         try:
             rows = (await api.manufacturing_to_make(token)).get("items", [])
         except APIError as e:
@@ -762,7 +762,7 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             # As Make selected: the queue keeps the key of an action whose outcome is not known.
-            error, kept = refusal_text(e.data or e.detail) or t("manufacturing.err_bulk_action"), kept_operation_key(form)
+            error, kept = refusal_text(e.data or e.detail) or t("manufacturing.err_bulk_action"), kept_operation_key(form, e)
         try:
             orders = (await api.list_mfg_orders(token, {})).get("items", [])
         except APIError as e:

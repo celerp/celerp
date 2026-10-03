@@ -364,3 +364,40 @@ async def test_make_selected_whose_answer_was_lost_is_sent_again_with_its_key(cl
 
     assert _table_key(lost.text) == "p1" and _toast(r)["type"] == "success"
     assert await _count(session, auth, entity_type="mfg_order") == 1
+
+
+async def test_a_kept_key_sent_with_another_selection_is_refused_and_replaced(client, session, auth):
+    """The answer is lost and the queue keeps the action's key; the person then ticks another
+    run as well. That is a different action: it is refused with a plain reason, and the queue
+    it answers with brings a new key, so the next try goes through."""
+    _, _, one = await _run(client, auth, qty=2)
+    _, _, two = await _run(client, auth, qty=2)
+    with _app(lose="/manufacturing/bulk-action"):
+        lost = await _page(auth, "/manufacturing/runs/bulk/hold?status=active",
+                           [("selected", one), ("idempotency_key", "p1")])
+        assert _table_key(lost.text) == "p1"
+
+        refused = await _page(auth, "/manufacturing/runs/bulk/hold?status=active",
+                              [("selected", one), ("selected", two), ("idempotency_key", "p1")])
+
+        assert _toast(refused)["type"] == "error"
+        assert "key" not in _toast(refused)["message"].lower()
+        assert _table_key(refused.text) != "p1"
+        assert (await _state(session, auth, two))["status"] == "planned"
+        await _bulk(auth, "hold", [one, two], _table_key(refused.text))
+    session.expire_all()
+    assert (await _state(session, auth, two))["status"] == "on_hold"
+
+
+async def test_make_selected_kept_key_with_another_selection_is_refused_and_replaced(client, session, auth):
+    made, early, late = await _setup(client, auth)
+    with _app(lose="/manufacturing/to-make/make"):
+        lost = await _page(auth, "/manufacturing/make-selected", {"selected": f"{made}|{late}", "idempotency_key": "p1"})
+        assert _table_key(lost.text) == "p1"
+
+        refused = await _page(auth, "/manufacturing/make-selected",
+                              [("selected", f"{made}|{late}"), ("selected", f"{made}|{early}"),
+                               ("idempotency_key", "p1")])
+
+    assert _toast(refused)["type"] == "error" and _table_key(refused.text) != "p1"
+    assert await _count(session, auth, entity_type="mfg_order") == 1

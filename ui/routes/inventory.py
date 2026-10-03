@@ -1998,7 +1998,7 @@ function celerpPrintLabel(entityId, templateId) {
             # Whether it happened is not known (the answer may have been lost): the run's
             # action list keeps its key, so sending it again is the same action.
             return await _production_block_response(token, entity_id, flash_msg=refusal_text(e.data or e.detail),
-                                                    flash_kind="error", kept_keys={run_id: kept_operation_key(form)})
+                                                    flash_kind="error", kept_keys={run_id: kept_operation_key(form, e)})
 
     @app.post("/api/items/{entity_id}/recipe-section")
     async def recipe_section_edit(request: Request, entity_id: str):

@@ -3547,6 +3547,7 @@
   "mfg.cancel_moved": "This run still holds materials or output, so it cannot be cancelled. Return its materials and undo its receipts first.",
   "mfg.wip_account_missing": "Production runs need a work in progress account that can take entries. Choose it in Settings > Accounting > Posting accounts.",
   "mfg.issue_first": "Issue every component to this run before receiving its output.",
+  "mfg.key_reused": "That action was already sent with different details. Check the list, then try again.",
   "mfg.unaccounted_value": "Nothing was received from this run, so the materials issued to it must be recorded as waste before it can be completed.",
   "mfg.over_return": "Only {issued:g} of {sku} was issued to this run, so no more can be returned.",
   "mfg.return_quantity": "Each component returned needs a quantity greater than zero.",

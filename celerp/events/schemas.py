@@ -945,6 +945,13 @@ class MfgOrderWipUnresolved(BaseModel):
     reason: str
 
 
+class MfgOperationRecorded(BaseModel):
+    # What one keyed action on many runs or demand lines was asked and answered, so the
+    # same key sent again gives the same answer and changes nothing.
+    action: str
+    result: dict
+
+
 class MfgOrderScheduled(BaseModel):
     # Scheduling fields for a run (Phase A). All optional; only provided keys are applied.
     due_date: str | None = None
@@ -1388,6 +1395,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "mfg.order.scheduled": MfgOrderScheduled,
     "mfg.order.wip_opened": MfgOrderWipOpened,
     "mfg.order.wip_unresolved": MfgOrderWipUnresolved,
+    "mfg.operation.recorded": MfgOperationRecorded,
 
     # Scanning
     "scan.barcode": ScanBarcode,

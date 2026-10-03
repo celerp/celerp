@@ -3547,6 +3547,7 @@
   "mfg.cancel_moved": "Ce cycle contient encore des matières ou de la production, il ne peut donc pas être annulé. Retournez d'abord ses matières et annulez ses réceptions.",
   "mfg.wip_account_missing": "Les cycles de production ont besoin d'un compte d'en-cours qui accepte des écritures. Choisissez-le dans Paramètres > Comptabilité > Comptes d'imputation.",
   "mfg.issue_first": "Sortez tous les composants pour ce cycle avant de réceptionner sa production.",
+  "mfg.key_reused": "Cette action a déjà été envoyée avec d'autres détails. Vérifiez la liste, puis réessayez.",
   "mfg.unaccounted_value": "Rien n'a été réceptionné de ce cycle : les matières sorties doivent être enregistrées comme rebut avant de pouvoir le terminer.",
   "mfg.over_return": "Seulement {issued:g} de {sku} ont été sortis pour ce cycle, il n'est donc pas possible d'en retourner davantage.",
   "mfg.return_quantity": "Chaque composant retourné doit avoir une quantité supérieure à zéro.",
