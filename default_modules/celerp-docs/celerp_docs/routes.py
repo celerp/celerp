@@ -2475,14 +2475,12 @@ async def bulk_delete_drafts(
         raise HTTPException(status_code=422, detail="No document IDs specified")
     from celerp.models.ledger import LedgerEntry
     import sqlalchemy as _sa
-    drafts = []
-    for eid in ids:
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
-        # Only a document is deleted here: a draft item or List sharing the ID space
-        # is skipped like any other non-draft-document ID.
-        if row is None or row.entity_type != "doc" or row.state.get("status") != "draft":
-            continue
-        drafts.append(row)
+    # Locked and read fresh, so a finalize that committed while this waited is seen.
+    # Only a document is deleted here: a draft item or List sharing the ID space
+    # is skipped like any other non-draft-document ID.
+    rows = await lock_projections(session, company_id, ids)
+    drafts = [row for eid in dict.fromkeys(ids)
+              if (row := rows.get(eid)) is not None and row.entity_type == "doc" and row.state.get("status") == "draft"]
 
     posted = [row.state.get("ref_id") or row.state.get("doc_number") or row.entity_id
               for row in drafts
@@ -2507,7 +2505,7 @@ async def bulk_delete_drafts(
 
 @router.delete("/{entity_id}")
 async def delete_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("delete_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Only draft documents can be deleted")
     entries = await _posted_journal_entries(session, company_id, entity_id)
