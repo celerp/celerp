@@ -407,7 +407,7 @@ def test_db_engine_and_session_factory():
 async def test_events_engine_pg_notify_exception_swallowed():
     """pg_notify Exception is swallowed and does not fail emission (lines 42-45)."""
     from celerp.events.engine import emit_event
-    from celerp.projections.engine import ProjectionEngine
+    from celerp.projections.engine import ProjectionEngine, Transition
 
     mock_session = AsyncMock()
     mock_session.flush = AsyncMock()
@@ -430,7 +430,9 @@ async def test_events_engine_pg_notify_exception_swallowed():
     mock_session.add = capture_add
 
     # The mocked session cannot read company settings, so the new lot books into no account.
-    with patch.object(ProjectionEngine, "apply_event", new_callable=AsyncMock) as mock_apply, \
+    # The item did not exist before: a birth.
+    born = Transition(before=None, after={"sku": "PG", "name": "PGTest"})
+    with patch.object(ProjectionEngine, "apply_event", AsyncMock(return_value=born)) as mock_apply, \
             patch("celerp.services.account_roles.new_lot_account", AsyncMock(return_value=None)):
         result = await emit_event(
             mock_session,
