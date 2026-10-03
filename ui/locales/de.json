@@ -2346,6 +2346,7 @@
   "documents.view_reserving_document": "Reservierungsbeleg anzeigen",
   "documents.void_reason_placeholder": "Stornogrund...",
   "documents.refund_this_payment": "Aus dieser Zahlung erstatten",
+  "documents.refund_in_stripe": "Über Stripe eingegangen: Erstattung oder Storno in Stripe.",
   "documents.refunded_amount": "Erstattet {amount}",
   "documents.void_this_payment": "Diese Zahlung stornieren",
   "documents.word_list": "Liste",

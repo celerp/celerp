@@ -5340,6 +5340,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         if voided:
             void_reason = p.get("void_reason") or ""
             void_cell = Td(Span(t("doc.voided"), cls="badge badge--void", title=void_reason))
+        elif p.get("held_by") == "stripe":
+            void_cell = Td(Span(t("documents.refund_in_stripe"), cls="text-muted small"))
         elif not voided and is_operator:
             refund_form = ""
             p_left = round_money(p_amount, currency) - round_money(p.get("refunded") or 0, currency)

@@ -21,6 +21,44 @@ def apply_event(state: dict, event: LedgerEntry) -> dict:
     return ProjectionEngine._apply(state, event.event_type, event.data)
 
 
+STRIPE_OWNED_PAYMENT = (
+    "This payment was received through Stripe, so it can only be refunded or reversed in Stripe."
+)
+# Every event that takes a received payment back off a document.
+PAYMENT_REMOVAL_EVENTS = frozenset({"doc.payment.voided", "doc.payment.deleted", "doc.payment.refunded"})
+
+
+async def stripe_payment_references(session, company_id, entity_id) -> set[str]:
+    """References of the payments the Stripe intake recorded on this document.
+
+    Stripe holds the money for these, so only Stripe can give it back. The ledger
+    records which writer received each payment; the method is free text that a
+    connector or a person can also set to "stripe".
+    """
+    rows = (await session.execute(
+        select(LedgerEntry.data["reference"].as_string()).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id == entity_id,
+            LedgerEntry.event_type == "doc.payment.received",
+            LedgerEntry.source == "stripe",
+        )
+    )).scalars().all()
+    return {ref for ref in rows if ref}
+
+
+async def _refuse_stripe_payment_removal(session, kwargs: dict) -> None:
+    """Refuse to void, delete or refund a payment Stripe holds the money for."""
+    row = await session.get(Projection, (kwargs.get("company_id"), kwargs.get("entity_id")))
+    if row is None or row.entity_type != "doc":
+        return
+    index = (kwargs.get("data") or {}).get("payment_index")
+    payment = next((p for p in (row.state or {}).get("payments", []) if p.get("index") == index), None)
+    if payment is None or payment.get("method") != "stripe" or not payment.get("reference"):
+        return
+    if payment["reference"] in await stripe_payment_references(session, kwargs["company_id"], kwargs["entity_id"]):
+        raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
+
+
 async def find_event_by_idempotency(session, company_id, idempotency_key: str | None) -> LedgerEntry | None:
     """Return the event already committed for this company/key, if any.
 
@@ -292,6 +330,9 @@ async def emit_event(
             await assert_document_item_uniqueness(
                 session, kwargs.get("company_id"), doc_type, line_set
             )
+
+    if kwargs.get("entity_type") == "doc" and kwargs.get("event_type") in PAYMENT_REMOVAL_EVENTS:
+        await _refuse_stripe_payment_removal(session, kwargs)
 
     if kwargs.get("event_type") in {"shop.sync.enabled", "shop.sync.disabled"}:
         from celerp.connectors.ownership import lock_connector_key

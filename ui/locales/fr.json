@@ -2346,6 +2346,7 @@
   "documents.view_reserving_document": "Afficher le document de réservation",
   "documents.void_reason_placeholder": "Motif d'annulation...",
   "documents.refund_this_payment": "Rembourser sur ce paiement",
+  "documents.refund_in_stripe": "Reçu via Stripe : remboursez-le ou annulez-le dans Stripe.",
   "documents.refunded_amount": "Remboursé {amount}",
   "documents.void_this_payment": "Annuler ce paiement",
   "documents.word_list": "Liste",

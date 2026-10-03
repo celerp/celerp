@@ -2345,6 +2345,7 @@
   "documents.view_reserving_document": "ดูเอกสารที่จองสินค้านี้",
   "documents.void_reason_placeholder": "เหตุผลการยกเลิก...",
   "documents.refund_this_payment": "คืนเงินจากการชำระเงินนี้",
+  "documents.refund_in_stripe": "รับผ่าน Stripe: คืนเงินหรือยกเลิกได้ใน Stripe",
   "documents.refunded_amount": "คืนเงินแล้ว {amount}",
   "documents.void_this_payment": "ยกเลิกการชำระเงินนี้",
   "documents.word_list": "รายการ",

@@ -1402,6 +1402,12 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     doc = row.state | {"id": row.entity_id, "version": row.version}
+    if any(p.get("method") == "stripe" for p in doc.get("payments") or []):
+        # Payments Stripe reported are refunded or reversed in Stripe, never here.
+        from celerp.events.engine import stripe_payment_references
+        held = await stripe_payment_references(session, company_id, entity_id)
+        doc["payments"] = [p | {"held_by": "stripe"} if p.get("method") == "stripe" and p.get("reference") in held else p
+                           for p in doc["payments"]]
     if doc.get("doc_type") == "memo":
         try:
             labels = await _derive_shipped_labels(session, company_id, entity_id, doc.get("line_items") or [])
@@ -3128,32 +3134,45 @@ async def delete_payment(
             ReconciliationSession.company_id == company_id,
         )
     )
-    recon_sessions = recon_result.scalars().all()
+    recon_sessions = [r for r in recon_result.scalars().all() if je_id in (r.reconciled_je_ids or [])]
+    if any(recon.status == "closed" for recon in recon_sessions):
+        raise HTTPException(
+            status_code=409,
+            detail="Payment has been reconciled in a closed period. Unreconcile to delete.",
+        )
+
+    # Emit doc.payment.deleted first - projection tombstones the row in place.
+    # Every refusal the event carries lands before anything else is changed.
+    # tombstone marks the new reducer semantics (pre-flag events compacted, and
+    # replaying them must keep doing so); ts is the payment's own date, so the
+    # period lock rejects the deletion even when no posted JE exists to void.
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
+        event_type="doc.payment.deleted",
+        data={"payment_index": payment_index, "delete_reason": payload.delete_reason,
+              "amount": payment.get("amount"), "method": payment.get("method"),
+              "tombstone": True, "ts": payment.get("payment_date")},
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=key, metadata_={"request": digest},
+    )
 
     for recon in recon_sessions:
-        if je_id in (recon.reconciled_je_ids or []):
-            if recon.status == "closed":
-                raise HTTPException(
-                    status_code=409,
-                    detail="Payment has been reconciled in a closed period. Unreconcile to delete.",
-                )
-            # Open session - auto-unmatch
-            updated_ids = [j for j in (recon.reconciled_je_ids or []) if j != je_id]
-            recon.reconciled_je_ids = updated_ids
-            # Clear matched_je_id on any statement line pointing to this JE
-            sl_result = await session.execute(
-                _sa.select(BankStatementLine).where(
-                    BankStatementLine.reconciliation_session_id == recon.id,
-                    BankStatementLine.matched_je_id == je_id,
-                )
+        # Open session - auto-unmatch
+        recon.reconciled_je_ids = [j for j in (recon.reconciled_je_ids or []) if j != je_id]
+        # Clear matched_je_id on any statement line pointing to this JE
+        sl_result = await session.execute(
+            _sa.select(BankStatementLine).where(
+                BankStatementLine.reconciliation_session_id == recon.id,
+                BankStatementLine.matched_je_id == je_id,
             )
-            for sl in sl_result.scalars().all():
-                sl.matched_je_id = None
-                sl.status = "unmatched"
+        )
+        for sl in sl_result.scalars().all():
+            sl.matched_je_id = None
+            sl.status = "unmatched"
 
-    # Void the original payment JE first so it disappears from the bank ledger
-    # and reports. The void carries the entry's own date, so a payment inside a
-    # locked period is rejected here before anything mutates.
+    # Void the original payment JE so it disappears from the bank ledger
+    # and reports. The void carries the entry's own date, so an entry inside a
+    # locked period refuses the whole deletion.
     if je_row is not None and je_row.state.get("status") == "posted":
         from celerp.services.je_keys import je_void_data as _je_void  # noqa: PLC0415
         await emit_event(
@@ -3168,20 +3187,6 @@ async def delete_payment(
             idempotency_key=f"{je_id}:void:del:{payment_index}",
             metadata_={"trigger": "doc.payment.deleted", "doc_id": entity_id},
         )
-
-    # Emit doc.payment.deleted - projection tombstones the row in place.
-    # tombstone marks the new reducer semantics (pre-flag events compacted, and
-    # replaying them must keep doing so); ts is the payment's own date, so the
-    # period lock rejects the deletion even when no posted JE exists to void.
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
-        event_type="doc.payment.deleted",
-        data={"payment_index": payment_index, "delete_reason": payload.delete_reason,
-              "amount": payment.get("amount"), "method": payment.get("method"),
-              "tombstone": True, "ts": payment.get("payment_date")},
-        actor_id=user.id, location_id=None, source="api",
-        idempotency_key=key, metadata_={"request": digest},
-    )
 
     await session.commit()
     return {"event_id": entry.id}

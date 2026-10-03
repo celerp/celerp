@@ -886,3 +886,105 @@ async def test_unmatched_payments_are_listed_newest_first(client, session):
 async def test_unmatched_payments_need_the_installation_owner(client):
     r = await client.get("/payments/unmatched")
     assert r.status_code in (401, 403)
+
+
+# ── A Stripe payment is changed only in Stripe ──────────────────────────────
+
+STRIPE_OWNED = "This payment was received through Stripe, so it can only be refunded or reversed in Stripe."
+
+
+def _remove_payment(client, tok, eid, action):
+    if action == "refund":
+        return client.post(f"/docs/{eid}/refund", headers=_h(tok), json={
+            "payment_index": 0, "amount": 100.0, "payment_date": "2026-07-14"})
+    if action == "void":
+        return client.post(f"/docs/{eid}/void-payment", headers=_h(tok), json={"payment_index": 0})
+    return client.delete(f"/docs/{eid}/payments/0", headers=_h(tok))
+
+
+async def _ledger(session, cid, eid) -> list[str]:
+    from sqlalchemy import text
+    return list((await session.scalars(text(
+        "SELECT event_type FROM ledger WHERE company_id = CAST(:c AS uuid) "
+        "AND (entity_id = :e OR entity_id LIKE :j) ORDER BY id"),
+        {"c": cid, "e": eid, "j": f"je:auto:{eid}:%"})).all())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["refund", "void", "delete"])
+async def test_a_stripe_payment_cannot_be_refunded_voided_or_deleted_here(client, session, payments_on, action):
+    from celerp.services.payments import receive_payment
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    assert await receive_payment({"company_id": cid, "entity_id": eid, "reference": "pi_card",
+                                  "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                                  "context": BOOKS}) is True
+    before, events = await _doc_state(client, tok, eid), await _ledger(session, cid, eid)
+    assert before["status"] == "paid" and [p["method"] for p in before["payments"]] == ["stripe"]
+    assert before["payments"][0]["held_by"] == "stripe"
+
+    r = await _remove_payment(client, tok, eid, action)
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == STRIPE_OWNED
+    assert await _doc_state(client, tok, eid) == before
+    assert await _ledger(session, cid, eid) == events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["refund", "void", "delete"])
+@pytest.mark.parametrize("method", ["card", "stripe"])
+async def test_a_payment_entered_by_hand_can_still_be_refunded_voided_or_deleted(client, session, method, action):
+    # Typing "stripe" as the method does not hand the payment to Stripe: only the
+    # payments Stripe itself reported are changed there.
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    r = await client.post(f"/docs/{eid}/payment", headers=_h(tok), json={
+        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1110", "method": method,
+        "reference": "pi_card"})
+    assert r.status_code == 200, r.text
+
+    assert "held_by" not in (await _doc_state(client, tok, eid))["payments"][0]
+
+    r = await _remove_payment(client, tok, eid, action)
+
+    assert r.status_code == 200, r.text
+    doc = await _doc_state(client, tok, eid)
+    assert doc["status"] != "paid"
+
+
+def _payment_history(payment: dict) -> str:
+    from fasthtml.common import to_xml
+    from ui.routes.documents import _payment_section
+    return to_xml(_payment_section({
+        "entity_id": "doc:inv", "doc_type": "invoice", "status": "paid", "currency": "USD",
+        "total": 1070.0, "amount_paid": 1070.0, "amount_outstanding": 0.0,
+        "payments": [{"index": 0, "amount": 1070.0, "method": "stripe", "reference": "pi_card",
+                      "payment_date": "2026-07-13", "bank_account": "1119", "status": "active"} | payment],
+    }, bank_accounts=[]))
+
+
+def test_a_stripe_payment_offers_no_refund_or_void_and_says_where_to_do_it():
+    from ui.i18n import t
+    html = _payment_history({"held_by": "stripe"})
+    assert "/docs/doc:inv/refund" not in html and "/docs/doc:inv/void-payment" not in html
+    assert t("documents.refund_in_stripe") in html
+
+
+def test_a_payment_entered_by_hand_as_stripe_keeps_its_refund_and_void():
+    from ui.i18n import t
+    html = _payment_history({})
+    assert "/docs/doc:inv/refund" in html and "/docs/doc:inv/void-payment" in html
+    assert t("documents.refund_in_stripe") not in html
+
+
+def test_the_online_payments_offer_names_no_payment_method_in_any_language():
+    import json
+    from pathlib import Path
+    card = ("card", "karte", "tarjeta", "carte", "kartu", "carta", "カード", "cartão", "บัตร", "thẻ", "بطاقة", "ካርድ")
+    locales = sorted((Path(__file__).parents[1] / "ui" / "locales").glob("*.json"))
+    assert len(locales) == 12
+    for path in locales:
+        text = json.loads(path.read_text(encoding="utf-8"))["pay.upgrade_desc"].lower()
+        assert not any(word in text for word in card), (path.name, text)

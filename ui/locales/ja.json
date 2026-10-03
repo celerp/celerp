@@ -2345,6 +2345,7 @@
   "documents.view_reserving_document": "予約伝票を表示",
   "documents.void_reason_placeholder": "取り消し理由...",
   "documents.refund_this_payment": "この支払いから返金",
+  "documents.refund_in_stripe": "Stripe経由で受領: 返金や取消はStripeで行ってください。",
   "documents.refunded_amount": "返金済み {amount}",
   "documents.void_this_payment": "この支払いを取り消す",
   "documents.word_list": "リスト",

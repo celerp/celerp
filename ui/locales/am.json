@@ -2446,6 +2446,7 @@
   "documents.view_reserving_document": "የተያዘ ሰነድ ይመልከቱ",
   "documents.void_reason_placeholder": "የውድቅ ምክንያት...",
   "documents.refund_this_payment": "ከዚህ ክፍያ ተመላሽ ክፈል",
+  "documents.refund_in_stripe": "በStripe በኩል የተቀበለ፡ ገንዘቡን በStripe ውስጥ ይመልሱ ወይም ይሰርዙ።",
   "documents.refunded_amount": "ተመላሽ የተደረገ {amount}",
   "documents.void_this_payment": "ይህን ክፍያ ውድቅ አድርግ",
   "documents.word_list": "ዝርዝር",

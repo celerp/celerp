@@ -2345,6 +2345,7 @@
   "documents.view_reserving_document": "Lihat dokumen pemesanan",
   "documents.void_reason_placeholder": "Alasan pembatalan...",
   "documents.refund_this_payment": "Kembalikan dana dari pembayaran ini",
+  "documents.refund_in_stripe": "Diterima melalui Stripe: kembalikan atau batalkan di Stripe.",
   "documents.refunded_amount": "Dikembalikan {amount}",
   "documents.void_this_payment": "Batalkan pembayaran ini",
   "documents.word_list": "daftar",

@@ -2345,6 +2345,7 @@
   "documents.view_reserving_document": "Visualizar documento de reserva",
   "documents.void_reason_placeholder": "Motivo do cancelamento...",
   "documents.refund_this_payment": "Reembolsar deste pagamento",
+  "documents.refund_in_stripe": "Recebido pelo Stripe: reembolse ou estorne no Stripe.",
   "documents.refunded_amount": "Reembolsado {amount}",
   "documents.void_this_payment": "Anular este pagamento",
   "documents.word_list": "Lista",
