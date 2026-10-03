@@ -168,7 +168,8 @@ async def test_a_contact_imported_twice_at_once_is_counted_once(committed_engine
     rec = _record("contact:RACE", "crm.contact.created", {"name": "Race Co"})
 
     async def run(s):
-        outcome = await contacts.import_contact_records(s, company_id, user.id, [contacts.CRMImportRecord(**rec)])
+        outcome = await contacts.import_contact_records(
+            s, company_id, user.id, [contacts.CRMImportRecord(**rec)], match_identity=True)
         await s.commit()
         return outcome.route_counts()
 

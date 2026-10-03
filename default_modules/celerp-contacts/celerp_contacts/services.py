@@ -39,18 +39,30 @@ def _live(state: dict) -> bool:
     return not state.get("deleted") and not state.get("merged_into")
 
 
+def _imported_type(current: str | None, imported: str) -> str:
+    """A customer imported again as a vendor (or the reverse) is both: an import adds a
+    role to a contact, never takes away one its documents rely on."""
+    if current in ("customer", "vendor", "both") and imported in ("customer", "vendor") and current != imported:
+        return "both"
+    return imported
+
+
 async def import_contact_records(
     session,
     company_id,
     actor_id,
     records: Sequence[CRMImportRecord],
+    *,
+    match_identity: bool,
     entity_type: str = "contact",
 ) -> ImportOutcome:
     """Create each imported contact, or update the contact it already is.
 
-    A row is an existing contact when that contact shares its import identity, carries
-    its entity id, or was created under its idempotency key, whatever key the row is
-    sent under now. One such contact takes the row's values (blank values leave a field
+    A row is an existing contact when that contact carries its entity id, was created
+    under its idempotency key, or (with match_identity, for files people prepare) shares
+    its import identity, whatever key the row is sent under now. A migration passes
+    match_identity=False: its source keeps two same-named records apart and so does the
+    import. One such contact takes the row's values (blank values leave a field
     as it is); a row with nothing new is skipped, so replaying a file writes nothing.
     More than one refuses the row with nothing written. The caller runs one import per
     company at a time and commits."""
@@ -72,7 +84,8 @@ async def import_contact_records(
         identity = contact_import_identity(rec.data)
         keyed = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
         # The company's own contact is kept in company settings, never matched by an import.
-        candidates = {cid for cid, state in states.items() if identity and _live(state) and not state.get("is_self")
+        candidates = {cid for cid, state in states.items() if match_identity and identity and _live(state)
+                      and not state.get("is_self")
                       and contact_import_identity(state) == identity}
         for cid in (rec.entity_id, keyed.entity_id if keyed is not None else None):
             if cid in states and _live(states[cid]):
@@ -89,8 +102,10 @@ async def import_contact_records(
             if candidates:
                 contact_id = candidates.pop()
                 state = states[contact_id]
-                changes = {k: {"old": state.get(k), "new": v} for k, v in rec.data.items()
-                           if v is not None and state.get(k) != v}
+                incoming = {k: v for k, v in rec.data.items() if v is not None}
+                if "contact_type" in incoming:
+                    incoming["contact_type"] = _imported_type(state.get("contact_type"), incoming["contact_type"])
+                changes = {k: {"old": state.get(k), "new": v} for k, v in incoming.items() if state.get(k) != v}
                 if not changes:
                     outcome.add(contact_id, "skipped")
                     continue

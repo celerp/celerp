@@ -727,7 +727,7 @@ async def import_contact(
     if replay is not None:
         if replay.event_type != "crm.contact.created" or replay.entity_id != body.entity_id:
             raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
-    record = (await services.import_contact_records(session, company_id, user.id, [body])).records[0]
+    record = (await services.import_contact_records(session, company_id, user.id, [body], match_identity=True)).records[0]
     if record.status in ("rejected", "failed"):
         raise HTTPException(status_code=409 if record.status == "rejected" else 422, detail=record.message)
     await session.commit()
@@ -1074,6 +1074,6 @@ async def batch_import_contacts(
     """Batch-import CIF contact records: a new contact is created, an existing one updated,
     an unchanged one skipped. Max 500 per call."""
     await locked_authority(session, company_id, user.id, ("edit_contacts", "import_export_data"))
-    outcome = await services.import_contact_records(session, company_id, user.id, body.records)
+    outcome = await services.import_contact_records(session, company_id, user.id, body.records, match_identity=True)
     await session.commit()
     return BatchImportResult(**outcome.route_counts())

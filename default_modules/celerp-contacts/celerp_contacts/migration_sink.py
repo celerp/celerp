@@ -24,7 +24,8 @@ class ContactsMigrationSink:
         prepared = [_contact_record(context, r) for r in records]
 
         async def write(ready: list[CRMImportRecord]):
-            return await services.import_contact_records(context.session, context.company_id, context.user_id, ready)
+            return await services.import_contact_records(
+                context.session, context.company_id, context.user_id, ready, match_identity=False)
 
         return sink_result(records, await import_prepared(prepared, write), CONTACT)
 

@@ -123,6 +123,16 @@ async def test_a_blank_contact_type_keeps_a_vendor_a_vendor_and_a_new_contact_is
     assert types == {"Supplier Co": "vendor", "Fresh": "customer"}
 
 
+async def test_a_customer_imported_again_as_a_vendor_becomes_both(client):
+    h = await _reg(client)
+    await _batch(client, h, _row({"name": "Two Way", "email": "tw@t.test", "contact_type": "customer"}))
+    assert (await _batch(client, h, _row({"name": "Two Way", "email": "tw@t.test", "contact_type": "vendor"})))["updated"] == 1
+    [contact] = await _contacts(None, client, h)
+    assert contact["contact_type"] == "both"
+    # Importing either role again changes nothing.
+    assert (await _batch(client, h, _row({"name": "Two Way", "email": "tw@t.test", "contact_type": "customer"})))["skipped"] == 1
+
+
 async def test_an_unknown_currency_refuses_the_row(client, session):
     h = await _reg(client)
     result = await _batch(client, h, _row({"name": "Bad Money", "currency": "XXQ"}))
