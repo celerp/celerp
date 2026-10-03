@@ -393,19 +393,20 @@ async def emit_event(
         return original
     try:
         await ProjectionEngine.apply_event(session, entry)
+        # Durable connector work belongs to the same savepoint as the item event, so a
+        # caller that catches a failure here keeps neither. No network I/O occurs here;
+        # the worker re-reads current state before sending. ``outbound_queued`` tells
+        # the caller the event will reach a connected store.
+        if entry.entity_type == "item":
+            from celerp.connectors.outbound_queue import enqueue_item_change
+            entry.outbound_queued = await enqueue_item_change(
+                session, entry, previous_state=previous_item_state
+            )
+            await session.flush()
     except BaseException:
         await savepoint.rollback()
         raise
     await savepoint.commit()
-
-    # Durable connector work is recorded in the same transaction as the item event.
-    # No network I/O occurs here; the worker re-reads current state before sending.
-    # ``outbound_queued`` tells the caller the event will reach a connected store.
-    if entry.entity_type == "item":
-        from celerp.connectors.outbound_queue import enqueue_item_change
-        entry.outbound_queued = await enqueue_item_change(
-            session, entry, previous_state=previous_item_state
-        )
 
     # Notify listeners (LISTEN/NOTIFY) that an event landed.
     try:

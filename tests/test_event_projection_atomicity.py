@@ -6,7 +6,8 @@
 A change to an item that is gone is refused with 404. A caller that catches that
 refusal and commits (a bulk loop recording one failed row and going on) must not
 leave the refused event in the ledger, and a rebuild must never turn such an event
-into a ghost item.
+into a ghost item. An item change and the store sync work it queues are kept or
+dropped together.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
+from celerp.models.connector_config import OutboundQueue
 from celerp.models.ledger import LedgerEntry
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.item_erasure import erase_items
@@ -125,3 +127,30 @@ async def test_a_repeated_key_returns_the_original_and_applies_nothing_twice(com
     assert repeat.was_deduped is True
     assert sibling.id != first.id
     assert await _stored(committed_engine, company_id) == ("Two", ["item.created", "item.updated", "item.updated"])
+
+
+async def test_a_change_whose_sync_work_fails_to_queue_is_not_kept_without_it(committed_engine, monkeypatch):
+    """If queueing the store sync for an item change fails, a caller that catches the
+    failure and commits keeps neither the change nor a partial queue row."""
+    from celerp.connectors import outbound_queue
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = await _seed(factory)
+
+    async def _fails_after_queueing(session, entry, *, previous_state=None):
+        session.add(OutboundQueue(company_id=str(entry.company_id), connector="woocommerce",
+                                  entity_type="inventory", entity_id="product:1", status="pending",
+                                  retry_count=0))
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr(outbound_queue, "enqueue_item_change", _fails_after_queueing)
+    async with factory() as s:
+        with pytest.raises(RuntimeError):
+            await _emit(s, company_id, "item.updated", {"fields_changed": {"name": {"old": "Atom", "new": "Lost"}}})
+        await s.commit()
+
+    assert await _stored(committed_engine, company_id) == ("Atom", ["item.created"])
+    async with committed_engine.connect() as conn:
+        queued = (await conn.execute(text("SELECT count(*) FROM outbound_queue WHERE company_id = :c"),
+                                     {"c": str(company_id)})).scalar_one()
+    assert queued == 0
