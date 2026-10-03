@@ -449,7 +449,7 @@ def test_windows_installer_check_covers_every_starting_point():
     """none / same / older / newer / --updated, and a refused run changes nothing."""
     steps = {s.get("name"): s for s in _workflow("build.yml")["jobs"]["build"]["steps"]}
     run = steps["Installer version check (Windows)"]["run"]
-    for case in ("none:", "same:", "older:", "--updated:", "newer:"):
+    for case in ("none:", "same:", "installed newer:", "--updated:", "installed older:"):
         assert f'Write-Host "{case}' in run, case
     assert 'Get-FileHash (Join-Path $dir "Celerp.exe") -Algorithm SHA256' in run
     assert "celerp-ci-sentinel.txt" in run
