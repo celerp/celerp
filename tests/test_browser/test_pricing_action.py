@@ -51,7 +51,12 @@ def quoter_module():
         ui_app.router.routes[:] = saved_routes
 
 
-def test_pricing_row_action_opens_the_module_page(page, ui_server, api, quoter_module):
+def test_pricing_row_action_opens_the_module_page(page, ui_server, fresh_company, quoter_module):
+    # The demo module is not in any company's enabled list, so the action shows only on a
+    # company that has never narrowed its modules. The shared session company may have had
+    # a preset applied by an earlier test on the same worker; this test owns its company.
+    api = fresh_company
+    assert "enabled_modules" not in (api.get("/companies/me").json()["settings"] or {})
     r = api.post("/items", json={"sku": f"PA-{uuid.uuid4().hex[:6]}", "name": "Quote me",
                                  "sell_by": "piece", "quantity": 2, "retail_price": 40})
     assert r.status_code in {200, 201}, r.text
