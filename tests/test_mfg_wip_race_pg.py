@@ -26,6 +26,7 @@ from company_backup_support import company, owner, token
 from migration_support import auth, maker
 from stock_books import assert_books_carry_stock, assert_wip_carried
 from test_posting_roles_race_pg import _until_blocked
+from test_posting_roles_race_pg_draft import race  # noqa: F401  (a fixture)
 from test_posting_roles_race_pg_origin import _net, _post, own_client  # noqa: F401  (own_client is a fixture)
 
 pytestmark = pytest.mark.asyncio
@@ -55,6 +56,12 @@ async def _job(engine, client, user, n: int, *, runs: int = 1, stock: float = 10
     return {"cid": cid, "user": user, "raw": raw, "product": product, "orders": orders}
 
 
+async def _first_lot(s, job, run: int) -> str:
+    """The first lot the run received, as the run stood when the request arrived."""
+    row = await s.get(Projection, {"company_id": job["cid"], "entity_id": job["orders"][run]})
+    return next(iter((row.state or {}).get("received_lots") or []), "no-lot")
+
+
 def _op(name: str, tag: str, run: int = 0):
     """Movement ``name`` on run ``run`` of a job, with its own request key."""
     from celerp_manufacturing import movements
@@ -67,6 +74,13 @@ def _op(name: str, tag: str, run: int = 0):
             return await movements.receive(s, job["cid"], job["user"], order, 1.0, key, at=AT)
         if name == "complete":
             return await movements.complete(s, job["cid"], job["user"], order, {}, key, at=AT)
+        if name == "return":
+            return await movements.return_materials(s, job["cid"], job["user"], order, None, key, at=AT)
+        if name == "undo":
+            return await movements.undo_receipt(s, job["cid"], job["user"], order, await _first_lot(s, job, run),
+                                                key, at=AT)
+        if name == "reopen":
+            return await movements.reopen(s, job["cid"], job["user"], order, key, at=AT)
         return await movements.cancel(s, job["cid"], job["user"], order, None, key, at=AT)
     return go
 
@@ -148,7 +162,7 @@ async def _prepare(engine, client, job, steps) -> None:
             await s.commit()
 
 
-# The run each pair starts from: as built, or with every component issued.
+# The run each pair starts from: as built, or after the steps named.
 PAIRS = [
     ("issue", "issue", ()),
     ("issue", "receive", ()),
@@ -160,10 +174,23 @@ PAIRS = [
     ("cancel", "complete", ()),
     ("cancel", "cancel", ()),
     ("cancel", "receive", ("issue",)),
+    ("return", "issue", ()),
+    ("return", "issue", ("issue",)),
+    ("return", "receive", ("issue",)),
+    ("return", "return", ("issue",)),
+    ("return", "complete", ("issue",)),
+    ("cancel", "return", ("issue",)),
+    ("undo", "undo", ("issue", "receive")),
+    ("undo", "receive", ("issue", "receive")),
+    ("undo", "return", ("issue", "receive")),
+    ("undo", "complete", ("issue", "receive")),
+    ("reopen", "reopen", ("issue", "complete")),
+    ("reopen", "undo", ("issue", "complete")),
+    ("reopen", "return", ("issue", "complete")),
 ]
 
 
-@pytest.mark.parametrize("a, b, prep", PAIRS, ids=[f"{a}-{b}{'-issued' if p else ''}" for a, b, p in PAIRS])
+@pytest.mark.parametrize("a, b, prep", PAIRS, ids=[f"{a}-{b}" + "".join(f"-after-{x}" for x in p) for a, b, p in PAIRS])
 @pytest.mark.parametrize("flip", [False, True], ids=["ab", "ba"])
 async def test_two_movements_on_one_run_end_as_if_one_ran_after_the_other(
         committed_engine, own_client, a, b, prep, flip):
@@ -196,3 +223,95 @@ async def test_two_runs_issuing_the_last_of_a_component_issue_it_once(committed_
     assert (loser["issued"], loser.get("wip_issued")) == ([0.0], None)
     assert outcome["raw"][0] == 0
     assert outcome["events"]["item.consumed"] == 1
+
+
+async def _sale(client, tok: str, job: dict, *, held: bool = False, hold=None) -> str:
+    """Sell the run's first lot whole: an invoice for it, finalized and shipped. The answer is
+    each step's status, up to the first refused. With ``held`` the invoice's creation is held
+    at its commit until the hold is released."""
+    lot = job["lot"]
+    async with maker(job["engine"])() as s:
+        state = (await s.get(Projection, {"company_id": job["cid"], "entity_id": lot})).state
+    if hold is not None:
+        hold.armed = held
+    steps = []
+    r = await client.post("/docs", headers=auth(tok), json={
+        "doc_type": "invoice", "total": 500.0, "line_items": [
+            {"entity_id": lot, "sku": state.get("sku"), "name": "Made", "quantity": 1,
+             "unit_price": 500.0, "sell_by": "piece"}]})
+    steps.append(r.status_code)
+    if r.status_code == 200:
+        doc = r.json()["id"]
+        for path, body in ((f"/docs/{doc}/finalize", None), (f"/docs/{doc}/fulfill-lines", {"line_entity_ids": [lot]})):
+            r = await client.post(path, headers=auth(tok), json=body)
+            steps.append(r.status_code)
+            if r.status_code != 200:
+                break
+    return "sale " + " ".join(map(str, steps))
+
+
+async def _sale_job(engine, client, user, n: int, prep) -> dict:
+    job = await _job(engine, client, user, n) | {"engine": engine}
+    await _prepare(engine, client, job, prep)
+    async with maker(engine)() as s:
+        lot = await _first_lot(s, job, 0)
+    return job | {"tok": await token(engine, user, job["cid"]), "lot": lot}
+
+
+@pytest.mark.parametrize("name, prep, shipped", [
+    ("undo", ("issue", "receive"), "sale 200 200 422"), ("reopen", ("issue", "complete"), "sale 200 200 200")],
+    ids=["undo-receipt", "reopen"])
+async def test_taking_output_back_while_it_is_being_sold_ends_as_if_one_ran_after_the_other(
+        committed_engine, race, name, prep, shipped):
+    """The run takes its lot back (Undo receipt, or Reopen) while an invoice for the same lot
+    is being written: the invoice waits, and finds what the run left. An undone receipt has no
+    stock left to ship; a reopened run keeps its lot, which then sells normally."""
+    client, hold = race
+    user = await owner(committed_engine)
+    raced, serial = [await _sale_job(committed_engine, client, user, n, prep) for n in (1, 2)]
+    take = _op(name, "1")
+
+    async with maker(committed_engine)() as s1:
+        held = await _attempt(s1, take, raced)
+        task = asyncio.create_task(_sale(client, raced["tok"], raced))
+        await _until_blocked(committed_engine, task)
+        await _settle(s1, held)
+        sold = await asyncio.wait_for(task, timeout=30)
+    async with maker(committed_engine)() as s:
+        out = await _attempt(s, take, serial)
+        await _settle(s, out)
+    assert (_answer(held), sold) == (_answer(out), await _sale(client, serial["tok"], serial))
+    assert await _outcome(committed_engine, raced) == await _outcome(committed_engine, serial)
+    assert sold == shipped, sold
+
+
+@pytest.mark.parametrize("name, prep", [("undo", ("issue", "receive")), ("reopen", ("issue", "complete"))],
+                         ids=["undo-receipt", "reopen"])
+async def test_a_lot_put_on_an_invoice_first_cannot_be_taken_back(committed_engine, race, name, prep):
+    """The invoice for the lot is being written when the run tries to take the lot back: the
+    run waits for it, finds the lot on a document and refuses, changing nothing."""
+    client, hold = race
+    user = await owner(committed_engine)
+    raced, serial = [await _sale_job(committed_engine, client, user, n, prep) for n in (1, 2)]
+    take = _op(name, "1")
+
+    selling = asyncio.create_task(_sale(client, raced["tok"], raced, held=True, hold=hold))
+    await asyncio.wait_for(hold.reached.wait(), timeout=30)
+
+    async def back():
+        async with maker(committed_engine)() as s:
+            out = await _attempt(s, take, raced)
+            await _settle(s, out)
+            return out
+
+    task = asyncio.create_task(back())
+    await _until_blocked(committed_engine, task)
+    hold.release.set()
+    sold, out = await asyncio.wait_for(selling, timeout=30), await asyncio.wait_for(task, timeout=30)
+
+    expected = await _sale(client, serial["tok"], serial)
+    async with maker(committed_engine)() as s:
+        later = await _attempt(s, take, serial)
+        await _settle(s, later)
+    assert (sold, _answer(out)) == (expected, _answer(later)) == ("sale 200 200 200", "refused 409 mfg.output_changed")
+    assert await _outcome(committed_engine, raced) == await _outcome(committed_engine, serial)
