@@ -246,6 +246,8 @@ def _config_to_env(cfg: dict, root: Path | None = None) -> dict:
     env = runtime.base_env()
     env["DATABASE_URL"] = cfg["database"]["url"]
     env["JWT_SECRET"] = cfg["auth"]["jwt_secret"]
+    # The UI reaches the API on the configured port, whatever the shell says.
+    env["API_URL"] = runtime.api_url(cfg["server"]["api_port"])
     if cfg["cloud"]["token"]:
         env["GATEWAY_TOKEN"] = cfg["cloud"]["token"]
     # A headless service install (`init --no-start`, then a process manager runs
@@ -1501,13 +1503,14 @@ def upgrade():
     Same steps as the in-app update (backup first, undone on failure), for use
     while Celerp is stopped.
     """
+    from celerp import runtime
     from celerp.services import update
 
     cfg = _read_config()
     if not cfg:
         click.echo("Not initialized. Run `celerp init` first.", err=True)
         sys.exit(1)
-    if update.get_json(f"http://127.0.0.1:{cfg['server']['api_port']}/health") is not None:
+    if update.get_json(f"{runtime.api_url(cfg['server']['api_port'])}/health") is not None:
         click.echo("Celerp is running. Stop it first, then run `celerp upgrade` again.", err=True)
         sys.exit(1)
     release_lock = _hold_update_lock("upgrade")

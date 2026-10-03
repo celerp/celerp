@@ -587,6 +587,43 @@ def test_start_exits_without_sentinel(tmp_path):
     assert len([c for c in spawn_calls if _is_api_cmd(c)]) == 1, "No respawn without sentinel"
 
 
+@pytest.mark.parametrize("api_port", [8621, 8000])
+def test_start_points_the_ui_at_the_configured_api_port(valid_cfg, tmp_path, monkeypatch, api_port):
+    """`celerp start` tells the UI where the API listens, so a configured api_port
+    other than the default still serves pages. An API_URL left in the shell never
+    points the UI elsewhere."""
+    import celerp.config as config
+    from celerp.cli import _start
+
+    monkeypatch.setattr(config.settings, "data_dir", tmp_path, raising=False)
+    monkeypatch.setenv("API_URL", "http://127.0.0.1:9")
+    cfg = {**valid_cfg, "server": {"api_port": api_port, "ui_port": 8080}, "modules": {"enabled": []}}
+    envs = {}
+
+    class _Proc:
+        returncode = 1
+        def poll(self): return 1
+        def terminate(self): pass
+        def wait(self): pass
+
+    def fake_popen(cmd, env, **kwargs):
+        envs["api" if _is_api_cmd(cmd) else "ui"] = env
+        return _Proc()
+
+    with (
+        patch("subprocess.Popen", side_effect=fake_popen),
+        patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
+        patch("celerp.cli.time.sleep"),
+        patch("celerp.cli._migrate_to_head"),  # not under test; would open a real connection
+        patch("celerp.cli._wait_ready"),  # not under test; would spin on closed ports
+        patch("signal.signal"),
+    ):
+        with pytest.raises(SystemExit):
+            _start(cfg)
+
+    assert envs["ui"]["API_URL"] == f"http://127.0.0.1:{api_port}"
+
+
 def test_spawn_server_gives_children_a_supervisor_lifetime_pipe():
     from celerp import runtime
     from celerp.cli import _spawn_server

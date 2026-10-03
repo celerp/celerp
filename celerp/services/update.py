@@ -818,9 +818,8 @@ class SupervisorSteps(Steps):
         ui_port = _free_loopback_port({self.api_port, self.ui_port, api_port})
         env = self._env_for(runtime.release_dir(target))
         env[runtime.UPDATE_VERIFY_ENV] = "1"
-        env["API_URL"] = f"http://127.0.0.1:{api_port}"
+        base = env["API_URL"] = runtime.api_url(api_port)
         api = self._spawn_api(env, api_port)
-        base = f"http://127.0.0.1:{api_port}"
         deadline = time.time() + VERIFY_TIMEOUT_SECONDS
         version = None
         while time.time() < deadline and api.poll() is None:
