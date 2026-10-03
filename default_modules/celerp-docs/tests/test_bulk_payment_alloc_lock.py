@@ -115,12 +115,12 @@ async def test_bulk_payment_pays_what_a_payment_in_flight_left(_db_engine):
         try:
             single = asyncio.create_task(record_payment(
                 inv, DocPaymentBody(amount=60.0, payment_date="2026-02-01", method="cash",
-                                    bank_account="1111"),
+                                    bank_account="1110"),
                 company_id=company_id, _=None, user=user, session=first))
             await asyncio.sleep(0.3)
             bulk = asyncio.create_task(bulk_payment(
                 BulkPaymentBody(doc_ids=[inv], amount=100.0, payment_date="2026-02-02",
-                                method="cash", bank_account="1111"),
+                                method="cash", bank_account="1110"),
                 company_id=company_id, _=None, user=user, session=second))
             await asyncio.sleep(0.3)
             release.set()
@@ -189,7 +189,7 @@ async def test_bulk_payment_that_cannot_take_a_document_records_nothing(_db_engi
             with pytest.raises(DBAPIError):
                 await bulk_payment(
                     BulkPaymentBody(doc_ids=[held, other], amount=250.0, payment_date="2026-02-05",
-                                    method="cash", bank_account="1111"),
+                                    method="cash", bank_account="1110"),
                     company_id=company_id, _=None, user=user, session=s_bulk)
         finally:
             await s_hold.close()
@@ -216,7 +216,7 @@ async def test_bulk_payments_in_opposite_order_both_finish(_db_engine):
             results = await asyncio.wait_for(asyncio.gather(*(
                 bulk_payment(
                     BulkPaymentBody(doc_ids=order, amount=30.0, payment_date="2026-02-06",
-                                    method="cash", bank_account="1111"),
+                                    method="cash", bank_account="1110"),
                     company_id=company_id, _=None, user=user, session=session)
                 for session, order in ((s_a, [d0, d1]), (s_b, [d1, d0])))), timeout=10)
         finally:

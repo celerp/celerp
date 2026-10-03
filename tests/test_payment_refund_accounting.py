@@ -70,6 +70,9 @@ async def test_a_partial_refund_moves_its_share_of_the_payment(client, session, 
 
 @pytest.mark.asyncio
 async def test_refunding_one_of_two_payments_reverses_only_that_one(client, session, auth):
+    r = await client.post("/accounting/accounts", headers=auth["headers"], json={
+        "code": "1112", "name": "Second bank", "account_type": "asset", "parent_code": "1110"})
+    assert r.status_code == 200, r.text
     inv = await _invoice(client, auth, 100.0, currency="EUR", conversion_rate=1.1)
     first = await _pay(client, session, auth, inv, 60.0, bank="1111", conversion_rate=1.1)
     second = await _pay(client, session, auth, inv, 40.0, bank="1112", conversion_rate=1.25)

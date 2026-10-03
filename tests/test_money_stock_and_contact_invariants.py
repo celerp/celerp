@@ -26,6 +26,8 @@ async def _auth_company(session, currency: str = "USD") -> dict:
     session.add(User(id=uid, email=f"inv-{uid.hex[:8]}@example.test", name="Admin", auth_hash="x", is_active=True))
     await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
+    from celerp_accounting.routes import seed_chart_of_accounts_hook
+    await seed_chart_of_accounts_hook(session=session, company_id=cid)  # as a company made in Celerp has
     await session.commit()
     token = await make_authed_token(session, str(uid), str(cid), "admin")
     return {"company_id": cid, "user_id": uid, "headers": {"Authorization": f"Bearer {token}"}}
