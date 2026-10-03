@@ -83,11 +83,16 @@ _INVENTORY = (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENI
 STOCK_TYPES = frozenset({"stocked", "component"})
 
 
+def is_stock_type(state: dict | None) -> bool:
+    """Whether an item is of a STOCK_TYPES type (an item that names none is stocked)."""
+    return ((state or {}).get("inventory_type") or "stocked") in STOCK_TYPES
+
+
 def _owned_stock(row: Projection) -> bool:
     """Whether a lot is goods of the company's own (STOCK_TYPES), whatever its status."""
     s = row.state or {}
     return (s.get("consignment_flag") != "in" and row.consignment_flag != "in"
-            and (s.get("inventory_type") or "stocked") in STOCK_TYPES)
+            and is_stock_type(s))
 
 
 def in_stock(state: dict | None) -> bool:

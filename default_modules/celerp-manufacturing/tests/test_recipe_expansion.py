@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Pure unit tests for recipe expansion (order inputs/outputs + JIT demand explosion)."""
+"""Pure unit tests for recipe expansion (order inputs and output + JIT demand explosion)."""
 from __future__ import annotations
 
 import pytest
@@ -11,6 +11,7 @@ from celerp_manufacturing.expansion import (
     explode_demand,
     is_manufacturable,
     mfg_idem_key,
+    output_line,
 )
 
 
@@ -25,28 +26,31 @@ def _item(sku, components=None, output_qty=1, **kw):
 
 def test_expand_basic() -> None:
     item = _item("RING", [{"item_id": "GOLD", "quantity": 2}])
-    inputs, outputs = expand_recipe(item, 3)
-    assert inputs == [{"item_id": "GOLD", "quantity": 6.0}]
-    assert outputs == [{"sku": "RING", "name": "RING", "quantity": 3.0, "category": None}]
+    assert expand_recipe(item, 3) == [{"item_id": "GOLD", "quantity": 6.0}]
+
+
+def test_output_line_names_the_product() -> None:
+    assert output_line(_item("RING", category="Rings"), 3) == {"sku": "RING", "name": "RING", "quantity": 3.0,
+                                                              "category": "Rings"}
 
 
 def test_expand_output_qty_batch() -> None:
     # recipe yields 10 per batch; comp 5 per batch; build 20 → 5 * (20/10) = 10
     item = _item("WIDGET", [{"item_id": "RAW", "quantity": 5}], output_qty=10)
-    inputs, _ = expand_recipe(item, 20)
+    inputs = expand_recipe(item, 20)
     assert inputs == [{"item_id": "RAW", "quantity": 10.0}]
 
 
 def test_expand_multiple_components() -> None:
     item = _item("ASM", [{"item_id": "A", "quantity": 1}, {"item_id": "B", "quantity": 3}])
-    inputs, _ = expand_recipe(item, 4)
+    inputs = expand_recipe(item, 4)
     assert inputs == [{"item_id": "A", "quantity": 4.0}, {"item_id": "B", "quantity": 12.0}]
 
 
 def test_expand_nested_single_level() -> None:
     # A sub-assembly stays ONE input line (consumed as stock); expand is single-level.
     item = _item("RING", [{"item_id": "SUB", "quantity": 2}])
-    inputs, _ = expand_recipe(item, 1)
+    inputs = expand_recipe(item, 1)
     assert inputs == [{"item_id": "SUB", "quantity": 2.0}]
 
 

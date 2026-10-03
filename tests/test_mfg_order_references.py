@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
-from test_helpers import perm_setup
+from test_helpers import create_item, perm_setup
 
 
 
@@ -49,21 +49,28 @@ async def _other_kind(client, h, kind: str) -> str:
     return r.json()["id"]
 
 
-def _order(item_id: str, **extra) -> dict:
-    return {"description": "Run", "inputs": [{"item_id": item_id, "quantity": 1}], **extra}
+async def _setup(client, session) -> dict:
+    """The permission setup plus a product for runs to make."""
+    s = await perm_setup(client, session)
+    return {**s, "product": await create_item(client, s["admin_h"], s["location_id"], sku="SKU-MADE")}
+
+
+def _order(item_id: str, product: str, **extra) -> dict:
+    return {"description": "Run", "inputs": [{"item_id": item_id, "quantity": 1}], "output_item_id": product,
+            **extra}
 
 
 @pytest.mark.asyncio
 async def test_new_run_with_a_real_component_is_created(client, session):
-    s = await perm_setup(client, session)
-    r = await client.post("/manufacturing", json=_order(s["item_id"]), headers=s["admin_h"])
+    s = await _setup(client, session)
+    r = await client.post("/manufacturing", json=_order(s["item_id"], s["product"]), headers=s["admin_h"])
     assert r.status_code == 200, r.text
 
 
 @pytest.mark.parametrize("kind", ["unknown", "doc", "contact", "list"])
 @pytest.mark.asyncio
 async def test_new_run_naming_a_non_item_component_is_refused(client, session, kind):
-    s = await perm_setup(client, session)
+    s = await _setup(client, session)
     company_id = await _company_id(session)
     ref = "item:nope" if kind == "unknown" else await _other_kind(client, s["admin_h"], kind)
     before = await _runs(session, company_id)
@@ -71,6 +78,7 @@ async def test_new_run_naming_a_non_item_component_is_refused(client, session, k
     r = await client.post("/manufacturing", json={
         "description": "Run",
         "inputs": [{"item_id": s["item_id"], "quantity": 1}, {"item_id": ref, "quantity": 1}],
+        "output_item_id": s["product"],
     }, headers=s["admin_h"])
     assert r.status_code == 422, r.text
     assert ref in r.json()["detail"]
@@ -79,12 +87,12 @@ async def test_new_run_naming_a_non_item_component_is_refused(client, session, k
 
 @pytest.mark.asyncio
 async def test_new_run_making_a_non_item_product_is_refused(client, session):
-    s = await perm_setup(client, session)
+    s = await _setup(client, session)
     company_id = await _company_id(session)
     doc_id = await _other_kind(client, s["admin_h"], "doc")
     r = await client.post("/manufacturing/import/batch", json={"records": [{
         "entity_id": "mfg:out", "event_type": "mfg.order.created",
-        "data": {**_order(s["item_id"]), "output_item_id": doc_id},
+        "data": {**_order(s["item_id"], s["product"]), "output_item_id": doc_id},
         "source": "import", "idempotency_key": "out-1",
     }]}, headers=s["admin_h"])
     assert r.status_code == 200, r.text
@@ -97,7 +105,7 @@ async def test_new_run_naming_another_companys_item_is_refused(client, session):
     from celerp.events.engine import emit_event
     from celerp.models.company import Company
 
-    s = await perm_setup(client, session)
+    s = await _setup(client, session)
     company_id = await _company_id(session)
     other = uuid.uuid4()
     session.add(Company(id=other, name="Other", slug=f"other-{other.hex[:8]}", settings={}))
@@ -108,7 +116,7 @@ async def test_new_run_naming_another_companys_item_is_refused(client, session):
                      actor_id=None, location_id=None, source="test", idempotency_key=str(uuid.uuid4()))
     await session.flush()
 
-    r = await client.post("/manufacturing", json=_order("item:theirs"), headers=s["admin_h"])
+    r = await client.post("/manufacturing", json=_order("item:theirs", s["product"]), headers=s["admin_h"])
     assert r.status_code == 422, r.text
     assert await _runs(session, company_id) == 0
     assert await _runs(session, other) == 0
@@ -117,14 +125,14 @@ async def test_new_run_naming_another_companys_item_is_refused(client, session):
 @pytest.mark.parametrize("kind", ["unknown", "doc", "contact"])
 @pytest.mark.asyncio
 async def test_imported_run_naming_a_non_item_component_is_refused(client, session, kind):
-    s = await perm_setup(client, session)
+    s = await _setup(client, session)
     company_id = await _company_id(session)
     ref = "item:nope" if kind == "unknown" else await _other_kind(client, s["admin_h"], kind)
 
     r = await client.post("/manufacturing/import/batch", json={"records": [
-        {"entity_id": "mfg:bad", "event_type": "mfg.order.created", "data": _order(ref),
+        {"entity_id": "mfg:bad", "event_type": "mfg.order.created", "data": _order(ref, s["product"]),
          "source": "import", "idempotency_key": "bad-1"},
-        {"entity_id": "mfg:good", "event_type": "mfg.order.created", "data": _order(s["item_id"]),
+        {"entity_id": "mfg:good", "event_type": "mfg.order.created", "data": _order(s["item_id"], s["product"]),
          "source": "import", "idempotency_key": "good-1"},
     ]}, headers=s["admin_h"])
     assert r.status_code == 200, r.text
@@ -145,7 +153,7 @@ async def test_imported_run_naming_a_non_item_component_is_refused(client, sessi
 ])
 @pytest.mark.asyncio
 async def test_imported_run_with_malformed_references_is_refused(client, session, data):
-    s = await perm_setup(client, session)
+    s = await _setup(client, session)
     company_id = await _company_id(session)
     r = await client.post("/manufacturing/import/batch", json={"records": [{
         "entity_id": "mfg:shape", "event_type": "mfg.order.created", "data": data,
@@ -159,11 +167,11 @@ async def test_imported_run_with_malformed_references_is_refused(client, session
 @pytest.mark.asyncio
 async def test_historical_run_with_a_dangling_component_still_rebuilds(client, session):
     """A run created before this rule may name an ID that is not an item; it replays as it was."""
-    s = await perm_setup(client, session)
+    s = await _setup(client, session)
     company_id = await _company_id(session)
     session.add(LedgerEntry(
         company_id=company_id, entity_id="mfg:old", entity_type="mfg_order", event_type="mfg.order.created",
-        data=_order("item:gone"), actor_id=None, location_id=None, source="legacy",
+        data=_order("item:gone", s["product"]), actor_id=None, location_id=None, source="legacy",
         idempotency_key=str(uuid.uuid4()), metadata_={},
     ))
     await session.flush()
@@ -177,9 +185,9 @@ async def test_historical_run_with_a_dangling_component_still_rebuilds(client, s
 @pytest.mark.asyncio
 async def test_a_component_a_run_names_cannot_be_deleted(client, session):
     """Once a run names an item, Delete refuses it, so issuing never meets a missing component."""
-    s = await perm_setup(client, session)
+    s = await _setup(client, session)
     company_id = await _company_id(session)
-    r = await client.post("/manufacturing", json=_order(s["item_id"]), headers=s["admin_h"])
+    r = await client.post("/manufacturing", json=_order(s["item_id"], s["product"]), headers=s["admin_h"])
     assert r.status_code == 200, r.text
     before = (await session.execute(select(func.count()).select_from(LedgerEntry).where(
         LedgerEntry.company_id == company_id, LedgerEntry.entity_id == s["item_id"]))).scalar_one()
@@ -240,7 +248,7 @@ async def test_finalizing_an_order_skips_and_reports_a_line_whose_recipe_names_a
     longer exists (a recipe saved before the items a recipe uses were kept from deletion) gets no
     work order, the other lines still do, the order still finalizes, and the skipped line is
     reported."""
-    s = await perm_setup(client, session)
+    s = await _setup(client, session)
     h = s["admin_h"]
 
     async def _item(sku: str, qty: int = 0) -> str:

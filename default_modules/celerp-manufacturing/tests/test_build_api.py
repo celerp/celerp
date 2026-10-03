@@ -106,10 +106,11 @@ async def test_issue_rejects_draft_component_and_leaves_quantity_untouched(clien
     (which is authoring data on a draft, not committed inventory) must not move."""
     token = await _register(client)
     comp = await _item(client, token, "DFTCOMP", quantity=5, status="draft")
+    out = await _item(client, token, "OUT1", quantity=0)
     order = await client.post("/manufacturing", headers=_h(token), json={
         "description": "Order with a draft component",
         "inputs": [{"item_id": comp, "quantity": 2}],
-        "expected_outputs": [{"sku": "OUT1", "name": "Output", "quantity": 1}],
+        "output_item_id": out,
     })
     assert order.status_code == 200, order.text
     order_id = order.json()["id"]

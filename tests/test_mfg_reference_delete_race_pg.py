@@ -35,7 +35,7 @@ from celerp_manufacturing import routes as mfg
 
 pytestmark = pytest.mark.asyncio
 
-_PART = "item:part"
+_PART, _PRODUCT = "item:part", "item:product"
 
 
 async def _seed(factory):
@@ -52,12 +52,18 @@ async def _seed(factory):
             data={"sku": "PART", "name": "Part", "quantity": 5, "sell_by": "piece", "status": "draft"},
             actor_id=user_id, location_id=None, source="test", idempotency_key=str(uuid.uuid4()),
         )
+        await emit_event(
+            s, company_id=company_id, entity_id=_PRODUCT, entity_type="item", event_type="item.created",
+            data={"sku": "MADE", "name": "Made", "quantity": 0, "sell_by": "piece", "status": "available"},
+            actor_id=user_id, location_id=None, source="test", idempotency_key=str(uuid.uuid4()),
+        )
         await s.commit()
     return company_id, types.SimpleNamespace(id=user_id)
 
 
 def _create(s, company_id, user):
-    payload = mfg.MfgOrderCreate(description="Run", inputs=[mfg.MfgInput(item_id=_PART, quantity=1)])
+    payload = mfg.MfgOrderCreate(description="Run", inputs=[mfg.MfgInput(item_id=_PART, quantity=1)],
+                                 output_item_id=_PRODUCT)
     return mfg.create_order(payload, company_id=company_id, user=user, _=None, session=s)
 
 

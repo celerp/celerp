@@ -151,9 +151,11 @@ async def test_work_in_progress_is_needed_only_once_the_company_manufactures(cli
     assert rows[WIP]["required"] is False
     assert rows[WIP]["group"] == "manufacturing"
 
+    raw = r.json()["id"]
+    made = (await client.post("/items", headers=h, json={
+        "sku": "FG-RD", "name": "Out", "quantity": 0, "sell_by": "piece"})).json()["id"]
     r = await client.post("/manufacturing", headers=h, json={
-        "description": "Run", "inputs": [{"item_id": r.json()["id"], "quantity": 1}],
-        "expected_outputs": [{"sku": "FG-RD", "name": "Out", "quantity": 1}]})
+        "description": "Run", "inputs": [{"item_id": raw, "quantity": 1}], "output_item_id": made})
     assert r.status_code == 200, r.text
     rows = {row["role"]: row for row in await readiness(session, cid)}
     assert rows[WIP]["required"] is True

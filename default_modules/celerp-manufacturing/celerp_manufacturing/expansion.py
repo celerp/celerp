@@ -3,7 +3,8 @@
 """Recipe expansion — turn demand into manufacturing-order inputs/outputs and JIT summaries.
 
 Pure functions (no DB); callers inject a ``lookup(item_id) -> item_state`` resolver.
-- ``expand_recipe``  : single-level — one finished item + build qty → order inputs + outputs.
+- ``expand_recipe``  : single-level — one finished item + build qty → order inputs.
+- ``output_line``    : the output a run expects, taken from the product it makes.
                        Sub-assemblies stay a single input line (consumed as stock by the order).
 - ``explode_demand`` : recursive — aggregate raw-material + sub-assembly demand across many
                        document lines, for the combined components (JIT) summary.
@@ -44,8 +45,14 @@ def merge_inputs(inputs) -> list[dict]:
     return list(merged.values())
 
 
-def expand_recipe(item_state: dict, build_qty: float) -> tuple[list[dict], list[dict]]:
-    """One finished item + build quantity → (inputs, expected_outputs) for a manufacturing order.
+def output_line(item_state: dict, quantity: float) -> dict:
+    """The output a run expects: ``quantity`` of the product it makes, named by the product."""
+    return {"sku": item_state.get("sku", ""), "name": item_state.get("name", ""), "quantity": float(quantity),
+            "category": item_state.get("category")}
+
+
+def expand_recipe(item_state: dict, build_qty: float) -> list[dict]:
+    """One finished item + build quantity → the inputs of a manufacturing order.
 
     Single-level: each component (including a sub-assembly) becomes one input line scaled by
     build_qty / output_qty. Raises RecipeError if the item is not manufacturable (caller must gate).
@@ -55,17 +62,10 @@ def expand_recipe(item_state: dict, build_qty: float) -> tuple[list[dict], list[
     if not components:
         raise RecipeError("item has no recipe to expand")
     factor = float(build_qty) / (float(recipe.get("output_qty") or 1) or 1)
-    inputs = merge_inputs(
+    return merge_inputs(
         {"item_id": c["item_id"], "quantity": round(float(c.get("quantity") or 0) * factor, 6)}
         for c in components if c.get("item_id")
     )
-    expected_outputs = [{
-        "sku": item_state.get("sku", ""),
-        "name": item_state.get("name", ""),
-        "quantity": float(build_qty),
-        "category": item_state.get("category"),
-    }]
-    return inputs, expected_outputs
 
 
 def explode_demand(lines: list[tuple[str, float]], lookup: ItemLookup) -> dict:

@@ -308,12 +308,16 @@ async def test_complete_sends_waste_to_cost_of_goods_sold_and_leaves_the_run_emp
 
 
 @pytest.mark.asyncio
-async def test_a_run_with_no_output_completes_only_with_everything_recorded_as_waste(client, session, auth):
+async def test_an_older_run_with_no_output_completes_only_with_everything_recorded_as_waste(client, session, auth):
+    """A run an older release created without naming a product has nothing to receive."""
     raw = await _item(client, auth, 100.0, qty=10)
-    r = await client.post("/manufacturing", headers=auth["headers"], json={
-        "description": "Trial batch", "inputs": [{"item_id": raw, "quantity": 10}]})
-    assert r.status_code == 200, r.text
-    order = r.json()["id"]
+    order = f"mfg:{uuid.uuid4()}"
+    await emit_event(session, company_id=auth["company_id"], entity_id=order, entity_type="mfg_order",
+                     event_type="mfg.order.created",
+                     data={"description": "Trial batch", "inputs": [{"item_id": raw, "quantity": 10}]},
+                     actor_id=auth["user_id"], location_id=None, source="api", idempotency_key=str(uuid.uuid4()),
+                     metadata_={})
+    await session.commit()
     cogs, wip = await role(session, auth, COGS), await role(session, auth, WIP)
     assert (await issue(client, auth, order, key="i")).status_code == 200
 

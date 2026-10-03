@@ -14,13 +14,13 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.events.engine import emit_event
+from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.events.schemas import (
     _WORKFLOW_TIME_UNITS,
     RecipeSpec,
@@ -33,7 +33,7 @@ from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
 from celerp.services import migrations
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.company_lock import lock_projections
+from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.permissions import require_permission
 from celerp.schemas.numbers import FiniteFloat
 
@@ -42,7 +42,7 @@ from .costing import RecipeError, labor_hours, roll_up_cost, where_used
 # Default hours-per-day for converting daily labor lines into the est-hours column.
 # Set per work center; the company's default center supplies the value.
 DEFAULT_HOURS_PER_DAY = 8.0
-from .expansion import expand_recipe, explode_demand, is_manufacturable, merge_inputs
+from .expansion import expand_recipe, explode_demand, is_manufacturable, merge_inputs, output_line
 from . import movements
 from .labor import apply_labor_providers
 from .search import _INCOMPLETE_STATUSES, search_orders
@@ -61,18 +61,16 @@ class MfgInput(BaseModel):
     quantity: FiniteFloat
 
 
-class MfgOutput(BaseModel):
-    sku: str
-    name: str
-    quantity: FiniteFloat
-    category: str | None = None
-
-
 class MfgOrderCreate(BaseModel):
+    # A run makes `quantity` of one product, `output_item_id`; what it expects to make is taken
+    # from that product. Fields it does not know, such as a list of outputs, are refused.
+    model_config = ConfigDict(extra="forbid")
+
     description: str
     order_type: str = "assembly"
     inputs: list[MfgInput] = Field(default_factory=list)
-    expected_outputs: list[MfgOutput] = Field(default_factory=list)
+    output_item_id: str | None = None
+    quantity: FiniteFloat = 1.0
     location_id: str | None = None
     assigned_to: str | None = None
     due_date: str | None = None
@@ -118,7 +116,9 @@ class ReceiveBody(BaseModel):
 
 
 class CompleteBody(BaseModel):
-    actual_outputs: list[MfgOutput] | None = None
+    # What a run made is what was received from it; a declared yield is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     waste_quantity: FiniteFloat | None = Field(default=None, ge=0)
     waste_unit: str | None = None
     waste_reason: str | None = None
@@ -174,32 +174,49 @@ def _order_item_ids(data: dict) -> list[str]:
             raise HTTPException(status_code=422, detail="Every component of a run must name an item")
         ids.append(item_id)
     output = data.get("output_item_id")
-    if output is not None:
-        if not isinstance(output, str) or not output:
-            raise HTTPException(status_code=422, detail="A run's product must name an item")
-        ids.append(output)
-    return ids
+    if not isinstance(output, str) or not output:
+        raise HTTPException(status_code=422, detail="A run must name the product it makes")
+    return [*ids, output]
 
 
-async def _emit_order_created(session: AsyncSession, company_id, order_id: str, data: dict, *,
-                              actor_id, idempotency_key: str, location_id=None, source: str = "api",
-                              metadata_: dict | None = None, locked: dict[str, Projection] | None = None):
+async def _emit_order_created(session: AsyncSession, company_id, order_id: str, data: dict, *, quantity: float,
+                              request: dict, actor_id, idempotency_key: str | None, location_id=None,
+                              source: str = "api", metadata_: dict | None = None,
+                              locked: dict[str, Projection] | None = None):
     """The one way a new run is written, by every door that creates one.
 
-    Every item the run names must be an item of this company, so a run never stores a
-    component or product that does not exist. The items are locked first (``locked``
-    when the caller already locked them), so a Delete of one either finishes before the
-    run is checked, and the run is refused, or waits until the run is saved."""
+    A run makes ``quantity`` of one product, ``data["output_item_id"]``, from the components
+    in ``data["inputs"]``; what it expects to make is taken from the product. Every item it
+    names must be a stocked item or component of this company, so a run never stores an item
+    that does not exist or one production cannot move. The items are locked first
+    (``locked`` when the caller already locked them), so a Delete of one either finishes
+    before the run is checked, and the run is refused, or waits until the run is saved.
+
+    ``request`` is what the caller asked for. A key sent again with the same request returns
+    the run it first created; sent with a different request it is refused."""
+    await lock_company(session, company_id)
+    key = f"mfg:created:{idempotency_key or uuid.uuid4().hex}"
+    fingerprint = movements._fingerprint(request)
+    stored = await find_event_by_idempotency(session, company_id, key)
+    if stored is not None:
+        if stored.event_type != "mfg.order.created" or (stored.metadata_ or {}).get("request") != fingerprint:
+            raise movements.refuse(409, "key_reused", "This request key was already used for a different run. "
+                                   "Send the request again without reusing the key.")
+        return stored
+    if not quantity > 0:
+        raise HTTPException(status_code=422, detail="A run must make a quantity greater than zero")
     ids = _order_item_ids(data)
     rows = locked if locked is not None else await lock_projections(session, company_id, ids)
     for item_id in ids:
         row = rows.get(item_id)
         if row is None or row.entity_type != "item":
             raise HTTPException(status_code=422, detail=f"Not an item in this company: {item_id}")
+        movements.require_stock(row.state or {}, item_id)
+    data = {**data, "expected_outputs": [output_line(rows[data["output_item_id"]].state or {}, quantity)]}
     return await emit_event(
         session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
         event_type="mfg.order.created", data=data, actor_id=actor_id, location_id=location_id,
-        source=source, idempotency_key=idempotency_key, metadata_=metadata_ or {},
+        source=source, idempotency_key=key, metadata_={**(metadata_ or {}), "request": fingerprint},
     )
 
 
@@ -210,22 +227,27 @@ async def _load_recipe_graph(session: AsyncSession, company_id, root_id: str, ro
     Returns ``(graph, missing)`` where graph maps entity_id -> item state (the root is
     keyed by root_id with its *new* recipe already overlaid) and missing lists any
     referenced item_id that does not resolve to an item in this company.
+
+    Each level of the graph is locked as it is read (the caller holds the company lock), so a
+    Delete of any item it names either finished before, and the item is missing, or waits
+    until the caller commits.
     """
     graph: dict[str, dict] = {root_id: root_state}
     missing: list[str] = []
     seen: set[str] = {root_id}
-    queue: list[str] = [c.get("item_id") for c in (root_state.get("recipe") or {}).get("components", [])]
-    while queue:
-        cid = queue.pop()
-        if not cid or cid in seen:
-            continue
-        seen.add(cid)
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": cid})
-        if row is None or row.entity_type != "item":
-            missing.append(cid)
-            continue
-        graph[cid] = row.state
-        queue.extend(c.get("item_id") for c in (row.state.get("recipe") or {}).get("components", []))
+    level = {c.get("item_id") for c in (root_state.get("recipe") or {}).get("components", [])} - seen
+    while level:
+        seen |= level
+        rows = await lock_projections(session, company_id, level)
+        following: set[str] = set()
+        for cid in level:
+            row = rows.get(cid)
+            if row is None or row.entity_type != "item":
+                missing.append(cid)
+                continue
+            graph[cid] = row.state
+            following.update(c.get("item_id") for c in (row.state.get("recipe") or {}).get("components", []))
+        level = {c for c in following if c} - seen
     return graph, missing
 
 
@@ -246,11 +268,14 @@ async def set_item_recipe(
 
     Validates components, rolls the standard cost up from current component costs,
     and emits ``item.recipe.set``. Hard errors (422) on self-reference, unknown
-    component SKUs, and recipe cycles — per GDR, validation lives at the function level.
+    component SKUs, items that are not stock, and recipe cycles — per GDR, validation lives
+    at the function level. The company lock is taken before anything is read, so the items
+    the recipe names are checked and saved in one step that a Delete cannot come between.
     """
-    item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+    item = (await lock_projections(session, company_id, [item_id])).get(item_id)
     if item is None or item.entity_type != "item":
         raise HTTPException(status_code=404, detail="Item not found")
+    movements.require_stock(item.state or {}, item_id)
 
     recipe = payload.model_dump()
     if any(c.get("item_id") == item_id for c in recipe["components"]):
@@ -267,6 +292,7 @@ async def set_item_recipe(
     # The component unit is not free text — it is the component item's own sell unit.
     for comp in recipe["components"]:
         cstate = graph.get(comp.get("item_id")) or {}
+        movements.require_stock(cstate, comp.get("item_id"))
         comp["unit"] = cstate.get("sell_by") or cstate.get("unit") or comp.get("unit")
         comp["sku"] = cstate.get("sku") or comp.get("sku")
 
@@ -410,13 +436,11 @@ async def build_item(
     item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
     if item is None or item.entity_type != "item":
         raise HTTPException(status_code=404, detail="Item not found")
+    movements.require_stock(item.state or {}, item_id)
     if not is_manufacturable(item.state):
         raise HTTPException(status_code=422, detail="Item has no recipe to build from")
     if str((item.state or {}).get("status") or "").lower() == "draft":
         raise HTTPException(status_code=422, detail="Cannot build into a draft item; make it available first.")
-    if payload.quantity <= 0:
-        raise HTTPException(status_code=422, detail="Build quantity must be greater than zero")
-    inputs, outputs = expand_recipe(item.state, payload.quantity)
     key = payload.idempotency_key or str(uuid.uuid4())
     # The run id follows the key, so a retried build finds the run it made instead of a second one.
     order_id = f"mfg:{uuid.uuid5(movements.MFG_LOT_NS, f'build:{key}')}"
@@ -424,17 +448,18 @@ async def build_item(
         session, company_id, order_id,
         {
             "description": f"Build {payload.quantity:g} x {item.state.get('sku', '')}",
-            "order_type": "assembly", "inputs": inputs, "expected_outputs": outputs,
+            "order_type": "assembly", "inputs": expand_recipe(item.state, payload.quantity),
             # The product this run makes — links the run to its product Manufacturing tab.
             "output_item_id": item_id,
         },
+        quantity=payload.quantity, request={"build": item_id, **payload.model_dump(exclude={"idempotency_key"})},
         actor_id=user.id, idempotency_key=key,
     )
     if payload.complete:
         await movements.complete(session, company_id, user.id, order_id, {}, f"build:{key}",
                                  at=datetime.now(timezone.utc).isoformat(), quantity=payload.quantity)
     await session.commit()
-    return {"event_id": entry.id, "id": order_id}
+    return {"event_id": entry.id, "id": entry.entity_id}
 
 
 async def _all_item_states(session: AsyncSession, company_id) -> dict[str, dict]:
@@ -678,17 +703,15 @@ async def _emit_work_order(session, company_id, actor_id, item_id: str, item_sta
                            source: dict | None = None) -> str:
     """Create a work order (mfg_order) to build qty of item_id, optionally linked 1:1 to a source
     order line via source_doc_* fields. Returns the new order id; the caller commits."""
-    inputs, outputs = expand_recipe(item_state, qty)
     order_id = f"mfg:{uuid.uuid4()}"
     data = {
         "description": f"Build {qty:g} x {item_state.get('sku', '')}",
-        "order_type": "assembly", "inputs": inputs, "expected_outputs": outputs,
-        "output_item_id": item_id,
+        "order_type": "assembly", "inputs": expand_recipe(item_state, qty), "output_item_id": item_id,
     }
     if source:
         data.update({k: v for k, v in source.items() if v not in (None, "")})
-    await _emit_order_created(session, company_id, order_id, data, actor_id=actor_id,
-                              idempotency_key=str(uuid.uuid4()))
+    await _emit_order_created(session, company_id, order_id, data, quantity=qty, request=data, actor_id=actor_id,
+                              idempotency_key=None)
     return order_id
 
 
@@ -1040,14 +1063,20 @@ async def import_manufacturing_template():
 
 # What an imported run may say about itself: what it makes and from what, and its planning
 # fields. Progress, status and value come only from the run's own movements.
-_IMPORTED_FIELDS = ("output_item_id", "planned_start", "priority", "source_doc_id", "source_doc_number",
+_IMPORTED_FIELDS = ("planned_start", "priority", "source_doc_id", "source_doc_number",
                     "source_doc_type", "source_contact_name", "source_due")
+# Listing outputs is refused on import as on every other door: a run's output is its product.
+_REFUSED_ON_IMPORT = ("expected_outputs", "outputs")
 
 
-def _imported_order(data: dict) -> dict:
-    order = MfgOrderCreate(**data).model_dump(exclude_none=True, exclude={"idempotency_key"})
+def _imported_order(data: dict) -> tuple[dict, float]:
+    """An imported run's creation data and quantity, held to the same model as POST /manufacturing."""
+    order = MfgOrderCreate(**{k: v for k, v in data.items()
+                              if k in MfgOrderCreate.model_fields or k in _REFUSED_ON_IMPORT}
+                           ).model_dump(exclude_none=True, exclude={"idempotency_key"})
+    quantity = order.pop("quantity")
     order["inputs"] = merge_inputs(order.get("inputs", []))
-    return {**order, **{k: data[k] for k in _IMPORTED_FIELDS if data.get(k) not in (None, "")}}
+    return {**order, **{k: data[k] for k in _IMPORTED_FIELDS if data.get(k) not in (None, "")}}, quantity
 
 
 @router.post("/import/batch", response_model=BatchImportResult)
@@ -1062,7 +1091,8 @@ async def batch_import_manufacturing(
     from sqlalchemy import select as _select
     from celerp.models.ledger import LedgerEntry
 
-    keys = [r.idempotency_key for r in body.records]
+    # A record already imported is skipped by its key, as the run's creation stored it.
+    keys = [f"mfg:created:{r.idempotency_key}" for r in body.records]
     existing_keys = set((await session.execute(
         _select(LedgerEntry.idempotency_key).where(
             LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key.in_(keys)
@@ -1097,19 +1127,20 @@ async def batch_import_manufacturing(
                 errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
             skipped += 1
             continue
-        if rec.idempotency_key in existing_keys:
+        if f"mfg:created:{rec.idempotency_key}" in existing_keys:
             skipped += 1
             continue
         if rec.event_type == "mfg.order.created" and rec.entity_id in existing_entities:
             skipped += 1
             continue
         try:
+            order, quantity = _imported_order(rec.data)
             await _emit_order_created(
-                session, company_id, rec.entity_id, _imported_order(rec.data),
+                session, company_id, rec.entity_id, order, quantity=quantity, request=rec.data,
                 actor_id=user.id, source=rec.source, idempotency_key=rec.idempotency_key,
                 metadata_={"source_ts": rec.source_ts} if rec.source_ts else {}, locked=locked,
             )
-            existing_keys.add(rec.idempotency_key)
+            existing_keys.add(f"mfg:created:{rec.idempotency_key}")
             if rec.event_type == "mfg.order.created":
                 existing_entities.add(rec.entity_id)
             created += 1
@@ -1455,16 +1486,17 @@ async def create_order(
         raise HTTPException(status_code=422, detail="description is required")
     if len(payload.inputs) == 0:
         raise HTTPException(status_code=409, detail="Cannot create/start order with no inputs")
-    entity_id = f"mfg:{uuid.uuid4()}"
+    request = payload.model_dump(exclude={"idempotency_key"})
     entry = await _emit_order_created(
-        session, company_id, entity_id,
-        {**payload.model_dump(exclude_none=True), "inputs": merge_inputs(i.model_dump() for i in payload.inputs)},
-        actor_id=user.id,
+        session, company_id, f"mfg:{uuid.uuid4()}",
+        {**payload.model_dump(exclude_none=True, exclude={"idempotency_key", "quantity"}),
+         "inputs": merge_inputs(i.model_dump() for i in payload.inputs)},
+        quantity=payload.quantity, request=request, actor_id=user.id,
         location_id=uuid.UUID(payload.location_id) if payload.location_id else None,
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
+        idempotency_key=payload.idempotency_key,
     )
     await session.commit()
-    return {"event_id": entry.id, "id": entity_id}
+    return {"event_id": entry.id, "id": entry.entity_id}
 
 
 @router.get("/{order_id}")

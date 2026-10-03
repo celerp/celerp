@@ -53,6 +53,7 @@ from celerp.services.lot_origin import (
     books_from_elsewhere,
     consumed_values,
     held_value,
+    is_stock_type,
     period_open,
 )
 from celerp.services.money import allocate_pro_rata, round_money
@@ -75,6 +76,18 @@ def refuse(http_status: int, key: str, message: str, /, **params) -> HTTPExcepti
     ``message_key`` and ``params`` let a translation say the same thing."""
     return HTTPException(status_code=http_status, detail={
         "message": message, "message_key": f"mfg.{key}", "params": params})
+
+
+def require_stock(state: dict, item_id: str, http_status: int = 422) -> None:
+    """A run turns stock into stock: the product it makes and every component it uses are
+    stocked items or components. Services and other costs belong in a recipe's labor and
+    overhead, never among its materials."""
+    if not is_stock_type(state):
+        sku = state.get("sku") or item_id
+        raise refuse(http_status, "not_stock",
+                     f"{sku} is not a stocked item or component, so it cannot be made or used as a material in "
+                     "production. Record services and other costs as labor or overhead.",
+                     sku=sku, inventory_type=state.get("inventory_type"))
 
 
 async def mfg_settings(session: AsyncSession, company_id) -> dict:
@@ -265,6 +278,7 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
         sku = s.get("sku") or item_id
         if str(s.get("status") or "").lower() == "draft":
             raise refuse(422, "item_draft", f"{sku} is a draft. Make it available before issuing it.", sku=sku)
+        require_stock(s, item_id, 409)
         held = held_value(row)
         if not is_item_available(s) or s.get("status_doc_id") or held is None:
             raise refuse(409, "item_unavailable",
@@ -473,6 +487,7 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
     if str(p.get("status") or "").lower() == "draft":
         raise refuse(422, "output_draft", f"{p.get('sku') or out_id} is a draft. Make it available first.",
                      sku=p.get("sku") or out_id)
+    require_stock(p, out_id, 409)
 
     wip = _wip(state)
     amount = wip if qty >= outstanding - _EPS else op.round(wip * _money(qty) / _money(outstanding))
@@ -516,7 +531,7 @@ async def complete(session: AsyncSession, company_id, user_id, order_id: str, pa
                    key: str | None, *, at: str, quantity: float | None = None) -> dict:
     """Finish a run: issue what is outstanding, receive the output still to come (``quantity``
     of it when given, else all of it) and close. ``payload`` holds the closing details
-    (actual_outputs, waste_quantity, waste_unit, waste_reason, labor_hours)."""
+    (waste_quantity, waste_unit, waste_reason, labor_hours). What it made is what it received."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
     request = _fingerprint({"payload": payload, "quantity": quantity})
@@ -590,11 +605,8 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str)
         wip_code = await continue_role(op.session, op.company_id, AccountRole.WORK_IN_PROGRESS, wip_code)
     await op.post(f"complete:{ck}", f"Production run {op.order_id} completed", wip_code, -held, debits, waste)
 
-    if payload.get("actual_outputs") is not None:
-        actual_outputs = payload["actual_outputs"]
-    else:
-        expected = (state.get("expected_outputs") or [{}])[0]
-        actual_outputs = [{**expected, "quantity": float(state.get("received_qty") or 0)}] if expected else []
+    expected = (state.get("expected_outputs") or [{}])[0]
+    actual_outputs = [{**expected, "quantity": float(state.get("received_qty") or 0)}] if expected else []
     await op.emit_run("mfg.order.completed", {
         "completed_by": str(op.user_id), "actual_outputs": actual_outputs,
         "waste": ({"quantity": payload.get("waste_quantity"), "unit": payload.get("waste_unit"),

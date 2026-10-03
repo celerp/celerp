@@ -254,9 +254,9 @@ async def test_fungible_sale_cogs_actual_lot_cost(client):
 
 
 @pytest.mark.asyncio
-async def test_completion_honors_actual_outputs(client):
-    """Completing with an explicit actual_outputs records that yield on the run, rather than echoing
-    the recipe's expected output back as the actual."""
+async def test_completion_records_what_was_received(client):
+    """What a run made is what was received from it: completing records the received quantity of
+    its product, and a declared yield is refused rather than recorded beside it."""
     token = await _register(client)
     gold = await _item(client, token, "GOLD5", quantity=1000, cost_total=80000)
     ring = await _item(client, token, "RING5", quantity=0)
@@ -264,11 +264,14 @@ async def test_completion_honors_actual_outputs(client):
 
     run = await _build(client, token, ring, 10)
     assert (await _issue(client, token, run)).status_code == 200
+    assert (await client.post(f"/manufacturing/{run}/receive", headers=_h(token), json={"quantity": 7})).status_code == 200
     r = await client.post(f"/manufacturing/{run}/complete", headers=_h(token),
                           json={"actual_outputs": [{"sku": "RING5", "name": "RING5", "quantity": 7}]})
+    assert r.status_code == 422, r.text
+    r = await client.post(f"/manufacturing/{run}/complete", headers=_h(token), json={})
     assert r.status_code == 200, r.text
     state = (await client.get(f"/manufacturing/{run}", headers=_h(token))).json()
-    assert float(state["actual_outputs"][0]["quantity"]) == 7
+    assert state["actual_outputs"] == [{"sku": "RING5", "name": "RING5", "quantity": 10.0, "category": None}]
 
 
 # ---------------------------------------------------------------------------

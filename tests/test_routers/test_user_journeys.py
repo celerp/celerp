@@ -1268,13 +1268,14 @@ async def test_wf_manufacturing_list_contains_order(client):
     token = await _reg(client)
     h = _h(token)
     raw_id = await _item(client, token, qty=10, sku="RAW-LIST")
+    made_id = await _item(client, token, qty=0, sku="FG-LIST")
     order = await client.post(
         "/manufacturing",
         headers=h,
         json={
             "description": "List Test",
             "inputs": [{"item_id": raw_id, "quantity": 1}],
-            "expected_outputs": [{"sku": "FG-LIST", "name": "FG List", "quantity": 1}],
+            "output_item_id": made_id,
         },
     )
     oid = order.json()["id"]
