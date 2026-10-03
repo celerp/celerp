@@ -135,7 +135,7 @@ def _business_data(sync_url: str, ids: dict[str, str]) -> dict[str, object]:
         eng.dispose()
 
 
-def test_upgrade_downgrade_and_fresh_install_agree_on_theschema_of():
+def test_upgrade_downgrade_and_fresh_install_agree_on_the_schema():
     with throwaway_db("graph_up") as (up_async, up_sync), throwaway_db("graph_new") as (new_async, _new_sync):
         upgrade_to(up_sync, RELEASE_HEAD)
         at_release = schema_of(up_sync)
@@ -170,7 +170,7 @@ def test_upgrade_downgrade_and_fresh_install_agree_on_theschema_of():
         assert _business_data(up_sync, ids) == kept
 
 
-def test_a_database_from_before_the_revisions_were_reordered_reaches_the_sameschema_of():
+def test_a_database_from_before_the_revisions_were_reordered_reaches_the_same_schema():
     """A database built while import reversibility still carried the ID that the
     unmatched refunds revision now has: stamped at that ID with only the import column
     present. Migrating it must add the refunds table rather than trust the stamp."""
