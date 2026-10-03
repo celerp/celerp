@@ -119,7 +119,7 @@ async def test_cancelling_a_run_that_holds_materials_says_why_in_the_users_langu
         patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "THB"})),
         patch("ui.api_client.manufacturing_item_hub", new=AsyncMock(return_value={})),
     ):
-        r = await ui_client.post("/api/items/item:p/runs/mfg:1/act", data={"action": "cancel"},
+        r = await ui_client.post("/api/items/item:p/runs/mfg:1/act", data={"action": "cancel", "idempotency_key": "k"},
                                  cookies={**_authed(), "celerp_lang": "th"})
     assert r.status_code == 200, r.text
     assert _TH_CANCEL in r.text
@@ -135,7 +135,7 @@ async def test_a_bulk_action_says_why_each_run_was_skipped(ui_client):
         patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": []})),
     ):
         r = await ui_client.post("/manufacturing/runs/bulk/issue?status=active",
-                                 content=b"selected=mfg%3A1&selected=mfg%3A2&selected=mfg%3A3",
+                                 content=b"selected=mfg%3A1&selected=mfg%3A2&selected=mfg%3A3&idempotency_key=k",
                                  headers={"content-type": "application/x-www-form-urlencoded"},
                                  cookies={**_authed(), "celerp_lang": "th"})
     assert r.status_code == 200, r.text

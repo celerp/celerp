@@ -93,7 +93,8 @@ async def test_sending_records_the_values_and_says_the_run_can_carry_on(ui_clien
     assert r.status_code == 200, r.text
     reconcile.assert_awaited_once()
     assert reconcile.await_args.args[1:] == (RUN["id"], {"components": [{"item_id": "item:flour", "value": 30.0}],
-                                                         "account": "1120", "idempotency_key": "k1"})
+                                                         "account": "1120"})
+    assert reconcile.await_args.kwargs == {"idempotency_key": "k1"}
     assert "Reconciled. The run can issue, return, receive and complete again." in r.text
 
 

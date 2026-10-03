@@ -565,6 +565,7 @@
   "error.passwords_no_match": "Kata sandi tidak cocok.",
   "error.please_enter_question": "Silakan masukkan pertanyaan.",
   "error.session_expired": "Sesi berakhir. Silakan segarkan halaman dan masuk lagi.",
+  "error.page_out_of_date": "Halaman ini sudah usang. Muat ulang dan coba lagi.",
   "error.sku_required": "SKU dan Nama wajib diisi.",
   "error.split_invalid_quantities": "Jumlah tidak valid — gunakan angka yang dipisahkan koma, mis. 3,2,1",
   "error.split_min_two": "Pemisahan membutuhkan minimal 1 kuantitas.",

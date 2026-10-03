@@ -22,6 +22,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
+from ui.components.operation_key import operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
@@ -1963,15 +1964,10 @@ function celerpPrintLabel(entityId, templateId) {
                 return P(t("error.unauthorized"), cls="cell-error")
             return Div(P(e.detail, cls="cell-error"), id="production-block")
 
-    _RUN_ACTIONS = {
-        "start": api.start_mfg_order, "complete": lambda tok, rid: api.complete_mfg_order(tok, rid),
-        "hold": lambda tok, rid: api.hold_mfg_order(tok, rid), "resume": api.resume_mfg_order,
-        "cancel": lambda tok, rid: api.cancel_mfg_order(tok, rid),
-        "return": lambda tok, rid: api.return_mfg_materials(tok, rid),
-        "reopen": lambda tok, rid: api.reopen_mfg_order(tok, rid),
-        # "undo:<lot id>" names the receipt to undo.
-        "undo": lambda tok, rid, lot: api.undo_mfg_receipt(tok, rid, lot),
-    }
+    # The client call each action makes, looked up when it is made. "undo:<lot id>" names the receipt to undo.
+    _RUN_ACTIONS = {"start": "start_mfg_order", "complete": "complete_mfg_order", "hold": "hold_mfg_order",
+                    "resume": "resume_mfg_order", "cancel": "cancel_mfg_order", "return": "return_mfg_materials",
+                    "reopen": "reopen_mfg_order", "undo": "undo_mfg_receipt"}
     # The undo actions change nothing the run's row shows, so they say what they did.
     _RUN_ACTION_DONE = {"return": "inventory.wo_returned", "undo": "inventory.wo_receipt_undone",
                         "reopen": "inventory.wo_reopened"}
@@ -1984,11 +1980,15 @@ function celerpPrintLabel(entityId, templateId) {
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
         action, _, lot = str(form.get("action") or "").partition(":")
-        fn = _RUN_ACTIONS.get(action)
+        fn = getattr(api, _RUN_ACTIONS[action]) if action in _RUN_ACTIONS else None
         if fn is None:
             return await _production_block_response(token, entity_id)
         try:
-            await (fn(token, run_id, lot) if action == "undo" else fn(token, run_id))
+            # The run's action list carries the key it was rendered with, so a choice sent
+            # again after a lost answer is recorded once; the refreshed block brings new keys.
+            key = required_operation_key(form, str(form.get("action")))
+            await (fn(token, run_id, lot, idempotency_key=key) if action == "undo"
+                   else fn(token, run_id, idempotency_key=key))
             done = _RUN_ACTION_DONE.get(action)
             return await _production_block_response(token, entity_id, flash_msg=t(done) if done else None)
         except APIError as e:
@@ -7065,7 +7065,8 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
             return Span(EMPTY)
         return Select(*opts, name="action", cls="wo-action-select", hx_trigger="change",
                       hx_post=f"/api/items/{entity_id}/runs/{rid}/act",
-                      hx_target="#production-block", hx_swap="outerHTML", hx_disabled_elt="this")
+                      hx_target="#production-block", hx_swap="outerHTML", hx_disabled_elt="this",
+                      hx_vals=operation_key_vals())
 
     def _wo_source_cell(run: dict) -> FT:
         src_id, src_no = run.get("source_doc_id"), run.get("source_doc_number")

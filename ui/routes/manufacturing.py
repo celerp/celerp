@@ -14,6 +14,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 import uuid
 
+from ui.components.operation_key import operation_key_attrs, operation_key_vals, required_operation_key
 from ui.components.posting_accounts import account_picker
 from ui.components.shell import base_shell, page_header, page_title, toast_header
 from ui.components.table import (EMPTY, status_cards, empty_state_cta, format_value, search_bar,
@@ -242,7 +243,7 @@ def _demand_table(lines: list[dict]) -> FT:
             filter_th(t("th.status"), 8, center=True),
         )),
         Tbody(*[_demand_row(l) for l in lines]),
-        cls="data-table", id="mfg-table",
+        cls="data-table", id="mfg-table", **operation_key_attrs(),
     )
 
 
@@ -288,6 +289,7 @@ def _order_table(orders: list[dict], today: str = "") -> FT:
         Tbody(*[_order_row(o, today) for o in _sched_sort(orders)]),
         cls="data-table",
         id="mfg-table",
+        **operation_key_attrs(),
     )
 
 
@@ -593,7 +595,9 @@ def setup_routes(app):
         error = ""
         try:
             if wo_lines:
-                result = await api.manufacturing_make_work_orders(token, wo_lines, complete=complete)
+                result = await api.manufacturing_make_work_orders(
+                    token, wo_lines, complete=complete,
+                    idempotency_key=required_operation_key(form, "make_complete" if complete else "make"))
             rows = (await api.manufacturing_to_make(token)).get("items", [])
         except APIError as e:
             if e.status == 401:
@@ -743,7 +747,8 @@ def setup_routes(app):
         error = ""
         try:
             if ids:
-                result = await api.manufacturing_bulk_run_action(token, ids, action)
+                result = await api.manufacturing_bulk_run_action(token, ids, action,
+                                                                 idempotency_key=required_operation_key(form, action))
             orders = (await api.list_mfg_orders(token, {})).get("items", [])
         except APIError as e:
             if e.status == 401:
@@ -812,7 +817,7 @@ def setup_routes(app):
         form = await request.form()
         entered = dict(zip(form.getlist("item_id"), (str(v).strip() for v in form.getlist("value"))))
         account = str(form.get("account") or "")
-        key = str(form.get("idempotency_key") or uuid.uuid4().hex)
+        key = str(form.get("idempotency_key") or "")
         components = []
         for item_id, raw in entered.items():
             try:
@@ -820,8 +825,8 @@ def setup_routes(app):
             except ValueError:
                 pass  # left out, so the refusal names it as having no value
         try:
-            await api.reconcile_mfg_order(token, run_id, {"components": components, "account": account or None,
-                                                          "idempotency_key": key})
+            await api.reconcile_mfg_order(token, run_id, {"components": components, "account": account or None},
+                                          idempotency_key=required_operation_key(form))
             return _reconcile_panel(run_id, {}, [], key=key, flash=t("manufacturing.reconcile_done"),
                                     kind="success")
         except APIError as e:
@@ -851,7 +856,7 @@ def setup_routes(app):
             f"event.preventDefault();event.stopPropagation();}}"
         )
         common = {"hx_post": post, "hx_target": "#mfg-table", "hx_swap": "outerHTML",
-                  "hx_trigger": "change", "onkeydown": escape_js}
+                  "hx_trigger": "change", "onkeydown": escape_js, "hx_vals": operation_key_vals()}
         if field == "priority":
             return Select(
                 Option("--", value="", selected=(current == "")),
@@ -878,13 +883,16 @@ def setup_routes(app):
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
         fields = {k: str(form[k]) for k in ("due_date", "priority", "planned_start") if k in form}
+        refused = ""
         if fields:
             try:
-                await api.schedule_mfg_order(token, run_id, fields)
+                await api.schedule_mfg_order(token, run_id, fields, idempotency_key=required_operation_key(form))
             except APIError as e:
                 if e.status == 401:
                     return P(t("error.unauthorized"), cls="cell-error")
-        return await _incomplete_runs_table(token)
+                refused = refusal_text(e.data or e.detail)  # e.g. the run closed meanwhile: say so
+        table = await _incomplete_runs_table(token)
+        return HTMLResponse(to_xml(table), headers=toast_header(refused, "error")) if refused else table
 
     # ── Work Centers ──────────────────────────────────────────────────────
     async def _wc_table_response(token: str) -> FT:

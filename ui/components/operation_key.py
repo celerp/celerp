@@ -25,7 +25,29 @@ def operation_key_vals() -> str:
     return json.dumps({FIELD: str(uuid.uuid4())})
 
 
+def operation_key_attrs() -> dict:
+    """A new key on a table a bulk toolbar acts on: the toolbar sends it with the ticked rows,
+    and the table the action re-renders brings the next one."""
+    return {"data-operation-key": str(uuid.uuid4())}
+
+
 def submitted_operation_key(form) -> dict:
     """The key a submitted form carried, as keyword arguments to pass on, or none."""
     key = str(form.get(FIELD, "")).strip()
     return {FIELD: key} if key else {}
+
+
+def required_operation_key(form, action: str = "") -> str:
+    """The key a submitted form carried, for a call that cannot go without one.
+
+    One rendered control can offer several actions (a run's action list, a bulk toolbar),
+    so the action chosen is part of the key: the same choice sent again is the same
+    action, a different choice is a new one. A form carrying no key was rendered before
+    the page sent one, and is refused as out of date rather than sent unprotected."""
+    from ui.api_client import APIError
+    from ui.i18n import t
+
+    key = str(form.get(FIELD, "")).strip()
+    if not key:
+        raise APIError(400, t("error.page_out_of_date"))
+    return f"{key}:{action}" if action else key

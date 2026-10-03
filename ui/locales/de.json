@@ -565,6 +565,7 @@
   "error.passwords_no_match": "Die Passwörter stimmen nicht überein.",
   "error.please_enter_question": "Bitte geben Sie eine Frage ein.",
   "error.session_expired": "Sitzung abgelaufen. Bitte aktualisieren Sie die Seite und melden Sie sich erneut an.",
+  "error.page_out_of_date": "Diese Seite ist veraltet. Laden Sie sie neu und versuchen Sie es erneut.",
   "error.sku_required": "SKU und Name sind erforderlich.",
   "error.split_invalid_quantities": "Ungültige Mengen — verwenden Sie kommagetrennte Zahlen, z. B. 3,2,1",
   "error.split_min_two": "Zum Aufteilen ist mindestens 1 Menge erforderlich.",

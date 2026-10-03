@@ -65,9 +65,10 @@ def _hub(**more):
 async def test_each_undo_calls_its_operation_and_says_what_it_did(ui_client, action, call, args, said):
     a, b, c = _hub()
     with a, b, c, patch(f"ui.api_client.{call}", new=AsyncMock(return_value={})) as op:
-        r = await ui_client.post("/api/items/item:p/runs/mfg:1/act", data={"action": action}, cookies=_authed())
+        r = await ui_client.post("/api/items/item:p/runs/mfg:1/act", data={"action": action, "idempotency_key": "k"},
+                                 cookies=_authed())
     assert r.status_code == 200, r.text
-    assert op.await_args.args[1:] == args
+    assert op.await_args.args[1:] == args and op.await_args.kwargs == {"idempotency_key": f"k:{action}"}
     assert said in r.text and "flash--success" in r.text
 
 
@@ -77,7 +78,7 @@ async def test_a_refused_undo_says_why_in_the_users_language(ui_client):
         "params": {"lot": "RING-L1"}})
     a, b, c = _hub()
     with a, b, c, patch("ui.api_client.undo_mfg_receipt", new=AsyncMock(side_effect=refused)):
-        r = await ui_client.post("/api/items/item:p/runs/mfg:1/act", data={"action": "undo:item:lot1"},
+        r = await ui_client.post("/api/items/item:p/runs/mfg:1/act", data={"action": "undo:item:lot1", "idempotency_key": "k"},
                                  cookies={**_authed(), "celerp_lang": "de"})
     assert r.status_code == 200, r.text
     assert "RING-L1 wurde verändert, seit dieser Produktionslauf es hergestellt hat" in r.text
@@ -91,10 +92,11 @@ async def test_the_in_production_queue_returns_materials_in_bulk(ui_client):
         patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": []})),
     ):
         r = await ui_client.post("/manufacturing/runs/bulk/return?status=active",
-                                 content=b"selected=mfg%3A1&selected=mfg%3A2",
+                                 content=b"selected=mfg%3A1&selected=mfg%3A2&idempotency_key=k",
                                  headers={"content-type": "application/x-www-form-urlencoded"}, cookies=_authed())
     assert r.status_code == 200, r.text
     assert bulk.await_args.args[1:] == (["mfg:1", "mfg:2"], "return")
+    assert bulk.await_args.kwargs == {"idempotency_key": "k:return"}
     assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == "Materials returned for runs: 2"
 
 

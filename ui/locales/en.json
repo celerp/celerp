@@ -643,6 +643,7 @@
   "error.please_enter_question": "Please enter a question.",
   "error.server_error_title": "500 - Server Error",
   "error.session_expired": "Session expired. Please refresh the page and log in again.",
+  "error.page_out_of_date": "This page is out of date. Reload it and try again.",
   "error.sku_required": "SKU and Name are required.",
   "error.something_went_wrong": "Something Went Wrong",
   "error.split_invalid_quantities": "Invalid quantities — use comma-separated numbers, e.g. 3,2,1",

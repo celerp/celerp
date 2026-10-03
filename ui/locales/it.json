@@ -565,6 +565,7 @@
   "error.passwords_no_match": "Le password non coincidono.",
   "error.please_enter_question": "Inserisci una domanda.",
   "error.session_expired": "Sessione scaduta. Aggiorna la pagina e accedi di nuovo.",
+  "error.page_out_of_date": "Questa pagina non è aggiornata. Ricaricala e riprova.",
   "error.sku_required": "SKU e Nome sono obbligatori.",
   "error.split_invalid_quantities": "Quantità non valide — usa numeri separati da virgola, es. 3,2,1",
   "error.split_min_two": "La divisione richiede almeno 1 quantità.",

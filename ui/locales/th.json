@@ -565,6 +565,7 @@
   "error.passwords_no_match": "รหัสผ่านไม่ตรงกัน",
   "error.please_enter_question": "กรุณากรอกคำถาม",
   "error.session_expired": "เซสชั่นหมดอายุแล้ว โปรดรีเฟรชหน้านี้และเข้าสู่ระบบอีกครั้ง",
+  "error.page_out_of_date": "หน้านี้ล้าสมัยแล้ว โหลดหน้าใหม่แล้วลองอีกครั้ง",
   "error.sku_required": "SKU และชื่อต้องระบุ",
   "error.split_invalid_quantities": "ปริมาณไม่ถูกต้อง — ใช้ตัวเลขที่คั่นด้วยเครื่องหมายจุลภาค เช่น 3,2,1",
   "error.split_min_two": "การแยกต้องมีปริมาณอย่างน้อย 1 ปริมาณ",

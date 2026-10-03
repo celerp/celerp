@@ -612,6 +612,7 @@
   "error.passwords_no_match": "የይለፍ ቃላት አይመሳሰሉም።",
   "error.please_enter_question": "እባክዎ ጥያቄ ያስገቡ።",
   "error.session_expired": "ክፍለ ጊዜው አልቋል። እባክዎ ገጹን ያድሱ እና እንደገና ይግቡ።",
+  "error.page_out_of_date": "ይህ ገጽ ጊዜው ያለፈበት ነው። ገጹን ያድሱ እና እንደገና ይሞክሩ።",
   "error.sku_required": "SKU እና ስም ያስፈልጋሉ።",
   "error.split_invalid_quantities": "ልክ ያልሆኑ ብዛቶች፦ በኮማ የተለያዩ ቁጥሮችን ይጠቀሙ፣ ለምሳሌ 3,2,1",
   "error.split_min_two": "መከፋፈል ቢያንስ 1 ብዛት ይፈልጋል።",

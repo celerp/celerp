@@ -565,6 +565,7 @@
   "error.passwords_no_match": "パスワードが一致しません。",
   "error.please_enter_question": "質問を入力してください。",
   "error.session_expired": "セッションの有効期限が切れました。ページを更新して再度ログインしてください。",
+  "error.page_out_of_date": "このページは古くなっています。再読み込みしてもう一度お試しください。",
   "error.sku_required": "SKU と名前は必須です。",
   "error.split_invalid_quantities": "無効な数量 — カンマ区切りの数値を使用してください。 3,2,1",
   "error.split_min_two": "分割には少なくとも 1 つの数量が必要です。",

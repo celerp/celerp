@@ -1885,12 +1885,14 @@ async def manufacturing_to_make(token: str) -> dict:
         return _raise(await c.get("/manufacturing/to-make")).json()
 
 
-async def manufacturing_make_work_orders(token: str, lines: list[dict], complete: bool = False) -> dict:
+async def manufacturing_make_work_orders(token: str, lines: list[dict], complete: bool = False, *,
+                                         idempotency_key: str) -> dict:
     """Create one work order per selected demand line (each {item_id, doc_id}), linked 1:1 to its
-    source order, for the line's shortfall. With complete=True, also issue/receive/close each."""
+    source order, for the line's shortfall. With complete=True, also issue/receive/close each.
+    The key names the user's action: sending it again makes nothing more."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/manufacturing/to-make/make",
-                                   json={"lines": lines, "complete": complete})).json()
+        return _raise(await c.post("/manufacturing/to-make/make", json={
+            "lines": lines, "complete": complete, "idempotency_key": idempotency_key})).json()
 
 
 async def manufacturing_requirements(token: str, item_ids: list[str]) -> dict:
@@ -1900,11 +1902,12 @@ async def manufacturing_requirements(token: str, item_ids: list[str]) -> dict:
                                    json={"item_ids": item_ids})).json()
 
 
-async def manufacturing_bulk_run_action(token: str, run_ids: list[str], action: str) -> dict:
+async def manufacturing_bulk_run_action(token: str, run_ids: list[str], action: str, *,
+                                        idempotency_key: str) -> dict:
     """Apply a lifecycle action (start/issue/return/complete/hold/resume/cancel) to many runs at once."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/manufacturing/bulk-action",
-                                   json={"run_ids": run_ids, "action": action})).json()
+        return _raise(await c.post("/manufacturing/bulk-action", json={
+            "run_ids": run_ids, "action": action, "idempotency_key": idempotency_key})).json()
 
 
 async def manufacturing_item_hub(token: str, item_id: str) -> dict:
@@ -1929,49 +1932,64 @@ async def recost_dependents(token: str, entity_id: str) -> dict:
         return _raise(await c.post(f"/manufacturing/items/{entity_id}/recost-dependents")).json()
 
 
-async def build_item(token: str, item_id: str, quantity: float, complete: bool = False) -> dict:
+# Every call below changes a run or stock, so each takes the key of the user's action, minted
+# by the page before it sends and sent again unchanged on a retry: the server then records
+# the action once. A new action gets a new key.
+
+
+async def build_item(token: str, item_id: str, quantity: float, complete: bool = False, *,
+                     idempotency_key: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/items/{item_id}/build",
-                                   json={"quantity": quantity, "complete": complete})).json()
+        return _raise(await c.post(f"/manufacturing/items/{item_id}/build", json={
+            "quantity": quantity, "complete": complete, "idempotency_key": idempotency_key})).json()
 
 
-async def start_mfg_order(token: str, order_id: str) -> dict:
+async def start_mfg_order(token: str, order_id: str, *, idempotency_key: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/start")).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/start",
+                                   json={"idempotency_key": idempotency_key})).json()
 
 
-async def issue_mfg_order(token: str, order_id: str, items: list[dict] | None = None) -> dict:
+async def issue_mfg_order(token: str, order_id: str, items: list[dict] | None = None, *,
+                          idempotency_key: str) -> dict:
     """Issue components into a run (decrements them; auto-advances to In Progress). None = issue all."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/issue", json={"items": items})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/issue",
+                                   json={"items": items, "idempotency_key": idempotency_key})).json()
 
 
-async def receive_mfg_order(token: str, order_id: str, quantity: float | None = None) -> dict:
+async def receive_mfg_order(token: str, order_id: str, quantity: float | None = None, *,
+                            idempotency_key: str) -> dict:
     """Receive finished goods from a run as a discrete lot. None = receive all remaining."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/receive", json={"quantity": quantity})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/receive",
+                                   json={"quantity": quantity, "idempotency_key": idempotency_key})).json()
 
 
-async def complete_mfg_order(token: str, order_id: str, data: dict | None = None) -> dict:
+async def complete_mfg_order(token: str, order_id: str, data: dict | None = None, *, idempotency_key: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/complete", json=data or {})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/complete",
+                                   json={**(data or {}), "idempotency_key": idempotency_key})).json()
 
 
-async def cancel_mfg_order(token: str, order_id: str, reason: str | None = None) -> dict:
+async def cancel_mfg_order(token: str, order_id: str, reason: str | None = None, *, idempotency_key: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/cancel", json={"reason": reason})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/cancel",
+                                   json={"reason": reason, "idempotency_key": idempotency_key})).json()
 
 
-async def return_mfg_materials(token: str, order_id: str) -> dict:
+async def return_mfg_materials(token: str, order_id: str, *, idempotency_key: str) -> dict:
     """Return everything issued to a run to the lots it came from."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/return", json={})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/return",
+                                   json={"idempotency_key": idempotency_key})).json()
 
 
-async def undo_mfg_receipt(token: str, order_id: str, lot_item_id: str) -> dict:
+async def undo_mfg_receipt(token: str, order_id: str, lot_item_id: str, *, idempotency_key: str) -> dict:
     """Undo one receipt of a run: its lot leaves stock and its value goes back to the run."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/undo-receipt", json={"lot_item_id": lot_item_id})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/undo-receipt",
+                                   json={"lot_item_id": lot_item_id, "idempotency_key": idempotency_key})).json()
 
 
 async def mfg_reconcile_needs(token: str, order_id: str) -> dict:
@@ -1980,31 +1998,36 @@ async def mfg_reconcile_needs(token: str, order_id: str) -> dict:
         return _raise(await c.get(f"/manufacturing/{order_id}/reconcile")).json()
 
 
-async def reconcile_mfg_order(token: str, order_id: str, data: dict) -> dict:
+async def reconcile_mfg_order(token: str, order_id: str, data: dict, *, idempotency_key: str) -> dict:
     """Record the value of each component in a run needing reconciliation and the account it comes off."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/reconcile", json=data)).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/reconcile",
+                                   json={**data, "idempotency_key": idempotency_key})).json()
 
 
-async def reopen_mfg_order(token: str, order_id: str) -> dict:
+async def reopen_mfg_order(token: str, order_id: str, *, idempotency_key: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/reopen", json={})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/reopen",
+                                   json={"idempotency_key": idempotency_key})).json()
 
 
-async def hold_mfg_order(token: str, order_id: str, reason: str | None = None) -> dict:
+async def hold_mfg_order(token: str, order_id: str, reason: str | None = None, *, idempotency_key: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/hold", json={"reason": reason})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/hold",
+                                   json={"reason": reason, "idempotency_key": idempotency_key})).json()
 
 
-async def resume_mfg_order(token: str, order_id: str) -> dict:
+async def resume_mfg_order(token: str, order_id: str, *, idempotency_key: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/resume")).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/resume",
+                                   json={"idempotency_key": idempotency_key})).json()
 
 
-async def schedule_mfg_order(token: str, order_id: str, fields: dict) -> dict:
+async def schedule_mfg_order(token: str, order_id: str, fields: dict, *, idempotency_key: str) -> dict:
     """Set scheduling fields (due_date / planned_start / priority) on a run."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/schedule", json=fields)).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/schedule",
+                                   json={**fields, "idempotency_key": idempotency_key})).json()
 
 
 # ── Work Centers (manufacturing master data) ──────────────────────────────────

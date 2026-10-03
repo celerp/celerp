@@ -183,6 +183,10 @@ BULK_TOOLBAR_JS = """
     if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
     var form=document.createElement('form');
     ids.forEach(function(id){var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;form.appendChild(inp);});
+    // A table that carries its render's operation key sends it, so an action sent again
+    // after a lost answer is recorded once (see ui/components/operation_key.py).
+    var key=t.getAttribute('data-operation-key');
+    if(key){var k=document.createElement('input');k.type='hidden';k.name='idempotency_key';k.value=key;form.appendChild(k);}
     bar.querySelectorAll('.bulk-field[name]').forEach(function(f){
       var inp=document.createElement('input');inp.type='hidden';
       inp.name=f.getAttribute('name');inp.value=f.value;form.appendChild(inp);});
@@ -238,7 +242,7 @@ def bulk_toolbar(table_id: str, actions: list[dict], fields: list | None = None)
     action list appears only when there is a selection for it to act on.
     actions: [{value, label, method('post'|'open'), url, confirm?, target?, swap?}].
     POST actions submit the selected ids (name='selected') via htmx; 'open' actions open
-    url?ids=<csv> in a new tab. Pair with `.bulk-select` row checkboxes + a `.bulk-select-all`
+    url?ids=<csv> in a new tab. A table carrying `operation_key_attrs()` has its key posted too. Pair with `.bulk-select` row checkboxes + a `.bulk-select-all`
     header checkbox in #table_id. `data-table` lives on the outer Div (the JS reads it there).
 
     `confirm` text may contain `{n}`, replaced with the number selected at click time.
