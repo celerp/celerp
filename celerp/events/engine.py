@@ -130,6 +130,7 @@ async def _connector_entity_id(
 async def connector_upsert(
     session, *, company_id, entity_type: str, event_type: str, idem_key: str, data: dict,
     external_identity: tuple[str, str] | None = None, on_create: dict | None = None,
+    update=None,
 ) -> str:
     """Create-or-update a projection from a connector payload.
 
@@ -144,6 +145,11 @@ async def connector_upsert(
     so an unchanged re-import dedups (no-op) while a changed one updates. ``on_create``
     holds fields written only when the record is created (an item's starting status);
     they are not part of the content, so a re-import never writes them again.
+
+    ``update`` applies a changed re-import to the existing projection the way an edit
+    would: ``await update(session, entity_id, data, event_idem)`` writes the change
+    under ``event_idem`` and returns False when nothing differs. Without it the
+    caller's ``event_type`` is emitted for the existing projection too.
     """
     import hashlib
     import json as _json
@@ -168,6 +174,8 @@ async def connector_upsert(
     )).first()
     if seen:
         return "noop"
+    if existing_id and update is not None:
+        return "updated" if await update(session, existing_id, data, event_idem) else "noop"
     if not existing_id and on_create:
         data = {**on_create, **data}
 
@@ -284,11 +292,12 @@ def _guard_on_books(kwargs: dict) -> None:
 async def _item_applied(session, entry: LedgerEntry, transition) -> None:
     """Checks and effects of one live item event, on the state its row lock applied it to.
 
-    Only a birth (item.created, item.snapshot) may find no item: any other change that
-    finds none read an item that was removed before it committed (a deleted draft, an
-    undone import) or names one that never existed, and writing it would make an item
-    out of the change alone. Replay applies events through ProjectionEngine directly and
-    is not affected."""
+    Births (item.created, item.snapshot) and changes are exclusive. A birth must find no
+    item: one that finds an item would overwrite it wholesale, bypassing every check an
+    edit carries. Any other change must find one: a change that finds none read an item
+    that was removed before it committed (a deleted draft, an undone import) or names
+    one that never existed, and writing it would make an item out of the change alone.
+    Replay applies events through ProjectionEngine directly and is not affected."""
     from celerp.connectors.outbound_queue import enqueue_item_change
     from celerp.services.lot_origin import (
         assert_draft_not_circulated,
@@ -298,6 +307,8 @@ async def _item_applied(session, entry: LedgerEntry, transition) -> None:
 
     if transition.before is None and entry.event_type not in ITEM_BIRTHS:
         raise HTTPException(status_code=404, detail="Item not found")
+    if transition.before is not None and entry.event_type in ITEM_BIRTHS:
+        raise HTTPException(status_code=409, detail="This item already exists.")
     assert_draft_not_circulated(entry.event_type, transition)
     draft_move = await draft_boundary(session, entry, transition)
     if draft_move is not None:

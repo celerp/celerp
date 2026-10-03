@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
 
+import functools
 import hashlib
 import json
 import logging
@@ -1644,6 +1645,34 @@ async def list_items_modified_since_last_sync(company_id: str, platform: str) ->
     )
 
 
+async def update_item_from_connector(session: AsyncSession, entity_id: str, data: dict, idempotency_key: str,
+                                 *, company_id) -> bool:
+    """Apply a changed connector re-import to the item it created, as an edit: only the
+    fields that differ, a new SKU handled like a SKU edit, and a cost change restated
+    with its consequences. An item deleted meanwhile is not recreated (404). Returns
+    False when nothing differs."""
+    cid = uuid.UUID(str(company_id))
+    row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id},
+                            with_for_update=True, populate_existing=True)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    state = row.state or {}
+    fields_changed = {key: {"old": state.get(key), "new": value}
+                      for key, value in data.items() if state.get(key) != value}
+    if not fields_changed:
+        return False
+    if "sku" in fields_changed and normalize_sku(state.get("sku")) != normalize_sku(data["sku"]):
+        await stamp_catalog_family_members(session, cid, entity_id, source="connector")
+    event = dict(event_type="item.updated", data={"fields_changed": fields_changed}, actor_id=None,
+                 source="connector", idempotency_key=idempotency_key)
+    if COST_ITEM_KEYS & set(fields_changed):
+        await restate_item_cost(session, cid, entity_id, **event)
+    else:
+        await emit_event(session, preserve_external_code_conflicts=True, company_id=cid, entity_id=entity_id,
+                         entity_type="item", location_id=None, metadata_={}, **event)
+    return True
+
+
 async def upsert_from_connector(company_id: str, item) -> str:
     """
     Create or update an item from a connector payload. Returns the write outcome:
@@ -1689,6 +1718,7 @@ async def upsert_from_connector(company_id: str, item) -> str:
         outcome = await connector_upsert(
             session, company_id=company_id, entity_type="item",
             event_type="item.created", idem_key=idem_key, data=data, on_create={"status": "draft"},
+            update=functools.partial(update_item_from_connector, company_id=company_id),
         )
         await session.commit()
         return outcome
