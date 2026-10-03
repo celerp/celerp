@@ -22,7 +22,7 @@ import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.events.engine import emit_event, find_event_by_idempotency
+from celerp.events.engine import emit_event, find_event_by_idempotency, stripe_payment_indexes
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
@@ -1402,12 +1402,9 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     doc = row.state | {"id": row.entity_id, "version": row.version}
-    if any(p.get("method") == "stripe" for p in doc.get("payments") or []):
-        # Payments Stripe reported are refunded or reversed in Stripe, never here.
-        from celerp.events.engine import stripe_payment_references
-        held = await stripe_payment_references(session, company_id, entity_id)
-        doc["payments"] = [p | {"held_by": "stripe"} if p.get("method") == "stripe" and p.get("reference") in held else p
-                           for p in doc["payments"]]
+    # Payments Stripe reported are refunded or reversed in Stripe, never here.
+    if held := await stripe_payment_indexes(session, company_id, entity_id, doc.get("payments") or []):
+        doc["payments"] = [p | {"held_by": "stripe"} if p.get("index") in held else p for p in doc["payments"]]
     if doc.get("doc_type") == "memo":
         try:
             labels = await _derive_shipped_labels(session, company_id, entity_id, doc.get("line_items") or [])

@@ -988,3 +988,43 @@ def test_the_online_payments_offer_names_no_payment_method_in_any_language():
     for path in locales:
         text = json.loads(path.read_text(encoding="utf-8"))["pay.upgrade_desc"].lower()
         assert not any(word in text for word in card), (path.name, text)
+
+
+@pytest.mark.asyncio
+async def test_a_payment_entered_by_hand_stays_the_users_when_stripe_later_reports_it(client, session, payments_on):
+    from celerp.services.payments import receive_payment
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    r = await client.post(f"/docs/{eid}/payment", headers=_h(tok), json={
+        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1110", "method": "stripe",
+        "reference": "pi_card"})
+    assert r.status_code == 200, r.text
+    assert await receive_payment({"company_id": cid, "entity_id": eid, "reference": "pi_card",
+                                  "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                                  "context": BOOKS}) is True
+    assert "held_by" not in (await _doc_state(client, tok, eid))["payments"][0]
+
+    r = await _remove_payment(client, tok, eid, "void")
+
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_a_stripe_payment_recorded_before_payments_carried_an_index_is_still_left_to_stripe(
+        client, session, payments_on):
+    from sqlalchemy import text
+    from celerp.services.payments import receive_payment
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    assert await receive_payment({"company_id": cid, "entity_id": eid, "reference": "pi_card",
+                                  "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                                  "context": BOOKS}) is True
+    await session.execute(text(
+        "UPDATE ledger SET data = (data::jsonb - 'index')::json "
+        "WHERE company_id = CAST(:c AS uuid) AND entity_id = :e AND source = 'stripe'"), {"c": cid, "e": eid})
+
+    assert (await _doc_state(client, tok, eid))["payments"][0]["held_by"] == "stripe"
+    r = await _remove_payment(client, tok, eid, "void")
+    assert r.status_code == 422 and r.json()["detail"] == STRIPE_OWNED

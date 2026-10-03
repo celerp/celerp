@@ -28,22 +28,29 @@ STRIPE_OWNED_PAYMENT = (
 PAYMENT_REMOVAL_EVENTS = frozenset({"doc.payment.voided", "doc.payment.deleted", "doc.payment.refunded"})
 
 
-async def stripe_payment_references(session, company_id, entity_id) -> set[str]:
-    """References of the payments the Stripe intake recorded on this document.
+async def stripe_payment_indexes(session, company_id, entity_id, payments: list[dict]) -> set[int]:
+    """Indexes of the payments on this document that the Stripe intake recorded.
 
     Stripe holds the money for these, so only Stripe can give it back. The ledger
     records which writer received each payment; the method is free text that a
-    connector or a person can also set to "stripe".
+    connector or a person can also set to "stripe". A payment is matched on the
+    index its event carries, or on its reference for events recorded before
+    payments carried one.
     """
-    rows = (await session.execute(
-        select(LedgerEntry.data["reference"].as_string()).where(
+    if not any(p.get("method") == "stripe" for p in payments):
+        return set()
+    events = (await session.execute(
+        select(LedgerEntry.data).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_id == entity_id,
             LedgerEntry.event_type == "doc.payment.received",
             LedgerEntry.source == "stripe",
         )
     )).scalars().all()
-    return {ref for ref in rows if ref}
+    indexes = {data["index"] for data in events if data.get("index") is not None}
+    references = {data.get("reference") for data in events if data.get("index") is None} - {None}
+    return {p.get("index") for p in payments if p.get("method") == "stripe"
+            and (p.get("index") in indexes or p.get("reference") in references)}
 
 
 async def _refuse_stripe_payment_removal(session, kwargs: dict) -> None:
@@ -52,10 +59,8 @@ async def _refuse_stripe_payment_removal(session, kwargs: dict) -> None:
     if row is None or row.entity_type != "doc":
         return
     index = (kwargs.get("data") or {}).get("payment_index")
-    payment = next((p for p in (row.state or {}).get("payments", []) if p.get("index") == index), None)
-    if payment is None or payment.get("method") != "stripe" or not payment.get("reference"):
-        return
-    if payment["reference"] in await stripe_payment_references(session, kwargs["company_id"], kwargs["entity_id"]):
+    payments = (row.state or {}).get("payments", [])
+    if index in await stripe_payment_indexes(session, kwargs["company_id"], kwargs["entity_id"], payments):
         raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
 
 
