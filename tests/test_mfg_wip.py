@@ -194,7 +194,8 @@ async def test_issue_refuses_when_work_in_progress_has_no_usable_account(client,
     await session.commit()
     before = await snapshot(session, auth, raw, order)
     r = await issue(client, auth, order, [(raw, 4)], key="x")
-    assert r.status_code == 409, r.text
+    refusal(r, 409, "wip_account_missing")
+    assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
     assert await snapshot(session, auth, raw, order) == before
 
 
@@ -287,8 +288,7 @@ async def test_receive_refusals_leave_everything_as_it_was(client, session, auth
 @pytest.mark.asyncio
 async def test_complete_sends_waste_to_cost_of_goods_sold_and_leaves_the_run_empty(client, session, auth):
     raw, item, order = await _job(client, session, auth, cost=100.0, stock=10, per=5, qty=2)
-    p, wip, cogs = (await role(session, auth, PURCHASED), await role(session, auth, WIP),
-                    await role(session, auth, COGS))
+    p, cogs = await role(session, auth, PURCHASED), await role(session, auth, COGS)
     assert (await issue(client, auth, order, key="i")).status_code == 200
     r = await receive(client, auth, order, 1, key="r")
     lot = r.json()["lot_item_id"]

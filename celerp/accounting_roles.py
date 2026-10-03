@@ -101,7 +101,7 @@ ROLE_LABELS: dict[AccountRole, str] = {
     R.FX_GAIN: "Exchange gain",
     R.FX_LOSS: "Exchange loss",
     R.STOCK_SHRINKAGE: "Stock shrinkage and write-offs",
-    R.WORK_IN_PROGRESS: "Work in Progress",
+    R.WORK_IN_PROGRESS: "Work in progress",
 }
 
 _ASSET = frozenset({"asset"})

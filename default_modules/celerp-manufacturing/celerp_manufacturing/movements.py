@@ -34,6 +34,7 @@ from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.account_roles import (
+    PostingRoleError,
     continue_role,
     current_settings,
     lot_account,
@@ -171,6 +172,16 @@ def _wip(state: dict) -> Decimal:
     return _money(state.get("wip_issued")) - _money(state.get("wip_transferred")) - _money(state.get("wip_wasted"))
 
 
+async def _wip_target(op: _Op) -> str:
+    """The account a run's first valued issue starts its work in progress on."""
+    try:
+        return await resolve(op.session, op.company_id, AccountRole.WORK_IN_PROGRESS)
+    except PostingRoleError as exc:
+        refusal = refuse(409, "wip_account_missing", exc.detail)
+        refusal.headers = exc.headers
+        raise refusal from exc
+
+
 def _require_settled(op: _Op, state: dict) -> None:
     """A run whose work in progress is not known, or is known but kept nowhere in the books,
     cannot move: anything it moved would leave the books unable to say where its value is."""
@@ -258,7 +269,7 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
     wip_code = state.get("wip_account_code")
     if op.books and any(befores.values()):
         wip_code = (await continue_role(op.session, op.company_id, AccountRole.WORK_IN_PROGRESS, wip_code)
-                    if wip_code else await resolve(op.session, op.company_id, AccountRole.WORK_IN_PROGRESS))
+                    if wip_code else await _wip_target(op))
 
     credits: dict[str, Decimal] = {}
     total = _ZERO

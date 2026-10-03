@@ -16,7 +16,7 @@ from ui.components.shell import base_shell, page_header, page_title, toast_heade
 from ui.components.table import (EMPTY, status_cards, empty_state_cta, format_value, search_bar,
                                  bulk_toolbar, filter_th, display_enum, COLUMN_FILTER_JS)
 from ui.config import get_token as _token
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 logger = logging.getLogger(__name__)
 
@@ -524,7 +524,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            error = str(e.detail) or t("manufacturing.err_make")
+            error = refusal_text(e.data or e.detail) or t("manufacturing.err_make")
         lines = _demand_filter(_demand_lines(rows), dtype)
         made = len(result.get("created", []))
         if error:
@@ -673,7 +673,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            error = str(e.detail) or t("manufacturing.err_bulk_action")
+            error = refusal_text(e.data or e.detail) or t("manufacturing.err_bulk_action")
         done = len(result.get("done", []))
         skipped = len(result.get("skipped", []))
         if error:
@@ -681,7 +681,8 @@ def setup_routes(app):
         else:
             msg = t(_BULK_RUN_MSG.get(action, "manufacturing.bulk_updated"), n=done)
             if skipped:
-                msg += " " + t("manufacturing.bulk_skipped", n=skipped)
+                why = dict.fromkeys(refusal_text({**s, "message": s.get("reason")}) for s in result["skipped"])
+                msg += " " + t("manufacturing.bulk_skipped", n=skipped) + "".join(f". {w}" for w in why if w)
             kind = "success" if done else "info"
         return HTMLResponse(
             to_xml(_order_table(_runs_for_status(orders, status), today=date.today().isoformat())),

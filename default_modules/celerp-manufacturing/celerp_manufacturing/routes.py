@@ -873,8 +873,10 @@ async def bulk_run_action(
         except ValueError as e:
             skipped.append({"id": run_id, "reason": str(e)})
         except HTTPException as e:
-            detail = e.detail
-            skipped.append({"id": run_id, "reason": detail.get("message") if isinstance(detail, dict) else str(detail)})
+            # A refusal keeps its message_key and params so the UI can say why in the user's language.
+            detail = e.detail if isinstance(e.detail, dict) else {"message": str(e.detail)}
+            skipped.append({"id": run_id, "reason": detail.get("message"),
+                            **{k: v for k, v in detail.items() if k in ("message_key", "params")}})
     await session.commit()
     return {"done": done, "skipped": skipped}
 

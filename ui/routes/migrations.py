@@ -40,7 +40,7 @@ from ui.config import (
     session_cookie_secure,
     set_session_cookies,
 )
-from ui.i18n import get_lang, t
+from ui.i18n import get_lang, role_label, t
 from ui.routes.auth import auth_header
 
 SCAN_COOKIE = "celerp_migration_scan"
@@ -1028,11 +1028,11 @@ def _posting_accounts(roles: list[dict], chosen: dict[str, str]) -> FT:
         Table(
             Thead(Tr(Th(t("posting.col_role")), Th(t("posting.col_account")))),
             Tbody(*[
-                Tr(Td(row["label"]),
+                Tr(Td(role_label(row["role"], row["label"])),
                    Td(row["current"] if row["current"] else account_picker(
                        f"{_ROLE_FIELD}{row['role']}", row["candidates"],
                        value=chosen.get(row["role"]) or row["preselect"] or "",
-                       proposal=row["proposal"], aria_label=row["label"])))
+                       proposal=row["proposal"], aria_label=role_label(row["role"], row["label"]))))
                 for row in rows
             ]),
             cls="data-table",

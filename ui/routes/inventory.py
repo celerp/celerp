@@ -32,7 +32,7 @@ from celerp.services.field_schema import union_category_attr_keys as _union_cate
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, is_price_item_key, price_key, price_lists_in, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
-from ui.i18n import t, get_lang, is_rtl, field_label
+from ui.i18n import t, get_lang, is_rtl, field_label, refusal_text
 from celerp.services.units import is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import splitting_allowed
 from celerp_inventory.services import (
@@ -1984,7 +1984,8 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
-            return await _production_block_response(token, entity_id, flash_msg=e.detail, flash_kind="error")
+            return await _production_block_response(token, entity_id, flash_msg=refusal_text(e.data or e.detail),
+                                                    flash_kind="error")
 
     @app.post("/api/items/{entity_id}/recipe-section")
     async def recipe_section_edit(request: Request, entity_id: str):

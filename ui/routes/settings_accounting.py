@@ -25,7 +25,7 @@ from ui.routes.accounting_import import ACCOUNT_TYPES
 CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
 from ui.routes.settings import _token, _check_permission
 from ui.routes.settings_general import _section_breadcrumb
-from ui.i18n import t
+from ui.i18n import role_label, t
 
 
 # Raw bank-account type values. Canonical everywhere (API, comparisons); the
@@ -341,7 +341,7 @@ def _posting_edit_cell(key: str, candidates: list[dict], code: str | None, label
 def _posting_role_row(row: dict, error: str | None = None) -> FT:
     status = row["status"]
     return Tr(
-        Td(row["label"]),
+        Td(role_label(row["role"], row["label"])),
         _posting_display_cell(row["role"], row.get("code"), row.get("name"), error),
         Td(Span(t(f"posting.status_{status}"), cls=f"badge badge--{_POSTING_BADGE.get(status, 'overdue')}"),
            P(row["problem"], cls="text-muted") if row.get("problem") else None),
@@ -1045,7 +1045,7 @@ def setup_routes(app):
         row = next((r for r in data.get("roles", []) if r["role"] == key), None)
         if row is None:
             return P(t("posting.unknown_role"), cls="cell-error")
-        return _posting_edit_cell(key, row["candidates"], row.get("code"), row["label"])
+        return _posting_edit_cell(key, row["candidates"], row.get("code"), role_label(key, row["label"]))
 
     @app.get("/settings/accounting/posting-accounts/{key}/display")
     async def posting_account_display(request: Request, key: str):
