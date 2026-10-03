@@ -549,9 +549,12 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         set_external_link_state,
     )
 
+    from fastapi import HTTPException
+
     from celerp_docs.routes_payments import (
         WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY,
         deposit_account,
+        require_online_deposit_account,
     )
     from celerp.services.company_lock import lock_company
     from celerp_docs.routes import (
@@ -1154,6 +1157,16 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                     "invoice has a balance again after a payment change; manual "
                     "financial reconciliation is required"
                 )
+            # The payment goes to the deposit account only while it can take online
+            # payments; otherwise the order stays unpaid and waits for a person.
+            bank_code = await deposit_account(session, cid, override_key=WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY)
+            try:
+                await require_online_deposit_account(session, cid, bank_code)
+            except HTTPException as refused:
+                await hold_for_reconciliation(
+                    f"WooCommerce order {order.get('number') or order_id} is paid but its "
+                    f"payment cannot be recorded. {refused.detail}"
+                )
             payment_date = str(order.get("date_paid"))[:10]
             await apply_doc_payment(
                 session, cid, entity_id,
@@ -1163,9 +1176,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                     "currency": doc.state.get("currency"),
                     "method": order.get("payment_method") or "woocommerce",
                     "reference": order.get("transaction_id") or f"woocommerce-order-{order_id}",
-                    "bank_account": await deposit_account(
-                        session, cid, override_key=WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
-                    ),
+                    "bank_account": bank_code,
                 },
                 source="woocommerce",
                 actor_id=owner_id,
