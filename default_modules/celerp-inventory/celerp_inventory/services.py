@@ -3233,13 +3233,15 @@ async def import_items(
         from celerp_inventory.models_import_batch import ImportBatch
 
         batch = await session.get(ImportBatch, uuid.UUID(batch_id))
+        side_effects = bool(plan.locations_to_create or schema_changed or outcome.lasting_effects)
         if counts["created"] or counts["updated"]:
             # Reversible only when this run wrote the whole entry and did nothing but
             # create its items; an entry that grew over several runs cannot show that.
-            batch.reversible = (
-                batch.row_count == counts["created"] and not counts["updated"]
-                and not plan.locations_to_create and not schema_changed and not outcome.lasting_effects
-            )
+            batch.reversible = batch.row_count == counts["created"] and not counts["updated"] and not side_effects
+        elif side_effects:
+            # A retry that wrote no item can still change what Undo would leave behind
+            # (category fields it may now add, say); once not reversible, never again.
+            batch.reversible = False
         reversible = batch.reversible
     await session.commit()
 

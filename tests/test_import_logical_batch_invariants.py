@@ -638,3 +638,40 @@ class TestImportPermissions:
         assert allowed.status_code == 200, allowed.text
         assert allowed.json()["removed"] == 2
         assert await _item_ids(session, ctx["company_id"]) == before_items
+
+
+# ---------------------------------------------------------------------------
+# An import that has done more than create its items never becomes undoable again
+# ---------------------------------------------------------------------------
+
+
+async def _category_schema_keys(session, company_id: str, category: str) -> set[str]:
+    from celerp.models.company import Company
+    session.expire_all()
+    company = await session.get(Company, uuid.UUID(company_id))
+    return {f["key"] for f in ((company.settings or {}).get("category_schemas") or {}).get(category) or []}
+
+
+@pytest.mark.asyncio
+async def test_a_retry_that_adds_category_fields_makes_the_import_not_undoable(client, session, ctx):
+    """A role without settings authority imports an item with a new attribute column: the
+    import only created the item, so it can be undone. The same import retried with settings
+    authority creates nothing new but adds the column to the category's fields, which Undo
+    would leave behind; from then on the import cannot be undone."""
+    rows = [{"name": "Ring", "sell_by": "piece", "quantity": "1", "category": "Rings", "band_metal": "gold"}]
+    key = f"op-{uuid.uuid4().hex}"
+
+    first = await _commit_rows(client, ctx["manager_h"], rows, upsert=False, key=key)
+    assert (first["created"], first["reversible"]) == (1, True)
+    assert "band_metal" not in await _category_schema_keys(session, ctx["company_id"], "Rings")
+
+    retry = await _commit_rows(client, ctx["admin_h"], rows, upsert=False, key=key)
+    assert (retry["created"], retry["updated"], retry["batch_id"]) == (0, 0, first["batch_id"])
+    assert "band_metal" in await _category_schema_keys(session, ctx["company_id"], "Rings")
+    assert retry["reversible"] is False
+    assert {b["id"]: b["reversible"] for b in await _history(client, ctx["admin_h"])} == {first["batch_id"]: False}
+
+    items = await _item_ids(session, ctx["company_id"])
+    undo = await client.post(f"/items/import/batches/{first['batch_id']}/undo", headers=ctx["admin_h"])
+    assert undo.status_code == 409 and undo.json()["detail"]["code"] == "import_not_reversible", undo.text
+    assert await _item_ids(session, ctx["company_id"]) == items
