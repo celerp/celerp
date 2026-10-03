@@ -144,40 +144,167 @@ async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
     adopt.assert_awaited_once()
 
 
+def _transactions_left_open(url) -> list[tuple]:
+    """Client connections to ``url``'s database still inside a transaction, read on a
+    blocking connection so nothing else on the event loop runs while it looks."""
+    import time
+
+    import psycopg2
+
+    conn = psycopg2.connect(host=url.host, port=url.port, user=url.username,
+                            password=url.password, dbname=url.database)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            deadline = time.monotonic() + 2
+            while True:
+                cur.execute(
+                    "SELECT pid, state, query FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+                    "AND backend_type = 'client backend' AND xact_start IS NOT NULL")
+                rows = cur.fetchall()
+                if not rows or time.monotonic() > deadline:
+                    return rows
+                time.sleep(0.1)
+    finally:
+        conn.close()
+
+
 @pytest.mark.asyncio
-async def test_shutdown_waits_for_every_background_task_to_stop(monkeypatch):
-    """A background loop stopped at shutdown finishes its own cleanup (closing its
-    database session) before the app is down, instead of being left mid-way when the
-    event loop ends, which kept its connection open inside a transaction."""
+async def test_shutdown_leaves_no_connection_in_a_transaction(monkeypatch):
+    """Shutdown stops the background work boot started and waits for it: a payment
+    reconcile still mid-statement when the app stops leaves no connection open in a
+    transaction. Such a connection would hold its table locks until garbage collection,
+    blocking any later schema change or TRUNCATE on the same database."""
     import asyncio
 
+    from sqlalchemy import select, text
+
+    import celerp.db
     import celerp.main as main_mod
     from celerp.config import settings
+    from celerp.models.payment_closure import PaymentClosure
     from celerp.services import payments
 
-    stopped: list[bool] = []
+    in_flight = asyncio.Event()
 
-    async def _loop_with_cleanup():
-        try:
-            await asyncio.Event().wait()
-        finally:
-            await asyncio.sleep(0.05)  # e.g. rolling back and closing its session
-            stopped.append(True)
+    async def _report_recoveries_in_flight(session):
+        await session.execute(select(PaymentClosure.operation_id))
+        in_flight.set()
+        await session.execute(text("SELECT pg_sleep(30)"))
 
-    monkeypatch.setattr(payments, "reconcile_payments_loop", _loop_with_cleanup)
-    monkeypatch.setattr("celerp.gateway.has_active_share", AsyncMock(return_value=False))
+    monkeypatch.setattr(payments, "report_recoveries", _report_recoveries_in_flight)
+    monkeypatch.setattr(main_mod, "_try_auto_activate", AsyncMock())
+
     saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
     settings.gateway_token = ""
     settings.celerp_public_url = None
+    url = celerp.db.engine.url
     try:
-        with _mock_db():
-            async with main_mod.lifespan(MagicMock()):
-                await asyncio.sleep(0)
+        async with main_mod.lifespan(MagicMock()):
+            await asyncio.wait_for(in_flight.wait(), 30)
+            for _ in range(100):
+                if any("pg_sleep" in q for _, _, q in _transactions_left_open(url)):
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                pytest.fail("the reconcile statement never reached the database")
+        left_open = _transactions_left_open(url)
     finally:
         settings.gateway_token = saved_token
         settings.celerp_public_url = saved_public
 
-    assert stopped == [True]
+    assert left_open == [], f"shutdown left connections in a transaction: {left_open}"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_returns_with_every_boot_task_finished(monkeypatch):
+    """Every background task boot starts (payment reconcile, cleanup loops, connector
+    schedulers, reorder alerts, update checks, the relay check-in, the backup scheduler)
+    has finished by the time shutdown returns, including one that takes a moment to
+    close its work after being told to stop."""
+    import asyncio
+
+    import celerp.main as main_mod
+    from celerp.config import settings
+
+    stopped: list[str] = []
+
+    def _slow_to_stop(name: str):
+        async def _task(*args, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.3)  # closing its work, e.g. a connection
+                stopped.append(name)
+                raise
+        return _task
+
+    async def _stops_at_once(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    tasks = {
+        "celerp.services.payments.reconcile_payments_loop": "reconcile",
+        "celerp.services.session_tracker.run_jti_cleanup_loop": "jti cleanup",
+        "celerp.connectors.outbound_queue.outbound_queue_loop": "outbound connectors",
+        "celerp.connectors.daily_scheduler.scheduler_loop_all": "connector schedule",
+        "celerp.services.reorder.reorder_alert_loop": "reorder alerts",
+        "celerp.services.update.update_loop": "update checks",
+        "celerp.services.backup_scheduler._db_backup_loop": "backups",
+        "celerp.main._try_auto_activate": "relay check-in",
+    }
+    for target, name in tasks.items():
+        monkeypatch.setattr(target, _slow_to_stop(name))
+    monkeypatch.setattr("celerp.ai.cleanup.run_cleanup_loop", _stops_at_once)
+
+    saved = (settings.gateway_token, settings.celerp_public_url,
+             settings.backup_encryption_key, settings.backup_enabled)
+    settings.gateway_token = ""
+    settings.celerp_public_url = "https://acme.celerp.com"
+    settings.backup_encryption_key = "k"
+    settings.backup_enabled = True
+    try:
+        async with main_mod.lifespan(MagicMock()):
+            await asyncio.sleep(0)  # every task is running
+        finished = sorted(stopped)
+    finally:
+        (settings.gateway_token, settings.celerp_public_url,
+         settings.backup_encryption_key, settings.backup_enabled) = saved
+
+    assert finished == sorted(tasks.values())
+
+
+@pytest.mark.asyncio
+async def test_shutdown_does_not_wait_forever_for_a_task_that_will_not_stop(monkeypatch, caplog):
+    """Waiting for background tasks at shutdown is bounded: a task that ignores being
+    cancelled is reported and left once the grace period is over."""
+    import asyncio
+    import logging
+
+    import celerp.main as main_mod
+
+    release = asyncio.Event()
+
+    async def _stubborn():
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    monkeypatch.setattr(main_mod, "_SHUTDOWN_GRACE_S", 0.2)
+    stubborn = asyncio.create_task(_stubborn(), name="stubborn")
+    quick = asyncio.create_task(asyncio.sleep(3600), name="quick")
+    await asyncio.sleep(0)  # both are running
+    try:
+        with caplog.at_level(logging.WARNING, logger="celerp.main"):
+            await asyncio.wait_for(main_mod._stop_background_tasks([stubborn, quick, None]), 5)
+        assert quick.cancelled()
+        assert not stubborn.done()
+        assert "stubborn" in caplog.text
+    finally:
+        release.set()
+        await stubborn
 
 
 async def _boot_with(monkeypatch, *, sweep, reconcile) -> bool:

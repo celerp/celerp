@@ -98,10 +98,13 @@ def start() -> None:
         log.debug("Backup scheduler started")
 
 
-def stop() -> None:
-    """Stop the backup scheduler task."""
+def stop() -> asyncio.Task | None:
+    """Stop the backup scheduler task. Returns the cancelled task, for a caller that
+    waits for it to finish (shutdown), or None when none was running."""
     global _db_task
-    if _db_task and not _db_task.done():
-        _db_task.cancel()
+    task = _db_task if _db_task and not _db_task.done() else None
+    if task:
+        task.cancel()
     _db_task = None
     log.debug("Backup scheduler stopped")
+    return task

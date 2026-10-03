@@ -7,8 +7,8 @@
 // The decision is `python -m celerp compatibility --db-url <url>`, the same check
 // every other way of opening the database makes: it refuses data a newer Celerp has
 // opened, or whose schema this copy does not know, and changes nothing. Startup runs
-// it before anything writes to the data directory, the config or the database, and
-// stops with a plain message when it refuses.
+// it before any change to application data, the database or the modules, and stops
+// with a plain message when it refuses.
 //
 // Pure apart from the injected runner, dialog and shell, so it is unit-testable
 // without Electron, like restart.js.
