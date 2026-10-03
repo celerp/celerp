@@ -11111,6 +11111,18 @@ class TestPaymentsSettingsPage:
         assert 'type="text" name="stripe_deposit_account"' not in r.text
 
     @pytest.mark.asyncio
+    async def test_disconnecting_asks_first_and_says_when_later_refunds_arrive(self, ui_client):
+        import html as _html
+        from ui.i18n import t
+        with self._mocks(relay=True, enabled=True):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        confirm = t("pay.disconnect_confirm")
+        assert "reconnect the same Stripe account" in confirm
+        assert f'data-confirm="{_html.escape(confirm)}"' in r.text
+        assert 'onsubmit="return confirm(this.dataset.confirm)"' in r.text
+
+    @pytest.mark.asyncio
     async def test_non_admin_cannot_open(self, ui_client):
         r = await ui_client.get("/settings/payments", cookies=_authed(role="staff"))
         assert r.status_code in (302, 303)

@@ -5275,7 +5275,8 @@ def _tc_dropdown(entity_id: str, doc: dict, tc_templates: list[dict], doc_type: 
     ]
 
 
-def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_operator: bool = True) -> FT:
+def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_operator: bool = True,
+                     payments_on: bool = False) -> FT:
     """Shared payment/credit section for invoices, bills, and credit notes.
 
     DRY: one function, different labels based on doc_type.
@@ -5341,7 +5342,9 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
             void_reason = p.get("void_reason") or ""
             void_cell = Td(Span(t("doc.voided"), cls="badge badge--void", title=void_reason))
         elif p.get("held_by") == "stripe":
-            void_cell = Td(Span(t("documents.refund_in_stripe"), cls="text-muted small"))
+            void_cell = Td(Span(t("documents.refund_in_stripe"), cls="text-muted small"),
+                           "" if payments_on else
+                           Span(" " + t("documents.refund_in_stripe_reconnect"), cls="text-muted small"))
         elif not voided and is_operator:
             refund_form = ""
             p_left = round_money(p_amount, currency) - round_money(p.get("refunded") or 0, currency)
@@ -9479,7 +9482,7 @@ async function celerpCsvImport(input, entityId) {{
             cls="doc-section doc-section--totals",
         ),
         # Payment section (invoices, bills, credit notes - not drafts/voids)
-        _payment_section(doc, bank_accounts=bank_accounts, is_operator=_can_pay),
+        _payment_section(doc, bank_accounts=bank_accounts, is_operator=_can_pay, payments_on=payments_on),
         # Terms & Conditions + Note to customer (2 columns). Both are customer-facing, so an
         # internal money-less doc (production order) hides them - it uses the Internal Notes
         # section below instead.

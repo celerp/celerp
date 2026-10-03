@@ -174,6 +174,33 @@ async def test_two_partial_refunds_each_give_back_their_share(real_engine, real_
         (f"je:auto:{invoice}:payrefund:refund_0_1", "2026-09-02")]
 
 
+async def test_refunds_made_in_stripe_while_disconnected_arrive_weeks_later_into_exact_books(
+        real_engine, real_client, monkeypatch):
+    """Refunds made in Stripe while the company was disconnected reach Celerp when it
+    reconnects the same Stripe account: weeks after the payment, one of them already
+    failed and reversed, each dated when it happened."""
+    boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    cloud.refund(a, invoice, "re_1", 20000, _at(24 * 20))
+    cloud.refund(a, invoice, "re_2", 30000, _at(24 * 21))
+    cloud.refund(a, invoice, "re_2", 30000, _at(24 * 23), transition="reversed")
+    cloud.refund(a, invoice, "re_3", 5000, _at(24 * 22))
+    await cloud.deliver()
+    for d in cloud.deliveries:  # reconnecting again finds the same refunds
+        d["acked"] = False
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    await _assert_books(real_engine, invoice, refunded="250")
+    assert await _kept_refunds(real_engine) == []
+    assert await _journal(real_engine, invoice) == [
+        (f"je:auto:{invoice}:pay:0", "2026-09-01"),
+        (f"je:auto:{invoice}:payrefund:refund_0_0", "2026-09-21"),
+        (f"je:auto:{invoice}:payrefund:refund_0_1", "2026-09-22"),
+        (f"je:auto:{invoice}:payrefund:refund_0_2", "2026-09-23"),
+        (f"je:auto:{invoice}:payrefundrev:refund_0_1", "2026-09-24")]
+    assert (await _ledger(real_engine, invoice)).count("doc.payment.refunded") == 3
+
+
 async def test_a_refund_is_dated_and_posted_on_the_books_its_payment_was_recorded_on(
         real_engine, real_client, monkeypatch):
     from test_company_reset_payments import _company_settings
