@@ -584,6 +584,11 @@ def _apply_migrations(db_url: str) -> None:
     sync_url = _sync_url(db_url)
     engine = _sa.create_engine(sync_url, pool_pre_ping=True)
     try:
+        # A database a newer Celerp already upgraded is refused before anything
+        # below can restamp it back to this copy's head.
+        from celerp.migrations._newer_schema import refuse_newer_schema
+        with engine.connect() as conn:
+            refuse_newer_schema(conn)
         inspector = _sa.inspect(engine)
         existing_tables = set(inspector.get_table_names())
         if "alembic_version" in existing_tables:

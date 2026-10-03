@@ -199,9 +199,14 @@ async def lifespan(_app: FastAPI):
         yield
         return
 
+    from celerp.migrations._newer_schema import NewerSchemaError, refuse_newer_schema
     try:
         async with lifecycle_engine.begin() as conn:
+            await conn.run_sync(refuse_newer_schema)
             await conn.run_sync(Base.metadata.create_all)
+    except NewerSchemaError as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        sys.exit(1)
     except Exception as exc:
         masked_url = mask_db_credentials(settings.database_url)
         print(
