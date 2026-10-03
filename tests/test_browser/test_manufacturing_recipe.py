@@ -289,7 +289,9 @@ def test_recipe_quantities_must_be_more_than_nothing(page, ui_server, api):
     ready(page, f"{SCOPE} input[name=value]")
     editor.fill("0")
     editor.press("Enter")
-    page.wait_for_selector(f'{cell}.cell--error[title*="greater than zero"]', timeout=8000)
+    # A refused edit swaps in the editor cell, which carries the field on its input.
+    page.wait_for_selector(f'{SCOPE} td.cell--error[title*="greater than zero"]'
+                           ':has(input[hx-patch$="recipe__components__0__quantity"])', timeout=8000)
     cancel_editor(page, SCOPE)
 
     page.fill("#output_qty", "0")
