@@ -107,5 +107,5 @@ async def test_production_order_rejects_payment(client):
     _gold, ring = await _ring(client, token)
     doc = await _production_order(client, token, ring, finalize=True)
     r = await client.post(f"/docs/{doc['id']}/payment", headers=_h(token),
-                          json={"amount": 100, "payment_date": "2026-06-14", "bank_account": "1010"})
+                          json={"amount": 100, "payment_date": "2026-06-14", "bank_account": "1111"})
     assert r.status_code == 409

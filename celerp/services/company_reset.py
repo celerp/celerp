@@ -42,6 +42,7 @@ INSTALL_WIDE = {
     "payment_closures": "requests to close a company's online payments, which outlive the company",
     "payment_recoveries": "the installation's System Recovery restores, as Celerp Cloud must learn of them",
     "unmatched_payments": "online payments received for a company or invoice that no longer exists",
+    "unmatched_refunds": "refunds of online payments kept until their payment is on its invoice",
 }
 
 NAME_MISMATCH = "The name you typed does not match this company's name. Nothing was deleted."
@@ -56,6 +57,9 @@ PAYMENTS_NOT_CLOSED = {
     "reconnect_required": (409, f"{t('pay.settings_revoked', 'en')} Nothing was deleted."),
     "payment_unrecorded": (409, "A payment on one of this company's invoices has not reached Celerp yet. "
                                 "Try again once it shows on the invoice. Nothing was deleted."),
+    "update_required": (409, "A refund of an online payment on one of this company's invoices can only be "
+                             "recorded by a newer version of Celerp. Update Celerp, then try again. "
+                             "Nothing was deleted."),
     "unconfirmed": (503, "Celerp could not confirm with Celerp Cloud that this company's online invoice "
                          "payments are closed. Try again in a moment. Nothing was deleted."),
 }

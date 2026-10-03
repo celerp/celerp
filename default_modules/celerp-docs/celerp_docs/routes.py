@@ -22,7 +22,7 @@ import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.events.engine import emit_event, find_event_by_idempotency
+from celerp.events.engine import STRIPE_OWNED_PAYMENT, emit_event, find_event_by_idempotency, stripe_payment_indexes
 from celerp.importers.results import failure_reason
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
@@ -46,7 +46,7 @@ from celerp.services.permissions import assert_role_permission, get_current_comp
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
-from celerp.services.money import checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
+from celerp.services.money import books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
@@ -1398,6 +1398,9 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     doc = row.state | {"id": row.entity_id, "version": row.version}
+    # Payments Stripe reported are refunded or reversed in Stripe, never here.
+    if held := await stripe_payment_indexes(session, company_id, entity_id, doc.get("payments") or []):
+        doc["payments"] = [p | {"held_by": "stripe"} if p.get("index") in held else p for p in doc["payments"]]
     if doc.get("doc_type") == "memo":
         try:
             labels = await _derive_shipped_labels(session, company_id, entity_id, doc.get("line_items") or [])
@@ -1870,7 +1873,7 @@ async def _payments_tip_suffix(session, company_id) -> str:
     company.settings = settings
     session.add(company)
     return (" Tip: connect a Stripe account under Web Access, Payments and "
-            "emailed invoices include a Pay button so customers can pay you by card.")
+            "emailed invoices include a Pay button so customers can pay you online.")
 
 
 def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: str,
@@ -2545,6 +2548,32 @@ async def _alloc_payment_index(session, company_id, payments: list,
     return idx
 
 
+async def books_currency_still(session, company_id, base: str) -> str:
+    """*base*, or 422 when the company now keeps its books in another currency. The
+    company is read FOR SHARE, so a settings change either committed first and is seen
+    here, or waits for the caller's transaction."""
+    company = (await session.execute(
+        select(Company).where(Company.id == company_id).with_for_update(read=True)
+        .execution_options(populate_existing=True))).scalar_one_or_none()
+    current = books_currency((company.settings or {}) if company else {})
+    if base != current:
+        raise HTTPException(status_code=422, detail=f"The payment is on {base} books; the company keeps them in {current}")
+    return current
+
+
+async def _books_still_kept(session, company_id, doc_state: dict, books: tuple[str, Decimal]) -> tuple[str, float]:
+    """The (base currency, document rate) a payment's *books* post on, or 422 when they no
+    longer describe the ledger: the company now keeps its books in another currency, or
+    the document now converts into them at another rate. Called under the document's row
+    lock with its locked state."""
+    base, rate = books
+    current = await books_currency_still(session, company_id, base)
+    current_rate = _require_doc_rate_http(doc_state, current)
+    if rate != current_rate:
+        raise HTTPException(status_code=422, detail=f"The payment is at rate {rate}; the document is now at {current_rate}")
+    return base, float(rate)
+
+
 async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
                             *, source: str, actor_id, idempotency_key: str,
                             request: str | None = None, commit: bool = True,
@@ -2561,8 +2590,9 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     and cannot compute a duplicate or colliding payment_index.
 
     *books* is the (base currency, document rate) the payment posts on when the caller
-    already holds them - an online payment keeps the books its payment page opened with;
-    otherwise they are the company's and the document's now."""
+    already holds them - an online payment keeps the books its payment page opened with,
+    while they still match the company's and the document's (_books_still_kept); otherwise
+    they are the company's and the document's now."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:
@@ -2621,7 +2651,9 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     # than 1 restates the receipt: 100 banked as 3500. Refused before the
     # event is written, the same way finalization refuses it on the document.
     if books is not None:
-        _base_currency, _document_rate = books[0], float(books[1])
+        from celerp_docs.routes_payments import require_online_deposit_account
+        await require_online_deposit_account(session, company_id, bank_code)
+        _base_currency, _document_rate = await _books_still_kept(session, company_id, doc_state, books)
     else:
         _company = await session.get(Company, company_id)
         _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
@@ -2684,6 +2716,12 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
     # read, rejecting a closed memo via its status allowlist; the row lock serializes
     # this payment against a concurrent close or a second recorder on the same doc.
     key, digest = _operation("payment", entity_id, payload)
+    if payload.bank_account:
+        # The money goes to one of the company's own active asset accounts. The document is
+        # locked first, the same order every other payment takes the two rows in.
+        from celerp_accounting.ledger_accounts import require_money_account
+        await _get_doc(session, company_id, entity_id, for_update=True)
+        await require_money_account(session, company_id, payload.bank_account)
     entry, _amount = await apply_doc_payment(
         session, company_id, entity_id, payload.model_dump(exclude_none=True),
         source="api", actor_id=user.id, idempotency_key=key, request=digest,
@@ -2710,29 +2748,33 @@ def _refundable(payment: dict, currency: str):
     return round_money(payment.get("amount") or 0, currency) - round_money(payment.get("refunded") or 0, currency)
 
 
-@router.post("/{entity_id}/refund")
-async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id, for_update=True)
-    key, digest = _operation("refund", entity_id, payload)
-    if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.refunded",
-                                   entity_id=entity_id, digest=digest)) is not None:
-        return done
+@dataclass(frozen=True)
+class RefundBooks:
+    """The books a refund of a payment posts on: the bank the payment went to, the
+    company currency and the two rates the payment posted at."""
+    bank_account: str
+    base_currency: str
+    doc_rate: float
+    settlement_rate: float
+
+
+async def apply_payment_refund(session, company_id, entity_id: str, row: Projection, payment: dict, *,
+                               amount, refund_date: str, books: RefundBooks, data: dict,
+                               actor_id, source: str, idempotency_key: str, metadata_: dict | None = None):
+    """Give back *amount* of *payment* on the locked document *row*: emit
+    doc.payment.refunded and post the entry that reverses the refunded share of the
+    payment, on *books*. The one refund implementation, for the refund route and for
+    a refund Stripe reports (``payments.receive_refund``). 422/409 when the payment
+    cannot give that much back; the caller commits. Returns the event, flagged
+    ``was_deduped`` when *idempotency_key* already recorded it."""
     _reject_if_closed(row.state, "refund a payment")
     currency = str(row.state.get("currency") or "USD").upper()
-    if payload.currency and str(payload.currency).upper() != currency:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Refund currency {str(payload.currency).upper()} does not match document currency {currency}",
-        )
-    payment = next((p for p in row.state.get("payments", []) if p.get("index") == payload.payment_index), None)
-    if payment is None or payment.get("status") != "active":
-        raise HTTPException(status_code=422, detail="Choose a payment on this document to refund.")
     if payment.get("method") in ("credit_note", "applied"):
         raise HTTPException(
             status_code=422,
             detail="A credit note application moved no money, so it cannot be refunded. Void it instead.",
         )
-    amount_d = round_money(payload.amount, currency)
+    amount_d = round_money(amount, currency)
     if amount_d <= 0:
         raise HTTPException(status_code=422, detail="Refund amount must be positive")
     left = min(_refundable(payment, currency), round_money(row.state.get("amount_paid", 0) or 0, currency))
@@ -2743,26 +2785,99 @@ async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = 
         )
     refund_number = int(payment.get("refund_count", 0))
     given_back = float(payment.get("refunded") or 0)
-    refund_data = payload.model_dump(exclude_none=True, exclude={"payment_date", "idempotency_key"})
-    refund_data.update(amount=to_stored_float(amount_d), currency=currency, refund_date=payload.payment_date,
-                       method=payload.method or payment.get("method"))
+    refund_data = {**data, "amount": to_stored_float(amount_d), "currency": currency, "refund_date": refund_date,
+                   "payment_index": payment.get("index"), "method": data.get("method") or payment.get("method"),
+                   "refund_number": refund_number}
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.refunded",
-        data=refund_data, actor_id=user.id, location_id=None, source="api",
-        idempotency_key=key, metadata_={"request": digest},
+        data=refund_data, actor_id=actor_id, location_id=None, source=source,
+        idempotency_key=idempotency_key, metadata_=metadata_ or {},
     )
-    company = await session.get(Company, company_id)
+    if getattr(entry, "was_deduped", False):
+        return entry
     # The refund gives back this payment's money: the same bank, at the same two rates
     # the payment posted at, in proportion to the amount refunded.
     await auto_je.void_for_doc_payment(
-        session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-        payment_index=payload.payment_index, amount=to_stored_float(amount_d),
-        bank_account_code=payment.get("bank_account") or "1111",
-        doc_type=row.state.get("doc_type", "invoice"), refund_date=payload.payment_date,
-        base_currency=(company.settings.get("currency", "USD") if company else "USD"),
-        doc_rate=float(row.state.get("conversion_rate") or 1),
-        settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1),
+        session, company_id=company_id, user_id=actor_id, doc_id=entity_id,
+        payment_index=payment.get("index"), amount=to_stored_float(amount_d),
+        bank_account_code=books.bank_account, doc_type=row.state.get("doc_type", "invoice"),
+        refund_date=refund_date, base_currency=books.base_currency,
+        doc_rate=books.doc_rate, settlement_rate=books.settlement_rate,
         refund_number=refund_number, already_given_back=given_back,
+    )
+    return entry
+
+
+async def reverse_payment_refund(session, company_id, entity_id: str, row: Projection, payment: dict,
+                                 refund: dict, *, reversal_date: str, books: RefundBooks, actor_id,
+                                 source: str, idempotency_key: str):
+    """Undo *refund*, the data of a doc.payment.refunded event of *payment* on the locked
+    document *row*, when the money it gave back came back: emit
+    doc.payment.refund_reversed and post the lines that give *refund*'s amount back
+    from the payment's refunded total (``auto_je.payment_return_entries``), swapped, on
+    *books*. Undoing the latest refund mirrors its entry; undoing an earlier one still
+    leaves the books at what the refunds left in place convert to. The caller commits.
+    Returns the event, flagged ``was_deduped`` when *idempotency_key* already recorded it."""
+    from celerp.services.je_keys import je_idempotency_key
+    index, number = payment.get("index"), refund["refund_number"]
+    key = f"refund_{index}_{number}"
+    amount = to_decimal(refund["amount"])
+    left_given_back = to_stored_float(to_decimal(payment.get("refunded") or 0) - amount)
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
+        event_type="doc.payment.refund_reversed",
+        data={"payment_index": index, "refund_number": number, "amount": refund["amount"],
+              "refund_id": refund.get("refund_id"), "reversal_date": reversal_date},
+        actor_id=actor_id, location_id=None, source=source, idempotency_key=idempotency_key,
+    )
+    if getattr(entry, "was_deduped", False):
+        return entry
+    lines = auto_je.payment_return_entries(
+        doc_type=row.state.get("doc_type", "invoice"), bank_account_code=books.bank_account,
+        amount=to_stored_float(amount),
+        already_given_back=left_given_back,
+        base_currency=books.base_currency, doc_rate=books.doc_rate, settlement_rate=books.settlement_rate,
+    )
+    await auto_je._emit_auto_posted_je(
+        session, company_id=company_id, user_id=actor_id,
+        je_id=f"je:auto:{entity_id}:payrefundrev:{key}",
+        idem_create=je_idempotency_key(entity_id, f"payment.refund_reversed:{key}", "c"),
+        idem_posted=je_idempotency_key(entity_id, f"payment.refund_reversed:{key}", "p"),
+        memo=f"Auto JE for {entity_id} payment refund reversed (index {index})",
+        ts=reversal_date, currency=books.base_currency.upper(),
+        entries=[{"account": e["account"], "debit": e.get("credit") or 0.0, "credit": e.get("debit") or 0.0}
+                 for e in lines],
+        metadata_={"trigger": "doc.payment.refund_reversed", "doc_id": entity_id, "payment_index": index},
+    )
+    return entry
+
+
+@router.post("/{entity_id}/refund")
+async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("refund", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.refunded",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
+    currency = str(row.state.get("currency") or "USD").upper()
+    if payload.currency and str(payload.currency).upper() != currency:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Refund currency {str(payload.currency).upper()} does not match document currency {currency}",
+        )
+    payment = next((p for p in row.state.get("payments", []) if p.get("index") == payload.payment_index), None)
+    if payment is None or payment.get("status") != "active":
+        raise HTTPException(status_code=422, detail="Choose a payment on this document to refund.")
+    company = await session.get(Company, company_id)
+    entry = await apply_payment_refund(
+        session, company_id, entity_id, row, payment, amount=payload.amount, refund_date=payload.payment_date,
+        books=RefundBooks(
+            bank_account=payment.get("bank_account") or "1111",
+            base_currency=(company.settings.get("currency", "USD") if company else "USD"),
+            doc_rate=float(row.state.get("conversion_rate") or 1),
+            settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1)),
+        data=payload.model_dump(exclude_none=True, exclude={"payment_date", "idempotency_key", "amount", "currency"}),
+        actor_id=user.id, source="api", idempotency_key=key, metadata_={"request": digest},
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -2969,6 +3084,9 @@ async def delete_payment(
         raise HTTPException(status_code=422, detail="Invalid payment index")
     if payment.get("status") != "active":
         raise HTTPException(status_code=409, detail="Only active payments can be deleted")
+    if payment_index in await stripe_payment_indexes(session, company_id, entity_id, payments):
+        # Said before "void it instead": a Stripe payment can be voided only in Stripe either.
+        raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
     if payment.get("refunded"):
         raise HTTPException(
             status_code=409,
@@ -3022,32 +3140,45 @@ async def delete_payment(
             ReconciliationSession.company_id == company_id,
         )
     )
-    recon_sessions = recon_result.scalars().all()
+    recon_sessions = [r for r in recon_result.scalars().all() if je_id in (r.reconciled_je_ids or [])]
+    if any(recon.status == "closed" for recon in recon_sessions):
+        raise HTTPException(
+            status_code=409,
+            detail="Payment has been reconciled in a closed period. Unreconcile to delete.",
+        )
+
+    # Emit doc.payment.deleted first - projection tombstones the row in place.
+    # Every refusal the event carries lands before anything else is changed.
+    # tombstone marks the new reducer semantics (pre-flag events compacted, and
+    # replaying them must keep doing so); ts is the payment's own date, so the
+    # period lock rejects the deletion even when no posted JE exists to void.
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
+        event_type="doc.payment.deleted",
+        data={"payment_index": payment_index, "delete_reason": payload.delete_reason,
+              "amount": payment.get("amount"), "method": payment.get("method"),
+              "tombstone": True, "ts": payment.get("payment_date")},
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=key, metadata_={"request": digest},
+    )
 
     for recon in recon_sessions:
-        if je_id in (recon.reconciled_je_ids or []):
-            if recon.status == "closed":
-                raise HTTPException(
-                    status_code=409,
-                    detail="Payment has been reconciled in a closed period. Unreconcile to delete.",
-                )
-            # Open session - auto-unmatch
-            updated_ids = [j for j in (recon.reconciled_je_ids or []) if j != je_id]
-            recon.reconciled_je_ids = updated_ids
-            # Clear matched_je_id on any statement line pointing to this JE
-            sl_result = await session.execute(
-                _sa.select(BankStatementLine).where(
-                    BankStatementLine.reconciliation_session_id == recon.id,
-                    BankStatementLine.matched_je_id == je_id,
-                )
+        # Open session - auto-unmatch
+        recon.reconciled_je_ids = [j for j in (recon.reconciled_je_ids or []) if j != je_id]
+        # Clear matched_je_id on any statement line pointing to this JE
+        sl_result = await session.execute(
+            _sa.select(BankStatementLine).where(
+                BankStatementLine.reconciliation_session_id == recon.id,
+                BankStatementLine.matched_je_id == je_id,
             )
-            for sl in sl_result.scalars().all():
-                sl.matched_je_id = None
-                sl.status = "unmatched"
+        )
+        for sl in sl_result.scalars().all():
+            sl.matched_je_id = None
+            sl.status = "unmatched"
 
-    # Void the original payment JE first so it disappears from the bank ledger
-    # and reports. The void carries the entry's own date, so a payment inside a
-    # locked period is rejected here before anything mutates.
+    # Void the original payment JE so it disappears from the bank ledger
+    # and reports. The void carries the entry's own date, so an entry inside a
+    # locked period refuses the whole deletion.
     if je_row is not None and je_row.state.get("status") == "posted":
         from celerp.services.je_keys import je_void_data as _je_void  # noqa: PLC0415
         await emit_event(
@@ -3062,20 +3193,6 @@ async def delete_payment(
             idempotency_key=f"{je_id}:void:del:{payment_index}",
             metadata_={"trigger": "doc.payment.deleted", "doc_id": entity_id},
         )
-
-    # Emit doc.payment.deleted - projection tombstones the row in place.
-    # tombstone marks the new reducer semantics (pre-flag events compacted, and
-    # replaying them must keep doing so); ts is the payment's own date, so the
-    # period lock rejects the deletion even when no posted JE exists to void.
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
-        event_type="doc.payment.deleted",
-        data={"payment_index": payment_index, "delete_reason": payload.delete_reason,
-              "amount": payment.get("amount"), "method": payment.get("method"),
-              "tombstone": True, "ts": payment.get("payment_date")},
-        actor_id=user.id, location_id=None, source="api",
-        idempotency_key=key, metadata_={"request": digest},
-    )
 
     await session.commit()
     return {"event_id": entry.id}
@@ -3330,6 +3447,9 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
     docs = [(doc_id, dict(rows[doc_id].state)) for doc_id in dict.fromkeys(payload.doc_ids) if doc_id in rows]
     if not docs:
         raise HTTPException(status_code=404, detail="No valid documents found")
+    if payload.bank_account:
+        from celerp_accounting.ledger_accounts import require_money_account
+        await require_money_account(session, company_id, payload.bank_account)
 
     contact_ids = {s.get("contact_id") for _, s in docs if s.get("contact_id")}
     if len(contact_ids) > 1:

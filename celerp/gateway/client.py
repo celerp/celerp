@@ -513,11 +513,19 @@ class GatewayClient:
                 and self._relay_status not in ("tos_required", "active_elsewhere")):
             raise ConnectionError("Gateway connection ended before activation.")
 
+    # Each Celerp Cloud delivery type this install records, and its handler. The
+    # hello declares exactly these keys, so Cloud holds back any type not listed.
+    _DELIVERIES = {
+        "invoice.payment": "_handle_invoice_payment",
+        "invoice.payment_release": "_handle_invoice_payment_release",
+        "invoice.refund": "_handle_invoice_refund",
+    }
+
     def _build_hello_payload(self, tos_version: str, app_version: str) -> dict:
         """Build the hello frame payload.
 
-        The four base keys match a direct install byte for byte. Partner
-        deployment association happens separately, before the gateway starts
+        The base keys match a direct install byte for byte. Partner deployment
+        association happens separately, before the gateway starts
         (celerp.gateway.bootstrap) - the handshake never carries the credential.
         """
         return {
@@ -525,6 +533,7 @@ class GatewayClient:
             "instance_id": self._instance_id,
             "tos_version": tos_version,
             "version": app_version,
+            "delivery_types": sorted(self._DELIVERIES),
         }
 
     async def _dispatch(self, msg: dict) -> None:
@@ -665,8 +674,8 @@ class GatewayClient:
         elif msg_type == "woocommerce.webhook":
             self._spawn(self._handle_woocommerce_webhook(payload))
 
-        elif msg_type == "invoice.payment":
-            self._spawn(self._handle_invoice_payment(payload))
+        elif msg_type in self._DELIVERIES:
+            self._spawn(getattr(self, self._DELIVERIES[msg_type])(payload))
 
         elif msg_type == "commercial_updated":
             # The payload is the context itself (flat, like subscription_updated);
@@ -748,18 +757,35 @@ class GatewayClient:
 
     async def _handle_invoice_payment(self, payload: dict) -> None:
         """Record a delivered invoice payment and acknowledge it once recorded."""
+        from celerp.services.payments import receive_payment
+        await self._receive_delivery("invoice.payment", receive_payment, payload)
+
+    async def _handle_invoice_refund(self, payload: dict) -> None:
+        """Record a delivered change to a refund of an invoice payment and acknowledge
+        it once recorded."""
+        from celerp.services.payments import receive_refund
+        await self._receive_delivery("invoice.refund", receive_refund, payload)
+
+    async def _handle_invoice_payment_release(self, payload: dict) -> None:
+        """Record that a delivered invoice payment is no longer linked to Stripe and
+        acknowledge it once recorded."""
+        from celerp.services.payments import receive_release
+        await self._receive_delivery("invoice.payment_release", receive_release, payload)
+
+    async def _receive_delivery(self, kind: str, receive, payload: dict) -> None:
+        """Hand a Celerp Cloud delivery to *receive*; acknowledge it once *receive*
+        reports it recorded, so an unrecorded delivery is delivered again."""
         delivery_id = payload.get("delivery_id")
         entity_id = payload.get("entity_id")
         try:
-            from celerp.services.payments import receive_payment
-            if await receive_payment(payload) and delivery_id and self._ws is not None:
+            if await receive(payload) and delivery_id and self._ws is not None:
                 await self._send(self._ws, {
                     "type": "event.ack",
                     "id": str(uuid.uuid4()),
                     "payload": {"delivery_id": delivery_id},
                 })
         except Exception as exc:
-            log.warning("invoice.payment handling failed (entity=%s): %s", entity_id, exc)
+            log.warning("%s handling failed (entity=%s): %s", kind, entity_id, exc)
 
     def _get_http_transport(self) -> _SharedProxyTransport:
         """Return the one shared bounded transport that every per-request proxy client

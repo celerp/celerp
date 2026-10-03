@@ -24,6 +24,7 @@ from celerp.services.company_lock import locked_company
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 import celerp.connectors.upsert as u
+from celerp_accounting.routes import seed_chart_of_accounts
 
 
 async def _seed_company(session, name: str) -> uuid.UUID:
@@ -41,6 +42,8 @@ async def _seed_company(session, name: str) -> uuid.UUID:
     session.add(UserCompany(
         user_id=uid, company_id=cid, role="owner", is_active=True,
     ))
+    # Every company gets the default chart of accounts when it is created.
+    await seed_chart_of_accounts(session, cid)
     await session.flush()
     return cid
 
@@ -1434,8 +1437,8 @@ async def test_woocommerce_balance_put_right_in_celerp_releases_the_order(use_te
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("settings, expected", [
-    ({"woocommerce_deposit_account": "1200", "stripe_deposit_account": "1055"}, "1200"),
-    ({"stripe_deposit_account": "1055"}, "1055"),
+    ({"woocommerce_deposit_account": "1191", "stripe_deposit_account": "1192"}, "1191"),
+    ({"stripe_deposit_account": "1192"}, "1192"),
     ({}, "1110"),
 ])
 async def test_woocommerce_payment_books_to_the_chosen_deposit_account(use_test_session, settings, expected):
@@ -1443,6 +1446,8 @@ async def test_woocommerce_payment_books_to_the_chosen_deposit_account(use_test_
     company's online-payments default, else Cash."""
     session = use_test_session
     cid = await _seed_company(session, "WooDeposit")
+    for code in ("1191", "1192"):
+        await _bank_on(session, cid, code)
     company = await locked_company(session, cid)
     company.settings = {**(company.settings or {}), **settings}
     await session.flush()
@@ -1451,6 +1456,70 @@ async def test_woocommerce_payment_books_to_the_chosen_deposit_account(use_test_
     st = await _state(session, cid, "woocommerce:order:2002")
     assert st["status"] == "paid"
     assert [p["bank_account"] for p in st["payments"]] == [expected]
+
+
+async def _bank_on(session, cid, code: str, *, active: bool = True) -> None:
+    """An active asset chart account *code* with a bank account on it (archived when not *active*)."""
+    from celerp_accounting.models import Account, BankAccount
+    session.add(Account(company_id=cid, code=code, name=f"Bank {code}", account_type="asset"))
+    session.add(BankAccount(
+        company_id=cid, chart_account_code=code, bank_name=f"Bank {code}", account_number="",
+        bank_type="checking", currency="USD", opening_balance=0, is_active=active,
+    ))
+    await session.flush()
+
+
+async def _deposit_case(session, cid, case: str) -> str:
+    """Set up one way the WooCommerce deposit account cannot take a payment; its code."""
+    from celerp_accounting.models import Account
+    company = await locked_company(session, cid)
+    if case == "archived_cash":
+        cash = await session.scalar(select(Account).where(Account.company_id == cid, Account.code == "1110"))
+        cash.is_active = False
+        await session.flush()
+        return "1110"
+    code = {"missing": "1199", "not_asset": "4100"}.get(case, "1190")
+    if case == "archived_bank":
+        await _bank_on(session, cid, code, active=False)
+    elif case == "other_company":
+        await _bank_on(session, await _seed_company(session, "WooOther"), code)
+    company.settings = {**(company.settings or {}), "woocommerce_deposit_account": code}
+    await session.flush()
+    return code
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["missing", "archived_cash", "archived_bank", "not_asset", "other_company"])
+async def test_woocommerce_payment_waits_for_a_person_when_its_deposit_account_cannot_take_it(
+        use_test_session, case):
+    """A paid store order whose deposit account is missing, archived, another company's or
+    not a money account is kept unpaid and waits for a person, naming the account; once the
+    setting points at a bank account the next import books the payment and releases it."""
+    from celerp_docs.doc_service import WooCommerceReconciliationRequired
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooBadDeposit")
+    code = await _deposit_case(session, cid, case)
+    order = {**_WOO_PLAIN_ORDER, "id": 2003, "date_paid": "2024-06-02T10:00:00"}
+
+    with pytest.raises(WooCommerceReconciliationRequired, match=code):
+        await u.upsert_order_from_woocommerce(str(cid), order)
+    session.expire_all()
+    st = await _state(session, cid, "woocommerce:order:2003")
+    assert st.get("payments") in (None, [])
+    assert st["amount_outstanding"] == 10.0
+    assert code in st["woocommerce_reconciliation_required"]
+
+    await _bank_on(session, cid, "1191")
+    company = await locked_company(session, cid)
+    company.settings = {**(company.settings or {}), "woocommerce_deposit_account": "1191"}
+    await session.commit()
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "updated"
+    session.expire_all()
+    st = await _state(session, cid, "woocommerce:order:2003")
+    assert [p["bank_account"] for p in st["payments"]] == ["1191"]
+    assert st["status"] == "paid"
+    assert st.get("woocommerce_reconciliation_required") is None
 
 
 async def _emit_item(session, cid, entity_id, state):

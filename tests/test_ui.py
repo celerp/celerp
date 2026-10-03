@@ -1224,6 +1224,17 @@ class TestActivityFeed:
         assert event_label("item.pricing.set") == "Price updated"
         assert event_label("item.quantity.adjusted") == "Quantity adjusted"
 
+    def test_a_refund_stripe_reversed_reads_in_the_activity(self):
+        from ui.components.activity import EVENT_TYPE_LABELS, detail_from_entry, event_label
+        assert "doc.payment.refund_reversed" in EVENT_TYPE_LABELS
+        assert event_label("doc.payment.refund_reversed") == "Payment refund reversed"
+        assert "200.00" in detail_from_entry({"amount": 200.0}, "doc.payment.refund_reversed", "USD")
+
+    def test_a_payment_released_from_stripe_reads_in_the_activity(self):
+        from ui.components.activity import EVENT_TYPE_LABELS, event_label
+        assert "doc.payment.stripe_released" in EVENT_TYPE_LABELS
+        assert event_label("doc.payment.stripe_released") == "Payment no longer linked to Stripe"
+
     def test_detail_from_entry_source_deactivated(self):
         from ui.components.activity import detail_from_entry
         result = detail_from_entry({"merged_into": "item:new123", "merged_into_sku": "SKU-NEW", "original_qty": 5.0}, "item.source_deactivated")
@@ -11067,7 +11078,7 @@ class TestPaymentsSettingsPage:
     no relay = Web Access upsell; relay without Stripe = a single-CTA sales
     pitch with no admin controls; connected = deposit selector + disconnect."""
 
-    def _mocks(self, relay=True, enabled=False, banks=None, deposit="", state=None, unmatched=None):
+    def _mocks(self, relay=True, enabled=False, banks=None, deposit="", state=None, unmatched=None, refunds=None):
         from contextlib import ExitStack
         stack = ExitStack()
         for name, val in (
@@ -11075,7 +11086,7 @@ class TestPaymentsSettingsPage:
             ("get_payments_status", {"enabled": enabled, "state": state}),
             ("get_company", {"stripe_deposit_account": deposit, "current_role": "admin"}),
             ("get_bank_accounts", {"items": banks or []}),
-            ("get_unmatched_payments", {"items": unmatched or []}),
+            ("get_unmatched_payments", {"items": unmatched or [], "refunds": refunds or []}),
         ):
             stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
         return stack
@@ -11113,6 +11124,19 @@ class TestPaymentsSettingsPage:
         assert 'value="__new__"' in r.text and "/settings/accounting/bank-accounts/new" in r.text
         assert "/settings/payments/disconnect" in r.text
         assert 'type="text" name="stripe_deposit_account"' not in r.text
+
+    @pytest.mark.asyncio
+    async def test_disconnecting_asks_first_and_says_where_later_refunds_are_recorded(self, ui_client):
+        import html as _html
+        from ui.i18n import t
+        with self._mocks(relay=True, enabled=True):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        confirm = t("pay.disconnect_confirm")
+        assert "no longer linked to Stripe" in confirm and "record any refund of them here" in confirm
+        assert "reconnect" not in confirm
+        assert f'data-confirm="{_html.escape(confirm)}"' in r.text
+        assert 'onsubmit="return confirm(this.dataset.confirm)"' in r.text
 
     @pytest.mark.asyncio
     async def test_non_admin_cannot_open(self, ui_client):
@@ -11172,6 +11196,26 @@ class TestPaymentsSettingsPage:
         with self._mocks(relay=True, enabled=True):
             r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
         assert "Payments not matched to an invoice" not in r.text
+        assert "Refunds not applied yet" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_refunds_not_applied_yet_are_listed(self, ui_client):
+        refunds = [
+            {"refund_id": "re_2", "transition": "reversed", "reference": "pi_new", "amount": 50.0,
+             "currency": "USD", "company_id": "c-new", "document_id": "doc:2",
+             "received_at": "2026-09-29T09:00:00+00:00", "occurred_at": None},
+            {"refund_id": "re_1", "transition": "applied", "reference": "pi_old", "amount": 200.0,
+             "currency": "USD", "company_id": "c-old", "document_id": "doc:1",
+             "received_at": "2026-09-28T09:00:00+00:00", "occurred_at": "2026-09-27T09:00:00+00:00"}]
+        with self._mocks(relay=True, enabled=True, refunds=refunds):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Payments not matched to an invoice" not in r.text
+        assert "Refunds not applied yet" in r.text and "Refunded on" in r.text
+        assert r.text.index("pi_new") < r.text.index("pi_old")  # newest first
+        assert "<td>Refund reversed</td>" in r.text and "<td>Refund</td>" in r.text
+        assert "2026-09-27" in r.text and "c-old" in r.text and "doc:1" in r.text
+        assert '<td>--</td>' in r.text  # not known for re_2
 
     @pytest.mark.asyncio
     async def test_unmatched_payments_hidden_from_a_login_that_may_not_see_them(self, ui_client):

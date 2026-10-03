@@ -424,22 +424,13 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     )
 
 
-async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float, refund_number: int | None = None, already_given_back: float = 0.0) -> None:
-    """Reverse a payment JE, or the refunded share of it, by creating a counter-entry.
-
-    refund_date: ISO date for the reversal JE (defaults to today if None). Used when
-        void is actually a refund - the date affects bank ledger position.
-    base_currency: company base currency for JE conversion.
-    doc_rate, settlement_rate: the same two rates the payment posted at, so the counter
-        entry is the mirror of it line for line, exchange difference included. Reversing
-        at any other rate would leave the difference behind in the accounts the payment
-        touched, on a document that is back to unpaid.
-    refund_number: set for a refund of part or all of the payment; each refund of the
-        payment is its own entry, reversing `amount` of it at the payment's rates.
-    already_given_back: how much of the payment earlier refunds reversed. Each piece
-        reverses what the payment's total so far converts to, less what the earlier pieces
-        did, so the pieces add up to exactly what the payment posted.
-    """
+def payment_return_entries(*, doc_type: str, bank_account_code: str, amount: float, already_given_back: float,
+                           base_currency: str, doc_rate: float, settlement_rate: float) -> list[dict]:
+    """The balanced lines that give back *amount* of a payment after *already_given_back*
+    of it was given back, at the two rates the payment posted at. Each line takes what
+    the total given back converts to, less what *already_given_back* converts to, so
+    the pieces of a payment add up to exactly what it posted, in whatever order they
+    are given back and restored (a restored piece posts these lines swapped)."""
     def _piece(rate: float) -> float:
         rate = checked_exchange_rate(rate)
         before = to_decimal(to_base(already_given_back, rate, base_currency))
@@ -447,12 +438,6 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
 
     ledger_amount = _piece(doc_rate)
     bank_amount = _piece(settlement_rate)
-    if refund_number is None:
-        kind, key, trigger = "payvoid", f"void_{payment_index}", "doc.payment.voided"
-        memo = f"Auto JE for {doc_id} payment void (index {payment_index})"
-    else:
-        kind, key, trigger = "payrefund", f"refund_{payment_index}_{refund_number}", "doc.payment.refunded"
-        memo = f"Auto JE for {doc_id} payment refund (index {payment_index})"
     if doc_type in ("bill", "purchase_order"):
         entries = [
             {"account": bank_account_code, "debit": bank_amount, "credit": 0.0},
@@ -470,7 +455,36 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
             {"account": "1120", "debit": ledger_amount, "credit": 0.0},
             {"account": bank_account_code, "debit": 0.0, "credit": bank_amount},
         ]
-    entries = _balanced_with_fx_difference(entries)
+    return _balanced_with_fx_difference(entries)
+
+
+async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float, refund_number: int | None = None, already_given_back: float = 0.0) -> None:
+    """Reverse a payment JE, or the refunded share of it, by creating a counter-entry.
+
+    refund_date: ISO date for the reversal JE (defaults to today if None). Used when
+        void is actually a refund - the date affects bank ledger position.
+    base_currency: company base currency for JE conversion.
+    doc_rate, settlement_rate: the same two rates the payment posted at, so the counter
+        entry is the mirror of it line for line, exchange difference included. Reversing
+        at any other rate would leave the difference behind in the accounts the payment
+        touched, on a document that is back to unpaid.
+    refund_number: set for a refund of part or all of the payment; each refund of the
+        payment is its own entry, reversing `amount` of it at the payment's rates.
+    already_given_back: how much of the payment earlier refunds reversed. Each piece
+        reverses what the payment's total so far converts to, less what the earlier pieces
+        did, so the pieces add up to exactly what the payment posted.
+    """
+    if refund_number is None:
+        kind, key, trigger = "payvoid", f"void_{payment_index}", "doc.payment.voided"
+        memo = f"Auto JE for {doc_id} payment void (index {payment_index})"
+    else:
+        kind, key, trigger = "payrefund", f"refund_{payment_index}_{refund_number}", "doc.payment.refunded"
+        memo = f"Auto JE for {doc_id} payment refund (index {payment_index})"
+    entries = payment_return_entries(
+        doc_type=doc_type, bank_account_code=bank_account_code, amount=amount,
+        already_given_back=already_given_back, base_currency=base_currency,
+        doc_rate=doc_rate, settlement_rate=settlement_rate,
+    )
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -480,6 +494,7 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
         idem_posted=je_idempotency_key(doc_id, f"{trigger.removeprefix('doc.')}:{key}", "p"),
         memo=memo,
         ts=refund_date,
+        currency=base_currency.upper(),
         entries=entries,
         metadata_={"trigger": trigger, "doc_id": doc_id, "payment_index": payment_index},
     )

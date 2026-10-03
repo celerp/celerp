@@ -12,10 +12,12 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
-from celerp.models.payment_closure import PaymentClosure, PaymentRecovery, UnmatchedPayment
+from celerp.models.payment_closure import PaymentClosure, PaymentRecovery, UnmatchedPayment, UnmatchedRefund
+from celerp.services.money import round_money, to_decimal
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +56,55 @@ async def _cloud_post(path: str, payload: dict) -> dict | None:
     return await _cloud_request("POST", path, payload)
 
 
+# ── Stripe amount units ──────────────────────────────────────────────────────
+# Stripe's own unit rules (docs.stripe.com/currencies), which are not the books'
+# precision (money.currency_dp): IDR is kept in whole rupiah but charged in
+# hundredths. Every amount sent to or received from Stripe crosses here.
+
+_STRIPE_ZERO_DECIMAL = frozenset(
+    "BIF CLP DJF GNF JPY KMF KRW MGA PYG RWF VND VUV XAF XOF XPF".split())
+_STRIPE_THREE_DECIMAL = frozenset("BHD JOD KWD OMR TND".split())  # last digit always 0
+_STRIPE_WHOLE_UNITS = frozenset({"ISK", "UGX"})  # two decimals in the API, always 00
+
+
+def _stripe_exponent(currency: str) -> int:
+    code = currency.upper()
+    if code in _STRIPE_ZERO_DECIMAL:
+        return 0
+    return 3 if code in _STRIPE_THREE_DECIMAL else 2
+
+
+def stripe_amount(api_amount: int, currency: str) -> Decimal:
+    """*api_amount*, an integer amount in Stripe's units, as an amount of *currency*."""
+    return Decimal(api_amount).scaleb(-_stripe_exponent(currency))
+
+
+def to_stripe_amount(amount, currency: str) -> int:
+    """*amount* of *currency* as the integer Stripe charges. ValueError, never rounding,
+    when the books and Stripe cannot both hold it exactly: not positive, finer than the
+    books keep *currency* or than Stripe charges it, a fraction of an ISK or UGX, or a
+    three-decimal amount not ending in 0."""
+    value = to_decimal(amount)
+    scaled = value.scaleb(_stripe_exponent(currency))
+    code = currency.upper()
+    if (value <= 0 or value != round_money(value, code) or scaled != scaled.to_integral_value()
+            or (code in _STRIPE_WHOLE_UNITS and value != value.to_integral_value())
+            or (code in _STRIPE_THREE_DECIMAL and scaled % 10)):
+        raise ValueError(f"{value} {code} cannot be paid online: Stripe cannot charge that amount exactly")
+    return int(scaled)
+
+
+def from_stripe_amount(api_amount: int, currency: str) -> Decimal:
+    """*api_amount*, as Stripe reports a charge, as an amount of *currency*: the exact
+    inverse of ``to_stripe_amount``, and ValueError for any integer it would not produce."""
+    value = stripe_amount(api_amount, currency)
+    try:
+        to_stripe_amount(value, currency)
+    except ValueError as exc:
+        raise ValueError(f"{api_amount} is not an exact Stripe amount of {currency.upper()}") from exc
+    return value
+
+
 # ── Payment (customer-facing, via the hosted invoice view) ───────────────────
 
 PAUSED = "Online payment is paused while recent payments are checked. Please try again shortly."
@@ -90,7 +141,7 @@ async def create_checkout(*, amount_minor: int, currency: str, description: str,
 
     Returns {"url": <stripe checkout url>} (redirect the customer there), or None on
     failure. Raises CheckoutPaused when Cloud holds new payments for a restore.
-    `amount_minor` is the balance due in minor units.
+    `amount_minor` is the balance due in Stripe's units (``to_stripe_amount``).
     """
     from celerp.config import settings
     if settings.cloud_disconnected:
@@ -111,7 +162,8 @@ class PaymentsNotClosed(Exception):
 
     ``reason`` is "disconnected", "payment_settling", "payment_unrecorded",
     "reconnect_required" (a payment can be checked only once the merchant reconnects
-    the Stripe account they withdrew) or "unconfirmed".
+    the Stripe account they withdrew), "update_required" (a refund waits for a
+    version of Celerp that can record it) or "unconfirmed".
     """
 
     def __init__(self, reason: str) -> None:
@@ -122,7 +174,7 @@ class PaymentsNotClosed(Exception):
 _CLOSURE = "/billing/connect/companies/retire"
 _RECOVERY = "/billing/connect/recovery"
 _PREPARED = ("prepared", "retired")
-_REFUSED = ("payment_settling", "payment_unrecorded", "reconnect_required")
+_REFUSED = ("payment_settling", "payment_unrecorded", "reconnect_required", "update_required")
 # Answers after which a step can never succeed: the request is forgotten, and Celerp
 # Cloud keeps the company's payments closed.
 _FINAL = {"finalize": ("generation_stale", "cancelled", "not_prepared"),
@@ -169,7 +221,14 @@ async def receive_payment(payload: dict) -> bool:
     the charge, or it refuses it, as it does a delivery without usable books). True once recorded
     either way (Cloud is then told it arrived), False for a delivery that names no
     payment. Raises when nothing could be recorded, so Cloud delivers it again.
-    Recording the same payment twice changes nothing."""
+    Recording the same payment twice changes nothing.
+
+    Every delivery tries the invoice again, even for a payment already among the
+    unmatched: one the invoice now takes, or already holds, leaves the unmatched
+    payments in the same transaction that records it, and the refunds of it kept
+    until then apply in that transaction too, in the order Stripe reported them. A
+    payment kept after it stopped being linked to Stripe takes the refunds Stripe
+    reported before that, then stops being linked to Stripe (``receive_release``)."""
     from fastapi import HTTPException
     from celerp.models.projections import Projection
     from celerp.services.company_lock import hold_company
@@ -190,15 +249,19 @@ async def receive_payment(payload: dict) -> bool:
     except ValueError:
         cid = None
     async with _own_session() as session:
-        if await session.get(UnmatchedPayment, reference) is not None:
-            return True
         # A reset waits for this hold; once it has deleted the company, the payment is unmatched.
         row = await session.get(Projection, (cid, entity_id)) if cid and await hold_company(session, cid) else None
         if row is not None:
+            released_at = await session.scalar(delete(UnmatchedPayment).where(
+                UnmatchedPayment.reference == reference).returning(UnmatchedPayment.released_at))
             try:
                 await record_stripe_payment(session, cid, entity_id, dict(row.state), reference=reference,
                                             amount_minor=amount_minor, currency=currency, paid_at=paid_at,
                                             context=payload.get("context"))
+                await _apply_parked_refunds(session, cid, entity_id, reference, before=released_at)
+                if released_at is not None:
+                    await _apply_release(session, cid, entity_id, reference, released_at)
+                await session.commit()  # already recorded: only the unmatched row goes
                 return True
             except HTTPException as exc:
                 if exc.status_code >= 500:
@@ -211,6 +274,153 @@ async def receive_payment(payload: dict) -> bool:
             former_company=company_id, document=entity_id, paid_at=paid_at).on_conflict_do_nothing())
         await session.commit()
     return True
+
+
+def _instant(value) -> datetime | None:
+    """A reported time with a zone, or None (no business day it can be placed on)."""
+    try:
+        instant = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return instant if instant.utcoffset() is not None else None
+
+
+async def _apply_refund(session, cid, entity_id: str, refund: dict) -> bool:
+    """Apply one change to a refund on its document, under the document's lock and in a
+    savepoint: True once applied (or applied before), and then no longer kept. False,
+    with nothing applied, when the document is gone or refuses it (logged). A 5xx
+    raises."""
+    from fastapi import HTTPException
+    from celerp.services.company_lock import lock_projections
+    from celerp_docs.routes_payments import record_stripe_refund
+    row = (await lock_projections(session, cid, [entity_id])).get(entity_id)
+    if row is None or row.entity_type != "doc":
+        return False
+    try:
+        async with session.begin_nested():
+            await record_stripe_refund(
+                session, cid, row, refund_id=refund["refund_id"], cycle=refund["cycle"],
+                transition=refund["transition"], reference=refund["reference"], amount_minor=refund["amount_minor"],
+                currency=refund["currency"], occurred_at=refund["occurred_at"], context=refund["context"])
+    except HTTPException as exc:
+        if exc.status_code >= 500:
+            raise
+        log.error("Invoice %s refused refund %s (%s %s): %s", entity_id, refund["refund_id"],
+                  refund["transition"], refund["cycle"], exc.detail)
+        return False
+    await session.execute(delete(UnmatchedRefund).where(
+        UnmatchedRefund.refund_id == refund["refund_id"], UnmatchedRefund.cycle == refund["cycle"],
+        UnmatchedRefund.transition == refund["transition"]))
+    return True
+
+
+async def _apply_parked_refunds(session, cid, entity_id: str, reference: str, *,
+                                before: datetime | None = None) -> None:
+    """Apply the kept refunds of the payment *reference*, now on its document, in the
+    order Stripe reported them; with *before*, only those Stripe reported before
+    then. One the document still refuses stays kept."""
+    query = select(UnmatchedRefund).where(UnmatchedRefund.reference == reference)
+    if before is not None:
+        query = query.where(UnmatchedRefund.occurred_at < before)
+    parked = (await session.scalars(query.order_by(
+        UnmatchedRefund.occurred_at.asc().nulls_last(), UnmatchedRefund.refund_id, UnmatchedRefund.cycle,
+        UnmatchedRefund.transition))).all()
+    for p in parked:
+        await _apply_refund(session, cid, entity_id, {
+            "refund_id": p.refund_id, "cycle": p.cycle, "transition": p.transition, "reference": p.reference,
+            "amount_minor": p.amount_minor, "currency": p.currency, "occurred_at": p.occurred_at,
+            "context": p.context})
+
+
+async def receive_refund(payload: dict) -> bool:
+    """Apply a change to a refund of an online payment delivered by Celerp Cloud
+    (``record_stripe_refund``), or keep it with the unmatched payments, whole, when it
+    cannot be applied yet: the company, invoice or payment is not there, or the
+    invoice refuses it. A kept refund applies when its payment is recorded on its
+    invoice (``receive_payment``). True once applied or kept (Cloud is then told it
+    arrived), False for a delivery that names no refund. Raises when nothing could be
+    recorded, so Cloud delivers it again. Recording the same change twice changes
+    nothing."""
+    from celerp.services.company_lock import hold_company
+    from celerp_docs.routes_payments import REFUND_TRANSITIONS
+    company_id, entity_id, reference, refund_id, transition = (
+        str(payload.get(k) or "") for k in ("company_id", "entity_id", "reference", "refund_id", "transition"))
+    amount_minor, cycle = payload.get("amount_minor"), payload.get("cycle")
+    if not (company_id and entity_id and reference and refund_id and transition in REFUND_TRANSITIONS
+            and _counted(amount_minor) and _counted(cycle)):
+        return False
+    refund = {"refund_id": refund_id, "cycle": cycle, "transition": transition, "reference": reference,
+              "amount_minor": amount_minor, "currency": str(payload.get("currency") or "USD").upper(),
+              "occurred_at": _instant(payload.get("occurred_at")), "context": payload.get("context")}
+    try:
+        cid = uuid.UUID(company_id)
+    except ValueError:
+        cid = None
+    async with _own_session() as session:
+        # A reset waits for this hold; once it has deleted the company, the refund is kept.
+        if cid and await hold_company(session, cid) and await _apply_refund(session, cid, entity_id, refund):
+            # A reversal that arrived before its refund was applied follows it now.
+            await _apply_parked_refunds(session, cid, entity_id, reference)
+            await session.commit()
+            return True
+        # Kept under the same locks, so a payment recorded meanwhile cannot miss it.
+        from sqlalchemy.dialects.postgresql import insert
+        await session.execute(insert(UnmatchedRefund).values(
+            **refund, former_company=company_id, document=entity_id).on_conflict_do_nothing())
+        await session.commit()
+    return True
+
+
+def _counted(value) -> bool:
+    """A whole number of at least one, as delivered (not a string or a boolean)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+async def _apply_release(session, cid, entity_id: str, reference: str, released_at: datetime) -> bool:
+    """Record that the payment *reference* on the document is no longer linked to
+    Stripe. False when the document or the payment is not there."""
+    from celerp.services.company_lock import lock_projections
+    from celerp_docs.routes_payments import record_stripe_release
+    row = (await lock_projections(session, cid, [entity_id])).get(entity_id)
+    if row is None or row.entity_type != "doc":
+        return False
+    return await record_stripe_release(session, cid, row, reference=reference, released_at=released_at)
+
+
+async def receive_release(payload: dict) -> bool:
+    """Record that an online payment delivered by Celerp Cloud is no longer linked to
+    Stripe (Stripe was disconnected): on its invoice (``record_stripe_release``), or on
+    the payment among the unmatched payments, applied when it is recorded on its
+    invoice (``receive_payment``). True once recorded either way (Cloud is then told
+    it arrived). False for a delivery that names no release or a payment not received
+    yet, so Cloud delivers it again after the payment. Recording it twice changes
+    nothing."""
+    from sqlalchemy import update
+    from celerp.services.company_lock import hold_company
+    company_id, entity_id, reference = (str(payload.get(k) or "") for k in ("company_id", "entity_id", "reference"))
+    released_at = _instant(payload.get("released_at"))
+    if not (company_id and entity_id and reference and released_at):
+        return False
+    try:
+        cid = uuid.UUID(company_id)
+    except ValueError:
+        cid = None
+    async with _own_session() as session:
+        held = bool(cid and await hold_company(session, cid))
+        # The unmatched payment first, in the same order as the payment intake.
+        kept = (await session.execute(update(UnmatchedPayment).where(UnmatchedPayment.reference == reference)
+                                      .values(released_at=func.coalesce(UnmatchedPayment.released_at, released_at))
+                                      )).rowcount
+        recorded = bool(kept) or (held and await _apply_release(session, cid, entity_id, reference, released_at))
+        await session.commit()
+    return recorded
+
+
+async def unmatched_refunds(session) -> list[UnmatchedRefund]:
+    """Every refund of an online payment kept until its payment is on its invoice,
+    newest first."""
+    return list((await session.scalars(
+        select(UnmatchedRefund).order_by(UnmatchedRefund.received_at.desc()))).all())
 
 
 async def unmatched_payments(session) -> list[UnmatchedPayment]:

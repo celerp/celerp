@@ -279,13 +279,14 @@ async def test_a_reset_prepares_the_closing_then_closes_the_payments_once_the_co
     (httpx.Response(409, json={"detail": "payment_settling"}), 409, "still being processed."),
     (httpx.Response(409, json={"detail": "payment_unrecorded"}), 409, "has not reached Celerp"),
     (httpx.Response(409, json={"detail": "reconnect_required"}), 409, "Reconnect this Stripe account"),
+    (httpx.Response(409, json={"detail": "update_required"}), 409, "Update Celerp"),
     (httpx.Response(409, json={"detail": "something else"}), 503, "could not confirm"),
     (httpx.Response(200, json={"company_id": "another-company", "operation_id": "x", "state": "prepared"}),
      503, "could not confirm"),
     (httpx.Response(200, json={"state": "cancelled"}), 503, "could not confirm"),
     (httpx.Response(200, text="<html>proxy</html>"), 503, "could not confirm"),
 ], ids=["no-answer", "unreachable", "stripe-unconfirmed", "server-error", "settling", "unrecorded",
-        "reconnect", "unknown-refusal", "other-company", "not-prepared", "not-json"])
+        "reconnect", "update", "unknown-refusal", "other-company", "not-prepared", "not-json"])
 async def test_nothing_is_deleted_unless_cloud_confirms_the_closing_is_prepared(
         real_engine, real_client, monkeypatch, answer, status, says):
     boss, a, b = await _harbor(real_engine)
@@ -833,7 +834,7 @@ async def test_the_customers_return_from_stripe_records_nothing_and_the_delivery
     assert await _unmatched(real_engine) == []
 
 
-async def test_a_payment_delivered_again_after_it_was_kept_among_the_unmatched_changes_nothing(
+async def test_a_payment_kept_among_the_unmatched_is_recorded_once_its_invoice_can_take_it(
         real_engine, real_client, monkeypatch):
     boss, a, b = await _harbor(real_engine)
     invoice = await _invoice(real_client, real_engine, boss, a)
@@ -841,6 +842,7 @@ async def test_a_payment_delivered_again_after_it_was_kept_among_the_unmatched_c
     await _pay_by_hand(real_client, real_engine, boss, a, invoice, 1070.0)
     cloud.pay(a, invoice, "pi_1")
     await cloud.deliver()
+    assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(a), invoice)]
     # The hand-entered payment was a mistake and is removed: the invoice is owed again.
     r = await real_client.delete(f"/docs/{invoice}/payments/0", headers=auth(await token(real_engine, boss, a)))
     assert r.status_code == 200, r.text
@@ -849,8 +851,68 @@ async def test_a_payment_delivered_again_after_it_was_kept_among_the_unmatched_c
     await cloud.deliver()
 
     assert [d["acked"] for d in cloud.deliveries] == [True]
-    assert await _paid(real_engine, invoice) == []
+    assert await _paid(real_engine, invoice) == [("pi_1", 1070.0)]
+    assert await _unmatched(real_engine) == []
+
+
+async def test_a_payment_kept_among_the_unmatched_that_still_cannot_be_recorded_stays_once(
+        real_engine, real_client, monkeypatch):
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    cloud = _Cloud(monkeypatch, real_engine)
+    await _pay_by_hand(real_client, real_engine, boss, a, invoice, 1070.0)
+    cloud.pay(a, invoice, "pi_1")
+    await cloud.deliver()
+
+    for _ in range(2):
+        cloud.deliveries[0]["acked"] = False
+        await cloud.deliver()
+
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+    assert await _paid(real_engine, invoice) == [(None, 1070.0)]
     assert await _unmatched(real_engine) == [("pi_1", 107000, "USD", str(a), invoice)]
+
+
+async def test_a_payment_already_on_its_invoice_is_cleared_from_the_unmatched_when_delivered_again(
+        real_engine, real_client, monkeypatch):
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    cloud = _Cloud(monkeypatch, real_engine)
+    cloud.pay(a, invoice, "pi_1")
+    await cloud.deliver()
+    async with maker(real_engine)() as s:  # kept among the unmatched by an earlier delivery
+        await s.execute(text("INSERT INTO unmatched_payments (reference, amount_minor, currency, former_company, "
+                             "document) VALUES ('pi_1', 107000, 'USD', :c, :e)"), {"c": str(a), "e": invoice})
+        await s.commit()
+    cloud.deliveries[0]["acked"] = False
+
+    await cloud.deliver()
+
+    assert [d["acked"] for d in cloud.deliveries] == [True]
+    assert await _paid(real_engine, invoice) == [("pi_1", 1070.0)]
+    assert await _unmatched(real_engine) == []
+
+
+@pytest.mark.parametrize("kept", [False, True], ids=["first-delivery", "kept-among-the-unmatched"])
+async def test_one_payment_delivered_twice_at_once_is_recorded_once(real_engine, real_client, monkeypatch, kept):
+    import asyncio
+    from celerp.services.payments import receive_payment
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    cloud = _Cloud(monkeypatch, real_engine)
+    cloud.pay(a, invoice, "pi_1")
+    payload = {k: v for k, v in cloud.deliveries[0].items() if k in _PAYMENT}
+    if kept:
+        async with maker(real_engine)() as s:
+            await s.execute(text("INSERT INTO unmatched_payments (reference, amount_minor, currency, "
+                                 "former_company, document) VALUES ('pi_1', 107000, 'USD', :c, :e)"),
+                            {"c": str(a), "e": invoice})
+            await s.commit()
+
+    assert await asyncio.gather(receive_payment(dict(payload)), receive_payment(dict(payload))) == [True, True]
+
+    assert await _paid(real_engine, invoice) == [("pi_1", 1070.0)]
+    assert await _unmatched(real_engine) == []
 
 
 @pytest.mark.parametrize("detail", ["generation_stale", "cancelled", "not_prepared"])
@@ -1166,6 +1228,42 @@ async def test_every_payment_a_restore_may_have_lost_is_recorded_again_before_a_
     assert r.status_code == 303 and cloud.checkouts == [(str(a), 1, 200)]
 
 
+async def test_a_late_payment_kept_among_the_unmatched_is_recorded_once_a_restore_brings_its_invoice_back(
+        tmp_path, monkeypatch, code_config, real_engine, real_client):
+    from celerp.services import backup_export, backup_import
+    _system_recovery(tmp_path, monkeypatch)
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    cloud = _Cloud(monkeypatch, real_engine)
+    source = await backup_export.export_full()
+    try:
+        assert (await _reset(real_client, real_engine, boss, a)).status_code == 200
+        # The customer pays after the reset: the invoice is gone, so the payment is unmatched.
+        cloud.pay(a, invoice, "pi_late")
+        await cloud.deliver()
+        assert await _unmatched(real_engine) == [("pi_late", 107000, "USD", str(a), invoice)]
+
+        result = await backup_import.run_recovery(source)
+    finally:
+        source.unlink(missing_ok=True)
+    assert result.ok is True, result.error
+    assert await _references(real_engine, invoice) == []
+
+    await cloud.deliver()  # Celerp Cloud delivers the payment again after the restore
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _paid(real_engine, invoice) == [("pi_late", 1070.0)]
+    assert await _unmatched(real_engine) == []
+
+    for d in cloud.deliveries:
+        d["acked"] = False
+    await cloud.deliver()  # and again: nothing changes
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _paid(real_engine, invoice) == [("pi_late", 1070.0)]
+    assert await _unmatched(real_engine) == []
+
+
 async def _company_settings(engine, cid, **changes) -> None:
     async with maker(engine)() as s:
         settings = await s.scalar(text("SELECT settings FROM companies WHERE id = :c"), {"c": cid}) or {}
@@ -1254,10 +1352,14 @@ async def _restore_losing_a_payment(tmp_path, monkeypatch, engine, client, paid_
 
 
 async def _add_account(engine, cid, code: str) -> None:
-    from celerp_accounting.models import Account
+    """A bank account online payments can be deposited to, with its chart account."""
+    from celerp_accounting.models import Account, BankAccount
     async with maker(engine)() as s:
         s.add(Account(id=uuid.uuid4(), company_id=cid, code=code, name="Online payments clearing",
                       account_type="asset", parent_code="1110"))
+        s.add(BankAccount(id=uuid.uuid4(), company_id=cid, chart_account_code=code,
+                          bank_name="Online payments clearing", account_number="", bank_type="checking",
+                          currency="USD", opening_balance=0.0))
         await s.commit()
 
 
@@ -1292,6 +1394,107 @@ async def test_a_payment_recorded_again_after_a_restore_posts_as_its_page_opened
     assert await _posting(real_engine, eid) == first
 
 
+async def _payment_journal(engine, entity_id) -> list[str]:
+    """The payment journal entries posted for the invoice."""
+    async with maker(engine)() as s:
+        return list((await s.scalars(text("SELECT entity_id FROM projections WHERE entity_id LIKE :j"),
+                                     {"j": f"je:auto:{entity_id}:pay:%"})).all())
+
+
+async def test_a_payment_whose_page_opened_before_the_company_changed_currency_is_kept_among_the_unmatched(
+        monkeypatch, real_engine, real_client):
+    """The company keeps its books in dollars when a customer opens the payment page,
+    then moves them to baht before the customer pays. The payment is never posted in
+    dollars into the baht books."""
+    _payments_on(monkeypatch)
+    boss, a, b = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    eid, share = await _shared_invoice(real_client, real_engine, boss, a)
+    assert (await real_client.get(f"/pay/{share}", follow_redirects=False)).status_code == 303
+    assert cloud.opened[eid]["base_currency"] == "USD"
+
+    await _company_settings(real_engine, a, currency="THB")
+    cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _references(real_engine, eid) == []
+    assert await _payment_journal(real_engine, eid) == []
+    assert await _unmatched(real_engine) == [("pi_paid", 50000, "USD", str(a), eid)]
+
+
+async def _rate_changed(client, engine, boss, cid, entity_id: str, rate: float) -> None:
+    """The owner gives the invoice another exchange rate, the way the app allows it on a
+    finalized invoice: back to draft, the rate edited, finalized again."""
+    tok = auth(await token(engine, boss, cid))
+    assert (await client.post(f"/docs/{entity_id}/revert-to-draft", json={}, headers=tok)).status_code == 200
+    r = await client.patch(f"/docs/{entity_id}", json={"fields_changed": {"conversion_rate": {"new": rate}}},
+                           headers=tok)
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{entity_id}/finalize", headers=tok)
+    assert r.status_code == 200, r.text
+
+
+async def test_a_payment_whose_page_opened_before_the_invoice_changed_rate_is_kept_among_the_unmatched(
+        monkeypatch, real_engine, real_client):
+    """The company keeps its books in baht and invoices in dollars. A customer opens the
+    payment page at the invoice's rate; before they pay, the owner gives the invoice
+    another rate. The payment is never posted at the rate the invoice no longer has."""
+    _payments_on(monkeypatch)
+    boss, a, b = await _harbor(real_engine)
+    await _company_settings(real_engine, a, currency="THB")
+    cloud = _Cloud(monkeypatch, real_engine)
+    eid, share = await _shared_invoice(real_client, real_engine, boss, a, conversion_rate=35.125)
+    assert (await real_client.get(f"/pay/{share}", follow_redirects=False)).status_code == 303
+    assert cloud.opened[eid]["base_currency"] == "THB" and float(cloud.opened[eid]["rate"]) == 35.125
+
+    await _rate_changed(real_client, real_engine, boss, a, eid, 36.5)
+    cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _references(real_engine, eid) == []
+    assert await _payment_journal(real_engine, eid) == []
+    assert await _unmatched(real_engine) == [("pi_paid", 50000, "USD", str(a), eid)]
+
+
+async def test_a_payment_recorded_again_into_books_a_restore_brought_back_in_another_currency_is_kept_among_the_unmatched(
+        tmp_path, monkeypatch, code_config, real_engine, real_client):
+    """After the backup the company moves its books from dollars to baht and gives the
+    invoice its baht rate; a customer opens the payment page and pays. The restore
+    brings back the dollar books and loses the payment; delivered again, it is never
+    posted with the baht books into the dollar ledger."""
+    from celerp.services import backup_export, backup_import
+    _system_recovery(tmp_path, monkeypatch)
+    _payments_on(monkeypatch)
+    boss, a, b = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    eid, share = await _shared_invoice(real_client, real_engine, boss, a)
+    source = await backup_export.export_full()
+    try:
+        await _company_settings(real_engine, a, currency="THB")
+        await _rate_changed(real_client, real_engine, boss, a, eid, 35.125)
+        assert (await real_client.get(f"/pay/{share}", follow_redirects=False)).status_code == 303
+        assert cloud.opened[eid]["base_currency"] == "THB" and float(cloud.opened[eid]["rate"]) == 35.125
+        cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
+        await cloud.deliver()
+        assert await _references(real_engine, eid) == ["pi_paid"]
+        result = await backup_import.run_recovery(source)
+    finally:
+        source.unlink(missing_ok=True)
+    assert result.ok is True, result.error
+    async with maker(real_engine)() as s:
+        settings = await s.scalar(text("SELECT settings FROM companies WHERE id = :c"), {"c": a})
+    assert settings.get("currency", "USD") == "USD"
+
+    await cloud.deliver()
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert [d["context"]["base_currency"] for d in cloud.deliveries if d.get("replay")] == ["THB"]
+    assert await _references(real_engine, eid) == []
+    assert await _payment_journal(real_engine, eid) == []
+    assert await _unmatched(real_engine) == [("pi_paid", 50000, "USD", str(a), eid)]
+
+
 async def test_a_payment_whose_bank_account_a_restore_removed_is_kept_among_the_unmatched(
         tmp_path, monkeypatch, code_config, real_engine, real_client):
     """The account online payments clear to was added after the backup: the payment is
@@ -1304,6 +1507,37 @@ async def test_a_payment_whose_bank_account_a_restore_removed_is_kept_among_the_
     assert await _unmatched(real_engine) == [("pi_paid", 50000, "USD", str(a), eid)]
     async with maker(real_engine)() as s:
         assert await s.scalar(text("SELECT paid_at FROM unmatched_payments")) == _OCTOBER_3
+
+
+async def test_a_payment_kept_among_the_unmatched_by_a_restore_is_recorded_when_a_later_restore_can_take_it(
+        tmp_path, monkeypatch, code_config, real_engine, real_client):
+    """The restored backup itself holds the unmatched payment beside an invoice that can
+    now take it: the payment delivered again after the restore is recorded on the
+    invoice and leaves the unmatched payments."""
+    from celerp.services import backup_export, backup_import
+    boss, a, eid, first = await _restore_losing_a_payment(
+        tmp_path, monkeypatch, real_engine, real_client, _OCTOBER_3,
+        opened={"stripe_deposit_account": "1119"}, account="1119")
+    assert await _unmatched(real_engine) == [("pi_paid", 50000, "USD", str(a), eid)]
+    # The merchant adds the account back; a later backup holds it and the unmatched payment.
+    await _add_account(real_engine, a, "1119")
+    cloud = _Cloud(monkeypatch, real_engine)
+    cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3,
+              books={**BOOKS, "deposit_account": "1119"})
+    cloud.deliveries[0]["acked"] = True  # recorded among the unmatched before this backup
+    source = await backup_export.export_full()
+    try:
+        result = await backup_import.run_recovery(source)
+    finally:
+        source.unlink(missing_ok=True)
+    assert result.ok is True, result.error
+    assert await _unmatched(real_engine) == [("pi_paid", 50000, "USD", str(a), eid)]
+
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _references(real_engine, eid) == ["pi_paid"]
+    assert await _unmatched(real_engine) == []
 
 
 @pytest.mark.parametrize("books", [

@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""The import reversibility revision follows the payment date revision directly, records every
+"""The import reversibility revision follows the unmatched refunds revision directly, records every
 import that existed before it as not reversible, and removes its column cleanly."""
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from sqlalchemy import create_engine, text
 
 from .conftest import run_migration_ops
 
-MODULE = "s6h7c8d9e0f1_import_batch_reversible"
+MODULE = "t7i8d9e0f1a2_import_batch_reversible"
 
 
 def test_revision_follows_its_parent():
@@ -23,7 +23,7 @@ def test_revision_follows_its_parent():
     from celerp.alembic_config import build_alembic_config
 
     script = ScriptDirectory.from_config(build_alembic_config())
-    assert script.get_revision("s6h7c8d9e0f1").down_revision == "r5g6b7c8d9e0"
+    assert script.get_revision("t7i8d9e0f1a2").down_revision == "s6h7c8d9e0f1"
 
 
 @pytest.fixture()

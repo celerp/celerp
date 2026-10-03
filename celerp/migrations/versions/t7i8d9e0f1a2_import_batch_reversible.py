@@ -6,16 +6,16 @@
 Imports recorded before this revision cannot be shown to have had no other effect,
 so they are recorded as not reversible.
 
-Revision ID: s6h7c8d9e0f1
-Revises: r5g6b7c8d9e0
+Revision ID: t7i8d9e0f1a2
+Revises: s6h7c8d9e0f1
 Create Date: 2026-10-02
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "s6h7c8d9e0f1"
-down_revision = "r5g6b7c8d9e0"
+revision = "t7i8d9e0f1a2"
+down_revision = "s6h7c8d9e0f1"
 branch_labels = None
 depends_on = None
 
