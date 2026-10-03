@@ -14,7 +14,9 @@ import ui.api_client as api
 from ui.api_client import APIError
 import uuid
 
-from ui.components.operation_key import operation_key_attrs, operation_key_vals, required_operation_key
+from ui.components.operation_key import (
+    kept_operation_key, operation_key_attrs, operation_key_vals, required_operation_key,
+)
 from ui.components.posting_accounts import account_picker
 from ui.components.shell import base_shell, page_header, page_title, toast_header
 from ui.components.table import (EMPTY, status_cards, empty_state_cta, format_value, search_bar,
@@ -227,7 +229,7 @@ def _demand_row(l: dict) -> FT:
     )
 
 
-def _demand_table(lines: list[dict]) -> FT:
+def _demand_table(lines: list[dict], kept_key: str = "") -> FT:
     if not lines:
         return Div(
             P(t("manufacturing.demand_empty"), cls="hint"),
@@ -243,7 +245,7 @@ def _demand_table(lines: list[dict]) -> FT:
             filter_th(t("th.status"), 8, center=True),
         )),
         Tbody(*[_demand_row(l) for l in lines]),
-        cls="data-table", id="mfg-table", **operation_key_attrs(),
+        cls="data-table", id="mfg-table", **operation_key_attrs(kept_key),
     )
 
 
@@ -269,7 +271,7 @@ def _type_filter_bar(all_lines: list[dict], dtype: str) -> FT:
 
 
 
-def _order_table(orders: list[dict], today: str = "") -> FT:
+def _order_table(orders: list[dict], today: str = "", kept_key: str = "") -> FT:
     if not orders:
         return Div(
             empty_state_cta(t("manufacturing.nothing_in_production"),
@@ -289,7 +291,7 @@ def _order_table(orders: list[dict], today: str = "") -> FT:
         Tbody(*[_order_row(o, today) for o in _sched_sort(orders)]),
         cls="data-table",
         id="mfg-table",
-        **operation_key_attrs(),
+        **operation_key_attrs(kept_key),
     )
 
 
@@ -592,17 +594,24 @@ def setup_routes(app):
                 wo_lines.append({"item_id": item_id, "doc_id": doc_id})
         result: dict = {"created": []}
         rows: list[dict] = []
-        error = ""
+        error = kept = ""
         try:
             if wo_lines:
                 result = await api.manufacturing_make_work_orders(
                     token, wo_lines, complete=complete,
                     idempotency_key=required_operation_key(form, "make_complete" if complete else "make"))
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            # Whether it was made is not known (the answer may have been lost): the board keeps
+            # the action's key, so sending it again is the same action.
+            error, kept = refusal_text(e.data or e.detail) or t("manufacturing.err_make"), kept_operation_key(form)
+        try:
             rows = (await api.manufacturing_to_make(token)).get("items", [])
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            error = refusal_text(e.data or e.detail) or t("manufacturing.err_make")
+            error = error or refusal_text(e.data or e.detail) or t("manufacturing.err_make")
         lines = _demand_filter(_demand_lines(rows), dtype)
         made = len(result.get("created", []))
         if error:
@@ -613,7 +622,7 @@ def setup_routes(app):
         else:
             msg, kind = t("manufacturing.nothing_to_make_selected"), "info"
         return HTMLResponse(
-            to_xml(_demand_table(lines)),
+            to_xml(_demand_table(lines, kept)),
             headers=toast_header(msg, kind),
         )
 
@@ -744,16 +753,22 @@ def setup_routes(app):
         ids = list(dict.fromkeys(form.getlist("selected")))
         result: dict = {"done": [], "skipped": []}
         orders: list[dict] = []
-        error = ""
+        error = kept = ""
         try:
             if ids:
                 result = await api.manufacturing_bulk_run_action(token, ids, action,
                                                                  idempotency_key=required_operation_key(form, action))
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            # As Make selected: the queue keeps the key of an action whose outcome is not known.
+            error, kept = refusal_text(e.data or e.detail) or t("manufacturing.err_bulk_action"), kept_operation_key(form)
+        try:
             orders = (await api.list_mfg_orders(token, {})).get("items", [])
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            error = refusal_text(e.data or e.detail) or t("manufacturing.err_bulk_action")
+            error = error or refusal_text(e.data or e.detail) or t("manufacturing.err_bulk_action")
         done = len(result.get("done", []))
         skipped = len(result.get("skipped", []))
         if error:
@@ -765,7 +780,7 @@ def setup_routes(app):
                 msg += " " + t("manufacturing.bulk_skipped", n=skipped) + "".join(f". {w}" for w in why if w)
             kind = "success" if done else "info"
         return HTMLResponse(
-            to_xml(_order_table(_runs_for_status(orders, status), today=date.today().isoformat())),
+            to_xml(_order_table(_runs_for_status(orders, status), today=date.today().isoformat(), kept_key=kept)),
             headers=toast_header(msg, kind),
         )
 

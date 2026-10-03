@@ -22,7 +22,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
-from ui.components.operation_key import operation_key_vals, required_operation_key
+from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
@@ -1944,13 +1944,14 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(e.detail, cls="cell-error"), id="recipe-section")
 
     async def _production_block_response(token: str, entity_id: str, flash_msg: str | None = None,
-                                         flash_kind: str = "success"):
+                                         flash_kind: str = "success", kept_keys: dict[str, str] | None = None):
         item, company, hub = await asyncio.gather(
             api.get_item(token, entity_id), api.get_company(token),
             api.manufacturing_item_hub(token, entity_id),
         )
         cur = currency_symbol(company.get("currency") or (company.get("settings") or {}).get("currency") or "")
-        return _production_block(entity_id, item, hub, cur, flash_msg=flash_msg, flash_kind=flash_kind)
+        return _production_block(entity_id, item, hub, cur, flash_msg=flash_msg, flash_kind=flash_kind,
+                                 kept_keys=kept_keys)
 
     @app.get("/api/items/{entity_id}/production-block")
     async def production_block(request: Request, entity_id: str):
@@ -1994,8 +1995,10 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
+            # Whether it happened is not known (the answer may have been lost): the run's
+            # action list keeps its key, so sending it again is the same action.
             return await _production_block_response(token, entity_id, flash_msg=refusal_text(e.data or e.detail),
-                                                    flash_kind="error")
+                                                    flash_kind="error", kept_keys={run_id: kept_operation_key(form)})
 
     @app.post("/api/items/{entity_id}/recipe-section")
     async def recipe_section_edit(request: Request, entity_id: str):
@@ -6993,7 +6996,8 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
 
 
 def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
-                      flash_msg: str | None = None, flash_kind: str = "success") -> FT:
+                      flash_msg: str | None = None, flash_kind: str = "success",
+                      kept_keys: dict[str, str] | None = None) -> FT:
     """The product Manufacturing-tab production hub: open demand for this product (with coverage) +
     its work orders. Both tables are client-sortable and Excel-filterable with from/to due-date
     filters, and paginate when long. Completed/cancelled work orders are hidden by default via the
@@ -7066,7 +7070,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         return Select(*opts, name="action", cls="wo-action-select", hx_trigger="change",
                       hx_post=f"/api/items/{entity_id}/runs/{rid}/act",
                       hx_target="#production-block", hx_swap="outerHTML", hx_disabled_elt="this",
-                      hx_vals=operation_key_vals())
+                      hx_vals=operation_key_vals((kept_keys or {}).get(rid, "")))
 
     def _wo_source_cell(run: dict) -> FT:
         src_id, src_no = run.get("source_doc_id"), run.get("source_doc_number")

@@ -306,3 +306,61 @@ async def test_a_refused_schedule_edit_says_why(client, session, auth):
     assert r.status_code == 200, r.text
     toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
     assert toast == {"message": "This run is cancelled, so it cannot be rescheduled.", "type": "error"}
+
+
+# ── The server's answer is lost on the way to the app: the page it shows keeps the key ──
+
+def _toast(r) -> dict:
+    return json.loads(r.headers["HX-Trigger"])["celerpToast"]
+
+
+def _run_key(html: str, order: str) -> str:
+    select = re.search(rf'<select[^>]*runs/{re.escape(order)}/act[^>]*>', html).group(0)
+    return re.search(r'idempotency_key(?:&quot;|")[^\w-]+([\w-]+)', select).group(1)
+
+
+def _table_key(html: str) -> str:
+    return re.search(r'data-operation-key="([^"]+)"', html).group(1)
+
+
+async def test_a_run_action_whose_answer_was_lost_is_sent_again_with_its_key(client, session, auth):
+    made, order = await _issued(client, auth)
+    with _app(lose=f"/manufacturing/{order}/return"):
+        lost = await _page(auth, f"/api/items/{made}/runs/{order}/act", {"action": "return", "idempotency_key": "p1"})
+        assert "flash--error" in lost.text
+        assert (await issue(client, auth, order, key="again")).status_code == 200
+        events = await _settled(session, auth)
+
+        await _act(auth, made, order, "return", _run_key(lost.text, order))
+
+    assert _run_key(lost.text, order) == "p1"
+    assert await _settled(session, auth) == events
+
+
+async def test_a_bulk_action_whose_answer_was_lost_is_sent_again_with_its_key(client, session, auth):
+    _, _, order = await _run(client, auth, qty=2)
+    with _app(lose="/manufacturing/bulk-action"):
+        lost = await _page(auth, "/manufacturing/runs/bulk/issue?status=active",
+                           [("selected", order), ("idempotency_key", "p1")])
+        assert _toast(lost)["type"] == "error"
+        assert (await give_back(client, auth, order, key="undone")).status_code == 200
+        events = await _settled(session, auth)
+
+        await _bulk(auth, "issue", [order], _table_key(lost.text))
+
+    assert _table_key(lost.text) == "p1"
+    assert await _settled(session, auth) == events
+    assert (await _state(session, auth, order))["inputs"][0]["issued_qty"] == 0.0
+
+
+async def test_make_selected_whose_answer_was_lost_is_sent_again_with_its_key(client, session, auth):
+    made, _, late = await _setup(client, auth)
+    with _app(lose="/manufacturing/to-make/make"):
+        lost = await _page(auth, "/manufacturing/make-selected", {"selected": f"{made}|{late}", "idempotency_key": "p1"})
+        assert _toast(lost)["type"] == "error"
+
+        r = await _page(auth, "/manufacturing/make-selected",
+                        {"selected": f"{made}|{late}", "idempotency_key": _table_key(lost.text)})
+
+    assert _table_key(lost.text) == "p1" and _toast(r)["type"] == "success"
+    assert await _count(session, auth, entity_type="mfg_order") == 1
