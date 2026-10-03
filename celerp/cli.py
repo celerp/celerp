@@ -484,69 +484,50 @@ def ensure_database(cfg: dict, *, own: bool = False) -> None:
 
 
 def _run_upgrade_with_auto_stamp(alembic_cfg, engine_url: str) -> None:
-    """Run alembic upgrade head, auto-stamping past any already-applied revisions.
+    """Upgrade to head one revision at a time, stamping past any revision whose DDL
+    is already present.
 
     When a migration's DDL was applied outside Alembic (e.g. dev testing before
     a formal release), the DB has the tables but the version stamp is behind.
-    Alembic will crash with DuplicateTable/DuplicateObject on the re-apply.
-    This helper catches those errors per-revision, stamps past them, and retries
-    until all pending migrations are applied cleanly.
+    Alembic will crash with DuplicateTable/DuplicateObject on the re-apply; that
+    revision alone is stamped and the upgrade continues.
+
+    One revision per upgrade is what makes the failing revision known. A single
+    `upgrade head` runs every pending revision in one transaction, so a failure
+    rolls back the revisions before it as well and the stamp no longer says which
+    one raised: stepping past "the one after the stamp" would skip a revision that
+    never ran.
     """
     from alembic import command
-    from alembic.util.exc import CommandError
+    from alembic.script import ScriptDirectory
     import sqlalchemy as _sa2
 
-    _MAX_RETRIES = 50  # safety cap - one per migration at most
-    for _ in range(_MAX_RETRIES):
+    _ALREADY_EXISTS = ("DuplicateTable", "DuplicateObject", "DuplicateColumn", "already exists")
+
+    engine2 = _sa2.create_engine(engine_url, pool_pre_ping=True)
+    try:
+        with engine2.connect() as conn:
+            has_stamp = _sa2.inspect(conn).has_table("alembic_version")
+            current = conn.execute(_sa2.text("SELECT version_num FROM alembic_version")).scalar() if has_stamp else None
+    finally:
+        engine2.dispose()
+
+    script = ScriptDirectory.from_config(alembic_cfg)
+    oldest_first = list(reversed(list(script.walk_revisions())))
+    ids = [rev.revision for rev in oldest_first]
+    if current is not None and current not in ids:
+        command.upgrade(alembic_cfg, "head")  # an unknown stamp: alembic's own error says so
+        return
+    pending = ids[ids.index(current) + 1:] if current is not None else ids
+
+    for revision in pending:
         try:
-            command.upgrade(alembic_cfg, "head")
-            return  # success
+            command.upgrade(alembic_cfg, revision)
         except Exception as exc:
-            msg = str(exc)
-            # Detect DDL-already-exists errors from Postgres.
-            _ALREADY_EXISTS = (
-                "DuplicateTable",
-                "DuplicateObject",
-                "DuplicateColumn",
-                "already exists",
-            )
-            if not any(tok in msg for tok in _ALREADY_EXISTS):
+            if not any(tok in str(exc) for tok in _ALREADY_EXISTS):
                 raise  # unrelated error - propagate
-
-            # Find the revision currently stamped and advance it by one so the
-            # offending migration is skipped on the next attempt.
-            engine2 = _sa2.create_engine(engine_url, pool_pre_ping=True)
-            try:
-                with engine2.connect() as conn:
-                    current = conn.execute(
-                        _sa2.text("SELECT version_num FROM alembic_version")
-                    ).scalar()
-                from alembic.script import ScriptDirectory
-                script = ScriptDirectory.from_config(alembic_cfg)
-                # Walk revisions from base to head; find the one after current.
-                revs = list(reversed(list(script.walk_revisions())))
-                next_rev = None
-                found = current is None  # if no stamp, first revision is the one
-                for rev in revs:
-                    if found:
-                        next_rev = rev.revision
-                        break
-                    if rev.revision == current:
-                        found = True
-                if next_rev:
-                    click.echo(
-                        f"  · Schema already contains changes from {next_rev} "
-                        f"— stamping past it..."
-                    )
-                    command.stamp(alembic_cfg, next_rev)
-                else:
-                    raise RuntimeError(
-                        f"Cannot auto-stamp past failed migration. Error: {msg}"
-                    )
-            finally:
-                engine2.dispose()
-
-    raise RuntimeError("Migration auto-stamp loop exceeded safety cap.")
+            click.echo(f"  · Schema already contains changes from {revision}, stamping past it...")
+            command.stamp(alembic_cfg, revision)
 
 
 def _apply_migrations(db_url: str) -> None:
