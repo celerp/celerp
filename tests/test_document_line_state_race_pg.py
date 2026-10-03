@@ -222,3 +222,39 @@ async def test_a_document_created_while_another_reserves_the_item_is_refused(com
     assert await _docs(committed_engine, company_id) == [holder]
     item = await _item(committed_engine, company_id)
     assert (item["status"], item["status_doc_id"]) == ("reserved", holder)
+
+
+def _credit_note(s, company_id, user, original: str, amount: float):
+    payload = docs.DocCreatePayload(doc_type="credit_note", original_doc_id=original,
+                                    subtotal=amount, total=amount)
+    return docs.create_doc(payload, company_id=company_id, _=None, role="admin", settings={},
+                           user=user, session=s)
+
+
+async def test_two_credit_notes_at_once_both_reduce_what_the_invoice_owes(committed_engine, monkeypatch):
+    """A credit note reads its invoice's balance after the other one has reduced it, so
+    neither reduction is lost."""
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id, user = await _seed(factory)
+    async with factory() as s:
+        await emit_event(
+            s, company_id=company_id, entity_id="doc:INV", entity_type="doc", event_type="doc.created",
+            data={"doc_type": "invoice", "ref_id": "INV", "status": "final", "line_items": [],
+                  "subtotal": 100, "total": 100, "amount_paid": 0, "amount_outstanding": 100},
+            actor_id=user.id, location_id=None, source="test", idempotency_key=str(uuid.uuid4()),
+        )
+        await s.commit()
+
+    async with factory() as first, factory() as second:
+        reached, release = _pause(monkeypatch, docs, "_lock_selected_contact", first)
+        late = asyncio.create_task(_credit_note(first, company_id, user, "doc:INV", 30))
+        await asyncio.wait_for(reached.wait(), timeout=30)
+        await _credit_note(second, company_id, user, "doc:INV", 20)
+        release.set()
+        await asyncio.wait_for(late, timeout=30)
+
+    async with committed_engine.connect() as conn:
+        owed = (await conn.execute(text(
+            "SELECT (state::jsonb ->> 'amount_outstanding')::numeric FROM projections "
+            "WHERE company_id = :c AND entity_id = 'doc:INV'"), {"c": company_id})).scalar_one()
+    assert owed == 50

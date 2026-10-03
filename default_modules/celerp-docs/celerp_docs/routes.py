@@ -1567,17 +1567,18 @@ async def create_doc(
         if replay is not None:
             return _replay_result(replay, event_type="doc.created", digest=digest)
 
-    if payload.doc_type == "credit_note" and payload.original_doc_id:
-        inv = await _get_doc(session, company_id, payload.original_doc_id)
-        original_total = float(inv.state.get("total", 0) or 0)
-        if payload.total > original_total + 1e-9:
-            raise HTTPException(status_code=409, detail="Credit note total cannot exceed original invoice total")
-
     # Contact before company, the lock order every contact-reference writer takes. The
     # company lock comes before any line check: Revert to Draft and Reserve take it too, so
     # the lines are checked as the last of them left the items, and numbering is serialized.
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
     company = await locked_company(session, company_id)
+
+    if payload.doc_type == "credit_note" and payload.original_doc_id:
+        # Locked, so the balance reduced below is the one the invoice's last writer left.
+        inv = await _get_doc(session, company_id, payload.original_doc_id, for_update=True)
+        original_total = float(inv.state.get("total", 0) or 0)
+        if payload.total > original_total + 1e-9:
+            raise HTTPException(status_code=409, detail="Credit note total cannot exceed original invoice total")
     require_currency_code(payload.currency)
 
     _assert_date_order(payload.model_dump(exclude_none=True))
