@@ -5,7 +5,8 @@
 A locked day refuses receiving and completing as it refuses issuing. A run, its
 components and its account belong to one company and are absent to every other. Labor
 and overhead stay planning data: a run carries only the value of the materials issued
-to it. A run whose work in progress account can no longer take postings is refused
+to it. A component's cost cannot be corrected once part of it went into a run, so the
+run keeps the value it was given. A run whose work in progress account can no longer take postings is refused
 rather than moved somewhere else.
 """
 from __future__ import annotations
@@ -18,7 +19,7 @@ import pytest
 
 from mfg_runs import WIP, complete, issue, product, receive, role, run, set_settings, snapshot
 from stock_books import assert_settled
-from test_cost_restatement import TZ, _item, _state, company_auth
+from test_cost_restatement import TZ, _item, _set_cost, _state, company_auth
 from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 
 pytestmark = pytest.mark.asyncio
@@ -103,4 +104,19 @@ async def test_a_run_whose_account_was_switched_off_is_refused_and_changes_nothi
         assert r.status_code == 409, r.text
         assert r.json()["detail"]["message_key"] == "posting.continued_account_unusable", r.text
     assert await snapshot(session, auth, raw, item, order) == before
+    await assert_settled(client, session, auth)
+
+
+@pytest.mark.parametrize("taken", [4, 10], ids=["part", "all"])
+async def test_correcting_a_components_cost_after_it_went_into_a_run_is_refused(client, session, auth, taken):
+    raw = await _item(client, auth, 100.0, qty=10)
+    order = await run(client, auth, await product(client, auth, [(raw, 5)]), 2)
+    assert (await issue(client, auth, order, [(raw, taken)], key="i")).status_code == 200
+    before = await snapshot(session, auth, raw, order)
+
+    r = await _set_cost(client, auth, raw, 300.0)
+
+    assert r.status_code == 409 and "cannot be carried" in r.text, r.text
+    assert await snapshot(session, auth, raw, order) == before
+    assert (await _state(session, auth, order))["wip_issued"] == f"{10.0 * taken:.2f}"
     await assert_settled(client, session, auth)
