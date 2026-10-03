@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from celerp.services.pricing import is_cost_list_name  # noqa: E402
-from test_helpers import create_item, grant_permission, perm_setup, merge_items  # noqa: E402
+from test_helpers import create_item, grant_permission, perm_setup, merge_items, reserve_item  # noqa: E402
 
 
 async def _item_state(client, headers: dict, item_id: str) -> dict:
@@ -478,7 +478,7 @@ async def test_revert_of_reserved_item_rejected(client, session):
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
     assert (await _make_available(client, ctx["admin_h"], item_id)).status_code == 200
-    assert (await _set_status(client, ctx["admin_h"], item_id, "reserved")).status_code == 200
+    await reserve_item(client, ctx["admin_h"], item_id)
 
     rv = await _revert_to_draft(client, ctx["admin_h"], item_id)
     assert rv.status_code == 409, rv.text

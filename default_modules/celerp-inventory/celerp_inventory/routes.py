@@ -400,6 +400,8 @@ _ACTION_OWNED_STATUSES: dict[str, str] = {
     "sold": "An item is sold by fulfilling its invoice, not a direct status edit.",
     "merged": "An item is merged through the Merge action, not a direct status edit.",
     "expired": "Use the Expire action to expire an item, not a direct status edit.",
+    "reserved": "An item is reserved by the sales order or invoice that holds it, not a direct status edit.",
+    "memo_out": "An item goes out on memo by fulfilling its memo, not a direct status edit.",
 }
 
 # Why stock that has left the books cannot come back through a status edit, by the
@@ -431,7 +433,9 @@ async def assert_status_change_allowed(
     """Function-level validation shared by every item-status write path (single,
     bulk, and PATCH). Unknown values are rejected with the allowed list. A status
     edit is administrative: it never records an outcome another action books
-    (written off, sold, merged, expired), and stock that has left the books (written
+    (written off, sold, merged, expired, reserved, out on memo), it never takes an item
+    out of a status a document holds (only a sold item may still be archived), and
+    stock that has left the books (written
     off, sold, merged, or used up by a split or transform) comes back only through the
     action that undoes it, judged on the locked row. A draft item's amounts and costs
     are freely editable, so an item that has circulated must never quietly become one
@@ -461,10 +465,9 @@ async def assert_status_change_allowed(
         current = str(state.get("status") or "").lower()
         if ns == "archived" and current in _ARCHIVABLE_AFTER_SALE:
             return
-        if ns == "archived":
-            _reject_document_held(state, "archived")
         if current not in ("", "draft", ns) and not in_stock(state):
             raise HTTPException(status_code=422, detail=_LEFT_THE_BOOKS.get(current, _GAVE_UP_ITS_STOCK))
+        _reject_document_held(state, "archived" if ns == "archived" else f"set to {ns}")
         return
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     state = (row.state if row else {}) or {}
@@ -525,15 +528,20 @@ async def assert_status_change_allowed(
         )
 
 
+# Statuses only a document sets and only that document releases.
+_DOCUMENT_HELD_STATUSES = frozenset({"reserved", "memo_out"})
+
+
 def _reject_document_held(state: dict, action: str) -> None:
-    """Goods a document holds (out on memo, or any status a document stamped) are
-    settled by that document: returned, converted or closed there. Archive and Expire
-    would retire them behind its back, so they wait until the document lets go."""
-    if not state.get("status_doc_id") and str(state.get("status") or "").lower() != "memo_out":
+    """Goods a document holds (reserved or out on memo, or any status a document
+    stamped) are settled by that document: released, returned, converted or closed
+    there. A status edit, Archive or Expire would take them from it behind its back,
+    so they wait until the document lets go."""
+    if not state.get("status_doc_id") and str(state.get("status") or "").lower() not in _DOCUMENT_HELD_STATUSES:
         return
     holder = state.get("status_doc_number") or state.get("status_doc_id") or "that holds it"
     raise HTTPException(status_code=409, detail=(
-        f"This item is held by document {holder}; resolve the document first (return the goods "
+        f"This item is held by document {holder}; resolve the document first (release or return the goods, "
         f"or convert the document), then the item can be {action}."))
 
 

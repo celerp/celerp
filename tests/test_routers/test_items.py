@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from test_helpers import merge_items, sell_item
+from test_helpers import merge_items, reserve_item, sell_item
 
 
 async def _token(client) -> str:
@@ -327,7 +327,7 @@ async def test_valuation_count_by_status(client):
     assert r1.status_code == 200 and r2.status_code == 200
     id2 = r2.json()["id"]
 
-    await client.post(f"/items/{id2}/status", json={"new_status": "reserved"}, headers=headers)
+    await reserve_item(client, headers, id2)
 
     r = await client.get("/items/valuation", headers=headers)
     assert r.status_code == 200
