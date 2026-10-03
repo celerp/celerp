@@ -380,20 +380,25 @@ def test_restore_reconcile_reports_the_refusal(scratch, tmp_path, monkeypatch):
         _restore_reconcile(scratch.refused("newer_marker"))
 
 
-def test_compatibility_command_runs_as_the_packaged_launcher_calls_it(scratch):
-    """`python -m celerp compatibility`, with this checkout's real version, as the desktop launcher runs it."""
+@pytest.mark.parametrize("recorded_by", ["opened", "projection"])
+def test_compatibility_command_runs_as_the_packaged_launcher_calls_it(scratch, recorded_by):
+    """`python -m celerp compatibility`, with this checkout's real version, as the desktop
+    launcher runs it: it refuses whether the newer copy is known from the record of copies
+    that opened the database or, for an older database, from its projection version."""
     from packaging.version import Version
     from celerp.cli import COMPATIBILITY_REFUSED_EXIT
     real = Version(subprocess.run([sys.executable, "-c", "import celerp; print(celerp.__version__)"],
                                   capture_output=True, text=True, check=True).stdout.strip())
     env = {**os.environ, "DATABASE_URL": DATABASE_URL}
-    newer = scratch("head", f"{real.major + 1}.0.0")
+    later = f"{real.major + 1}.0.0"
+    newer = (scratch("head", str(real), opened=later) if recorded_by == "opened"
+             else scratch("head", later))
     current = scratch("head", None)
     out = subprocess.run([sys.executable, "-m", "celerp", "compatibility", "--db-url", newer],
                          capture_output=True, text=True, env=env, timeout=60)
     assert out.returncode == COMPATIBILITY_REFUSED_EXIT, out.stderr
     decision = json.loads(out.stdout)
-    assert decision["status"] == "newer_app" and decision["recorded"] == f"{real.major + 1}.0.0"
+    assert decision["status"] == "newer_app" and decision["recorded"] == later
     assert decision["running"] == str(real) or Version(decision["running"]) == real
     out = subprocess.run([sys.executable, "-m", "celerp", "compatibility", "--db-url", current],
                          capture_output=True, text=True, env=env, timeout=60)

@@ -32,7 +32,8 @@ function restartSentinelPath(proc) {
 /**
  * Attach an exit handler to the current apiProcess reference.
  * If the restart sentinel is present on exit: delete it, respawn API + UI,
- * then re-attach the watcher (so subsequent restarts also work).
+ * then re-attach the watcher (so subsequent restarts also work). When startApi
+ * resolves false (the database was refused), nothing else starts.
  * If absent and exit code is non-zero: call onCrash.
  *
  * @param {string} dbUrl
@@ -40,7 +41,7 @@ function restartSentinelPath(proc) {
  *   getApiProcess: () => import("child_process").ChildProcess | null,
  *   getUiProcess: () => import("child_process").ChildProcess | null,
  *   setUiProcess: (p: null) => void,
- *   startApi: (dbUrl: string) => Promise<void>,
+ *   startApi: (dbUrl: string) => Promise<boolean | void>,
  *   startUi: (dbUrl: string) => Promise<void>,
  *   sentinelPath: string,
  *   onCrash: (err: Error) => void,
@@ -70,7 +71,7 @@ function watchForRestart(dbUrl, {
       try {
         const ui = getUiProcess();
         if (ui) { ui.kill(); setUiProcess(null); }
-        await startApi(dbUrl);
+        if ((await startApi(dbUrl)) === false) return;
         await startUi(dbUrl);
         watchForRestart(dbUrl, { getApiProcess, getUiProcess, setUiProcess, startApi, startUi, sentinelPath, onCrash, onRestart, fs });
         console.log("[restart] Servers respawned.");

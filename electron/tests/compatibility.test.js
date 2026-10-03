@@ -148,17 +148,21 @@ describe("app-main startup", () => {
     return files;
   }
 
-  async function startPackaged(result, marker = "2.6.0") {
+  const EXTERNAL = {
+    db_mode: "external", external_db_url: "postgresql+asyncpg://u:p@db.example/celerp",
+    feature_flags: { external_db: true },
+  };
+
+  async function startPackaged(result, marker = "2.6.0", { config = EXTERNAL, preflight } = {}) {
     const userData = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-compat-"));
     const dataDir = path.join(userData, "celerp-data");
     const moduleDir = path.join(dataDir, "modules");
     fs.mkdirSync(path.join(moduleDir, "celerp-inventory"), { recursive: true });
     fs.writeFileSync(path.join(moduleDir, "celerp-inventory", "__init__.py"), "# newer copy's module\n");
     if (marker) fs.writeFileSync(path.join(moduleDir, ".default-modules-version"), marker);
-    fs.writeFileSync(path.join(dataDir, "celerp-config.json"), JSON.stringify({
-      db_mode: "external", external_db_url: "postgresql+asyncpg://u:p@db.example/celerp",
-      feature_flags: { external_db: true },
-    }));
+    fs.mkdirSync(path.join(dataDir, "attachments"));
+    fs.writeFileSync(path.join(dataDir, "attachments", "invoice-0001.pdf"), "business document\n");
+    fs.writeFileSync(path.join(dataDir, "celerp-config.json"), JSON.stringify(config));
     const resources = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-res-"));
     const bundled = path.join(resources, "app", "default_modules", "celerp-inventory");
     fs.mkdirSync(bundled, { recursive: true });
@@ -186,7 +190,11 @@ describe("app-main startup", () => {
       extraFakes: {
         child_process: {
           spawnSync: (bin, args) => { events.push(`spawnSync:${name(bin, args)}`); return result; },
-          execFileSync: (bin, args) => { events.push(`execFileSync:${name(bin, args)}`); return ""; },
+          execFileSync: (bin, args, opts) => {
+            events.push(`execFileSync:${name(bin, args)}`);
+            if (args[1] === "celerp.entitlement_preflight" && preflight) preflight(opts.env.CELERP_DATA_DIR);
+            return "";
+          },
           spawn: (bin, args) => {
             events.push(`spawn:${name(bin, args)}`);
             const server = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
@@ -214,6 +222,36 @@ describe("app-main startup", () => {
         "exit:0",
       ]);
       expect(after).toEqual(before);
+    });
+
+  // The entitlement preflight runs before the check and may refresh the config, but
+  // a refused database still has its modules and every data file left as they were.
+  test("a refused database is left unchanged when the preflight refreshed the subscription",
+    async function test_app_main_preflight_then_refused() {
+      const lapsed = { ...EXTERNAL, feature_flags: { external_db: false } };
+      const { events, before, after } = await startPackaged(NEWER, "2.6.0", {
+        config: lapsed,
+        // As celerp.entitlement_preflight does on a renewal: the refreshed flags land
+        // in the config Electron reads.
+        preflight: (dataDir) => fs.writeFileSync(path.join(dataDir, "celerp-config.json"), JSON.stringify(EXTERNAL)),
+      });
+      expect(events).toEqual([
+        "execFileSync:-m celerp.entitlement_preflight",
+        "spawnSync:-m celerp compatibility",
+        "message:Your data was last opened with Celerp 2.6.0, which is newer than this copy (2.5.3). " +
+          "Download the latest version to continue.",
+        "exit:0",
+      ]);
+      expect(JSON.parse(after["celerp-config.json"])).toEqual(EXTERNAL);
+      // Configuration only: the refreshed config, and the password a bundled database
+      // would use, minted while choosing a database when no bundled one exists yet.
+      const settings = (files) => {
+        const { ["celerp-config.json"]: _c, ["pg-password"]: _p, ...data } = files;
+        return data;
+      };
+      const dataAfter = settings(after);
+      expect(dataAfter).toEqual(settings(before));
+      expect(dataAfter["attachments/invoice-0001.pdf"]).toBe("business document\n");
     });
 
   test("compatible data opens as before, after the check", async function test_app_main_compatible_starts() {

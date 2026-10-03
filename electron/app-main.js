@@ -1371,8 +1371,9 @@ app.whenReady().then(async () => {
         // A restart can follow a backup restore that replaced the database wholesale
         // (possibly with an older schema). Check and reconcile it before the servers
         // come back, exactly like a cold boot; skipping this leaves the code querying
-        // columns the restored schema does not have.
-        await reopenData({
+        // columns the restored schema does not have. A refusal has already quit;
+        // returning it keeps the UI from starting.
+        return reopenData({
           mayOpenData: () => mayOpenDatabase(url),
           runMigrations: () => runMigrations(url),
           startApi: async () => {

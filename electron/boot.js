@@ -4,9 +4,9 @@
 
 // The part of desktop startup that touches the data, in order.
 //
-// The database is checked before anything writes to the data directory, the
-// config or the database: when this copy may not open it, none of the steps
-// after the check run. Pure apart from the injected steps, so the order is
+// The database is checked before any change to application data, the database or
+// the modules: when this copy may not open it, none of the steps after the check
+// run. (Choosing which database to open can refresh the config first.) Pure apart from the injected steps, so the order is
 // unit-testable without Electron, like restart.js.
 
 /**
