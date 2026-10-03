@@ -27,94 +27,28 @@ from pathlib import Path, PurePosixPath
 log = logging.getLogger(__name__)
 
 
-def _parse_version(v: str | None) -> tuple[int, int, int, str]:
-    """Parse a celerp version string into a comparable tuple.
+# Archives from before backups recorded their version.
+_UNRECORDED_VERSIONS = (None, "", "unknown")
 
-    Returns (major, minor, patch, pre_release). Garbage / None / "unknown"
-    return (0, 0, 0, "") so the import proceeds (no false block on
-    legacy archives).
 
-    Accepts:
-      - "1.2.3"                       → (1, 2, 3, "")
-      - "1.1.19.dev158"                → (1, 1, 19, "dev158")   (setuptools_scm on dev)
-      - "0.1.dev1"                     → (0, 1, 0,  "dev1")     (setuptools_scm on CI, no tags)
-      - "1.0"                          → (1, 0, 0, "")
-      - "" / None / "unknown" / "abc"  → (0, 0, 0, "")
-
-    Tuple comparison is correct for major/minor/patch: (10, 0, 0, "") >
-    (9, 0, 0, "") is True. (String compare would say "10" < "9"
-    lexicographically — that's the old bug.)
-
-    NOTE: the 4th element (pre_release) is informational only and is NOT
-    PEP 440-ordered — a final release sorts *below* its own dev pre-release
-    ("" < "dev1" as strings). The version policy never orders on it (it only
-    reads major/minor), so this is harmless; do not rely on the pre field for
-    ordering decisions elsewhere.
-
-    The parser walks the dotted components. The first 1-3 components
-    that are pure integers become major/minor/patch. The first non-int
-    component (or anything after it) is captured as pre-release. If the
-    FIRST component isn't an int, the whole string is treated as
-    garbage (we return zeros) — the dev versions setuptools_scm emits
-    always start with a numeric major.
-    """
-    if not v or not isinstance(v, str):
-        return (0, 0, 0, "")
-
-    parts = v.split(".")
-
-    # First component must be a pure int for the version to be parseable.
+def _refuse_newer_archive(recorded) -> None:
+    """Refuse a backup made by a newer Celerp than this one: an older copy cannot
+    know that backup's schema or data. Legacy backups that never recorded a version
+    restore; a recorded version that cannot be read is refused."""
+    from packaging.version import InvalidVersion
+    from celerp.migrations.compatibility import is_newer_than_running, running_version
+    if recorded in _UNRECORDED_VERSIONS:
+        return
     try:
-        major = int(parts[0])
-    except (ValueError, IndexError):
-        return (0, 0, 0, "")
-
-    # Walk the rest, allowing up to 2 more numeric components before any
-    # non-numeric one starts the pre-release tail.
-    nums = [major]
-    pre_parts: list[str] = []
-    saw_non_int = False
-    for p in parts[1:]:
-        if not saw_non_int and len(nums) < 3:
-            try:
-                nums.append(int(p))
-            except ValueError:
-                saw_non_int = True
-                pre_parts.append(p)
-        else:
-            if not saw_non_int:
-                saw_non_int = True
-            pre_parts.append(p)
-
-    minor = nums[1] if len(nums) > 1 else 0
-    patch = nums[2] if len(nums) > 2 else 0
-    pre = ".".join(pre_parts)
-    return (major, minor, patch, pre)
-
-
-def _safe_test_version() -> str:
-    """Return a version string guaranteed to be <= the current install.
-
-    Used by tests that build .celerp-backup archives with a fixed
-    celerp_version. Deriving at runtime (instead of hardcoding "1.0.0")
-    means the test passes on:
-      - Local dev (setuptools_scm gives 1.1.11.dev20 with tags)
-      - CI (setuptools_scm gives 0.1.dev1 on a fresh checkout with no tags)
-      - Packaged install (setuptools gives the published version)
-
-    The returned version is one patch below the current major.minor so
-    it's unambiguously "older" — the version policy treats it as silent.
-    """
-    try:
-        from importlib.metadata import version
-        current = version("celerp")
-    except Exception:
-        return "0.0.0"
-    v = _parse_version(current)
-    if v == (0, 0, 0, ""):
-        return "0.0.0"
-    # Same major.minor, patch - 1. Guarantees <= current.
-    return f"{v[0]}.{v[1]}.{max(0, v[2] - 1)}"
+        newer = is_newer_than_running(recorded)
+    except (InvalidVersion, TypeError):
+        raise ValueError(f"This backup records a Celerp version that cannot be read ({recorded!r}). "
+                         f"Nothing was changed.")
+    if newer:
+        raise ValueError(
+            f"This backup was made with Celerp {recorded}, which is newer than this copy "
+            f"({running_version()}). Nothing was changed. Update Celerp, then restore it."
+        )
 
 
 @dataclass
@@ -179,7 +113,7 @@ def validate_archive(path: Path) -> ImportMeta:
         meta_data = json.loads(meta_file.read())
 
     meta = ImportMeta(
-        celerp_version=meta_data.get("celerp_version", "unknown"),
+        celerp_version=meta_data.get("celerp_version") or "unknown",
         pg_version=meta_data.get("pg_version", "unknown"),
         created_at=meta_data.get("created_at", "unknown"),
         company_name=meta_data.get("company_name", "unknown"),
@@ -201,38 +135,7 @@ def validate_archive(path: Path) -> ImportMeta:
             f"backup from a newer PostgreSQL."
         )
 
-    # Version compatibility check
-    try:
-        from importlib.metadata import version
-        current = version("celerp")
-    except Exception:
-        current = "0.0.0"
-
-    backup_v = _parse_version(meta.celerp_version)
-    current_v = _parse_version(current)
-
-    if backup_v[0] > current_v[0]:
-        # Backup is from a newer MAJOR version. The whole point of restore
-        # is recovery — don't block the user. Warn loudly so the UI can
-        # surface it, but proceed with the import. Schema migrations are
-        # additive so a newer-major backup is usually safe to restore.
-        log.warning(
-            "Backup is from a newer major version (%s) than the current "
-            "installation (%s). Restoring anyway — schema migrations are "
-            "additive. If the backup uses removed features, some data may "
-            "not round-trip cleanly.",
-            meta.celerp_version, current,
-        )
-    elif backup_v[0] == current_v[0] and backup_v[1] != current_v[1]:
-        # Same major, different minor. Existing behaviour: warn, proceed.
-        log.warning(
-            "Backup version %s differs from current %s (minor version mismatch). "
-            "Schema migrations will run automatically after restore.",
-            meta.celerp_version, current,
-        )
-    # else: same major, same or older minor (downgrade) → silent.
-    # Schema migrations are additive in both directions.
-
+    _refuse_newer_archive(meta_data.get("celerp_version"))
     return meta
 
 
@@ -802,8 +705,10 @@ def recovery_incomplete() -> bool:
 def _mark_recovery_started(target: Path, connectors: list[dict]) -> None:
     """Durably record that the installation is being replaced, what *target* archive
     brings it back to a whole state if the replacement does not finish, and the
-    *connectors* whose remote state must be revoked before it is replaced."""
-    _write_marker({"target": str(target), "connectors": connectors})
+    *connectors* whose remote state must be revoked before it is replaced. The marker
+    records this copy's version: an older copy never finishes a newer copy's recovery."""
+    from celerp.migrations.compatibility import running_version
+    _write_marker({"target": str(target), "connectors": connectors, "celerp_version": running_version()})
 
 
 def _write_marker(state: dict) -> None:
@@ -846,13 +751,16 @@ def _keep_for_retry(prepared: PreparedRecovery) -> Path:
 async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], bool]:
     """Replace the database, file roots and enabled modules with *prepared*'s.
 
-    Clears the restored connectors and ends every session. Returns the enabled
+    Clears the restored connectors, records the restore for Celerp Cloud
+    (``payments.record_recovery``) and ends every session. Returns the enabled
     modules and whether a restart was scheduled. The caller holds the recovery locks and the recovery marker.
     """
     import asyncio
+    import sqlalchemy as sa
     from celerp.config import settings
     from celerp.db import get_session_ctx
-    from celerp.services import session_tracker
+    from celerp.models.company import Company
+    from celerp.services import payments, session_tracker
     from celerp.services.backup_export import required_installation_modules
 
     await _dispose_engine()
@@ -860,10 +768,14 @@ async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], 
     await _reconcile_schema()
     async with get_session_ctx() as session:
         await _clear_restored_connector_state(session)
+        # The restored companies take online payments again, closings from before the
+        # restore can no longer finish, companies it did not bring back stay closed, and
+        # every payment it ever recorded is delivered again.
+        payments.record_recovery(session, (await session.scalars(sa.select(Company.id))).all())
         # Backups without module metadata take the set from every restored company.
         modules = prepared.meta.enabled_modules or sorted(await required_installation_modules(session))
         # No session from before the replacement stays valid; this also
-        # commits the connector cleanup.
+        # commits the connector cleanup and the recorded restore.
         await session_tracker.end_all_sessions(session)
     await asyncio.to_thread(_swap_roots, prepared)
     return modules, _apply_modules(modules)
@@ -873,9 +785,11 @@ async def _replace_from(target: Path) -> None:
     """Revoke the connectors the recovery marker still lists, replace the installation
     with the archive *target*, then clear the marker."""
     import asyncio
-    await _reconcile_connectors()
+    # Checked before the irreversible connector revoke: an archive this copy cannot
+    # restore leaves everything as it is.
     prepared = await prepare_recovery(target)
     try:
+        await _reconcile_connectors()
         await _replace_installation(prepared)
     finally:
         await asyncio.to_thread(_remove_staging, prepared.root)
@@ -893,7 +807,9 @@ async def finish_incomplete_recovery() -> None:
     if not recovery_incomplete():
         return
     try:
-        target = Path(json.loads(_marker_path().read_text())["target"])
+        marker = json.loads(_marker_path().read_text())
+        target = Path(marker["target"])
+        _refuse_newer_archive(marker.get("celerp_version"))
         async with _recovery_locks():
             await _replace_from(target)
         log.info("Unfinished System Recovery completed from %s", target)
@@ -934,6 +850,10 @@ async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | Non
                     log.exception("The installation could not be put back from %s", safety_archive)
             return _failed(_commit_failure(exc, safety, restored), safety_archive=safety)
         _mark_recovery_finished()
+        # Celerp Cloud learns of the restore now; until it has, no company can be reset,
+        # and the reconciliation at start and every few minutes keeps trying.
+        from celerp.services.payments import reconcile_payments
+        await reconcile_payments()
         warnings = _missing_module_warnings(modules)
         _write_restore_notice(prepared.meta.company_name, warnings, safety, restart_scheduled)
         return BackupResult(ok=True, size_bytes=prepared.files[_STAGED_DUMP], warnings=warnings,

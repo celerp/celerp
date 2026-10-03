@@ -199,9 +199,18 @@ async def lifespan(_app: FastAPI):
         yield
         return
 
+    from celerp.migrations.compatibility import IncompatibleDatabase, check as check_compatibility
     try:
+        async with lifecycle_engine.connect() as conn:
+            compatibility = await conn.run_sync(check_compatibility)
+            await conn.rollback()
+        if not compatibility.ok:
+            raise IncompatibleDatabase(compatibility)
         async with lifecycle_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+    except IncompatibleDatabase as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        sys.exit(1)
     except Exception as exc:
         masked_url = mask_db_credentials(settings.database_url)
         print(
@@ -322,6 +331,13 @@ async def lifespan(_app: FastAPI):
         await reconcile_landings()
     except Exception:
         logging.getLogger(__name__).exception("Reconciling unfinished company restores failed (non-fatal)")
+
+    # In the background, and again every few minutes: a System Recovery restore Celerp
+    # Cloud has not confirmed is reported, and a company reset that stopped after Cloud
+    # began closing the company's online payments is settled (a deleted company's
+    # payments close for good, a kept one's reopen). Until then they stay closed.
+    from celerp.services.payments import reconcile_payments_loop
+    payments_reconcile_task = asyncio.create_task(reconcile_payments_loop())
 
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links
@@ -456,6 +472,7 @@ async def lifespan(_app: FastAPI):
     outbound_connector_task.cancel()
     reorder_alert_task.cancel()
     update_task.cancel()
+    payments_reconcile_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:

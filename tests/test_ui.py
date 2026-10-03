@@ -33,7 +33,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from ui.routes.csv_import import _read_stage, _write_stage, MAPPING_ATTRIBUTE, MAPPING_SKIP
+from celerp.services.import_stage import read_stage, write_stage
+from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
 from test_helpers import make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
@@ -90,7 +91,7 @@ async def _inventory_import_with_mapping(ui_client, csv_bytes: bytes):
     m = re.search(r'name="csv_ref"\s+value="([^"]+)"', html)
     assert m, "csv_ref hidden field not found"
     csv_ref = m.group(1)
-    csv_text = _read_stage(_TEST_COMPANY_ID, csv_ref)
+    csv_text = read_stage(_TEST_COMPANY_ID, csv_ref)
     assert csv_text, "stashed CSV missing"
 
     # Build mapping: map known core columns to themselves, others as attributes
@@ -132,7 +133,7 @@ async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url:
     m = re.search(r'name="csv_ref"\s+value="([^"]+)"', html)
     assert m, f"csv_ref hidden field not found in {preview_url} response"
     csv_ref = m.group(1)
-    csv_text = _read_stage(_TEST_COMPANY_ID, csv_ref)
+    csv_text = read_stage(_TEST_COMPANY_ID, csv_ref)
     assert csv_text, "stashed CSV missing"
 
     import csv as _csv, io as _io
@@ -157,7 +158,7 @@ _TEST_COMPANY_ID = "00000000-0000-0000-0000-00000000c0de"
 
 def _stage_csv(csv_text: str) -> str:
     """Stage CSV text under this file's test company and return its csv_ref."""
-    return _write_stage(_TEST_COMPANY_ID, csv_text)
+    return write_stage(_TEST_COMPANY_ID, csv_text)
 
 
 def _role_from_token(token: str | None) -> str:
@@ -1217,6 +1218,17 @@ class TestActivityFeed:
         assert event_label("item.split") == "Item split"
         assert event_label("item.pricing.set") == "Price updated"
         assert event_label("item.quantity.adjusted") == "Quantity adjusted"
+
+    def test_a_refund_stripe_reversed_reads_in_the_activity(self):
+        from ui.components.activity import EVENT_TYPE_LABELS, detail_from_entry, event_label
+        assert "doc.payment.refund_reversed" in EVENT_TYPE_LABELS
+        assert event_label("doc.payment.refund_reversed") == "Payment refund reversed"
+        assert "200.00" in detail_from_entry({"amount": 200.0}, "doc.payment.refund_reversed", "USD")
+
+    def test_a_payment_released_from_stripe_reads_in_the_activity(self):
+        from ui.components.activity import EVENT_TYPE_LABELS, event_label
+        assert "doc.payment.stripe_released" in EVENT_TYPE_LABELS
+        assert event_label("doc.payment.stripe_released") == "Payment no longer linked to Stripe"
 
     def test_detail_from_entry_source_deactivated(self):
         from ui.components.activity import detail_from_entry
@@ -11056,14 +11068,15 @@ class TestPaymentsSettingsPage:
     no relay = Web Access upsell; relay without Stripe = a single-CTA sales
     pitch with no admin controls; connected = deposit selector + disconnect."""
 
-    def _mocks(self, relay=True, enabled=False, banks=None, deposit=""):
+    def _mocks(self, relay=True, enabled=False, banks=None, deposit="", state=None, unmatched=None, refunds=None):
         from contextlib import ExitStack
         stack = ExitStack()
         for name, val in (
             ("get_relay_status", {"connected": relay}),
-            ("get_payments_status", {"enabled": enabled}),
+            ("get_payments_status", {"enabled": enabled, "state": state}),
             ("get_company", {"stripe_deposit_account": deposit, "current_role": "admin"}),
             ("get_bank_accounts", {"items": banks or []}),
+            ("get_unmatched_payments", {"items": unmatched or [], "refunds": refunds or []}),
         ):
             stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
         return stack
@@ -11103,9 +11116,129 @@ class TestPaymentsSettingsPage:
         assert 'type="text" name="stripe_deposit_account"' not in r.text
 
     @pytest.mark.asyncio
+    async def test_disconnecting_asks_first_and_says_where_later_refunds_are_recorded(self, ui_client):
+        import html as _html
+        from ui.i18n import t
+        with self._mocks(relay=True, enabled=True):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        confirm = t("pay.disconnect_confirm")
+        assert "no longer linked to Stripe" in confirm and "record any refund of them here" in confirm
+        assert "reconnect" not in confirm
+        assert f'data-confirm="{_html.escape(confirm)}"' in r.text
+        assert 'onsubmit="return confirm(this.dataset.confirm)"' in r.text
+
+    @pytest.mark.asyncio
     async def test_non_admin_cannot_open(self, ui_client):
         r = await ui_client.get("/settings/payments", cookies=_authed(role="staff"))
         assert r.status_code in (302, 303)
+
+    @pytest.mark.asyncio
+    async def test_disconnecting_state_says_existing_payments_finish(self, ui_client):
+        with self._mocks(relay=True, enabled=False, state="disconnecting"):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Stripe is disconnecting while existing payments finish." in r.text
+        # Neither connect (Cloud refuses it until the disconnect finishes) nor disconnect again.
+        assert "/settings/payments/connect" not in r.text
+        assert "/settings/payments/disconnect" not in r.text
+        assert "stripe_deposit_account" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_revoked_access_asks_to_reconnect_the_same_account(self, ui_client):
+        with self._mocks(relay=True, enabled=False, state="revoked"):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Reconnect this Stripe account to finish checking payments already in progress." in r.text
+        # One action: reconnect. No sales pitch, no disconnect, no deposit settings.
+        assert r.text.count('action="/settings/payments/connect"') == 1
+        assert "Reconnect Stripe" in r.text
+        assert "Connect with Stripe" not in r.text
+        assert "/settings/payments/disconnect" not in r.text
+        assert "stripe_deposit_account" not in r.text
+        assert "Stripe is disconnecting" not in r.text
+
+    _UNMATCHED = [
+        {"reference": "pi_new", "amount": 5000, "currency": "JPY", "company_id": "c-new",
+         "document_id": "doc:2", "received_at": "2026-09-29T09:00:00+00:00", "paid_at": None},
+        {"reference": "pi_old", "amount": 1070.0, "currency": "USD", "company_id": "c-old",
+         "document_id": "doc:1", "received_at": "2026-09-28T09:00:00+00:00",
+         "paid_at": "2026-09-25T09:00:00+00:00"},
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enabled, state", [
+        (True, None), (False, "disconnecting"), (False, "revoked"), (False, None)])
+    async def test_unmatched_payments_are_listed_in_every_state(self, ui_client, enabled, state):
+        with self._mocks(relay=True, enabled=enabled, state=state, unmatched=self._UNMATCHED):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Payments not matched to an invoice" in r.text
+        assert r.text.index("pi_new") < r.text.index("pi_old")  # newest first
+        assert "c-old" in r.text and "doc:1" in r.text and "2026-09-28" in r.text
+        assert "Paid on" in r.text and "2026-09-25" in r.text  # when the customer paid
+        assert "Recorded on" in r.text  # when this installation recorded it
+        assert '<td>--</td>' in r.text  # not known for pi_new
+        assert 'class="cell--number"' in r.text and 'class="cell--money"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_no_unmatched_payments_shows_nothing(self, ui_client):
+        with self._mocks(relay=True, enabled=True):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert "Payments not matched to an invoice" not in r.text
+        assert "Refunds not applied yet" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_refunds_not_applied_yet_are_listed(self, ui_client):
+        refunds = [
+            {"refund_id": "re_2", "transition": "reversed", "reference": "pi_new", "amount": 50.0,
+             "currency": "USD", "company_id": "c-new", "document_id": "doc:2",
+             "received_at": "2026-09-29T09:00:00+00:00", "occurred_at": None},
+            {"refund_id": "re_1", "transition": "applied", "reference": "pi_old", "amount": 200.0,
+             "currency": "USD", "company_id": "c-old", "document_id": "doc:1",
+             "received_at": "2026-09-28T09:00:00+00:00", "occurred_at": "2026-09-27T09:00:00+00:00"}]
+        with self._mocks(relay=True, enabled=True, refunds=refunds):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Payments not matched to an invoice" not in r.text
+        assert "Refunds not applied yet" in r.text and "Refunded on" in r.text
+        assert r.text.index("pi_new") < r.text.index("pi_old")  # newest first
+        assert "<td>Refund reversed</td>" in r.text and "<td>Refund</td>" in r.text
+        assert "2026-09-27" in r.text and "c-old" in r.text and "doc:1" in r.text
+        assert '<td>--</td>' in r.text  # not known for re_2
+
+    @pytest.mark.asyncio
+    async def test_unmatched_payments_hidden_from_a_login_that_may_not_see_them(self, ui_client):
+        from ui.api_client import APIError
+        with self._mocks(relay=True, enabled=True), \
+                patch("ui.api_client.get_unmatched_payments",
+                      new=AsyncMock(side_effect=APIError(403, "Installation owner only"))):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Payments not matched to an invoice" not in r.text
+        assert "/settings/payments/disconnect" in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_disconnect_that_waits_for_payments_shows_it(self, ui_client):
+        with self._mocks(relay=True, enabled=False, state="disconnecting"), \
+                patch("ui.api_client.disconnect_payments",
+                      new=AsyncMock(return_value={"disconnected": False, "state": "disconnecting"})):
+            r = await ui_client.post("/settings/payments/disconnect", cookies=_authed(role="admin"))
+            assert r.status_code == 302 and r.headers["location"] == "/settings/payments"
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert "Stripe is disconnecting while existing payments finish." in r.text
+        assert "/settings/payments/connect" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_failed_disconnect_is_shown(self, ui_client):
+        from ui.api_client import APIError
+        with self._mocks(relay=True, enabled=True), \
+                patch("ui.api_client.disconnect_payments",
+                      new=AsyncMock(side_effect=APIError(503, "Payments are not configured"))):
+            r = await ui_client.post("/settings/payments/disconnect", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Payments are not configured" in r.text
+        assert "/settings/payments/disconnect" in r.text
 
 
 class TestCompanyAllFilesView:
@@ -14739,13 +14872,6 @@ class TestBugFixesBatch25Mar6Bugs:
 
 
 class TestBuildWorkflowVersioning:
-    def test_build_workflow_sets_electron_version_from_tag(self):
-        from test_helpers import REPO_ROOT
-        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
-        assert 'Set Electron version from git tag' in workflow
-        assert "data['version'] = os.environ['VERSION']" in workflow
-        assert 'Install Node deps' in workflow
-
     def test_build_workflow_keeps_static_artifact_names(self):
         from test_helpers import REPO_ROOT
         workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
@@ -14810,16 +14936,6 @@ class TestBuildWorkflowVersioning:
         shell = (REPO_ROOT / 'ui/components/shell.py').read_text()
         assert 'https://github.com/celerp/celerp/releases' in shell
         assert 'Data-Universal-Limited' not in shell
-
-    def test_electron_main_wires_update_not_available(self):
-        from test_helpers import REPO_ROOT
-        main_js = (REPO_ROOT / 'electron/app-main.js').read_text()
-        assert 'update-not-available' in main_js
-
-    def test_preload_exposes_on_update_not_available(self):
-        from test_helpers import REPO_ROOT
-        preload = (REPO_ROOT / 'electron/preload.js').read_text()
-        assert 'onUpdateNotAvailable' in preload
 
 
 class TestInventoryUXFixes:
@@ -16851,13 +16967,13 @@ class TestUnknownUnitRendererInFixTable:
     async def test_revalidate_with_valid_unit_clears_error(self, ui_client):
         """After user picks a valid unit in the fix table, revalidate must succeed."""
         import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
+        from ui.routes.csv_import import _rows_to_csv
 
         units = self._UNITS
         csv_rows = [{"sku": "X1", "name": "Ring", "sell_by": "grams", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
+        csv_ref = write_stage(_TEST_COMPANY_ID, csv_text)
 
         # User fixes "grams" → "gram" (valid unit)
         fixes = {"0__sell_by": "gram"}
@@ -16885,12 +17001,12 @@ class TestUnknownUnitRendererInFixTable:
         catalog and clicking Fix & Import (without changing the cell) must clear the error.
         """
         import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
+        from ui.routes.csv_import import _rows_to_csv
 
         csv_rows = [{"sku": "X2", "name": "Stone", "sell_by": "carat", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
+        csv_ref = write_stage(_TEST_COMPANY_ID, csv_text)
 
         # "carat" is now in the catalog (user added it while fix table was open)
         units_now = self._UNITS + [{"name": "carat", "label": "Carat", "decimals": 2}]
@@ -16913,12 +17029,12 @@ class TestUnknownUnitRendererInFixTable:
     async def test_revalidate_still_unknown_unit_keeps_error(self, ui_client):
         """If unit is still not in catalog after revalidate, error persists and value is preserved."""
         import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
+        from ui.routes.csv_import import _rows_to_csv
 
         csv_rows = [{"sku": "X3", "name": "Rock", "sell_by": "fathom", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
+        csv_ref = write_stage(_TEST_COMPANY_ID, csv_text)
 
         with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)), \
              patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
@@ -16941,12 +17057,12 @@ class TestUnknownUnitRendererInFixTable:
     async def test_add_new_option_not_saved_as_unit_value(self, ui_client):
         """If __add_new__ somehow reaches revalidate, it must not be stored as a sell_by value."""
         import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
+        from ui.routes.csv_import import _rows_to_csv
 
         csv_rows = [{"sku": "X4", "name": "Bead", "sell_by": "piece", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
+        csv_ref = write_stage(_TEST_COMPANY_ID, csv_text)
 
         # Simulate user somehow submitting __add_new__ as the fix value
         fixes = {"0__sell_by": "__add_new__"}
@@ -17414,7 +17530,7 @@ class TestDraftStatusColumn:
         assert "badge--reserved" in r.text, "finalized list must show the item's real status"
 
 
-# ── Factory Reset danger zone UI tests ───────────────────────────────────────
+# ── Danger zone UI tests ───────────────────────────────────────
 
 class TestDangerZoneUI:
     @pytest.mark.asyncio
@@ -17426,7 +17542,7 @@ class TestDangerZoneUI:
              patch("ui.api_client.get_locations", new_callable=AsyncMock, return_value={"items": []}):
             r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="owner"))
         assert r.status_code == 200
-        assert "Reset All Data" in r.text
+        assert "Reset this company" in r.text
 
     @pytest.mark.asyncio
     async def test_danger_zone_hidden_for_admin(self, ui_client):
@@ -17437,7 +17553,7 @@ class TestDangerZoneUI:
              patch("ui.api_client.get_locations", new_callable=AsyncMock, return_value={"items": []}):
             r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="admin"))
         assert r.status_code == 200
-        assert "Reset All Data" not in r.text
+        assert "Reset this company" not in r.text
 
 
 @pytest.mark.asyncio

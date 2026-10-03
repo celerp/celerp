@@ -298,6 +298,9 @@ async def test_migration_phase_uses_verified_first_party_behind_stale_shadow(
         assert errors == {}
     finally:
         loader._first_party_lock.cache_clear()
+        # The phase commits: leave no module table behind for later tests on this database.
+        async with _db_engine.begin() as conn:
+            await conn.execute(sa.text("DROP TABLE IF EXISTS acme_service_log, acme_equipment"))
 
 
 async def test_first_party_migration_failure_raises(_db_engine, tmp_path, monkeypatch):

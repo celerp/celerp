@@ -129,6 +129,11 @@ def watch_supervisor_pipe() -> None:
     threading.Thread(target=_watch, name="supervisor-watch", daemon=True).start()
 
 
+def api_url(port: int) -> str:
+    """Where a server started on this machine reaches the API on `port`."""
+    return f"http://127.0.0.1:{port}"
+
+
 def base_env(env: dict | None = None) -> dict:
     """`env` (default os.environ) without the release this process runs, so a
     child started with it picks its release afresh."""

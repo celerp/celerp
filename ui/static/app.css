@@ -3179,7 +3179,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 }
 .share-btn-dot--live { background: var(--c-green); }
 
-/* --- Factory reset modal --- */
+/* --- Company reset modal --- */
 .reset-modal__body { padding: 16px 24px 24px; display: flex; flex-direction: column; gap: 12px; }
 .reset-modal__body .modal-dialog__actions { margin-top: 4px; }
 .reset-modal__body .form-input { font-size: 14px; padding: 9px 11px; }

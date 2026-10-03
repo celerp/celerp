@@ -19,15 +19,6 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
-def _version() -> str:
-    """Return current celerp version string."""
-    try:
-        from importlib.metadata import version
-        return version("celerp")
-    except Exception:
-        return "unknown"
-
-
 def _pg_version() -> str:
     """Return pg_dump --version output."""
     import subprocess
@@ -114,21 +105,29 @@ async def export_full() -> Path:
     Returns path to temp file.
     """
     import asyncio
-    import datetime
 
-    from celerp.config import settings, read_config
-    from celerp.db import get_session_ctx
+    from celerp.config import settings
     from celerp.services import backup
 
     dump = await asyncio.to_thread(backup.dump_database, settings.database_url)
+    meta = await archive_meta()
+    return await asyncio.to_thread(_build_archive, dump, list(restore_roots().values()), meta)
+
+
+async def archive_meta() -> dict:
+    """meta.json of a full backup."""
+    import datetime
+
+    from celerp.config import read_config
+    from celerp.db import get_session_ctx
+    from celerp.migrations.compatibility import running_version
+
     async with get_session_ctx() as session:
         enabled_modules = sorted(await required_installation_modules(session))
-
-    meta = {
-        "celerp_version": _version(),
+    return {
+        "celerp_version": running_version(),
         "pg_version": _pg_version(),
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "company_name": read_config().get("company", {}).get("name", "unknown"),
         "enabled_modules": enabled_modules,
     }
-    return await asyncio.to_thread(_build_archive, dump, list(restore_roots().values()), meta)

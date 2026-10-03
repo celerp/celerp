@@ -15,6 +15,8 @@ Restoring is one wizard on three entry points:
   from a backup.
 - Fresh installation (`/setup/restore-backup`): no user exists yet; the restore creates
   the first owner.
+- Start company (`/setup/start-company/restore-backup`): a login left with no company,
+  after its last company was reset, restores one with its email and password.
 
 Steps: upload, preview (nothing written yet), restore, then the restored company. A
 backup already restored here opens that company instead, giving its missing team
@@ -37,7 +39,8 @@ from ui.components.shell import flash
 from ui.components.table import format_value
 from ui.config import cookie_domain, get_company_id, get_token, session_cookie_secure, set_session_cookies
 from ui.i18n import t
-from ui.routes.auth import auth_header
+from ui.routes.auth import START_COMPANY as START_COMPANY_PAGE
+from ui.routes.auth import START_COMPANY_RESTORE, auth_header
 from ui.routes.migrations import (
     WizardMode,
     account_error,
@@ -60,6 +63,7 @@ SETTINGS = WizardMode("settings", "/settings/restore-backup", BACKUP_TAB, _TITLE
 NEW_COMPANY = WizardMode("new_company", "/setup/new-company/restore-backup", "/setup/new-company",
                          _TITLE, _OWNER_ONLY)
 BOOTSTRAP = WizardMode("bootstrap", "/setup/restore-backup", "/setup", _TITLE, _OWNER_ONLY)
+START_COMPANY = WizardMode("start_company", START_COMPANY_RESTORE, START_COMPANY_PAGE, _TITLE, _OWNER_ONLY)
 
 UPLOAD_COOKIE = "celerp_company_backup_upload"
 UPLOAD_TTL_SECONDS = 24 * 3600
@@ -118,6 +122,28 @@ async def _download(request: Request):
 # Restore
 # ---------------------------------------------------------------------------
 
+async def _gate(request: Request, mode: WizardMode):
+    """A login with no company has no session: the API checks its email and password at
+    every step instead."""
+    return None if mode is START_COMPANY else await gate(request, mode)
+
+
+def _sign_in_fields(email: str) -> list:
+    """The email and password of a login with no company, which every step checks."""
+    return [
+        Div(Label(t("label.email"), For="email", cls="form-label"),
+            Input(type="email", id="email", name="email", value=email, required=True, cls="form-input"),
+            cls="form-group"),
+        Div(Label(t("label.password"), For="password", cls="form-label"),
+            Input(type="password", id="password", name="password", required=True, cls="form-input"),
+            cls="form-group"),
+    ]
+
+
+def _sign_in(form) -> tuple[str, str]:
+    return str(form.get("email", "")).strip(), str(form.get("password", ""))
+
+
 def _set_upload_cookie(resp, token: str, mode: WizardMode, request: Request) -> None:
     resp.set_cookie(UPLOAD_COOKIE, token, max_age=UPLOAD_TTL_SECONDS, path=mode.base, httponly=True,
                     samesite="strict", secure=session_cookie_secure(request), domain=cookie_domain(request))
@@ -127,7 +153,8 @@ def _clear_upload_cookie(resp, mode: WizardMode, request: Request) -> None:
     resp.delete_cookie(UPLOAD_COOKIE, path=mode.base, domain=cookie_domain(request))
 
 
-async def _upload_page(request: Request, mode: WizardMode, error: str | None = None, status_code: int = 200):
+async def _upload_page(request: Request, mode: WizardMode, error: str | None = None, status_code: int = 200,
+                       email: str = ""):
     return wizard_page(
         request,
         auth_header(t(_TITLE), t("company_backup.upload_subtitle")),
@@ -139,6 +166,7 @@ async def _upload_page(request: Request, mode: WizardMode, error: str | None = N
                       cls="form-input"),
                 cls="form-group",
             ),
+            *(_sign_in_fields(email) if mode is START_COMPANY else []),
             setup_code_field() if await setup_code_required(mode) else "",
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full"),
             method="post", action=f"{mode.base}/read", enctype="multipart/form-data", cls="auth-form",
@@ -209,6 +237,8 @@ async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, va
         Form(
             *[Input(type="hidden", name=f"preview_{k}", value=str(preview.get(k) or "")) for k in _PREVIEW_FIELDS],
             *(account_fields(values) if mode.bootstrap else []),
+            *([P(t("company_backup.confirm_with_password"), cls="form-hint"), *_sign_in_fields(values.get("email", ""))]
+              if mode is START_COMPANY else []),
             setup_code_field() if await setup_code_required(mode) else "",
             Button(t(_BUTTONS.get(action, _BUTTONS[_CREATE])), type="submit", cls="btn btn--primary btn--full"),
             method="post", action=f"{mode.base}/{target}", cls="auth-form",
@@ -220,26 +250,30 @@ async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, va
 
 
 async def _start(request: Request, mode: WizardMode):
-    if (denied := await gate(request, mode)) is not None:
+    if (denied := await _gate(request, mode)) is not None:
         return denied
     return await _upload_page(request, mode)
 
 
 async def _read(request: Request, mode: WizardMode):
-    if (denied := await gate(request, mode)) is not None:
+    if (denied := await _gate(request, mode)) is not None:
         return denied
     form = await request.form()
+    email, password = _sign_in(form)
     upload = form.get("file")
     if not getattr(upload, "filename", ""):
-        return await _upload_page(request, mode, t("migration.choose_file"))
+        return await _upload_page(request, mode, t("migration.choose_file"), email=email)
     setup_code = str(form.get("setup_code", "")).strip() or None
     try:
-        summary = await api.company_backup_read(api_token(request, mode), upload.filename, upload.file,
-                                                setup_code=setup_code, mode=None if mode.bootstrap else mode.key)
+        if mode is START_COMPANY:
+            summary = await api.company_backup_start_read(email, password, upload.filename, upload.file)
+        else:
+            summary = await api.company_backup_read(api_token(request, mode), upload.filename, upload.file,
+                                                    setup_code=setup_code, mode=None if mode.bootstrap else mode.key)
     except APIError as e:
-        return await _upload_page(request, mode, _message(e), status_code=_status(e))
+        return await _upload_page(request, mode, _message(e), status_code=_status(e), email=email)
     preview = {**summary, "prepared_by": (summary.get("provenance") or {}).get("prepared_by")}
-    resp = _html(await _preview_page(request, mode, preview))
+    resp = _html(await _preview_page(request, mode, preview, values={"email": email}))
     _set_upload_cookie(resp, summary["upload_token"], mode, request)
     return resp
 
@@ -289,7 +323,7 @@ async def _reactivate(request: Request, mode: WizardMode):
 
 
 async def _restore(request: Request, mode: WizardMode):
-    if (denied := await gate(request, mode)) is not None:
+    if (denied := await _gate(request, mode)) is not None:
         return denied
     upload_token = request.cookies.get(UPLOAD_COOKIE)
     if not upload_token:
@@ -309,6 +343,9 @@ async def _restore(request: Request, mode: WizardMode):
                                            error=t("auth.setup_code_required"))
             restored = await api.company_backup_bootstrap_restore(upload_token, values["name"], values["email"],
                                                                   values["password"], setup_code=setup_code)
+        elif mode is START_COMPANY:
+            restored = await api.company_backup_start_restore(values["email"], values["password"], upload_token,
+                                                              preview["plan_fingerprint"])
         else:
             restored = await api.company_backup_restore(get_token(request), upload_token, mode.key,
                                                         preview["plan_fingerprint"])
@@ -367,9 +404,9 @@ async def _done(request: Request, mode: WizardMode):
 
 def company_backup_routes(app) -> None:
     app.get(DOWNLOAD)(_download)
-    for mode in (SETTINGS, NEW_COMPANY, BOOTSTRAP):
+    for mode in (SETTINGS, NEW_COMPANY, BOOTSTRAP, START_COMPANY):
         for method, suffix, handler in (("get", "", _start), ("post", "/read", _read),
                                         ("post", "/restore", _restore), ("get", "/done", _done)):
             getattr(app, method)(f"{mode.base}{suffix}")(bind(handler, mode, "company_backup"))
-        if not mode.bootstrap:
-            app.post(f"{mode.base}/reactivate")(bind(_reactivate, mode, "company_backup"))
+    for mode in (SETTINGS, NEW_COMPANY):
+        app.post(f"{mode.base}/reactivate")(bind(_reactivate, mode, "company_backup"))

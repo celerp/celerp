@@ -62,9 +62,13 @@ def _add(tar: tarfile.TarFile, name: str, body: bytes) -> None:
 
 
 def _archive(path: Path, files: dict[str, bytes] | None = None, *, dump: bytes = SOURCE_DUMP,
-             modules=("celerp-inventory",), extra: tuple[tarfile.TarInfo, ...] = ()) -> Path:
-    """A whole-installation archive in the .celerp-backup layout."""
+             modules=("celerp-inventory",), extra: tuple[tarfile.TarInfo, ...] = (),
+             version: str | None = None) -> Path:
+    """A whole-installation archive in the .celerp-backup layout, made by Celerp *version*
+    (None: an archive from before backups recorded their version)."""
     meta = {"pg_version": "unknown", "company_name": "Harbor Goods Ltd", "enabled_modules": modules}
+    if version is not None:
+        meta["celerp_version"] = version
     with tarfile.open(path, "w:gz") as tar:
         _add(tar, "database.dump", dump)
         _add(tar, "meta.json", json.dumps(meta).encode())
@@ -301,11 +305,11 @@ async def test_local_backup_meta_lists_every_company_module(rec, real_engine):
 
 async def test_cloud_snapshot_meta_lists_every_company_module(rec, real_engine):
     """A cloud recovery point lists the modules of every company in its metadata."""
-    from celerp.services import backup_repo
+    from celerp.services import backup_export
     user = await owner(real_engine)
     await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-labels"]})
     await company(real_engine, user, "Beta Trading", "beta", settings={"enabled_modules": ["celerp-contacts"]})
-    meta = await backup_repo._build_meta()
+    meta = await backup_export.archive_meta()
     assert sorted(meta["enabled_modules"]) == ["celerp-contacts", "celerp-labels"]
 
 
@@ -1315,3 +1319,108 @@ def test_migrate_does_not_report_done_while_the_recovery_is_unfinished(tmp_path,
     assert result.exit_code == 0, result.output
     assert "System Recovery unfinished" in result.output
     assert "Done" not in result.output
+
+
+# ── Backups and recoveries from a newer Celerp ───────────────────────────────
+
+@pytest.fixture
+def running_254(monkeypatch):
+    import celerp
+    monkeypatch.setattr(celerp, "__version__", "2.5.4")
+
+
+@pytest.mark.parametrize("kind", ["local", "cloud"])
+async def test_newer_backup_refused_before_any_recovery_step(rec, tmp_path, running_254, kind):
+    """A backup made by a newer Celerp is refused before the safety archive, the recovery
+    marker, the connector revoke, pg_restore or any file swap."""
+    from celerp.services import backup_import
+    rec.seed()
+    before, modules = rec.trees(), _enabled()
+    archive = _archive(tmp_path / "newer.celerp-backup", SOURCE_FILES, version="2.6.0")
+    result = await rec.start(kind, archive, tmp_path)
+    assert result.ok is False and result.needs_confirmation is False
+    assert "made with Celerp 2.6.0, which is newer than this copy (2.5.4)" in result.error
+    assert "Update Celerp, then restore it." in result.error
+    assert set(rec.names()) <= {"guard"}
+    rec.cloud_snapshot.assert_not_awaited()
+    assert rec.safety_archives() == [] and rec.staging() == []
+    assert backup_import.recovery_incomplete() is False
+    assert rec.trees() == before and _enabled() == modules
+
+
+async def test_newer_backup_refused_on_a_fresh_installation(rec, real_client, code_config, tmp_path, running_254):
+    """Restoring into a fresh installation refuses a newer backup the same way."""
+    from celerp.services import backup_import
+    archive = _archive(tmp_path / "boot.celerp-backup", {"attachments/new.pdf": b"NEW"}, version="3.0.0")
+    r = await real_client.post("/backup/import-bootstrap", files={"file": ("boot.celerp-backup", archive.read_bytes())},
+                               data={"setup_code": code_config})
+    assert r.status_code != 200 or r.json()["ok"] is False, r.text
+    assert "Update Celerp, then restore it." in r.text
+    assert set(rec.names()) <= {"guard"} and rec.restored == []
+    assert backup_import.recovery_incomplete() is False
+    assert rec.tree("attachments") == {}
+
+
+@pytest.mark.parametrize("version", ["2.5.4", "2.4.0", None])
+async def test_older_or_same_backup_restored_and_migrated(rec, tmp_path, running_254, version):
+    """A backup from this or an older Celerp (or one that never recorded its version) is
+    restored and its schema brought up to date."""
+    from celerp.services import backup_import
+    rec.seed()
+    result = await backup_import.run_recovery(_archive(tmp_path / "older.celerp-backup", SOURCE_FILES,
+                                                       version=version))
+    assert result.ok, result.error
+    assert rec.restored[-1] == SOURCE_DUMP
+    assert rec.names().index("pg_restore") < rec.names().index("reconcile")
+    assert rec.tree("ai_uploads") == {"new.txt": b"SOURCE-AI"}
+
+
+def _leave_unfinished(target: Path, version: str | None) -> None:
+    """A recovery marker as a copy of *version* leaves it when a recovery does not finish
+    (None: a marker written before markers recorded their version)."""
+    from celerp.services import backup_import
+    state = {"target": str(target), "connectors": []}
+    if version is not None:
+        state["celerp_version"] = version
+    backup_import._write_marker(state)
+
+
+async def test_recovery_marker_records_the_version(rec, tmp_path, monkeypatch, running_254):
+    from celerp.services import backup_import
+    _inject(monkeypatch, "root_swap")
+    rec.fail_safety()
+    first = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    result = await backup_import.continue_recovery(first.confirmation_id, first.archive_digest)
+    assert result.ok is False and backup_import.recovery_incomplete() is True
+    assert json.loads(backup_import._marker_path().read_text())["celerp_version"] == "2.5.4"
+
+
+@pytest.mark.parametrize("marker_version,archive_version", [("2.6.0", None), ("2.5.4", "2.6.0"),
+                                                            ("garbage", None)])
+async def test_older_copy_never_resumes_a_newer_copys_recovery(rec, tmp_path, running_254,
+                                                               marker_version, archive_version):
+    """A recovery a newer Celerp started, or one whose archive a newer Celerp made, is left
+    for that version to finish: nothing is revoked, restored or swapped, and the
+    installation stays closed."""
+    from celerp.services import backup_import
+    rec.seed()
+    before = rec.trees()
+    _leave_unfinished(_archive(tmp_path / "target.celerp-backup", SOURCE_FILES, version=archive_version),
+                      marker_version)
+    await backup_import.finish_incomplete_recovery()
+    assert backup_import.recovery_incomplete() is True
+    assert not {"revoke", "pg_restore", "reconcile", "clear_connectors"} & set(rec.names())
+    assert rec.trees() == before and rec.staging() == []
+
+
+@pytest.mark.parametrize("marker_version", ["2.5.4", "2.4.0", None])
+async def test_own_or_older_copys_recovery_is_resumed(rec, tmp_path, running_254, marker_version):
+    from celerp.services import backup_import
+    rec.seed()
+    _leave_unfinished(_archive(tmp_path / "target.celerp-backup", SOURCE_FILES, version="2.5.4"),
+                      marker_version)
+    await backup_import.finish_incomplete_recovery()
+    assert backup_import.recovery_incomplete() is False
+    assert rec.names().index("revoke") < rec.names().index("pg_restore")
+    assert rec.restored[-1] == SOURCE_DUMP
+    assert rec.tree("ai_uploads") == {"new.txt": b"SOURCE-AI"}

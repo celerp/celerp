@@ -56,8 +56,8 @@ from celerp.modules.loader import (
 )
 from celerp.modules.registry import get_enabled, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
-from celerp.services.auth import verify_password
-from celerp.services.company_lock import lock_company, locked_company
+from celerp.services.auth import HAS_COMPANY, hold_companyless_login, verify_password
+from celerp.services.company_lock import hold_company, lock_company, locked_company
 from celerp.services.migrations import COMPANY_NAME_MAX
 from celerp.services.provisioning import create_install_owner, provision_restored_company
 
@@ -88,6 +88,7 @@ EXCLUDED_TABLES = {
     "import_batches": "import job state",
     "migration_runs": "migration run state",
     "migration_cleanup_tasks": "migration cleanup state",
+    "session_registry": "sign-in sessions issued by this installation",
 }
 
 # Settings that describe this installation or its people, not the business.
@@ -99,7 +100,7 @@ DROPPED_SETTINGS = frozenset({
 # Columns every reader expects to hold a JSON object.
 OBJECT_COLUMNS = {"ledger": "data", "projections": "state"}
 
-MODES = frozenset({"settings", "new_company", "bootstrap"})
+MODES = frozenset({"settings", "new_company", "start_company", "bootstrap"})
 
 MAX_UPLOAD_BYTES = 2 * 1024 ** 3
 MAX_MEMBERS = 200_000
@@ -547,15 +548,30 @@ async def export_company_snapshot(company_id, out: Path, *, provenance: dict | N
     wholly in the backup or wholly absent from it. Writers are never blocked. SQLite has one
     writer at a time, so there one plain transaction reads the same moment.
 
-    Refused, with nothing written, when the company holds data Celerp cannot back up."""
-    async with AsyncSession(bind=celerp.db.engine, expire_on_commit=False) as session, session.begin():
-        if session.get_bind().dialect.name != "sqlite":
-            await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
-            await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
-        return await _export_company(session, company_id, out, provenance=provenance)
+    Refused, with nothing written, when the company holds data Celerp cannot back up or is
+    deleted before its backup is finished."""
+    partial = out.with_name(out.name + ".partial")
+    try:
+        async with AsyncSession(bind=celerp.db.engine, expire_on_commit=False) as session, session.begin():
+            if session.get_bind().dialect.name != "sqlite":
+                await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+                await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
+            manifest = await _export_company(session, company_id, partial, provenance=provenance)
+        # The snapshot does not hold the company, so it can be reset meanwhile. The file is
+        # published only while the company is held: a reset that already committed leaves
+        # nothing behind, and a later one deletes the published file with the company.
+        async with AsyncSession(bind=celerp.db.engine) as session, session.begin():
+            if not await hold_company(session, company_id):
+                raise BackupError(404, "Company not found.")
+            partial.replace(out)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    return manifest
 
 
-async def _export_company(session: AsyncSession, company_id, out: Path, *, provenance: dict | None) -> dict:
+async def _export_company(session: AsyncSession, company_id, partial: Path, *, provenance: dict | None) -> dict:
+    """Write the backup to ``partial``; the caller publishes it or deletes it."""
     company = await session.get(Company, company_id)
     if company is None:
         raise BackupError(404, "Company not found.")
@@ -584,59 +600,53 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
                     "versions": _module_versions(enabled | {plan.owners[t] for t in tables if t in plan.owners})},
         "tables": {}, "attachments": [],
     }
-    out.parent.mkdir(parents=True, exist_ok=True)
-    partial = out.with_name(out.name + ".partial")
-    try:
-        with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for name in tables:
-                table = plan.schema[name]
-                expr = _without([c for c, col in table.columns.items() if col.generated])
-                for cols in plan.outside_fks(name):
-                    expr = f"({expr} || jsonb_build_object({', '.join(f'{_literal(c)}, NULL' for c in cols)}))"
-                digest, rows = hashlib.sha256(), 0
-                with zf.open(f"tables/{name}.jsonl", "w", force_zip64=True) as fh:
-                    async for batch in _batches(session, table, company_id, expr):
-                        for line in batch:
-                            body = line.encode()
-                            if len(body) > MAX_ROW_BYTES or _row_too_large(body):
-                                raise BackupError(409, ROW_TOO_LARGE_TO_BACK_UP.format(table=name))
-                            _collect_urls(json.loads(line), company_id, found, types)
-                            body += b"\n"
-                            digest.update(body)
-                            fh.write(body)
-                        rows += len(batch)
-                manifest["tables"][name] = {"columns": table.insertable, "rows": rows, "sha256": digest.hexdigest()}
-            names: dict[str, str] = {}
-            for name in sorted(found):
-                backup_name = _backup_name(name, found[name], types)
-                if names.setdefault(backup_name, name) != name:
-                    raise BackupError(409, f"This company has two attachment files named {backup_name}."
-                                      + _NOT_BACKED_UP)
-            for backup_name, name in sorted(names.items()):
-                url = found[name]
-                try:
-                    body = await attachments.read_company_file(company_id, url,
-                                                              _member_limit(f"attachments/{backup_name}"))
-                except OSError:
-                    logger.warning("Reading an attachment for a company backup failed", exc_info=True)
-                    body = None
-                if body is None:
-                    raise BackupError(409, f"This company has an attachment file Celerp cannot read: {url}."
-                                      + _NOT_BACKED_UP)
-                zf.writestr(f"attachments/{backup_name}", body)
-                manifest["attachments"].append({"url": url, "name": backup_name, "size": len(body),
-                                                "sha256": hashlib.sha256(body).hexdigest()})
-            body = json.dumps(manifest, indent=1).encode()
-            if len(body) > MAX_MANIFEST_BYTES:
-                raise BackupError(409, TOO_LARGE_TO_BACK_UP)
-            zf.writestr("manifest.json", body)
-        # The same limits a restore applies, so no backup is made that restore would refuse.
-        if not _within_limits(partial):
+    partial.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name in tables:
+            table = plan.schema[name]
+            expr = _without([c for c, col in table.columns.items() if col.generated])
+            for cols in plan.outside_fks(name):
+                expr = f"({expr} || jsonb_build_object({', '.join(f'{_literal(c)}, NULL' for c in cols)}))"
+            digest, rows = hashlib.sha256(), 0
+            with zf.open(f"tables/{name}.jsonl", "w", force_zip64=True) as fh:
+                async for batch in _batches(session, table, company_id, expr):
+                    for line in batch:
+                        body = line.encode()
+                        if len(body) > MAX_ROW_BYTES or _row_too_large(body):
+                            raise BackupError(409, ROW_TOO_LARGE_TO_BACK_UP.format(table=name))
+                        _collect_urls(json.loads(line), company_id, found, types)
+                        body += b"\n"
+                        digest.update(body)
+                        fh.write(body)
+                    rows += len(batch)
+            manifest["tables"][name] = {"columns": table.insertable, "rows": rows, "sha256": digest.hexdigest()}
+        names: dict[str, str] = {}
+        for name in sorted(found):
+            backup_name = _backup_name(name, found[name], types)
+            if names.setdefault(backup_name, name) != name:
+                raise BackupError(409, f"This company has two attachment files named {backup_name}."
+                                  + _NOT_BACKED_UP)
+        for backup_name, name in sorted(names.items()):
+            url = found[name]
+            try:
+                body = await attachments.read_company_file(company_id, url,
+                                                          _member_limit(f"attachments/{backup_name}"))
+            except OSError:
+                logger.warning("Reading an attachment for a company backup failed", exc_info=True)
+                body = None
+            if body is None:
+                raise BackupError(409, f"This company has an attachment file Celerp cannot read: {url}."
+                                  + _NOT_BACKED_UP)
+            zf.writestr(f"attachments/{backup_name}", body)
+            manifest["attachments"].append({"url": url, "name": backup_name, "size": len(body),
+                                            "sha256": hashlib.sha256(body).hexdigest()})
+        body = json.dumps(manifest, indent=1).encode()
+        if len(body) > MAX_MANIFEST_BYTES:
             raise BackupError(409, TOO_LARGE_TO_BACK_UP)
-        partial.replace(out)
-    except BaseException:
-        partial.unlink(missing_ok=True)
-        raise
+        zf.writestr("manifest.json", body)
+    # The same limits a restore applies, so no backup is made that restore would refuse.
+    if not _within_limits(partial):
+        raise BackupError(409, TOO_LARGE_TO_BACK_UP)
     return manifest
 
 
@@ -1267,7 +1277,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
 
     ``settings`` and ``new_company`` restore it for the signed-in ``user_id`` as the
     preview identified by ``plan_fingerprint`` showed it; a preview that no longer holds
-    raises StalePreview. ``bootstrap`` creates the installation's first owner from
+    raises StalePreview. ``start_company`` does the same for a login left with no company,
+    and refuses once it has one. ``bootstrap`` creates the installation's first owner from
     ``owner_account`` ({name, email, password}) in the same transaction. Restoring a
     backup that was already restored here returns that company (``created`` False) to its
     members, never reactivating it when it is deactivated."""
@@ -1297,6 +1308,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     await session.rollback()
                     return result
             else:
+                if mode == "start_company" and not await hold_companyless_login(session, user_id):
+                    raise BackupError(409, HAS_COMPANY)
                 plan, destination = await _plan(session, backup, mode, user_id, current_company_id, lock=True)
                 if plan.action == REFUSE:
                     raise BackupError(409, NOT_A_MEMBER)

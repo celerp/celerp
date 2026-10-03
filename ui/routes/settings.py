@@ -558,13 +558,14 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
     app.delete(f"/settings/{prefix}/{{idx}}")(_make_delete(get_fn_name, patch_fn_name, redirect_url, "get_default_price_list"))
 
 
-def _factory_reset_card() -> FT:
-    """Reset All Data card — lives inside the existing Danger Zone section."""
-    modal_id = "factory-reset-modal"
-    step1_id = "factory-reset-step1"
-    step2_id = "factory-reset-step2"
-    input_id = "factory-reset-confirm-input"
-    btn_id   = "factory-reset-confirm-btn"
+def _company_reset_card(company_name: str) -> FT:
+    """Reset this company card, inside the Danger Zone. Errors show inside the dialog."""
+    from ui.routes.company_backup import DOWNLOAD
+    modal_id = "company-reset-modal"
+    step1_id = "company-reset-step1"
+    step2_id = "company-reset-step2"
+    input_id = "company-reset-confirm-input"
+    btn_id   = "company-reset-confirm-btn"
     close_js = f"document.getElementById('{modal_id}').close()"
 
     to_step2_js = (
@@ -572,31 +573,21 @@ def _factory_reset_card() -> FT:
         f"document.getElementById('{step2_id}').style.display='block';"
         f"document.getElementById('{input_id}').focus();"
     )
-    validate_js = (
-        f"document.getElementById('{btn_id}').disabled="
-        f"document.getElementById('{input_id}').value!=='RESET';"
-    )
-    success_js = (
-        f"document.getElementById('{modal_id}').addEventListener('htmx:afterRequest',function(e){{"
-        f"if(e.detail.xhr.status===200){{window.location.href='/setup';}}"
-        f"}},{{once:true}});"
-    )
+    validate_js = f"document.getElementById('{btn_id}').disabled=this.value!==this.dataset.name;"
 
     return Div(
-        Div(id="reset-flash"),
-        P(t("settings.factory_reset_desc"),
-          cls="settings-help-text"),
-        Button(t("settings.reset_all_data"),
+        P(t("settings.company_reset_desc"), cls="settings-help-text"),
+        Button(t("settings.reset_this_company"),
                type="button",
                cls="btn btn--outline btn--danger",
                onclick=f"document.getElementById('{modal_id}').showModal()"),
         Dialog(
-            # Step 1: warning
+            # Step 1: warning and the optional company backup
             Div(
                 Div(
                     Div(
                         Span("⚠", cls="reset-modal__icon"),
-                        H3(t("settings.reset_all_data_q"), cls="modal-dialog__title reset-modal__title--danger"),
+                        H3(t("settings.reset_this_company_q"), cls="modal-dialog__title reset-modal__title--danger"),
                         cls="reset-modal__title-row",
                     ),
                     Button("✕", type="button", cls="modal-dialog__close", aria_label=t("btn.close"),
@@ -604,11 +595,12 @@ def _factory_reset_card() -> FT:
                     cls="modal-dialog__header",
                 ),
                 Div(
-                    P(t("settings.factory_reset_warning")),
-                    P(Strong(t("settings.factory_reset_preserved"))),
+                    P(Strong(company_name)),
+                    P(t("settings.company_reset_warning")),
+                    P(Strong(t("settings.company_reset_kept"))),
                     Div(
                         A(t("settings.download_backup_first"),
-                          href="/backup/export",
+                          href=DOWNLOAD,
                           cls="btn btn--sm btn--ghost",
                           onclick=to_step2_js,
                           download=True),
@@ -622,8 +614,8 @@ def _factory_reset_card() -> FT:
                 ),
                 id=step1_id,
             ),
-            # Step 2: type-to-confirm
-            Div(
+            # Step 2: type the company name to confirm
+            Form(
                 Div(
                     H3(t("settings.confirm_deletion"), cls="modal-dialog__title reset-modal__title--danger"),
                     Button("✕", type="button", cls="modal-dialog__close", aria_label=t("btn.close"),
@@ -631,20 +623,17 @@ def _factory_reset_card() -> FT:
                     cls="modal-dialog__header",
                 ),
                 Div(
-                    P(t("settings.type_reset_prefix"), Strong("RESET"), t("settings.type_reset_suffix")),
-                    Input(type="text", id=input_id, placeholder="RESET",
+                    Div(id="company-reset-flash"),
+                    P(t("settings.type_company_name"), " ", Strong(company_name)),
+                    Input(type="text", id=input_id, name="company_name",
                           autocomplete="off", cls="form-input",
-                          oninput=validate_js),
+                          data_name=company_name, oninput=validate_js),
                     Div(
-                        Button(t("settings.delete_everything"),
+                        Button(t("settings.reset_this_company"),
                                type="submit",
                                id=btn_id,
                                cls="btn btn--danger",
-                               disabled=True,
-                               hx_post="/settings/factory-reset",
-                               hx_target="#reset-flash",
-                               hx_swap="innerHTML",
-                               onclick=success_js),
+                               disabled=True),
                         Button(t("btn.cancel"),
                                type="button",
                                cls="btn btn--ghost",
@@ -655,6 +644,9 @@ def _factory_reset_card() -> FT:
                 ),
                 id=step2_id,
                 style="display:none",
+                hx_post="/settings/company/reset",
+                hx_target="#company-reset-flash",
+                hx_swap="innerHTML",
             ),
             id=modal_id,
             cls="modal-dialog",
@@ -2361,27 +2353,33 @@ def setup_routes(app):
             pass
         return _category_row(new_key, new_name, len(schemas.get(new_key, [])))
 
-    @app.post("/settings/factory-reset")
-    async def factory_reset_ui(request: Request):
-        """Proxy factory-reset to the API. Owner only."""
+    @app.post("/settings/company/reset")
+    async def company_reset_ui(request: Request):
+        """Reset this company through the API. Owner only. Errors return into the dialog."""
         role = _get_role(request)
         from celerp.services.permissions import role_has_permission
         if not role_has_permission({}, role, "manage_company_lifecycle"):
             return Div(t("settings.owner_role_required"), cls="flash flash--error")
+        form = await request.form()
         token = _token(request)
         try:
-            async with api._local_client(token, timeout=30.0, follow_redirects=False) as c:
-                r = await c.post("/system/factory-reset")
-            if r.status_code != 200:
-                detail = r.json().get("detail", t("settings.reset_failed")) if r.headers.get("content-type", "").startswith("application/json") else t("settings.reset_failed")
-                return Div(detail, cls="flash flash--error")
+            async with api._local_client(token, timeout=60.0, follow_redirects=False) as c:
+                r = await c.post("/companies/me/reset", json={"company_name": str(form.get("company_name", ""))})
         except Exception as exc:
             return Div(f"{t('shell.error_prefix')} {exc}", cls="flash flash--error")
-        from starlette.responses import Response as _Resp
-        from ui.config import clear_session_cookies
-        resp = _Resp(status_code=200, content='{"ok":true}', media_type="application/json")
-        clear_session_cookies(resp, request)
-        resp.headers["HX-Redirect"] = "/setup"
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        if r.status_code != 200:
+            detail = body.get("detail")
+            return Div(detail if isinstance(detail, str) else t("settings.reset_failed"), cls="flash flash--error")
+        from ui.config import clear_session_cookies, set_session_cookies
+        from ui.routes.auth import START_COMPANY
+        resp = Response(status_code=200)
+        if body.get("next") == "start_company":
+            clear_session_cookies(resp, request)
+            resp.headers["HX-Redirect"] = START_COMPANY
+        else:
+            set_session_cookies(resp, body["access_token"], body["refresh_token"], request)
+            resp.headers["HX-Redirect"] = "/"
         return resp
 
     @app.delete("/settings/company/deactivate")
@@ -3086,7 +3084,7 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
                     ),
                     cls="settings-card settings-card--danger",
                 ),
-                _factory_reset_card(),
+                _company_reset_card(company.get("name", "")),
                 *(
                     [
                         Div(

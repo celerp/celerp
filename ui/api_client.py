@@ -445,6 +445,15 @@ async def login_force(email: str, password: str) -> tuple[str, str]:
         return data["access_token"], data["refresh_token"]
 
 
+async def start_company(email: str, password: str, company_name: str) -> tuple[str, str]:
+    """Create a company for a login that has none. Returns (access_token, refresh_token)."""
+    async with _anon_api_client() as c:
+        r = _raise(await c.post("/auth/start-company",
+                                json={"email": email, "password": password, "company_name": company_name}))
+        data = r.json()
+        return data["access_token"], data["refresh_token"]
+
+
 async def change_password(token: str, current_password: str, new_password: str) -> str:
     """Change password for the authenticated user. Returns detail message."""
     async with _api_client(token) as c:
@@ -2854,6 +2863,11 @@ async def get_payments_status(token: str) -> dict:
         return _raise(await c.get("/payments/status")).json()
 
 
+async def get_unmatched_payments(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/payments/unmatched")).json()
+
+
 async def get_payments_enabled(token: str) -> bool:
     """Cached payments flag - cheap per-render gate (no cloud round-trip)."""
     async with _api_client(token) as c:
@@ -3625,6 +3639,28 @@ async def company_backup_reactivate(token: str, upload_token: str, mode: str, pl
         async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
             r = await c.post("/company-backups/reactivate", json={
                 "upload_token": upload_token, "mode": mode, "plan_fingerprint": plan_fingerprint})
+    return _raise(r).json()
+
+
+async def company_backup_start_read(email: str, password: str, filename: str, content: BinaryIO) -> dict:
+    """Upload a company backup for a login with no company left, for checking. Nothing is
+    written. Returns the upload token, a preview and what restoring it does."""
+    async with _local_error_mapping():
+        async with _local_client(None, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True) as c:
+            r = await c.post("/company-backups/start-company/read",
+                             files=[("file", (filename, content, "application/octet-stream"))],
+                             data={"email": email, "password": password})
+    return _raise(r).json()
+
+
+async def company_backup_start_restore(email: str, password: str, upload_token: str, plan_fingerprint: str) -> dict:
+    """Restore an uploaded backup as the company of a login with no company left. Returns
+    the company and tokens for it."""
+    async with _local_error_mapping():
+        async with _local_client(None, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
+            r = await c.post("/company-backups/start-company/restore", json={
+                "email": email, "password": password, "upload_token": upload_token,
+                "plan_fingerprint": plan_fingerprint})
     return _raise(r).json()
 
 

@@ -25,6 +25,7 @@ from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, rea
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting import import_service
 from celerp_accounting.import_service import AccImportRecord
+from celerp_accounting.ledger_accounts import check_account_change, require_money_account, require_open_account
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
@@ -539,16 +540,18 @@ async def patch_account(
 ) -> dict:
     acc = (
         await session.execute(
-            select(Account).where(Account.company_id == company_id, Account.code == code)
+            select(Account).where(Account.company_id == company_id, Account.code == code).with_for_update()
         )
     ).scalar_one_or_none()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
+    account_type = _checked_account_type(payload.account_type) if payload.account_type is not None else None
+    await check_account_change(session, company_id, acc, account_type=account_type, is_active=payload.is_active)
 
     if payload.name is not None:
         acc.name = _checked_account_name(payload.name)
-    if payload.account_type is not None:
-        acc.account_type = _checked_account_type(payload.account_type)
+    if account_type is not None:
+        acc.account_type = account_type
     if payload.parent_code is not None:
         acc.parent_code = _checked_parent_code(payload.parent_code)
     if payload.is_active is not None:
@@ -1004,7 +1007,7 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         currency = state.get("currency")
         rate = state.get("conversion_rate")
         payment_index = meta.get("payment_index")
-        if isinstance(payment_index, int) and meta.get("trigger") in ("doc.payment.received", "doc.payment.voided", "doc.payment.refunded"):
+        if isinstance(payment_index, int) and meta.get("trigger") in ("doc.payment.received", "doc.payment.voided", "doc.payment.refunded", "doc.payment.refund_reversed"):
             payments = state.get("payments", [])
             # Payments are identified by their index FIELD (stable since
             # deletions tombstone in place). Projections compacted before that
@@ -1509,11 +1512,7 @@ async def create_manual_journal_entry(
     total_credit = Decimal(0)
     entries: list[dict] = []
     for index, line in enumerate(payload.entries):
-        acc = account_map.get(line.account)
-        if not acc:
-            raise HTTPException(status_code=422, detail=f"Unknown account {line.account}.")
-        if not acc.is_active:
-            raise HTTPException(status_code=422, detail=f"Account {line.account} is inactive.")
+        acc = require_open_account(account_map.get(line.account), line.account)
         children = children_of.get(line.account)
         if children:
             # Parent accounts are grouping rollups (the balance sheet sums their
@@ -2573,6 +2572,8 @@ async def patch_bank_account(
         if normed not in ISO_4217_CURRENCIES:
             raise HTTPException(status_code=422, detail=f"Invalid currency '{payload.currency}'. Must be a valid ISO 4217 code.")
         b.currency = normed
+    if payload.is_active and not b.is_active:
+        await require_money_account(session, company_id, b.chart_account_code)
     if payload.is_active is not None:
         b.is_active = payload.is_active
 

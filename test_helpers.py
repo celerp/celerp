@@ -88,6 +88,17 @@ async def ensure_user(session, user_id) -> None:
         await session.flush()
 
 
+async def ensure_company(session, company_id=None):
+    """Insert a minimal companies row (a sign-in session belongs to a company) and return its id."""
+    import uuid as _uuid
+    from celerp.models.company import Company
+    cid = _uuid.UUID(str(company_id)) if company_id else _uuid.uuid4()
+    if await session.get(Company, cid) is None:
+        session.add(Company(id=cid, name="Test Co", slug=f"test-{cid.hex}"))
+        await session.flush()
+    return cid
+
+
 async def default_location_id(client, headers: dict) -> str:
     """Return the company's real default (or first) location id.
 

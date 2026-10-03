@@ -7,17 +7,32 @@ Core checks each slot at render/startup time and injects module contributions.
 
 Defined slots
 -------------
+These are every slot core or a bundled module reads; a slot name not listed here
+is ignored at load time.
+
 nav                Sidebar navigation entry
-settings_tab       Tab in the /settings page
 bulk_action        Action in the inventory bulk toolbar
+send_to_targets    Document type offered by the inventory bulk "send to" action
 catalog_channel    Compact external-channel state in the inventory catalog
 item_action        Button in the item detail actions panel
-doc_action         Button in the document detail actions panel
-dashboard_widget   Widget on the dashboard page
-import_adapter     Source option in the CSV import page
+pricing_action     Button on rows of an item's Pricing tab. Keys: label or label_key,
+                   href_template, permission, show_on, presentation; any other key
+                   is refused. href_template must be an app-local path (one leading
+                   /, never //, no backslash, no control character) and may use
+                   {entity_id}, {price_list} and {field_name} (filled URL-encoded);
+                   any other brace is refused. Optional show_on lists row traits a
+                   row must all carry (editable/readonly, sell/cost,
+                   manual/derived); presentation is "page" (the default and only
+                   value). Validated at load.
+doc_detail_actions Element on a document's detail page, from a "render" callable
+                   ("module.path:function", called with the document)
+doc_detail_badges  Status badge on a document's detail page, from a "render" callable
 category_schema    Default field definitions for a named category
 projection_handler Maps event-type prefixes to a handler function
 on_company_created Async callback(session, company_id) fired after a new company is persisted
+on_modules_ready   Async callback(session) fired once after every module has loaded
+doc_finalize_hook  Async callback fired when a document is finalized, before commit
+on_doc_payment     Async callback fired after a payment is recorded on a document
 search_provider    Contributes rows to the global search bar. Exactly one descriptor
                    dict per module: {"handler", "result_key", "permission"}. handler
                    names an in-module "module.path:function" resolved and validated
@@ -26,6 +41,12 @@ search_provider    Contributes rows to the global search bar. Exactly one descri
                    returning {result_key: [rows]}; result_key is "items" or "entries";
                    permission gates the source per company role. See the module loader
                    for the full descriptor contract.
+
+item_action, pricing_action, doc_detail_actions, doc_detail_badges, bulk_action,
+send_to_targets and catalog_channel are shown only when the company has the
+contributing module switched on and the role holds the entry's "permission"
+(ui.module_slots). Hiding is presentation: the route an entry leads to must
+still check the permission itself.
 
 Usage in core UI
 ----------------

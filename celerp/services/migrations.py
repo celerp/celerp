@@ -78,6 +78,7 @@ from celerp.models.migration import (
 from celerp.services import attachments
 from celerp.services import migration_scan_store as store
 from celerp.services.auth import normalize_role
+from celerp.services.company_files import delete_company_data
 from celerp.services.company_lock import lock_company
 from celerp.services.csv_export import csv_safe
 from celerp.services.permissions import role_has_permission
@@ -131,7 +132,7 @@ IMPORT_PHASES: tuple[MigrationPhase, ...] = tuple(PHASE_GROUPS)
 # Tables a staged migration company may hold rows in, in safe delete order. A
 # company row in any other table means discard cannot prove the graph complete.
 _DISCARD_ORDER = ("import_batches", "ledger", "projections", "bank_accounts", "accounts", "locations",
-                  "migration_runs", "user_companies")
+                  "migration_runs", "session_registry", "user_companies")
 
 _BLOCKS_FULL_HISTORY = (CoverageClass.UNCLASSIFIED, CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER)
 _BLOCKS_CUTOVER = (CoverageClass.UNCLASSIFIED,)
@@ -970,9 +971,7 @@ async def _delete_task_files(session: AsyncSession, task: MigrationCleanupTask) 
     committed record links it: the link and the task's deletion commit together, so a
     linked file whose task survives is never removed."""
     if task.attachment is None:
-        for run_id in task.run_ids:
-            await asyncio.to_thread(store.remove_run_dir, uuid.UUID(run_id))
-        await attachments.delete_company_files(str(task.company_id))
+        await delete_company_data(task.company_id, task.run_ids)
         return
     if await find_event_by_idempotency(session, task.company_id, task.attachment["idempotency_key"]) is None:
         await attachments.delete_stored_file(str(task.company_id), task.attachment["file_id"],

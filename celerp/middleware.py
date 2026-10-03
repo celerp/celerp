@@ -226,8 +226,7 @@ async def _refresh_bearer_validated(token: str) -> str | None:
             pair = await issue_token_pair(
                 s,
                 user=ctx.user,
-                company=ctx.company,
-                role=ctx.role,
+                company_id=ctx.company.id,
                 jti=ctx.claims["jti"],
                 expected_snonce=ctx.snonce,
             )
