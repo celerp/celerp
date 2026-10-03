@@ -334,9 +334,6 @@ async def bulk_attach_files(
                         and sku_key not in hero_assigned
                         and (not existing_hero or override_hero)
                     )
-                    if is_hero:
-                        hero_assigned.add(sku_key)
-
                     await emit_event(
                         session,
                         company_id=company_id,
@@ -368,6 +365,9 @@ async def bulk_attach_files(
                     # current for the next file on this SKU. Re-applying double-counts
                     # the file (two entries with the same file_id) - see F1.
 
+                    # Only an attached hero counts; a refused one leaves the hero to the next image.
+                    if is_hero:
+                        hero_assigned.add(sku_key)
                     matched += 1
                     report.append({"sku": sku_part, "file": name, "status": "ok",
                                     "url": meta.get("url", ""), "tag": tag, "is_hero": is_hero})
