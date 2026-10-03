@@ -330,3 +330,46 @@ def test_stale_lock_that_cannot_be_removed_ends_at_the_budget(tmp_path, monkeypa
     start = time.monotonic()
     assert config_store._acquire_lock(str(lock), 0.2) is None
     assert time.monotonic() - start < 2
+
+
+def _replace_refused(times: int, monkeypatch) -> list[int]:
+    """os.replace refuses the first ``times`` calls as Windows does while another
+    process has the target open; returns the call count."""
+    calls = [0]
+    real = os.replace
+
+    def replace(src, dst):
+        calls[0] += 1
+        if calls[0] <= times:
+            raise PermissionError(5, "Access is denied", dst)
+        real(src, dst)
+
+    monkeypatch.setattr(config_store.os, "replace", replace)
+    monkeypatch.setattr(config_store.time, "sleep", lambda _s: None)
+    return calls
+
+
+def test_write_waits_out_a_reader_holding_the_file(tmp_path, monkeypatch):
+    """A reader that briefly has the file open does not fail the write."""
+    path = tmp_path / "update_state.json"
+    path.write_text("old")
+    calls = _replace_refused(3, monkeypatch)
+
+    config_store.atomic_write_text(str(path), "new")
+
+    assert path.read_text() == "new"
+    assert calls[0] == 4
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["update_state.json"]
+
+
+def test_write_still_fails_when_the_file_stays_held(tmp_path, monkeypatch):
+    """A file that stays refused fails the write, old file and no temp file left."""
+    path = tmp_path / "update_state.json"
+    path.write_text("old")
+    _replace_refused(10_000, monkeypatch)
+
+    with pytest.raises(PermissionError):
+        config_store.atomic_write_text(str(path), "new")
+
+    assert path.read_text() == "old"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["update_state.json"]
