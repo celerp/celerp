@@ -121,17 +121,35 @@ def test_disabled_module_contributes_nothing():
 
 
 # ── item_action shares the gate and the encoding ─────────────────────────────
+# Before pricing_action, item_action rendered every registered contribution to every
+# role, whether or not the company had the module switched on or the role held the
+# action's permission. Applying the shared module-enabled and permission gate to it
+# is an intentional fix, kept and pinned here.
 
 def _panel(role="owner", settings=None, entity_id="item:1/x"):
     from ui.routes.inventory import _advanced_panel
     return to_xml(_advanced_panel(entity_id, {"quantity": 1}, None, role=role, settings=settings or {}))
 
 
-def test_item_action_is_gated_like_every_module_contribution():
-    slots.register("item_action", {"label": "Ship it", "href_template": "/ship/{entity_id}",
-                                   "permission": "adjust_inventory", "_module": "celerp-ship"})
-    assert "Ship it" not in _panel(role="viewer")
+def _ship_action():
+    return {"label": "Ship it", "href_template": "/ship/{entity_id}",
+            "permission": "adjust_inventory", "_module": "celerp-ship"}
+
+
+def test_item_action_respects_module_enabled_and_permission_intentional_fix():
+    slots.register("item_action", _ship_action())
+    # A module the company has switched off contributes nothing, even to the owner.
     assert "Ship it" not in _panel(settings={"enabled_modules": ["celerp-other"]})
+    # A role without the action's permission does not see it.
+    assert "Ship it" not in _panel(role="viewer")
+    # A permitted role sees it while the module is on.
+    assert "Ship it" in _panel(settings={"enabled_modules": ["celerp-ship"]})
+    granted = {"role_grants": {"adjust_inventory": ["viewer", "operator", "manager", "admin", "owner"]}}
+    assert "Ship it" in _panel(role="viewer", settings=granted)
+
+
+def test_item_action_placeholder_is_url_encoded():
+    slots.register("item_action", _ship_action())
     assert 'href="/ship/item%3A1%2Fx"' in _panel()
 
 
