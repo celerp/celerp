@@ -100,6 +100,15 @@ class ReturnBody(BaseModel):
     idempotency_key: str | None = None
 
 
+class UndoReceiptBody(BaseModel):
+    lot_item_id: str
+    idempotency_key: str | None = None
+
+
+class KeyBody(BaseModel):
+    idempotency_key: str | None = None
+
+
 class ReceiveBody(BaseModel):
     # Finished-goods quantity to receive. Omit `quantity` to receive everything still outstanding.
     quantity: FiniteFloat | None = None
@@ -1547,6 +1556,39 @@ async def return_order_materials(
     result = await movements.return_materials(session, company_id, user.id, order_id, items,
                                               payload.idempotency_key if payload else None,
                                               at=datetime.now(timezone.utc).isoformat())
+    await session.commit()
+    return result
+
+
+@router.post("/{order_id}/undo-receipt")
+async def undo_order_receipt(
+    order_id: str,
+    payload: UndoReceiptBody,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Take back a lot this run received, while it is exactly as the run left it."""
+    result = await movements.undo_receipt(session, company_id, user.id, order_id, payload.lot_item_id,
+                                          payload.idempotency_key, at=datetime.now(timezone.utc).isoformat())
+    await session.commit()
+    return result
+
+
+@router.post("/{order_id}/reopen")
+async def reopen_order(
+    order_id: str,
+    payload: KeyBody | None = None,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Reopen a completed run, reversing what completing it did."""
+    result = await movements.reopen(session, company_id, user.id, order_id,
+                                    payload.idempotency_key if payload else None,
+                                    at=datetime.now(timezone.utc).isoformat())
     await session.commit()
     return result
 

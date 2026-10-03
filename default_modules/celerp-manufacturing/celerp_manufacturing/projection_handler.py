@@ -10,7 +10,9 @@ from decimal import Decimal
 # import or any other caller) can never carry them in. Older runs replay with the defaults: a run
 # with movement but no recorded value is marked untracked until the upgrade settles it.
 WIP_FACTS = ("wip_issued", "wip_transferred", "wip_wasted", "wip_account_code", "wip_untracked",
-             "wip_unresolved", "receipts")
+             "wip_unresolved", "receipts", "closing")
+# What completion changes on a run, kept with the completion so reopening restores it exactly.
+_CLOSED = ("status", "is_in_production", "actual_outputs", "waste", "labor_hours", "wip_transferred", "wip_wasted")
 
 
 def _money(value) -> str:
@@ -108,7 +110,22 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         for key in ("due_date", "planned_start", "priority"):
             if key in data:
                 current[key] = data[key] or None
+    elif event_type == "mfg.order.receipt_undone":
+        lot_id = data.get("lot_item_id")
+        current["received_qty"] = max(0.0, round(float(current.get("received_qty") or 0) - float(data["quantity"]), 9))
+        current["received_lots"] = [lot for lot in current.get("received_lots") or [] if lot != lot_id]
+        current["receipts"] = [r for r in current.get("receipts") or [] if r.get("lot_item_id") != lot_id]
+        _add(current, "wip_transferred", -Decimal(str(data["value"])))
+    elif event_type == "mfg.order.reopened":
+        before = (current.pop("closing", None) or {}).get("before") or {}
+        for key in _CLOSED:
+            if key in before:
+                current[key] = before[key]
+            else:
+                current.pop(key, None)
     elif event_type == "mfg.order.completed":
+        if data.get("closing") is not None:
+            current["closing"] = {**data["closing"], "before": {k: current[k] for k in _CLOSED if k in current}}
         current["status"] = "completed"
         current["is_in_production"] = False
         if data.get("actual_outputs") is not None:

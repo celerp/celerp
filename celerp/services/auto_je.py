@@ -2019,8 +2019,8 @@ async def create_for_mfg_movement(
     work in progress account ``wip_code``, ``lots`` onto or off the inventory accounts the lots
     record, ``waste`` to cost of goods sold, and ``equity`` (value the books first recognize,
     as opening stock is) to retained earnings. Amounts are already money in the company
-    currency and balance. ``movement`` names the operation (issue:<key>, receive:<key>,
-    completed, wip-opened) and keys the entry, so a retried operation posts nothing more. Nothing posts
+    currency and balance. ``movement`` names the operation (issue:<key>, return:<key>,
+    receive:<key>, unreceive:<key>, complete:<key>, reopen:<key>, wip-opened) and keys the entry, so a retried operation posts nothing more. Nothing posts
     when every amount is zero."""
     def _side(amount: _Dec) -> dict:
         value = to_stored_float(abs(amount))

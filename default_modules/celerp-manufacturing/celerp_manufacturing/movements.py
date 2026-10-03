@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Production run movements: the one implementation of Issue, Receive, Complete and Cancel.
+"""Production run movements: the one implementation of Issue, Receive, Complete and Cancel,
+and of undoing each: Return, Undo receipt and Reopen.
 
 Every entry point (the run endpoints, one-tap build, Demand Planning, bulk actions and the
 invoice finalize hook) moves stock and value through these functions, in the caller's
@@ -11,7 +12,8 @@ component, at that moment, from the inventory account the component records onto
 work in progress account, which is fixed at the first issue that carries value. Receive moves
 a share of what the run holds onto the new lot's own inventory account. Completion trues the
 lots up to the final cost through cost restatement, sends waste to cost of goods sold and
-leaves the run holding nothing. Each operation is dated once, takes the company lock before
+leaves the run holding nothing. Each undo is the exact reverse of its step, from the values
+the step recorded, and is refused once what it would take back has changed. Each operation is dated once, takes the company lock before
 the run and the items, and is identified by one key from which every event and journal entry
 it writes is derived, so a retry finds what was written instead of moving anything again.
 """
@@ -31,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, LOT_ACCOUNT_FIELD, SCHEMA_KEY, AccountRole
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.company import Company
+from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.account_roles import (
@@ -42,6 +45,7 @@ from celerp.services.account_roles import (
     resolve,
 )
 from celerp.services.company_lock import lock_company, lock_projections
+from celerp.services.document_lines import listing_record
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import (
     account_room,
@@ -60,6 +64,9 @@ MFG_LOT_NS = uuid.UUID("6f1d0c2a-7b3e-4a9c-8d5f-2e0a1b4c6d8e")
 CLOSED_RUN_STATUSES = frozenset({"completed", "cancelled"})
 _EPS = 1e-9
 _ZERO = Decimal(0)
+# Every stock event a run writes carries the run's id (older releases marked consumed components
+# the same way), so a lot's history shows what the run did to it.
+_ORDER_MARK = "manufacturing_order_id"
 
 
 def refuse(http_status: int, key: str, message: str, /, **params) -> HTTPException:
@@ -283,7 +290,7 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
         item_id = line["item_id"]
         await op.emit(item_id, "item", "item.consumed", {"quantity_consumed": line["quantity"]},
                       f"mfg:{op.order_id}:issue:{rk}:{item_id}",
-                      metadata={"manufacturing_order_id": op.order_id})
+                      metadata={_ORDER_MARK: op.order_id})
         after = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": item_id},
                                      populate_existing=True)
         moved = befores[item_id] - op.round(held_value(after) or 0)
@@ -397,7 +404,7 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
         target = befores[item_id] + value
         await op.emit(item_id, "item", "item.quantity.adjusted", {
             "new_qty": qty, "cost_base": float(target) - landed * qty, "reason": "production_return"},
-            f"mfg:{op.order_id}:return:{rk}:{item_id}", metadata={"manufacturing_order_id": op.order_id})
+            f"mfg:{op.order_id}:return:{rk}:{item_id}", metadata={_ORDER_MARK: op.order_id})
         after = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": item_id},
                                      populate_existing=True)
         if op.round(held_value(after) or 0) != target:
@@ -436,7 +443,7 @@ async def receive(session: AsyncSession, company_id, user_id, order_id: str, qua
     lot_id = await _receive(op, run, qty, rk, request)
     run = await _run(op)
     if outstanding_output(run.state) <= _EPS:
-        await _close(op, run, {}, request)
+        await _close(op, run, {}, request, f"receive:{rk}")
     return {"received": qty, "lot_item_id": lot_id}
 
 
@@ -477,7 +484,7 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
 
     lot_id = f"item:{uuid.uuid5(MFG_LOT_NS, f'{op.order_id}:{rk}')}"
     loc = p.get("location_id")
-    mark = {"manufacturing_order_id": op.order_id}
+    mark = {_ORDER_MARK: op.order_id}
     await op.emit(lot_id, "item", "item.created", {
         "sku": p.get("sku"), "name": p.get("name"), "sell_by": p.get("sell_by"),
         "category": p.get("category"), "inventory_type": p.get("inventory_type"),
@@ -485,7 +492,7 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
         "parent_item_id": out_id, "lot": True,
         # A produced lot is a new physical parcel with its own barcode.
         "barcode": (await allocate_internal_codes(op.session, op.company_id))[0],
-        "manufacturing_order_id": op.order_id, "cost_total": float(amount), LOT_ACCOUNT_FIELD: code,
+        _ORDER_MARK: op.order_id, "cost_total": float(amount), LOT_ACCOUNT_FIELD: code,
     }, f"mfg:{op.order_id}:receive:{rk}:created", location_id=loc, metadata=mark)
     await op.emit(lot_id, "item", "item.produced", {"quantity_produced": qty},
                   f"mfg:{op.order_id}:receive:{rk}:produced", location_id=loc, metadata=mark)
@@ -508,9 +515,8 @@ async def complete(session: AsyncSession, company_id, user_id, order_id: str, pa
     (actual_outputs, waste_quantity, waste_unit, waste_reason, labor_hours)."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
-    request = _fingerprint({"key": rk, "payload": payload, "quantity": quantity})
-    stored = await find_event_by_idempotency(session, company_id, f"mfg:{order_id}:completed")
-    if stored is not None and (stored.data or {}).get("request") == request:
+    request = _fingerprint({"payload": payload, "quantity": quantity})
+    if await _replayed(op, f"mfg:{order_id}:complete:{rk}", request) is not None:
         return {"status": "completed"}
     run = await _run(op)
     _require_open(run.state, "completed")
@@ -526,14 +532,15 @@ async def complete(session: AsyncSession, company_id, user_id, order_id: str, pa
     if qty > _EPS and run.state.get("output_item_id"):
         await _receive(op, run, qty, f"{rk}:receive", request)
         run = await _run(op)
-    await _close(op, run, payload, request)
+    await _close(op, run, payload, request, rk)
     return {"status": "completed"}
 
 
-async def _close(op: _Op, run: Projection, payload: dict, request: str) -> None:
+async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str) -> None:
     """Close a run, leaving it holding nothing: waste to cost of goods sold, and the rest
     shared over its lots by quantity, each lot restated by the difference from what it took
-    when it was received."""
+    when it was received. ``ck`` keys this completion, so a reopened run completes afresh.
+    The completion records what it moved, so reopening reverses exactly that."""
     from celerp_inventory.services import CostRestatementConflict, goods_basis, restate_item_cost
 
     state = run.state
@@ -552,6 +559,7 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str) -> None:
     shares = allocate_pro_rata(finished, [_money(r["quantity"]) for r in receipts], op.currency) if receipts else []
 
     debits: dict[str, Decimal] = {}
+    restated = []
     for receipt, share in zip(receipts, shares):
         delta = share - _money(receipt.get("value"))
         if not delta:
@@ -563,11 +571,12 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str) -> None:
             await restate_item_cost(
                 op.session, op.company_id, lot_id, event_type="item.cost_adjusted",
                 data={"cost_total": float(_money(goods_basis(lot.state or {})) + delta),
-                      "manufacturing_order_id": op.order_id},
-                actor_id=op.user_id, source="api", idempotency_key=f"mfg:{op.order_id}:recost:{lot_id}",
+                      _ORDER_MARK: op.order_id},
+                actor_id=op.user_id, source="api", idempotency_key=f"mfg:{op.order_id}:complete:{ck}:recost:{lot_id}",
                 day=op.day)
         except CostRestatementConflict as exc:
             raise refuse(409, "recost_conflict", f"This run cannot be completed: {exc}.", reason=str(exc)) from exc
+        restated.append({"lot_item_id": lot_id, "delta": str(delta)})
         if op.books:
             code = lot_account(end.state or {})
             debits[code] = debits.get(code, _ZERO) + delta
@@ -575,7 +584,7 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str) -> None:
     wip_code = state.get("wip_account_code")
     if op.books and held:
         wip_code = await continue_role(op.session, op.company_id, AccountRole.WORK_IN_PROGRESS, wip_code)
-    await op.post("completed", f"Production run {op.order_id} completed", wip_code, -held, debits, waste)
+    await op.post(f"complete:{ck}", f"Production run {op.order_id} completed", wip_code, -held, debits, waste)
 
     if payload.get("actual_outputs") is not None:
         actual_outputs = payload["actual_outputs"]
@@ -588,7 +597,8 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str) -> None:
                    "reason": payload.get("waste_reason")} if payload.get("waste_quantity") is not None else None),
         "labor_hours": payload.get("labor_hours"),
         "transferred": str(finished), "wasted": str(waste), "request": request,
-    }, f"mfg:{op.order_id}:completed")
+        "closing": {"held": str(held), "wasted": str(waste), "lots": restated, "booked": op.books},
+    }, f"mfg:{op.order_id}:complete:{ck}")
 
 
 async def _lineage_end(op: _Op, lot_id: str) -> Projection:
@@ -613,6 +623,125 @@ async def _lineage_end(op: _Op, lot_id: str) -> Projection:
         raise refuse(409, "output_gone",
                      f"{s.get('sku') or current}, received from this run, is {status or 'no longer held'}, so its "
                      "final cost cannot be recorded.", lot=s.get("sku") or current, status=status)
+
+
+# ---------------------------------------------------------------------------
+# Undo a receipt, reopen a completed run
+# ---------------------------------------------------------------------------
+
+async def _require_untouched(op: _Op, row: Projection | None, lot_id: str, quantity: float, value: Decimal) -> None:
+    """A lot this run produced, exactly as the run left it: holding ``quantity`` at ``value``,
+    free, and changed by nothing but this run. Anything else (a sale, a move, a split, an
+    adjustment, a reservation, a document) has made it something the run can no longer take back."""
+    from celerp_inventory.projections import is_item_available
+
+    s = (row.state or {}) if row is not None and row.entity_type == "item" else {}
+    marks = (await op.session.execute(select(LedgerEntry.data, LedgerEntry.metadata_).where(
+        LedgerEntry.company_id == op.company_id, LedgerEntry.entity_id == lot_id))).all()
+    held = held_value(row) if s else None
+    if (not s or await listing_record(op.session, op.company_id, lot_id) is not None or not marks or any(op.order_id not in ((d or {}).get(_ORDER_MARK), (m or {}).get(_ORDER_MARK)) for d, m in marks)
+            or abs(float(s.get("quantity") or 0) - quantity) > _EPS or float(s.get("reserved_quantity") or 0) > _EPS
+            or s.get("status_doc_id") or not is_item_available(s) or held is None or op.round(held) != value):
+        sku = s.get("sku") or lot_id
+        raise refuse(409, "output_changed",
+                     f"{sku} has changed since this run produced it (it was sold, moved, split, adjusted, "
+                     "reserved or put on a document), so the run cannot take it back.", lot=sku)
+
+
+async def undo_receipt(session: AsyncSession, company_id, user_id, order_id: str, lot_id: str, key: str | None,
+                       *, at: str) -> dict:
+    """Undo a receipt: the lot it made leaves stock and its value goes back to the run, as if
+    it had never been received. Only while the lot is exactly as the run left it."""
+    rk = key or uuid.uuid4().hex
+    op = await _begin(session, company_id, user_id, order_id, at)
+    request = _fingerprint({"lot_item_id": lot_id})
+    stored = await _replayed(op, f"mfg:{order_id}:unreceive:{rk}", request)
+    if stored is not None:
+        return {k: stored.data.get(k) for k in ("lot_item_id", "quantity", "value")}
+    run = await _run(op)
+    state = run.state
+    if state.get("status") == "completed":
+        raise refuse(409, "reopen_first", "This run is completed. Reopen it before undoing a receipt.")
+    _require_open(state, "changed")
+    _require_settled(op, state)
+    receipt = next((r for r in state.get("receipts") or [] if r.get("lot_item_id") == lot_id), None)
+    if receipt is None:
+        raise refuse(422, "not_a_receipt", "That lot was not received from this run.")
+    qty, value = float(receipt["quantity"]), _money(receipt["value"])
+    row = (await lock_projections(op.session, op.company_id, [lot_id])).get(lot_id)
+    await _require_untouched(op, row, lot_id, qty, value)
+    code = lot_account(row.state or {}) if op.books and value else None
+    wip_code = state.get("wip_account_code")
+    if op.books and value:
+        wip_code = await continue_role(op.session, op.company_id, AccountRole.WORK_IN_PROGRESS, wip_code)
+
+    mark = {_ORDER_MARK: op.order_id}
+    loc = (row.state or {}).get("location_id")
+    # Emptied first, then archived: an archived lot brought back holds nothing.
+    await op.emit(lot_id, "item", "item.quantity.adjusted",
+                  {"new_qty": 0.0, "cost_base": 0.0, "reason": "production_receipt_undone"},
+                  f"mfg:{order_id}:unreceive:{rk}:emptied", location_id=loc, metadata=mark)
+    await op.emit(lot_id, "item", "item.status.set", {"new_status": "archived", "reason": "production_receipt_undone"},
+                  f"mfg:{order_id}:unreceive:{rk}:archived", location_id=loc, metadata=mark)
+    await op.post(f"unreceive:{rk}", f"Output receipt undone on production run {order_id}", wip_code, value,
+                  {code: -value} if code else {})
+    data = {"lot_item_id": lot_id, "quantity": qty, "value": str(value)}
+    await op.emit_run("mfg.order.receipt_undone", {**data, "undone_by": str(op.user_id), "request": request},
+                      f"mfg:{order_id}:unreceive:{rk}")
+    return data
+
+
+async def reopen(session: AsyncSession, company_id, user_id, order_id: str, key: str | None, *, at: str) -> dict:
+    """Reopen a completed run: completion's own entries (the lots' final cost and the waste) are
+    reversed from the values completion recorded, and the run holds what it held before.
+    Only while every lot it produced is exactly as completion left it."""
+    from celerp_inventory.services import CostRestatementConflict, goods_basis, restate_item_cost
+
+    rk = key or uuid.uuid4().hex
+    op = await _begin(session, company_id, user_id, order_id, at)
+    request = _fingerprint({})
+    if await _replayed(op, f"mfg:{order_id}:reopen:{rk}", request) is not None:
+        return {"status": "reopened"}
+    run = await _run(op)
+    state = run.state
+    if state.get("status") != "completed":
+        raise refuse(409, "not_completed", "Only a completed run can be reopened.")
+    closing = state.get("closing")
+    # A run completed by an older release, or with Accounting in another state, recorded nothing
+    # this can reverse exactly.
+    if closing is None or bool(closing.get("booked")) != op.books:
+        raise _reconcile()
+    _require_settled(op, state)
+    deltas = {lot["lot_item_id"]: _money(lot["delta"]) for lot in closing.get("lots") or []}
+    receipts = [r for r in state.get("receipts") or [] if float(r.get("quantity") or 0) > 0]
+    rows = await lock_projections(op.session, op.company_id, [r["lot_item_id"] for r in receipts])
+    for r in receipts:
+        lot_id = r["lot_item_id"]
+        await _require_untouched(op, rows.get(lot_id), lot_id, float(r["quantity"]),
+                                 _money(r["value"]) + deltas.get(lot_id, _ZERO))
+
+    credits: dict[str, Decimal] = {}
+    for lot_id, delta in deltas.items():
+        lot = rows[lot_id]
+        try:
+            await restate_item_cost(
+                op.session, op.company_id, lot_id, event_type="item.cost_adjusted",
+                data={"cost_total": float(_money(goods_basis(lot.state or {})) - delta), _ORDER_MARK: op.order_id},
+                actor_id=op.user_id, source="api", idempotency_key=f"mfg:{order_id}:reopen:{rk}:recost:{lot_id}",
+                day=op.day)
+        except CostRestatementConflict as exc:
+            raise refuse(409, "recost_conflict", f"This run cannot be reopened: {exc}.", reason=str(exc)) from exc
+        if op.books:
+            code = lot_account(lot.state or {})
+            credits[code] = credits.get(code, _ZERO) - delta
+    held, waste = _money(closing.get("held")), _money(closing.get("wasted"))
+    wip_code = state.get("wip_account_code")
+    if op.books and held:
+        wip_code = await continue_role(op.session, op.company_id, AccountRole.WORK_IN_PROGRESS, wip_code)
+    await op.post(f"reopen:{rk}", f"Production run {order_id} reopened", wip_code, held, credits, -waste)
+    await op.emit_run("mfg.order.reopened", {"reopened_by": str(op.user_id), "request": request},
+                      f"mfg:{order_id}:reopen:{rk}")
+    return {"status": "reopened"}
 
 
 # ---------------------------------------------------------------------------
@@ -645,10 +774,6 @@ async def cancel(session: AsyncSession, company_id, user_id, order_id: str, reas
 # ---------------------------------------------------------------------------
 # Runs whose work in progress the books do not hold yet
 # ---------------------------------------------------------------------------
-
-# Older releases marked each component they consumed into a run with the run's id.
-_ORDER_MARK = "manufacturing_order_id"
-
 
 class _Retry(Exception):
     """Something the settlement needs is not there yet (a posting account, an open period):

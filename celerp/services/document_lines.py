@@ -43,6 +43,20 @@ def line_item_id(line: dict) -> str | None:
     return line.get("item_id") or line.get("entity_id")
 
 
+async def listing_record(session, company_id, item_id: str) -> Projection | None:
+    """A document or List with a line linked to ``item_id``, or None. Lines are keyed by
+    ``item_id`` or ``entity_id`` depending on the writer (``line_item_id``), so either matches."""
+    from sqlalchemy import cast, or_
+    from sqlalchemy.dialects.postgresql import JSONB
+
+    lines = cast(Projection.state["line_items"], JSONB)
+    return (await session.execute(select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_type.in_(("doc", "list")),
+        or_(lines.contains([{"item_id": item_id}]), lines.contains([{"entity_id": item_id}])),
+    ).limit(1))).scalars().first()
+
+
 def line_id_counts(line_items) -> Counter:
     """How many lines of a line set link to each item id (free-text lines are not counted)."""
     ids = (line_item_id(line) for line in line_items or [] if isinstance(line, dict))

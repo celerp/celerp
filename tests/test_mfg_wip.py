@@ -299,7 +299,7 @@ async def test_complete_sends_waste_to_cost_of_goods_sold_and_leaves_the_run_emp
     # Completing received the other unit at 50, emptying the run. 2 of the 10 units issued were
     # wasted: 20 to cost of goods sold, and each lot gives back 10 of what it took.
     lot2 = next(x for x in (await _state(session, auth, order))["received_lots"] if x != lot)
-    assert await lines(session, auth, f"je:auto:{order}:completed") == sorted([
+    assert await lines(session, auth, f"je:auto:{order}:complete:c") == sorted([
         (p, (PURCHASED,), 0.0, 20.0), (cogs, (COGS,), 20.0, 0.0)])
     assert [(await _state(session, auth, x))["cost_total"] for x in (lot, lot2)] == [40.0, 40.0]
     facts = await _run_facts(session, auth, order)
@@ -324,7 +324,7 @@ async def test_a_run_with_no_output_completes_only_with_everything_recorded_as_w
 
     r = await complete(client, auth, order, key="c", waste_quantity=10, waste_reason="trial")
     assert r.status_code == 200, r.text
-    assert await lines(session, auth, f"je:auto:{order}:completed") == sorted([
+    assert await lines(session, auth, f"je:auto:{order}:complete:c") == sorted([
         (wip, (WIP,), 0.0, 100.0), (cogs, (COGS,), 100.0, 0.0)])
     assert (await snapshot(session, auth))["items"] == before["items"]
     await assert_settled(client, session, auth)

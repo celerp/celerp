@@ -18,3 +18,18 @@ class MfgOrderReturned(BaseModel):
 
 
 register_event_type("mfg.order.returned", MfgOrderReturned)
+
+
+class MfgOrderReceiptUndone(BaseModel):
+    lot_item_id: str
+    quantity: float
+    value: str
+    undone_by: str | None = None
+
+
+class MfgOrderReopened(BaseModel):
+    reopened_by: str | None = None
+
+
+register_event_type("mfg.order.receipt_undone", MfgOrderReceiptUndone)
+register_event_type("mfg.order.reopened", MfgOrderReopened)
