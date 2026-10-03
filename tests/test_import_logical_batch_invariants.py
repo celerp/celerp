@@ -671,6 +671,11 @@ async def test_a_retry_that_adds_category_fields_makes_the_import_not_undoable(c
     assert retry["reversible"] is False
     assert {b["id"]: b["reversible"] for b in await _history(client, ctx["admin_h"])} == {first["batch_id"]: False}
 
+    # A later retry that adds nothing lasting does not make it undoable again.
+    again = await _commit_rows(client, ctx["manager_h"], rows, upsert=False, key=key)
+    assert (again["created"], again["batch_id"], again["reversible"]) == (0, first["batch_id"], False)
+    assert {b["id"]: b["reversible"] for b in await _history(client, ctx["admin_h"])} == {first["batch_id"]: False}
+
     items = await _item_ids(session, ctx["company_id"])
     undo = await client.post(f"/items/import/batches/{first['batch_id']}/undo", headers=ctx["admin_h"])
     assert undo.status_code == 409 and undo.json()["detail"]["code"] == "import_not_reversible", undo.text

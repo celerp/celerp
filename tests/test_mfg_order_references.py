@@ -92,6 +92,28 @@ async def test_new_run_making_a_non_item_product_is_refused(client, session):
     assert await _runs(session, company_id) == 0
 
 
+@pytest.mark.asyncio
+async def test_new_run_naming_another_companys_item_is_refused(client, session):
+    from celerp.events.engine import emit_event
+    from celerp.models.company import Company
+
+    s = await perm_setup(client, session)
+    company_id = await _company_id(session)
+    other = uuid.uuid4()
+    session.add(Company(id=other, name="Other", slug=f"other-{other.hex[:8]}", settings={}))
+    await session.flush()
+    await emit_event(session, company_id=other, entity_id="item:theirs", entity_type="item",
+                     event_type="item.created", data={"sku": "THEIRS", "name": "Theirs", "quantity": 5,
+                                                      "sell_by": "piece"},
+                     actor_id=None, location_id=None, source="test", idempotency_key=str(uuid.uuid4()))
+    await session.flush()
+
+    r = await client.post("/manufacturing", json=_order("item:theirs"), headers=s["admin_h"])
+    assert r.status_code == 422, r.text
+    assert await _runs(session, company_id) == 0
+    assert await _runs(session, other) == 0
+
+
 @pytest.mark.parametrize("kind", ["unknown", "doc", "contact"])
 @pytest.mark.asyncio
 async def test_imported_run_naming_a_non_item_component_is_refused(client, session, kind):

@@ -7,7 +7,8 @@ Either upload door (the attachments one and the files one) can read the item, st
 file and then find the item gone when it records the upload. The upload is refused, the
 item stays deleted with no event left for it, and the stored file and its thumbnail are
 deleted again. Runs on real PostgreSQL with local storage, the Delete committing while
-the upload is under way.
+the upload is under way. The other way round, an upload that holds the item first is
+saved and the Delete waits for it, then deletes the item as usual.
 """
 
 from __future__ import annotations
@@ -181,3 +182,26 @@ async def test_an_upload_whose_commit_lands_then_fails_keeps_its_file(committed_
     recorded = {f.get("id") for f in (state.get("attachments") or []) + (state.get("files") or [])}
     assert stored and stored[0] in recorded
     assert any(stored[0] in path for path in _company_files(tmp_path, company_id))
+
+
+@pytest.mark.parametrize("door", [_attachments_door, _files_door], ids=["attachments", "files"])
+async def test_an_upload_holding_the_item_first_is_saved_and_the_delete_waits(committed_engine, tmp_path, monkeypatch, door):
+    _local_files(monkeypatch, tmp_path)
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id, user = await _seed(factory)
+    stored = _record_stores(monkeypatch)
+
+    async with factory() as a, factory() as b:
+        commit_upload = a.commit
+        a.commit = _deferred
+        uploaded = await door(a, company_id, user)
+        delete = asyncio.create_task(_delete(b, company_id, user))
+        await _until_waiting_or_done(committed_engine, delete)
+        assert not delete.done(), "the Delete did not wait for the upload holding the item"
+        await commit_upload()
+        deleted = await asyncio.wait_for(delete, timeout=30)
+
+    assert uploaded and stored
+    assert deleted == {"deleted": 1}
+    assert await _rows(committed_engine, company_id, "projections") == 0
+    assert await _rows(committed_engine, company_id, "ledger") == 0
