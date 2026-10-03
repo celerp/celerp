@@ -33,6 +33,7 @@ from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
+from celerp.services.goods_cost import negative_cost_error
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
@@ -3826,6 +3827,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                     detail=(f"{it.sku or it.name or it.item_id}: no line on this {doc_label} prices it, "
                             f"so the received goods cannot be costed. Add it to the {doc_label} first."),
                 )
+        refusal = negative_cost_error(str(it.sku or it.name or it.item_id), cost)
+        if refusal:
+            raise HTTPException(status_code=422, detail=refusal)
         priced.append((conversion, stock_qty, cost))
 
     _new_parcel_count = sum(1 for it in payload.received_items if _creates_parcel(it))

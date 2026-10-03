@@ -55,6 +55,7 @@ from celerp.services.auto_je import create_for_item_transform
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility, restricted_field_keys
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.demo import demo_item_ids
+from celerp.services.goods_cost import GOODS_COST_KEYS, lot_label, negative_cost_error
 from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS, DEFAULT_ITEM_SCHEMA, NUMERIC_SCHEMA_TYPES
 from celerp.services.permissions import (
     assert_role_permission,
@@ -2380,6 +2381,9 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         _amt_val = data.get(_amt)
         if _amt_val is not None and float(_amt_val) < 0:
             raise HTTPException(status_code=422, detail=f"{_amt} cannot be negative")
+    refusal = negative_cost_error(lot_label(data, entity_id), *(data.get(k) for k in GOODS_COST_KEYS))
+    if refusal:
+        raise HTTPException(status_code=422, detail=refusal)
 
     for field in ("purchase_unit", "weight_unit"):
         if data.get(field) is None and field in category_defaults:
@@ -3680,6 +3684,9 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     if payload.child_cost_total is not None and payload.child_cost_total != parent_cost_total:
         reject_price_change({"cost_total"}, role, settings)
     effective_cost = payload.child_cost_total if payload.child_cost_total is not None else parent_cost_total
+    refusal = negative_cost_error(payload.child_sku, effective_cost)
+    if refusal:
+        raise HTTPException(status_code=422, detail=refusal)
     parent_location_id = parent.state.get("location_id")
 
     child_eid = f"item:{uuid.uuid4()}"
@@ -4126,6 +4133,9 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     # repeat across lots (per-lot identity is the barcode + entity_id), so no
     # uniqueness check is applied - consistent with create/rename.
     merged_sku = (payload.resulting_sku or "").strip() or str(target_state.get("sku") or "")
+    refusal = negative_cost_error(lot_label({"sku": merged_sku, "name": resulting_name}, new_entity_id), resulting_cost)
+    if refusal:
+        raise HTTPException(status_code=422, detail=refusal)
     if catalog_anchor is not None and normalize_sku(merged_sku) != normalize_sku(
         (catalog_anchor.state or {}).get("sku")
     ):

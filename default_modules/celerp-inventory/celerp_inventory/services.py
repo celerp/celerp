@@ -34,6 +34,7 @@ from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
+from celerp.services.goods_cost import event_goods_costs, lot_label, negative_cost_error
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import round_basis
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
@@ -178,10 +179,6 @@ def goods_basis(state: dict) -> float | None:
     return None if basis is None else round_basis(basis)
 
 
-def _lot_label(state: dict, entity_id: str) -> str:
-    return str(state.get("sku") or state.get("name") or entity_id)
-
-
 def _basis_or_conflict(state: dict, label: str) -> float:
     """A lot's goods cost, 0 when it carries no cost at all. A unit cost with no
     total has no basis a correction can move, so it is refused."""
@@ -304,7 +301,7 @@ async def _sale_of_lot(session: AsyncSession, company_id, entity_id: str, state:
     entry, so nothing is adjusted."""
     from celerp.services.cogs_backfill import legacy_cogs_refusal
 
-    label = _lot_label(state, entity_id)
+    label = lot_label(state, entity_id)
     sale = (await session.execute(
         select(LedgerEntry).where(
             LedgerEntry.company_id == company_id,
@@ -377,11 +374,14 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     old = root.state or {}
     new = apply_item_event(old, event_type, data)
     old_basis, new_basis = goods_basis(old), goods_basis(new)
-    label = _lot_label(old, entity_id)
+    label = lot_label(old, entity_id)
     status = str(old.get("status") or "").lower()
     cost_changed = old_basis != new_basis
-    if cost_changed and new_basis is not None and new_basis < 0:
-        raise CostRestatementConflict(f"{label}: a cost cannot be negative")
+    # The written values too, not only the basis: a unit cost on a lot with no stock
+    # leaves no basis at all.
+    refusal = negative_cost_error(label, *event_goods_costs(event_type, data), new_basis)
+    if refusal:
+        raise CostRestatementConflict(refusal)
     if cost_changed and not await _cost_is_traceable(session, company_id, entity_id, old):
         raise CostRestatementConflict(
             f"{label}'s cost was already split, transformed, or used, so the correction "
@@ -417,7 +417,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                     f"{current} was merged into {next_id}, which is not an item; the merge lineage is broken"
                 )
             state = row.state or {}
-            current = _lot_label(state, next_id)
+            current = lot_label(state, next_id)
             succ_status = str(state.get("status") or "").lower()
             if not await _cost_is_traceable(session, company_id, next_id, state) or succ_status == "disposed":
                 raise CostRestatementConflict(
@@ -467,7 +467,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                 if sale.line is not None:
                     records.append({"doc_id": sale.doc_id, "cycle": sale.cycle, "line": sale.line, "amount": change})
                 elif sale.doc_id is None:
-                    unposted.append(_lot_label(before, lot_id))
+                    unposted.append(lot_label(before, lot_id))
                 elif not sale.allocated and change:
                     resold[sale.doc_id] = resold.get(sale.doc_id, 0.0) + change
             unit_delta = auto_je.lot_unit_cost(after) - auto_je.lot_unit_cost(before)
@@ -476,7 +476,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                 covered = sum(qty for (doc_id, _, _), qty in allocations.items() if doc_id == sale.doc_id)
                 if abs(covered - float(before.get("quantity") or 0)) > 1e-9:
                     raise CostRestatementConflict(
-                        f"{_lot_label(before, lot_id)} was sold on {sale.doc_number}, but that invoice does "
+                        f"{lot_label(before, lot_id)} was sold on {sale.doc_number}, but that invoice does "
                         "not price the whole lot, so its cost of goods sold cannot be adjusted "
                         "automatically; correct it with a journal entry instead")
             for (doc_id, cycle, line_index), qty in sorted(allocations.items()):
@@ -2830,6 +2830,10 @@ async def build_import_records(
                     data["cost_total"] = total_val
                 else:
                     data[unit_key] = to_stored_float(unit_price_from_total(total_val, price_qty, currency))
+        for col_key in ("cost_price", "cost_price_total"):
+            refusal = negative_cost_error(sku or name or f"Row {i + 1}", _flt(col_key))
+            if refusal:
+                price_errors.append({"row": i + 1, "field": col_key, "code": "negative_value", "message": refusal})
         if price_errors:
             errors.extend(price_errors)
             continue
@@ -3707,6 +3711,10 @@ async def write_import_batch(
             outcome.add(entity_id, "rejected",
                 f"Row (SKU={data.get('sku', '?')}): {negative_amount} cannot be negative"
             )
+            continue
+        refusal = negative_cost_error(lot_label(data, entity_id), *event_goods_costs(event_type, data))
+        if refusal:
+            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {refusal}")
             continue
 
         # Creation follows the ordinary internal-code primitive, after replay

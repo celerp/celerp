@@ -32,6 +32,7 @@ from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
 from celerp.services import auto_je, migrations
 from celerp.services.line_measures import splitting_allowed
+from celerp.services.goods_cost import lot_label, negative_cost_error
 from celerp.services.money import round_basis
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import lock_projections
@@ -260,6 +261,9 @@ async def set_item_recipe(
     except RecipeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     recipe.update(breakdown)
+    refusal = negative_cost_error(lot_label(item.state, item_id), recipe.get("unit_cost"))
+    if refusal:
+        raise HTTPException(status_code=422, detail=refusal)
 
     entry = await emit_event(
         session,
