@@ -277,8 +277,8 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
 async def record_stripe_release(session, company_id, row: Projection, *, reference: str,
                                 released_at: datetime.datetime) -> bool:
     """Record on the document *row* that the online payment *reference* is no
-    longer linked to Stripe: Stripe was disconnected, so it is refunded, voided or
-    deleted here from now on, for good. Only ``payments.receive_release`` and the
+    longer linked to Stripe: Stripe was disconnected, so it is refunded or voided
+    here from now on, for good. Only ``payments.receive_release`` and the
     payment intake call it; the caller commits. The owner is told, once. False when
     the payment is not on the document; recording it again is a quiet True."""
     from celerp.events.engine import emit_event

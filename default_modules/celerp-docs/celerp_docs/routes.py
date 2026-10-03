@@ -22,7 +22,8 @@ import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.events.engine import STRIPE_OWNED_PAYMENT, emit_event, find_event_by_idempotency, stripe_payment_indexes
+from celerp.events.engine import (emit_event, find_event_by_idempotency, refuse_stripe_payment_removal,
+                                  stripe_payment_indexes)
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
@@ -3162,9 +3163,9 @@ async def delete_payment(
         raise HTTPException(status_code=422, detail="Invalid payment index")
     if payment.get("status") != "active":
         raise HTTPException(status_code=409, detail="Only active payments can be deleted")
-    if payment_index in await stripe_payment_indexes(session, company_id, entity_id, payments):
-        # Said before "void it instead": a Stripe payment can be voided only in Stripe either.
-        raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
+    # Said before "void it instead": a Stripe payment is voided only in Stripe either.
+    await refuse_stripe_payment_removal(session, company_id, entity_id, payments, payment_index,
+                                        "doc.payment.deleted")
     if payment.get("refunded"):
         raise HTTPException(
             status_code=409,

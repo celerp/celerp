@@ -661,7 +661,8 @@ class DocPaymentRefundReversed(BaseModel):
 
 class DocPaymentStripeReleased(BaseModel):
     """Stripe was disconnected: the payment is no longer linked to Stripe, for good, and
-    is refunded, voided or deleted here like any other payment."""
+    is refunded or voided here like any other payment. It was received through Stripe,
+    so it is never deleted."""
     payment_index: int
     reference: str
     released_at: str
