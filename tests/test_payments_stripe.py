@@ -171,7 +171,7 @@ async def test_a_payment_of_a_hundredth_of_an_idr_invoice_does_not_mark_it_paid(
     eid, _ = await _idr_invoice(client, tok)
     delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_idr",
                 "amount_minor": 100000, "currency": "idr", "paid_at": PAID.isoformat(),
-                "context": {**BOOKS, "base_currency": "IDR"}}
+                "context": {**BOOKS, "base_currency": "IDR"}, "managed": True}
 
     assert await receive_payment(delivery) is True
 
@@ -190,7 +190,7 @@ async def test_a_stripe_amount_the_books_cannot_hold_is_kept_among_the_unmatched
     eid, _ = await _idr_invoice(client, tok)
     delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_idr_frac",
                 "amount_minor": 10000050, "currency": "idr", "paid_at": PAID.isoformat(),
-                "context": {**BOOKS, "base_currency": "IDR"}}
+                "context": {**BOOKS, "base_currency": "IDR"}, "managed": True}
 
     assert await receive_payment(delivery) is True
 
@@ -341,7 +341,7 @@ async def test_backup_push_records_and_is_idempotent(client, session, payments_o
     row = await session.get(Projection, (cid, eid))
     await record_stripe_payment(session, cid, eid, dict(row.state),
                                 reference="pi_push", amount_minor=107000, currency="usd",
-                                paid_at=PAID, context=BOOKS)
+                                paid_at=PAID, context=BOOKS, managed=True)
     await session.commit()
     doc = await _doc_state(client, tok, eid)
     assert doc["status"] == "paid"
@@ -350,7 +350,7 @@ async def test_backup_push_records_and_is_idempotent(client, session, payments_o
     row2 = await session.get(Projection, (cid, eid))
     await record_stripe_payment(session, cid, eid, dict(row2.state),
                                 reference="pi_push", amount_minor=107000, currency="usd",
-                                paid_at=PAID, context=BOOKS)
+                                paid_at=PAID, context=BOOKS, managed=True)
     await session.commit()
     doc2 = await _doc_state(client, tok, eid)
     assert len([p for p in doc2["payments"] if p.get("reference") == "pi_push"]) == 1
@@ -383,7 +383,7 @@ async def test_a_payment_clears_to_the_deposit_account_its_page_opened_with(clie
 
     row = await session.get(Projection, (cid, eid))
     await record_stripe_payment(session, cid, eid, dict(row.state), reference="pi_acct", amount_minor=107000,
-                                currency="usd", paid_at=PAID, context=opened)
+                                currency="usd", paid_at=PAID, context=opened, managed=True)
     await session.commit()
     doc = await _doc_state(client, tok, eid)
     pay_entry = next(p for p in doc["payments"] if p.get("reference") == "pi_acct")
@@ -492,7 +492,7 @@ async def test_a_payment_whose_deposit_account_is_not_cash_or_an_active_bank_is_
     code = await _refused_deposit(client, session, tok, kind)
     delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_dep",
                 "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
-                "context": {**BOOKS, "deposit_account": code}}
+                "context": {**BOOKS, "deposit_account": code}, "managed": True}
 
     assert await receive_payment(delivery) is True
 
@@ -511,7 +511,7 @@ async def test_a_payment_to_an_active_bank_is_recorded_there(client, session, pa
     code = await _bank(client, tok)
     delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_bank",
                 "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
-                "context": {**BOOKS, "deposit_account": code}}
+                "context": {**BOOKS, "deposit_account": code}, "managed": True}
 
     assert await receive_payment(delivery) is True
 
@@ -620,7 +620,7 @@ async def test_full_online_payment_journey(client, session, payments_on, monkeyp
     from celerp.services.payments import receive_payment
     delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_journey",
                 "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
-                "context": checkout["context"]}
+                "context": checkout["context"], "managed": True}
     assert await receive_payment(delivery) is True
 
     # 5. Money truth: invoice paid, exactly one payment, exactly one posted JE.
@@ -669,7 +669,7 @@ async def test_online_payment_posts_exactly_one_journal_entry(client, session, p
     row = await session.get(Projection, (cid, eid))
     await record_stripe_payment(session, cid, eid, dict(row.state),
                                 reference="pi_je", amount_minor=107000, currency="usd",
-                                paid_at=PAID, context=BOOKS)
+                                paid_at=PAID, context=BOOKS, managed=True)
     await session.commit()
     assert await _pay_je_entities(session, cid, eid) == [f"je:auto:{eid}:pay:0"]
 
@@ -702,7 +702,7 @@ async def test_manual_payment_racing_online_confirm(client, session, payments_on
     with pytest.raises(HTTPException) as refused:
         await record_stripe_payment(session, cid, eid, stale,
                                     reference="pi_race", amount_minor=107000, currency="usd",
-                                    paid_at=PAID, context=BOOKS)
+                                    paid_at=PAID, context=BOOKS, managed=True)
     assert refused.value.status_code == 409
     assert "exceeds amount outstanding" in refused.value.detail
     await session.rollback()
@@ -726,12 +726,12 @@ async def test_stale_repeated_delivery_is_noop(client, session, payments_on):
 
     await record_stripe_payment(session, cid, eid, dict((await session.get(Projection, (cid, eid))).state),
                                 reference="pi_dup", amount_minor=107000, currency="usd",
-                                paid_at=PAID, context=BOOKS)
+                                paid_at=PAID, context=BOOKS, managed=True)
     # Replay with the PRE-payment snapshot (worst case: passes the caller's own
     # stale pre-check, must be stopped by the locked fresh read).
     assert await record_stripe_payment(session, cid, eid, stale,
                                        reference="pi_dup", amount_minor=107000, currency="usd",
-                                       paid_at=PAID, context=BOOKS) is None
+                                       paid_at=PAID, context=BOOKS, managed=True) is None
     doc = await _doc_state(client, tok, eid)
     assert len([p for p in doc["payments"] if p.get("reference") == "pi_dup"]) == 1
     assert await _pay_je_entities(session, cid, eid) == [f"je:auto:{eid}:pay:0"]
@@ -923,7 +923,7 @@ async def test_a_stripe_payment_cannot_be_refunded_voided_or_deleted_here(client
     cid = _company_id(tok)
     assert await receive_payment({"company_id": cid, "entity_id": eid, "reference": "pi_card",
                                   "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
-                                  "context": BOOKS}) is True
+                                  "context": BOOKS, "managed": True}) is True
     before, events = await _doc_state(client, tok, eid), await _ledger(session, cid, eid)
     assert before["status"] == "paid" and [p["method"] for p in before["payments"]] == ["stripe"]
     assert before["payments"][0]["held_by"] == "stripe"
@@ -1016,7 +1016,7 @@ async def test_a_payment_entered_by_hand_stays_the_users_when_stripe_later_repor
     assert r.status_code == 200, r.text
     assert await receive_payment({"company_id": cid, "entity_id": eid, "reference": "pi_card",
                                   "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
-                                  "context": BOOKS}) is True
+                                  "context": BOOKS, "managed": True}) is True
     assert "held_by" not in (await _doc_state(client, tok, eid))["payments"][0]
 
     r = await _remove_payment(client, tok, eid, "void")
@@ -1025,8 +1025,11 @@ async def test_a_payment_entered_by_hand_stays_the_users_when_stripe_later_repor
 
 
 @pytest.mark.asyncio
-async def test_a_stripe_payment_recorded_before_payments_carried_an_index_is_still_left_to_stripe(
+async def test_a_stripe_payment_the_released_version_recorded_is_the_companys_to_manage(
         client, session, payments_on):
+    """The released version recorded online payments without an index or a mark that
+    Stripe manages them, and Stripe never sends their refunds: they are voided,
+    deleted or refunded here like any other payment."""
     from sqlalchemy import text
     from celerp.services.payments import receive_payment
     tok = await _register(client)
@@ -1034,11 +1037,12 @@ async def test_a_stripe_payment_recorded_before_payments_carried_an_index_is_sti
     cid = _company_id(tok)
     assert await receive_payment({"company_id": cid, "entity_id": eid, "reference": "pi_card",
                                   "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
-                                  "context": BOOKS}) is True
+                                  "context": BOOKS, "managed": True}) is True
     await session.execute(text(
-        "UPDATE ledger SET data = (data::jsonb - 'index')::json "
+        "UPDATE ledger SET data = (data::jsonb - 'index' - 'stripe_managed')::json "
         "WHERE company_id = CAST(:c AS uuid) AND entity_id = :e AND source = 'stripe'"), {"c": cid, "e": eid})
+    await session.commit()
 
-    assert (await _doc_state(client, tok, eid))["payments"][0]["held_by"] == "stripe"
+    assert "held_by" not in (await _doc_state(client, tok, eid))["payments"][0]
     r = await _remove_payment(client, tok, eid, "void")
-    assert r.status_code == 422 and r.json()["detail"] == STRIPE_OWNED
+    assert r.status_code == 200, r.text

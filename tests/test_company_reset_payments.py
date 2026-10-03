@@ -45,7 +45,7 @@ NO_ANSWER = object()  # the request returns nothing
 
 
 _PAYMENT = ("company_id", "entity_id", "reference", "amount_minor", "currency", "paid_at", "context",
-            "delivery_id")
+            "managed", "delivery_id")
 # The books a payment page opened with, for a payment whose page the test does not open.
 BOOKS = {"deposit_account": "1110", "timezone": "UTC", "base_currency": "USD", "rate": "1"}
 OPENED = object()  # the books the invoice's last payment page opened with
@@ -102,6 +102,7 @@ class _Cloud:
                                 "amount_minor": amount_minor, "currency": "usd",
                                 "paid_at": (paid_at or datetime.now(timezone.utc)).isoformat(),
                                 "context": self.opened.get(entity_id, BOOKS) if books is OPENED else books,
+                                "managed": True,
                                 "delivery_id": str(uuid.uuid4()), "acked": False})
 
     async def deliver(self) -> None:

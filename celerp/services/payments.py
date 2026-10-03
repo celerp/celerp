@@ -215,7 +215,9 @@ def _reached(answer: tuple[int, dict] | None, closure: PaymentClosure, states: t
 
 async def receive_payment(payload: dict) -> bool:
     """Record an online payment delivered by Celerp Cloud: on its invoice, on the
-    books its payment page opened with and the day it was paid, when the invoice can
+    books its payment page opened with and the day it was paid (``managed``: Stripe
+    manages it; one paid on a page opened before pages carried their books is the
+    company's, see ``record_stripe_payment``), when the invoice can
     take the whole charge, otherwise among the unmatched payments, whole (the company
     or the invoice no longer exists, the invoice is already paid, it owes less than
     the charge, or it refuses it, as it does a delivery without usable books). True once recorded
@@ -227,8 +229,8 @@ async def receive_payment(payload: dict) -> bool:
     unmatched: one the invoice now takes, or already holds, leaves the unmatched
     payments in the same transaction that records it, and the refunds of it kept
     until then apply in that transaction too, in the order Stripe reported them. A
-    payment kept after it stopped being linked to Stripe takes the refunds Stripe
-    reported before that, then stops being linked to Stripe (``receive_release``)."""
+    payment kept after it stopped being linked to Stripe stops being linked to
+    Stripe with it (``receive_release``)."""
     from fastapi import HTTPException
     from celerp.models.projections import Projection
     from celerp.services.company_lock import hold_company
@@ -236,6 +238,7 @@ async def receive_payment(payload: dict) -> bool:
     company_id, entity_id, reference = (str(payload.get(k) or "") for k in ("company_id", "entity_id", "reference"))
     if not (company_id and entity_id and reference):
         return False
+    managed = payload.get("managed") is True
     amount_minor = int(payload.get("amount_minor") or 0)
     currency = str(payload.get("currency") or "USD").upper()
     try:
@@ -257,9 +260,10 @@ async def receive_payment(payload: dict) -> bool:
             try:
                 await record_stripe_payment(session, cid, entity_id, dict(row.state), reference=reference,
                                             amount_minor=amount_minor, currency=currency, paid_at=paid_at,
-                                            context=payload.get("context"))
-                await _apply_parked_refunds(session, cid, entity_id, reference, before=released_at)
-                if released_at is not None:
+                                            context=payload.get("context"), managed=managed)
+                if released_at is None:
+                    await _apply_parked_refunds(session, cid, entity_id, reference)
+                else:
                     await _apply_release(session, cid, entity_id, reference, released_at)
                 await session.commit()  # already recorded: only the unmatched row goes
                 return True
@@ -314,14 +318,11 @@ async def _apply_refund(session, cid, entity_id: str, refund: dict) -> bool:
     return True
 
 
-async def _apply_parked_refunds(session, cid, entity_id: str, reference: str, *,
-                                before: datetime | None = None) -> None:
+async def _apply_parked_refunds(session, cid, entity_id: str, reference: str) -> None:
     """Apply the kept refunds of the payment *reference*, now on its document, in the
-    order Stripe reported them; with *before*, only those Stripe reported before
-    then. One the document still refuses stays kept."""
+    order Stripe reported them. One the document still refuses stays kept: one Stripe
+    made after the payment stopped being linked to it, for good."""
     query = select(UnmatchedRefund).where(UnmatchedRefund.reference == reference)
-    if before is not None:
-        query = query.where(UnmatchedRefund.occurred_at < before)
     parked = (await session.scalars(query.order_by(
         UnmatchedRefund.occurred_at.asc().nulls_last(), UnmatchedRefund.refund_id, UnmatchedRefund.cycle,
         UnmatchedRefund.transition))).all()
@@ -378,13 +379,18 @@ def _counted(value) -> bool:
 
 async def _apply_release(session, cid, entity_id: str, reference: str, released_at: datetime) -> bool:
     """Record that the payment *reference* on the document is no longer linked to
-    Stripe. False when the document or the payment is not there."""
+    Stripe, then apply its kept refunds Stripe made before that, whenever they
+    arrived (``_apply_parked_refunds``). False when the document or the payment is
+    not there."""
     from celerp.services.company_lock import lock_projections
     from celerp_docs.routes_payments import record_stripe_release
     row = (await lock_projections(session, cid, [entity_id])).get(entity_id)
     if row is None or row.entity_type != "doc":
         return False
-    return await record_stripe_release(session, cid, row, reference=reference, released_at=released_at)
+    if not await record_stripe_release(session, cid, row, reference=reference, released_at=released_at):
+        return False
+    await _apply_parked_refunds(session, cid, entity_id, reference)
+    return True
 
 
 async def receive_release(payload: dict) -> bool:
