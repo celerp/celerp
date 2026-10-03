@@ -2442,7 +2442,7 @@
   "inventory.no_work_orders": "لا توجد أوامر عمل لعرضها. قم بإنشائها من طلب أو من صفحة «تخطيط الطلب».",
   "inventory.not_paired_field": "ليس حقلًا مقترنًا",
   "inventory.not_saved_detail": "لم يتم الحفظ: {detail}",
-  "inventory.not_saved_output_qty_number": "لم يتم الحفظ: يجب أن تكون كمية المخرجات رقمًا.",
+  "inventory.not_saved_quantity_positive": "لم يتم الحفظ: يجب أن تكون الكمية رقمًا أكبر من صفر.",
   "inventory.not_used_labor_type": "غير مستخدم لهذا النوع من العمالة",
   "inventory.open_demand": "طلب مفتوح",
   "inventory.open_demand_hint": "الطلبات التي تحتوي على هذا العنصر، مع توضيح مدى تغطية العرض الحالي لكل منها.",

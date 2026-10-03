@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from .costing import MAX_RECIPE_DEPTH, RecipeError
+from .costing import MAX_RECIPE_DEPTH, RecipeError, component_quantity, output_quantity
 
 ItemLookup = Callable[[str], dict | None]
 
@@ -60,9 +60,9 @@ def expand_recipe(item_state: dict, build_qty: float) -> list[dict]:
     components = recipe.get("components") or []
     if not components:
         raise RecipeError("item has no recipe to expand")
-    factor = float(build_qty) / (float(recipe.get("output_qty") or 1) or 1)
+    factor = float(build_qty) / output_quantity(recipe)
     return merge_inputs(
-        {"item_id": c["item_id"], "quantity": round(float(c.get("quantity") or 0) * factor, 6)}
+        {"item_id": c["item_id"], "quantity": round(component_quantity(c) * factor, 6)}
         for c in components if c.get("item_id")
     )
 
@@ -88,14 +88,14 @@ def explode_demand(lines: list[tuple[str, float]], lookup: ItemLookup) -> dict:
             raw[item_id] = raw.get(item_id, 0.0) + qty
             return
         sub[item_id] = sub.get(item_id, 0.0) + qty
-        factor = qty / (float(recipe.get("output_qty") or 1) or 1)
+        factor = qty / output_quantity(recipe)
         for c in components:
             cid = c.get("item_id")
             if not cid:
                 continue
             if cid in path:
                 raise RecipeError(f"recipe cycle detected at {cid}")
-            _walk(cid, float(c.get("quantity") or 0) * factor, path | {cid}, depth + 1)
+            _walk(cid, component_quantity(c) * factor, path | {cid}, depth + 1)
 
     for item_id, qty in lines:
         if is_manufacturable(lookup(item_id)):

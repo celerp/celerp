@@ -2443,7 +2443,7 @@
   "inventory.no_work_orders": "Aucun ordre de fabrication à afficher. Créez-les à partir d’une commande ou sur la page « Planification de la demande ».",
   "inventory.not_paired_field": "Champ non apparié",
   "inventory.not_saved_detail": "Non enregistré : {detail}",
-  "inventory.not_saved_output_qty_number": "Non enregistré : la quantité de sortie doit être un nombre.",
+  "inventory.not_saved_quantity_positive": "Non enregistré : la quantité doit être un nombre supérieur à zéro.",
   "inventory.not_used_labor_type": "Non utilisé pour ce type de main-d’œuvre",
   "inventory.open_demand": "Demande en cours",
   "inventory.open_demand_hint": "Commandes comportant cet article, avec indication du degré de couverture de chacune par l’approvisionnement actuel.",

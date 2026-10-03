@@ -2442,7 +2442,7 @@
   "inventory.no_work_orders": "Tidak ada perintah kerja yang ditampilkan. Buatlah dari pesanan atau di halaman Perencanaan Permintaan.",
   "inventory.not_paired_field": "Bukan bidang yang dipasangkan",
   "inventory.not_saved_detail": "Belum disimpan: {detail}",
-  "inventory.not_saved_output_qty_number": "Belum disimpan: jumlah keluaran harus berupa angka.",
+  "inventory.not_saved_quantity_positive": "Belum disimpan: jumlah harus berupa angka lebih dari nol.",
   "inventory.not_used_labor_type": "Tidak digunakan untuk jenis tenaga kerja ini",
   "inventory.open_demand": "Permintaan terbuka",
   "inventory.open_demand_hint": "Pesanan yang memesan item ini, beserta seberapa baik persediaan saat ini mencukupi masing-masing pesanan.",

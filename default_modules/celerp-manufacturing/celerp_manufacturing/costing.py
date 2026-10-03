@@ -19,7 +19,28 @@ ItemLookup = Callable[[str], dict | None]
 
 
 class RecipeError(ValueError):
-    """Raised on a cyclic or too-deeply-nested recipe graph."""
+    """Raised on a cyclic or too-deeply-nested recipe graph, or one that cannot make anything."""
+
+
+def output_quantity(recipe: dict) -> float:
+    """Units one batch of ``recipe`` yields; 1 when it does not say.
+
+    A recipe an older release stored with nothing or less as its output is still kept as
+    written, but nothing new is costed or made from it until it is corrected."""
+    stated = recipe.get("output_qty")
+    qty = 1.0 if stated is None else float(stated)
+    if not qty > 0:
+        raise RecipeError("A recipe's output quantity must be greater than zero")
+    return qty
+
+
+def component_quantity(comp: dict) -> float:
+    """How much of one component a batch uses; refused when it is nothing or less, the same
+    rule a recipe is saved under (see ``output_quantity``)."""
+    qty = float(comp.get("quantity") or 0)
+    if not qty > 0:
+        raise RecipeError(f"Component {comp.get('sku') or comp.get('item_id')} quantity must be greater than zero")
+    return qty
 
 
 def _labor_line_cost(line: dict) -> float:
@@ -69,7 +90,7 @@ def roll_up_cost(recipe: dict, lookup: ItemLookup, *, currency: str = "USD", _pa
         if cid in _path:
             raise RecipeError(f"recipe cycle detected at {cid}")
         child_cost = unit_cost(lookup(cid), lookup, currency=currency, _path=_path | {cid}, _depth=_depth + 1)
-        line = float(comp.get("quantity") or 0) * child_cost
+        line = component_quantity(comp) * child_cost
         # Annotate the line in-place so the UI can show each component's catalog unit cost (a rate)
         # and extended cost (an amount) without re-deriving any cost logic (single source = this module).
         comp["unit_cost"] = float(round_rate(child_cost, currency))
@@ -78,7 +99,7 @@ def roll_up_cost(recipe: dict, lookup: ItemLookup, *, currency: str = "USD", _pa
 
     labor = sum(_labor_line_cost(l) for l in recipe.get("labor", []))
     overhead = sum(float(o.get("amount") or 0) for o in recipe.get("overhead", []))
-    output_qty = float(recipe.get("output_qty") or 1) or 1
+    output_qty = output_quantity(recipe)
     total = materials + labor + overhead
     return {
         "materials_cost": float(round_money(materials, currency)),

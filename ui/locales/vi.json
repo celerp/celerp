@@ -2442,7 +2442,7 @@
   "inventory.no_work_orders": "Không có lệnh sản xuất nào để hiển thị. Hãy tạo chúng từ một đơn hàng hoặc trên trang Lập kế hoạch nhu cầu.",
   "inventory.not_paired_field": "Không phải là trường ghép đôi",
   "inventory.not_saved_detail": "Chưa được lưu: {detail}",
-  "inventory.not_saved_output_qty_number": "Chưa được lưu: số lượng đầu ra phải là một số.",
+  "inventory.not_saved_quantity_positive": "Chưa được lưu: số lượng phải là một số lớn hơn không.",
   "inventory.not_used_labor_type": "Không được sử dụng cho loại lao động này",
   "inventory.open_demand": "Nhu cầu chưa được đáp ứng",
   "inventory.open_demand_hint": "Các đơn hàng có mặt hàng này trong đơn đặt hàng, kèm theo mức độ đáp ứng của nguồn cung hiện tại đối với từng đơn hàng.",

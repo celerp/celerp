@@ -2442,7 +2442,7 @@
   "inventory.no_work_orders": "表示する作業指示書がありません。注文から作成するか、「需要計画」ページで作成してください。",
   "inventory.not_paired_field": "ペアになっていないフィールドです",
   "inventory.not_saved_detail": "保存されていません：{detail}",
-  "inventory.not_saved_output_qty_number": "保存されていません：出力数量は数値でなければなりません。",
+  "inventory.not_saved_quantity_positive": "保存されていません：数量はゼロより大きい数値でなければなりません。",
   "inventory.not_used_labor_type": "この労働タイプでは使用されていません",
   "inventory.open_demand": "未処理の需要",
   "inventory.open_demand_hint": "この品目が発注されている注文一覧と、現在の供給量が各注文をどの程度カバーしているか。",

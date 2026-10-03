@@ -2080,9 +2080,11 @@ function celerpPrintLabel(entityId, templateId) {
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
         try:
-            output_qty = float(str(form.get("output_qty", "1")) or 1)
+            output_qty = float(str(form.get("output_qty", "")))
         except ValueError:
-            return _recipe_saved_status(t("inventory.not_saved_output_qty_number"), "error")
+            output_qty = 0.0
+        if not output_qty > 0:
+            return _recipe_saved_status(t("inventory.not_saved_quantity_positive"), "error")
         try:
             item = await api.get_item(token, entity_id)
             recipe = item.get("recipe") or {"output_qty": 1, "components": [], "labor": [], "overhead": []}
@@ -2508,9 +2510,14 @@ function celerpPrintLabel(entityId, templateId) {
                 try:
                     value = float(str(value) or 0)
                 except (ValueError, TypeError):
+                    value = None
+                # A component a recipe uses must be more than nothing (the API refuses it too).
+                if value is None or (section == "components" and not value > 0):
                     edit_td = editable_cell(entity_id=entity_id, field=field, value=str(form.get("value", "")),
                                             cell_type="number", restore_url=restore_url)
                     edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
+                    if value is not None:
+                        edit_td.attrs["title"] = t("inventory.not_saved_quantity_positive")
                     return edit_td
             try:
                 item = await api.get_item(token, entity_id)
@@ -6264,7 +6271,9 @@ def _recipe_api_payload(recipe: dict) -> dict:
         except (TypeError, ValueError):
             return 0.0
     return {
-        "output_qty": _num(recipe.get("output_qty")) or 1.0,
+        # Sent as stored: a recipe saved with nothing as its output is refused until it is
+        # corrected, never quietly changed to 1.
+        "output_qty": _num(recipe.get("output_qty", 1)),
         "components": [
             {"item_id": c.get("item_id"), "sku": c.get("sku"), "quantity": _num(c.get("quantity")), "unit": c.get("unit")}
             for c in recipe.get("components", []) if c.get("item_id")
@@ -6681,7 +6690,7 @@ def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: 
                 ),
                 Div(
                     Div(t("inventory.production_worksheet_title")),
-                    Div(t("inventory.ws_output", qty=f"{float(recipe.get('output_qty') or 1):g}")),
+                    Div(t("inventory.ws_output", qty=f"{float(recipe.get('output_qty', 1)):g}")),
                     Div(today, cls="ws-muted"),
                     cls="ws-meta",
                 ),
@@ -6971,7 +6980,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             Div(
                 Label(t("inventory.output_qty_label"), For="output_qty"),
                 Input(type="number", id="output_qty", name="output_qty",
-                      value=f"{recipe.get('output_qty', 1) or 1:g}", min="0.001", step="any", cls="cell--number", **_save),
+                      value=f"{float(recipe.get('output_qty', 1)):g}", min="0.001", step="any", cls="cell--number", **_save),
                 P(t("inventory.unit_cost_formula"), cls="hint"),
                 cls="detail-card recipe-block",
             ),

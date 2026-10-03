@@ -2443,7 +2443,7 @@
   "inventory.no_work_orders": "Nessun ordine di lavoro da visualizzare. Crearli da un ordine o nella pagina “Pianificazione della domanda”.",
   "inventory.not_paired_field": "Campo non associato",
   "inventory.not_saved_detail": "Non salvato: {detail}",
-  "inventory.not_saved_output_qty_number": "Non salvato: la quantità di output deve essere un numero.",
+  "inventory.not_saved_quantity_positive": "Non salvato: la quantità deve essere un numero maggiore di zero.",
   "inventory.not_used_labor_type": "Non utilizzato per questo tipo di manodopera",
   "inventory.open_demand": "Domanda aperta",
   "inventory.open_demand_hint": "Ordini che contengono questo articolo, con l’indicazione di quanto l’attuale disponibilità copra ciascuno di essi.",

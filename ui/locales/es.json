@@ -2442,7 +2442,7 @@
   "inventory.no_work_orders": "No hay órdenes de trabajo que mostrar. Créalas a partir de un pedido o en la página «Planificación de la demanda».",
   "inventory.not_paired_field": "No es un campo emparejado",
   "inventory.not_saved_detail": "No se ha guardado: {detail}",
-  "inventory.not_saved_output_qty_number": "No guardado: la cantidad de salida debe ser un número.",
+  "inventory.not_saved_quantity_positive": "No guardado: la cantidad debe ser un número mayor que cero.",
   "inventory.not_used_labor_type": "No se utiliza para este tipo de mano de obra",
   "inventory.open_demand": "Demanda pendiente",
   "inventory.open_demand_hint": "Pedidos que incluyen este artículo, con la cobertura que ofrece el suministro actual para cada uno de ellos.",

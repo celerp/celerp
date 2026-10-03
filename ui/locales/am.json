@@ -2543,7 +2543,7 @@
   "inventory.no_work_orders": "ምንም የሚታዩ የስራ ትዕዛዞች የሉም። ከትዕዛዝ ወይም በፍላጎት ዕቅድ ገጽ ላይ ይፍጠሩዋቸው።",
   "inventory.not_paired_field": "የተጣመረ መስክ አይደለም",
   "inventory.not_saved_detail": "አልተቀመጠም: {detail}",
-  "inventory.not_saved_output_qty_number": "አልተቀመጠም፡ የውጤት ብዛት ቁጥር መሆን አለበት።",
+  "inventory.not_saved_quantity_positive": "አልተቀመጠም፡ ብዛቱ ከዜሮ የሚበልጥ ቁጥር መሆን አለበት።",
   "inventory.not_used_labor_type": "ለዚህ የጉልበት አይነት ጥቅም ላይ አይውልም",
   "inventory.open_demand": "ክፍት ፍላጎት",
   "inventory.open_demand_hint": "ይህ ዕቃ በትዕዛዝ ያላቸው ፣የአሁኖቹ አቅርቦት እያንዳንዳቸው ምን ያህል እንደሚሸፍኑ።",

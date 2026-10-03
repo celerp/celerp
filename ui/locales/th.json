@@ -2442,7 +2442,7 @@
   "inventory.no_work_orders": "ไม่มีใบสั่งผลิตให้แสดง สร้างได้จากคำสั่งซื้อหรือหน้าวางแผนความต้องการ.",
   "inventory.not_paired_field": "ไม่ใช่ฟิลด์ที่จับคู่กัน",
   "inventory.not_saved_detail": "ไม่ได้บันทึก: {detail}",
-  "inventory.not_saved_output_qty_number": "ไม่ได้บันทึก: จำนวนผลผลิตต้องเป็นตัวเลข.",
+  "inventory.not_saved_quantity_positive": "ไม่ได้บันทึก: จำนวนต้องเป็นตัวเลขที่มากกว่าศูนย์.",
   "inventory.not_used_labor_type": "ไม่ได้ใช้กับประเภทค่าแรงนี้",
   "inventory.open_demand": "ความต้องการค้าง",
   "inventory.open_demand_hint": "คำสั่งซื้อที่มีสินค้านี้อยู่ พร้อมระดับความเพียงพอของสต็อกปัจจุบันต่อแต่ละรายการ.",

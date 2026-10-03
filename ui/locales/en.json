@@ -2562,7 +2562,7 @@
   "inventory.no_work_orders": "No work orders to show. Create them from an order or on the Demand Planning page.",
   "inventory.not_paired_field": "Not a paired field",
   "inventory.not_saved_detail": "Not saved: {detail}",
-  "inventory.not_saved_output_qty_number": "Not saved: output quantity must be a number.",
+  "inventory.not_saved_quantity_positive": "Not saved: quantity must be a number greater than zero.",
   "inventory.not_used_labor_type": "Not used for this labor type",
   "inventory.open_demand": "Open demand",
   "inventory.open_demand_hint": "Orders that have this item on order, with how well current supply covers each.",

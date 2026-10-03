@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from celerp.schemas.numbers import PositiveFloat
+
 # The SKU/barcode write-time predicates live in celerp.inventory_codes so the event
 # boundary, the interactive routes, the allocation service, and the scanner share one
 # source of truth. reject_comma_sku/SKU_COMMA_MESSAGE are re-exported here because
@@ -351,7 +353,7 @@ class ItemInventoryOnBooksRecorded(BaseModel):
 class ComponentSpec(BaseModel):
     item_id: str                       # entity_id of the input inventory item
     sku: str | None = None             # denormalized for display; resolved server-side
-    quantity: float                    # qty of this component per recipe batch (output_qty)
+    quantity: PositiveFloat            # qty of this component per recipe batch (output_qty)
     unit: str | None = None
 
 
@@ -370,7 +372,7 @@ class OverheadLine(BaseModel):
 
 
 class RecipeSpec(BaseModel):
-    output_qty: float = 1              # units one batch of this recipe yields
+    output_qty: PositiveFloat = 1      # units one batch of this recipe yields
     components: list[ComponentSpec] = Field(default_factory=list)
     labor: list[LaborLine] = Field(default_factory=list)
     overhead: list[OverheadLine] = Field(default_factory=list)

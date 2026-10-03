@@ -37,7 +37,7 @@ from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.permissions import require_permission
 from celerp.schemas.numbers import FiniteFloat
 
-from .costing import RecipeError, labor_hours, roll_up_cost, where_used
+from .costing import RecipeError, labor_hours, output_quantity, roll_up_cost, where_used
 
 # Default hours-per-day for converting daily labor lines into the est-hours column.
 # Set per work center; the company's default center supplies the value.
@@ -57,6 +57,8 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class MfgInput(BaseModel):
+    # Refused unless more than nothing where it is used: by the door that writes a run
+    # (_emit_order_created) and by issue and return (movements).
     item_id: str
     quantity: FiniteFloat
 
@@ -204,6 +206,15 @@ async def _created_before(session: AsyncSession, company_id, key: str, fingerpri
     return stored
 
 
+def _recipe_inputs(item_state: dict, qty: float) -> list[dict]:
+    """The components a run making ``qty`` of a product uses, from its recipe; a recipe that
+    cannot make anything is refused with the reason, naming the product."""
+    try:
+        return expand_recipe(item_state, qty)
+    except RecipeError as exc:
+        raise HTTPException(status_code=422, detail=f"{item_state.get('sku') or 'This product'}: {exc}")
+
+
 async def _emit_order_created(session: AsyncSession, company_id, order_id: str, data: dict, *, quantity: float,
                               request: dict, actor_id, idempotency_key: str | None, location_id=None,
                               source: str = "api", metadata_: dict | None = None,
@@ -227,6 +238,11 @@ async def _emit_order_created(session: AsyncSession, company_id, order_id: str, 
         return stored
     if not quantity > 0:
         raise HTTPException(status_code=422, detail="A run must make a quantity greater than zero")
+    # Each line is checked before lines of one component are added together, so a negative
+    # line cannot hide inside a positive total.
+    if any(not float(i.get("quantity") or 0) > 0 for i in data.get("inputs") or []):
+        raise movements.refuse(422, "input_quantity", "Each component a run uses needs a quantity greater than zero.")
+    data = {**data, "inputs": merge_inputs(data.get("inputs") or [])}
     ids = _order_item_ids(data)
     rows = locked if locked is not None else await lock_projections(session, company_id, ids)
     for item_id in ids:
@@ -470,7 +486,7 @@ async def build_item(
         session, company_id, order_id,
         {
             "description": f"Build {payload.quantity:g} x {item.state.get('sku', '')}",
-            "order_type": "assembly", "inputs": expand_recipe(item.state, payload.quantity),
+            "order_type": "assembly", "inputs": _recipe_inputs(item.state, payload.quantity),
             # The product this run makes — links the run to its product Manufacturing tab.
             "output_item_id": item_id,
         },
@@ -510,7 +526,12 @@ async def _recost_one(session: AsyncSession, company_id, user, item_id: str, sta
     recipe = st.get("recipe")
     if not recipe or not recipe.get("components"):
         return None
-    breakdown = roll_up_cost(recipe, states.get, _path=frozenset({item_id}))
+    try:
+        breakdown = roll_up_cost(recipe, states.get, _path=frozenset({item_id}))
+    except RecipeError:
+        # A recipe an older release saved that cannot make anything keeps its last cost until
+        # it is corrected; it never stops the products around it being re-costed.
+        return None
     new_recipe = {**recipe, **breakdown}
     await emit_event(
         session, company_id=company_id, entity_id=item_id, entity_type="item",
@@ -690,9 +711,11 @@ async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
         docs_list = list(row["docs"].values())
         _peg(supply, docs_list)
         recipe = ist.get("recipe") or {}
-        out_qty = float(recipe.get("output_qty") or 1) or 1
         unit_cost = float(recipe.get("unit_cost") or 0)
-        hours_per_unit = labor_hours(recipe, hours_per_day) / out_qty
+        try:
+            hours_per_unit = labor_hours(recipe, hours_per_day) / output_quantity(recipe)
+        except RecipeError:
+            hours_per_unit = None  # an older recipe that cannot make anything has no time to show
         items.append({
             **{k: row[k] for k in ("item_id", "sku", "name", "due")},
             "unit": ist.get("sell_by") or ist.get("unit"),
@@ -701,7 +724,7 @@ async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
             "doc_count": len(docs_list), "docs": docs_list,
             "est_unit_cost": round(unit_cost, 4),
             "est_cost": round(unit_cost * to_make_qty, 2),
-            "est_hours": round(hours_per_unit * to_make_qty, 2),
+            "est_hours": None if hours_per_unit is None else round(hours_per_unit * to_make_qty, 2),
         })
     items.sort(key=lambda r: (r["due"] is not None, r["due"] or "", (r["sku"] or r["name"] or "")))
     return items
@@ -730,7 +753,7 @@ async def _emit_work_order(session, company_id, actor_id, item_id: str, item_sta
     order_id = f"mfg:{uuid.uuid5(movements.MFG_LOT_NS, key) if key else uuid.uuid4()}"
     data = {
         "description": f"Build {qty:g} x {item_state.get('sku', '')}",
-        "order_type": "assembly", "inputs": expand_recipe(item_state, qty), "output_item_id": item_id,
+        "order_type": "assembly", "inputs": _recipe_inputs(item_state, qty), "output_item_id": item_id,
     }
     if source:
         data.update({k: v for k, v in source.items() if v not in (None, "")})
@@ -943,7 +966,10 @@ async def bulk_requirements(
         ist = states.get(item_id) or {}
         products.append({"item_id": item_id, "sku": ist.get("sku"), "name": ist.get("name"),
                          "quantity": qty, "unit": ist.get("sell_by") or ist.get("unit")})
-    demand = explode_demand(lines, states.get) if lines else {"sub_assemblies": {}, "raw_materials": {}}
+    try:
+        demand = explode_demand(lines, states.get) if lines else {"sub_assemblies": {}, "raw_materials": {}}
+    except RecipeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
     def _detail(d: dict[str, float]) -> list[dict]:
         return [
@@ -1534,7 +1560,7 @@ async def create_order(
     entry = await _emit_order_created(
         session, company_id, f"mfg:{uuid.uuid4()}",
         {**payload.model_dump(exclude_none=True, exclude={"idempotency_key", "quantity"}),
-         "inputs": merge_inputs(i.model_dump() for i in payload.inputs)},
+         "inputs": [i.model_dump() for i in payload.inputs]},
         quantity=payload.quantity, request=request, actor_id=user.id,
         location_id=uuid.UUID(payload.location_id) if payload.location_id else None,
         idempotency_key=payload.idempotency_key,

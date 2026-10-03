@@ -2443,7 +2443,7 @@
   "inventory.no_work_orders": "Es sind keine Arbeitsaufträge vorhanden. Erstellen Sie diese aus einem Auftrag oder auf der Seite „Bedarfplanung“.",
   "inventory.not_paired_field": "Kein gepaartes Feld",
   "inventory.not_saved_detail": "Nicht gespeichert: {detail}",
-  "inventory.not_saved_output_qty_number": "Nicht gespeichert: Die Ausgabemenge muss eine Zahl sein.",
+  "inventory.not_saved_quantity_positive": "Nicht gespeichert: Die Menge muss eine Zahl größer als null sein.",
   "inventory.not_used_labor_type": "Wird für diese Arbeitsart nicht verwendet",
   "inventory.open_demand": "Offener Bedarf",
   "inventory.open_demand_hint": "Bestellungen, in denen dieser Artikel enthalten ist, mit Angabe, inwieweit der aktuelle Bestand die jeweilige Bestellung abdeckt.",
