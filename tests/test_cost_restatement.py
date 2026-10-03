@@ -33,7 +33,11 @@ def ids():
 
 @pytest_asyncio.fixture
 async def auth(session, ids):
-    cid, uid = ids["company_id"], ids["user_id"]
+    return await company_auth(session, ids["company_id"], ids["user_id"])
+
+
+async def company_auth(session, cid, uid) -> dict:
+    """A company with its books and an admin, and the admin's request headers."""
     session.add(Company(id=cid, name="CostCo", slug=f"costco-{cid.hex[:8]}",
                         settings={"currency": "USD", "timezone": TZ}))
     session.add(User(id=uid, email=f"admin-{cid.hex[:8]}@test.co", name="Admin", auth_hash="x", is_active=True))
