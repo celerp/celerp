@@ -2479,6 +2479,9 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         if replay is not None:
             if replay.event_type != "item.updated" or replay.entity_id != entity_id:
                 raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            if set(payload.fields_changed) & COST_ITEM_KEYS:
+                from celerp_inventory.services import cost_correction_notice
+                return {"event_id": replay.id, "cost_correction": await cost_correction_notice(session, company_id, replay)}
             return {"event_id": replay.id}
 
     # Guard: restricted fields require a role at the schema-configured floor.
@@ -2674,20 +2677,23 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
     )
     if changed_keys & COST_ITEM_KEYS:
-        entry = await _restate_cost_or_409(session, company_id, **event)
-    else:
-        entry = await emit_event(session, company_id=company_id, entity_type="item", location_id=None, metadata_={}, **event)
+        return await _restate_cost_or_409(session, company_id, **event)
+    entry = await emit_event(session, company_id=company_id, entity_type="item", location_id=None, metadata_={}, **event)
     await session.commit()
     return {"event_id": entry.id}
 
 
-async def _restate_cost_or_409(session: AsyncSession, company_id, **event):
-    """Apply a goods-cost change with its merge and COGS consequences (see restate_item_cost)."""
-    from celerp_inventory.services import CostRestatementConflict, restate_item_cost
+async def _restate_cost_or_409(session: AsyncSession, company_id, **event) -> dict:
+    """Apply and commit a goods-cost change with its merge and COGS consequences (see
+    restate_item_cost); returns the event id and what the change posted."""
+    from celerp_inventory.services import CostRestatementConflict, cost_correction_notice, restate_item_cost
     try:
-        return await restate_item_cost(session, company_id, **event)
+        entry = await restate_item_cost(session, company_id, **event)
     except CostRestatementConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    notice = await cost_correction_notice(session, company_id, entry)
+    await session.commit()
+    return {"event_id": entry.id, "cost_correction": notice}
 
 
 class BulkStatusBody(BaseModel):
@@ -4338,9 +4344,8 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
     )
     if is_cost_price_type(payload.price_type):
-        entry = await _restate_cost_or_409(session, company_id, **event)
-    else:
-        entry = await emit_event(session, company_id=company_id, entity_type="item", location_id=None, metadata_={}, **event)
+        return await _restate_cost_or_409(session, company_id, **event)
+    entry = await emit_event(session, company_id=company_id, entity_type="item", location_id=None, metadata_={}, **event)
     await session.commit()
     return {"event_id": entry.id}
 

@@ -33,7 +33,11 @@ def ids():
 
 @pytest_asyncio.fixture
 async def auth(session, ids):
-    cid, uid = ids["company_id"], ids["user_id"]
+    return await company_auth(session, ids["company_id"], ids["user_id"])
+
+
+async def company_auth(session, cid, uid) -> dict:
+    """A company made in Celerp, with its admin's request headers."""
     session.add(Company(id=cid, name="CostCo", slug=f"costco-{cid.hex[:8]}",
                         settings={"currency": "USD", "timezone": TZ}))
     session.add(User(id=uid, email=f"admin-{cid.hex[:8]}@test.co", name="Admin", auth_hash="x", is_active=True))
@@ -407,11 +411,15 @@ async def test_broken_lineage_refuses_correction_atomically(client, session, aut
 
 
 @pytest.mark.asyncio
-async def test_sale_without_an_exact_invoice_line_refuses_correction(client, session, auth):
+async def test_sale_with_no_document_saves_the_cost_and_posts_nothing(client, session, auth):
     item = await _item(client, auth, 100.0)
     r = await client.post(f"/items/{item}/status", headers=auth["headers"], json={"new_status": "sold"})
     assert r.status_code == 200, r.text
-    await _assert_refused(client, session, auth, item, [], fragment="invoice line")
+    jes = await _count(session, auth, event_type="acc.journal_entry.created")
+    r = await _set_cost(client, auth, item, 120.0)
+    assert r.status_code == 200, r.text
+    assert await _cost(session, auth, item) == 120.0
+    assert await _count(session, auth, event_type="acc.journal_entry.created") == jes
 
 
 # -- Every cost writer goes through the same operation ----------------------

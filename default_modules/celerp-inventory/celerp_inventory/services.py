@@ -182,6 +182,19 @@ def _lot_label(state: dict, entity_id: str) -> str:
     return str(state.get("sku") or state.get("name") or entity_id)
 
 
+def _basis_or_conflict(state: dict, label: str) -> float:
+    """A lot's goods cost, 0 when it carries no cost at all. A unit cost with no
+    total has no basis a correction can move, so it is refused."""
+    basis = goods_basis(state)
+    if basis is not None:
+        return basis
+    if state.get("cost_price") not in (None, ""):
+        raise CostRestatementConflict(
+            f"{label} has a unit cost but no total cost, so a correction cannot be carried "
+            "from it automatically; correct it with a journal entry instead")
+    return 0.0
+
+
 async def _cost_is_traceable(session: AsyncSession, company_id, entity_id: str, state: dict) -> bool:
     """Whether all of the lot's cost is still on the lot (or went into a merge or sale).
 
@@ -225,34 +238,110 @@ async def _cost_is_traceable(session: AsyncSession, company_id, entity_id: str, 
     return not any(audits_lowering.values())
 
 
-async def _invoice_line_of_sale(session: AsyncSession, company_id, entity_id: str, state: dict) -> tuple[str, int, str]:
-    """(doc_id, line_index, doc_number) of the invoice line that sold this lot.
+_COST_KEYS = frozenset({"cost_total", "cost_price", "cost_base"})
 
-    Only a sale fulfilled from one line of a finalized invoice whose recognized
-    COGS is on record is exact enough to adjust."""
+
+async def _merge_parts(session: AsyncSession, company_id, entity_id: str) -> list[str] | None:
+    """The lots a merge result was made from, while its cost is still the merge's own
+    (no cost was set on it since); else None."""
+    rows = (await session.execute(
+        select(LedgerEntry.event_type, LedgerEntry.data, LedgerEntry.metadata_)
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id)
+        .order_by(LedgerEntry.id)
+    )).all()
+    if not rows or rows[0][0] != "item.created":
+        return None
+    for event_type, data, _ in rows[1:]:
+        data = data or {}
+        if event_type == "item.cost_adjusted" or _COST_KEYS & {*data, *(data.get("fields_changed") or {})}:
+            return None
+    parts = (rows[0][2] or {}).get("merged_from")
+    return list(parts) if isinstance(parts, list) and parts else None
+
+
+@dataclass
+class _Sale:
+    """Where a sold lot's cost went: the invoice whose cost of goods sold carries it,
+    and its line when the invoice keeps a per-line allocation; no invoice when the lot
+    was marked sold by hand."""
+    doc_id: str | None = None
+    cycle: str | None = None
+    line: int | None = None
+    doc_number: str = ""
+    allocated: bool = False                  # carried by the invoice's finalize allocation
+
+
+async def _return_after(session: AsyncSession, company_id, sku: str, after_id: int) -> str | None:
+    """The number of a credit note still holding returned stock of this SKU received after
+    ledger entry after_id, or None. A return is valued from a sold lot of its SKU without
+    recording which, so any of them may be the one it drew on."""
+    if not sku:
+        return None
+    rows = (await session.execute(
+        select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.event_type == "doc.return_received",
+            LedgerEntry.id > after_id,
+        ).order_by(LedgerEntry.id)
+    )).scalars().all()
+    for cn_id in dict.fromkeys(rows):
+        cn = await session.get(Projection, {"company_id": company_id, "entity_id": cn_id})
+        cn_state = (cn.state or {}) if cn is not None else {}
+        if any(str(r.get("sku") or "") == sku for r in cn_state.get("return_received_items") or []):
+            return cn_state.get("doc_number") or cn_state.get("ref_id") or cn_id
+    return None
+
+
+async def _sale_of_lot(session: AsyncSession, company_id, entity_id: str, state: dict) -> _Sale:
+    """How a sold lot's cost reached cost of goods sold, or CostRestatementConflict.
+
+    A lot fulfilled on one line of an invoice that keeps its allocation is adjusted on
+    that line. A lot fulfilled on an invoice issued before invoices kept allocations is
+    adjusted by the change in its cost of sale, provided that invoice's cost of goods
+    sold is posted or the one-time posting has passed it by. A lot an invoice sold
+    without fulfilling it (a converted memo) is adjusted through that invoice's
+    allocation when it covers the whole lot. A lot marked sold by hand has no sale
+    entry, so nothing is adjusted."""
+    from celerp.services.cogs_backfill import legacy_cogs_refusal
+
+    label = _lot_label(state, entity_id)
     sale = (await session.execute(
         select(LedgerEntry).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_id == entity_id,
-            LedgerEntry.event_type == "item.fulfilled",
+            LedgerEntry.event_type.in_(("item.fulfilled", "item.status.set")),
         ).order_by(LedgerEntry.id.desc()).limit(1)
     )).scalars().first()
     data = (sale.data or {}) if sale is not None else {}
     doc_id = data.get("source_doc_id")
-    line_index = (sale.metadata_ or {}).get("line_index") if sale is not None else None
-    if (
-        data.get("doc_type") != "invoice"
-        or not doc_id
-        or state.get("status_doc_id") != doc_id
-        or not isinstance(line_index, int)
-        or isinstance(line_index, bool)
-        or await auto_je.recognized_cogs(session, company_id, doc_id) is None
-    ):
+    returned = await _return_after(session, company_id, str(state.get("sku") or ""), sale.id if sale is not None else 0)
+    if returned:
         raise CostRestatementConflict(
-            f"{_lot_label(state, entity_id)} is sold, but the sale cannot be matched to one invoice "
-            "line, so its cost of goods sold cannot be adjusted automatically"
-        )
-    return doc_id, line_index, data.get("doc_number") or doc_id
+            f"{label} is sold, and {state.get('sku')} was later returned on {returned}, so a correction "
+            "cannot be carried into the returned stock automatically; correct it with a journal entry instead")
+    if sale is not None and sale.event_type == "item.status.set" and not doc_id and not state.get("status_doc_id"):
+        return _Sale()
+    cannot = (f"{label} is sold, but its sale cannot be traced to one invoice line, so its cost "
+              "of goods sold cannot be adjusted automatically; correct it with a journal entry instead")
+    if not doc_id or state.get("status_doc_id") != doc_id:
+        raise CostRestatementConflict(cannot)
+    doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
+    doc_state = (doc.state or {}) if doc is not None else {}
+    doc_number = data.get("doc_number") or doc_state.get("doc_number") or doc_state.get("ref_id") or doc_id
+    if sale.event_type == "item.status.set":
+        if doc_state.get("doc_type") != "invoice" or await auto_je.recognized_cogs(session, company_id, doc_id) is None:
+            raise CostRestatementConflict(cannot)
+        return _Sale(doc_id=doc_id, doc_number=doc_number, allocated=True)
+    line_index = (sale.metadata_ or {}).get("line_index")
+    if data.get("doc_type") != "invoice" or not isinstance(line_index, int) or isinstance(line_index, bool):
+        raise CostRestatementConflict(cannot)
+    recognized = await auto_je.recognized_cogs(session, company_id, doc_id)
+    if recognized is not None:
+        return _Sale(doc_id=doc_id, cycle=recognized.cycle, line=line_index, doc_number=doc_number)
+    reason = await legacy_cogs_refusal(session, company_id, doc_id, doc_state)
+    if reason:
+        raise CostRestatementConflict(f"{label} was sold on {doc_number}, {reason}")
+    return _Sale(doc_id=doc_id, doc_number=doc_number)
 
 
 @dataclass
@@ -262,6 +351,8 @@ class _Restatement:
     repriced: dict[str, list[dict]]          # lot id -> per-invoice-line COGS changes
     lots: list[str]                          # the item and every merge result it reads
     docs: list[str]                          # the invoices it adjusts
+    resold: dict[str, float]                 # invoice without allocations -> COGS change
+    unposted: list[str]                      # lots sold by hand, whose cost no entry carries
 
 
 async def _restatement(session: AsyncSession, company_id, entity_id: str, event_type: str, data: dict,
@@ -289,6 +380,8 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     label = _lot_label(old, entity_id)
     status = str(old.get("status") or "").lower()
     cost_changed = old_basis != new_basis
+    if cost_changed and new_basis is not None and new_basis < 0:
+        raise CostRestatementConflict(f"{label}: a cost cannot be negative")
     if cost_changed and not await _cost_is_traceable(session, company_id, entity_id, old):
         raise CostRestatementConflict(
             f"{label}'s cost was already split, transformed, or used, so the correction "
@@ -298,16 +391,19 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     successors: list[tuple[str, float]] = []
     restated: list[tuple[str, dict, dict]] = [(entity_id, old, new)]   # (entity_id, before, after)
     if status in ("merged", "sold", "disposed") and old_basis != new_basis:
-        if old_basis is None or new_basis is None:
-            raise CostRestatementConflict(
-                f"{label} is {status}; its cost can be corrected but not added or cleared"
-            )
         if status == "disposed":
             raise CostRestatementConflict(
                 f"{label} was written off, so a cost correction cannot be carried into the write-off automatically"
             )
-        delta = round_basis(new_basis - old_basis)
+        # A lot that left with no cost left at cost 0, so adding or clearing a cost
+        # moves everything downstream by the whole amount.
+        delta = round_basis((new_basis or 0) - _basis_or_conflict(old, label))
+        if status == "merged" and new_basis is None:
+            raise CostRestatementConflict(
+                f"{label} was merged, and a merge result's cost is the sum of its parts, so clearing "
+                "the cost of one part cannot be carried automatically; correct the merge result's cost instead")
         seen = {entity_id}
+        prev_id, prev_basis = entity_id, new_basis
         current, next_id = label, old.get("merged_into") if status == "merged" else None
         if status == "merged" and not next_id:
             raise CostRestatementConflict(f"{label} is merged, but its merge lineage is not recorded")
@@ -322,19 +418,30 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                 )
             state = row.state or {}
             current = _lot_label(state, next_id)
-            basis = goods_basis(state)
             succ_status = str(state.get("status") or "").lower()
             if not await _cost_is_traceable(session, company_id, next_id, state) or succ_status == "disposed":
                 raise CostRestatementConflict(
                     f"{label}'s cost went into {current}, which was later split, transformed, used, or "
                     "written off, so the correction cannot be carried through it automatically"
                 )
-            if basis is None or basis + delta < 0:
+            basis = _basis_or_conflict(state, current)
+            if goods_basis(state) is None:
+                # A merge result with no cost had a part with no cost; with this part
+                # corrected it costs the sum of its parts once every part has one.
+                bases = []
+                for part in await _merge_parts(session, company_id, next_id) or []:
+                    part_row = None if part == prev_id else await _read(part)
+                    bases.append(prev_basis if part == prev_id else goods_basis(part_row.state or {}) if part_row else None)
+                if not bases or any(b is None for b in bases):
+                    break
+                delta = round_basis(sum(bases))
+            if basis + delta < 0:
                 raise CostRestatementConflict(
                     f"{label}'s cost went into {current}, whose cost cannot absorb a change of {delta:g}"
                 )
-            successors.append((next_id, round_basis(basis + delta)))
-            restated.append((next_id, state, apply_item_event(state, "item.cost_adjusted", {"cost_total": basis + delta})))
+            prev_id, prev_basis = next_id, round_basis(basis + delta)
+            successors.append((next_id, prev_basis))
+            restated.append((next_id, state, apply_item_event(state, "item.cost_adjusted", {"cost_total": prev_basis})))
             next_id = state.get("merged_into") if succ_status == "merged" else None
             if succ_status == "merged" and not next_id:
                 raise CostRestatementConflict(f"{current} is merged, but its merge lineage is not recorded")
@@ -345,22 +452,35 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     # change in its unit cost. Two invoices can both allocate one lot before either
     # ships it, so a sold lot can still be allocated on another invoice.
     repriced: dict[str, list[dict]] = {}
+    resold: dict[str, float] = {}
+    unposted: list[str] = []
     if cost_changed:
         for lot_id, before, after in restated:
             lot_status = str(before.get("status") or "").lower()
             if lot_status in ("merged", "memo_out"):
                 continue
             records: list[dict] = []
-            sold_on = None
+            sale = _Sale()
+            change = auto_je.lot_cost_of_sale(after) - auto_je.lot_cost_of_sale(before)
             if lot_status == "sold":
-                sold_on, line_index, _ = await _invoice_line_of_sale(session, company_id, lot_id, before)
-                cycle = (await auto_je.recognized_cogs(session, company_id, sold_on)).cycle
-                records.append({"doc_id": sold_on, "cycle": cycle, "line": line_index,
-                                "amount": auto_je.lot_cost_of_sale(after) - auto_je.lot_cost_of_sale(before)})
+                sale = await _sale_of_lot(session, company_id, lot_id, before)
+                if sale.line is not None:
+                    records.append({"doc_id": sale.doc_id, "cycle": sale.cycle, "line": sale.line, "amount": change})
+                elif sale.doc_id is None:
+                    unposted.append(_lot_label(before, lot_id))
+                elif not sale.allocated and change:
+                    resold[sale.doc_id] = resold.get(sale.doc_id, 0.0) + change
             unit_delta = auto_je.lot_unit_cost(after) - auto_je.lot_unit_cost(before)
-            for (doc_id, cycle, line_index), qty in sorted(
-                    (await auto_je.allocations_naming_lot(session, company_id, lot_id)).items()):
-                if doc_id != sold_on:
+            allocations = await auto_je.allocations_naming_lot(session, company_id, lot_id)
+            if sale.allocated:
+                covered = sum(qty for (doc_id, _, _), qty in allocations.items() if doc_id == sale.doc_id)
+                if abs(covered - float(before.get("quantity") or 0)) > 1e-9:
+                    raise CostRestatementConflict(
+                        f"{_lot_label(before, lot_id)} was sold on {sale.doc_number}, but that invoice does "
+                        "not price the whole lot, so its cost of goods sold cannot be adjusted "
+                        "automatically; correct it with a journal entry instead")
+            for (doc_id, cycle, line_index), qty in sorted(allocations.items()):
+                if sale.line is None or doc_id != sale.doc_id:
                     records.append({"doc_id": doc_id, "cycle": cycle, "line": line_index, "amount": qty * unit_delta})
             records = [r for r in records if r["amount"]]
             if records:
@@ -368,7 +488,8 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     return _Restatement(
         label=label, successors=successors, repriced=repriced,
         lots=[eid for eid, _, _ in restated],
-        docs=sorted({r["doc_id"] for records in repriced.values() for r in records}),
+        docs=sorted({r["doc_id"] for records in repriced.values() for r in records} | set(resold)),
+        resold=resold, unposted=unposted,
     )
 
 
@@ -420,7 +541,8 @@ async def restate_item_cost(
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="item",
         event_type=event_type, data=data, actor_id=actor_id, location_id=None,
-        source=source, idempotency_key=idempotency_key, metadata_=_metadata(entity_id, {}),
+        source=source, idempotency_key=idempotency_key,
+        metadata_=_metadata(entity_id, {"cogs_unposted": plan.unposted} if plan.unposted else {}),
     )
     identity = hashlib.sha256(idempotency_key.encode()).hexdigest()[:24]
     for succ_id, basis in successors:
@@ -435,17 +557,48 @@ async def restate_item_cost(
         company = await session.get(Company, company_id)
         today = business_date_at(datetime.now(timezone.utc), ((company.settings if company else None) or {}).get("timezone"))
         for doc_id in plan.docs:
+            adjustment = dict(
+                session=session, company_id=company_id, user_id=actor_id, doc_id=doc_id,
+                cycle_tag=f"restate-{hashlib.sha256(f'{identity}:{doc_id}'.encode()).hexdigest()[:16]}",
+                ts=today, trigger="item.cost_restated",
+                memo=f"COGS adjustment: cost of {label} corrected",
+                context={"item_id": entity_id, "restatement": identity},
+            )
+            if doc_id in plan.resold:
+                # An invoice issued before invoices kept allocations books the lot's
+                # cost of sale as it was; the change in it is the whole adjustment.
+                doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
+                doc_state = (doc.state or {}) if doc is not None else {}
+                await auto_je.create_for_doc_cogs_adjustment(
+                    delta=plan.resold[doc_id],
+                    doc_number=doc_state.get("doc_number") or doc_state.get("ref_id") or doc_id, **adjustment)
+                continue
             try:
-                await auto_je.reconcile_doc_cogs(
-                    session, company_id=company_id, user_id=actor_id, doc_id=doc_id,
-                    cycle_tag=f"restate-{hashlib.sha256(f'{identity}:{doc_id}'.encode()).hexdigest()[:16]}",
-                    ts=today, trigger="item.cost_restated",
-                    memo=f"COGS adjustment: cost of {label} corrected",
-                    context={"item_id": entity_id, "restatement": identity},
-                )
+                await auto_je.reconcile_doc_cogs(**adjustment)
             except ValueError as exc:
                 raise CostRestatementConflict(str(exc)) from exc
     return entry
+
+
+async def cost_correction_notice(session: AsyncSession, company_id, entry: LedgerEntry) -> dict:
+    """What a cost change posted, for the person who made it: every cost of goods sold
+    adjustment it made ({doc_number, amount}) and the lots sold by hand whose cost no
+    entry carries."""
+    identity = hashlib.sha256((entry.idempotency_key or "").encode()).hexdigest()[:24]
+    rows = (await session.execute(
+        select(LedgerEntry.metadata_).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.event_type == "acc.journal_entry.created",
+            LedgerEntry.metadata_["restatement"].as_string() == identity,
+        ).order_by(LedgerEntry.id)
+    )).scalars().all()
+    adjusted = []
+    for metadata_ in rows:
+        doc = await session.get(Projection, {"company_id": company_id, "entity_id": metadata_.get("doc_id")})
+        doc_state = (doc.state or {}) if doc is not None else {}
+        adjusted.append({"doc_number": doc_state.get("doc_number") or doc_state.get("ref_id") or metadata_.get("doc_id"),
+                         "amount": metadata_.get("cogs_delta")})
+    return {"cogs_adjusted": adjusted, "cogs_unposted": list((entry.metadata_ or {}).get("cogs_unposted") or [])}
 
 
 _CHANNEL_KEY_PREFIXES = tuple(f"{p}:" for p in PRODUCT_CHANNEL_PLATFORMS)
