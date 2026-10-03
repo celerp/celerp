@@ -152,3 +152,32 @@ async def test_an_upload_racing_a_delete_leaves_nothing_behind(committed_engine,
     assert await _rows(committed_engine, company_id, "ledger") == 0
     assert stored, "the upload never reached storing its file"
     assert _company_files(tmp_path, company_id) == []
+
+
+@pytest.mark.parametrize("door", [_attachments_door, _files_door], ids=["attachments", "files"])
+async def test_an_upload_whose_commit_lands_then_fails_keeps_its_file(committed_engine, tmp_path, monkeypatch, door):
+    """The commit reaches the database and the connection drops before it confirms: the
+    item records the file, so the stored file must still be there."""
+    _local_files(monkeypatch, tmp_path)
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id, user = await _seed(factory)
+    stored = _record_stores(monkeypatch)
+
+    async with factory() as s:
+        real_commit = s.commit
+
+        async def commit_then_drop():
+            await real_commit()
+            raise ConnectionResetError("connection lost after commit")
+
+        s.commit = commit_then_drop
+        with pytest.raises(ConnectionResetError):
+            await door(s, company_id, user)
+
+    async with committed_engine.connect() as conn:
+        state = (await conn.execute(text(
+            "SELECT state::jsonb FROM projections WHERE company_id = :c AND entity_id = :e"),
+            {"c": company_id, "e": _ITEM})).scalar_one()
+    recorded = {f.get("id") for f in (state.get("attachments") or []) + (state.get("files") or [])}
+    assert stored and stored[0] in recorded
+    assert any(stored[0] in path for path in _company_files(tmp_path, company_id))
