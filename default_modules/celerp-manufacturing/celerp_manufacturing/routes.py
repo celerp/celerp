@@ -34,6 +34,7 @@ from celerp.services import auto_je, migrations
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_basis
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.company_lock import lock_projections
 from celerp.services.permissions import require_permission
 from celerp.schemas.numbers import FiniteFloat
 
@@ -144,6 +145,47 @@ async def _get_order(session: AsyncSession, company_id, order_id: str) -> Projec
     if row is None or row.entity_type != "mfg_order":
         raise HTTPException(status_code=404, detail="Manufacturing order not found")
     return row
+
+
+def _order_item_ids(data: dict) -> list[str]:
+    """Every item a new run names: its components and the product it makes."""
+    inputs = data.get("inputs", [])
+    if not isinstance(inputs, list):
+        raise HTTPException(status_code=422, detail="A run's components must be a list")
+    ids = []
+    for line in inputs:
+        item_id = line.get("item_id") if isinstance(line, dict) else None
+        if not isinstance(item_id, str) or not item_id:
+            raise HTTPException(status_code=422, detail="Every component of a run must name an item")
+        ids.append(item_id)
+    output = data.get("output_item_id")
+    if output is not None:
+        if not isinstance(output, str) or not output:
+            raise HTTPException(status_code=422, detail="A run's product must name an item")
+        ids.append(output)
+    return ids
+
+
+async def _emit_order_created(session: AsyncSession, company_id, order_id: str, data: dict, *,
+                              actor_id, idempotency_key: str, location_id=None, source: str = "api",
+                              metadata_: dict | None = None, locked: dict[str, Projection] | None = None):
+    """The one way a new run is written, by every door that creates one.
+
+    Every item the run names must be an item of this company, so a run never stores a
+    component or product that does not exist. The items are locked first (``locked``
+    when the caller already locked them), so a Delete of one either finishes before the
+    run is checked, and the run is refused, or waits until the run is saved."""
+    ids = _order_item_ids(data)
+    rows = locked if locked is not None else await lock_projections(session, company_id, ids)
+    for item_id in ids:
+        row = rows.get(item_id)
+        if row is None or row.entity_type != "item":
+            raise HTTPException(status_code=422, detail=f"Not an item in this company: {item_id}")
+    return await emit_event(
+        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
+        event_type="mfg.order.created", data=data, actor_id=actor_id, location_id=location_id,
+        source=source, idempotency_key=idempotency_key, metadata_=metadata_ or {},
+    )
 
 
 async def _load_recipe_graph(session: AsyncSession, company_id, root_id: str, root_state: dict) -> tuple[dict[str, dict], list[str]]:
@@ -361,17 +403,15 @@ async def build_item(
         raise HTTPException(status_code=422, detail="Build quantity must be greater than zero")
     inputs, outputs = expand_recipe(item.state, payload.quantity)
     order_id = f"mfg:{uuid.uuid4()}"
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-        event_type="mfg.order.created",
-        data={
+    entry = await _emit_order_created(
+        session, company_id, order_id,
+        {
             "description": f"Build {payload.quantity:g} x {item.state.get('sku', '')}",
             "order_type": "assembly", "inputs": inputs, "expected_outputs": outputs,
             # The product this run makes — links the run to its product Manufacturing tab.
             "output_item_id": item_id,
         },
-        actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        actor_id=user.id, idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
     )
     if payload.complete:
         states = await _all_item_states(session, company_id)
@@ -635,10 +675,8 @@ async def _emit_work_order(session, company_id, actor_id, item_id: str, item_sta
     }
     if source:
         data.update({k: v for k, v in source.items() if v not in (None, "")})
-    await emit_event(
-        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-        event_type="mfg.order.created", data=data, actor_id=actor_id, location_id=None,
-        source="api", idempotency_key=str(uuid.uuid4()), metadata_={})
+    await _emit_order_created(session, company_id, order_id, data, actor_id=actor_id,
+                              idempotency_key=str(uuid.uuid4()))
     return order_id
 
 
@@ -720,6 +758,7 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
     user = await session.get(User, user_id) if auto_complete else None
     completed: list[str] = []
     failed: list[str] = []
+    not_created: list[str] = []
     states = await _all_item_states(session, company_id)
     # Idempotent across re-finalize: skip items already linked to an open work order for this order.
     existing = (await session.execute(
@@ -743,7 +782,12 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
         make_qty = max(0.0, qty - float((st or {}).get("quantity") or 0))
         if make_qty <= 0:
             continue
-        order_id = await _emit_work_order(session, company_id, user_id, item_id, st, make_qty, source)
+        try:
+            order_id = await _emit_work_order(session, company_id, user_id, item_id, st, make_qty, source)
+        except HTTPException as exc:
+            # The recipe names something that is no longer an item: nothing was written.
+            not_created.append(f"{st.get('sku') or item_id} ({failure_reason(exc)})")
+            continue
         linked.add(item_id)
         if auto_complete:
             # Complete the planned run on the spot, inside a savepoint so a mid-completion failure
@@ -757,27 +801,36 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
                 failed.append(order_id)
                 log.warning("auto-complete failed for %s: %s", order_id, exc)
 
-    if auto_complete and (completed or failed):
-        # Disclose the automatic action (GDR 2d), itself savepoint-guarded so a failed notification
-        # flush/prune cannot abort the invoice commit.
-        try:
-            async with session.begin_nested():
-                if failed:
-                    await notif_svc.create(
-                        session, company_id, category="manufacturing",
-                        title="Work orders need completing",
-                        body=(f"{len(failed)} work order(s) could not auto-complete on invoice posting "
-                              f"and are left planned: {', '.join(failed)}. Complete them manually."),
-                        priority="high", action_url="/manufacturing/production?status=planned")
-                else:
-                    await notif_svc.create(
-                        session, company_id, category="manufacturing",
-                        title="Work orders auto-completed",
-                        body=(f"{len(completed)} work order(s) were completed automatically on invoice "
-                              f"posting: {', '.join(completed)}."),
-                        priority="medium", action_url="/manufacturing/production")
-        except Exception as exc:
-            log.warning("auto-complete notification failed: %s", exc)
+    if not (not_created or (auto_complete and (completed or failed))):
+        return
+    # Disclose the automatic action (GDR 2d), itself savepoint-guarded so a failed notification
+    # flush/prune cannot abort the invoice commit.
+    try:
+        async with session.begin_nested():
+            if not_created:
+                await notif_svc.create(
+                    session, company_id, category="manufacturing",
+                    title="Work orders not created",
+                    body=(f"{len(not_created)} work order(s) could not be created on invoice posting because "
+                          f"the recipe names a missing item: {', '.join(not_created)}. Fix the recipe, "
+                          f"then create the work order from the To-Make board."),
+                    priority="high", action_url="/manufacturing/to-make")
+            if auto_complete and failed:
+                await notif_svc.create(
+                    session, company_id, category="manufacturing",
+                    title="Work orders need completing",
+                    body=(f"{len(failed)} work order(s) could not auto-complete on invoice posting "
+                          f"and are left planned: {', '.join(failed)}. Complete them manually."),
+                    priority="high", action_url="/manufacturing/production?status=planned")
+            elif auto_complete and completed:
+                await notif_svc.create(
+                    session, company_id, category="manufacturing",
+                    title="Work orders auto-completed",
+                    body=(f"{len(completed)} work order(s) were completed automatically on invoice "
+                          f"posting: {', '.join(completed)}."),
+                    priority="medium", action_url="/manufacturing/production")
+    except Exception as exc:
+        log.warning("work order notification failed: %s", exc)
 
 
 @router.post("/to-make/requirements")
@@ -1015,6 +1068,16 @@ async def batch_import_manufacturing(
             )
         )).scalars().all())
 
+    # Every item any record names is locked in one sorted pass before the first write, so
+    # the import never takes item locks out of order with another writer.
+    named: set[str] = set()
+    for rec in body.records:
+        try:
+            named.update(_order_item_ids(rec.data))
+        except HTTPException:
+            pass  # refused with its reason when the record itself is written
+    locked = await lock_projections(session, company_id, named)
+
     created = skipped = 0
     errors: list[str] = []
     for rec in body.records:
@@ -1030,18 +1093,10 @@ async def batch_import_manufacturing(
             skipped += 1
             continue
         try:
-            entry = await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=rec.entity_id,
-                entity_type="mfg_order",
-                event_type=rec.event_type,
-                data=rec.data,
-                actor_id=user.id,
-                location_id=None,
-                source=rec.source,
-                idempotency_key=rec.idempotency_key,
-                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
+            entry = await _emit_order_created(
+                session, company_id, rec.entity_id, rec.data,
+                actor_id=user.id, source=rec.source, idempotency_key=rec.idempotency_key,
+                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {}, locked=locked,
             )
             existing_keys.add(rec.idempotency_key)
             if rec.event_type == "mfg.order.created":
@@ -1053,7 +1108,7 @@ async def batch_import_manufacturing(
                 created += 1
         except Exception as exc:
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {exc}")
+                errors.append(f"{rec.entity_id}: {failure_reason(exc)}")
 
     await session.commit()
     return BatchImportResult(created=created, skipped=skipped, errors=errors)
@@ -1394,7 +1449,11 @@ def _lot_qty_by_parent(states: dict[str, dict]) -> dict[str, float]:
 async def _consume_components(session: AsyncSession, company_id, user, order_id: str,
                               items: list[dict]) -> list[dict]:
     """Emit item.consumed for each issued component (the projection floors quantity at zero, which
-    keeps made-to-order producible even when a component is briefly short). Returns what was issued."""
+    keeps made-to-order producible even when a component is briefly short). Returns what was issued.
+
+    The components are locked first, so each is checked as it is now: one deleted since the run
+    was created, or by a Delete still in flight, refuses the issue instead of being consumed."""
+    await lock_projections(session, company_id, [it.get("item_id") for it in items])
     consumed: list[dict] = []
     for it in items:
         item_id = it.get("item_id")
@@ -1621,18 +1680,11 @@ async def create_order(
     if len(payload.inputs) == 0:
         raise HTTPException(status_code=409, detail="Cannot create/start order with no inputs")
     entity_id = f"mfg:{uuid.uuid4()}"
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="mfg_order",
-        event_type="mfg.order.created",
-        data=payload.model_dump(exclude_none=True),
+    entry = await _emit_order_created(
+        session, company_id, entity_id, payload.model_dump(exclude_none=True),
         actor_id=user.id,
         location_id=uuid.UUID(payload.location_id) if payload.location_id else None,
-        source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
     )
     await session.commit()
     return {"event_id": entry.id, "id": entity_id}
