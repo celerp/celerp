@@ -23,7 +23,8 @@ def test_event_type_values() -> None:
     assert EventType.ITEM_TRANSFORM == "item.transform"
     assert EventType.ITEM_TRANSFORMED_FROM == "item.transformed_from"
     # Spot-check total count
-    assert len(EventType) == 112
+    assert EventType.DOC_PAYMENT_REFUND_REVERSED == "doc.payment.refund_reversed"
+    assert len(EventType) == 113
 
 
 def test_log_level_default_is_info() -> None:
