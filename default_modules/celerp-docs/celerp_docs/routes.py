@@ -1573,8 +1573,11 @@ async def create_doc(
         if payload.total > original_total + 1e-9:
             raise HTTPException(status_code=409, detail="Credit note total cannot exceed original invoice total")
 
-    # Contact before company, the lock order every contact-reference writer takes.
+    # Contact before company, the lock order every contact-reference writer takes. The
+    # company lock comes before any line check: Revert to Draft and Reserve take it too, so
+    # the lines are checked as the last of them left the items, and numbering is serialized.
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
+    company = await locked_company(session, company_id)
     require_currency_code(payload.currency)
 
     _assert_date_order(payload.model_dump(exclude_none=True))
@@ -1607,10 +1610,7 @@ async def create_doc(
                 [li.model_dump() for li in payload.line_items], None,
             )
 
-    # Concurrent doc creation must not read the same numbering counter and
-    # mint duplicate refs (e.g. two CN-2606-0002).
-    company = await locked_company(session, company_id)
-    # Re-check under the same serialization lock that owns numbering. A concurrent
+    # Re-check under the company lock, which also owns numbering. A concurrent
     # retry can only reach this point before the first request commits; once it does,
     # the second request observes the original event and returns without consuming a
     # second document number.
