@@ -275,6 +275,27 @@ async def _receipt_recorded(s, company_id) -> bool:
     return any(state.get("pre_receipt_status") == "draft" for state in rows)
 
 
+async def _run_issued_by_older_release(s, company_id) -> None:
+    """A production run open from an older release, which issued materials without their value."""
+    from celerp.events.engine import emit_event
+
+    order = f"mfg:{uuid.uuid4().hex}"
+    for event_type, data in (("mfg.order.created", {"description": "Run", "inputs": [], "outputs": []}),
+                             ("mfg.order.started", {}),
+                             ("mfg.order.issued", {"items": [], "issued_by": None})):
+        await emit_event(s, company_id=company_id, entity_id=order, entity_type="mfg_order", event_type=event_type,
+                         data=data, actor_id=None, location_id=None, source="test",
+                         idempotency_key=f"test:{event_type}:{order}", metadata_={})
+
+
+async def _run_settled(s, company_id) -> bool:
+    from celerp.models.projections import Projection
+
+    rows = (await s.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "mfg_order"))).scalars().all()
+    return bool(rows) and not any(state.get("wip_untracked") for state in rows)
+
+
 # Each backfill, with what makes a company need it and whether the backfill reached it.
 LIFECYCLE_BACKFILLS = {
     "celerp_accounting.routes:backfill_chart_of_accounts_hook": (_drop_chart, _has_chart),
@@ -282,6 +303,7 @@ LIFECYCLE_BACKFILLS = {
     "celerp_contacts.migrations:backfill_self_contacts_hook": (_self_contact_without_phone, _self_contact_has_phone),
     "celerp_docs.received_legacy:move_legacy_imports_hook": (_legacy_import, _legacy_import_moved),
     "celerp_docs.legacy_receipts:record_legacy_receipts_hook": (_receipt_without_its_record, _receipt_recorded),
+    "celerp_manufacturing.routes:settle_open_runs_hook": (_run_issued_by_older_release, _run_settled),
 }
 # Needs a staged company cannot have: only the migration writes to it, and it never
 # emits doc.shared_import, which nothing but imports from before Received wrote.

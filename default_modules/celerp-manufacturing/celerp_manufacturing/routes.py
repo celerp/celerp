@@ -1103,6 +1103,23 @@ async def backfill_default_work_center_hook(*, session: AsyncSession) -> None:
         await seed_default_work_center(session, company_id)
 
 
+async def settle_open_runs_hook(*, session: AsyncSession) -> None:
+    """on_modules_ready: give every open run the work in progress its history proves
+    (movements.settle_open_runs). Modules load by name, so Accounting has placed each
+    company's stock first; a company whose stock is not placed yet waits for a later start.
+    A company staged for a data migration is left alone, and one that fails is logged and
+    retried on the next start."""
+    company_ids = (await session.execute(select(Company.id).order_by(Company.id))).scalars().all()
+    for company_id in company_ids:
+        if await migrations.is_company_migration_staged(session, company_id):
+            continue
+        try:
+            await movements.settle_open_runs(session, company_id)
+        except Exception:
+            log.exception("Open production runs of company %s were not settled; retrying on the next start",
+                          company_id)
+
+
 class WorkCenterCreate(BaseModel):
     name: str
     wip_location_id: str | None = None

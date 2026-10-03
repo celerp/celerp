@@ -2013,13 +2013,14 @@ async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: st
 
 async def create_for_mfg_movement(
     session, *, company_id, user_id, order_id: str, movement: str, memo: str, wip_code: str | None,
-    wip: _Dec, lots: dict[str, _Dec], waste: _Dec = _Dec(0), day: str,
+    wip: _Dec, lots: dict[str, _Dec], waste: _Dec = _Dec(0), equity: _Dec = _Dec(0), day: str,
 ) -> None:
     """Post one production run movement: ``wip`` onto (positive) or off (negative) the run's
     work in progress account ``wip_code``, ``lots`` onto or off the inventory accounts the lots
-    record, and ``waste`` to cost of goods sold. Amounts are already money in the company
+    record, ``waste`` to cost of goods sold, and ``equity`` (value the books first recognize,
+    as opening stock is) to retained earnings. Amounts are already money in the company
     currency and balance. ``movement`` names the operation (issue:<key>, receive:<key>,
-    completed) and keys the entry, so a retried operation posts nothing more. Nothing posts
+    completed, wip-opened) and keys the entry, so a retried operation posts nothing more. Nothing posts
     when every amount is zero."""
     def _side(amount: _Dec) -> dict:
         value = to_stored_float(abs(amount))
@@ -2031,6 +2032,9 @@ async def create_for_mfg_movement(
         entries.append(_line(wip_code, R.WORK_IN_PROGRESS, **_side(wip)))
     if waste:
         entries.append(_line(await resolve(session, company_id, R.COGS), R.COGS, **_side(waste)))
+    if equity:
+        entries.append(_line(await resolve(session, company_id, R.RETAINED_EARNINGS), R.RETAINED_EARNINGS,
+                             **_side(equity)))
     if not entries:
         return
     await _emit_auto_posted_je(

@@ -18,6 +18,10 @@ import_adapter     Source option in the CSV import page
 category_schema    Default field definitions for a named category
 projection_handler Maps event-type prefixes to a handler function
 on_company_created Async callback(session, company_id) fired after a new company is persisted
+inventory_in_production
+                   Async callback(session, company_id) -> Decimal: stock value an older
+                   release issued to work still open, which its books still carry on the
+                   inventory accounts (lot_origin._in_production)
 search_provider    Contributes rows to the global search bar. Exactly one descriptor
                    dict per module: {"handler", "result_key", "permission"}. handler
                    names an in-module "module.path:function" resolved and validated

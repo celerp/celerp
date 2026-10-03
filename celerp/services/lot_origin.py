@@ -132,6 +132,13 @@ def _room(entries: list[tuple[str, dict]], items: list[Projection], code: str) -
     return balance - recorded
 
 
+async def account_room(session: AsyncSession, company_id, code: str) -> Decimal:
+    """What account ``code`` holds beyond the stock on hand recorded on it, in money."""
+    currency = (await current_settings(session, company_id)).get("currency", "USD")
+    return round_money(_room(await _posted_entries(session, company_id), await _items(session, company_id), code),
+                       currency)
+
+
 def unrecorded(items: list[Projection]) -> list[Projection]:
     """The lots on hand that record no inventory account."""
     return [r for r in items if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and held_value(r) is not None]
@@ -210,7 +217,7 @@ async def _record(session: AsyncSession, company_id, item_id: str, code: str, wh
                      idempotency_key=f"lot-account:{item_id}", metadata_={"recorded_by": why})
 
 
-async def _foreign(session: AsyncSession, company_id, settings: dict) -> bool:
+async def books_from_elsewhere(session: AsyncSession, company_id, settings: dict) -> bool:
     """Whether the company's books could have come from outside Celerp, so they cannot
     vouch for where its stock sits: a migration run or the source-book controls one
     leaves, a restored backup, or stock brought in by a migration or a bundle import.
@@ -256,7 +263,7 @@ async def _mark(session: AsyncSession, company_id) -> None:
     await session.flush()
 
 
-async def _period_open(session: AsyncSession, company_id, day: str) -> bool:
+async def period_open(session: AsyncSession, company_id, day: str) -> bool:
     from celerp.events.engine import _check_period_lock
 
     try:
@@ -310,6 +317,48 @@ async def _older_retired_stock(session: AsyncSession, company_id,
     return found
 
 
+async def _in_production(session: AsyncSession, company_id) -> Decimal:
+    """Stock an older release issued to production runs that are still open: it has left
+    the shelf, but those releases booked its value off the inventory accounts only when the
+    run completed, so the books still carry it (each module's inventory_in_production slot)."""
+    from celerp.modules.slots import get, resolve_handler
+
+    total = Decimal("0")
+    for handler in sorted({c["handler"] for c in get("inventory_in_production")}):  # each module counted once
+        total += await resolve_handler(handler)(session=session, company_id=company_id)
+    return total
+
+
+async def consumed_values(session: AsyncSession, company_id, marker: str,
+                          owners: set[str]) -> dict[str, dict[str, Decimal]]:
+    """Per owner, the value each lot gave up to the item.consumed events marked
+    ``marker`` == owner, in money: what the lot held just before each such event less what
+    it held just after, replayed from the lot's own events. History, never today's costs."""
+    from celerp.projections.engine import ProjectionEngine
+
+    currency = (await current_settings(session, company_id)).get("currency", "USD")
+    consumed = (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_type == "item",
+        LedgerEntry.event_type == "item.consumed"))).scalars().all()
+    lots = sorted({e.entity_id for e in consumed if (e.metadata_ or {}).get(marker) in owners})
+    found: dict[str, dict[str, Decimal]] = {o: {} for o in owners}
+    for lot in lots:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": lot})
+        flag = row.consignment_flag if row is not None else None
+        state: dict = {}
+        for e in (await session.execute(select(LedgerEntry).where(
+                LedgerEntry.company_id == company_id, LedgerEntry.entity_type == "item",
+                LedgerEntry.entity_id == lot).order_by(LedgerEntry.id))).scalars():
+            before = held_value(SimpleNamespace(state=state, consignment_flag=flag))
+            state = ProjectionEngine._apply(state, e.event_type, e.data)
+            owner = (e.metadata_ or {}).get(marker)
+            if e.event_type == "item.consumed" and owner in owners:
+                after = held_value(SimpleNamespace(state=state, consignment_flag=flag))
+                moved = round_money(before or 0, currency) - round_money(after or 0, currency)
+                found[owner][lot] = found[owner].get(lot, Decimal("0")) + moved
+    return found
+
+
 class _Retry(Exception):
     """A period lock forbids the upgrade's writes: roll the company's savepoint back and
     retry on a later start."""
@@ -319,7 +368,8 @@ async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) 
     """Give the older stock of a company Celerp built itself the inventory account it sits
     in (module docstring), all in one savepoint. The purchased (P) and opening (OB)
     inventory accounts must both take entries, and together hold exactly the stock on
-    hand (V); then one entry dated the company's business day moves OB, beyond the stock
+    hand plus what older releases issued to production runs still open (V,
+    ``_in_production``); then one entry dated the company's business day moves OB, beyond the stock
     recording OB, into P, every older lot that has held stock records P, on hand or not,
     and the company is marked upgraded. An older draft holds no stock, so it counts
     toward neither V nor the proof and records nothing. Retained earnings, cost
@@ -352,7 +402,7 @@ async def _normalize(session: AsyncSession, company_id) -> bool:
         return True  # another start upgraded the company while this one waited for the lock
     items = await _items(session, company_id)
     pending = _legacy(items)
-    if codes is None or not pending or await _foreign(session, company_id, settings):
+    if codes is None or not pending or await books_from_elsewhere(session, company_id, settings):
         await _mark(session, company_id)
         return True
     p, ob = codes[purchased], codes[opening]
@@ -365,7 +415,7 @@ async def _normalize(session: AsyncSession, company_id) -> bool:
     balance = {code: sum((Decimal(str(e.get("debit") or 0)) - Decimal(str(e.get("credit") or 0))
                           for _, e in entries if e.get("account") == code), Decimal("0")) for code in (p, ob)}
     books = round_money(balance[p] + balance[ob], currency)
-    value = round_money(sum((v for _, v in held), Decimal("0")), currency)
+    value = round_money(sum((v for _, v in held), Decimal("0")) + await _in_production(session, company_id), currency)
     day = business_date_of(None, settings.get("timezone"))
     kept: list[Projection] = []
     if books != value:
@@ -380,7 +430,7 @@ async def _normalize(session: AsyncSession, company_id) -> bool:
     if moved and await session.get(Projection, {"company_id": company_id, "entity_id": je_id}) is not None:
         await _mark(session, company_id)  # moved once already; the books have changed since
         return True
-    if (moved or kept) and not await _period_open(session, company_id, day):
+    if (moved or kept) and not await period_open(session, company_id, day):
         raise _Retry
     for row in kept:
         await emit_event(session, company_id=company_id, entity_id=row.entity_id, entity_type="item",
@@ -423,7 +473,7 @@ async def open_inventory_origins(session: AsyncSession, company_id, user_id=None
     accounts; a company whose books already carry them gets the opening entry for the
     stock those books never booked, and is then upgraded like any older company
     (normalize_legacy_inventory_origins), so its earlier documents and its lots agree on
-    one account. Stock from elsewhere (``_foreign``) records nothing and waits for the
+    one account. Stock from elsewhere (``books_from_elsewhere``) records nothing and waits for the
     user. A period lock that forbids the entry writes nothing and leaves the company
     unmarked, to retry on a later start. Returns whether the company was marked."""
     try:
@@ -441,10 +491,10 @@ async def _open(session: AsyncSession, company_id, user_id) -> bool:
     if INVENTORY_ORIGIN_KEY in settings:
         return True  # another start opened the company while this one waited for the lock
     pending = _legacy(await _items(session, company_id))
-    if codes is None or not pending or await _foreign(session, company_id, settings):
+    if codes is None or not pending or await books_from_elsewhere(session, company_id, settings):
         await _mark(session, company_id)
         return True
-    if not await _period_open(session, company_id, business_date_of(None, settings.get("timezone"))):
+    if not await period_open(session, company_id, business_date_of(None, settings.get("timezone"))):
         raise _Retry
     inventory = {code for role in _INVENTORY for code in scope_codes(settings, role)}
     if any(e.get("account") in inventory for _, e in await _posted_entries(session, company_id)):
@@ -752,8 +802,7 @@ async def choose_lot_account(session: AsyncSession, company_id, item_id: str, co
         raise HTTPException(status_code=409, detail="This stock already records its inventory account.")
     currency = settings.get("currency", "USD")
     value = round_money(held_value(row) or Decimal("0"), currency)
-    room = round_money(_room(await _posted_entries(session, company_id), await _items(session, company_id), code),
-                       currency)
+    room = await account_room(session, company_id, code)
     if value > room:
         raise HTTPException(status_code=422, detail=(
             f"Account {code} does not hold this stock's value of {value}: beyond the stock already "

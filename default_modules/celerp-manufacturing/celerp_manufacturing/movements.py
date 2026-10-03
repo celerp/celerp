@@ -17,6 +17,7 @@ it writes is derived, so a retry finds what was written instead of moving anythi
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import uuid
@@ -24,9 +25,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD, SCHEMA_KEY, AccountRole
+from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, LOT_ACCOUNT_FIELD, SCHEMA_KEY, AccountRole
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.company import Company
 from celerp.models.projections import Projection
@@ -40,7 +42,13 @@ from celerp.services.account_roles import (
 )
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.line_measures import splitting_allowed
-from celerp.services.lot_origin import held_value
+from celerp.services.lot_origin import (
+    account_room,
+    books_from_elsewhere,
+    consumed_values,
+    held_value,
+    period_open,
+)
 from celerp.services.money import allocate_pro_rata, round_money
 
 from .expansion import merge_inputs
@@ -114,12 +122,13 @@ class _Op:
         return await self.emit(self.order_id, "mfg_order", event_type, {**data, "ts": self.day}, key)
 
     async def post(self, movement: str, memo: str, wip_code: str | None, wip: Decimal,
-                   lots: dict[str, Decimal], waste: Decimal = _ZERO) -> None:
+                   lots: dict[str, Decimal], waste: Decimal = _ZERO, equity: Decimal = _ZERO) -> None:
         if not self.books:
             return
         await auto_je.create_for_mfg_movement(
             self.session, company_id=self.company_id, user_id=self.user_id, order_id=self.order_id,
-            movement=movement, memo=memo, wip_code=wip_code, wip=wip, lots=lots, waste=waste, day=self.day)
+            movement=movement, memo=memo, wip_code=wip_code, wip=wip, lots=lots, waste=waste, equity=equity,
+            day=self.day)
 
 
 async def _begin(session: AsyncSession, company_id, user_id, order_id: str, at: str) -> _Op:
@@ -168,9 +177,9 @@ def _require_settled(op: _Op, state: dict) -> None:
     if state.get("wip_unresolved") or state.get("wip_untracked") or (
             op.books and _wip(state) and not state.get("wip_account_code")):
         raise refuse(409, "reconciliation_required",
-                     "This run started before Celerp tracked the value of materials in production, "
-                     "and that value cannot be worked out from its history. Reconcile it before "
-                     "issuing, receiving or completing.")
+                     "The value of the materials in this run is not recorded in the books yet, or "
+                     "cannot be worked out from its history. Reconcile it before issuing, receiving "
+                     "or completing.")
 
 
 # ---------------------------------------------------------------------------
@@ -498,3 +507,164 @@ async def cancel(session: AsyncSession, company_id, user_id, order_id: str, reas
     if reason:
         data["reason"] = reason
     return await op.emit_run("mfg.order.cancelled", data, f"mfg:{order_id}:cancel:{rk}")
+
+
+# ---------------------------------------------------------------------------
+# Runs whose work in progress the books do not hold yet
+# ---------------------------------------------------------------------------
+
+# Older releases marked each component they consumed into a run with the run's id.
+_ORDER_MARK = "manufacturing_order_id"
+
+
+class _Retry(Exception):
+    """Something the settlement needs is not there yet (a posting account, an open period):
+    roll the company back and retry on a later start."""
+
+
+async def _open_runs(session: AsyncSession, company_id) -> list[Projection]:
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "mfg_order"))).scalars()
+    return sorted((r for r in rows if (r.state or {}).get("status") not in CLOSED_RUN_STATUSES),
+                  key=lambda r: r.entity_id)
+
+
+async def legacy_in_production(*, session: AsyncSession, company_id) -> Decimal:
+    """inventory_in_production: the value components left the shelf with for runs an older
+    release started and that are still open. Those releases booked it only on completion, so
+    the inventory accounts still carry it (lot_origin.normalize_legacy_inventory_origins)."""
+    runs = {r.entity_id for r in await _open_runs(session, company_id) if (r.state or {}).get("wip_untracked")}
+    values = await consumed_values(session, company_id, _ORDER_MARK, runs) if runs else {}
+    return sum((v for per in values.values() for v in per.values()), _ZERO)
+
+
+async def settle_open_runs(session: AsyncSession, company_id) -> None:
+    """Give every open run the work in progress its history proves, in one savepoint per
+    company. Never priced from today's costs.
+
+    A run an older release started records what it issued but not its value: that value is
+    replayed from each component's own events (lot_origin.consumed_values). With Accounting
+    on, the books carry it on the components' inventory accounts, so it moves onto the work in
+    progress account when each of those accounts holds exactly that value beyond its stock on
+    hand; when none holds any of it, the books never recognized it and it is opened against
+    retained earnings, as opening stock is. A run that received output before value was
+    tracked, a component with no inventory account, books from elsewhere, or accounts that
+    hold anything else leave the run needing reconciliation: it refuses every movement
+    (``_require_settled``) rather than move a guessed value.
+
+    A run issued while Accounting was off holds value no account carries; when Accounting is
+    on it is opened against retained earnings, unless the books came from elsewhere.
+
+    Nothing runs before Accounting has placed the company's stock (it retries on the next
+    start). A missing work in progress account or a locked period leaves the company as it
+    was until a later start. Running it again changes nothing."""
+    try:
+        async with session.begin_nested():
+            await _settle(session, company_id)
+    except _Retry:
+        pass
+
+
+async def _settle(session: AsyncSession, company_id) -> None:
+    from celerp.notifications import service as notification_service
+
+    await lock_company(session, company_id)
+    settings = await current_settings(session, company_id)
+    books = SCHEMA_KEY in settings
+    if books and INVENTORY_ORIGIN_KEY not in settings:
+        return
+    runs = await _open_runs(session, company_id)
+    older = [r for r in runs if r.state.get("wip_untracked") and not r.state.get("wip_unresolved")]
+    unbooked = [r for r in runs if books and not r.state.get("wip_untracked") and not r.state.get("wip_unresolved")
+                and _wip(r.state) and not r.state.get("wip_account_code")]
+    if not older and not unbooked:
+        return
+    rows = await lock_projections(session, company_id, [r.entity_id for r in older + unbooked])
+    base = _Op(session=session, company_id=company_id, user_id=None, order_id="",
+               day=await auto_je.entry_day(session, company_id), books=books,
+               currency=str(settings.get("currency") or "USD").upper())
+    native = not books or not await books_from_elsewhere(session, company_id, settings)
+
+    values = await consumed_values(session, company_id, _ORDER_MARK, {r.entity_id for r in older})
+    plans: dict[str, dict[str | None, Decimal]] = {}
+    unresolved: dict[str, str] = {}
+    for run in older:
+        order = run.entity_id
+        if float(run.state.get("received_qty") or 0) > 0 or run.state.get("received_lots"):
+            unresolved[order] = "received before tracking"
+            continue
+        per: dict[str | None, Decimal] = {}
+        for lot_id, value in sorted(values[order].items()):
+            lot = await session.get(Projection, {"company_id": company_id, "entity_id": lot_id})
+            code = ((lot.state or {}) if lot is not None else {}).get(LOT_ACCOUNT_FIELD) if books else None
+            if books and value and not code:
+                unresolved[order] = "component without an inventory account"
+                break
+            per[code] = per.get(code, _ZERO) + value
+        else:
+            plans[order] = per
+
+    source = "lots"
+    if books and plans:
+        need: dict[str, Decimal] = {}
+        for per in plans.values():
+            for code, value in per.items():
+                if value:
+                    need[code] = need.get(code, _ZERO) + value
+        room = {code: await account_room(session, company_id, code) for code in need}
+        if any(room[code] != need[code] for code in need):
+            source = "equity" if native and not any(room.values()) else ""
+        if not source:
+            unresolved.update(dict.fromkeys(plans, "books disagree"))
+            plans = {}
+    if not native:
+        unresolved.update(dict.fromkeys((r.entity_id for r in unbooked), "books from elsewhere"))
+        unbooked = []
+
+    writes = any(sum(per.values(), _ZERO) for per in plans.values()) or unbooked
+    if books and writes and not await period_open(session, company_id, base.day):
+        raise _Retry
+    wip_code = None
+    if books and writes:
+        try:
+            wip_code = await resolve(session, company_id, AccountRole.WORK_IN_PROGRESS)
+        except HTTPException as exc:
+            raise _Retry from exc
+
+    for order, per in plans.items():
+        op = dataclasses.replace(base, order_id=order)
+        total = sum(per.values(), _ZERO)
+        if source == "lots":
+            await op.post("wip-opened", f"Materials already in production run {order} when Celerp began tracking "
+                          "their value", wip_code, total, {code: -v for code, v in per.items() if code})
+        else:
+            await op.post("wip-opened", f"Materials in production run {order} when Accounting was turned on",
+                          wip_code, total, {}, equity=-total)
+        await op.emit_run("mfg.order.wip_opened", {
+            "issued": str(total), "transferred": "0", "receipts": [],
+            "wip_account_code": wip_code if books and total else None}, f"mfg:{order}:wip-opened")
+    for run in unbooked:
+        state = rows[run.entity_id].state
+        op = dataclasses.replace(base, order_id=run.entity_id)
+        held = _wip(state)
+        await op.post("wip-booked", f"Materials in production run {run.entity_id} when Accounting was turned on",
+                      wip_code, held, {}, equity=-held)
+        await op.emit_run("mfg.order.wip_opened", {
+            "issued": str(_money(state.get("wip_issued"))), "transferred": str(_money(state.get("wip_transferred"))),
+            "receipts": list(state.get("receipts") or []), "wip_account_code": wip_code}, f"mfg:{run.entity_id}:wip-booked")
+    for order, reason in sorted(unresolved.items()):
+        await dataclasses.replace(base, order_id=order).emit_run(
+            "mfg.order.wip_unresolved", {"reason": reason}, f"mfg:{order}:wip-unresolved")
+
+    if unresolved:
+        await notification_service.create(
+            session, company_id, category="manufacturing", title="Production runs need reconciling",
+            body=(f"The value of materials in {len(unresolved)} production run(s) started before Celerp tracked it "
+                  f"cannot be worked out from their history: {', '.join(sorted(unresolved))}. They cannot issue, "
+                  "receive or complete until they are reconciled."), priority="high")
+    booked = sorted([*(o for o, per in plans.items() if sum(per.values(), _ZERO)), *(r.entity_id for r in unbooked)])
+    if books and booked:
+        await notification_service.create(
+            session, company_id, category="accounting", title="Materials in production recorded",
+            body=(f"The materials in production run(s) {', '.join(booked)} now carry their value on work in "
+                  f"progress account {wip_code}, in entries dated {base.day}."))
