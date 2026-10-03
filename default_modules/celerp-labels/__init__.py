@@ -46,7 +46,6 @@ PLUGIN_MANIFEST = {
             "icon": "🖨",
             "action_type": "navigate",  # opens in new tab, not HTMX swap
         },
-        "item_action": None,
     },
 
     # ── UI translation catalogs ───────────────────────────────────────────────

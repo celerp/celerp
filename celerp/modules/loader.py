@@ -902,13 +902,15 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
                     f"closest existing key."
                 )
 
-    # A malformed pricing_action would render a broken link on every item's Pricing
-    # tab; refuse the module with the reason instead.
-    if _PRICING_ACTION_SLOT in slots_manifest:
+    # A malformed item or pricing action would render a broken link, or one leading
+    # out of Celerp, on every item page; refuse the module with the reason instead.
+    for slot_name, validate in _LINK_SLOT_VALIDATORS.items():
+        if slots_manifest.get(slot_name) is None:
+            continue
         try:
-            _validate_pricing_action(slots_manifest[_PRICING_ACTION_SLOT])
+            validate(slots_manifest[slot_name])
         except ModuleLoadError:
-            log.error("Module %r rejected: invalid pricing_action slot", pkg_name)
+            log.error("Module %r rejected: invalid %s slot", pkg_name, slot_name)
             for key in list(sys.modules.keys()):
                 if key == pkg_name or key.startswith(pkg_name + "."):
                     sys.modules.pop(key, None)
@@ -1235,19 +1237,56 @@ _PRICING_ACTION_KEYS = frozenset(
 )
 _PRICING_ACTION_PLACEHOLDERS = frozenset({"entity_id", "price_list", "field_name"})
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]*)\}")
+# item_action: a button on an item's detail page, linking to the module's page for it.
+_ITEM_ACTION_SLOT = "item_action"
+_ITEM_ACTION_PLACEHOLDERS = frozenset({"entity_id"})
 _PRICING_ROW_TRAIT_PAIRS = (("editable", "readonly"), ("sell", "cost"), ("manual", "derived"))
+
+
+def _validate_href_template(slot: str, item: dict, placeholders: frozenset[str]) -> None:
+    """Raise :class:`ModuleLoadError` unless ``item`` has an app-local href_template
+    whose braces only wrap one of ``placeholders``.
+
+    The app-local check runs on the template itself. Core fills each placeholder
+    URL-encoded with no safe characters, so a filled value never adds a "/", a
+    backslash or a control character, and a template that is app-local here gives
+    an app-local link for any value."""
+    href = item.get("href_template")
+    if not isinstance(href, str) or not href:
+        raise ModuleLoadError(f"Slot {slot!r} needs an href_template.")
+    if not is_app_local_path(href):
+        raise ModuleLoadError(
+            f"Slot {slot!r} href_template must be a path inside Celerp: "
+            f"one leading /, never //, no backslash and no control character."
+        )
+    unknown = set(_PLACEHOLDER_RE.findall(href)) - placeholders
+    if unknown:
+        raise ModuleLoadError(
+            f"Slot {slot!r} href_template uses "
+            f"{', '.join('{' + u + '}' for u in sorted(unknown))}; the placeholders are "
+            f"{', '.join('{' + p + '}' for p in sorted(placeholders))}."
+        )
+    if set("{}") & set(_PLACEHOLDER_RE.sub("", href)):
+        raise ModuleLoadError(
+            f"Slot {slot!r} href_template has a stray brace; "
+            f"braces may only wrap a placeholder."
+        )
+
+
+def _validate_item_action(contribution) -> None:
+    """Raise :class:`ModuleLoadError` unless every item_action item is a dict with an
+    app-local href_template whose only placeholder is {entity_id}."""
+    for item in contribution if isinstance(contribution, list) else [contribution]:
+        if not isinstance(item, dict):
+            raise ModuleLoadError(f"Slot {_ITEM_ACTION_SLOT!r} items must be dicts.")
+        _validate_href_template(_ITEM_ACTION_SLOT, item, _ITEM_ACTION_PLACEHOLDERS)
 
 
 def _validate_pricing_action(contribution) -> None:
     """Raise :class:`ModuleLoadError` unless every pricing_action item has only the
     known keys, an app-local href_template whose braces only wrap known
     placeholders, a show_on list of known traits that some row can carry, and no
-    presentation other than "page".
-
-    The app-local check runs on the template itself. Core fills each placeholder
-    URL-encoded with no safe characters, so a filled value never adds a "/", a
-    backslash or a control character, and a template that is app-local here gives
-    an app-local link for any item id, list name or field name."""
+    presentation other than "page"."""
     traits = {trait for pair in _PRICING_ROW_TRAIT_PAIRS for trait in pair}
     for item in contribution if isinstance(contribution, list) else [contribution]:
         if not isinstance(item, dict):
@@ -1259,26 +1298,7 @@ def _validate_pricing_action(contribution) -> None:
                 f"{', '.join(repr(k) for k in unknown_keys)}; the keys are "
                 f"{', '.join(sorted(_PRICING_ACTION_KEYS))}."
             )
-        href = item.get("href_template")
-        if not isinstance(href, str) or not href:
-            raise ModuleLoadError(f"Slot {_PRICING_ACTION_SLOT!r} needs an href_template.")
-        if not is_app_local_path(href):
-            raise ModuleLoadError(
-                f"Slot {_PRICING_ACTION_SLOT!r} href_template must be a path inside Celerp: "
-                f"one leading /, never //, no backslash and no control character."
-            )
-        unknown = set(_PLACEHOLDER_RE.findall(href)) - _PRICING_ACTION_PLACEHOLDERS
-        if unknown:
-            raise ModuleLoadError(
-                f"Slot {_PRICING_ACTION_SLOT!r} href_template uses "
-                f"{', '.join('{' + u + '}' for u in sorted(unknown))}; the placeholders are "
-                f"{', '.join('{' + p + '}' for p in sorted(_PRICING_ACTION_PLACEHOLDERS))}."
-            )
-        if set("{}") & set(_PLACEHOLDER_RE.sub("", href)):
-            raise ModuleLoadError(
-                f"Slot {_PRICING_ACTION_SLOT!r} href_template has a stray brace; "
-                f"braces may only wrap a placeholder."
-            )
+        _validate_href_template(_PRICING_ACTION_SLOT, item, _PRICING_ACTION_PLACEHOLDERS)
         show_on = item.get("show_on", [])
         if not isinstance(show_on, list) or not set(show_on) <= traits:
             raise ModuleLoadError(
@@ -1294,6 +1314,13 @@ def _validate_pricing_action(contribution) -> None:
             raise ModuleLoadError(
                 f"Slot {_PRICING_ACTION_SLOT!r} presentation must be \"page\"."
             )
+
+
+# Link slots checked when a module loads, so a broken link never reaches a page.
+_LINK_SLOT_VALIDATORS = {
+    _ITEM_ACTION_SLOT: _validate_item_action,
+    _PRICING_ACTION_SLOT: _validate_pricing_action,
+}
 
 
 def _enclosing_first_party_module(source_file: Path, expected_name: str) -> Path | None:

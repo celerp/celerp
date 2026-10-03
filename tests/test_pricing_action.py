@@ -155,11 +155,11 @@ def test_item_action_placeholder_is_url_encoded():
 
 # ── loader contract ──────────────────────────────────────────────────────────
 
-def _load(tmp_path, contribution):
+def _load(tmp_path, contribution, slot="pricing_action"):
     name = f"pa_mod_{uuid.uuid4().hex[:8]}"
     pkg = tmp_path / name
     pkg.mkdir()
-    manifest = {"name": name, "version": "1.0", "slots": {"pricing_action": contribution}}
+    manifest = {"name": name, "version": "1.0", "slots": {slot: contribution}}
     (pkg / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
     return _load_one(pkg, name)
 
@@ -235,6 +235,29 @@ def test_loader_rejects_an_unknown_pricing_action_key(tmp_path, key):
 def test_loader_still_accepts_well_formed_actions(tmp_path, contribution):
     _load(tmp_path, [contribution])
     assert len(slots.get("pricing_action")) == 1
+
+
+@pytest.mark.parametrize("href, message", [
+    ("https://evil.example/i/{entity_id}", "inside Celerp"),
+    ("//evil.example/i/{entity_id}", "inside Celerp"),
+    ("/i/{entity_id}\x01", "inside Celerp"),
+    ("/i/{entity_id", "brace"),
+    ("/i/{price_list}", r"\{price_list\}"),
+    (None, "needs an href_template"),
+])
+def test_loader_rejects_an_item_action_link_pricing_action_would_reject(tmp_path, href, message):
+    """item_action builds its button link from href_template the same way, so the same
+    link rules apply: inside Celerp, braces only around {entity_id}."""
+    action = {"label": "Ship"} if href is None else {"label": "Ship", "href_template": href}
+    with pytest.raises(ModuleLoadError, match=message):
+        _load(tmp_path, action, slot="item_action")
+    assert slots.get("item_action") == []
+
+
+def test_loader_accepts_an_item_action_inside_celerp(tmp_path):
+    _load(tmp_path, {"label": "Ship", "href_template": "/ship/{entity_id}?from=item",
+                     "permission": "edit_inventory", "icon": "x"}, slot="item_action")
+    assert [a["label"] for a in slots.get("item_action")] == ["Ship"]
 
 
 @pytest.mark.parametrize("value", [

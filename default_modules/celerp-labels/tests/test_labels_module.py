@@ -99,7 +99,7 @@ class TestLabelsManifest:
 
     def test_slot_item_action_removed(self):
         mod = _import_labels_pkg()
-        assert mod.PLUGIN_MANIFEST["slots"]["item_action"] is None
+        assert "item_action" not in mod.PLUGIN_MANIFEST["slots"]
 
     def test_no_settings_tab_slot(self):
         """Nothing in Celerp reads a settings_tab slot; the labels settings page is
@@ -249,7 +249,8 @@ class TestLabelsLoaderIntegration:
         assert any(s["href"] == "/settings/labels" for s in get("nav"))
         assert len(get("bulk_action")) >= 1
         assert any(s["form_action"] == "/labels/print-bulk" for s in get("bulk_action"))
-        # item_action slot removed (set to None) — print is now inline in item detail
+        # No item_action: printing is inline in item detail
+        assert get("item_action") == []
 
     def test_labels_module_not_bsl_violation(self, tmp_path):
         """celerp-labels does not import any protected BSL internals."""
