@@ -138,13 +138,19 @@ async def _checked_books(session: AsyncSession, company_id, books) -> tuple[str,
 
 async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
                                 reference: str, amount_minor: int, currency: str,
-                                paid_at: datetime.datetime | None, context):
+                                paid_at: datetime.datetime | None, context, managed: bool):
     """Record a confirmed online charge as a payment on its invoice. Only
-    ``payments.receive_payment`` calls it. The payment is recorded on *context*, the
-    books its payment page opened with (``payment_books``), and dated their business day at
-    *paid_at*, when Stripe reported it paid, so a payment recorded again after a
-    System Recovery posts exactly as it first did. Without usable books or *paid_at*
-    it is refused (422), never recorded on today's settings.
+    ``payments.receive_payment`` calls it.
+
+    A *managed* payment is Stripe's to manage (``stripe_managed_indexes``): it is
+    recorded on *context*, the books its payment page opened with
+    (``payment_books``), and dated their business day at *paid_at*, when Stripe
+    reported it paid, so a payment recorded again after a System Recovery posts
+    exactly as it first did. Without usable books or *paid_at* it is refused (422),
+    never recorded on today's settings. A payment taken on a page opened before
+    pages carried their books is the company's to manage: it is recorded on the
+    books the invoice is paid on now, dated when Stripe reported it paid, or now
+    when that was not reported.
 
     The same charge (Stripe payment_intent) recorded again is a quiet None. A charge
     the invoice cannot take whole (it is already paid, or owes less than the charge)
@@ -156,6 +162,12 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     if any(p.get("reference") == reference and p.get("status") != "deleted"
            for p in doc_state.get("payments", [])):
         return None  # already recorded - a repeated delivery
+    if not managed:
+        try:
+            context = await payment_books(session, company_id, doc_state)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        paid_at = paid_at or datetime.datetime.now(datetime.timezone.utc)
     account, timezone, base, rate = await _checked_books(session, company_id, context)
     if paid_at is None:
         raise HTTPException(status_code=422, detail="The payment carries no time it was paid")
@@ -167,6 +179,8 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     body = {"amount": float(amount), "payment_date": business_date_at(paid_at, timezone),
             "currency": currency.upper(), "bank_account": account, "conversion_rate": float(rate),
             "method": "stripe", "reference": reference}
+    if managed:
+        body["stripe_managed"] = True
     try:
         entry, _amount = await apply_doc_payment(
             session, company_id, entity_id, body,
@@ -210,8 +224,10 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
     invoice or is no longer linked to Stripe, the refund was never applied in that
     cycle, it gives back more than is left of the payment (never cut down to fit),
     the company now keeps its books in another currency, or it carries no usable
-    books, currency or time."""
-    from celerp.events.engine import find_event_by_idempotency
+    books, currency or time. A change Stripe made before the payment stopped being
+    linked to it applies whenever it arrives; one made after is never applied
+    here."""
+    from celerp.events.engine import find_event_by_idempotency, stripe_managed_indexes
     from celerp_docs.routes import RefundBooks, apply_payment_refund, books_currency_still, reverse_payment_refund
     entity_id = row.entity_id
     key = stripe_refund_key(refund_id, cycle, transition)
@@ -228,7 +244,9 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
                     if p.get("reference") == reference and p.get("status") == "active"), None)
     if payment is None or payment.get("method") != "stripe":
         raise HTTPException(status_code=409, detail="The refunded payment is not on this document")
-    if payment.get("stripe_released_at"):
+    released_at = payment.get("stripe_released_at")
+    if (payment.get("index") not in await stripe_managed_indexes(session, company_id, entity_id)
+            or (released_at and occurred_at >= datetime.datetime.fromisoformat(released_at))):
         raise HTTPException(status_code=409, detail=NOT_LINKED_TO_STRIPE)
     if payment.get("bank_account") != account or Decimal(str(payment.get("conversion_rate"))) != rate:
         raise HTTPException(status_code=422, detail="The refund carries other books than its payment was recorded on")

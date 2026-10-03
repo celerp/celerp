@@ -28,19 +28,13 @@ STRIPE_OWNED_PAYMENT = (
 PAYMENT_REMOVAL_EVENTS = frozenset({"doc.payment.voided", "doc.payment.deleted", "doc.payment.refunded"})
 
 
-async def stripe_payment_indexes(session, company_id, entity_id, payments: list[dict]) -> set[int]:
-    """Indexes of the payments on this document that the Stripe intake recorded and
-    that are still linked to Stripe.
-
-    Stripe holds the money for these, so only Stripe can give it back. Once Stripe is
-    disconnected a payment is no longer linked to it (``stripe_released_at``) and is
-    changed here like any other. The ledger records which writer received each
-    payment; the method is free text that a connector or a person can also set to
-    "stripe". A payment is matched on the index its event carries, or on its
-    reference for events recorded before payments carried one.
-    """
-    if not any(p.get("method") == "stripe" for p in payments):
-        return set()
+async def stripe_managed_indexes(session, company_id, entity_id) -> set[int]:
+    """Indexes of the payments on this document that the Stripe intake recorded as
+    Stripe's to manage: paid on a page that carried the books it is recorded on
+    (``stripe_managed``). The ledger records which writer received each payment; the
+    method is free text that a connector or a person can also set to "stripe". A
+    payment taken before payment pages carried their books is the company's to
+    manage, like any other."""
     events = (await session.execute(
         select(LedgerEntry.data).where(
             LedgerEntry.company_id == company_id,
@@ -49,10 +43,22 @@ async def stripe_payment_indexes(session, company_id, entity_id, payments: list[
             LedgerEntry.source == "stripe",
         )
     )).scalars().all()
-    indexes = {data["index"] for data in events if data.get("index") is not None}
-    references = {data.get("reference") for data in events if data.get("index") is None} - {None}
+    return {data["index"] for data in events if data.get("stripe_managed") is True and data.get("index") is not None}
+
+
+async def stripe_payment_indexes(session, company_id, entity_id, payments: list[dict]) -> set[int]:
+    """Indexes of the payments on this document that Stripe manages
+    (``stripe_managed_indexes``) and that are still linked to Stripe.
+
+    Stripe holds the money for these, so only Stripe can give it back. Once Stripe is
+    disconnected a payment is no longer linked to it (``stripe_released_at``) and is
+    changed here like any other.
+    """
+    if not any(p.get("method") == "stripe" for p in payments):
+        return set()
+    managed = await stripe_managed_indexes(session, company_id, entity_id)
     return {p.get("index") for p in payments if p.get("method") == "stripe" and not p.get("stripe_released_at")
-            and (p.get("index") in indexes or p.get("reference") in references)}
+            and p.get("index") in managed}
 
 
 async def _refuse_stripe_payment_removal(session, kwargs: dict) -> None:

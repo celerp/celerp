@@ -16,6 +16,7 @@ for good, and is refunded here like any other."""
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -771,3 +772,62 @@ async def test_a_refund_for_books_the_company_no_longer_keeps_is_kept_not_posted
 
     assert await _ledger(real_engine, invoice) == before
     assert await _kept_refunds(real_engine) == [("re_1", 1, "applied", "pi_1", 20000, str(a), invoice)]
+
+
+# ── Refunds Stripe made before the release, whenever they arrive ─────────────
+
+async def test_a_refund_stripe_made_before_the_release_but_delivered_after_it_is_applied(
+        real_engine, real_client, monkeypatch):
+    boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    cloud.release(a, invoice, RELEASED_AT)
+    cloud.refund(a, invoice, "re_1", 20000, _at(1))  # made in Stripe before it was disconnected
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    await _assert_books(real_engine, invoice, refunded="200")
+    assert await _kept_refunds(real_engine) == []
+    assert _payment(await _doc(real_engine, invoice))["stripe_released_at"] == RELEASED_AT.isoformat()
+
+
+async def test_a_reversal_kept_across_the_release_follows_its_refund_once(real_engine, real_client, monkeypatch):
+    """Stripe undid a refund before it was disconnected; the reversal arrives first, then
+    the release, then the refund it undoes: each applies once, in Stripe's order."""
+    boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    cloud.refund(a, invoice, "re_1", 20000, _at(2), transition="reversed")
+    cloud.release(a, invoice, RELEASED_AT)
+    await cloud.deliver()
+    assert await _kept_refunds(real_engine) == [("re_1", 1, "reversed", "pi_1", 20000, str(a), invoice)]
+
+    cloud.refund(a, invoice, "re_1", 20000, _at(1))
+    await cloud.deliver()
+    for d in cloud.deliveries:
+        d["acked"] = False  # every acknowledgement was lost
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    await _assert_books(real_engine, invoice, refunded="0")
+    ledger = await _ledger(real_engine, invoice)
+    assert (ledger.count("doc.payment.refunded"), ledger.count("doc.payment.refund_reversed")) == (1, 1)
+    assert await _kept_refunds(real_engine) == []
+
+
+async def test_a_refund_kept_until_the_release_is_applied_by_it_once(real_engine, real_client, monkeypatch):
+    """A refund Stripe made before the release that was kept for its payment (as a
+    refund delivered after the release was by the version before this one) applies
+    when the release is recorded, once however often the release is delivered."""
+    boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    async with maker(real_engine)() as s:
+        await s.execute(text(
+            "INSERT INTO unmatched_refunds (refund_id, cycle, transition, reference, amount_minor, currency, "
+            "former_company, document, occurred_at, context, received_at) VALUES ('re_1', 1, 'applied', "
+            "'pi_1', 20000, 'USD', :c, :d, :at, CAST(:books AS json), now())"),
+            {"c": str(a), "d": invoice, "at": _at(1), "books": json.dumps(BOOKS)})
+        await s.commit()
+    cloud.release(a, invoice, RELEASED_AT)
+    await cloud.deliver()
+    cloud.deliveries[-1]["acked"] = False
+    await cloud.deliver()
+
+    await _assert_books(real_engine, invoice, refunded="200")
+    assert (await _ledger(real_engine, invoice)).count("doc.payment.refunded") == 1
+    assert await _kept_refunds(real_engine) == []
