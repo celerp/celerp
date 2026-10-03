@@ -653,6 +653,9 @@ async def batch_import_accounting(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
+    # Hold the company lock so two imports naming one entry cannot both see it as new,
+    # and judge the caller's authority as it stands once nothing can change it.
+    await locked_authority(session, company_id, user.id, ("manage_accounting", "import_export_data"))
     outcome = await import_service.import_journal_records(session, company_id, user.id, body.records)
     await session.commit()
     return BatchImportResult(**outcome.route_counts())
