@@ -29,26 +29,42 @@ def apply_event(state: dict, event: LedgerEntry) -> dict:
 STRIPE_OWNED_PAYMENT = (
     "This payment was received through Stripe, so it can only be refunded or reversed in Stripe."
 )
+STRIPE_RECEIPT_KEPT = (
+    "This payment was received through Stripe, so it was real and cannot be deleted. Void or refund it instead."
+)
 # Every event that takes a received payment back off a document.
 PAYMENT_REMOVAL_EVENTS = frozenset({"doc.payment.voided", "doc.payment.deleted", "doc.payment.refunded"})
 
 
-async def stripe_managed_indexes(session, company_id, entity_id) -> set[int]:
-    """Indexes of the payments on this document that the Stripe intake recorded as
-    Stripe's to manage: paid on a page that carried the books it is recorded on
-    (``stripe_managed``). The ledger records which writer received each payment; the
-    method is free text that a connector or a person can also set to "stripe". A
-    payment taken before payment pages carried their books is the company's to
-    manage, like any other."""
-    events = (await session.execute(
+async def _stripe_receipts(session, company_id, entity_id) -> list[dict]:
+    """The ``doc.payment.received`` events the Stripe intake wrote on this document.
+    The ledger records which writer received each payment; the method is free text
+    that a connector or a person can also set to "stripe"."""
+    return list((await session.execute(
         select(LedgerEntry.data).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_id == entity_id,
             LedgerEntry.event_type == "doc.payment.received",
             LedgerEntry.source == "stripe",
         )
-    )).scalars().all()
-    return {data["index"] for data in events if data.get("stripe_managed") is True and data.get("index") is not None}
+    )).scalars().all())
+
+
+async def stripe_origin_indexes(session, company_id, entity_id) -> set[int]:
+    """Indexes of the payments on this document received through Stripe, managed or
+    not, linked to Stripe or not. Stripe confirmed the money arrived, so each is real
+    for good and is never deleted."""
+    return {data["index"] for data in await _stripe_receipts(session, company_id, entity_id)
+            if data.get("index") is not None}
+
+
+async def stripe_managed_indexes(session, company_id, entity_id) -> set[int]:
+    """Indexes of the payments on this document that the Stripe intake recorded as
+    Stripe's to manage: paid on a page that carried the books it is recorded on
+    (``stripe_managed``). A payment taken before payment pages carried their books is
+    the company's to manage, like any other."""
+    return {data["index"] for data in await _stripe_receipts(session, company_id, entity_id)
+            if data.get("stripe_managed") is True and data.get("index") is not None}
 
 
 async def stripe_payment_indexes(session, company_id, entity_id, payments: list[dict]) -> set[int]:
@@ -57,7 +73,7 @@ async def stripe_payment_indexes(session, company_id, entity_id, payments: list[
 
     Stripe holds the money for these, so only Stripe can give it back. Once Stripe is
     disconnected a payment is no longer linked to it (``stripe_released_at``) and is
-    changed here like any other.
+    refunded or voided here like any other.
     """
     if not any(p.get("method") == "stripe" for p in payments):
         return set()
@@ -66,18 +82,28 @@ async def stripe_payment_indexes(session, company_id, entity_id, payments: list[
             and p.get("index") in managed}
 
 
+async def refuse_stripe_payment_removal(session, company_id, entity_id, payments: list[dict],
+                                        index, event_type: str) -> None:
+    """422 when *event_type* would take the payment at *index* off the document while
+    Stripe holds its money (``stripe_payment_indexes``), or would delete a payment
+    received through Stripe (``stripe_origin_indexes``)."""
+    if index in await stripe_payment_indexes(session, company_id, entity_id, payments):
+        raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
+    if event_type == "doc.payment.deleted" and index in await stripe_origin_indexes(session, company_id, entity_id):
+        raise HTTPException(status_code=422, detail=STRIPE_RECEIPT_KEPT)
+
+
 async def _refuse_stripe_payment_removal(session, kwargs: dict) -> None:
-    """Refuse to void, delete or refund a payment Stripe holds the money for, except
-    a refund Stripe itself reports (``payments.receive_refund``)."""
+    """``refuse_stripe_payment_removal`` for every writer, except a refund Stripe
+    itself reports (``payments.receive_refund``)."""
     if kwargs.get("event_type") == "doc.payment.refunded" and kwargs.get("source") == "stripe":
         return
     row = await session.get(Projection, (kwargs.get("company_id"), kwargs.get("entity_id")))
     if row is None or row.entity_type != "doc":
         return
-    index = (kwargs.get("data") or {}).get("payment_index")
-    payments = (row.state or {}).get("payments", [])
-    if index in await stripe_payment_indexes(session, kwargs["company_id"], kwargs["entity_id"], payments):
-        raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
+    await refuse_stripe_payment_removal(session, kwargs["company_id"], kwargs["entity_id"],
+                                        (row.state or {}).get("payments", []),
+                                        (kwargs.get("data") or {}).get("payment_index"), kwargs["event_type"])
 
 
 async def find_event_by_idempotency(session, company_id, idempotency_key: str | None) -> LedgerEntry | None:

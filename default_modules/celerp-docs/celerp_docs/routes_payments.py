@@ -228,7 +228,7 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
     linked to it applies whenever it arrives; one made after is never applied
     here."""
     from celerp.events.engine import find_event_by_idempotency, stripe_managed_indexes
-    from celerp_docs.routes import RefundBooks, apply_payment_refund, books_currency_still, reverse_payment_refund
+    from celerp_docs.routes import PaymentBooks, apply_payment_refund, books_currency_still, reverse_payment_refund
     entity_id = row.entity_id
     key = stripe_refund_key(refund_id, cycle, transition)
     if await find_event_by_idempotency(session, company_id, key) is not None:
@@ -257,7 +257,7 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
     await books_currency_still(session, company_id, base)
     day = business_date_at(occurred_at, timezone)
     actor = await _company_owner_id(session, company_id)
-    books = RefundBooks(bank_account=account, base_currency=base, doc_rate=float(rate), settlement_rate=float(rate))
+    books = PaymentBooks(bank_account=account, base_currency=base, doc_rate=float(rate), settlement_rate=float(rate))
     if transition == "applied":
         return await apply_payment_refund(
             session, company_id, entity_id, row, payment, amount=float(amount), refund_date=day, books=books,
@@ -277,8 +277,8 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
 async def record_stripe_release(session, company_id, row: Projection, *, reference: str,
                                 released_at: datetime.datetime) -> bool:
     """Record on the document *row* that the online payment *reference* is no
-    longer linked to Stripe: Stripe was disconnected, so it is refunded, voided or
-    deleted here from now on, for good. Only ``payments.receive_release`` and the
+    longer linked to Stripe: Stripe was disconnected, so it is refunded or voided
+    here from now on, for good. Only ``payments.receive_release`` and the
     payment intake call it; the caller commits. The owner is told, once. False when
     the payment is not on the document; recording it again is a quiet True."""
     from celerp.events.engine import emit_event

@@ -11,7 +11,8 @@ gives the money back again, each time once. A System Recovery restore has Celerp
 deliver the payment, its refunds and its release again, which rebuilds the books
 exactly. A payment Stripe holds the money for is never refunded, voided or deleted
 here, until Stripe is disconnected: the payment is then no longer linked to Stripe,
-for good, and is refunded here like any other."""
+for good, and is refunded or voided here like any other. A payment received through
+Stripe was real, so it is never deleted."""
 
 from __future__ import annotations
 
@@ -452,8 +453,8 @@ async def _held_by(client, engine, boss, company, entity_id) -> list:
     return [p.get("held_by") for p in r.json()["payments"]]
 
 
-@pytest.mark.parametrize("action", ["refund", "void", "delete"])
-async def test_a_released_payment_is_refunded_voided_or_deleted_here(real_engine, real_client, monkeypatch, action):
+@pytest.mark.parametrize("action", ["refund", "void"])
+async def test_a_released_payment_is_refunded_or_voided_here(real_engine, real_client, monkeypatch, action):
     boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
     assert await _held_by(real_client, real_engine, boss, a, invoice) == ["stripe"]
     cloud.release(a, invoice, RELEASED_AT)
@@ -472,6 +473,99 @@ async def test_a_released_payment_is_refunded_voided_or_deleted_here(real_engine
         doc = await _doc(real_engine, invoice)
         assert doc["amount_paid"] == 0 and doc["amount_outstanding"] == 1070.0
         assert await _books(real_engine, invoice) == {}
+
+
+# ── A payment received through Stripe was real, so it is never deleted ───────
+
+KEPT = "This payment was received through Stripe, so it was real and cannot be deleted. Void or refund it instead."
+
+
+async def _released_receipt(engine, client, monkeypatch, tmp_path):
+    boss, a, b, invoice, cloud = await _paid_invoice(engine, client, monkeypatch)
+    cloud.release(a, invoice, RELEASED_AT)
+    await cloud.deliver()
+    return boss, a, invoice, KEPT
+
+
+async def _connected_receipt(engine, client, monkeypatch, tmp_path):
+    boss, a, b, invoice, cloud = await _paid_invoice(engine, client, monkeypatch)
+    return boss, a, invoice, STRIPE_OWNED
+
+
+async def _legacy_receipt(engine, client, monkeypatch, tmp_path):
+    """Paid on a page opened before payment pages carried their books: the company's
+    to manage from the start."""
+    boss, a, b = await _harbor(engine)
+    invoice = await _invoice(client, engine, boss, a)
+    cloud = _RefundCloud(monkeypatch, engine)
+    cloud.pay(a, invoice, "pi_1", paid_at=PAID_AT, books=None)
+    cloud.deliveries[-1]["managed"] = False
+    await cloud.deliver()
+    assert await _paid(engine, invoice) == [("pi_1", 1070.0)]
+    return boss, a, invoice, KEPT
+
+
+async def _recovered_receipt(engine, client, monkeypatch, tmp_path):
+    """Recorded again after a System Recovery restore, then released."""
+    from celerp.services import backup_export, backup_import
+    _system_recovery(tmp_path, monkeypatch)
+    boss, a, b = await _harbor(engine)
+    invoice = await _invoice(client, engine, boss, a)
+    cloud = _RefundCloud(monkeypatch, engine)
+    source = await backup_export.export_full()
+    try:
+        assert (await _reset(client, engine, boss, a)).status_code == 200
+        cloud.pay(a, invoice, "pi_1", paid_at=PAID_AT, books=BOOKS)
+        cloud.release(a, invoice, RELEASED_AT)
+        await cloud.deliver()
+        result = await backup_import.run_recovery(source)
+    finally:
+        source.unlink(missing_ok=True)
+    assert result.ok is True, result.error
+    cloud.deliveries[0]["acked"] = False  # Cloud delivers the payment again
+    await cloud.deliver()
+    assert await _paid(engine, invoice) == [("pi_1", 1070.0)]
+    assert _payment(await _doc(engine, invoice))["stripe_released_at"] == RELEASED_AT.isoformat()
+    return boss, a, invoice, KEPT
+
+
+RECEIPTS = {"connected": _connected_receipt, "released": _released_receipt, "legacy": _legacy_receipt,
+            "recovered": _recovered_receipt}
+
+
+async def _delete_event(engine, company_id, entity_id):
+    """Delete the payment by emitting the event itself, as any writer could."""
+    from fastapi import HTTPException
+
+    from celerp.events.engine import emit_event
+    async with maker(engine)() as s:
+        try:
+            await emit_event(s, company_id=company_id, entity_id=entity_id, entity_type="doc",
+                             event_type="doc.payment.deleted",
+                             data={"payment_index": 0, "tombstone": True, "ts": "2026-09-01"},
+                             actor_id=None, location_id=None, source="api", idempotency_key="delete-pi_1")
+        except HTTPException as refused:
+            await s.rollback()
+            return refused.status_code, refused.detail
+        await s.commit()
+        return 200, None
+
+
+@pytest.mark.parametrize("writer", ["route", "event"])
+@pytest.mark.parametrize("receipt", list(RECEIPTS))
+async def test_a_payment_received_through_stripe_is_never_deleted(
+        tmp_path, monkeypatch, code_config, real_engine, real_client, receipt, writer):
+    boss, a, invoice, detail = await RECEIPTS[receipt](real_engine, real_client, monkeypatch, tmp_path)
+    before, events = await _doc(real_engine, invoice), await _ledger(real_engine, invoice)
+
+    if writer == "route":
+        r = await _remove_payment(real_client, auth(await token(real_engine, boss, a)), invoice, "delete")
+        refused = (r.status_code, r.json().get("detail"))
+    else:
+        refused = await _delete_event(real_engine, a, invoice)
+
+    assert refused == (422, detail)
+    assert await _doc(real_engine, invoice) == before and await _ledger(real_engine, invoice) == events
 
 
 async def test_the_owner_is_told_once_that_a_payment_is_no_longer_linked_to_stripe(
@@ -629,6 +723,120 @@ async def test_the_gateway_hands_a_release_to_the_release_intake_and_says_it_rec
 
     assert received == [{"reference": "pi_1"}]
     assert "invoice.payment_release" in GatewayClient._DELIVERIES
+
+
+# ── Given back on the books the payment was recorded on ──────────────────────
+
+THB_BOOKS = {"deposit_account": "1110", "timezone": "UTC", "base_currency": "THB", "rate": "35.5"}
+NO_BOOKS = ("Celerp cannot tell which books this Stripe payment was recorded on, so it cannot be refunded or "
+            "voided here. Record the refund with a journal entry instead.")
+
+
+async def _settings(engine, company_id, **changes) -> None:
+    async with maker(engine)() as s:
+        settings = await s.scalar(text("SELECT settings FROM companies WHERE id = :c"), {"c": company_id})
+        await s.execute(text("UPDATE companies SET settings = CAST(:s AS json) WHERE id = :c"),
+                        {"s": json.dumps({**(settings or {}), **changes}), "c": company_id})
+        await s.commit()
+
+
+async def _rewrite_payment(engine, entity_id, change) -> None:
+    """Apply *change* to the payment as the ledger recorded it and as the document shows it."""
+    async with maker(engine)() as s:
+        event_id, data = (await s.execute(text(
+            "SELECT id, data FROM ledger WHERE entity_id = :e AND event_type = 'doc.payment.received'"),
+            {"e": entity_id})).one()
+        state = await s.scalar(text("SELECT state FROM projections WHERE entity_id = :e"), {"e": entity_id})
+        change(data)
+        change(state["payments"][0])
+        await s.execute(text("UPDATE ledger SET data = CAST(:d AS json) WHERE id = :i"),
+                        {"d": json.dumps(data), "i": event_id})
+        await s.execute(text("UPDATE projections SET state = CAST(:s AS json) WHERE entity_id = :e"),
+                        {"s": json.dumps(state), "e": entity_id})
+        await s.commit()
+
+
+def _as_released_before(payment: dict) -> None:
+    """A payment as Celerp recorded it before payments kept their books: no books and,
+    from an online payment, no rate of its own."""
+    payment.pop("books", None)
+    payment.pop("conversion_rate", None)
+
+
+async def _doc_rate(engine, entity_id, rate) -> None:
+    async with maker(engine)() as s:
+        state = await s.scalar(text("SELECT state FROM projections WHERE entity_id = :e"), {"e": entity_id})
+        await s.execute(text("UPDATE projections SET state = CAST(:s AS json) WHERE entity_id = :e"),
+                        {"s": json.dumps({**state, "conversion_rate": rate}), "e": entity_id})
+        await s.commit()
+
+
+async def _released_in_baht(engine, client, monkeypatch, *, older: bool = False):
+    """A company keeping its books in THB whose USD invoice of 1,070.00, at 35.5, a
+    customer paid online; Stripe was then disconnected."""
+    boss, a, b = await _harbor(engine)
+    await _settings(engine, a, currency="THB")
+    invoice = await _invoice(client, engine, boss, a, conversion_rate=35.5)
+    cloud = _RefundCloud(monkeypatch, engine)
+    cloud.pay(a, invoice, "pi_1", paid_at=PAID_AT, books=THB_BOOKS)
+    cloud.release(a, invoice, RELEASED_AT)
+    await cloud.deliver()
+    assert all(d["acked"] for d in cloud.deliveries)
+    if older:
+        await _rewrite_payment(engine, invoice, _as_released_before)
+    ar = await _ar_account(engine, invoice)
+    assert await _books(engine, invoice) == {"1110": Decimal("37985"), ar: Decimal("-37985")}
+    return boss, a, invoice, ar
+
+
+async def _give_back(client, engine, boss, company_id, invoice):
+    tok = auth(await token(engine, boss, company_id))
+    refunded = await client.post(f"/docs/{invoice}/refund", headers=tok, json={
+        "payment_index": 0, "amount": 100.0, "payment_date": "2026-09-20"})
+    voided = await client.post(f"/docs/{invoice}/void-payment", headers=tok,
+                               json={"payment_index": 0, "refund_date": "2026-09-21"})
+    return refunded, voided
+
+
+@pytest.mark.parametrize("older", [False, True], ids=["kept", "read_from_its_entry"])
+async def test_a_released_payment_is_given_back_on_the_books_it_was_recorded_on(
+        real_engine, real_client, monkeypatch, older):
+    boss, a, invoice, ar = await _released_in_baht(real_engine, real_client, monkeypatch, older=older)
+    # The company now deposits online payments elsewhere. A payment that kept its books
+    # also finds the company keeping them in JPY, which has no cents, and the invoice at
+    # another rate; an older one is read from its entry, which the ledger keeps in the
+    # company's currency, so that currency is the one it was posted in.
+    if older:
+        await _settings(real_engine, a, stripe_deposit_account="1111")
+    else:
+        await _settings(real_engine, a, currency="JPY", stripe_deposit_account="1111")
+        await _doc_rate(real_engine, invoice, 36)
+
+    tok = auth(await token(real_engine, boss, a))
+    r = await real_client.post(f"/docs/{invoice}/refund", headers=tok, json={
+        "payment_index": 0, "amount": 100.33, "payment_date": "2026-09-20"})
+    assert r.status_code == 200, r.text
+    # 100.33 at 35.5 is 3,561.715 THB, given back to the satang
+    assert await _books(real_engine, invoice) == {"1110": Decimal("34423.28"), ar: Decimal("-34423.28")}
+    r = await real_client.post(f"/docs/{invoice}/void-payment", headers=tok,
+                               json={"payment_index": 0, "refund_date": "2026-09-21"})
+    assert r.status_code == 200, r.text
+
+    assert await _books(real_engine, invoice) == {}
+
+
+async def test_an_older_stripe_payment_whose_books_cannot_be_read_is_not_given_back_here(
+        real_engine, real_client, monkeypatch):
+    boss, a, invoice, ar = await _released_in_baht(real_engine, real_client, monkeypatch, older=True)
+    await _doc_rate(real_engine, invoice, 36)  # nothing left says at what rate its entry posted
+    before, events = await _doc(real_engine, invoice), await _ledger(real_engine, invoice)
+
+    refunded, voided = await _give_back(real_client, real_engine, boss, a, invoice)
+
+    assert (refunded.status_code, refunded.json().get("detail")) == (422, NO_BOOKS)
+    assert (voided.status_code, voided.json().get("detail")) == (422, NO_BOOKS)
+    assert await _doc(real_engine, invoice) == before and await _ledger(real_engine, invoice) == events
+    assert await _books(real_engine, invoice) == {"1110": Decimal("37985"), ar: Decimal("-37985")}
 
 
 # ── Deliveries at once, and deliveries that name no refund ───────────────────
