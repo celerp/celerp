@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from celerp.models.payment_closure import PaymentClosure, PaymentRecovery, UnmatchedPayment
 from celerp.services.money import round_money, to_decimal
@@ -220,7 +220,11 @@ async def receive_payment(payload: dict) -> bool:
     the charge, or it refuses it, as it does a delivery without usable books). True once recorded
     either way (Cloud is then told it arrived), False for a delivery that names no
     payment. Raises when nothing could be recorded, so Cloud delivers it again.
-    Recording the same payment twice changes nothing."""
+    Recording the same payment twice changes nothing.
+
+    Every delivery tries the invoice again, even for a payment already among the
+    unmatched: one the invoice now takes, or already holds, leaves the unmatched
+    payments in the same transaction that records it."""
     from fastapi import HTTPException
     from celerp.models.projections import Projection
     from celerp.services.company_lock import hold_company
@@ -241,15 +245,15 @@ async def receive_payment(payload: dict) -> bool:
     except ValueError:
         cid = None
     async with _own_session() as session:
-        if await session.get(UnmatchedPayment, reference) is not None:
-            return True
         # A reset waits for this hold; once it has deleted the company, the payment is unmatched.
         row = await session.get(Projection, (cid, entity_id)) if cid and await hold_company(session, cid) else None
         if row is not None:
+            await session.execute(delete(UnmatchedPayment).where(UnmatchedPayment.reference == reference))
             try:
                 await record_stripe_payment(session, cid, entity_id, dict(row.state), reference=reference,
                                             amount_minor=amount_minor, currency=currency, paid_at=paid_at,
                                             context=payload.get("context"))
+                await session.commit()  # already recorded: only the unmatched row goes
                 return True
             except HTTPException as exc:
                 if exc.status_code >= 500:
