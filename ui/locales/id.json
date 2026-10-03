@@ -3592,6 +3592,6 @@
   "mfg.reconcile_left": "{account} memegang {room} di luar stok yang ada; mengambil {total} darinya akan menyisakan {left}, sehingga pembukuan tetap tidak sesuai dengan stok. Masukkan nilai yang dipegangnya.",
   "mfg.reconcile_excess": "Lot yang sudah diterima pesanan ini bernilai {carried}, lebih dari {issued} yang dimasukkan. Masukkan nilai yang dikeluarkan, atau ambil selisihnya dari akun persediaan yang mencatat lot tersebut.",
   "mfg.reconcile_kept": "{lots}, yang diterima dari perintah ini, tidak dapat dihitung ulang biayanya (dipecah, dijual sebagian, diubah, dipakai, atau dihapus sebelum rilis ini) dan tetap bernilai {kept}, lebih dari {issued} yang dinyatakan. Masukkan nilai yang dikeluarkan untuk perintah ini, minimal sebesar itu.",
-  "mfg.output_in_production": "{sku} berasal dari perintah produksi {order} yang masih terbuka, dan biayanya baru final setelah perintah selesai. Selesaikan perintah sebelum memecah, mengubah, memakai, mengurangi, mengarsipkan, atau menghapus stok ini; sampai saat itu stok dapat dijual utuh atau digabung.",
+  "mfg.output_in_production": "{sku} berasal dari perintah produksi {order} yang masih terbuka, dan biayanya baru final setelah perintah selesai. Selesaikan perintah sebelum memecah, mengubah, memakai, mengurangi, atau menghapus stok ini; sampai saat itu stok dapat dijual utuh atau digabung.",
   "mfg.period_locked": "Pembukuan dikunci untuk {day}, jadi proses ini baru dapat direkonsiliasi setelah periode tersebut dibuka."
 }

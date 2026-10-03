@@ -3592,6 +3592,6 @@
   "mfg.reconcile_left": "{account} détient {room} au-delà de son stock disponible ; en retirer {total} laisserait {left}, et les livres ne concorderaient toujours pas avec le stock. Indiquez la valeur qu'il détient.",
   "mfg.reconcile_excess": "Les lots déjà reçus par cet ordre portent {carried}, plus que les {issued} indiqués. Indiquez la valeur sortie, ou imputez la différence sur le compte de stock qui les porte.",
   "mfg.reconcile_kept": "{lots}, reçu de cet ordre, ne peut pas être revalorisé (divisé, vendu en partie, transformé, utilisé ou mis au rebut avant cette version) et conserve les {kept} qui lui ont été attribués, plus que les {issued} indiqués. Indiquez la valeur sortie pour cet ordre, au moins ce montant.",
-  "mfg.output_in_production": "{sku} provient de l'ordre de fabrication {order}, encore ouvert, et son coût n'est définitif qu'à la clôture de l'ordre. Terminez l'ordre avant de diviser, transformer, utiliser, réduire, archiver ou mettre au rebut ce stock ; d'ici là, il peut être vendu entier ou fusionné.",
+  "mfg.output_in_production": "{sku} provient de l'ordre de fabrication {order}, encore ouvert, et son coût n'est définitif qu'à la clôture de l'ordre. Terminez l'ordre avant de diviser, transformer, utiliser, réduire ou mettre au rebut ce stock ; d'ici là, il peut être vendu entier ou fusionné.",
   "mfg.period_locked": "La comptabilité est verrouillée pour le {day}, ce cycle ne peut donc pas être rapproché tant que cette période n'est pas ouverte."
 }

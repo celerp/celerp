@@ -3592,6 +3592,6 @@
   "mfg.reconcile_left": "{account} tiene {room} además de sus existencias; descontar {total} dejaría {left}, así que los libros seguirían sin cuadrar con las existencias. Indique el valor que tiene.",
   "mfg.reconcile_excess": "Los lotes que esta orden ya recibió llevan {carried}, más que los {issued} indicados. Indique el valor entregado o descuente la diferencia de la cuenta de inventario que los lleva.",
   "mfg.reconcile_kept": "{lots}, recibido de esta orden, no puede recostearse (se dividió, vendió en parte, transformó, usó o dio de baja antes de esta versión) y conserva los {kept} que se le asignaron, más que los {issued} indicados. Indique el valor emitido a esta orden, al menos esa cantidad.",
-  "mfg.output_in_production": "{sku} procede de la orden de producción {order}, que sigue abierta, y su costo solo es definitivo cuando la orden se completa. Complete la orden antes de dividir, transformar, usar, reducir, archivar o dar de baja este stock; hasta entonces puede venderse entero o fusionarse.",
+  "mfg.output_in_production": "{sku} procede de la orden de producción {order}, que sigue abierta, y su costo solo es definitivo cuando la orden se completa. Complete la orden antes de dividir, transformar, usar, reducir o dar de baja este stock; hasta entonces puede venderse entero o fusionarse.",
   "mfg.period_locked": "La contabilidad está cerrada para {day}, así que este ciclo no se puede conciliar hasta que ese periodo esté abierto."
 }

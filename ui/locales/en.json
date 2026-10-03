@@ -3592,6 +3592,6 @@
   "mfg.reconcile_left": "{account} holds {room} beyond its stock on hand; taking {total} off it would leave {left}, so the books would still disagree with the stock. Give the value it holds.",
   "mfg.reconcile_excess": "The lots this run already received carry {carried}, more than the {issued} stated. Give the value that was issued, or take the difference off the inventory account that carries them.",
   "mfg.reconcile_kept": "{lots}, received from this run, cannot be re-costed (it was split, sold in part, transformed, used or written off before this release) and keeps the {kept} it was given, more than the {issued} stated. Give the value that was issued to this run, at least that much.",
-  "mfg.output_in_production": "{sku} came from production run {order}, which is still open, and its cost is final only when the run is completed. Complete the run before splitting, transforming, using, counting down, archiving or writing off this stock; until then it can be sold whole or merged.",
+  "mfg.output_in_production": "{sku} came from production run {order}, which is still open, and its cost is final only when the run is completed. Complete the run before splitting, transforming, using, counting down or writing off this stock; until then it can be sold whole or merged.",
   "mfg.period_locked": "The books are locked for {day}, so this run cannot be reconciled until that period is open."
 }
