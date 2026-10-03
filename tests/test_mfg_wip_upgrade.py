@@ -34,7 +34,7 @@ from celerp.modules import slots
 from celerp.services.auto_je import _emit_auto_posted_je
 from celerp.services.company_lock import locked_company
 from mfg_runs import OPENING, PURCHASED, WIP, complete, issue, lines, product, receive, refusal, role, run, snapshot
-from mfg_runs import set_settings
+from mfg_runs import cancel, give_back, set_settings, undo_receipt
 from stock_books import assert_books_carry_stock, assert_settled, assert_wip_carried, older_release_lot
 from test_cost_restatement import TZ, _item, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_money_stock_and_contact_invariants import _account_net
@@ -225,6 +225,9 @@ async def _refused_everywhere(client, session, auth, raw: str, order: str) -> No
     refusal(await issue(client, auth, order, [(raw, 6)], key="i"), 409, "reconciliation_required")
     refusal(await receive(client, auth, order, 1, key="r"), 409, "reconciliation_required")
     refusal(await complete(client, auth, order, key="c"), 409, "reconciliation_required")
+    refusal(await give_back(client, auth, order, key="g"), 409, "reconciliation_required")
+    refusal(await undo_receipt(client, auth, order, raw, key="u"), 409, "reconciliation_required")
+    refusal(await cancel(client, auth, order, key="x"), 409, "reconciliation_required")
     assert await snapshot(session, auth, raw, order) == before
 
 

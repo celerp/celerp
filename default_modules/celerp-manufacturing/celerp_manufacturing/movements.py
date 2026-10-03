@@ -353,7 +353,8 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
                          item=line["item_id"])
         have = float(inp.get("issued_qty") or 0)
         if line["quantity"] > have + _EPS:
-            sku = inp.get("sku") or line["item_id"]
+            lot = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": line["item_id"]})
+            sku = ((lot.state or {}).get("sku") if lot is not None else None) or line["item_id"]
             raise refuse(409, "over_return", f"Only {have:g} of {sku} was issued to this run, so no more can be "
                          "returned.", sku=sku, issued=have)
     if not wanted:
@@ -765,6 +766,8 @@ async def cancel(session: AsyncSession, company_id, user_id, order_id: str, reas
         return stored
     run = await _run(op)
     _require_open(run.state, "cancelled")
+    # Its materials cannot be returned until it is reconciled, so that comes first.
+    _require_settled(op, run.state)
     if float(run.state.get("received_qty") or 0) > _EPS or _wip(run.state) or any(
             float(i.get("issued_qty") or 0) > _EPS for i in run.state.get("inputs", [])):
         raise refuse(409, "cancel_moved",

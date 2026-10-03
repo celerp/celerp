@@ -121,7 +121,7 @@ async def test_return_refuses_more_than_was_issued(client, session, auth):
     assert (await issue(client, auth, order, [(raw, 4)], key="i")).status_code == 200
     detail = await _refused(client, session, auth, (raw, order),
                             lambda: give_back(client, auth, order, [(raw, 5)], key="g"), 409, "over_return")
-    assert detail["params"] == {"item": raw, "issued": 4.0}
+    assert detail["params"] == {"sku": (await _state(session, auth, raw))["sku"], "issued": 4.0}
 
 
 async def test_return_refuses_a_component_that_is_not_in_the_run(client, session, auth):
@@ -169,6 +169,22 @@ async def test_return_to_a_lot_that_is_no_longer_held_is_refused(client, session
     await _sell(client, session, auth, raw)
     await _refused(client, session, auth, (raw, order),
                    lambda: give_back(client, auth, order, [(raw, 4)], key="g"), 409, "return_lot_unavailable")
+
+
+@pytest.mark.parametrize("touch", ["moved", "split", "adjusted"])
+async def test_return_to_a_lot_that_was_moved_split_or_adjusted_goes_back_to_it(client, session, auth, touch):
+    raw, _, order = await _job(client, auth, cost=100.0, stock=10)
+    assert (await issue(client, auth, order, [(raw, 4)], key="i")).status_code == 200
+    await _TOUCHES[touch](client, session, auth, raw)
+    lot = await _state(session, auth, raw)
+    r = await give_back(client, auth, order, [(raw, 4)], key="g")
+    assert r.status_code == 200, r.text
+    after = await _state(session, auth, raw)
+    assert after["quantity"] == lot["quantity"] + 4
+    assert round(float(after["cost_total"]) - float(lot["cost_total"]), 2) == 40.0
+    assert after.get("location_id") == lot.get("location_id")
+    assert float((await _state(session, auth, order))["wip_issued"]) == 0
+    await assert_settled(client, session, auth)
 
 
 async def test_return_retried_with_its_key_moves_nothing_more(client, session, auth):
