@@ -222,6 +222,19 @@ async def test_issue_return_issue_leaves_books_and_stock_as_the_issue_alone(clie
     await assert_settled(client, session, auth)
 
 
+async def test_returned_materials_do_not_count_as_used_for_reordering(client, session, auth):
+    raw, _, order = await _job(client, auth, stock=100)
+    assert (await issue(client, auth, order, [(raw, 10)], key="i")).status_code == 200
+    used = (await client.get(f"/items/{raw}/reorder-suggestion", headers=auth["headers"])).json()
+    assert used["reorder_qty"] is not None
+    assert (await give_back(client, auth, order, [(raw, 4)], key="g")).status_code == 200
+    r = await client.get(f"/items/{raw}/reorder-suggestion", headers=auth["headers"])
+    assert r.json()["reorder_qty"] < used["reorder_qty"], r.text
+    assert (await give_back(client, auth, order, key="g2")).status_code == 200
+    r = await client.get(f"/items/{raw}/reorder-suggestion", headers=auth["headers"])
+    assert r.json() == {"reorder_point": None, "reorder_qty": None}, r.text
+
+
 async def test_cancel_after_returning_everything(client, session, auth):
     raw, _, order = await _job(client, auth)
     before = await _books_and_stock(session, auth, raw)
@@ -235,6 +248,14 @@ async def test_cancel_after_returning_everything(client, session, auth):
     assert (await _state(session, auth, order))["status"] == "cancelled"
     assert await _books_and_stock(session, auth, raw) == before
     await assert_settled(client, session, auth)
+    # Retried with its key, the cancel answers as it did; the key cannot carry another request.
+    done = await snapshot(session, auth, raw, order)
+    again = await cancel(client, auth, order, key="c")
+    assert again.status_code == 200 and again.json() == r.json(), again.text
+    other = await client.post(f"/manufacturing/{order}/cancel", headers=auth["headers"],
+                              json={"reason": "changed my mind", "idempotency_key": "c"})
+    refusal(other, 409, "key_reused")
+    assert await snapshot(session, auth, raw, order) == done
 
 
 async def _bulk(client, auth, action: str, *orders: str):

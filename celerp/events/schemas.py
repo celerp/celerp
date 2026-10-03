@@ -184,6 +184,9 @@ class ItemQuantityAdjusted(BaseModel):
     # stock position carries the source's value. Omitted by ordinary stock adjustments,
     # which leave the lot's cost alone.
     cost_base: float | None = None
+    # Set only when stock consumed earlier is given back (materials returned from production):
+    # the quantity no longer counts as used.
+    quantity_returned: float | None = None
 
 
 class ItemLandedCostApplied(BaseModel):
