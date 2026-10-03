@@ -2374,6 +2374,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
 
         import csv, io, uuid
+        from celerp_contacts.services import contact_import_identity
 
         form = await request.form()
         csv_data = await resolve_import_csv(token, form)
@@ -2386,7 +2387,6 @@ def setup_routes(app):
                 continue
             email = str(r.get("email", "")).strip()
             phone = str(r.get("phone", "")).strip()
-            contact_type_val = str(r.get("contact_type", "")).strip() or "customer"
 
             data = {
                 "name": name,
@@ -2397,7 +2397,7 @@ def setup_routes(app):
                 "currency": str(r.get("currency", "")).strip() or None,
                 "billing_address": str(r.get("billing_address", "")).strip() or None,
                 "tax_id": str(r.get("tax_id", "")).strip() or None,
-                "contact_type": contact_type_val,
+                "contact_type": str(r.get("contact_type", "")).strip() or None,
                 "payment_terms": str(r.get("payment_terms", "")).strip() or None,
             }
             credit_limit_raw = str(r.get("credit_limit", "")).strip()
@@ -2407,7 +2407,7 @@ def setup_routes(app):
                 except ValueError:
                     data["credit_limit"] = credit_limit_raw
 
-            idem = f"csv:contact:{email or phone or name}".lower()
+            idem = f"csv:contact:{contact_import_identity(data)}"
             records.append({
                 "entity_id": f"contact:{uuid.uuid4()}",
                 "event_type": "crm.contact.created",

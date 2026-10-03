@@ -1,14 +1,17 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
 
+import uuid
 from collections.abc import Sequence
 
+from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from celerp.events.engine import emit_event
-from celerp.importers.results import ImportOutcome
-from celerp.models.ledger import LedgerEntry
+from celerp.events.engine import emit_event, find_event_by_idempotency
+from celerp.importers.results import ImportOutcome, failure_reason
+from celerp.models.projections import Projection
+from celerp.services.currencies import require_currency_code
 
 CONTACT_CREATED = "crm.contact.created"
 
@@ -22,6 +25,20 @@ class CRMImportRecord(BaseModel):
     source_ts: str | None = None
 
 
+def contact_import_identity(data: dict) -> str:
+    """The contact an import row stands for: its email, else its phone, else its name,
+    compared case-insensitively. Empty when the row carries none of them."""
+    for key in ("email", "phone", "name"):
+        value = str(data.get(key) or "").strip()
+        if value:
+            return value.lower()
+    return ""
+
+
+def _live(state: dict) -> bool:
+    return not state.get("deleted") and not state.get("merged_into")
+
+
 async def import_contact_records(
     session,
     company_id,
@@ -29,42 +46,79 @@ async def import_contact_records(
     records: Sequence[CRMImportRecord],
     entity_type: str = "contact",
 ) -> ImportOutcome:
-    """Create imported contacts once per per-company idempotency key. The caller commits."""
-    keys = [r.idempotency_key for r in records]
-    existing = set(
-        (await session.execute(
-            select(LedgerEntry.idempotency_key).where(
-                LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key.in_(keys)
-            )
-        )).scalars().all()
-    )
+    """Create each imported contact, or update the contact it already is.
+
+    A row is an existing contact when that contact shares its import identity, carries
+    its entity id, or was created under its idempotency key, whatever key the row is
+    sent under now. One such contact takes the row's values (blank values leave a field
+    as it is); a row with nothing new is skipped, so replaying a file writes nothing.
+    More than one refuses the row with nothing written. The caller runs one import per
+    company at a time and commits."""
+    rows = (await session.execute(
+        select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "contact")
+    )).scalars().all()
+    states = {r.entity_id: dict(r.state or {}) for r in rows}
     outcome = ImportOutcome()
     for rec in records:
+        label = str(rec.data.get("name") or rec.entity_id)
         if rec.event_type != CONTACT_CREATED:
             outcome.add(rec.entity_id, "rejected", f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
             continue
-        if rec.idempotency_key in existing:
-            outcome.add(rec.entity_id, "skipped")
+        try:
+            require_currency_code(rec.data.get("currency"))
+        except HTTPException as exc:
+            outcome.add(rec.entity_id, "rejected", f"{label}: {exc.detail}")
+            continue
+        identity = contact_import_identity(rec.data)
+        keyed = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
+        # The company's own contact is kept in company settings, never matched by an import.
+        candidates = {cid for cid, state in states.items() if identity and _live(state) and not state.get("is_self")
+                      and contact_import_identity(state) == identity}
+        for cid in (rec.entity_id, keyed.entity_id if keyed is not None else None):
+            if cid in states and _live(states[cid]):
+                candidates.add(cid)
+        if rec.entity_id in states and not _live(states[rec.entity_id]):
+            outcome.add(rec.entity_id, "rejected", f"{label}: contact {rec.entity_id} was merged or deleted")
+            continue
+        if len(candidates) > 1:
+            outcome.add(rec.entity_id, "rejected",
+                        f"{label}: matches {len(candidates)} existing contacts ({', '.join(sorted(candidates))}); "
+                        "merge them or give the row a unique email, phone or name")
             continue
         try:
+            if candidates:
+                contact_id = candidates.pop()
+                state = states[contact_id]
+                changes = {k: {"old": state.get(k), "new": v} for k, v in rec.data.items()
+                           if v is not None and state.get(k) != v}
+                if not changes:
+                    outcome.add(contact_id, "skipped")
+                    continue
+                await emit_event(
+                    session, company_id=company_id, entity_id=contact_id, entity_type=entity_type,
+                    event_type="crm.contact.updated", data={"fields_changed": changes},
+                    actor_id=actor_id, location_id=None, source=rec.source,
+                    idempotency_key=str(uuid.uuid4()),
+                    metadata_={"import_key": rec.idempotency_key, **({"source_ts": rec.source_ts} if rec.source_ts else {})},
+                )
+                state.update({k: c["new"] for k, c in changes.items()})
+                outcome.add(contact_id, "updated")
+                continue
+            data = {"contact_type": "customer", **{k: v for k, v in rec.data.items() if v is not None}}
             entry = await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=rec.entity_id,
-                entity_type=entity_type,
-                event_type=rec.event_type,
-                data=rec.data,
-                actor_id=actor_id,
-                location_id=None,
-                source=rec.source,
-                idempotency_key=rec.idempotency_key,
+                session, company_id=company_id, entity_id=rec.entity_id, entity_type=entity_type,
+                event_type=rec.event_type, data=data, actor_id=actor_id, location_id=None,
+                source=rec.source, idempotency_key=rec.idempotency_key,
                 metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
             )
-            existing.add(rec.idempotency_key)
-            # A concurrent import of the same file can write the row first.
-            outcome.add(rec.entity_id, "skipped" if getattr(entry, "was_deduped", False) else "created")
+            if getattr(entry, "was_deduped", False):
+                # The key already wrote something that is no longer a live contact.
+                outcome.add(rec.entity_id, "skipped")
+                continue
+            states[rec.entity_id] = {"entity_type": "contact", **data}
+            outcome.add(rec.entity_id, "created")
         except Exception as exc:
-            outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {exc}")
+            outcome.add(rec.entity_id, "failed", f"{label}: {failure_reason(exc)}")
     return outcome
 
 

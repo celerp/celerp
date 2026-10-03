@@ -174,16 +174,16 @@ async def test_crm_batch_import_contacts_skip_existing_entity(client):
     }]})
     assert r1.json()["created"] == 1
 
-    # Same idempotency_key again → skipped (covers the skip branch)
+    # The same row again → skipped (covers the skip branch)
     r2 = await client.post("/crm/contacts/import/batch", headers=_h(tok), json={"records": [{
         "entity_id": entity_id,
         "event_type": "crm.contact.created",
-        "data": {"name": "Skip Me Again"},
+        "data": {"name": "Skip Me"},
         "source": "test",
         "idempotency_key": ik1,
     }]})
     assert r2.status_code == 200
-    assert r2.json()["skipped"] >= 1
+    assert (r2.json()["created"], r2.json()["updated"], r2.json()["skipped"]) == (0, 0, 1)
 
 
 # ---------------------------------------------------------------------------

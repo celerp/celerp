@@ -14,17 +14,18 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import FileResponse
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
+from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.attachments import attach_file, local_attachment_url_path, remove_attachment, storing
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.currencies import require_currency_code
-from celerp.services.permissions import require_permission
+from celerp.services.permissions import locked_authority, require_permission
 
 from celerp.importers.sinks import register_sink
 from celerp_contacts import services
@@ -716,32 +717,24 @@ async def import_contact(
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Accept only the canonical contact-create CIF snapshot transport."""
+    """Accept only the canonical contact-create CIF snapshot transport. A contact that
+    already exists is updated, as in the batch import."""
     if body.event_type != "crm.contact.created":
         raise HTTPException(status_code=422, detail=f"Event type {body.event_type!r} is not import-safe")
+    await locked_authority(session, company_id, user.id, ("edit_contacts", "import_export_data"))
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
         if replay.event_type != "crm.contact.created" or replay.entity_id != body.entity_id:
             raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
-        return {"event_id": replay.id, "id": replay.entity_id, "idempotency_hit": True}
-    existing = await session.get(Projection, {"company_id": company_id, "entity_id": body.entity_id})
-    if existing is not None:
-        raise HTTPException(status_code=409, detail=f"Contact {body.entity_id} already exists")
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=body.entity_id,
-        entity_type="contact",
-        event_type="crm.contact.created",
-        data=body.data,
-        actor_id=user.id,
-        location_id=None,
-        source=body.source,
-        idempotency_key=body.idempotency_key,
-        metadata_={"source_ts": body.source_ts} if body.source_ts else {},
-    )
+    record = (await services.import_contact_records(session, company_id, user.id, [body])).records[0]
+    if record.status in ("rejected", "failed"):
+        raise HTTPException(status_code=409 if record.status == "rejected" else 422, detail=record.message)
     await session.commit()
-    return {"event_id": entry.id, "id": entry.entity_id, "idempotency_hit": False}
+    event_id = await session.scalar(
+        select(func.max(LedgerEntry.id)).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == record.entity_id)
+    )
+    return {"event_id": event_id, "id": record.entity_id, "status": record.status,
+            "idempotency_hit": replay is not None and record.status == "skipped"}
 
 
 
@@ -1077,7 +1070,9 @@ async def batch_import_contacts(
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    """Batch-import CIF contact records. Idempotent on idempotency_key. Max 500 per call."""
+    """Batch-import CIF contact records: a new contact is created, an existing one updated,
+    an unchanged one skipped. Max 500 per call."""
+    await locked_authority(session, company_id, user.id, ("edit_contacts", "import_export_data"))
     outcome = await services.import_contact_records(session, company_id, user.id, body.records)
     await session.commit()
     return BatchImportResult(**outcome.route_counts())
