@@ -1573,6 +1573,47 @@ async def test_newer_schema_refused_before_writes(real_engine, real_client, tmp_
     await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "newer version of Celerp")
 
 
+@pytest.mark.parametrize("recorded", ["999.0.0", "newer_dev"])
+async def test_backup_from_a_newer_celerp_refused_before_writes(real_engine, real_client, tmp_path, monkeypatch,
+                                                                recorded):
+    """A backup made by a newer Celerp is refused before any write, even when its tables and
+    columns all exist here: the newer copy's records may mean something this copy cannot read."""
+    from packaging.version import Version
+    from celerp.migrations.compatibility import running_version
+    _bk_local(monkeypatch, tmp_path)
+    user, _, tok = await _bk_setup(real_engine)
+    if recorded == "newer_dev":
+        v = Version(running_version())
+        recorded = f"{v.major}.{v.minor}.{v.micro + 1}.dev1"
+
+    def change(m):
+        m["celerp_version"] = recorded
+    data = _bk_edit_manifest(await download(real_client, tok), change)
+    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "newer version of Celerp")
+
+
+@pytest.mark.parametrize("recorded", ["not a version", 7, ""])
+async def test_backup_with_an_unreadable_celerp_version_refused_before_writes(real_engine, real_client, tmp_path,
+                                                                              monkeypatch, recorded):
+    """A backup whose recorded Celerp version cannot be read is refused as damaged, never guessed."""
+    _bk_local(monkeypatch, tmp_path)
+    user, _, tok = await _bk_setup(real_engine)
+
+    def change(m):
+        m["celerp_version"] = recorded
+    data = _bk_edit_manifest(await download(real_client, tok), change)
+    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "damaged or was changed")
+
+
+async def test_backup_records_the_celerp_that_made_it(real_engine, real_client, tmp_path, monkeypatch):
+    """The manifest names the Celerp version that made it, so an older copy can refuse it."""
+    from celerp.migrations.compatibility import running_version
+    _bk_local(monkeypatch, tmp_path)
+    _, _, tok = await _bk_setup(real_engine)
+    m = json.loads(members(await download(real_client, tok))["manifest.json"])
+    assert m["celerp_version"] == running_version()
+
+
 @pytest.mark.parametrize("table", ["locations", "ledger"])
 async def test_unknown_archived_column_refused_before_writes(real_engine, real_client, tmp_path, monkeypatch, table):
     """A backup listing a column this Celerp's table does not have is refused before any write."""

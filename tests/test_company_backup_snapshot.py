@@ -314,7 +314,7 @@ async def test_export_snapshot_archive_format_unchanged(real_engine, real_client
     assert set(parts) == ({"manifest.json", "attachments/photo.png"}
                           | {f"tables/{t}.jsonl" for t in m["tables"]})
     assert json.loads(parts["manifest.json"]) == m
-    assert set(m) == {"format", "format_version", "backup_id", "created_at", "company", "provenance",
+    assert set(m) == {"format", "format_version", "celerp_version", "backup_id", "created_at", "company", "provenance",
                       "modules", "tables", "attachments"}
     assert (m["format"], m["format_version"], m["provenance"]) == ("celerp-company-backup", 1, _PROVENANCE)
     assert set(m["company"]) == {"id", "name", "settings"} and m["company"]["id"] == str(cid)

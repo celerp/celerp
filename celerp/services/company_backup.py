@@ -48,7 +48,10 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from packaging.version import InvalidVersion
+
 import celerp.db
+from celerp.migrations.compatibility import is_newer_than_running, running_version
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.modules.importer import TABLE_NAME, installed_table_prefixes
@@ -711,7 +714,8 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
     # data depends on, so it is not a requirement of the backup.
     enabled = {name for name in get_enabled(settings) if _installed(name) is not None}
     manifest: dict = {
-        "format": FORMAT, "format_version": FORMAT_VERSION, "backup_id": str(uuid.uuid4()),
+        "format": FORMAT, "format_version": FORMAT_VERSION, "celerp_version": running_version(),
+        "backup_id": str(uuid.uuid4()),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "company": {"id": str(company.id), "name": company.name, "settings": settings},
         **({"provenance": provenance} if provenance else {}),
@@ -816,6 +820,16 @@ def _check_manifest(m) -> None:
         raise BackupError(422, DAMAGED)
     if version > FORMAT_VERSION:
         raise BackupError(422, NEWER)
+    # A newer Celerp's records may mean something this copy cannot read, even when
+    # every table and column exists here. Backups made before the version was
+    # recorded come from an older Celerp.
+    if "celerp_version" in m:
+        try:
+            newer = is_newer_than_running(m["celerp_version"])
+        except (InvalidVersion, TypeError):
+            raise BackupError(422, DAMAGED)
+        if newer:
+            raise BackupError(422, NEWER)
     company, modules, tables, files = m.get("company"), m.get("modules"), m.get("tables"), m.get("attachments")
     ok = (_is_uuid(m.get("backup_id")) and isinstance(m.get("created_at"), str)
           and isinstance(company, dict) and _is_uuid(company.get("id"))
