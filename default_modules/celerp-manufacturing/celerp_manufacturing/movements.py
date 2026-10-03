@@ -194,8 +194,8 @@ async def _wip_target(op: _Op) -> str:
 def _reconcile() -> HTTPException:
     return refuse(409, "reconciliation_required",
                   "The value of the materials in this run is not recorded in the books yet, or "
-                  "cannot be worked out from its history. Reconcile it before issuing, receiving "
-                  "or completing.")
+                  "cannot be worked out from its history. Reconcile it before changing its materials "
+                  "or output.")
 
 
 def _require_settled(op: _Op, state: dict) -> None:
@@ -353,8 +353,9 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
                          item=line["item_id"])
         have = float(inp.get("issued_qty") or 0)
         if line["quantity"] > have + _EPS:
-            raise refuse(409, "over_return", f"Only {have:g} of {line['item_id']} was issued to this run.",
-                         item=line["item_id"], issued=have)
+            sku = inp.get("sku") or line["item_id"]
+            raise refuse(409, "over_return", f"Only {have:g} of {sku} was issued to this run, so no more can be "
+                         "returned.", sku=sku, issued=have)
     if not wanted:
         return {"returned": [], "value": "0"}
     if float(state.get("received_qty") or 0) > _EPS or state.get("receipts"):

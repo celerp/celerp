@@ -1901,7 +1901,7 @@ async def manufacturing_requirements(token: str, item_ids: list[str]) -> dict:
 
 
 async def manufacturing_bulk_run_action(token: str, run_ids: list[str], action: str) -> dict:
-    """Apply a lifecycle action (start/issue/complete/hold/resume/cancel) to many runs at once."""
+    """Apply a lifecycle action (start/issue/return/complete/hold/resume/cancel) to many runs at once."""
     async with _api_client(token) as c:
         return _raise(await c.post("/manufacturing/bulk-action",
                                    json={"run_ids": run_ids, "action": action})).json()
@@ -1960,6 +1960,23 @@ async def complete_mfg_order(token: str, order_id: str, data: dict | None = None
 async def cancel_mfg_order(token: str, order_id: str, reason: str | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/manufacturing/{order_id}/cancel", json={"reason": reason})).json()
+
+
+async def return_mfg_materials(token: str, order_id: str) -> dict:
+    """Return everything issued to a run to the lots it came from."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/return", json={})).json()
+
+
+async def undo_mfg_receipt(token: str, order_id: str, lot_item_id: str) -> dict:
+    """Undo one receipt of a run: its lot leaves stock and its value goes back to the run."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/undo-receipt", json={"lot_item_id": lot_item_id})).json()
+
+
+async def reopen_mfg_order(token: str, order_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/reopen", json={})).json()
 
 
 async def hold_mfg_order(token: str, order_id: str, reason: str | None = None) -> dict:

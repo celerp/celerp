@@ -939,7 +939,7 @@ async def item_manufacturing_hub(
                     "due": st.get("due_date") or st.get("promised_date") or None,
                 })
 
-    # Runs that make this product, newest first, with input SKUs resolved.
+    # Runs that make this product, newest first, with input and received lot SKUs resolved.
     run_rows = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id, Projection.entity_type == "mfg_order",
@@ -955,7 +955,8 @@ async def item_manufacturing_hub(
              "name": (states.get(i.get("item_id")) or {}).get("name")}
             for i in rs.get("inputs", [])
         ]
-        runs.append({**rs, "id": r.entity_id, "inputs": inputs,
+        receipts = [{**x, "sku": (states.get(x.get("lot_item_id")) or {}).get("sku")} for x in rs.get("receipts") or []]
+        runs.append({**rs, "id": r.entity_id, "inputs": inputs, "receipts": receipts,
                      "created_at": r.created_at.isoformat() if r.created_at else None})
     runs.sort(key=lambda x: x.get("created_at") or "", reverse=True)
 

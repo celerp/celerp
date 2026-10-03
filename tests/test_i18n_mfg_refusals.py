@@ -26,11 +26,13 @@ from ui.api_client import APIError
 ROOT = Path(__file__).resolve().parents[1]
 LOCALES = sorted(p.stem for p in (ROOT / "ui" / "locales").glob("*.json"))
 REFUSALS = ["mfg.reconciliation_required", "mfg.insufficient_stock", "mfg.over_receipt", "mfg.cancel_moved",
-            "mfg.wip_account_missing", "mfg.issue_first", "mfg.unaccounted_value"]
+            "mfg.wip_account_missing", "mfg.issue_first", "mfg.unaccounted_value", "mfg.over_return",
+            "mfg.return_quantity", "mfg.return_after_receipt", "mfg.return_lot_unavailable", "mfg.return_value",
+            "mfg.output_changed", "mfg.not_a_receipt", "mfg.reopen_first", "mfg.not_completed", "mfg.recost_conflict"]
 SHORT = {"message": "Only 2 of RAW-1 is in stock and not reserved; 4 is needed.",
          "message_key": "mfg.insufficient_stock", "params": {"sku": "RAW-1", "available": 2.0, "needed": 4.0}}
 _TH_SHORT = "RAW-1 มีในสต๊อกที่ไม่ได้จองไว้เพียง 2 แต่ต้องใช้ 4"
-_TH_CANCEL = "ใบสั่งผลิตนี้ใช้วัตถุดิบหรือผลิตสินค้าไปแล้ว จึงยกเลิกไม่ได้ ให้พักไว้หรือปิดใบสั่งผลิตแทน"
+_TH_CANCEL = "ใบสั่งผลิตนี้ยังมีวัตถุดิบหรือผลผลิตอยู่ จึงยกเลิกไม่ได้ ให้คืนวัตถุดิบและยกเลิกการรับสินค้าก่อน"
 
 
 @pytest.fixture(autouse=True)
@@ -104,10 +106,10 @@ def test_the_posting_accounts_panel_names_work_in_progress_in_the_users_language
 
 
 @pytest.mark.asyncio
-async def test_cancelling_a_run_that_used_materials_says_why_in_the_users_language(ui_client):
-    refused = APIError(409, "This run has already used materials or produced output, so it cannot be cancelled.",
-                       {"message": "This run has already used materials or produced output, so it cannot be "
-                                   "cancelled.", "message_key": "mfg.cancel_moved", "params": {}})
+async def test_cancelling_a_run_that_holds_materials_says_why_in_the_users_language(ui_client):
+    refused = APIError(409, "This run still holds materials or output, so it cannot be cancelled.",
+                       {"message": "This run still holds materials or output, so it cannot be cancelled.",
+                        "message_key": "mfg.cancel_moved", "params": {}})
     with (
         patch("ui.api_client.cancel_mfg_order", new=AsyncMock(side_effect=refused)),
         patch("ui.api_client.get_item", new=AsyncMock(return_value={"id": "item:p", "sku": "P"})),

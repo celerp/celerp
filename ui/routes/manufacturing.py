@@ -470,6 +470,9 @@ def setup_routes(app):
                  "url": f"/manufacturing/runs/bulk/start?status={active}"},
                 {"value": "issue", "label": t("manufacturing.action_issue"), "method": "post",
                  "url": f"/manufacturing/runs/bulk/issue?status={active}"},
+                {"value": "return", "label": t("manufacturing.action_return"), "method": "post",
+                 "url": f"/manufacturing/runs/bulk/return?status={active}",
+                 "confirm": t("manufacturing.confirm_return_runs")},
                 {"value": "complete", "label": t("manufacturing.action_complete"), "method": "post",
                  "url": f"/manufacturing/runs/bulk/complete?status={active}",
                  "confirm": t("manufacturing.confirm_complete")},
@@ -651,6 +654,7 @@ def setup_routes(app):
 
     # Per-action success toast KEY (R1); each holds a count-neutral "...: {n}" template (R7).
     _BULK_RUN_MSG = {"start": "manufacturing.bulk_started", "issue": "manufacturing.bulk_issued",
+                     "return": "manufacturing.bulk_returned",
                      "complete": "manufacturing.bulk_completed", "hold": "manufacturing.bulk_hold",
                      "resume": "manufacturing.bulk_resumed", "cancel": "manufacturing.bulk_cancelled"}
 

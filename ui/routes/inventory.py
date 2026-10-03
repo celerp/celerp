@@ -1966,7 +1966,14 @@ function celerpPrintLabel(entityId, templateId) {
         "start": api.start_mfg_order, "complete": lambda tok, rid: api.complete_mfg_order(tok, rid),
         "hold": lambda tok, rid: api.hold_mfg_order(tok, rid), "resume": api.resume_mfg_order,
         "cancel": lambda tok, rid: api.cancel_mfg_order(tok, rid),
+        "return": lambda tok, rid: api.return_mfg_materials(tok, rid),
+        "reopen": lambda tok, rid: api.reopen_mfg_order(tok, rid),
+        # "undo:<lot id>" names the receipt to undo.
+        "undo": lambda tok, rid, lot: api.undo_mfg_receipt(tok, rid, lot),
     }
+    # The undo actions change nothing the run's row shows, so they say what they did.
+    _RUN_ACTION_DONE = {"return": "inventory.wo_returned", "undo": "inventory.wo_receipt_undone",
+                        "reopen": "inventory.wo_reopened"}
 
     @app.post("/api/items/{entity_id}/runs/{run_id}/act")
     async def run_action(request: Request, entity_id: str, run_id: str):
@@ -1975,12 +1982,14 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
-        fn = _RUN_ACTIONS.get(str(form.get("action") or ""))
+        action, _, lot = str(form.get("action") or "").partition(":")
+        fn = _RUN_ACTIONS.get(action)
         if fn is None:
             return await _production_block_response(token, entity_id)
         try:
-            await fn(token, run_id)
-            return await _production_block_response(token, entity_id)
+            await (fn(token, run_id, lot) if action == "undo" else fn(token, run_id))
+            done = _RUN_ACTION_DONE.get(action)
+            return await _production_block_response(token, entity_id, flash_msg=t(done) if done else None)
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
@@ -7033,7 +7042,8 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         return Span(s.replace("_", " ").title(), cls=f"badge badge--{s.replace('_', '-')}",
                     **({"title": help_txt} if help_txt else {}))
 
-    def _wo_action_select(rid: str, status: str) -> FT:
+    def _wo_action_select(run: dict) -> FT:
+        rid, status = run.get("id"), run.get("status", "planned")
         opts = [Option(t("inventory.wo_action"), value="", disabled=True, selected=True)]
         if status == "planned":
             opts.append(Option(t("btn.start"), value="start"))
@@ -7042,8 +7052,15 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         if status == "on_hold":
             opts.append(Option(t("btn.resume"), value="resume"))
         if status not in ("completed", "cancelled"):
+            # Each step of a run can be taken back: its receipts, then the materials it holds.
+            opts += [Option(t("inventory.wo_undo_receipt", lot=r.get("sku") or r.get("lot_item_id")),
+                            value=f"undo:{r.get('lot_item_id')}") for r in run.get("receipts") or []]
+            if any(float(i.get("issued_qty") or 0) > 0 for i in run.get("inputs") or []):
+                opts.append(Option(t("inventory.wo_return"), value="return"))
             opts.append(Option(t("btn.cancel"), value="cancel"))
-        if len(opts) == 1:  # closed run - no further actions
+        if status == "completed":
+            opts.append(Option(t("btn.reopen"), value="reopen"))
+        if len(opts) == 1:  # a cancelled run - no further actions
             return Span(EMPTY)
         return Select(*opts, name="action", cls="wo-action-select", hx_trigger="change",
                       hx_post=f"/api/items/{entity_id}/runs/{rid}/act",
@@ -7066,7 +7083,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
             Td(f"{qty:g}", cls="cell--number"),
             Td(run.get("source_due") or (run.get("created_at") or "")[:10] or EMPTY, cls="cell--center"),
             Td(_wo_status_badge(status)),
-            Td(_wo_action_select(rid, status), cls="cell--actions"),
+            Td(_wo_action_select(run), cls="cell--actions"),
             cls="data-row" + (" data-row--inactive" if status == "cancelled" else ""),
         )
 
