@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 """A bank account and the chart account it posts to stay consistent: an active bank
-account always posts to an active asset account, and Cash (1110) stays an active asset
-account while online payments are deposited to it."""
+account always posts to an active asset account."""
 
 from __future__ import annotations
 
@@ -152,38 +151,18 @@ async def test_a_bank_account_is_restored_only_onto_an_active_asset_account(clie
     assert r.json()["is_active"] is True
 
 
-# ── Cash (1110), where online payments are deposited by default ───────────────
+# ── Cash (1110), which has no bank account ────────────────────────────────────
 
-@pytest.mark.parametrize("setting", [None, "1110"])
 @pytest.mark.parametrize("change", [{"is_active": False}, {"account_type": "liability"}])
-async def test_cash_cannot_be_archived_or_retyped_while_online_payments_are_deposited_to_it(
-        client, setting, change):
+async def test_cash_can_be_archived_or_retyped_in_a_company_that_never_connected_online_payments(
+        client, change):
     tok = await _register(client)
-    if setting:
-        r = await client.patch("/companies/me", headers=_h(tok),
-                               json={"settings": {"stripe_deposit_account": setting}})
-        assert r.status_code == 200, r.text
 
     r = await client.patch("/accounting/accounts/1110", headers=_h(tok), json=change)
 
-    assert r.status_code == 422, r.text
-    assert r.json()["detail"] == (
-        "Online payments are deposited to account 1110. Choose another account for online payments "
-        "before archiving this account or changing its type.")
+    assert r.status_code == 200, r.text
     acc = await _chart_account(client, tok, "1110")
-    assert (acc["account_type"], acc["is_active"]) == ("asset", True)
-
-
-async def test_cash_can_be_archived_once_online_payments_go_to_a_bank_account(client):
-    tok = await _register(client)
-    code = (await _bank(client, tok))["chart_account_code"]
-    r = await client.patch("/companies/me", headers=_h(tok), json={"settings": {"stripe_deposit_account": code}})
-    assert r.status_code == 200, r.text
-
-    r = await client.patch("/accounting/accounts/1110", headers=_h(tok), json={"is_active": False})
-
-    assert r.status_code == 200, r.text
-    assert r.json()["is_active"] is False
+    assert {k: acc[k] for k in change} == change
 
 
 # ── the rule every posting meets ──────────────────────────────────────────────

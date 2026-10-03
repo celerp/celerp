@@ -230,3 +230,31 @@ async def test_an_archival_that_reaches_the_account_while_the_payment_posts_wait
     assert await _references(real_engine, eid) == ["pi_paid"]
     assert await _posted_to(real_engine, eid) == [code]
     assert await _account(real_engine, a, code) == (False, "asset")
+
+
+@pytest.mark.parametrize("change", [{"is_active": False}, {"account_type": "liability"}])
+async def test_cash_archived_or_retyped_while_a_payment_is_on_its_way_keeps_it_among_the_unmatched(
+        monkeypatch, real_engine, real_client, change):
+    """Online payments go to Cash, the default, when the payment page opens. The owner
+    archives or retypes Cash before the payment is recorded: the payment never posts to
+    Cash and is kept among the unmatched."""
+    _payments_on(monkeypatch)
+    boss, a, _ = await _harbor(real_engine)
+    cloud = _Cloud(monkeypatch, real_engine)
+    eid, share = await _shared_invoice(real_client, real_engine, boss, a)
+    assert (await real_client.get(f"/pay/{share}", follow_redirects=False)).status_code == 303
+    assert cloud.opened[eid]["deposit_account"] == "1110"
+    reached, release = _hold(monkeypatch, after_the_deposit_check=False)
+    cloud.pay(a, eid, "pi_paid", amount_minor=50000, paid_at=_OCTOBER_3)
+    paying = asyncio.create_task(cloud.deliver())
+    await asyncio.wait_for(reached.wait(), 10)
+    try:
+        r = await real_client.patch("/accounting/accounts/1110", json=change,
+                                    headers=auth(await token(real_engine, boss, a)))
+    finally:
+        release.set()
+    await paying
+
+    assert r.status_code == 200, r.text
+    await _kept_unmatched(real_engine, cloud, a, eid)
+    assert "1110" not in await _posted_to(real_engine, eid)
