@@ -431,3 +431,36 @@ def test_build_workflow_exports_versioned_openapi_before_publish():
     assert "EXISTING_ASSET_ID=" in openapi_block
     assert "/releases/assets/$EXISTING_ASSET_ID" in openapi_block
     assert "assets?name=openapi.json" in openapi_block
+
+
+# ---------------------------------------------------------------------------
+# Installer upgrade and downgrade checks
+# ---------------------------------------------------------------------------
+
+_WORKFLOWS = Path(__file__).parent.parent / ".github" / "workflows"
+
+
+def _workflow(name):
+    import yaml
+    return yaml.safe_load((_WORKFLOWS / name).read_text())
+
+
+def test_windows_installer_check_covers_every_starting_point():
+    """none / same / older / newer / --updated, and a refused run changes nothing."""
+    steps = {s.get("name"): s for s in _workflow("build.yml")["jobs"]["build"]["steps"]}
+    run = steps["Installer version check (Windows)"]["run"]
+    for case in ("none:", "same:", "older:", "--updated:", "newer:"):
+        assert f'Write-Host "{case}' in run, case
+    assert 'Get-FileHash (Join-Path $dir "Celerp.exe") -Algorithm SHA256' in run
+    assert "celerp-ci-sentinel.txt" in run
+    assert 'if ($after -ne $before) { Fail "older installer changed the install' in run
+    assert 'if ($code -ne 2) { Fail "older installer over 999.0.0' in run
+
+
+def test_packaged_upgrade_smoke_runs_nightly_and_on_demand_only():
+    wf = _workflow("packaged-upgrade-smoke.yml")
+    triggers = wf[True]  # YAML 1.1 reads the bare key `on` as True
+    assert set(triggers) == {"schedule", "workflow_dispatch"}
+    steps = [s["name"] for s in wf["jobs"]["upgrade"]["steps"]]
+    assert "Previous, candidate, downgrade, update (Linux, data)" in steps
+    assert "Previous, candidate, downgrade, update (Windows, install)" in steps
