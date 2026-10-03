@@ -101,11 +101,11 @@ class TestLabelsManifest:
         mod = _import_labels_pkg()
         assert mod.PLUGIN_MANIFEST["slots"]["item_action"] is None
 
-    def test_slot_settings_tab(self):
+    def test_no_settings_tab_slot(self):
+        """Nothing in Celerp reads a settings_tab slot; the labels settings page is
+        reached from the nav entry, so the module declares no dead slot."""
         mod = _import_labels_pkg()
-        st = mod.PLUGIN_MANIFEST["slots"]["settings_tab"]
-        assert st["href"] == "/settings/labels"
-        assert isinstance(st["order"], int)
+        assert "settings_tab" not in mod.PLUGIN_MANIFEST["slots"]
 
     def test_requires_list(self):
         mod = _import_labels_pkg()
@@ -250,7 +250,6 @@ class TestLabelsLoaderIntegration:
         assert len(get("bulk_action")) >= 1
         assert any(s["form_action"] == "/labels/print-bulk" for s in get("bulk_action"))
         # item_action slot removed (set to None) — print is now inline in item detail
-        assert len(get("settings_tab")) >= 1
 
     def test_labels_module_not_bsl_violation(self, tmp_path):
         """celerp-labels does not import any protected BSL internals."""
