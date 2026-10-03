@@ -411,13 +411,18 @@ async def restate_item_cost(
         source=source, idempotency_key=idempotency_key, metadata_=_metadata(entity_id, {}),
     )
     identity = hashlib.sha256(idempotency_key.encode()).hexdigest()[:24]
+    # A production run's completion entry books the re-cost of every lot it produced,
+    # merged or not, so the change carried into a merge result names the run too.
+    lineage = {"restated_from": entity_id}
+    if data.get("manufacturing_order_id"):
+        lineage["manufacturing_order_id"] = data["manufacturing_order_id"]
     for succ_id, basis in successors:
         await emit_event(
             session, company_id=company_id, entity_id=succ_id, entity_type="item",
             event_type="item.cost_adjusted", data={"cost_total": basis},
             actor_id=actor_id, location_id=None, source=source,
             idempotency_key=f"cost-restate:{identity}:{succ_id}",
-            metadata_=_metadata(succ_id, {"restated_from": entity_id}),
+            metadata_=_metadata(succ_id, lineage),
         )
     if plan.docs:
         company = await session.get(Company, company_id)

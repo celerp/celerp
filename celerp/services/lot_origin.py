@@ -547,6 +547,102 @@ async def post_opening_stock_delta(session: AsyncSession, company_id, values: di
         idem_create=f"{idem}:c", idem_posted=f"{idem}:p", memo=memo, entries=lines, metadata_=metadata, ts=day)
 
 
+# Writers that book or move a lot's value themselves, read off the event: a merge,
+# split or transform moving value between lots on the same account, a document's goods
+# movement, a count and its undo, a production run, and a migration carrying its source
+# books. Their own entries carry the value; every other change to it is booked by
+# value_boundary.
+_SELF_BOOKED_REASONS = frozenset({"from_merge", "from_split", "from_transform", "split_parent", "audit", "audit_undo"})
+_SELF_BOOKED_SOURCES = frozenset({"migration", "audit", "fulfillment", "fulfill_split", "receive_undo"})
+_SELF_BOOKED_MARKERS = frozenset({"source_doc", "source_return", "source_receive_undo", "split_for_fulfillment",
+                                  "audit_id", "manufacturing_order_id"})
+
+
+def _self_booked(entry: LedgerEntry) -> bool:
+    if entry.event_type == "item.consumed" or entry.source in _SELF_BOOKED_SOURCES:
+        return True
+    for marks in (entry.data or {}, entry.metadata_ or {}):
+        if marks.get("reason") in _SELF_BOOKED_REASONS or _SELF_BOOKED_MARKERS & marks.keys():
+            return True
+    return False
+
+
+def _held(state: dict) -> Decimal | None:
+    return held_value(SimpleNamespace(state=state, consignment_flag=state.get("consignment_flag")))
+
+
+@dataclass(frozen=True)
+class ValueChange:
+    """A change in the value a lot holds on its inventory account (value_boundary)."""
+
+    delta: Decimal
+    code: str
+    day: str
+
+
+async def value_boundary(session: AsyncSession, entry: LedgerEntry, transition: Transition) -> ValueChange | None:
+    """Whether an applied item event changed the value a lot on hand holds on the
+    inventory account it recorded, read from the transition its row lock applied
+    (ProjectionEngine.apply_event). Every writer passes here, so a cost edit, a quantity
+    change, a price set, a restated cost carried into a merge result or a store re-import
+    is booked in the same transaction; writers that book or move the value themselves
+    (_self_booked) are left to their own entries. While the lot holds booked stock,
+    nothing may change whether it is the company's own (its inventory type, a
+    consignment): that is refused, never booked. With Accounting off, nothing is booked."""
+    from celerp.services.auto_je import entry_day
+
+    before, after = transition.before, transition.after
+    code = (before or {}).get(LOT_ACCOUNT_FIELD)
+    if not code or not in_stock(before) or not in_stock(after):
+        return None
+    if _owned_stock(SimpleNamespace(state=before, consignment_flag=None)) != _owned_stock(
+            SimpleNamespace(state=after, consignment_flag=None)):
+        raise HTTPException(
+            status_code=422,
+            detail=f"This item holds stock booked to inventory account {code}, so its inventory type and "
+                   "consignment cannot change. Sell, write off or return the stock to draft first.")
+    if _self_booked(entry):
+        return None
+    hb, ha = _held(before), _held(after)
+    if hb is None or ha is None:
+        return None
+    settings = await current_settings(session, entry.company_id)
+    if SCHEMA_KEY not in settings:
+        return None
+    currency = settings.get("currency", "USD")
+    delta = round_money(ha, currency) - round_money(hb, currency)
+    if not delta:
+        return None
+    return ValueChange(delta=delta, code=code,
+                       day=await entry_day(session, entry.company_id, (entry.data or {}).get("ts")))
+
+
+async def book_value_change(session: AsyncSession, entry: LedgerEntry, change: ValueChange) -> None:
+    """Book a lot's change in value (value_boundary) on its inventory account: an
+    increase against stock gains, a decrease against stock shrinkage, keyed by the event
+    so a retry books nothing more. The account the other side posts to is checked as any
+    new entry's is (account_roles.resolve_many); a refusal rolls the event back."""
+    from celerp.services.auto_je import _emit_auto_posted_je, _line, _lot_line
+
+    settings = await current_settings(session, entry.company_id)
+    amount = float(abs(change.delta))
+    if change.delta > 0:
+        role = AccountRole.STOCK_GAIN.value
+        other = (await resolve_many(session, entry.company_id, [role]))[role]
+        lines = [_lot_line(settings, change.code, debit=amount), _line(other, role, credit=amount)]
+        memo = "Stock value increased"
+    else:
+        role = AccountRole.STOCK_SHRINKAGE.value
+        other = (await resolve_many(session, entry.company_id, [role]))[role]
+        lines = [_line(other, role, debit=amount), _lot_line(settings, change.code, credit=amount)]
+        memo = "Stock value decreased"
+    await _emit_auto_posted_je(
+        session, company_id=entry.company_id, user_id=entry.actor_id,
+        je_id=f"je:auto:{entry.entity_id}:value-changed:{entry.id}",
+        idem_create=f"lot-value:{entry.id}:c", idem_posted=f"lot-value:{entry.id}:p", memo=memo, entries=lines,
+        metadata_={"trigger": "item.value-changed", "event": entry.event_type}, ts=change.day)
+
+
 async def recognize_opening_lots(session: AsyncSession, company_id, item_ids, actor_id, operation_id: str,
                                  at=None) -> None:
     """Book the stock one operation brought in with no purchase behind it (an import, a

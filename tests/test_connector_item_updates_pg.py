@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from migration_support import auth, maker
 from test_item_births_pg import _delete, _left_behind
-from test_posting_roles_race_pg_draft import _company, _draft, _race, race  # noqa: F401  (race is a fixture)
+from test_posting_roles_race_pg_draft import _books, _company, _draft, _ok, _race, race  # noqa: F401  (race is a fixture)
 
 pytestmark = pytest.mark.asyncio
 
@@ -132,6 +132,25 @@ async def test_a_reimported_sku_change_keeps_the_items_lots_in_its_family(commit
     assert await connector(cid, _record("qb:4", sku="FAM-2")) == "updated"
 
     assert (await _state(committed_engine, cid, member)).get("catalog_item_id") == "item:qb:4"
+
+
+@pytest.mark.parametrize("new_cost", [15.0, 4.0], ids=["up", "down"])
+async def test_a_reimported_cost_on_available_stock_is_booked(committed_engine, race, connector, new_cost):
+    """A store re-import that changes the cost of stock already made available books
+    the difference on the lot's inventory account, like a cost edit."""
+    client, _ = race
+    cid, tok = await _company(committed_engine)
+    assert await connector(cid, _record("qb:5", quantity=2, cost_price=10.0)) == "created"
+    lot = "item:qb:5"
+    await _ok(client, tok, "/items/bulk/make-available", {"entity_ids": [lot]})
+    assert sum((await _books(committed_engine, cid)).values()) == 20
+
+    assert await connector(cid, _record("qb:5", quantity=2, cost_price=new_cost)) == "updated"
+
+    assert sum((await _books(committed_engine, cid)).values()) == 2 * new_cost
+    r = await client.get("/accounting/balance-sheet", headers=auth(tok))
+    assert r.status_code == 200, r.text
+    assert sum((await _books(committed_engine, cid)).values()) == 2 * new_cost
 
 
 async def test_creating_an_item_that_already_exists_is_refused(committed_engine, race):

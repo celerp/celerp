@@ -302,7 +302,9 @@ async def _item_applied(session, entry: LedgerEntry, transition) -> None:
     from celerp.services.lot_origin import (
         assert_draft_not_circulated,
         book_draft_boundary,
+        book_value_change,
         draft_boundary,
+        value_boundary,
     )
 
     if transition.before is None and entry.event_type not in ITEM_BIRTHS:
@@ -313,6 +315,9 @@ async def _item_applied(session, entry: LedgerEntry, transition) -> None:
     draft_move = await draft_boundary(session, entry, transition)
     if draft_move is not None:
         await book_draft_boundary(session, entry, draft_move)
+    value_change = await value_boundary(session, entry, transition)
+    if value_change is not None:
+        await book_value_change(session, entry, value_change)
     # Durable connector work is recorded in the same transaction as the item event.
     # No network I/O occurs here; the worker re-reads current state before sending.
     await enqueue_item_change(session, entry, previous_state=transition.before)
