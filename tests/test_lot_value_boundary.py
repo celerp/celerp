@@ -197,3 +197,21 @@ async def test_a_production_run_whose_output_was_merged_before_completion_books_
     assert await _account_net(session, auth["company_id"], await _role(session, auth, GAIN)) == 0
     assert (await _state(session, auth, merged))["status"] != "merged"
     assert (await _state(session, auth, merged))["cost_total"] == 11.0
+
+
+async def test_stock_consumed_outside_a_production_run_books_the_value_it_gave_up(client, session, auth):
+    """Only a production run books its own consumption (onto work in progress); stock
+    consumed by anything else leaves the books as shrinkage, never silently."""
+    from celerp.events.engine import emit_event
+
+    lot = await _item(client, auth, 100.0, qty=4)
+    await assert_settled(client, session, auth)
+
+    await emit_event(session, company_id=auth["company_id"], entity_id=lot, entity_type="item",
+                     event_type="item.consumed", data={"quantity_consumed": 1}, actor_id=auth["user_id"],
+                     location_id=None, source="api", idempotency_key=f"consume-{uuid.uuid4().hex}", metadata_={})
+    await session.commit()
+
+    assert (await _state(session, auth, lot))["quantity"] == 3
+    await assert_settled(client, session, auth)
+    assert await _account_net(session, auth["company_id"], await _role(session, auth, SHRINKAGE)) == 25.0

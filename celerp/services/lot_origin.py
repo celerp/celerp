@@ -600,8 +600,8 @@ async def post_opening_stock_delta(session: AsyncSession, company_id, values: di
 # Writers that book or move a lot's value themselves, read off the event: a merge,
 # split or transform moving value between lots on the same account, a document's goods
 # movement, a count and its undo, a production run, and a migration carrying its source
-# books. Their own entries carry the value; every other change to it is booked by
-# value_boundary.
+# books. Their own entries carry the value; every other change to it, a consumption no
+# production run marks included, is booked by value_boundary.
 _SELF_BOOKED_REASONS = frozenset({"from_merge", "from_split", "from_transform", "split_parent", "audit", "audit_undo"})
 _SELF_BOOKED_SOURCES = frozenset({"migration", "audit", "fulfillment", "fulfill_split", "receive_undo"})
 _SELF_BOOKED_MARKERS = frozenset({"source_doc", "source_return", "source_receive_undo", "split_for_fulfillment",
@@ -609,7 +609,7 @@ _SELF_BOOKED_MARKERS = frozenset({"source_doc", "source_return", "source_receive
 
 
 def _self_booked(entry: LedgerEntry) -> bool:
-    if entry.event_type == "item.consumed" or entry.source in _SELF_BOOKED_SOURCES:
+    if entry.source in _SELF_BOOKED_SOURCES:
         return True
     for marks in (entry.data or {}, entry.metadata_ or {}):
         if marks.get("reason") in _SELF_BOOKED_REASONS or _SELF_BOOKED_MARKERS & marks.keys():
