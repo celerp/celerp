@@ -454,7 +454,7 @@ async def batch_import_settings(
             skipped += 1
             continue
         try:
-            await emit_event(
+            entry = await emit_event(
                 session,
                 company_id=company_id,
                 entity_id=str(company_id),
@@ -468,7 +468,11 @@ async def batch_import_settings(
                 metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
             )
             existing_keys.add(rec.idempotency_key)
-            created += 1
+            # A concurrent import of the same file can write the row first.
+            if getattr(entry, "was_deduped", False):
+                skipped += 1
+            else:
+                created += 1
         except Exception as exc:
             if len(errors) < 10:
                 errors.append(f"{rec.entity_id}: {exc}")

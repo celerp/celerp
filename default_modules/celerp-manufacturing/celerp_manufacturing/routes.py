@@ -1030,7 +1030,7 @@ async def batch_import_manufacturing(
             skipped += 1
             continue
         try:
-            await emit_event(
+            entry = await emit_event(
                 session,
                 company_id=company_id,
                 entity_id=rec.entity_id,
@@ -1046,7 +1046,11 @@ async def batch_import_manufacturing(
             existing_keys.add(rec.idempotency_key)
             if rec.event_type == "mfg.order.created":
                 existing_entities.add(rec.entity_id)
-            created += 1
+            # A concurrent import of the same file can write the row first.
+            if getattr(entry, "was_deduped", False):
+                skipped += 1
+            else:
+                created += 1
         except Exception as exc:
             if len(errors) < 10:
                 errors.append(f"{rec.entity_id}: {exc}")

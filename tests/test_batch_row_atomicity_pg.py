@@ -11,6 +11,7 @@ written, and the counts and errors say exactly what happened. Real PostgreSQL.
 
 from __future__ import annotations
 
+import asyncio
 import types
 import uuid
 
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
+from celerp.events.engine import emit_event
 from celerp_docs import routes as docs
 
 pytestmark = pytest.mark.asyncio
@@ -126,3 +128,96 @@ async def test_an_import_update_is_left_for_the_caller_to_commit(committed_engin
             "SELECT state::jsonb ->> 'customer_note' FROM projections "
             "WHERE company_id = :c AND entity_id = 'doc:INV-D'"), {"c": company_id})).scalar_one()
     assert note == "first"
+
+
+async def _import_racing_the_same_file(engine, factory, company_id, record: dict, entity_type: str, run):
+    """Session A writes the record and holds it uncommitted, as a second submission of
+    the same file would. Session B imports it: its check for already imported rows sees
+    nothing, then its write waits on A. A commits, and B's write turns out a duplicate."""
+    async with factory() as a, factory() as b:
+        await emit_event(a, company_id=company_id, entity_id=record["entity_id"], entity_type=entity_type,
+                         event_type=record["event_type"], data=record["data"], actor_id=None,
+                         location_id=None, source="import", idempotency_key=record["idempotency_key"],
+                         metadata_={})
+        importing = asyncio.create_task(run(b))
+        async with engine.connect() as probe:
+            for _ in range(200):
+                waiting = (await probe.execute(text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"))).scalar_one()
+                if waiting:
+                    break
+                await asyncio.sleep(0.02)
+        assert waiting, "the import never reached its write"
+        await a.commit()
+        return await importing
+
+
+def _record(entity_id: str, event_type: str, data: dict) -> dict:
+    return {"entity_id": entity_id, "event_type": event_type, "data": data,
+            "source": "import", "idempotency_key": f"imp:{uuid.uuid4().hex}"}
+
+
+async def test_a_contact_imported_twice_at_once_is_counted_once(committed_engine):
+    from celerp_contacts import services as contacts
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id, user = await _seed(factory)
+    rec = _record("contact:RACE", "crm.contact.created", {"name": "Race Co"})
+
+    async def run(s):
+        outcome = await contacts.import_contact_records(s, company_id, user.id, [contacts.CRMImportRecord(**rec)])
+        await s.commit()
+        return outcome.route_counts()
+
+    counts = await _import_racing_the_same_file(committed_engine, factory, company_id, rec, "contact", run)
+    assert (counts["created"], counts["skipped"]) == (0, 1), counts
+
+
+async def test_a_journal_imported_twice_at_once_is_counted_once(committed_engine):
+    from celerp_accounting import import_service as accounting
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id, user = await _seed(factory)
+    rec = _record("je:RACE", "acc.journal_entry.created", {"memo": "Race", "ts": "2026-03-02", "entries": [
+        {"account": "1120", "debit": 10, "credit": 0}, {"account": "4100", "debit": 0, "credit": 10}]})
+
+    async def run(s):
+        outcome = await accounting.import_journal_records(s, company_id, user.id, [accounting.AccImportRecord(**rec)])
+        await s.commit()
+        return outcome.route_counts()
+
+    counts = await _import_racing_the_same_file(committed_engine, factory, company_id, rec, "journal_entry", run)
+    assert (counts["created"], counts["skipped"]) == (0, 1), counts
+
+
+async def test_a_run_imported_twice_at_once_is_counted_once(committed_engine):
+    from celerp_manufacturing import routes as mfg
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id, user = await _seed(factory)
+    rec = _record("mfg:RACE", "mfg.order.created", {"name": "Race run", "status": "draft"})
+
+    async def run(s):
+        return (await mfg.batch_import_manufacturing(
+            mfg.MfgBatchImportRequest(records=[rec]), company_id=company_id, user=user,
+            _=None, __=None, session=s)).model_dump()
+
+    counts = await _import_racing_the_same_file(committed_engine, factory, company_id, rec, "mfg_order", run)
+    assert (counts["created"], counts["skipped"]) == (0, 1), counts
+
+
+async def test_settings_imported_twice_at_once_are_counted_once(committed_engine):
+    from celerp.routers import companies
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id, user = await _seed(factory)
+    rec = _record(str(company_id), "sys.company.created", {"name": "Rows", "slug": f"rows-{company_id.hex[:8]}"})
+
+    async def run(s):
+        return (await companies.batch_import_settings(
+            companies.SettingsBatchImportRequest(records=[rec]), company_id=company_id, user=user,
+            _=None, __=None, session=s)).model_dump()
+
+    counts = await _import_racing_the_same_file(committed_engine, factory, company_id, rec, "company", run)
+    assert (counts["created"], counts["skipped"]) == (0, 1), counts
