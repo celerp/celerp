@@ -428,22 +428,7 @@ class WooCommerceConnector(ConnectorBase):
             row = await session.get(
                 Projection, {"company_id": ctx.company_id, "entity_id": entity_id}
             )
-            if row is None:
-                # Backward-compatible helper boundary for older callers that pass a
-                # SKU. Never choose arbitrarily when same-SKU physical rows exist.
-                from sqlalchemy import func, select
-                matches = (await session.execute(
-                    select(Projection).where(
-                        Projection.company_id == ctx.company_id,
-                        Projection.entity_type == "item",
-                        func.lower(Projection.state["sku"].as_string())
-                        == str(entity_id).strip().lower(),
-                    )
-                )).scalars().all()
-                if len(matches) != 1:
-                    return
-                row = matches[0]
-            if row.entity_type != "item":
+            if row is None or row.entity_type != "item":
                 return
             for i, img in enumerate(images):
                 src = img.get("src")

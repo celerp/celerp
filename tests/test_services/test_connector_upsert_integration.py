@@ -301,7 +301,7 @@ async def test_watermark_only_advances_on_full_success(session, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_woocommerce_pull_product_files(use_test_session, monkeypatch):
-    """_pull_product_files resolves the item by SKU and emits each image + cert."""
+    """_pull_product_files emits each image + cert onto the resolved item."""
     import contextlib
     import json
     from unittest.mock import AsyncMock
@@ -314,6 +314,10 @@ async def test_woocommerce_pull_product_files(use_test_session, monkeypatch):
     cid = await _seed_company(session, "WooFiles")
     await u.upsert_item(str(cid), ItemCreate(
         sku="WID-1", name="Widget", sell_by="piece", sale_price=1.0, idempotency_key="woocommerce:900"))
+    from sqlalchemy import select
+    from celerp.models.projections import Projection
+    entity_id = (await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == cid, Projection.entity_type == "item"))).scalar_one()
 
     @contextlib.asynccontextmanager
     async def _ctx():
@@ -328,8 +332,12 @@ async def test_woocommerce_pull_product_files(use_test_session, monkeypatch):
                        "value": json.dumps([{"url": "https://c.test/c.pdf", "name": "c.pdf"}])}],
     }
     ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle="https://shop.test")
-    await WooCommerceConnector()._pull_product_files(ctx, product, "WID-1")
+    await WooCommerceConnector()._pull_product_files(ctx, product, entity_id)
     assert emit.await_count == 2  # the hero image + the certificate
+
+    emit.reset_mock()
+    await WooCommerceConnector()._pull_product_files(ctx, product, "WID-1")
+    assert emit.await_count == 0  # a SKU is not an item id
 
 
 @pytest.mark.asyncio
