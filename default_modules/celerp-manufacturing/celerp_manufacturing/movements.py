@@ -770,6 +770,34 @@ async def reopen(session: AsyncSession, company_id, user_id, order_id: str, key:
 # Cancel
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Start, hold, resume, reschedule
+# ---------------------------------------------------------------------------
+
+_TRANSITIONS = {"start": ("mfg.order.started", "started"), "hold": ("mfg.order.on_hold", "put on hold"),
+                "resume": ("mfg.order.resumed", "resumed"), "schedule": ("mfg.order.scheduled", "rescheduled")}
+
+
+async def transition(session: AsyncSession, company_id, user_id, order_id: str, action: str, data: dict,
+                     key: str | None, *, at: str):
+    """Start, hold, resume or reschedule a run, serialized with every movement on it: the run
+    is read under the company lock, so a run completed or cancelled meanwhile is refused rather
+    than brought back. Completed and cancelled runs stay closed; a completed run leaves only
+    through reopen."""
+    event_type, done = _TRANSITIONS[action]
+    rk = key or uuid.uuid4().hex
+    op = await _begin(session, company_id, user_id, order_id, at)
+    request = _fingerprint({"action": action, **data})
+    stored = await _replayed(op, f"mfg:{order_id}:{action}:{rk}", request)
+    if stored is not None:
+        return stored
+    run = await _run(op)
+    _require_open(run.state, done)
+    if action == "resume" and run.state.get("status") != "on_hold":
+        raise refuse(409, "not_on_hold", "Only a run on hold can be resumed.")
+    return await op.emit_run(event_type, {**data, "request": request}, f"mfg:{order_id}:{action}:{rk}")
+
+
 async def cancel(session: AsyncSession, company_id, user_id, order_id: str, reason: str | None,
                  key: str | None, *, at: str):
     """Cancel a run that holds nothing. A run still holding issued materials or received output

@@ -30,7 +30,7 @@ REFUSALS = ["mfg.reconciliation_required", "mfg.insufficient_stock", "mfg.over_r
             "mfg.return_quantity", "mfg.return_after_receipt", "mfg.return_lot_unavailable", "mfg.return_value",
             "mfg.output_changed", "mfg.not_a_receipt", "mfg.reopen_first", "mfg.not_completed", "mfg.recost_conflict",
             "mfg.not_unresolved", "mfg.reconcile_values", "mfg.reconcile_missing", "mfg.reconcile_account",
-            "mfg.reconcile_held", "mfg.reconcile_left", "mfg.reconcile_excess", "mfg.output_unknown",
+            "mfg.reconcile_held", "mfg.reconcile_left", "mfg.reconcile_excess", "mfg.output_unknown", "mfg.not_on_hold",
             "mfg.period_locked"]
 SHORT = {"message": "Only 2 of RAW-1 is in stock and not reserved; 4 is needed.",
          "message_key": "mfg.insufficient_stock", "params": {"sku": "RAW-1", "available": 2.0, "needed": 4.0}}

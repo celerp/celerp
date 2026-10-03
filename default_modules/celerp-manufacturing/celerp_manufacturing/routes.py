@@ -919,6 +919,7 @@ async def bulk_requirements(
 class BulkRunActionBody(BaseModel):
     run_ids: list[str] = Field(default_factory=list)
     action: str = ""
+    idempotency_key: str | None = None
 
 
 _BULK_RUN_ACTIONS = {"start", "issue", "return", "complete", "hold", "resume", "cancel"}
@@ -938,38 +939,30 @@ async def bulk_run_action(
     if action not in _BULK_RUN_ACTIONS:
         raise HTTPException(status_code=422, detail=f"Unknown bulk action: {action}")
     at = datetime.now(timezone.utc).isoformat()
-    # One key for this request: each run's movements derive their own keys from it and the run id.
-    rk = uuid.uuid4().hex
-
-    async def _emit(run_id: str, event_type: str, data: dict) -> None:
-        await emit_event(session, company_id=company_id, entity_id=run_id, entity_type="mfg_order",
-                         event_type=event_type, data=data, actor_id=user.id, location_id=None,
-                         source="api", idempotency_key=str(uuid.uuid4()), metadata_={})
+    # One key for this request: each run's movements derive their own keys from it and the run id,
+    # so sending the same request again changes nothing it already changed.
+    rk = payload.idempotency_key or uuid.uuid4().hex
 
     done: list[str] = []
     skipped: list[dict] = []
     for run_id in payload.run_ids:
         try:
-            row = await _get_order(session, company_id, run_id)
+            await _get_order(session, company_id, run_id)
         except HTTPException:
             skipped.append({"id": run_id, "reason": "not found"})
             continue
-        st = row.state or {}
-        status = (st.get("status") or "").lower()
         try:
             # Each run commits or rolls back on its own, so a run that cannot take the action
             # leaves nothing half done and the others still go through.
             async with session.begin_nested():
-                if action in ("start", "hold") and status in movements.CLOSED_RUN_STATUSES:
-                    raise ValueError("run is already closed")
                 if action == "start":
-                    await _emit(run_id, "mfg.order.started", {"started_by": str(user.id)})
+                    await movements.transition(session, company_id, user.id, run_id, "start",
+                                               {"started_by": str(user.id)}, rk, at=at)
                 elif action == "hold":
-                    await _emit(run_id, "mfg.order.on_hold", {"reason": None})
+                    await movements.transition(session, company_id, user.id, run_id, "hold", {"reason": None}, rk, at=at)
                 elif action == "resume":
-                    if status != "on_hold":
-                        raise ValueError("only an on-hold run can be resumed")
-                    await _emit(run_id, "mfg.order.resumed", {"resumed_by": str(user.id)})
+                    await movements.transition(session, company_id, user.id, run_id, "resume",
+                                               {"resumed_by": str(user.id)}, rk, at=at)
                 elif action == "cancel":
                     await movements.cancel(session, company_id, user.id, run_id, None, rk, at=at)
                 elif action == "issue":
@@ -979,8 +972,6 @@ async def bulk_run_action(
                 elif action == "complete":
                     await movements.complete(session, company_id, user.id, run_id, {}, rk, at=at)
             done.append(run_id)
-        except ValueError as e:
-            skipped.append({"id": run_id, "reason": str(e)})
         except HTTPException as e:
             # A refusal keeps its message_key and params so the UI can say why in the user's language.
             detail = e.detail if isinstance(e.detail, dict) else {"message": str(e.detail)}
@@ -1526,27 +1517,15 @@ async def get_order(
 @router.post("/{order_id}/start")
 async def start_order(
     order_id: str,
+    payload: KeyBody | None = None,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_order(session, company_id, order_id)
-    if row.state.get("status") == "completed":
-        raise HTTPException(status_code=409, detail="Order already completed")
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=order_id,
-        entity_type="mfg_order",
-        event_type="mfg.order.started",
-        data={"started_by": str(user.id)},
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
-    )
+    entry = await movements.transition(session, company_id, user.id, order_id, "start",
+                                       {"started_by": str(user.id)}, payload.idempotency_key if payload else None,
+                                       at=datetime.now(timezone.utc).isoformat())
     await session.commit()
     return {"event_id": entry.id}
 
@@ -1561,14 +1540,10 @@ async def hold_order(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Put an active run on hold (paused). Reversible via /resume."""
-    row = await _get_order(session, company_id, order_id)
-    if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot hold a closed run")
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-        event_type="mfg.order.on_hold", data={"reason": (payload.reason if payload else None)},
-        actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
-    )
+    entry = await movements.transition(session, company_id, user.id, order_id, "hold",
+                                       {"reason": payload.reason if payload else None},
+                                       payload.idempotency_key if payload else None,
+                                       at=datetime.now(timezone.utc).isoformat())
     await session.commit()
     return {"event_id": entry.id}
 
@@ -1576,20 +1551,16 @@ async def hold_order(
 @router.post("/{order_id}/resume")
 async def resume_order(
     order_id: str,
+    payload: KeyBody | None = None,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Resume an on-hold run (back to In Progress)."""
-    row = await _get_order(session, company_id, order_id)
-    if row.state.get("status") != "on_hold":
-        raise HTTPException(status_code=409, detail="Only an on-hold run can be resumed")
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-        event_type="mfg.order.resumed", data={"resumed_by": str(user.id)},
-        actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
-    )
+    entry = await movements.transition(session, company_id, user.id, order_id, "resume",
+                                       {"resumed_by": str(user.id)}, payload.idempotency_key if payload else None,
+                                       at=datetime.now(timezone.utc).isoformat())
     await session.commit()
     return {"event_id": entry.id}
 
@@ -1605,17 +1576,11 @@ async def schedule_order(
 ) -> dict:
     """Set scheduling fields (due date / planned start / priority) on a run. Only provided keys are
     written; a blank value clears that field. A closed run cannot be rescheduled."""
-    row = await _get_order(session, company_id, order_id)
-    if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot reschedule a closed run")
     data = payload.model_dump(exclude_unset=True, exclude={"idempotency_key"})
     if not data:
         raise HTTPException(status_code=422, detail="No scheduling fields provided")
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-        event_type="mfg.order.scheduled", data=data, actor_id=user.id, location_id=None,
-        source="api", idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
-    )
+    entry = await movements.transition(session, company_id, user.id, order_id, "schedule", data,
+                                       payload.idempotency_key, at=datetime.now(timezone.utc).isoformat())
     await session.commit()
     return {"event_id": entry.id}
 

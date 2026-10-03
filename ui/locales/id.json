@@ -3579,6 +3579,7 @@
   "manufacturing.reconcile_done": "Selesai direkonsiliasi. Proses ini dapat kembali mengeluarkan, mengembalikan, menerima, dan menyelesaikan.",
   "inventory.wo_needs_reconciling": "Perlu rekonsiliasi",
   "mfg.not_unresolved": "Proses ini tidak perlu direkonsiliasi.",
+  "mfg.not_on_hold": "Hanya pesanan yang ditahan yang dapat dilanjutkan.",
   "mfg.reconcile_values": "{item} bukan komponen yang masih ada di proses ini, disebut dua kali, atau bernilai negatif.",
   "mfg.reconcile_missing": "Masukkan nilai setiap komponen yang masih ada di proses ini: {items} belum memiliki nilai.",
   "mfg.reconcile_account": "Pilih akun asal nilai ini: akun persediaan yang memegang setidaknya {total} di luar stok yang ada, atau laba ditahan untuk nilai yang tidak pernah dicatat di pembukuan.",

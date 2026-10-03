@@ -380,6 +380,10 @@ _RUN_MOVES = {
     "undo_receipt": (("issue", "receive"), "undo-receipt", lambda lot: {"lot_item_id": lot}),
     "reopen": (("issue", "complete"), "reopen", lambda lot: {}),
     "cancel": ((), "cancel", lambda lot: {"reason": "not needed"}),
+    "start": ((), "start", lambda lot: {}),
+    "hold": ((), "hold", lambda lot: {"reason": "waiting"}),
+    "resume": (("hold",), "resume", lambda lot: {}),
+    "schedule": ((), "schedule", lambda lot: {"due_date": "2026-04-01"}),
 }
 
 

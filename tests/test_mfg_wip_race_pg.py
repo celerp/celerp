@@ -81,6 +81,9 @@ def _op(name: str, tag: str, run: int = 0):
                                                 key, at=AT)
         if name == "reopen":
             return await movements.reopen(s, job["cid"], job["user"], order, key, at=AT)
+        if name in ("start", "hold", "resume", "schedule"):
+            data = {"due_date": "2026-04-01"} if name == "schedule" else {}
+            return await movements.transition(s, job["cid"], job["user"], order, name, data, key, at=AT)
         return await movements.cancel(s, job["cid"], job["user"], order, None, key, at=AT)
     return go
 
@@ -144,7 +147,8 @@ async def _outcome(engine, job) -> dict:
         # company() seeds item:1 as a marker with no stock; it is no lot.
         books = await assert_books_carry_stock(s, cid, unplaced=("item:1",))
         wip = await assert_wip_carried(s, cid)
-    runs = [{k: rows[o].get(k) for k in ("status", "received_qty", "wip_issued", "wip_transferred", "wip_wasted")}
+    runs = [{k: rows[o].get(k) for k in ("status", "received_qty", "wip_issued", "wip_transferred", "wip_wasted",
+                                         "due_date")}
             | {"issued": [float(i.get("issued_qty") or 0) for i in rows[o].get("inputs", [])],
                "lots": sorted((float(rows[x].get("quantity") or 0), float(rows[x].get("cost_total") or 0))
                               for x in rows[o].get("received_lots") or [])}
@@ -187,6 +191,13 @@ PAIRS = [
     ("reopen", "reopen", ("issue", "complete")),
     ("reopen", "undo", ("issue", "complete")),
     ("reopen", "return", ("issue", "complete")),
+    # Start, hold, resume and reschedule against the movements that close a run.
+    ("hold", "complete", ("issue", "receive")),
+    ("start", "cancel", ()),
+    ("resume", "complete", ("issue", "receive", "hold")),
+    ("schedule", "complete", ("issue", "receive")),
+    ("hold", "cancel", ()),
+    ("start", "complete", ("issue", "receive")),
 ]
 
 

@@ -201,8 +201,8 @@ async def test_a_component_a_run_names_cannot_be_deleted(client, session):
 
 def test_every_run_creation_goes_through_the_one_check():
     """No writer of a new run bypasses the shared reference check: the only emit of a run's
-    creation is inside it, and the one emit with a variable event type (the bulk run actions)
-    is only ever handed lifecycle events."""
+    creation is inside it, and no route emits an event type it computes (lifecycle changes go
+    through the manufacturing transition, which knows only its own fixed events)."""
     from celerp_manufacturing import routes
 
     tree = ast.parse(inspect.getsource(routes))
@@ -219,13 +219,10 @@ def test_every_run_creation_goes_through_the_one_check():
                 elif fn.name not in variable:
                     variable.append(fn.name)
     assert creators == ["_emit_order_created"], creators
-    assert sorted(variable) == ["_emit", "bulk_run_action"], variable
+    assert variable == [], variable
 
-    bulk = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "bulk_run_action")
-    handed = [c.args[1] for c in ast.walk(bulk)
-              if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "_emit"]
-    assert handed and all(isinstance(a, ast.Constant) and a.value.startswith("mfg.order.")
-                          and a.value != "mfg.order.created" for a in handed)
+    from celerp_manufacturing import movements
+    assert all(e.startswith("mfg.order.") and e != "mfg.order.created" for e, _ in movements._TRANSITIONS.values())
 
 
 def test_no_other_module_writes_a_new_run():
