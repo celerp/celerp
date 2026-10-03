@@ -42,37 +42,54 @@ def line_item_id(line: dict) -> str | None:
     return line.get("item_id") or line.get("entity_id")
 
 
-async def linked_items(session, company_id, line_items, *, known=frozenset()) -> dict[str, Projection]:
+def line_id_counts(line_items) -> Counter:
+    """How many lines of a line set link to each item id (free-text lines are not counted)."""
+    return Counter(
+        ident for line in line_items or []
+        if isinstance(line, dict) and (ident := line_item_id(line))
+    )
+
+
+async def linked_items(session, company_id, line_items, *, known: Counter | None = None) -> dict[str, Projection]:
     """Resolve every linked line to its item, refusing a line whose item does not exist.
 
     The one rule for every document and List line writer: each supplied item_id /
     entity_id must resolve to an item projection of ``company_id``, else 422
-    ``invalid_reference`` naming the line (1-based) and the id. ``known`` holds ids
-    already accepted on the stored record, which a save may carry forward without
-    re-proving them. Free-text lines (no id) are not checked. One company-scoped query.
+    ``invalid_reference`` naming the line (1-based) and the id. ``known`` counts the
+    lines per id already on the stored record (``line_id_counts``): a save may carry
+    that many lines for an id forward without re-proving it, so an old record whose item
+    has since gone stays editable, but every line beyond the stored count is a new
+    reference and must exist. Free-text lines (no id) are not checked. One
+    company-scoped query.
 
-    Returns the resolved projections keyed by id. A line that adds an item takes the
-    company lock before the check (a no-op for a writer that already holds it), so a
-    removal that holds the lock (Undo) either commits first and the add is refused, or
-    waits until the add has committed and then sees it.
+    Returns the resolved projections keyed by id. A save that references an id more
+    often than the stored record did takes the company lock before the check (a no-op
+    for a writer that already holds it), so a removal that holds the lock (Undo) either
+    commits first and the add is refused, or waits until the add has committed and then
+    sees it.
     """
+    known = known or Counter()
     linked = [(n, line, line_item_id(line)) for n, line in enumerate(line_items or [], 1)
               if isinstance(line, dict) and line_item_id(line)]
-    ids = {ident for _, _, ident in linked}
-    if not ids:
+    counts = Counter(ident for _, _, ident in linked)
+    if not counts:
         return {}
-    if ids - known:
+    if any(n > known[ident] for ident, n in counts.items()):
         await lock_company(session, company_id)
     rows = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
             Projection.entity_type == "item",
-            Projection.entity_id.in_(ids),
+            Projection.entity_id.in_(counts),
         )
     )).scalars().all()
     items = {row.entity_id: row for row in rows}
+    carried = Counter()
     for n, line, ident in linked:
-        if ident not in items and ident not in known:
+        if ident in items:
+            continue
+        carried[ident] += 1
+        if carried[ident] > known[ident]:
             label = line.get("name") or line.get("sku")
             where = f"Line {n} ({label})" if label else f"Line {n}"
             raise HTTPException(
@@ -98,21 +115,15 @@ async def assert_document_item_uniqueness(session, company_id, doc_type, line_it
     Otherwise resolve the repeated ids in one company-scoped query:
       - a repeated id that resolves to a non-splittable item -> 409 duplicate;
       - a repeated id that resolves to a splittable item or to none -> allowed here
-        (``linked_items`` has already refused a newly added id with no item).
+        (``linked_items`` has already refused every line for a missing item beyond the
+        number the stored document held).
     """
     if doc_type not in DOCUMENT_ITEM_UNIQUE_DOC_TYPES:
         return
     if not line_items:
         return
 
-    counts = Counter()
-    for line in line_items:
-        if not isinstance(line, dict):
-            continue
-        ident = line_item_id(line)
-        if ident:
-            counts[ident] += 1
-
+    counts = line_id_counts(line_items)
     repeated = [ident for ident, n in counts.items() if n > 1]
     if not repeated:
         return  # fast path: no linked id repeats, no DB read

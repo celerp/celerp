@@ -309,3 +309,78 @@ async def test_a_line_writer_that_skipped_the_company_lock_still_waits_for_undo(
 
     _refused(outcome)
     assert await _records(committed_engine, company_id, "doc") == []
+
+
+def _create_list(s, company_id, user, *entity_ids):
+    payload = docs.ListCreatePayload(list_type="quotation", line_items=[_line(e) for e in entity_ids])
+    return docs.create_list(payload, company_id=company_id, _=None, role="admin", settings={},
+                            user=user, session=s)
+
+
+def _patch_list(s, company_id, user, entity_id, version, old_lines, new_lines):
+    changed = {"line_items": {"old": old_lines, "new": new_lines}}
+    return docs.patch_list(entity_id, docs.ListPatch(fields_changed=changed, expected_version=version),
+                           company_id=company_id, _=None, role="admin", settings={}, user=user, session=s)
+
+
+async def _with_a_line_already_gone(factory, engine, company_id, user, kind: str) -> tuple[str, int]:
+    """A stored document or List with one line whose item has since been erased."""
+    async with factory() as s:
+        created = await (_create(s, company_id, user, _ITEM) if kind == "doc"
+                         else _create_list(s, company_id, user, _ITEM))
+    async with factory() as s:
+        await erase_items(s, company_id, [_ITEM])
+        await s.commit()
+    async with engine.connect() as conn:
+        version = (await conn.execute(text(
+            "SELECT version FROM projections WHERE company_id = :c AND entity_id = :e"),
+            {"c": company_id, "e": created["id"]})).scalar_one()
+    return created["id"], version
+
+
+def _save(s, company_id, user, kind, entity_id, version, old, new):
+    if kind == "doc":
+        return _patch(s, company_id, user, entity_id, old, new)
+    if kind == "list-page":
+        page = docs.ListLinePagePatch(line_items=new, offset=0, original_count=len(old), expected_version=version)
+        return docs.patch_list_line_page(entity_id, page, company_id=company_id, _=None, role="admin",
+                                         settings={}, user=user, session=s)
+    return _patch_list(s, company_id, user, entity_id, version, old, new)
+
+
+# A List line page save replaces the window it loaded, so it is checked like a full save.
+_SAVES = [("doc", "doc"), ("list", "list"), ("list-page", "list")]
+
+
+@pytest.mark.parametrize("save, kind", _SAVES)
+async def test_a_save_cannot_repeat_a_line_whose_item_was_already_gone(committed_engine, save, kind):
+    """The stored record holds one line for a gone item; a save may carry that one line
+    forward, but a second line for the same gone item is a new reference and is refused."""
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id, user, _batch = await _seed(factory)
+    entity_id, version = await _with_a_line_already_gone(factory, committed_engine, company_id, user, kind)
+
+    async with factory() as s:
+        outcome = (await asyncio.gather(
+            _save(s, company_id, user, save, entity_id, version, [_line(_ITEM)], [_line(_ITEM), _line(_ITEM)]),
+            return_exceptions=True))[0]
+        await s.rollback()
+
+    _refused(outcome, line=2)
+    assert await _records(committed_engine, company_id, kind) == [(entity_id, [_ITEM])]
+    assert await _events(committed_engine, company_id, kind) == [f"{kind}.created"]
+
+
+@pytest.mark.parametrize("save, kind", _SAVES)
+async def test_a_save_may_edit_the_one_line_whose_item_was_already_gone(committed_engine, save, kind):
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id, user, _batch = await _seed(factory)
+    entity_id, version = await _with_a_line_already_gone(factory, committed_engine, company_id, user, kind)
+
+    async with factory() as s:
+        await _save(s, company_id, user, save, entity_id, version,
+                    [_line(_ITEM)], [{**_line(_ITEM), "description": "kept as sold"}])
+        await s.commit()
+
+    assert await _records(committed_engine, company_id, kind) == [(entity_id, [_ITEM])]
+    assert await _events(committed_engine, company_id, kind) == [f"{kind}.created", f"{kind}.updated"]

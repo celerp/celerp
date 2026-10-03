@@ -13,7 +13,7 @@ from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ITEM_BIRTHS, ProjectionEngine
-from celerp.services.document_lines import assert_document_item_uniqueness, line_item_id, linked_items
+from celerp.services.document_lines import assert_document_item_uniqueness, line_id_counts, linked_items
 from celerp.services.business_time import business_date_of
 
 
@@ -370,9 +370,7 @@ async def emit_event(
             stored = (proj.state or {}) if same else {}
             await linked_items(
                 session, kwargs.get("company_id"), line_set,
-                known=frozenset(
-                    line_item_id(li) for li in stored.get("line_items") or [] if isinstance(li, dict)
-                ),
+                known=line_id_counts(stored.get("line_items")),
             )
             # Prefer the event's own doc_type; otherwise the stored document's. A List has
             # none, so the outbound uniqueness rule never applies to it.

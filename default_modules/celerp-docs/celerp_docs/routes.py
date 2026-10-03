@@ -40,7 +40,7 @@ from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
-from celerp.services.document_lines import line_item_id, linked_items
+from celerp.services.document_lines import line_id_counts, line_item_id, linked_items
 from celerp.services.attachments import attach_file, store_upload
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
@@ -727,7 +727,8 @@ async def _validate_document_line_quantities(
 
 
 async def _validate_list_line_quantities(
-    line_items: list[dict], session: AsyncSession, company_id: str, *, require_positive: bool = True
+    line_items: list[dict], session: AsyncSession, company_id: str, *, require_positive: bool = True,
+    stored: list | None = None,
 ) -> None:
     """Reject malformed List line quantities at the function boundary before a write.
 
@@ -735,20 +736,22 @@ async def _validate_list_line_quantities(
     a stocked piece cannot be smuggled past the positive/decimal rule by submitting a
     service unit. A linked item_id that resolves to no real item is rejected 422 by
     linked_items (the rule every line writer shares) rather than silently dropping to the
-    free-text finiteness gate.
+    free-text finiteness gate. ``stored`` is the stored lines these replace: as many lines
+    per id as they held are carried forward even when the item has since gone, and such a
+    line, having no stored unit, is checked as submitted.
     Delegates each line to the shared _check_line_quantity gate; an unlinked / free-text
     line (no id) uses its own submitted sell_by.
     """
     if not line_items:
         return
     unit_map = await _get_unit_map(session, company_id)
-    items = await linked_items(session, company_id, line_items)
+    items = await linked_items(session, company_id, line_items, known=line_id_counts(stored))
     for li in line_items:
         if not isinstance(li, dict):
             continue
         label = li.get("name") or li.get("sku") or "Line item"
         lid = line_item_id(li)
-        if lid is not None:
+        if lid in items:
             # Linked line: the stored unit governs; a submitted sell_by is ignored.
             resolved_sell_by = items[lid].state.get("sell_by")
         else:
@@ -5502,6 +5505,7 @@ async def patch_list(
         await _validate_list_line_quantities(
             _new_lines, session, company_id,
             require_positive=((row.state.get("list_type") or DEFAULT_LIST_TYPE) != "audit"),
+            stored=row.state.get("line_items"),
         )
         if is_money_list(row.state.get("list_type")):
             await _assert_sales_line_price_permission(
@@ -6019,6 +6023,7 @@ async def patch_list_line_page(
     await _validate_list_line_quantities(
         page, session, company_id,
         require_positive=((row.state.get("list_type") or DEFAULT_LIST_TYPE) != "audit"),
+        stored=stored[offset:offset + original_count],
     )
     if is_money_list(row.state.get("list_type")):
         stored_window = stored[offset:offset + original_count]
