@@ -80,6 +80,41 @@ async def _older_issue(session, auth, order: str, item: str, qty: float) -> None
     await session.commit()
 
 
+async def _older_receive(session, auth, order: str, qty: float) -> str:
+    """``qty`` of ``order``'s output received as an older release did it: a new lot of the
+    product at the run's provisional cost (the standard cost of everything issued, spread over
+    everything received so far), produced, and recorded on the run, with no entry."""
+    cid, uid = auth["company_id"], auth["user_id"]
+    state = await _state(session, auth, order)
+    cost = 0.0
+    for line in state.get("inputs", []):
+        item = await _state(session, auth, line["item_id"])
+        unit = 0.0
+        if item.get("cost_price") is not None:
+            unit = float(item["cost_price"])
+        elif item.get("cost_total") is not None and float(item.get("quantity") or 0) > 0:
+            unit = float(item["cost_total"]) / float(item["quantity"])
+        issued = float(line.get("issued_qty") or 0)
+        cost += (issued if issued > 0 else float(line.get("quantity") or 0)) * unit
+    after = float(state.get("received_qty") or 0) + qty
+    out = await _state(session, auth, state["output_item_id"])
+    lot = f"item:{uuid.uuid4()}"
+    mark = {"manufacturing_order_id": order}
+    await emit_event(session, company_id=cid, entity_id=lot, entity_type="item", event_type="item.created",
+                     data={"sku": out.get("sku"), "name": out.get("name"), "sell_by": out.get("sell_by"),
+                           "quantity": 0, "parent_item_id": state["output_item_id"], "lot": True, **mark,
+                           "cost_total": round(cost / after * qty, 2)},
+                     actor_id=uid, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_=mark)
+    await emit_event(session, company_id=cid, entity_id=lot, entity_type="item", event_type="item.produced",
+                     data={"quantity_produced": qty}, actor_id=uid, location_id=None, source="api",
+                     idempotency_key=str(uuid.uuid4()), metadata_=mark)
+    await emit_event(session, company_id=cid, entity_id=order, entity_type="mfg_order",
+                     event_type="mfg.order.received", data={"quantity": qty, "lot_item_id": lot, "received_by": str(uid)},
+                     actor_id=uid, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+    return lot
+
+
 async def _job(client, auth, raw: str):
     item = await product(client, auth, [(raw, 5)])
     return item, await run(client, auth, item, 2)
@@ -270,16 +305,13 @@ async def test_an_older_run_that_received_output_needs_reconciling(client, sessi
     raw = await _item(client, auth, 100.0, qty=10)
     _, order = await _job(client, auth, raw)
     await _older_issue(session, auth, order, raw, 10)
-    await emit_event(session, company_id=auth["company_id"], entity_id=order, entity_type="mfg_order",
-                     event_type="mfg.order.received", data={"quantity": 1, "lot_item_id": f"item:{uuid.uuid4()}"},
-                     actor_id=auth["user_id"], location_id=None, source="api", idempotency_key=str(uuid.uuid4()),
-                     metadata_={})
-    await session.commit()
+    lot = await _older_receive(session, auth, order, 1)
 
     await _upgrade(session)
 
     assert (await _facts(session, auth, order))["wip_unresolved"] == "received before tracking"
     assert await _entry(session, auth, f"je:auto:{order}:wip-opened") is None
+    assert (await _state(session, auth, lot))["cost_total"] == 100.0  # test_mfg_reconcile_legacy reconciles it
 
 
 async def test_a_run_issued_while_accounting_was_off_in_restored_books_needs_reconciling(client, session, auth):

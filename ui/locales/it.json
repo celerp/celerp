@@ -3574,6 +3574,7 @@
   "manufacturing.reconcile_account": "Proviene dal conto",
   "manufacturing.reconcile_account_hint": "Un conto di magazzino che detiene questo valore oltre alle sue giacenze, oppure utili portati a nuovo per un valore mai registrato in contabilità.",
   "manufacturing.reconcile_nothing_held": "Questa produzione non contiene materiali. La riconciliazione registra che non contiene nulla.",
+  "manufacturing.reconcile_received": "Produzione già ricevuta da questo ordine: {lots}. Indica l'intero valore prelevato; ciascuno di quei lotti ne riceve la sua quota.",
   "manufacturing.reconcile_submit": "Riconcilia",
   "manufacturing.reconcile_done": "Riconciliata. La produzione può di nuovo prelevare, restituire, ricevere e completare.",
   "inventory.wo_needs_reconciling": "Da riconciliare",
@@ -3581,5 +3582,9 @@
   "mfg.reconcile_values": "{item} non è più un componente di questa produzione, è indicato due volte o ha un valore negativo.",
   "mfg.reconcile_missing": "Indica il valore di ogni componente ancora in questa produzione: {items} non ne ha.",
   "mfg.reconcile_account": "Scegli il conto da cui proviene questo valore: un conto di magazzino che detiene almeno {total} oltre alle sue giacenze, oppure utili portati a nuovo per un valore mai registrato in contabilità.",
+  "mfg.output_unknown": "Questo ordine ha già ricevuto produzione, ma la sua cronologia non mostra in quali lotti è andata né quanto sono costati, quindi non può essere riconciliato.",
+  "mfg.reconcile_held": "{holding} non corrisponde esattamente alle sue giacenze, quindi il valore dei materiali di questo ordine è già a libro: stornalo da quel conto.",
+  "mfg.reconcile_left": "{account} detiene {room} oltre alle sue giacenze; togliere {total} lascerebbe {left}, quindi i libri continuerebbero a non quadrare con le giacenze. Indica il valore che detiene.",
+  "mfg.reconcile_excess": "I lotti già ricevuti da questo ordine portano {carried}, più dei {issued} indicati. Indica il valore prelevato, oppure storna la differenza dal conto di magazzino che li porta.",
   "mfg.period_locked": "La contabilità è bloccata per il {day}, quindi questa produzione non può essere riconciliata finché quel periodo non è aperto."
 }

@@ -3574,6 +3574,7 @@
   "manufacturing.reconcile_account": "Sale de la cuenta",
   "manufacturing.reconcile_account_hint": "Una cuenta de inventario que tenga este valor además de sus existencias, o resultados acumulados para un valor que la contabilidad nunca registró.",
   "manufacturing.reconcile_nothing_held": "Este ciclo no tiene materiales. La conciliación registra que no tiene nada.",
+  "manufacturing.reconcile_received": "Producción que esta orden ya recibió: {lots}. Indique el valor total entregado; cada uno de esos lotes recibe su parte.",
   "manufacturing.reconcile_submit": "Conciliar",
   "manufacturing.reconcile_done": "Conciliado. El ciclo puede volver a entregar, devolver, recibir y completar.",
   "inventory.wo_needs_reconciling": "Requiere conciliación",
@@ -3581,5 +3582,9 @@
   "mfg.reconcile_values": "{item} no es un componente que siga en este ciclo, aparece dos veces o tiene un valor negativo.",
   "mfg.reconcile_missing": "Indique el valor de cada componente que sigue en este ciclo: {items} no tiene ninguno.",
   "mfg.reconcile_account": "Elija la cuenta de la que sale este valor: una cuenta de inventario que tenga al menos {total} además de sus existencias, o resultados acumulados para un valor que la contabilidad nunca registró.",
+  "mfg.output_unknown": "Esta orden ya recibió producción, pero su historial no muestra en qué lotes entró ni cuánto costaron, así que no se puede conciliar.",
+  "mfg.reconcile_held": "{holding} no refleja exactamente sus existencias, así que el valor de los materiales de esta orden ya está en los libros: descuéntelo de esa cuenta.",
+  "mfg.reconcile_left": "{account} tiene {room} además de sus existencias; descontar {total} dejaría {left}, así que los libros seguirían sin cuadrar con las existencias. Indique el valor que tiene.",
+  "mfg.reconcile_excess": "Los lotes que esta orden ya recibió llevan {carried}, más que los {issued} indicados. Indique el valor entregado o descuente la diferencia de la cuenta de inventario que los lleva.",
   "mfg.period_locked": "La contabilidad está cerrada para {day}, así que este ciclo no se puede conciliar hasta que ese periodo esté abierto."
 }

@@ -3574,6 +3574,7 @@
   "manufacturing.reconcile_account": "የሚቀነስበት ሒሳብ",
   "manufacturing.reconcile_account_hint": "ከያዘው ክምችት በላይ ይህን ዋጋ የያዘ የክምችት ሒሳብ፣ ወይም የሂሳብ መዝገቡ ፈጽሞ ላልያዘው ዋጋ የተያዘ ትርፍ።",
   "manufacturing.reconcile_nothing_held": "ይህ ዙር ምንም ዕቃ የለውም። ማስታረቁ ምንም እንዳልያዘ ይመዘግባል።",
+  "manufacturing.reconcile_received": "ይህ ትዕዛዝ አስቀድሞ የተቀበለው ውጤት፦ {lots}። የወጣውን ሙሉ ዋጋ ያስገቡ፤ እያንዳንዱ ሎት ድርሻውን ይወስዳል።",
   "manufacturing.reconcile_submit": "አስታርቅ",
   "manufacturing.reconcile_done": "ታርቋል። ዙሩ እንደገና ማውጣት፣ መመለስ፣ መቀበል እና ማጠናቀቅ ይችላል።",
   "inventory.wo_needs_reconciling": "መታረቅ ያስፈልገዋል",
@@ -3581,5 +3582,9 @@
   "mfg.reconcile_values": "{item} በዚህ ዙር ውስጥ የቀረ ክፍል አይደለም፣ ሁለት ጊዜ ተጠቅሷል ወይም አሉታዊ ዋጋ አለው።",
   "mfg.reconcile_missing": "በዚህ ዙር ውስጥ የቀረውን የእያንዳንዱን ክፍል ዋጋ ያስገቡ፦ {items} ዋጋ የለውም።",
   "mfg.reconcile_account": "ይህ ዋጋ የሚቀነስበትን ሒሳብ ይምረጡ፦ ከያዘው ክምችት በላይ ቢያንስ {total} የያዘ የክምችት ሒሳብ፣ ወይም የሂሳብ መዝገቡ ፈጽሞ ላልያዘው ዋጋ የተያዘ ትርፍ።",
+  "mfg.output_unknown": "ይህ የምርት ትዕዛዝ ውጤት ተቀብሏል፣ ነገር ግን ታሪኩ ውጤቱ ወደ የትኞቹ ሎቶች እንደገባ ወይም ዋጋቸው ስንት እንደሆነ ስለማያሳይ ማስታረቅ አይቻልም።",
+  "mfg.reconcile_held": "{holding} ከያዘው ክምችት ጋር በትክክል አይዛመድም፣ ስለዚህ የዚህ ትዕዛዝ ቁሳቁሶች ዋጋ አስቀድሞ በሒሳብ መዝገብ ላይ አለ፦ ከዚያ ሒሳብ ይቀንሱት።",
+  "mfg.reconcile_left": "{account} ከክምችቱ በላይ {room} ይዟል፤ {total} መቀነስ {left} ያስቀራል፣ ስለዚህ መዝገቡ አሁንም ከክምችቱ ጋር አይዛመድም። የያዘውን ዋጋ ያስገቡ።",
+  "mfg.reconcile_excess": "ይህ ትዕዛዝ አስቀድሞ የተቀበላቸው ሎቶች {carried} ይዘዋል፣ ከተገለጸው {issued} ይበልጣል። የወጣውን ዋጋ ያስገቡ፣ ወይም ልዩነቱን ሎቶቹን ከያዘው የክምችት ሒሳብ ይቀንሱ።",
   "mfg.period_locked": "የሂሳብ መዝገቡ ለ{day} ተቆልፏል፣ ስለዚህ ያ ጊዜ እስኪከፈት ድረስ ይህ ዙር ሊታረቅ አይችልም።"
 }

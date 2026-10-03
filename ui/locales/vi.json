@@ -3574,6 +3574,7 @@
   "manufacturing.reconcile_account": "Ghi giảm tài khoản",
   "manufacturing.reconcile_account_hint": "Một tài khoản hàng tồn kho đang giữ giá trị này ngoài số hàng hiện có, hoặc lợi nhuận giữ lại cho giá trị mà sổ sách chưa từng ghi nhận.",
   "manufacturing.reconcile_nothing_held": "Đợt này không có nguyên vật liệu. Việc đối chiếu ghi nhận rằng nó không giữ gì.",
+  "manufacturing.reconcile_received": "Thành phẩm lệnh này đã nhận: {lots}. Hãy nhập toàn bộ giá trị đã xuất; mỗi lô đó nhận phần của mình.",
   "manufacturing.reconcile_submit": "Đối chiếu",
   "manufacturing.reconcile_done": "Đã đối chiếu. Đợt này có thể xuất, trả lại, nhập và hoàn tất trở lại.",
   "inventory.wo_needs_reconciling": "Cần đối chiếu",
@@ -3581,5 +3582,9 @@
   "mfg.reconcile_values": "{item} không còn là thành phần trong đợt này, bị nêu hai lần hoặc có giá trị âm.",
   "mfg.reconcile_missing": "Hãy nhập giá trị của mọi thành phần còn trong đợt này: {items} chưa có giá trị.",
   "mfg.reconcile_account": "Chọn tài khoản mà giá trị này được ghi giảm: một tài khoản hàng tồn kho đang giữ ít nhất {total} ngoài số hàng hiện có, hoặc lợi nhuận giữ lại cho giá trị mà sổ sách chưa từng ghi nhận.",
+  "mfg.output_unknown": "Lệnh này đã nhận thành phẩm, nhưng lịch sử không cho biết thành phẩm vào lô nào hoặc giá vốn bao nhiêu, nên không thể đối chiếu.",
+  "mfg.reconcile_held": "{holding} không khớp chính xác với hàng tồn kho hiện có, nên giá trị nguyên liệu của lệnh này đã có trên sổ: hãy ghi giảm từ tài khoản đó.",
+  "mfg.reconcile_left": "{account} đang giữ {room} ngoài số hàng hiện có; ghi giảm {total} sẽ còn lại {left}, nên sổ sách vẫn không khớp với hàng tồn kho. Hãy nhập giá trị mà tài khoản đang giữ.",
+  "mfg.reconcile_excess": "Các lô mà lệnh này đã nhận mang giá trị {carried}, nhiều hơn {issued} đã nhập. Hãy nhập giá trị đã xuất, hoặc ghi giảm phần chênh lệch từ tài khoản hàng tồn kho đang ghi nhận các lô đó.",
   "mfg.period_locked": "Sổ sách đã khóa cho ngày {day}, nên chưa thể đối chiếu đợt này cho đến khi kỳ đó được mở."
 }

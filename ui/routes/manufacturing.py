@@ -394,6 +394,9 @@ def _reconcile_panel(run_id: str, needs: dict, accounts: list[dict], *, key: str
         Thead(Tr(Th(t("th.item")), Th(t("th.value"), cls="cell--number"))),
         Tbody(*rows), cls="data-table",
     ) if rows else P(t("manufacturing.reconcile_nothing_held"), cls="hint")
+    received = needs.get("received") or []
+    output = P(t("manufacturing.reconcile_received", lots=", ".join(
+        f"{r.get('sku') or r['lot_item_id']} ({r['quantity']:g})" for r in received)), cls="hint") if received else ""
     picker = Div(
         Label(t("manufacturing.reconcile_account")),
         account_picker("account", accounts, value=account, aria_label=t("manufacturing.reconcile_account")),
@@ -404,6 +407,7 @@ def _reconcile_panel(run_id: str, needs: dict, accounts: list[dict], *, key: str
         flash_el,
         P(t("manufacturing.reconcile_intro", reason=t(_RECONCILE_REASONS[reason]) if reason in _RECONCILE_REASONS
             else reason), cls="hint"),
+        output,
         Form(
             table, picker,
             Input(type="hidden", name="idempotency_key", value=key),

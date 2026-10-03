@@ -126,3 +126,13 @@ async def test_the_runs_row_on_its_product_links_to_reconciling_it():
                                     "$"))
     assert html.count("Needs reconciling") == 1
     assert f'href="/manufacturing/runs/{RUN["id"]}/reconcile"' in html
+
+
+async def test_output_already_received_is_listed_so_the_value_given_is_the_whole_issue(ui_client):
+    needs = {**NEEDS, "reason": "received before tracking",
+             "received": [{"lot_item_id": "item:lot1", "sku": "CAKE", "quantity": 1.0, "value": "100.00"}]}
+
+    r = await _page(ui_client, needs=needs)
+
+    assert r.status_code == 200, r.text
+    assert "Output this run already received: CAKE (1)." in r.text

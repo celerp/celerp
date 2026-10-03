@@ -21,7 +21,6 @@ import pytest
 from sqlalchemy import select
 
 from celerp.accounting_roles import AccountRole
-from celerp.events.engine import emit_event
 from celerp.models.accounting import UserCompany
 from celerp.models.company import User
 from celerp.models.notification import Notification
@@ -94,31 +93,6 @@ async def test_a_run_whose_books_disagree_is_reconciled_and_carries_on(client, s
     # 30.00, less the 7.50 the one returned took back onto its lot, plus the 67.50 that lot then
     # held for the seven issued after (six at 10.00 and the returned one at 7.50).
     await _carry_on(client, session, auth, raw, order, 90.0)
-
-
-async def test_a_run_that_received_before_tracking_is_reconciled_and_carries_on(client, session, auth):
-    raw = await _item(client, auth, 100.0, qty=10)
-    _, order = await _job(client, auth, raw)
-    await _older_issue(session, auth, order, raw, 10)
-    await emit_event(session, company_id=auth["company_id"], entity_id=order, entity_type="mfg_order",
-                     event_type="mfg.order.received", data={"quantity": 1, "lot_item_id": f"item:{uuid.uuid4()}"},
-                     actor_id=auth["user_id"], location_id=None, source="api", idempotency_key=str(uuid.uuid4()),
-                     metadata_={})
-    await session.commit()
-    await _upgrade(session)
-    assert (await _facts(session, auth, order))["wip_unresolved"] == "received before tracking"
-    ob = await role(session, auth, OPENING)
-
-    assert (await reconcile(client, auth, order, [(raw, 100.0)], ob)).status_code == 200
-
-    assert (await _facts(session, auth, order))["wip_issued"] == "100.00"
-    await assert_settled(client, session, auth)
-    refusal(await give_back(client, auth, order, [(raw, 1)], key="back"), 409, "return_after_receipt")
-    r = await receive(client, auth, order, key="out")
-    assert r.status_code == 200, r.text
-    assert (await _state(session, auth, r.json()["lot_item_id"]))["cost_total"] == 100.0
-    assert (await _state(session, auth, order))["status"] == "completed"
-    await assert_settled(client, session, auth)
 
 
 async def test_a_run_with_a_component_without_an_account_is_reconciled_and_carries_on(client, session, auth):
@@ -229,6 +203,7 @@ async def test_reconciling_needs_manufacturing_and_accounting_permission(client,
 async def test_reconciling_refuses_values_or_accounts_it_cannot_book(client, session, auth):
     raw, order, ob = await _books_disagree(client, session, auth)
     other = await _item(client, auth, 10.0, qty=1)
+    re = await role(session, auth, RETAINED)
     before = await snapshot(session, auth, raw, order)
 
     for values, account, status, key in (
@@ -237,7 +212,11 @@ async def test_reconciling_refuses_values_or_accounts_it_cannot_book(client, ses
             ([(raw, 30.0), (other, 1.0)], ob, 422, "reconcile_values"),  # not a component of the run
             ([(raw, 30.0)], None, 422, "reconcile_account"),         # no account for a value
             ([(raw, 30.0)], "5100", 422, "reconcile_account"),       # not inventory or retained earnings
-            ([(raw, 40.0)], ob, 422, "reconcile_account")):          # more than the account holds
+            ([(raw, 40.0)], ob, 422, "reconcile_left"),              # more than the account holds
+            ([(raw, 20.0)], ob, 422, "reconcile_left"),              # less: the books would still disagree
+            ([(raw, 30.0)], re, 422, "reconcile_held"),              # the books carry it: not from nowhere
+            ([(raw, 0.0)], ob, 422, "reconcile_held"),               # nothing cannot hide what the books hold
+            ([(raw, 0.0)], None, 422, "reconcile_held")):
         refusal(await reconcile(client, auth, order, values, account, key=str(uuid.uuid4())), status, key)
 
     assert await snapshot(session, auth, raw, order) == before

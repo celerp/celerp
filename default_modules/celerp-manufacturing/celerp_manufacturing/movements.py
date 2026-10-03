@@ -50,7 +50,7 @@ from celerp.services.account_roles import (
     new_lot_account,
     resolve,
     role_map,
-    roles_for_account,
+    scope_codes,
 )
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.document_lines import listing_record
@@ -58,6 +58,7 @@ from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import (
     RECORDED,
     account_room,
+    account_rooms,
     books_from_elsewhere,
     consumed_values,
     held_value,
@@ -568,8 +569,6 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str)
     shared over its lots by quantity, each lot restated by the difference from what it took
     when it was received. ``ck`` keys this completion, so a reopened run completes afresh.
     The completion records what it moved, so reopening reverses exactly that."""
-    from celerp_inventory.services import CostRestatementConflict, goods_basis, restate_item_cost
-
     state = run.state
     issued, held = _money(state.get("wip_issued")), _wip(state)
     waste_qty = float(payload.get("waste_quantity") or 0)
@@ -592,20 +591,9 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str)
         if not delta:
             continue
         lot_id = receipt["lot_item_id"]
-        end = await _lineage_end(op, lot_id)
-        lot = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": lot_id})
-        try:
-            await restate_item_cost(
-                op.session, op.company_id, lot_id, event_type="item.cost_adjusted",
-                data={"cost_total": float(_money(goods_basis(lot.state or {})) + delta),
-                      _ORDER_MARK: op.order_id},
-                actor_id=op.user_id, source="api", idempotency_key=f"mfg:{op.order_id}:complete:{ck}:recost:{lot_id}",
-                day=op.day)
-        except CostRestatementConflict as exc:
-            raise refuse(409, "recost_conflict", f"This run cannot be completed: {exc}.", reason=str(exc)) from exc
+        code = await _restate(op, lot_id, delta, f"mfg:{op.order_id}:complete:{ck}:recost:{lot_id}", "completed")
         restated.append({"lot_item_id": lot_id, "delta": str(delta)})
-        if op.books:
-            code = lot_account(end.state or {})
+        if code:
             debits[code] = debits.get(code, _ZERO) + delta
 
     wip_code = state.get("wip_account_code")
@@ -623,6 +611,24 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str)
         "transferred": str(finished), "wasted": str(waste), "request": request,
         "closing": {"held": str(held), "wasted": str(waste), "lots": restated, "booked": op.books},
     }, f"mfg:{op.order_id}:complete:{ck}")
+
+
+async def _restate(op: _Op, lot_id: str, delta: Decimal, key: str, action: str) -> str | None:
+    """Change the cost of a lot this run received by ``delta``, wherever its value is now
+    (_lineage_end), and return the account that carries the change (None with Accounting off).
+    The run books its side: this only moves the lot's cost."""
+    from celerp_inventory.services import CostRestatementConflict, goods_basis, restate_item_cost
+
+    end = await _lineage_end(op, lot_id)
+    lot = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": lot_id})
+    try:
+        await restate_item_cost(
+            op.session, op.company_id, lot_id, event_type="item.cost_adjusted",
+            data={"cost_total": float(_money(goods_basis(lot.state or {})) + delta), _ORDER_MARK: op.order_id},
+            actor_id=op.user_id, source="api", idempotency_key=key, day=op.day)
+    except CostRestatementConflict as exc:
+        raise refuse(409, "recost_conflict", f"This run cannot be {action}: {exc}.", reason=str(exc)) from exc
+    return lot_account(end.state or {}) if op.books else None
 
 
 async def _lineage_end(op: _Op, lot_id: str) -> Projection:
@@ -722,8 +728,6 @@ async def reopen(session: AsyncSession, company_id, user_id, order_id: str, key:
     """Reopen a completed run: completion's own entries (the lots' final cost and the waste) are
     reversed from the values completion recorded, and the run holds what it held before.
     Only while every lot it produced is exactly as completion left it."""
-    from celerp_inventory.services import CostRestatementConflict, goods_basis, restate_item_cost
-
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
     request = _fingerprint({})
@@ -749,17 +753,8 @@ async def reopen(session: AsyncSession, company_id, user_id, order_id: str, key:
 
     credits: dict[str, Decimal] = {}
     for lot_id, delta in deltas.items():
-        lot = rows[lot_id]
-        try:
-            await restate_item_cost(
-                op.session, op.company_id, lot_id, event_type="item.cost_adjusted",
-                data={"cost_total": float(_money(goods_basis(lot.state or {})) - delta), _ORDER_MARK: op.order_id},
-                actor_id=op.user_id, source="api", idempotency_key=f"mfg:{order_id}:reopen:{rk}:recost:{lot_id}",
-                day=op.day)
-        except CostRestatementConflict as exc:
-            raise refuse(409, "recost_conflict", f"This run cannot be reopened: {exc}.", reason=str(exc)) from exc
-        if op.books:
-            code = lot_account(lot.state or {})
+        code = await _restate(op, lot_id, -delta, f"mfg:{order_id}:reopen:{rk}:recost:{lot_id}", "reopened")
+        if code:
             credits[code] = credits.get(code, _ZERO) - delta
     held, waste = _money(closing.get("held")), _money(closing.get("wasted"))
     wip_code = state.get("wip_account_code")
@@ -819,10 +814,15 @@ async def _open_runs(session: AsyncSession, company_id) -> list[Projection]:
 async def legacy_in_production(*, session: AsyncSession, company_id) -> Decimal:
     """inventory_in_production: the value components left the shelf with for runs an older
     release started and that are still open. Those releases booked it only on completion, so
-    the inventory accounts still carry it (lot_origin.normalize_legacy_inventory_origins)."""
-    runs = {r.entity_id for r in await _open_runs(session, company_id) if (r.state or {}).get("wip_untracked")}
-    values = await consumed_values(session, company_id, _ORDER_MARK, runs) if runs else {}
-    return sum((v for per in values.values() for v in per.values()), _ZERO)
+    the inventory accounts still carry it (lot_origin.normalize_legacy_inventory_origins).
+    Output they received from such a run is a lot of its own, carrying the cost it was given
+    then: that much of the value is stock (on hand, or sold off the books), not production."""
+    runs = {r.entity_id: r.state for r in await _open_runs(session, company_id) if (r.state or {}).get("wip_untracked")}
+    values = await consumed_values(session, company_id, _ORDER_MARK, set(runs)) if runs else {}
+    total = sum((v for per in values.values() for v in per.values()), _ZERO)
+    for order, state in sorted(runs.items()):
+        total -= sum((r["value"] for r in await legacy_output(session, company_id, order, state) or []), _ZERO)
+    return total
 
 
 async def settle_open_runs(session: AsyncSession, company_id) -> None:
@@ -967,19 +967,63 @@ async def still_held(session: AsyncSession, company_id, order_id: str, state: di
     return issued | set((await consumed_values(session, company_id, _ORDER_MARK, {order_id}))[order_id])
 
 
+async def legacy_output(session: AsyncSession, company_id, order_id: str, state: dict) -> list[dict] | None:
+    """The output an older release received from a run before value was tracked: each lot,
+    with the quantity it was produced with and the cost it was given then, read from the
+    lot's own events marked with the run. None when that history does not account for
+    everything the run received."""
+    tracked = {r.get("lot_item_id") for r in state.get("receipts") or []}
+    lots = [lot for lot in state.get("received_lots") or [] if lot not in tracked]
+    untracked_qty = float(state.get("received_qty") or 0) - sum(float(r.get("quantity") or 0)
+                                                                for r in state.get("receipts") or [])
+    found = []
+    for lot in lots:
+        events = (await session.execute(select(LedgerEntry).where(
+            LedgerEntry.company_id == company_id, LedgerEntry.entity_id == lot,
+            LedgerEntry.event_type.in_(("item.created", "item.produced"))).order_by(LedgerEntry.id))).scalars().all()
+        mine = [e for e in events if order_id in ((e.data or {}).get(_ORDER_MARK), (e.metadata_ or {}).get(_ORDER_MARK))]
+        created = [e for e in mine if e.event_type == "item.created"]
+        quantity = sum(float((e.data or {}).get("quantity_produced") or 0) for e in mine if e.event_type == "item.produced")
+        if len(created) != 1 or quantity <= _EPS:
+            return None
+        found.append({"lot_item_id": lot, "quantity": quantity, "value": _money(created[0].data.get("cost_total"))})
+    if abs(sum(r["quantity"] for r in found) - untracked_qty) > _EPS:
+        return None
+    return found
+
+
+def _inventory_codes(settings: dict) -> set[str]:
+    return {code for role in INVENTORY_VALUE_ROLES for code in scope_codes(settings, role.value)}
+
+
+async def _awaiting_reconciliation(session: AsyncSession, company_id, order_id: str) -> bool:
+    """Whether another open run's value is still unknown: the books may hold it anywhere."""
+    return any(r.entity_id != order_id and (r.state.get("wip_unresolved") or r.state.get("wip_untracked"))
+               for r in await _open_runs(session, company_id))
+
+
 async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, components: list[dict],
                     account: str | None, key: str | None, *, at: str) -> dict:
     """Record what a run needing reconciliation holds, as someone allowed to keep the books
-    states it: the value of each component still in the run, and the account that value comes
-    off. With Accounting on, that is an inventory account holding at least the total beyond its
-    stock on hand, or retained earnings for value the books never carried. The total moves onto
-    work in progress and the run carries on like any other. Nothing is worked out for the user."""
+    states it: the value of each component issued to it, and the account that value comes
+    off. Nothing is worked out for the user, and nothing is left for the books to disagree with.
+
+    Output an older release already received from the run (legacy_output) took its share of
+    that value: each such lot is restated to the share a receipt takes today (its quantity
+    over the run's output), so the run holds issued value less its lots, exactly as if it
+    had been received on this release. Only the value the lots did not already carry comes
+    off the account: an inventory account holding it beyond its stock on hand, or retained
+    earnings when the books carry no such value anywhere (they never recognized it). A
+    reconciliation that would leave the account holding anything beyond its stock is
+    refused while no other run waits for reconciling, so the books carry the stock and the
+    work in progress afterwards just as after any live movement."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
     request = _fingerprint({"components": components, "account": account})
     stored = await _replayed(op, f"mfg:{order_id}:reconcile:{rk}", request)
     if stored is not None:
-        return {"reconciled": stored.data.get("issued"), "components": stored.data.get("components")}
+        return {k: stored.data.get(k) for k in ("issued", "components", "receipts")} | {
+            "reconciled": stored.data.get("issued")}
     run = await _run(op)
     _require_open(run.state, "reconciled")
     if not run.state.get("wip_unresolved"):
@@ -999,32 +1043,81 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
                      f"{', '.join(missing)} has none.", items=", ".join(missing))
     total = sum(values.values(), _ZERO)
 
+    legacy = await legacy_output(session, company_id, order_id, run.state)
+    if legacy is None:
+        raise refuse(409, "output_unknown", "Output was received from this run, but its history does not show "
+                     "which lots it went into or what they cost, so it cannot be reconciled.")
+    expected = float((run.state.get("expected_outputs") or [{}])[0].get("quantity") or 0)
+    made = max(expected, float(run.state.get("received_qty") or 0))
+    receipts, transferred, carried = [], _ZERO, _ZERO
+    if legacy:
+        weights = [_money(r["quantity"]) for r in legacy]
+        rest = _money(made) - sum(weights, _ZERO)
+        shares = allocate_pro_rata(total, weights + ([rest] if rest > 0 else []), op.currency) if total else []
+        for i, r in enumerate(legacy):
+            share = shares[i] if shares else _ZERO
+            receipts.append({"lot_item_id": r["lot_item_id"], "quantity": r["quantity"], "value": str(share)})
+            transferred += share
+            carried += r["value"]
+    amount = total - carried  # what the books get from the account: the lots already carry the rest
+
+    settings = await current_settings(session, company_id)
     lots: dict[str, Decimal] = {}
     equity = _ZERO
     wip_code = None
-    if op.books and total:
-        settings = await current_settings(session, company_id)
-        roles = set(roles_for_account(settings, account)) if account else set()
-        if account and account == role_map(settings).get(AccountRole.RETAINED_EARNINGS.value):
-            equity = -total
-        elif (roles & {r.value for r in INVENTORY_VALUE_ROLES}
-              and await account_room(session, company_id, account) >= total):
-            lots = {account: -total}
-        else:
+    if op.books:
+        inventory = _inventory_codes(settings)
+        retained = account and account == role_map(settings).get(AccountRole.RETAINED_EARNINGS.value)
+        if amount and not retained and account not in inventory:
             raise refuse(422, "reconcile_account",
-                         "Choose the account this value comes off: an inventory account that holds at least "
-                         f"{total} beyond its stock on hand, or retained earnings for value the books never "
-                         "carried.", total=str(total), account=account)
-        if not await period_open(session, company_id, op.day):
+                         "Choose the account this value comes off: an inventory account that holds it beyond its "
+                         "stock on hand, or retained earnings for value the books never carried.",
+                         total=str(amount), account=account)
+        if not amount or retained:
+            # Value from nowhere the books show: only while every inventory account carries exactly
+            # its stock, for an account that does not is where this run's value (or its lots'
+            # excess) already sits.
+            holding = sorted(c for c, v in (await account_rooms(session, company_id, inventory)).items() if v)
+            if amount < 0:
+                # The lots already carry more than the value stated: that is stock value the
+                # books hold, never something retained earnings gives up.
+                raise refuse(422, "reconcile_excess",
+                             f"The lots this run already received carry {carried}, more than the {total} stated. "
+                             "Give the value that was issued, or take the difference off the inventory account "
+                             "that carries them.", carried=str(carried), issued=str(total))
+            if holding:
+                raise refuse(422, "reconcile_held",
+                             f"{', '.join(holding)} does not carry exactly its stock on hand, so the value of this "
+                             "run's materials is already on the books: take it off that account.",
+                             total=str(amount), account=account, holding=", ".join(holding))
+            equity = -amount
+        else:
+            room = await account_room(session, company_id, account)
+            left = room - amount
+            if left < 0 or (left and not await _awaiting_reconciliation(session, company_id, order_id)):
+                raise refuse(422, "reconcile_left",
+                             f"{account} holds {room} beyond its stock on hand; taking {amount} off it would leave "
+                             f"{left}, so the books would still disagree with the stock. Give the value it holds.",
+                             total=str(amount), account=account, room=str(room), left=str(left))
+            lots = {account: -amount}
+        if (amount or transferred != carried or total) and not await period_open(session, company_id, op.day):
             raise refuse(422, "period_locked", f"The books are locked for {op.day}, so this run cannot be "
                          "reconciled until that period is open.", day=op.day)
-        wip_code = await _wip_target(op)
-    await op.post(f"reconcile:{rk}", f"Materials in production run {order_id} reconciled", wip_code, total,
-                  lots, equity=equity)
+        if total - transferred:
+            wip_code = await _wip_target(op)
+    for r, old in zip(receipts, legacy):
+        delta = _money(r["value"]) - old["value"]
+        if delta:
+            code = await _restate(op, r["lot_item_id"], delta,
+                                  f"mfg:{order_id}:reconcile:{rk}:recost:{r['lot_item_id']}", "reconciled")
+            if code:
+                lots[code] = lots.get(code, _ZERO) + delta
+    await op.post(f"reconcile:{rk}", f"Materials in production run {order_id} reconciled", wip_code,
+                  total - transferred, lots, equity=equity)
     recorded = [{"item_id": i, "value": str(v)} for i, v in sorted(values.items())]
-    data = {"issued": str(total), "components": recorded, "reconciled_by": str(op.user_id), "request": request,
-            "wip_account_code": wip_code}
-    if op.books and total:
+    data = {"issued": str(total), "transferred": str(transferred), "receipts": receipts, "components": recorded,
+            "reconciled_by": str(op.user_id), "request": request, "wip_account_code": wip_code}
+    if op.books and amount:
         data["account"] = account
     await op.emit_run("mfg.order.wip_reconciled", data, f"mfg:{order_id}:reconcile:{rk}")
-    return {"reconciled": str(total), "components": recorded}
+    return {"reconciled": str(total), "issued": str(total), "components": recorded, "receipts": receipts}

@@ -147,15 +147,16 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
             current["wip_account_code"] = data["wip_account_code"]
         current.pop("wip_untracked", None)
     elif event_type == "mfg.order.wip_reconciled":
-        # The run holds what the user stated; any receipt before it took none of that value.
+        # The run was issued what the user stated, and output received before it took the
+        # share the reconciliation recorded for each lot.
         values = {c.get("item_id"): c.get("value") for c in data.get("components") or []}
         for inp in current.get("inputs", []):
             if inp.get("item_id") in values:
                 inp["issued_value"] = _money(values[inp["item_id"]])
         current["wip_issued"] = _money(data.get("issued"))
-        current["wip_transferred"] = _money(0)
+        current["wip_transferred"] = _money(data.get("transferred"))
         current.pop("wip_wasted", None)
-        current["receipts"] = []
+        current["receipts"] = list(data.get("receipts") or [])
         if data.get("wip_account_code"):
             current["wip_account_code"] = data["wip_account_code"]
         current.pop("wip_untracked", None)

@@ -3574,6 +3574,7 @@
   "manufacturing.reconcile_account": "Geht ab von Konto",
   "manufacturing.reconcile_account_hint": "Ein Bestandskonto, das diesen Wert über seinen Lagerbestand hinaus hält, oder Gewinnvortrag für einen Wert, den die Bücher nie geführt haben.",
   "manufacturing.reconcile_nothing_held": "Dieser Lauf enthält kein Material. Die Abstimmung hält fest, dass er nichts enthält.",
+  "manufacturing.reconcile_received": "Bereits aus diesem Auftrag eingebuchter Ausstoß: {lots}. Geben Sie den gesamten entnommenen Wert an; jede dieser Chargen erhält ihren Anteil daran.",
   "manufacturing.reconcile_submit": "Abstimmen",
   "manufacturing.reconcile_done": "Abgestimmt. Der Lauf kann wieder entnehmen, zurückgeben, einbuchen und abschließen.",
   "inventory.wo_needs_reconciling": "Abstimmung nötig",
@@ -3581,5 +3582,9 @@
   "mfg.reconcile_values": "{item} ist keine Komponente mehr in diesem Lauf, ist doppelt angegeben oder hat einen negativen Wert.",
   "mfg.reconcile_missing": "Geben Sie den Wert jeder noch im Lauf befindlichen Komponente an: {items} hat keinen.",
   "mfg.reconcile_account": "Wählen Sie das Konto, von dem dieser Wert abgeht: ein Bestandskonto, das mindestens {total} über seinen Lagerbestand hinaus hält, oder Gewinnvortrag für einen Wert, den die Bücher nie geführt haben.",
+  "mfg.output_unknown": "Aus diesem Auftrag wurde bereits Ausstoß eingebucht, aber sein Verlauf zeigt nicht, in welche Chargen er ging oder was sie kosteten, daher kann er nicht abgestimmt werden.",
+  "mfg.reconcile_held": "{holding} entspricht nicht genau seinem Lagerbestand, der Wert der Materialien dieses Auftrags steht also bereits in den Büchern: Buchen Sie ihn von diesem Konto ab.",
+  "mfg.reconcile_left": "{account} hält {room} über seinen Lagerbestand hinaus; {total} davon abzubuchen ließe {left} übrig, die Bücher würden also weiterhin nicht zum Bestand passen. Geben Sie den Wert an, den es hält.",
+  "mfg.reconcile_excess": "Die Chargen, die dieser Auftrag bereits eingebucht hat, tragen {carried}, mehr als die angegebenen {issued}. Geben Sie den entnommenen Wert an oder buchen Sie die Differenz vom Bestandskonto ab, das sie trägt.",
   "mfg.period_locked": "Die Bücher sind für {day} gesperrt, daher kann dieser Lauf erst abgestimmt werden, wenn diese Periode offen ist."
 }

@@ -139,9 +139,14 @@ def _room(entries: list[tuple[str, dict]], items: list[Projection], code: str) -
 
 async def account_room(session: AsyncSession, company_id, code: str) -> Decimal:
     """What account ``code`` holds beyond the stock on hand recorded on it, in money."""
+    return (await account_rooms(session, company_id, {code}))[code]
+
+
+async def account_rooms(session: AsyncSession, company_id, codes) -> dict[str, Decimal]:
+    """account_room for each of ``codes``, read once."""
     currency = (await current_settings(session, company_id)).get("currency", "USD")
-    return round_money(_room(await _posted_entries(session, company_id), await _items(session, company_id), code),
-                       currency)
+    entries, items = await _posted_entries(session, company_id), await _items(session, company_id)
+    return {code: round_money(_room(entries, items, code), currency) for code in codes}
 
 
 def unrecorded(items: list[Projection]) -> list[Projection]:
