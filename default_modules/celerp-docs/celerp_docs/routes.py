@@ -6155,7 +6155,7 @@ async def revert_list_to_draft(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Go back from finalized to draft, allowed only before a terminal action has run (GDR 2c)."""
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409,
                             detail="Only a finalized list (before its terminal action) can be reverted to draft")
@@ -6176,7 +6176,7 @@ async def void_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     status = row.state.get("status")
     if status == VOID:
         raise HTTPException(status_code=409, detail="Already voided")
@@ -6196,7 +6196,7 @@ async def delete_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Only draft lists can be deleted")
     from celerp.models.ledger import LedgerEntry
@@ -9059,7 +9059,7 @@ async def send_list(
     """Record a finalized list as sent (sets the `sent_at` milestone; status stays finalized) and,
     if a recipient is given, fire the relay email — the same Send / Mark-as-sent mechanism documents
     use. `sent_via="manual"` (no recipient) is the Mark-as-sent path."""
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Issue the list before sending it")
     now = datetime.now(timezone.utc).isoformat()
@@ -9119,7 +9119,7 @@ async def move_transfer(
     """Transfer action: relocate every item on a finalized transfer to one location, by emitting the
     inventory `item.transferred` event per line (stock is owned by inventory; docs only emits the
     event). Repeatable — the transfer stays finalized so it can be moved again."""
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     if (row.state.get("list_type") or "") != "transfer":
         raise HTTPException(status_code=409, detail="Only transfers can move stock")
     if row.state.get("status") != FINALIZED:
