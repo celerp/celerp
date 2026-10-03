@@ -184,6 +184,24 @@ async def _verify_runtime_dependencies() -> None:
     await adopt_legacy_connector_configs()
 
 
+_SHUTDOWN_GRACE_S = 10
+
+
+async def _stop_background_tasks(tasks: list[asyncio.Task | None]) -> None:
+    """Cancel the background tasks boot started and wait for each to finish, so none
+    is left with a connection open in a transaction (holding its table locks) after
+    shutdown. A task still running after _SHUTDOWN_GRACE_S is logged and left."""
+    tasks = [t for t in tasks if t is not None]
+    for task in tasks:
+        task.cancel()
+    if not tasks:
+        return
+    _done, pending = await asyncio.wait(tasks, timeout=_SHUTDOWN_GRACE_S)
+    if pending:
+        log.warning("%d background task(s) did not stop within %ss of shutdown: %s",
+                    len(pending), _SHUTDOWN_GRACE_S, ", ".join(t.get_name() for t in pending))
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     update_verify = _os.environ.get(_runtime.UPDATE_VERIFY_ENV) == "1"
@@ -337,7 +355,7 @@ async def lifespan(_app: FastAPI):
     # began closing the company's online payments is settled (a deleted company's
     # payments close for good, a kept one's reopen). Until then they stay closed.
     from celerp.services.payments import reconcile_payments_loop
-    payments_reconcile_task = asyncio.create_task(reconcile_payments_loop())
+    background = [asyncio.create_task(reconcile_payments_loop())]
 
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links
@@ -387,10 +405,10 @@ async def lifespan(_app: FastAPI):
         # Authenticated activation is the canonical durable reconciliation path.
         # It is bounded, idempotent for established credentials, and runs in the
         # background so tunnel startup is never delayed.
-        asyncio.create_task(_try_sync_existing_entitlement())
+        background.append(asyncio.create_task(_try_sync_existing_entitlement()))
     else:
         # Auto-activate: probe relay for an existing subscription (silent, no-op on failure)
-        asyncio.create_task(_try_auto_activate())
+        background.append(asyncio.create_task(_try_auto_activate()))
 
     # Start backup scheduler - paid tiers only (public_url is the paid signal;
     # a free instance is not entitled to backups at all).
@@ -426,11 +444,11 @@ async def lifespan(_app: FastAPI):
 
     # Start AI file cleanup background task
     from celerp.ai.cleanup import run_cleanup_loop
-    cleanup_task = asyncio.create_task(run_cleanup_loop())
+    background.append(asyncio.create_task(run_cleanup_loop()))
 
     # Start JTI cleanup background task (runs hourly, advisory lock prevents duplicates)
     from celerp.services.session_tracker import run_jti_cleanup_loop
-    jti_cleanup_task = asyncio.create_task(run_jti_cleanup_loop())
+    background.append(asyncio.create_task(run_jti_cleanup_loop()))
 
     # Adopt legacy connector rows only when ownership is
     # unambiguous, then start near-real-time outbound stock delivery.
@@ -439,25 +457,25 @@ async def lifespan(_app: FastAPI):
         outbound_queue_loop,
     )
     await adopt_legacy_connector_configs()
-    outbound_connector_task = asyncio.create_task(outbound_queue_loop())
+    background.append(asyncio.create_task(outbound_queue_loop()))
 
     # Connector reconciliation scheduler: a daily incremental sync per connector,
     # backstopping any realtime webhooks missed while offline. No-op without a
     # relay session (self-hosted instances skip token fetch).
     from celerp.connectors.daily_scheduler import scheduler_loop_all
     from celerp.connectors.relay_token import fetch_context as _connector_token_fetcher
-    connector_sched_task = asyncio.create_task(scheduler_loop_all(token_fetcher=_connector_token_fetcher))
+    background.append(asyncio.create_task(scheduler_loop_all(token_fetcher=_connector_token_fetcher)))
 
     # Reorder low-stock alert scheduler: a daily per-company scan that notifies
     # once per dip when items reach their reorder point (no-op for companies with
     # alerts disabled or no reorder points set).
     from celerp.services.reorder import reorder_alert_loop
-    reorder_alert_task = asyncio.create_task(reorder_alert_loop())
+    background.append(asyncio.create_task(reorder_alert_loop()))
 
     # Update checks: reports the last update attempt once, then checks hourly and,
     # when automatic updates are on, installs overnight in the owner's time zone.
     from celerp.services.update import update_loop
-    update_task = asyncio.create_task(update_loop(restart=system._send_sigterm))
+    background.append(asyncio.create_task(update_loop(restart=system._send_sigterm)))
 
     yield
 
@@ -465,30 +483,20 @@ async def lifespan(_app: FastAPI):
     from celerp.notifications.sse import shutdown_all as _sse_shutdown
     _sse_shutdown()
 
-    # Stop background tasks
-    cleanup_task.cancel()
-    jti_cleanup_task.cancel()
-    connector_sched_task.cancel()
-    outbound_connector_task.cancel()
-    reorder_alert_task.cancel()
-    update_task.cancel()
-    payments_reconcile_task.cancel()
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
-
-    # Stop backup scheduler
-    try:
-        from celerp.services import backup_scheduler
-        backup_scheduler.stop()
-    except Exception:
-        pass
+    # Stop background tasks, the backup scheduler's included, and wait for them
+    from celerp.services import backup_scheduler
+    background.append(backup_scheduler.stop())
+    await _stop_background_tasks(background)
 
     # Close the tunnel and its run task, whoever started it (boot gate, auto-activate,
     # or a runtime share-create) - the gateway package owns that lifecycle now.
     from celerp.gateway import shutdown as _gateway_shutdown
     await _gateway_shutdown()
+
+    # Close every pooled connection last, once nothing is left to use one.
+    import celerp.db
+    await celerp.db.engine.dispose()
+    await celerp.db.lifecycle_engine.dispose()
 
 
 logging.basicConfig(level=settings.log_level.upper())

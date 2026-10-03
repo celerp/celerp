@@ -708,25 +708,6 @@ async def committed_engine():
 
 
 @pytest_asyncio.fixture
-async def boot_tasks_settled():
-    """For a test that runs the real lifespan: its background tasks finish before the
-    test's event loop closes.
-
-    Shutdown cancels the tasks boot started (payment reconcile, cleanup loops) without
-    waiting for them. A task cancelled mid-statement closes its connection in further
-    tasks of its own, and if the loop closes first that never happens: the connection
-    stays open in its transaction, holding locks on this worker's database until garbage
-    collection, and a later TRUNCATE on the same worker times out. Waiting for every
-    pending task, never cancelling one, lets each connection close."""
-    import asyncio
-
-    yield
-    current = asyncio.current_task()
-    pending = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
-    await asyncio.gather(*pending, return_exceptions=True)
-
-
-@pytest_asyncio.fixture
 async def session(_db_engine) -> AsyncSession:
     """Per-test isolation by transaction rollback — nothing commits to disk. The
     test runs inside an outer transaction; the app's session.commit() calls become
