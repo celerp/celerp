@@ -199,13 +199,14 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
 
     "applied" gives the money back from the payment (``apply_payment_refund``) on
     *context*, the books the payment was recorded on, dated their business day at
-    *occurred_at*. "reversed" undoes an applied refund with one mirror entry. The same
+    *occurred_at*. "reversed" undoes an applied refund with one entry on the same books. The same
     change recorded again is a quiet None. A change that cannot be applied raises a
     4xx and is kept for later: the payment is not on the invoice, the refund was never
     applied, it gives back more than is left of the payment (never cut down to fit),
-    or it carries no usable books, currency or time."""
+    the company now keeps its books in another currency, or it carries no usable
+    books, currency or time."""
     from celerp.events.engine import find_event_by_idempotency
-    from celerp_docs.routes import RefundBooks, apply_payment_refund, reverse_payment_refund
+    from celerp_docs.routes import RefundBooks, apply_payment_refund, books_currency_still, reverse_payment_refund
     entity_id = row.entity_id
     key = stripe_refund_key(refund_id, transition)
     if await find_event_by_idempotency(session, company_id, key) is not None:
@@ -227,13 +228,13 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
         amount = pay.from_stripe_amount(amount_minor, currency)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await books_currency_still(session, company_id, base)
     day = business_date_at(occurred_at, timezone)
     actor = await _company_owner_id(session, company_id)
+    books = RefundBooks(bank_account=account, base_currency=base, doc_rate=float(rate), settlement_rate=float(rate))
     if transition == "applied":
         return await apply_payment_refund(
-            session, company_id, entity_id, row, payment, amount=float(amount), refund_date=day,
-            books=RefundBooks(bank_account=account, base_currency=base, doc_rate=float(rate),
-                              settlement_rate=float(rate)),
+            session, company_id, entity_id, row, payment, amount=float(amount), refund_date=day, books=books,
             data={"method": "stripe", "reference": reference, "refund_id": refund_id},
             actor_id=actor, source="stripe", idempotency_key=key)
     applied = await find_event_by_idempotency(session, company_id, stripe_refund_key(refund_id, "applied"))
@@ -243,7 +244,7 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
     if refund.get("payment_index") != payment.get("index") or Decimal(str(refund.get("amount"))) != amount:
         raise HTTPException(status_code=422, detail="The reversal does not match the refund it reverses")
     return await reverse_payment_refund(session, company_id, entity_id, row, payment, refund,
-                                        reversal_date=day, actor_id=actor, source="stripe",
+                                        reversal_date=day, books=books, actor_id=actor, source="stripe",
                                         idempotency_key=key)
 
 

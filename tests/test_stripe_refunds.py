@@ -446,3 +446,43 @@ async def test_the_installation_owner_sees_the_refunds_kept_for_later(real_engin
     assert [{k: v for k, v in item.items() if k != "received_at"} for item in r.json()["refunds"]] == [{
         "refund_id": "re_1", "transition": "applied", "reference": "pi_1", "amount": 200.0, "currency": "USD",
         "company_id": str(b), "document_id": "doc:gone", "occurred_at": _at(1).isoformat()}]
+
+
+# ── Hardening: the seams refunds open ────────────────────────────────────────
+
+FX_BOOKS = {**BOOKS, "rate": "1.1"}
+
+
+async def test_refunds_and_a_reversal_out_of_order_on_a_foreign_currency_invoice_leave_exact_books(
+        real_engine, real_client, monkeypatch):
+    """Each piece of the payment given back or restored converts what the payment's
+    total refunded so far converts to, so the books always match what is refunded,
+    whichever refund is reversed: refunding the whole payment leaves nothing behind."""
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a, currency="EUR", conversion_rate=1.1)
+    cloud = _RefundCloud(monkeypatch, real_engine)
+    cloud.pay(a, invoice, "pi_1", paid_at=PAID_AT, books=FX_BOOKS)
+    cloud.deliveries[-1]["currency"] = "eur"
+    for refund_id, minor, hours, transition in [("re_a", 5, 1, "applied"), ("re_b", 5, 2, "applied"),
+                                                ("re_a", 5, 3, "reversed"), ("re_c", 106995, 4, "applied")]:
+        cloud.refund(a, invoice, refund_id, minor, _at(hours), transition=transition, books=FX_BOOKS)
+        cloud.deliveries[-1]["currency"] = "eur"
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries) and await _kept_refunds(real_engine) == []
+    doc = await _doc(real_engine, invoice)
+    assert _payment(doc)["refunded"] == 1070.0 and doc["amount_paid"] == 0
+    assert await _books(real_engine, invoice) == {}
+
+
+async def test_a_refund_for_books_the_company_no_longer_keeps_is_kept_not_posted(
+        real_engine, real_client, monkeypatch):
+    from test_company_reset_payments import _company_settings
+    boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    await _company_settings(real_engine, a, currency="EUR")
+    before = await _ledger(real_engine, invoice)
+    cloud.refund(a, invoice, "re_1", 20000, _at(1))
+    await cloud.deliver()
+
+    assert await _ledger(real_engine, invoice) == before
+    assert await _kept_refunds(real_engine) == [("re_1", "applied", "pi_1", 20000, str(a), invoice)]

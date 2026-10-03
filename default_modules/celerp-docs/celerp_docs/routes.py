@@ -2626,19 +2626,26 @@ async def _alloc_payment_index(session, company_id, payments: list,
     return idx
 
 
+async def books_currency_still(session, company_id, base: str) -> str:
+    """*base*, or 422 when the company now keeps its books in another currency. The
+    company is read FOR SHARE, so a settings change either committed first and is seen
+    here, or waits for the caller's transaction."""
+    company = (await session.execute(
+        select(Company).where(Company.id == company_id).with_for_update(read=True)
+        .execution_options(populate_existing=True))).scalar_one_or_none()
+    current = books_currency((company.settings or {}) if company else {})
+    if base != current:
+        raise HTTPException(status_code=422, detail=f"The payment is on {base} books; the company keeps them in {current}")
+    return current
+
+
 async def _books_still_kept(session, company_id, doc_state: dict, books: tuple[str, Decimal]) -> tuple[str, float]:
     """The (base currency, document rate) a payment's *books* post on, or 422 when they no
     longer describe the ledger: the company now keeps its books in another currency, or
     the document now converts into them at another rate. Called under the document's row
-    lock with its locked state; the company is read FOR SHARE in the same step, so a
-    settings change either committed first and is seen here, or waits for this payment."""
-    company = (await session.execute(
-        select(Company).where(Company.id == company_id).with_for_update(read=True)
-        .execution_options(populate_existing=True))).scalar_one_or_none()
+    lock with its locked state."""
     base, rate = books
-    current = books_currency((company.settings or {}) if company else {})
-    if base != current:
-        raise HTTPException(status_code=422, detail=f"The payment is on {base} books; the company keeps them in {current}")
+    current = await books_currency_still(session, company_id, base)
     current_rate = _require_doc_rate_http(doc_state, current)
     if rate != current_rate:
         raise HTTPException(status_code=422, detail=f"The payment is at rate {rate}; the document is now at {current_rate}")
@@ -2880,20 +2887,20 @@ async def apply_payment_refund(session, company_id, entity_id: str, row: Project
 
 
 async def reverse_payment_refund(session, company_id, entity_id: str, row: Projection, payment: dict,
-                                 refund: dict, *, reversal_date: str, actor_id, source: str,
-                                 idempotency_key: str):
+                                 refund: dict, *, reversal_date: str, books: RefundBooks, actor_id,
+                                 source: str, idempotency_key: str):
     """Undo *refund*, the data of a doc.payment.refunded event of *payment* on the locked
     document *row*, when the money it gave back came back: emit
-    doc.payment.refund_reversed and post the exact mirror of the refund's entry. The
-    caller commits. Returns the event, flagged ``was_deduped`` when *idempotency_key*
-    already recorded it."""
+    doc.payment.refund_reversed and post the lines that give *refund*'s amount back
+    from the payment's refunded total (``auto_je.payment_return_entries``), swapped, on
+    *books*. Undoing the latest refund mirrors its entry; undoing an earlier one still
+    leaves the books at what the refunds left in place convert to. The caller commits.
+    Returns the event, flagged ``was_deduped`` when *idempotency_key* already recorded it."""
     from celerp.services.je_keys import je_idempotency_key
     index, number = payment.get("index"), refund["refund_number"]
     key = f"refund_{index}_{number}"
-    refund_je = await session.get(Projection, {"company_id": company_id,
-                                                "entity_id": f"je:auto:{entity_id}:payrefund:{key}"})
-    if refund_je is None:
-        raise HTTPException(status_code=409, detail="The refund being reversed has no journal entry to reverse.")
+    amount = to_decimal(refund["amount"])
+    left_given_back = to_stored_float(to_decimal(payment.get("refunded") or 0) - amount)
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.refund_reversed",
@@ -2903,15 +2910,21 @@ async def reverse_payment_refund(session, company_id, entity_id: str, row: Proje
     )
     if getattr(entry, "was_deduped", False):
         return entry
+    lines = auto_je.payment_return_entries(
+        doc_type=row.state.get("doc_type", "invoice"), bank_account_code=books.bank_account,
+        amount=to_stored_float(amount),
+        already_given_back=left_given_back,
+        base_currency=books.base_currency, doc_rate=books.doc_rate, settlement_rate=books.settlement_rate,
+    )
     await auto_je._emit_auto_posted_je(
         session, company_id=company_id, user_id=actor_id,
         je_id=f"je:auto:{entity_id}:payrefundrev:{key}",
         idem_create=je_idempotency_key(entity_id, f"payment.refund_reversed:{key}", "c"),
         idem_posted=je_idempotency_key(entity_id, f"payment.refund_reversed:{key}", "p"),
         memo=f"Auto JE for {entity_id} payment refund reversed (index {index})",
-        ts=reversal_date, currency=refund_je.state.get("currency"),
+        ts=reversal_date, currency=books.base_currency.upper(),
         entries=[{"account": e["account"], "debit": e.get("credit") or 0.0, "credit": e.get("debit") or 0.0}
-                 for e in refund_je.state.get("entries", [])],
+                 for e in lines],
         metadata_={"trigger": "doc.payment.refund_reversed", "doc_id": entity_id, "payment_index": index},
     )
     return entry
