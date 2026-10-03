@@ -25,6 +25,8 @@ from celerp.db_url import sync_url
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 UNKNOWN = "ffff00c0ffee"
 RUNNING = "2.5.4"
+# instance_meta key: the newest Celerp version that has begun opening the database.
+OPENED_KEY = "newest_celerp_version"
 
 pytestmark = pytest.mark.skipif(
     not DATABASE_URL.startswith("postgresql"), reason="needs a live Postgres database"
@@ -48,6 +50,11 @@ REFUSED = {
     "unknown_revision_no_marker": (UNKNOWN, None, "unknown_schema"),
     "unknown_revision_newer_marker": (UNKNOWN, "2.6.0", "newer_app"),
     "corrupt_marker": (None, "not a version", "invalid_version_record"),
+    # A newer Celerp began opening the database (same schema) but never finished the
+    # projection reconcile, so projection_version still names an older copy.
+    "newer_opener_older_projection": (None, RUNNING, "newer_app", "2.5.5"),
+    "newer_opener_no_projection": (None, None, "newer_app", "2.5.5"),
+    "corrupt_opener": (None, RUNNING, "invalid_version_record", "garbage"),
 }
 
 
@@ -68,7 +75,8 @@ def scratch():
     admin = sa.create_engine(sync_url(DATABASE_URL), isolation_level="AUTOCOMMIT", poolclass=NullPool)
     names: list[str] = []
 
-    def make(revision: str | None = "head", version: str | None = None, *, backfill: str | None = None) -> str:
+    def make(revision: str | None = "head", version: str | None = None, *, backfill: str | None = None,
+             opened: str | None = None) -> str:
         name = f"compat_{uuid.uuid4().hex[:10]}"
         with admin.connect() as conn:
             conn.execute(sa.text(f'CREATE DATABASE "{name}"'))
@@ -85,9 +93,10 @@ def scratch():
                     conn.execute(sa.text("CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)"))
                     conn.execute(sa.text("INSERT INTO alembic_version VALUES (:v)"),
                                  {"v": _head() if revision == "head" else revision})
-                if version is not None or backfill is not None:
+                meta = (("projection_version", version), ("backfill_version", backfill), (OPENED_KEY, opened))
+                if any(value is not None for _, value in meta):
                     conn.execute(sa.text("CREATE TABLE instance_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"))
-                    for key, value in (("projection_version", version), ("backfill_version", backfill)):
+                    for key, value in meta:
                         if value is not None:
                             conn.execute(sa.text("INSERT INTO instance_meta VALUES (:k, :v)"), {"k": key, "v": value})
         finally:
@@ -95,8 +104,8 @@ def scratch():
         return url
 
     def refused(case: str) -> str:
-        revision, version, _ = REFUSED[case]
-        return make(revision or "head", version)
+        revision, version, _, *opened = REFUSED[case]
+        return make(revision or "head", version, opened=opened[0] if opened else None)
 
     make.refused = refused
     yield make
@@ -303,6 +312,21 @@ def _compatibility_command(url):
     raise _Refused(json.loads(result.output)["message"])
 
 
+def _reset_password(url):
+    from click.testing import CliRunner
+    from celerp import cli
+    mp = pytest.MonkeyPatch()
+    try:
+        mp.setattr(cli, "_read_config", lambda: {"database": {"url": url}})
+        result = CliRunner().invoke(cli.main, ["reset-password", "--email", "a@example.com",
+                                               "--password", "a-long-enough-password"])
+    finally:
+        mp.undo()
+    assert result.exit_code == 1, result.output
+    assert "Nothing was changed" in result.output, result.output
+    raise _Refused(result.output)
+
+
 class _Refused(Exception):
     pass
 
@@ -314,6 +338,7 @@ PATHS = {
     "restore_reconcile": _restore_reconcile,
     "api_startup": _api_startup,
     "compatibility_command": _compatibility_command,
+    "reset_password": _reset_password,
 }
 
 
@@ -380,7 +405,8 @@ def test_compatibility_command_runs_as_the_packaged_launcher_calls_it(scratch):
 
 def test_older_schema_with_older_marker_migrates_forward(scratch, monkeypatch):
     """One revision behind, last opened by an older Celerp: migrated to head, data kept,
-    and the recorded version left for the server's successful start to advance."""
+    this copy recorded as having opened it, and the projection reconcile's own version
+    left for the server's successful start to advance."""
     from alembic import command
     from celerp.alembic_config import build_alembic_config
     from celerp.migrations.compatibility import check_url
@@ -396,7 +422,7 @@ def test_older_schema_with_older_marker_migrates_forward(scratch, monkeypatch):
     after = snapshot(url)
     assert after["alembic_version"] == [(_head(),)]
     assert after["sentinel"] == [(1, "sentinel-before")]
-    assert after["instance_meta"] == [("projection_version", "2.5.3")]
+    assert after["instance_meta"] == [(OPENED_KEY, RUNNING), ("projection_version", "2.5.3")]
 
 
 def test_older_backup_restored_and_migrated_forward(scratch, tmp_path, monkeypatch):
@@ -428,6 +454,7 @@ def test_older_backup_restored_and_migrated_forward(scratch, tmp_path, monkeypat
     assert after["alembic_version"] == [(_head(),)]
     assert after["sentinel"] == [(1, "sentinel-before")]
     assert ("projection_version", "2.5.3") in after["instance_meta"]
+    assert (OPENED_KEY, RUNNING) in after["instance_meta"]
 
 
 def test_current_database_start_changes_nothing(scratch, tmp_path, monkeypatch):
@@ -435,7 +462,223 @@ def test_current_database_start_changes_nothing(scratch, tmp_path, monkeypatch):
     from celerp.cli import _migrate_to_head
     from celerp.config import settings
     monkeypatch.setattr(settings, "data_dir", tmp_path)
-    url = scratch("head", RUNNING, backfill=RUNNING)
+    url = scratch("head", RUNNING, backfill=RUNNING, opened=RUNNING)
     before = snapshot(url)
     assert _migrate_to_head(url) is True
     assert snapshot(url) == before
+
+
+# ── The newest Celerp that began opening the database ────────────────────────
+#
+# A newer copy with the same alembic head changes the database (create_all, module
+# migrations, module startup work, or a whole migrate) before, or without ever,
+# finishing the projection reconcile that writes projection_version. The record the
+# check reads is raised before any of that, so an older copy refuses afterwards
+# however far the newer one got.
+
+NEWER = "2.5.5"
+
+_BOOT = r"""
+import asyncio, sys
+from pathlib import Path
+import celerp
+celerp.__version__ = sys.argv[1]
+mode = sys.argv[2]
+from celerp.config import settings
+settings.data_dir = Path(sys.argv[3])
+settings.gateway_token = ""
+settings.celerp_public_url = None
+import celerp.main as app_main
+if mode == "guard_raises":
+    import celerp.services.dev_release_guard as guard
+    async def _guard_fails(session):
+        raise RuntimeError("projection reconcile failed")
+    guard.run_upgrade_guard = _guard_fails
+elif mode == "first_mutation_fails":
+    from celerp.models.base import Base
+    def _create_all_fails(*args, **kwargs):
+        raise RuntimeError("schema step failed")
+    Base.metadata.create_all = _create_all_fails
+async def boot():
+    async with app_main.lifespan(app_main.app):
+        pass
+asyncio.run(boot())
+"""
+
+
+def _boot_api(url: str, version: str, mode: str, data_dir, *, verify: bool = False) -> subprocess.CompletedProcess:
+    """The real API startup, as Celerp *version*, in its own process."""
+    env = {k: v for k, v in os.environ.items() if k not in ("MODULE_DIR", "ENABLED_MODULES")}
+    env.update({"DATABASE_URL": url, "ALLOW_INSECURE_JWT": "true"})
+    env.pop("CELERP_UPDATE_VERIFY", None)
+    if verify:
+        env["CELERP_UPDATE_VERIFY"] = "1"
+    return subprocess.run([sys.executable, "-c", _BOOT, version, mode, str(data_dir)],
+                          capture_output=True, text=True, env=env, timeout=120)
+
+
+def _meta(url: str) -> dict:
+    return dict(snapshot(url)["instance_meta"] or [])
+
+
+def _add_unknown_event(url: str) -> None:
+    engine = sa.create_engine(sync_url(url), poolclass=NullPool)
+    try:
+        with engine.begin() as conn:
+            cid = uuid.uuid4()
+            conn.execute(sa.text(
+                "INSERT INTO companies (id, name, slug, settings, is_active, is_migration_staged, created_at) "
+                "VALUES (:id, 'Co', :slug, '{}'::json, true, false, now())"), {"id": cid, "slug": f"co-{cid.hex[:8]}"})
+            conn.execute(sa.text(
+                "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, "
+                "idempotency_key, ts) VALUES (:cid, 'x:1', 'mystery', 'zzz.newer.event', '{}'::json, "
+                "'test', :idem, now())"), {"cid": cid, "idem": uuid.uuid4().hex})
+    finally:
+        engine.dispose()
+
+
+def _older_copy_refuses(url: str, tmp_path, monkeypatch) -> None:
+    """This copy (RUNNING) refuses the database by the check and by every opening path."""
+    from celerp.config import settings
+    from celerp.migrations.compatibility import IncompatibleDatabase, check_url
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    result = check_url(sync_url(url))
+    assert result.status == "newer_app" and result.recorded == NEWER, result
+    before = snapshot(url)
+    with pytest.raises(IncompatibleDatabase):
+        _apply_migrations(url)
+    with pytest.raises(_Refused):
+        _api_startup(url)
+    assert snapshot(url) == before
+
+
+@pytest.mark.parametrize("mode", ["unknown_event", "guard_raises", "update_verify"])
+def test_older_copy_refuses_after_a_newer_one_with_the_same_schema_began(scratch, tmp_path, monkeypatch, mode):
+    """(a) the newer copy's projection reconcile met an event it does not know and left
+    projection_version alone; (b) the reconcile raised; (c) the update's verify start
+    returned before the reconcile. Each time the newer copy had already changed the
+    database, so the older copy must refuse it."""
+    # No projection_version: a database whose reconcile never recorded a release.
+    url = scratch("head", None if mode == "unknown_event" else RUNNING, opened=None if mode == "unknown_event" else RUNNING)
+    if mode == "unknown_event":
+        _add_unknown_event(url)
+    out = _boot_api(url, NEWER, mode, tmp_path, verify=mode == "update_verify")
+    assert out.returncode == 0, out.stderr[-3000:]
+    meta = _meta(url)
+    # The reconcile did not record the newer copy.
+    assert meta.get("projection_version") in (None, RUNNING)
+    assert meta[OPENED_KEY] == NEWER
+    _older_copy_refuses(url, tmp_path, monkeypatch)
+
+
+def test_newer_copy_records_itself_before_its_first_change(scratch, tmp_path, monkeypatch):
+    """The newer copy's first database change fails, so its startup stops: the record is
+    already raised, and the older copy refuses the half-opened database."""
+    url = scratch("head", RUNNING, opened=RUNNING)
+    out = _boot_api(url, NEWER, "first_mutation_fails", tmp_path)
+    assert out.returncode == 1, out.stderr[-3000:]
+    assert _meta(url)[OPENED_KEY] == NEWER
+    _older_copy_refuses(url, tmp_path, monkeypatch)
+
+
+def test_migrate_records_this_copy_before_its_first_change(scratch, tmp_path, monkeypatch):
+    """A migrate as the newer copy that fails at its first schema step still leaves the
+    record raised."""
+    import celerp
+    from celerp import cli
+    url = scratch("head", RUNNING, opened=RUNNING)
+    monkeypatch.setattr(celerp, "__version__", NEWER)
+
+    def _upgrade_fails(*args, **kwargs):
+        raise RuntimeError("migration failed")
+
+    monkeypatch.setattr(cli, "_run_upgrade_with_auto_stamp", _upgrade_fails)
+    with pytest.raises(RuntimeError, match="migration failed"):
+        cli._apply_migrations(url)
+    assert _meta(url)[OPENED_KEY] == NEWER
+    monkeypatch.undo()
+    monkeypatch.setattr(celerp, "__version__", RUNNING)
+    monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
+    _older_copy_refuses(url, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("path", ["apply_migrations", "api_startup"])
+def test_the_record_is_never_lowered(scratch, tmp_path, monkeypatch, path):
+    """Opening a database an older copy recorded raises the record; an equal record is
+    left as it is; nothing ever lowers it."""
+    import celerp
+    from celerp.config import settings
+    from celerp.migrations.compatibility import IncompatibleDatabase
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    url = scratch("head", "2.5.3", opened="2.5.3")
+    if path == "apply_migrations":
+        _apply_migrations(url)
+    else:
+        assert _boot_api(url, RUNNING, "normal", tmp_path, verify=True).returncode == 0
+    assert _meta(url)[OPENED_KEY] == RUNNING
+    # An older copy cannot get in to lower it; and opening it again leaves it as it is.
+    monkeypatch.setattr(celerp, "__version__", "2.5.3")
+    with pytest.raises(IncompatibleDatabase):
+        _apply_migrations(url)
+    monkeypatch.setattr(celerp, "__version__", RUNNING)
+    _apply_migrations(url)
+    assert _meta(url)[OPENED_KEY] == RUNNING
+
+
+def test_existing_database_is_seeded_from_projection_version(scratch, tmp_path, monkeypatch):
+    """A database from before the record existed: projection_version is the floor, so a
+    copy older than it is still refused, and the first copy allowed in records itself."""
+    import celerp
+    from celerp.config import settings
+    from celerp.migrations.compatibility import IncompatibleDatabase, check_url
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    url = scratch("head", NEWER)  # no record yet, reconciled by the newer copy
+    assert check_url(sync_url(url)).status == "newer_app"
+    with pytest.raises(IncompatibleDatabase):
+        _apply_migrations(url)
+    assert OPENED_KEY not in _meta(url)
+    monkeypatch.setattr(celerp, "__version__", NEWER)
+    _apply_migrations(url)
+    assert _meta(url)[OPENED_KEY] == NEWER
+
+
+def test_a_stale_record_never_hides_a_newer_projection_version(scratch):
+    """Both records are read: the newer of the two decides."""
+    from celerp.migrations.compatibility import check_url
+    result = check_url(sync_url(scratch("head", NEWER, opened=RUNNING)))
+    assert result.status == "newer_app" and result.recorded == NEWER
+
+
+def test_restored_backup_carries_its_record(scratch, tmp_path, monkeypatch):
+    """A dump of a database a newer copy began opening carries the record: restored and
+    reconciled by this copy, it is refused before the schema step changes it. A dump
+    this copy may open is restored and recorded as opened by this copy."""
+    import asyncio
+    from celerp.config import settings
+    from celerp.services import backup, backup_import
+
+    def restore(source: str) -> str:
+        dump = tmp_path / f"{uuid.uuid4().hex}.dump"
+        dump.write_bytes(backup.dump_database(source))
+        target = scratch(None, None)
+        engine = sa.create_engine(sync_url(target), poolclass=NullPool)
+        with engine.begin() as conn:
+            conn.execute(sa.text("DROP SCHEMA public CASCADE"))
+            conn.execute(sa.text("CREATE SCHEMA public"))
+        engine.dispose()
+        asyncio.run(backup_import._run_pg_restore(dump, target))
+        return target
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    newer = restore(scratch("head", RUNNING, opened=NEWER))
+    monkeypatch.setattr(settings, "database_url", newer)
+    before = snapshot(newer)
+    assert before["instance_meta"] == [(OPENED_KEY, NEWER), ("projection_version", RUNNING)]
+    with pytest.raises(RuntimeError, match="newer than this copy"):
+        asyncio.run(backup_import._reconcile_schema())
+    assert snapshot(newer) == before
+
+    older = restore(scratch("head", "2.5.3", opened="2.5.3"))
+    monkeypatch.setattr(settings, "database_url", older)
+    asyncio.run(backup_import._reconcile_schema())
+    assert _meta(older)[OPENED_KEY] == RUNNING

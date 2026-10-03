@@ -217,13 +217,13 @@ async def lifespan(_app: FastAPI):
         yield
         return
 
-    from celerp.migrations.compatibility import IncompatibleDatabase, check as check_compatibility
+    # This copy is admitted, and recorded as having opened the database, in a
+    # transaction of its own before its first change, so even a start that fails or
+    # stops early below leaves an older copy refusing the database.
+    from celerp.migrations.compatibility import IncompatibleDatabase, admit
     try:
-        async with lifecycle_engine.connect() as conn:
-            compatibility = await conn.run_sync(check_compatibility)
-            await conn.rollback()
-        if not compatibility.ok:
-            raise IncompatibleDatabase(compatibility)
+        async with lifecycle_engine.begin() as conn:
+            await conn.run_sync(admit)
         async with lifecycle_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     except IncompatibleDatabase as exc:

@@ -1,20 +1,29 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Decide, read-only, whether this copy of Celerp may open a database.
+"""Decide whether this copy of Celerp may open a database, and record that it has.
 
 Every path that opens a database (desktop start, ``celerp start``, the API on its
-own, ``celerp migrate``, the update's migrate step, restore and recovery) asks this
-module first, before anything can write. A database is refused when:
+own, ``celerp migrate``, the update's migrate and verify steps, restore and
+recovery) is admitted here first, before it changes anything. A database is
+refused when:
 
-- it records that a newer Celerp last opened it (``instance_meta.projection_version``
-  is newer than this copy), or
+- a newer Celerp has begun opening it (``instance_meta.newest_celerp_version``,
+  or, for a database from before that record existed, ``projection_version``, is
+  newer than this copy), or
 - it is stamped with an alembic revision this copy's migration scripts do not
   contain, which only a newer Celerp can have written, or
-- the version it records cannot be read as a version at all.
+- a version it records cannot be read as a version at all.
 
 An older database, or one that has never recorded a version, is compatible: the
-normal upgrade path moves it forward. Nothing here creates, stamps, repairs or
-writes anything; on Postgres the check runs in a read-only transaction.
+normal upgrade path moves it forward.
+
+``check`` only reads; on Postgres it runs in a read-only transaction. ``admit``
+makes the same decision under a lock, writes nothing when it refuses, and
+otherwise raises ``newest_celerp_version`` to this copy's version, which the
+caller commits on its own before its first change. The record is never lowered,
+and it stands whatever the caller does next: a startup that fails, stops early (the update's
+verify start) or never finishes the projection reconcile has still begun to
+change the database, so an older copy refuses it from then on.
 """
 from __future__ import annotations
 
@@ -25,9 +34,18 @@ import json
 import sqlalchemy as sa
 from packaging.version import InvalidVersion, Version
 
-# instance_meta and its key are owned by _data_reconcile; read here without its
-# get_meta helper, which creates the table.
-from celerp.migrations._data_reconcile import _META_TABLE, PROJECTION_VERSION_KEY
+# instance_meta is owned by _data_reconcile; read here without its get_meta helper,
+# which creates the table.
+from celerp.migrations._data_reconcile import _META_TABLE, PROJECTION_VERSION_KEY, set_meta
+
+# The newest Celerp version that has begun opening this database. Only admit()
+# writes it. projection_version belongs to the projection reconcile; it is read
+# here only as the floor for a database from before this record existed (and,
+# should both exist, the newer of the two decides).
+NEWEST_CELERP_KEY = "newest_celerp_version"
+_RECORDED_KEYS = (NEWEST_CELERP_KEY, PROJECTION_VERSION_KEY)
+# Serializes admissions, so two copies opening at once cannot lower the record.
+_ADMIT_LOCK_KEY = 0x63656C6572700002
 
 COMPATIBLE = "compatible"
 NEWER_APP = "newer_app"
@@ -111,12 +129,31 @@ def _unknown_revisions(conn: sa.Connection, tables: set[str]) -> tuple[str, ...]
     return tuple(sorted(rev for rev in stamped if rev not in known))
 
 
-def _recorded_version(conn: sa.Connection, tables: set[str]) -> str | None:
+def _recorded_versions(conn: sa.Connection, tables: set[str]) -> dict[str, str]:
     if _META_TABLE not in tables:
-        return None
-    return conn.execute(
-        sa.text(f"SELECT value FROM {_META_TABLE} WHERE key = :k"), {"k": PROJECTION_VERSION_KEY},
-    ).scalar()
+        return {}
+    rows = conn.execute(sa.text(f"SELECT key, value FROM {_META_TABLE}"))
+    return {key: value for key, value in rows if key in _RECORDED_KEYS}
+
+
+def _classify(conn: sa.Connection) -> tuple[Compatibility, dict[str, str]]:
+    tables = set(sa.inspect(conn).get_table_names())
+    running = running_version()
+    revisions = _unknown_revisions(conn, tables)
+    recorded = _recorded_versions(conn, tables)
+    newest: str | None = None
+    for value in recorded.values():
+        try:
+            parsed = Version(value)
+        except InvalidVersion:
+            return Compatibility(INVALID_VERSION_RECORD, running, value, revisions), recorded
+        if newest is None or parsed > Version(newest):
+            newest = value
+    if newest is not None and Version(newest) > Version(running):
+        return Compatibility(NEWER_APP, running, newest, revisions), recorded
+    if revisions:
+        return Compatibility(UNKNOWN_SCHEMA, running, newest, revisions), recorded
+    return Compatibility(COMPATIBLE, running, newest), recorded
 
 
 def check(conn: sa.Connection) -> Compatibility:
@@ -127,20 +164,25 @@ def check(conn: sa.Connection) -> Compatibility:
     """
     if conn.dialect.name == "postgresql":
         conn.execute(sa.text("SET TRANSACTION READ ONLY"))
-    tables = set(sa.inspect(conn).get_table_names())
-    running = running_version()
-    revisions = _unknown_revisions(conn, tables)
-    recorded = _recorded_version(conn, tables)
-    if recorded is not None:
-        try:
-            newer = Version(recorded) > Version(running)
-        except InvalidVersion:
-            return Compatibility(INVALID_VERSION_RECORD, running, recorded, revisions)
-        if newer:
-            return Compatibility(NEWER_APP, running, recorded, revisions)
-    if revisions:
-        return Compatibility(UNKNOWN_SCHEMA, running, recorded, revisions)
-    return Compatibility(COMPATIBLE, running, recorded)
+    return _classify(conn)[0]
+
+
+def admit(conn: sa.Connection) -> Compatibility:
+    """Decide again and, when this copy may open the database, record it. Raises
+    IncompatibleDatabase, having written nothing, when it may not.
+
+    *conn* must be in a transaction of its own that the caller commits before it
+    changes anything else, so the record stands however the caller's work ends.
+    """
+    if conn.dialect.name == "postgresql":
+        conn.execute(sa.text("SELECT pg_advisory_xact_lock(:k)"), {"k": _ADMIT_LOCK_KEY})
+    result, recorded = _classify(conn)
+    if not result.ok:
+        raise IncompatibleDatabase(result)
+    mine = recorded.get(NEWEST_CELERP_KEY)
+    if mine is None or Version(result.running) > Version(mine):
+        set_meta(conn, NEWEST_CELERP_KEY, result.running)
+    return result
 
 
 def check_url(sync_url: str) -> Compatibility:
@@ -156,8 +198,11 @@ def check_url(sync_url: str) -> Compatibility:
         engine.dispose()
 
 
-def refuse_incompatible(sync_url: str) -> None:
-    """Raise IncompatibleDatabase unless this copy may open *sync_url*'s database."""
-    result = check_url(sync_url)
-    if not result.ok:
-        raise IncompatibleDatabase(result)
+def admit_url(sync_url: str) -> Compatibility:
+    """Admit this copy to *sync_url*'s database and commit the record (see admit)."""
+    engine = sa.create_engine(sync_url, poolclass=sa.pool.NullPool)
+    try:
+        with engine.begin() as conn:
+            return admit(conn)
+    finally:
+        engine.dispose()

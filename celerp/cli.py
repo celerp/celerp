@@ -585,9 +585,10 @@ def _apply_migrations(db_url: str) -> None:
     # DuplicateColumn, which _run_upgrade_with_auto_stamp catches.
     sync_url = _sync_url(db_url)
     # A database a newer Celerp already opened is refused before anything below
-    # can restamp it back to this copy's head.
-    from celerp.migrations.compatibility import refuse_incompatible
-    refuse_incompatible(sync_url)
+    # can restamp it back to this copy's head; otherwise this copy is recorded as
+    # having opened it before anything below changes it.
+    from celerp.migrations.compatibility import admit_url
+    admit_url(sync_url)
     engine = _sa.create_engine(sync_url, pool_pre_ping=True)
     try:
         inspector = _sa.inspect(engine)
@@ -1366,7 +1367,9 @@ def reset_password(email: str, password: str) -> None:
     sync_url = _sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
+        from celerp.migrations.compatibility import admit_url
         from celerp.services.auth import hash_password
+        admit_url(sync_url)
         engine = create_engine(sync_url)
         with engine.begin() as conn:
             row = conn.execute(text("SELECT id, name FROM users WHERE email = :e"), {"e": email}).fetchone()
