@@ -2474,7 +2474,9 @@ async def bulk_delete_drafts(
     drafts = []
     for eid in ids:
         row = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
-        if row is None or row.state.get("status") != "draft":
+        # Only a document is deleted here: a draft item or List sharing the ID space
+        # is skipped like any other non-draft-document ID.
+        if row is None or row.entity_type != "doc" or row.state.get("status") != "draft":
             continue
         drafts.append(row)
 

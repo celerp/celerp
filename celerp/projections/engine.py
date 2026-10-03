@@ -25,8 +25,15 @@ log = logging.getLogger(__name__)
 _ITEM_BIRTHS = frozenset({"item.created", "item.snapshot"})
 
 
+_TYPE_LABELS = {"item": "Item", "doc": "Document", "list": "List", "contact": "Contact"}
+
+
 def _item_exists() -> HTTPException:
     return HTTPException(status_code=409, detail="Item already exists")
+
+
+def _not_found(entity_type: str) -> HTTPException:
+    return HTTPException(status_code=404, detail=f"{_TYPE_LABELS.get(entity_type, 'Record')} not found")
 
 
 def _resolve_module_handler(dotted: str):
@@ -131,13 +138,23 @@ class ProjectionEngine:
         """Apply a new event. A change to an item that is gone is refused: the item
         was removed (an undone import, a deleted draft) after the change read it, and
         writing the change would bring it back. A creation of an item that already
-        exists is refused too: an item is born once, and everything after is a change."""
+        exists is refused too: an item is born once, and everything after is a change.
+        An event of one kind on a record of another kind (an item change on a document's
+        ID, an item creation over a contact's) is refused as not found: that ID holds no
+        record of the event's kind. Replay (rebuild) keeps applying such rows from older
+        ledgers unchanged, so a rebuild still reproduces the history it was given."""
         projection = await ProjectionEngine._locked_projection(session, entry)
         if ProjectionEngine._changes_missing_item(entry, projection):
-            raise HTTPException(status_code=404, detail="Item not found")
+            raise _not_found("item")
+        ProjectionEngine._refuse_other_kind(entry, projection)
         if projection is not None and ProjectionEngine._is_item_birth(entry):
             raise _item_exists()
         await ProjectionEngine._write(session, entry, projection)
+
+    @staticmethod
+    def _refuse_other_kind(entry: LedgerEntry, projection: Projection | None) -> None:
+        if projection is not None and projection.entity_type != entry.entity_type:
+            raise _not_found(entry.entity_type)
 
     @staticmethod
     def _is_item_birth(entry: LedgerEntry) -> bool:
@@ -187,6 +204,7 @@ class ProjectionEngine:
                 projection = await ProjectionEngine._locked_projection(session, entry)
                 if projection is None:
                     raise
+                ProjectionEngine._refuse_other_kind(entry, projection)
         fields = ProjectionEngine._next_fields(projection.state, entry, projection.version)
         for column, value in fields.items():
             setattr(projection, column, value)

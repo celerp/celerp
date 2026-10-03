@@ -409,7 +409,22 @@ async def lock_item(session: AsyncSession, company_id, entity_id: str) -> Projec
     item) has either committed and is read here, or waits for this write and is then
     judged against it.
     """
-    return (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+    return row if row is not None and row.entity_type == "item" else None
+
+
+async def lock_existing_items(session: AsyncSession, company_id, entity_ids: list[str]) -> dict[str, Projection]:
+    """Lock every selected item before any of them changes; 404 naming the first ID that
+    is not an item of this company (absent, or a document, List or contact). A bulk action
+    checks the whole selection first, so it applies to all of it or to none."""
+    if not entity_ids:
+        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    rows = await lock_projections(session, company_id, entity_ids)
+    for entity_id in entity_ids:
+        row = rows.get(entity_id)
+        if row is None or row.entity_type != "item":
+            raise HTTPException(status_code=404, detail=f"Item not found: {entity_id}")
+    return rows
 
 
 def _status_of(row: Projection | None) -> str:
@@ -2691,8 +2706,7 @@ class BulkDeleteBody(BaseModel):
 
 @router.post("/bulk/status")
 async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await lock_existing_items(session, company_id, payload.entity_ids)
     # Validated per item BEFORE any event is emitted: one blocked item rejects the
     # whole bulk with the reason, nothing is half-applied (the session never commits).
     for entity_id in payload.entity_ids:
@@ -2730,8 +2744,7 @@ class RevertToDraftBody(BaseModel):
 @router.post("/bulk/make-available")
 async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Commit one or more drafts into stock. Same authority as authoring the draft (edit_inventory) - no extra permission."""
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await lock_existing_items(session, company_id, payload.entity_ids)
     for entity_id in payload.entity_ids:
         await assert_make_available_allowed(session, company_id, entity_id)
     event_ids = []
@@ -2757,8 +2770,7 @@ async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get
 @router.post("/bulk/revert-to-draft")
 async def bulk_revert_to_draft(payload: RevertToDraftBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     """assert_status_change_allowed does the real gating (revert_items_to_draft + clean history)."""
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await lock_existing_items(session, company_id, payload.entity_ids)
     for entity_id in payload.entity_ids:
         await assert_status_change_allowed(session, company_id, entity_id, "draft", role, settings)
     event_ids = []
@@ -2790,8 +2802,7 @@ class BulkShopifySyncBody(BaseModel):
 async def bulk_shopify_sync(payload: BulkShopifySyncBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Opt the selected items into (or out of) outbound Shopify sync by emitting
     shop.sync.enabled/disabled, which sets is_sync_to_shopify on each item's projection."""
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await lock_existing_items(session, company_id, payload.entity_ids)
     event_type = "shop.sync.enabled" if payload.enable else "shop.sync.disabled"
     event_ids = []
     for entity_id in payload.entity_ids:
@@ -2837,8 +2848,7 @@ async def _build_transfer_data(session, company_id, entity_id: str, to_location_
 
 @router.post("/bulk/transfer")
 async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await lock_existing_items(session, company_id, payload.entity_ids)
     from celerp.models.company import Location
     loc_rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
     loc_map = {str(r.id): r.name for r in loc_rows}
@@ -2864,24 +2874,26 @@ async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_curren
 
 @router.post("/bulk/delete")
 async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await lock_existing_items(session, company_id, payload.entity_ids)
     import sqlalchemy as _sa
     from celerp.models.projections import Projection as _Proj
     from celerp.models.ledger import LedgerEntry as _LE
     # Hard delete: remove projection rows and all ledger events for these items.
-    # This is the correct behaviour for a user-initiated "Delete" action —
+    # This is the correct behaviour for a user-initiated "Delete" action -
     # the item should vanish from the catalog entirely (hard delete, no event trail).
-    await lock_projections(session, company_id, payload.entity_ids)
+    # Every ID was locked and checked as an item above, and both deletes stay on item
+    # rows, so no other record's projection or history can go with them.
     await session.execute(
         _sa.delete(_Proj).where(
             _Proj.company_id == company_id,
+            _Proj.entity_type == "item",
             _Proj.entity_id.in_(payload.entity_ids),
         )
     )
     await session.execute(
         _sa.delete(_LE).where(
             _LE.company_id == company_id,
+            _LE.entity_type == "item",
             _LE.entity_id.in_(payload.entity_ids),
         )
     )
@@ -2895,8 +2907,7 @@ class BulkExpireBody(BaseModel):
 
 @router.post("/bulk/expire")
 async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    await lock_existing_items(session, company_id, payload.entity_ids)
     for eid in payload.entity_ids:
         await assert_not_draft(session, company_id, eid, "expire")
     for eid in payload.entity_ids:
