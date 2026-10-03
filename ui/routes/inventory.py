@@ -22,7 +22,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
-from ui.components.shell import base_shell, minimal_shell, page_header, search_help, toast_header, page_title
+from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
@@ -1831,7 +1831,8 @@ def setup_routes(app):
             Span("", id="item-header-error"),
             Script(_SPLIT_DELTA_JS),
             Script(_BULK_SPLIT_JS),
-            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview, role=_item_role, settings=_item_settings),
+            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview, role=_item_role, settings=_item_settings,
+                              manufacturing=module_active(request, "celerp-manufacturing")),
             title=page_title("page.item_detail"),
             nav_active="inventory",
             request=request,
@@ -7135,9 +7136,15 @@ def _item_detail_tabs(
     split_preview: dict | None = None,
     role: str = "owner",
     settings: dict | None = None,
+    *,
+    manufacturing: bool,
 ) -> FT:
-    """Tabbed item detail: Details | Pricing | Manufacturing | Activity."""
-    tabs = [("details", t("th.details")), ("pricing", t("page.pricing")), ("manufacturing", t("nav.manufacturing")), ("activity", t("inventory.tab_activity"))]
+    """Tabbed item detail: Details | Pricing | Manufacturing | Activity. The Manufacturing
+    tab exists only while the manufacturing module is on; asking for it otherwise shows Details."""
+    tabs = [("details", t("th.details")), ("pricing", t("page.pricing")),
+            *([("manufacturing", t("nav.manufacturing"))] if manufacturing else []), ("activity", t("inventory.tab_activity"))]
+    if active_tab not in {key for key, _ in tabs}:
+        active_tab = "details"
     tab_bar = Div(
         *[
             A(
