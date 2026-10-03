@@ -77,7 +77,7 @@ def _mock_db():
 
 
 @pytest.mark.asyncio
-async def test_lifespan_starts_gateway_for_paid_instance():
+async def test_lifespan_starts_gateway_for_paid_instance(boot_tasks_settled):
     """A paid instance (celerp_public_url set) runs a persistent tunnel: lifespan
     starts the gateway client at boot regardless of any live share."""
     from celerp.config import settings
@@ -113,7 +113,7 @@ async def test_lifespan_starts_gateway_for_paid_instance():
 
 
 @pytest.mark.asyncio
-async def test_startup_connects_free_only_with_active_share():
+async def test_startup_connects_free_only_with_active_share(boot_tasks_settled):
     """A free instance (token set, no public_url) runs a lazy tunnel: it starts at
     boot only when a share is already live. No live share -> the client stays down;
     a live share -> it comes up."""
@@ -166,7 +166,7 @@ async def test_startup_connects_free_only_with_active_share():
 
 
 @pytest.mark.asyncio
-async def test_lifespan_no_gateway_when_token_empty():
+async def test_lifespan_no_gateway_when_token_empty(boot_tasks_settled):
     """lifespan does NOT start gateway task when settings.gateway_token is empty."""
     from celerp.config import settings
     import celerp.gateway.client as gw_module
@@ -187,7 +187,7 @@ async def test_lifespan_no_gateway_when_token_empty():
 
 
 @pytest.mark.asyncio
-async def test_lifespan_gateway_teardown():
+async def test_lifespan_gateway_teardown(boot_tasks_settled):
     """lifespan stops gateway client on shutdown."""
     from celerp.config import settings
     import celerp.gateway.client as gw_module

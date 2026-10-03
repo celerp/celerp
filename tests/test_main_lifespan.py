@@ -55,7 +55,7 @@ def _mock_db():
 
 
 @pytest.mark.asyncio
-async def test_modules_ready_commit_guarded(monkeypatch):
+async def test_modules_ready_commit_guarded(monkeypatch, boot_tasks_settled):
     """A failing on_modules_ready hook does not crash boot: the raise is caught,
     the session is rolled back, and startup runs through to serving."""
     import celerp.main as main_mod
@@ -102,7 +102,7 @@ async def test_modules_ready_commit_guarded(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
+async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch, boot_tasks_settled):
     import celerp.main as main_mod
     from celerp import runtime
     from celerp.config import settings
