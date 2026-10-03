@@ -26,6 +26,7 @@ from ui.components.shell import base_shell, minimal_shell, page_header, search_h
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
+from ui.module_slots import module_contribution_visible, visible_slot_contributions
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, cost_columns
 from celerp.services.field_schema import union_category_attr_keys as _union_category_attr_keys
@@ -1046,7 +1047,7 @@ async def _inventory_content(
     connected_connectors = await _connected_connector_ids(str(company.get("id") or ""))
     catalog_channels = [
         ch for ch in get_slot("catalog_channel")
-        if _module_contribution_visible(ch, _settings, role, connected_connectors)
+        if module_contribution_visible(ch, _settings, role, connected_connectors)
     ]
 
     currency = company.get("currency")
@@ -4782,33 +4783,6 @@ def _slot_label(slot: dict, fallback: str = "") -> str:
     return t(key) if key else slot.get("label", fallback)
 
 
-
-def _module_contribution_visible(
-    contribution: dict, settings: dict, role: str,
-    connected_connectors: set[str] | None = None,
-) -> bool:
-    """Apply company-module, permission, and optional connector gates uniformly."""
-    from celerp.modules.loader import CORE_FOLDED
-    from celerp.modules.registry import get_enabled
-    module = contribution.get("_module")
-    if module and module not in CORE_FOLDED and "enabled_modules" in settings:
-        if module not in get_enabled(settings):
-            return False
-    permission = contribution.get("permission")
-    if permission and not role_has_permission(settings, role, permission):
-        return False
-    required = contribution.get("requires_connector")
-    if required and required not in (connected_connectors or set()):
-        return False
-    return True
-
-
-def _visible_slot_actions(slot: str, settings: dict, role: str) -> list[dict]:
-    """The contributions to a link-action slot (item_action, pricing_action) this role sees."""
-    from celerp.modules.slots import get as get_slot
-    return [a for a in get_slot(slot) if _module_contribution_visible(a, settings, role)]
-
-
 def _slot_action_link(action: dict, **values: str) -> FT:
     """A module action's button. Each placeholder value is URL-encoded, so an id or a
     price-list name holding "/", "?", "&" or a space stays one value in the link."""
@@ -4844,7 +4818,7 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     _settings = settings or {}
     send_to_targets = [
         tgt for tgt in get_slot("send_to_targets")
-        if _module_contribution_visible(tgt, _settings, role, connected_connectors)
+        if module_contribution_visible(tgt, _settings, role, connected_connectors)
     ]
     send_to_opts = [
         Option(tgt.get("label", ""), value=tgt.get("doc_type", ""))
@@ -4856,7 +4830,7 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     # action_type="htmx" (default) → HTMX POST into #bulk-action-result.
     visible_bulk_actions = [
         action for action in get_slot("bulk_action")
-        if _module_contribution_visible(action, _settings, role, connected_connectors)
+        if module_contribution_visible(action, _settings, role, connected_connectors)
     ]
     module_action_opts = []
     for action in visible_bulk_actions:
@@ -7303,7 +7277,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     # Schema editability is config-driven: derived lists' price columns are marked
     # non-editable by the effective field schema for every role.
     schema_editable = {f.get("key") for f in (pricing_fields or []) if f.get("editable")}
-    pricing_actions = _visible_slot_actions("pricing_action", settings or {}, role)
+    pricing_actions = visible_slot_contributions("pricing_action", settings or {}, role)
 
     def _row_actions(pl: dict, editable: bool) -> list[FT]:
         pl_name = pl.get("name", "")
@@ -7790,7 +7764,7 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
 
     module_item_actions = [
         _slot_action_link(action, entity_id=entity_id)
-        for action in _visible_slot_actions("item_action", settings or {}, role)
+        for action in visible_slot_contributions("item_action", settings or {}, role)
     ]
 
     safe_id = re.sub(r"[^a-zA-Z0-9]", "_", entity_id)
