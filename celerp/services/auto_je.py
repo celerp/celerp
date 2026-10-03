@@ -2011,38 +2011,39 @@ async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: st
         )
 
 
-async def create_for_mfg_completed(session, *, company_id, user_id, order_id: str, inputs: dict[str, float],
-                                   waste_cost: float, outputs: dict[str, float], recorded: object = None) -> None:
-    """Components leave the inventory accounts their lots are valued in (``inputs``, cost per
-    account); the output goes to the accounts the run's output lots recorded (``outputs``,
-    quantity per account) and waste to COGS. Dated the business day of ``recorded``, when
-    the completion started (entry_day)."""
-    # Input and waste become money first; the output is what is left of them, so the entry balances.
-    currency = await company_currency(session, company_id)
-    relief = {code: round_money(v, currency) for code, v in sorted(inputs.items())}
-    input_amt = sum(relief.values(), _Dec(0))
-    waste_amt = min(round_money(waste_cost, currency), input_amt)
-    output_amt = input_amt - waste_amt
-    cogs = await resolve(session, company_id, R.COGS)
-    if output_amt and not any(v > 0 for v in outputs.values()):
-        outputs = {await resolve(session, company_id, R.INVENTORY_PURCHASED): 1.0}
+async def create_for_mfg_movement(
+    session, *, company_id, user_id, order_id: str, movement: str, memo: str, wip_code: str | None,
+    wip: _Dec, lots: dict[str, _Dec], waste: _Dec = _Dec(0), day: str,
+) -> None:
+    """Post one production run movement: ``wip`` onto (positive) or off (negative) the run's
+    work in progress account ``wip_code``, ``lots`` onto or off the inventory accounts the lots
+    record, and ``waste`` to cost of goods sold. Amounts are already money in the company
+    currency and balance. ``movement`` names the operation (issue:<key>, receive:<key>,
+    completed) and keys the entry, so a retried operation posts nothing more. Nothing posts
+    when every amount is zero."""
+    def _side(amount: _Dec) -> dict:
+        value = to_stored_float(abs(amount))
+        return {"debit": value} if amount > 0 else {"credit": value}
+
     settings = await current_settings(session, company_id)
+    entries = [_lot_line(settings, code, **_side(amount)) for code, amount in sorted(lots.items()) if amount]
+    if wip:
+        entries.append(_line(wip_code, R.WORK_IN_PROGRESS, **_side(wip)))
+    if waste:
+        entries.append(_line(await resolve(session, company_id, R.COGS), R.COGS, **_side(waste)))
+    if not entries:
+        return
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{order_id}:mfg",
-        idem_create=je_idempotency_key(order_id, "mfg.completed", "c"),
-        idem_posted=je_idempotency_key(order_id, "mfg.completed", "p"),
-        memo=f"Auto JE for {order_id} completion",
-        ts=await entry_day(session, company_id, recorded),
-        entries=[
-            *(_inventory_lines(settings, output_amt, outputs, currency, debit=True) if output_amt else []),
-            _line(cogs, R.COGS, debit=to_stored_float(waste_amt)),
-            *(_lot_line(settings, code, credit=to_stored_float(amt))
-              for code, amt in relief.items() if amt),
-        ],
-        metadata_={"trigger": "mfg.order.completed", "order_id": order_id},
+        je_id=f"je:auto:{order_id}:{movement}",
+        idem_create=je_idempotency_key(order_id, f"mfg.{movement}", "c"),
+        idem_posted=je_idempotency_key(order_id, f"mfg.{movement}", "p"),
+        memo=memo,
+        ts=day,
+        entries=entries,
+        metadata_={"trigger": f"mfg.order.{movement.split(':')[0]}", "order_id": order_id},
     )
 
 

@@ -370,6 +370,7 @@ async def restate_item_cost(
     actor_id,
     source: str,
     idempotency_key: str,
+    day: str | None = None,
 ) -> LedgerEntry:
     """Apply a goods-cost change to an item and carry its consequences.
 
@@ -379,7 +380,8 @@ async def restate_item_cost(
     to a result are kept. Every invoice that recognizes one of these lots - sold
     on one of its lines, or allocated to a line not yet shipped - has the change
     recorded against that line and its COGS trued up by one adjustment JE dated
-    today, leaving the invoice's own entries untouched. Every check runs before
+    ``day``, the business day of the operation making the change, or today,
+    leaving the invoice's own entries untouched. Every check runs before
     the first event is written: the change lands with all of its consequences in
     the caller's transaction, or raises CostRestatementConflict.
     """
@@ -425,14 +427,15 @@ async def restate_item_cost(
             metadata_=_metadata(succ_id, lineage),
         )
     if plan.docs:
-        company = await session.get(Company, company_id)
-        today = business_date_at(datetime.now(timezone.utc), ((company.settings if company else None) or {}).get("timezone"))
+        if day is None:
+            company = await session.get(Company, company_id)
+            day = business_date_at(datetime.now(timezone.utc), ((company.settings if company else None) or {}).get("timezone"))
         for doc_id in plan.docs:
             try:
                 await auto_je.reconcile_doc_cogs(
                     session, company_id=company_id, user_id=actor_id, doc_id=doc_id,
                     cycle_tag=f"restate-{hashlib.sha256(f'{identity}:{doc_id}'.encode()).hexdigest()[:16]}",
-                    ts=today, trigger="item.cost_restated",
+                    ts=day, trigger="item.cost_restated",
                     memo=f"COGS adjustment: cost of {label} corrected",
                     context={"item_id": entity_id, "restatement": identity},
                 )

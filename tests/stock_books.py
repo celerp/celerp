@@ -13,6 +13,11 @@ those accounts, except the ones the caller names as unplaced (stock from another
 system's books, waiting for the user to place it); their value is left out of the
 comparison. With Accounting off nothing is booked, so no account may carry anything.
 
+The value production runs hold is checked apart from the lots (assert_wip_carried):
+every account that has served work in progress holds exactly what the open runs kept
+on it still hold, and a completed run holds nothing. assert_settled runs both and then
+proves the balance sheet finds no opening stock to book.
+
 Also shared: the stock an older release left behind, for the tests of what happens to it.
 """
 from __future__ import annotations
@@ -86,3 +91,56 @@ async def assert_books_carry_stock(session, company_id, *, unplaced=()) -> dict[
     held = {code: round_money(v, currency) for code, v in held.items()}
     assert books == held, f"books {books} != stock recorded on them {held}"
     return books
+
+
+def _run_wip(state: dict) -> Decimal:
+    return sum((Decimal(str(state.get(k) or 0)) * sign for k, sign in
+                (("wip_issued", 1), ("wip_transferred", -1), ("wip_wasted", -1))), Decimal("0"))
+
+
+async def assert_wip_carried(session, company_id) -> dict[str, Decimal]:
+    """Assert every account that has kept work in progress holds exactly what the open runs
+    kept on it still hold, and that no completed run holds anything; return the balances."""
+    session.expire_all()
+    settings = (await session.get(Company, company_id)).settings or {}
+    currency = settings.get("currency", "USD")
+    rows = list((await session.execute(select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_type.in_(("mfg_order", "journal_entry"))))).scalars())
+    runs = [r.state or {} for r in rows if r.entity_type == "mfg_order"]
+    lines = [e for r in rows if r.entity_type == "journal_entry" and (r.state or {}).get("status") == "posted"
+             for e in r.state.get("entries") or []]
+    for run in runs:
+        if run.get("status") in ("completed", "cancelled"):
+            assert _run_wip(run) == 0, f"a {run.get('status')} run still holds {_run_wip(run)}: {run}"
+    codes = set(scope_codes(settings, AccountRole.WORK_IN_PROGRESS.value)) | {
+        r["wip_account_code"] for r in runs if r.get("wip_account_code")}
+    books = {code: round_money(sum((Decimal(str(e.get("debit") or 0)) - Decimal(str(e.get("credit") or 0))
+                                    for e in lines if e.get("account") == code), Decimal("0")), currency)
+             for code in codes}
+    if SCHEMA_KEY not in settings:
+        assert not any(books.values()), f"Accounting is off, yet work in progress accounts carry {books}"
+        return books
+    held = dict.fromkeys(codes, Decimal("0"))
+    for run in runs:
+        if _run_wip(run):
+            assert run.get("wip_account_code"), f"a run holds {_run_wip(run)} on no account: {run}"
+            held[run["wip_account_code"]] += _run_wip(run)
+    held = {code: round_money(v, currency) for code, v in held.items()}
+    assert books == held, f"work in progress books {books} != what open runs hold {held}"
+    return books
+
+
+async def assert_settled(client, session, auth) -> None:
+    """The books carry the stock and the work in progress, and the balance sheet finds no
+    opening stock to book (nothing hides a gap behind an opening entry)."""
+    cid = auth["company_id"]
+    await assert_books_carry_stock(session, cid)
+    await assert_wip_carried(session, cid)
+    r = await client.get("/accounting/balance-sheet", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    opening = await session.get(Projection, {"company_id": cid, "entity_id": f"je:auto:opening-inventory:{cid}"})
+    assert opening is None or opening.state.get("status") != "posted", opening.state
+    await assert_books_carry_stock(session, cid)
+    await assert_wip_carried(session, cid)

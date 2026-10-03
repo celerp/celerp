@@ -320,6 +320,8 @@ async def test_a_run_completed_at_midnight_is_booked_on_the_day_it_started(sessi
     assert r.status_code == 200, r.text
     order = (await client.post(f"/manufacturing/items/{product}/build", headers=h, json={"quantity": 2})).json()["id"]
     _midnight(monkeypatch, "item.consumed")
-    r = await client.post(f"/manufacturing/{order}/complete", headers=h, json={})
+    r = await client.post(f"/manufacturing/{order}/complete", headers=h, json={"idempotency_key": "c"})
     assert r.status_code == 200, r.text
-    assert await _entry_day(session, auth, f"je:auto:{order}:mfg") == "2026-10-01"
+    # Completing issued the components and received the output, each entry on the day it started.
+    for movement in ("issue:c:issue", "receive:c:receive"):
+        assert await _entry_day(session, auth, f"je:auto:{order}:{movement}") == "2026-10-01"

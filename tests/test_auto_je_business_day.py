@@ -3,7 +3,7 @@
 """Automatic entries carry the business day of the operation they record.
 
 A bill without its own date, goods returned on a credit note, a return undone, a
-finished manufacturing run, and an audit or write-off adjustment are each dated the
+production run movement, and an audit or write-off adjustment are each dated the
 company's calendar day of the operation, never the server's own date. A recorded
 date or timestamp wins over the clock, a period lock through that day refuses the
 entry with the usual message, and posting the same entry again later or rebuilding
@@ -12,6 +12,7 @@ the books never re-dates it.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -59,12 +60,13 @@ async def _return_undone(session, client, auth, instant) -> str:
     return "je:auto:doc:cn1:return:undo:u1"
 
 
-async def _run_completed(session, client, auth, instant) -> str:
-    await auto_je.create_for_mfg_completed(
-        session, company_id=auth["company_id"], user_id=auth["user_id"], order_id="mo:1",
-        inputs={"1130-P": 10.0}, waste_cost=0.0, outputs={"1130-P": 1.0},
+async def _run_issued(session, client, auth, instant) -> str:
+    await auto_je.create_for_mfg_movement(
+        session, company_id=auth["company_id"], user_id=auth["user_id"], order_id="mo:1", movement="issue:k1",
+        memo="Components issued", wip_code="1130-WIP", wip=Decimal("10"), lots={"1130-P": Decimal("-10")},
+        day=await auto_je.entry_day(session, auth["company_id"], instant.isoformat()),
     )
-    return "je:auto:mo:1:mfg"
+    return "je:auto:mo:1:issue:k1"
 
 
 async def _stock_adjusted(session, client, auth, instant) -> str:
@@ -75,7 +77,7 @@ async def _stock_adjusted(session, client, auth, instant) -> str:
     return "je:auto:list:a1:audit:0"
 
 
-_PATHS = [_bill_without_a_date, _return_received, _return_undone, _run_completed, _stock_adjusted]
+_PATHS = [_bill_without_a_date, _return_received, _return_undone, _run_issued, _stock_adjusted]
 _IDS = ["bill", "return-received", "return-undone", "manufacturing", "line-adjustment"]
 
 

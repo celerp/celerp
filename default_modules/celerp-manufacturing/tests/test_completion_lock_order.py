@@ -7,8 +7,8 @@ already emitted a ledger event for the same company.
 Every ledger insert takes an implicit foreign-key KEY SHARE lock on its company row
 (celerp/models/ledger.py: LedgerEntry.company_id -> companies.id) and holds it until the
 transaction ends. A one-tap build (celerp_manufacturing.routes.build_item with complete=True)
-emits mfg.order.created and then, in the same transaction, locks the company row to mint the
-output lot's barcode (_lock_code_namespace_for_completion -> lock_item_code_namespace). If
+emits mfg.order.created and then, in the same transaction, completes the run, which takes the
+company lock before it moves anything (celerp_manufacturing.movements, lock_company). If
 that lock is FOR UPDATE it has to upgrade past the transaction's own KEY SHARE, and two such
 transactions - each already holding KEY SHARE on the company, each now requesting the row
 lock - block on each other, so Postgres aborts one with a deadlock (SQLSTATE 40P01). The same
@@ -191,7 +191,7 @@ async def test_concurrent_one_tap_builds_no_deadlock(_db_engine):
     the exact create-and-complete lock upgrade. Both must complete with no deadlock; before
     the fix this pair aborts one side with 40P01."""
     from celerp_manufacturing.routes import build_item, BuildBody
-    import celerp_inventory.services as inventory_services
+    from celerp_manufacturing import movements
 
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
     company_id, user_id, user = await _seed_company(factory)
@@ -199,15 +199,13 @@ async def test_concurrent_one_tap_builds_no_deadlock(_db_engine):
     product_b = await _seed_buildable(factory, company_id, user, 1)
     results: dict[str, dict | BaseException] = {}
 
-    # By the time a completion reaches _lock_code_namespace_for_completion it has already
-    # emitted mfg.order.created and flushed it (the _all_item_states read autoflushes), so it
-    # holds the company KEY SHARE. Barrier the FIRST namespace-lock acquisition per session so
-    # both builds hold KEY SHARE before either takes the company lock, making the upgrade
-    # contention deterministic instead of a matter of scheduling luck. This wraps the real
-    # lock (never delays it beyond the barrier) and _lock_code_namespace_for_completion imports
-    # the name from this module each call, so the wrapper is what completion sees.
+    # By the time a completion takes the company lock it has already emitted
+    # mfg.order.created, so it holds the company KEY SHARE. Barrier the FIRST company-lock
+    # acquisition per session so both builds hold KEY SHARE before either takes the lock,
+    # making the upgrade contention deterministic instead of a matter of scheduling luck. This
+    # wraps the real lock (never delays it beyond the barrier).
     both_hold_key_share = asyncio.Barrier(2)
-    orig_lock = inventory_services.lock_item_code_namespace
+    orig_lock = movements.lock_company
     synced: set[int] = set()
 
     async def _barrier_then_lock(session, cid):
@@ -228,7 +226,7 @@ async def test_concurrent_one_tap_builds_no_deadlock(_db_engine):
         finally:
             await s.close()
 
-    inventory_services.lock_item_code_namespace = _barrier_then_lock
+    movements.lock_company = _barrier_then_lock
     try:
         await asyncio.wait_for(
             asyncio.gather(_one_tap("a", product_a), _one_tap("b", product_b)), timeout=30
@@ -244,5 +242,5 @@ async def test_concurrent_one_tap_builds_no_deadlock(_db_engine):
                 order = await s.get(Projection, {"company_id": company_id, "entity_id": order_id})
                 assert order.state["status"] == "completed", f"build {label} did not complete"
     finally:
-        inventory_services.lock_item_code_namespace = orig_lock
+        movements.lock_company = orig_lock
         await _cleanup(factory, company_id, user_id)

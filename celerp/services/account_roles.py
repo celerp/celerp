@@ -286,6 +286,28 @@ async def resolve(session: AsyncSession, company_id, role) -> str:
     return (await resolve_many(session, company_id, [role]))[str(AccountRole(role))]
 
 
+async def continue_role(session: AsyncSession, company_id, role, code: str) -> str:
+    """The account a balance already recognized for ``role`` keeps moving on: ``code``,
+    where it was recognized, never today's target. A remap does not move the balance, so
+    the account must still take postings for the role (in the chart, active, a leaf, of
+    the role's type) and is held until the transaction ends; otherwise the entry is
+    refused, since posting elsewhere would split the balance from its history."""
+    from celerp.services.journal_accounts import lock_accounts
+
+    role = AccountRole(role).value
+    accounts = await lock_accounts(session, company_id, {code})
+    if accounts is None:
+        return code
+    problem = target_problem(role, {role: code}, accounts.get(code))
+    if problem:
+        raise HTTPException(status_code=409, detail={
+            "message": (f"This balance is kept on account {code}, which cannot take it now: {problem} "
+                        "Make that account usable again in the chart of accounts."),
+            "message_key": "posting.continued_account_unusable",
+            "params": {"code": code, "problem": problem}})
+    return code
+
+
 async def set_role(session: AsyncSession, company_id, role: str, code: str) -> dict:
     """Point ``role`` at ``code`` for new recognition. Existing balances stay where they
     were posted; the old account stays in the role's scope for historical readers."""

@@ -12,7 +12,6 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -475,41 +474,6 @@ async def test_csv_cost_upsert_that_cannot_reconcile_changes_nothing(client, ses
     assert body["updated"] == 0 and any("cannot be carried" in e for e in body["errors"]), body
     state = await _state(session, auth, a)
     assert state["cost_total"] == 100.0 and state["name"] == "Lot"
-
-
-@pytest.mark.asyncio
-async def test_manufacturing_recost_of_sold_lot_adjusts_cogs(client, session, auth):
-    from celerp_manufacturing.routes import _recost_run_lots
-
-    lot = await _item(client, auth, 100.0)
-    doc = await _sell(client, session, auth, lot)
-    user = SimpleNamespace(id=auth["user_id"])
-    run = {"received_qty": 1, "received_lots": [lot]}
-    await _recost_run_lots(session, auth["company_id"], user, "mfg:order-sold", run, 120.0)
-    await session.commit()
-
-    assert await _cost(session, auth, lot) == 120.0
-    adjustments = await _cogs_adjustments(session, auth, doc)
-    assert len(adjustments) == 1
-    assert [_cogs(state) for state in adjustments.values()] == [20.0]
-
-
-@pytest.mark.asyncio
-async def test_manufacturing_recost_follows_merge_lineage(client, session, auth):
-    from celerp_manufacturing.routes import _recost_run_lots
-
-    lot, other = await _item(client, auth, 100.0, qty=2), await _item(client, auth, 50.0)
-    merged = await _merge(client, auth, [lot, other])
-    user = SimpleNamespace(id=auth["user_id"])
-    run = {"received_qty": 2, "received_lots": [lot]}
-    await _recost_run_lots(session, auth["company_id"], user, "mfg:order-1", run, 130.0)
-    await session.commit()
-    assert await _cost(session, auth, lot) == 130.0
-    assert await _cost(session, auth, merged) == 180.0
-    # Completing the same run again adds nothing.
-    await _recost_run_lots(session, auth["company_id"], user, "mfg:order-1", run, 130.0)
-    await session.commit()
-    assert await _cost(session, auth, merged) == 180.0
 
 
 # -- Zero-quantity unit cost: one normalization for price, edit and CSV -------

@@ -1,0 +1,500 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: MIT
+"""Production run movements: the one implementation of Issue, Receive, Complete and Cancel.
+
+Every entry point (the run endpoints, one-tap build, Demand Planning, bulk actions and the
+invoice finalize hook) moves stock and value through these functions, in the caller's
+transaction.
+
+The run owns its work in progress. Issue moves the stock value that actually left each
+component, at that moment, from the inventory account the component records onto the run's
+work in progress account, which is fixed at the first issue that carries value. Receive moves
+a share of what the run holds onto the new lot's own inventory account. Completion trues the
+lots up to the final cost through cost restatement, sends waste to cost of goods sold and
+leaves the run holding nothing. Each operation is dated once, takes the company lock before
+the run and the items, and is identified by one key from which every event and journal entry
+it writes is derived, so a retry finds what was written instead of moving anything again.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import uuid
+from dataclasses import dataclass
+from decimal import Decimal
+
+from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, SCHEMA_KEY, AccountRole
+from celerp.events.engine import emit_event, find_event_by_idempotency
+from celerp.models.company import Company
+from celerp.models.projections import Projection
+from celerp.services import auto_je
+from celerp.services.account_roles import (
+    continue_role,
+    current_settings,
+    lot_account,
+    new_lot_account,
+    resolve,
+)
+from celerp.services.company_lock import lock_company, lock_projections
+from celerp.services.line_measures import splitting_allowed
+from celerp.services.lot_origin import held_value
+from celerp.services.money import allocate_pro_rata, round_money
+
+from .expansion import merge_inputs
+
+# Namespace for produced-lot ids: a receipt retried with its key resolves to the same lot id.
+MFG_LOT_NS = uuid.UUID("6f1d0c2a-7b3e-4a9c-8d5f-2e0a1b4c6d8e")
+CLOSED_RUN_STATUSES = frozenset({"completed", "cancelled"})
+_EPS = 1e-9
+_ZERO = Decimal(0)
+
+
+def refuse(http_status: int, key: str, message: str, /, **params) -> HTTPException:
+    """A refusal the UI can show in the user's language: ``message`` is the English text,
+    ``message_key`` and ``params`` let a translation say the same thing."""
+    return HTTPException(status_code=http_status, detail={
+        "message": message, "message_key": f"mfg.{key}", "params": params})
+
+
+async def mfg_settings(session: AsyncSession, company_id) -> dict:
+    company = await session.get(Company, company_id)
+    return (company.settings or {}).get("manufacturing", {}) if company else {}
+
+
+def outstanding_inputs(run_state: dict) -> list[dict]:
+    """Per input, the quantity still to issue (required - already issued)."""
+    out = []
+    for inp in run_state.get("inputs", []):
+        rem = float(inp.get("quantity") or 0) - float(inp.get("issued_qty") or 0)
+        if rem > _EPS:
+            out.append({"item_id": inp.get("item_id"), "quantity": round(rem, 6)})
+    return out
+
+
+def outstanding_output(run_state: dict) -> float:
+    """Finished-goods quantity still to receive (expected - already received)."""
+    expected = float((run_state.get("expected_outputs") or [{}])[0].get("quantity") or 0)
+    return max(0.0, expected - float(run_state.get("received_qty") or 0))
+
+
+def _money(value) -> Decimal:
+    return Decimal(str(value or 0))
+
+
+def _fingerprint(request: dict) -> str:
+    return hashlib.sha256(json.dumps(request, sort_keys=True, default=str).encode()).hexdigest()[:32]
+
+
+@dataclass
+class _Op:
+    """One operation: who, on which run, and the business day everything it writes carries."""
+
+    session: AsyncSession
+    company_id: object
+    user_id: object
+    order_id: str
+    day: str
+    books: bool
+    currency: str
+
+    def round(self, value) -> Decimal:
+        return round_money(value, self.currency)
+
+    async def emit(self, entity_id: str, entity_type: str, event_type: str, data: dict, key: str,
+                   location_id=None, metadata: dict | None = None):
+        return await emit_event(
+            self.session, company_id=self.company_id, entity_id=entity_id, entity_type=entity_type,
+            event_type=event_type, data=data, actor_id=self.user_id, location_id=location_id,
+            source="api", idempotency_key=key, metadata_=metadata or {})
+
+    async def emit_run(self, event_type: str, data: dict, key: str):
+        return await self.emit(self.order_id, "mfg_order", event_type, {**data, "ts": self.day}, key)
+
+    async def post(self, movement: str, memo: str, wip_code: str | None, wip: Decimal,
+                   lots: dict[str, Decimal], waste: Decimal = _ZERO) -> None:
+        if not self.books:
+            return
+        await auto_je.create_for_mfg_movement(
+            self.session, company_id=self.company_id, user_id=self.user_id, order_id=self.order_id,
+            movement=movement, memo=memo, wip_code=wip_code, wip=wip, lots=lots, waste=waste, day=self.day)
+
+
+async def _begin(session: AsyncSession, company_id, user_id, order_id: str, at: str) -> _Op:
+    """Take the company lock (always first) and fix the operation's business day."""
+    await lock_company(session, company_id)
+    settings = await current_settings(session, company_id)
+    return _Op(session=session, company_id=company_id, user_id=user_id, order_id=order_id,
+               day=await auto_je.entry_day(session, company_id, at), books=SCHEMA_KEY in settings,
+               currency=str(settings.get("currency") or "USD").upper())
+
+
+async def _replayed(op: _Op, key: str, request: str):
+    """The event an earlier attempt of this operation wrote, or None. A key reused for a
+    different request is refused rather than answered with the first one's result."""
+    stored = await find_event_by_idempotency(op.session, op.company_id, key)
+    if stored is None:
+        return None
+    if stored.entity_id != op.order_id or (stored.data or {}).get("request") != request:
+        raise refuse(409, "key_reused", "This request key was already used for a different action. "
+                     "Send the action again without reusing the key.")
+    return stored
+
+
+async def _run(op: _Op) -> Projection:
+    """The run, locked, as the last committed operation left it."""
+    row = (await lock_projections(op.session, op.company_id, [op.order_id])).get(op.order_id)
+    if row is None or row.entity_type != "mfg_order":
+        raise HTTPException(status_code=404, detail="Order not found")
+    return row
+
+
+def _require_open(state: dict, action: str) -> None:
+    if state.get("status") in CLOSED_RUN_STATUSES:
+        raise refuse(409, "run_closed", f"This run is {state.get('status')}, so it cannot be {action}.",
+                     status=state.get("status"), action=action)
+
+
+def _wip(state: dict) -> Decimal:
+    """What the run holds: issued value not yet moved to its lots or waste."""
+    return _money(state.get("wip_issued")) - _money(state.get("wip_transferred")) - _money(state.get("wip_wasted"))
+
+
+def _require_settled(op: _Op, state: dict) -> None:
+    """A run whose work in progress is not known, or is known but kept nowhere in the books,
+    cannot move: anything it moved would leave the books unable to say where its value is."""
+    if state.get("wip_unresolved") or state.get("wip_untracked") or (
+            op.books and _wip(state) and not state.get("wip_account_code")):
+        raise refuse(409, "reconciliation_required",
+                     "This run started before Celerp tracked the value of materials in production, "
+                     "and that value cannot be worked out from its history. Reconcile it before "
+                     "issuing, receiving or completing.")
+
+
+# ---------------------------------------------------------------------------
+# Issue
+# ---------------------------------------------------------------------------
+
+def _requested(run_state: dict, items: list[dict] | None) -> list[dict]:
+    """The components to issue: the request with each item once, or everything outstanding."""
+    if not items:
+        return outstanding_inputs(run_state)
+    for line in items:
+        if not line.get("item_id") or float(line.get("quantity") or 0) <= 0:
+            raise refuse(422, "issue_quantity", "Each component issued needs a quantity greater than zero.")
+    return [{"item_id": i["item_id"], "quantity": round(i["quantity"], 6)} for i in merge_inputs(items)]
+
+
+async def issue(session: AsyncSession, company_id, user_id, order_id: str, items: list[dict] | None,
+                key: str | None, *, at: str) -> dict:
+    """Issue components into a run: the ``items`` given, or everything still outstanding."""
+    rk = key or uuid.uuid4().hex
+    op = await _begin(session, company_id, user_id, order_id, at)
+    request = _fingerprint({"items": items or None})
+    stored = await _replayed(op, f"mfg:{order_id}:issue:{rk}", request)
+    if stored is not None:
+        return {"issued": stored.data.get("items") or [], "value": stored.data.get("value")}
+    run = await _run(op)
+    _require_open(run.state, "issued to")
+    _require_settled(op, run.state)
+    return await _issue(op, run, _requested(run.state, items), rk, request)
+
+
+async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request: str) -> dict:
+    """Consume ``wanted`` from stock and move the value that left onto the run's work in
+    progress. Every check runs under the locks before anything is written."""
+    state = run.state
+    remaining = {i["item_id"]: i["quantity"] for i in outstanding_inputs(state)}
+    planned = {i.get("item_id") for i in state.get("inputs", [])}
+    for line in wanted:
+        if line["item_id"] not in planned:
+            raise refuse(422, "not_an_input", f"{line['item_id']} is not a component of this run.",
+                         item=line["item_id"])
+        if line["quantity"] > remaining.get(line["item_id"], 0.0) + _EPS:
+            raise refuse(409, "over_issue",
+                         f"Only {remaining.get(line['item_id'], 0.0):g} of {line['item_id']} is still to be "
+                         "issued to this run.", item=line["item_id"], remaining=remaining.get(line["item_id"], 0.0))
+    if not wanted:
+        return {"issued": [], "value": "0"}
+
+    from celerp_inventory.projections import is_item_available
+
+    rows = await lock_projections(op.session, op.company_id, [i["item_id"] for i in wanted])
+    befores: dict[str, Decimal] = {}
+    for line in wanted:
+        item_id = line["item_id"]
+        row = rows.get(item_id)
+        if row is None or row.entity_type != "item":
+            raise refuse(404, "item_missing", f"Component {item_id} was not found.", item=item_id)
+        s = row.state or {}
+        sku = s.get("sku") or item_id
+        if str(s.get("status") or "").lower() == "draft":
+            raise refuse(422, "item_draft", f"{sku} is a draft. Make it available before issuing it.", sku=sku)
+        held = held_value(row)
+        if not is_item_available(s) or s.get("status_doc_id") or held is None:
+            raise refuse(409, "item_unavailable",
+                         f"{sku} is not stock the company holds and can use (it is {s.get('status') or 'unknown'}).",
+                         sku=sku, status=s.get("status"))
+        free = float(s.get("quantity") or 0) - float(s.get("reserved_quantity") or 0)
+        if free + _EPS < line["quantity"]:
+            raise refuse(409, "insufficient_stock",
+                         f"Only {max(free, 0.0):g} of {sku} is in stock and not reserved; {line['quantity']:g} is needed.",
+                         sku=sku, available=max(free, 0.0), needed=line["quantity"])
+        befores[item_id] = op.round(held)
+        if op.books and befores[item_id]:
+            lot_account(s)  # stock whose inventory account is not known cannot move
+
+    wip_code = state.get("wip_account_code")
+    if op.books and any(befores.values()):
+        wip_code = (await continue_role(op.session, op.company_id, AccountRole.WORK_IN_PROGRESS, wip_code)
+                    if wip_code else await resolve(op.session, op.company_id, AccountRole.WORK_IN_PROGRESS))
+
+    credits: dict[str, Decimal] = {}
+    total = _ZERO
+    for line in wanted:
+        item_id = line["item_id"]
+        await op.emit(item_id, "item", "item.consumed", {"quantity_consumed": line["quantity"]},
+                      f"mfg:{op.order_id}:issue:{rk}:{item_id}",
+                      metadata={"manufacturing_order_id": op.order_id})
+        after = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": item_id},
+                                     populate_existing=True)
+        moved = befores[item_id] - op.round(held_value(after) or 0)
+        if moved and op.books:
+            code = lot_account(after.state or {})
+            credits[code] = credits.get(code, _ZERO) - moved
+        total += moved
+    await op.post(f"issue:{rk}", f"Components issued to production run {op.order_id}", wip_code, total, credits)
+    data = {"items": wanted, "issued_by": str(op.user_id), "value": str(total), "request": request}
+    if wip_code and total:
+        data["wip_account_code"] = wip_code
+    await op.emit_run("mfg.order.issued", data, f"mfg:{op.order_id}:issue:{rk}")
+    return {"issued": wanted, "value": str(total)}
+
+
+# ---------------------------------------------------------------------------
+# Receive
+# ---------------------------------------------------------------------------
+
+async def receive(session: AsyncSession, company_id, user_id, order_id: str, quantity: float | None,
+                  key: str | None, *, at: str) -> dict:
+    """Receive finished goods as a new lot: ``quantity``, or everything still outstanding. A run
+    whose output is fully received completes."""
+    rk = key or uuid.uuid4().hex
+    op = await _begin(session, company_id, user_id, order_id, at)
+    request = _fingerprint({"quantity": quantity})
+    stored = await _replayed(op, f"mfg:{order_id}:receive:{rk}:received", request)
+    if stored is not None:
+        return {"received": stored.data.get("quantity"), "lot_item_id": stored.data.get("lot_item_id")}
+    run = await _run(op)
+    _require_open(run.state, "received into")
+    _require_settled(op, run.state)
+    qty = outstanding_output(run.state) if quantity is None else float(quantity)
+    lot_id = await _receive(op, run, qty, rk, request)
+    run = await _run(op)
+    if outstanding_output(run.state) <= _EPS:
+        await _close(op, run, {}, request)
+    return {"received": qty, "lot_item_id": lot_id}
+
+
+async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) -> str:
+    """Restock ``qty`` of the run's output as a new lot carrying its share of the run's work in
+    progress: the share of the quantity still to come, so receiving 3 then 2 moves what
+    receiving 5 would, and the last receipt takes everything left."""
+    state = run.state
+    outstanding = outstanding_output(state)
+    if qty <= 0:
+        raise refuse(422, "receive_quantity", "The quantity received must be greater than zero.")
+    if qty > outstanding + _EPS:
+        raise refuse(409, "over_receipt",
+                     f"Only {outstanding:g} is still to be received from this run; {qty:g} cannot be received.",
+                     remaining=outstanding, quantity=qty)
+    if outstanding_inputs(state):
+        raise refuse(409, "issue_first", "Issue every component to this run before receiving its output.")
+    out_id = state.get("output_item_id")
+    product = (await lock_projections(op.session, op.company_id, [out_id])).get(out_id) if out_id else None
+    if product is None or product.entity_type != "item":
+        raise refuse(409, "no_output", "This run has no product to receive its output into.")
+    p = product.state or {}
+    if str(p.get("status") or "").lower() == "draft":
+        raise refuse(422, "output_draft", f"{p.get('sku') or out_id} is a draft. Make it available first.",
+                     sku=p.get("sku") or out_id)
+
+    wip = _wip(state)
+    amount = wip if qty >= outstanding - _EPS else op.round(wip * _money(qty) / _money(outstanding))
+    wip_code = state.get("wip_account_code")
+    if op.books:
+        code = await resolve(op.session, op.company_id, AccountRole.INVENTORY_PURCHASED)
+        if amount:
+            wip_code = await continue_role(op.session, op.company_id, AccountRole.WORK_IN_PROGRESS, wip_code)
+    else:
+        code = await new_lot_account(op.session, op.company_id, AccountRole.INVENTORY_PURCHASED)
+
+    from celerp_inventory.services import allocate_internal_codes
+
+    lot_id = f"item:{uuid.uuid5(MFG_LOT_NS, f'{op.order_id}:{rk}')}"
+    loc = p.get("location_id")
+    mark = {"manufacturing_order_id": op.order_id}
+    await op.emit(lot_id, "item", "item.created", {
+        "sku": p.get("sku"), "name": p.get("name"), "sell_by": p.get("sell_by"),
+        "category": p.get("category"), "inventory_type": p.get("inventory_type"),
+        "allow_splitting": splitting_allowed(p), "quantity": 0, "location_id": loc,
+        "parent_item_id": out_id, "lot": True,
+        # A produced lot is a new physical parcel with its own barcode.
+        "barcode": (await allocate_internal_codes(op.session, op.company_id))[0],
+        "manufacturing_order_id": op.order_id, "cost_total": float(amount), LOT_ACCOUNT_FIELD: code,
+    }, f"mfg:{op.order_id}:receive:{rk}:created", location_id=loc, metadata=mark)
+    await op.emit(lot_id, "item", "item.produced", {"quantity_produced": qty},
+                  f"mfg:{op.order_id}:receive:{rk}:produced", location_id=loc, metadata=mark)
+    await op.post(f"receive:{rk}", f"Output received from production run {op.order_id}", wip_code, -amount,
+                  {code: amount} if code else {})
+    await op.emit_run("mfg.order.received", {
+        "quantity": qty, "lot_item_id": lot_id, "received_by": str(op.user_id), "value": str(amount),
+        "request": request}, f"mfg:{op.order_id}:receive:{rk}:received")
+    return lot_id
+
+
+# ---------------------------------------------------------------------------
+# Complete
+# ---------------------------------------------------------------------------
+
+async def complete(session: AsyncSession, company_id, user_id, order_id: str, payload: dict,
+                   key: str | None, *, at: str, quantity: float | None = None) -> dict:
+    """Finish a run: issue what is outstanding, receive the output still to come (``quantity``
+    of it when given, else all of it) and close. ``payload`` holds the closing details
+    (actual_outputs, waste_quantity, waste_unit, waste_reason, labor_hours)."""
+    rk = key or uuid.uuid4().hex
+    op = await _begin(session, company_id, user_id, order_id, at)
+    request = _fingerprint({"key": rk, "payload": payload, "quantity": quantity})
+    stored = await find_event_by_idempotency(session, company_id, f"mfg:{order_id}:completed")
+    if stored is not None and (stored.data or {}).get("request") == request:
+        return {"status": "completed"}
+    run = await _run(op)
+    _require_open(run.state, "completed")
+    _require_settled(op, run.state)
+    outstanding = outstanding_inputs(run.state)
+    if outstanding:
+        if (await mfg_settings(session, company_id)).get("require_issued_before_complete"):
+            raise refuse(409, "issue_required",
+                         "Issue all components before completing this run (required by your manufacturing settings).")
+        await _issue(op, run, outstanding, f"{rk}:issue", request)
+        run = await _run(op)
+    qty = outstanding_output(run.state) if quantity is None else float(quantity)
+    if qty > _EPS and run.state.get("output_item_id"):
+        await _receive(op, run, qty, f"{rk}:receive", request)
+        run = await _run(op)
+    await _close(op, run, payload, request)
+    return {"status": "completed"}
+
+
+async def _close(op: _Op, run: Projection, payload: dict, request: str) -> None:
+    """Close a run, leaving it holding nothing: waste to cost of goods sold, and the rest
+    shared over its lots by quantity, each lot restated by the difference from what it took
+    when it was received."""
+    from celerp_inventory.services import CostRestatementConflict, goods_basis, restate_item_cost
+
+    state = run.state
+    issued, held = _money(state.get("wip_issued")), _wip(state)
+    waste_qty = float(payload.get("waste_quantity") or 0)
+    total_in = sum(float(i.get("quantity") or 0) for i in state.get("inputs", []))
+    # Waste is its share of everything issued, whether or not the output was already received: the
+    # lots then give back what they took for it.
+    waste = min(op.round(issued * _money(waste_qty) / _money(total_in)), issued) if waste_qty > 0 and total_in > 0 else _ZERO
+    finished = issued - waste
+    receipts = [r for r in state.get("receipts") or [] if float(r.get("quantity") or 0) > 0]
+    if finished and not receipts:
+        raise refuse(409, "unaccounted_value",
+                     "Nothing was received from this run, so the materials issued to it must be recorded "
+                     "as waste before it can be completed.")
+    shares = allocate_pro_rata(finished, [_money(r["quantity"]) for r in receipts], op.currency) if receipts else []
+
+    debits: dict[str, Decimal] = {}
+    for receipt, share in zip(receipts, shares):
+        delta = share - _money(receipt.get("value"))
+        if not delta:
+            continue
+        lot_id = receipt["lot_item_id"]
+        end = await _lineage_end(op, lot_id)
+        lot = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": lot_id})
+        try:
+            await restate_item_cost(
+                op.session, op.company_id, lot_id, event_type="item.cost_adjusted",
+                data={"cost_total": float(_money(goods_basis(lot.state or {})) + delta),
+                      "manufacturing_order_id": op.order_id},
+                actor_id=op.user_id, source="api", idempotency_key=f"mfg:{op.order_id}:recost:{lot_id}",
+                day=op.day)
+        except CostRestatementConflict as exc:
+            raise refuse(409, "recost_conflict", f"This run cannot be completed: {exc}.", reason=str(exc)) from exc
+        if op.books:
+            code = lot_account(end.state or {})
+            debits[code] = debits.get(code, _ZERO) + delta
+
+    wip_code = state.get("wip_account_code")
+    if op.books and held:
+        wip_code = await continue_role(op.session, op.company_id, AccountRole.WORK_IN_PROGRESS, wip_code)
+    await op.post("completed", f"Production run {op.order_id} completed", wip_code, -held, debits, waste)
+
+    if payload.get("actual_outputs") is not None:
+        actual_outputs = payload["actual_outputs"]
+    else:
+        expected = (state.get("expected_outputs") or [{}])[0]
+        actual_outputs = [{**expected, "quantity": float(state.get("received_qty") or 0)}] if expected else []
+    await op.emit_run("mfg.order.completed", {
+        "completed_by": str(op.user_id), "actual_outputs": actual_outputs,
+        "waste": ({"quantity": payload.get("waste_quantity"), "unit": payload.get("waste_unit"),
+                   "reason": payload.get("waste_reason")} if payload.get("waste_quantity") is not None else None),
+        "labor_hours": payload.get("labor_hours"),
+        "transferred": str(finished), "wasted": str(waste), "request": request,
+    }, f"mfg:{op.order_id}:completed")
+
+
+async def _lineage_end(op: _Op, lot_id: str) -> Projection:
+    """Where a received lot's value is now: the lot, or the lot it was merged into, followed to
+    the end. Its account takes the lot's final cost, so that end must still hold the stock or
+    have sold it."""
+    seen: set[str] = set()
+    current = lot_id
+    while True:
+        row = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": current})
+        if row is None or row.entity_type != "item" or current in seen:
+            raise refuse(409, "output_gone", "A lot received from this run can no longer be found, so its final "
+                         "cost cannot be recorded.", lot=current)
+        seen.add(current)
+        s = row.state or {}
+        status = str(s.get("status") or "").lower()
+        if status == "merged" and s.get("merged_into"):
+            current = s["merged_into"]
+            continue
+        if status == "sold" or held_value(row) is not None:
+            return row
+        raise refuse(409, "output_gone",
+                     f"{s.get('sku') or current}, received from this run, is {status or 'no longer held'}, so its "
+                     "final cost cannot be recorded.", lot=s.get("sku") or current, status=status)
+
+
+# ---------------------------------------------------------------------------
+# Cancel
+# ---------------------------------------------------------------------------
+
+async def cancel(session: AsyncSession, company_id, user_id, order_id: str, reason: str | None,
+                 key: str | None, *, at: str):
+    """Cancel a run that has not moved anything. A run that has issued materials or received
+    output holds their value, which cancelling would lose."""
+    rk = key or uuid.uuid4().hex
+    op = await _begin(session, company_id, user_id, order_id, at)
+    request = _fingerprint({"reason": reason})
+    stored = await _replayed(op, f"mfg:{order_id}:cancel:{rk}", request)
+    if stored is not None:
+        return stored
+    run = await _run(op)
+    _require_open(run.state, "cancelled")
+    if float(run.state.get("received_qty") or 0) > 0 or any(
+            float(i.get("issued_qty") or 0) > 0 for i in run.state.get("inputs", [])):
+        raise refuse(409, "cancel_moved",
+                     "This run has already used materials or produced output, so it cannot be cancelled. "
+                     "Put it on hold or complete it instead.")
+    data = {"request": request}
+    if reason:
+        data["reason"] = reason
+    return await op.emit_run("mfg.order.cancelled", data, f"mfg:{order_id}:cancel:{rk}")

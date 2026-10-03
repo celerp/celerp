@@ -133,6 +133,7 @@ async def test_receive_rejects_draft_output_even_if_status_changed_after_order_c
     r = await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 2})
     assert r.status_code == 200, r.text
     order_id = r.json()["id"]
+    assert (await client.post(f"/manufacturing/{order_id}/issue", headers=_h(token))).status_code == 200
 
     revert = await client.post("/items/bulk/revert-to-draft", headers=_h(token), json={"entity_ids": [ring]})
     assert revert.status_code == 200, revert.text

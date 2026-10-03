@@ -96,19 +96,6 @@ async def test_half_cent_landed_capitalisation_stays_balanced(session):
     assert lines == [("1130-P", 0.02, 0.0), ("1130-FRT", 0.0, 0.01), ("1130-DTY", 0.0, 0.01)]
 
 
-@pytest.mark.asyncio
-async def test_half_cent_manufacturing_completion_stays_balanced(session):
-    auth = await _company(session, "USD")
-    await auto_je.create_for_mfg_completed(
-        session, company_id=auth["company_id"], user_id=auth["user_id"], order_id="mo:1",
-        inputs={"1130-P": 0.015}, waste_cost=0.005, outputs={"1130-P": 1.0},
-    )
-    await session.commit()
-    lines = await _je(session, auth, "je:auto:mo:1:mfg")
-    assert lines == [("1130-P", 0.01, 0.0), ("5100", 0.01, 0.0), ("1130-P", 0.0, 0.02)]
-    assert _balanced(lines)
-
-
 def _bill(total: float, lines: list[tuple[float, str]], **fields) -> dict:
     return {"doc_type": "bill", "total": total, **fields, "line_items": [
         {"description": "Line", "sku": "SKU" if receive_as == "stock" else "", "receive_as": receive_as,

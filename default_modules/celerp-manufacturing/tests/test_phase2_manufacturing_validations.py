@@ -58,14 +58,15 @@ async def test_complete_with_waste_posts_balanced_je(client):
     assert done.status_code == 200
 
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
-    je = next(e for e in ledger if run in (e["data"].get("memo") or ""))
-    entries = je["data"]["entries"]
-    accounts = [x["account"] for x in entries]
-    assert {"1130-OB", "1130-P", "5100"} <= set(accounts)
-    assert any(x["account"] == "5100" and float(x.get("debit", 0) or 0) > 0 for x in entries)  # waste posted
-    debit = sum(float(x.get("debit", 0) or 0) for x in entries)
-    credit = sum(float(x.get("credit", 0) or 0) for x in entries)
-    assert abs(debit - credit) < 1e-6
+    jes = [e["data"]["entries"] for e in ledger
+           if run in (e["data"].get("memo") or "") and e["event_type"] == "acc.journal_entry.created"]
+    # Issued from opening stock into work in progress, received as produced stock, waste to cost of goods sold.
+    assert {x["account"] for entries in jes for x in entries} == {"1130-OB", "1130-WIP", "1130-P", "5100"}
+    assert any(x["account"] == "5100" and float(x.get("debit", 0) or 0) > 0 for entries in jes for x in entries)
+    for entries in jes:
+        debit = sum(float(x.get("debit", 0) or 0) for x in entries)
+        credit = sum(float(x.get("credit", 0) or 0) for x in entries)
+        assert abs(debit - credit) < 1e-6
 
 
 @pytest.mark.asyncio
