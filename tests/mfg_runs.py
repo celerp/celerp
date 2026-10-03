@@ -102,3 +102,44 @@ async def set_settings(session, auth, **changes) -> None:
     company = await locked_company(session, auth["company_id"])
     company.settings = {**(company.settings or {}), **changes}
     await session.commit()
+
+
+async def _act(client, auth, order: str, action: str, body: dict, key: str | None):
+    if key:
+        body["idempotency_key"] = key
+    return await client.post(f"/manufacturing/{order}/{action}", headers=auth["headers"], json=body)
+
+
+async def give_back(client, auth, order: str, items: list[tuple[str, float]] | None = None, key: str | None = None):
+    """Return issued materials: the ``items`` given, or everything issued."""
+    body: dict = {}
+    if items is not None:
+        body["items"] = [{"item_id": i, "quantity": q} for i, q in items]
+    return await _act(client, auth, order, "return", body, key)
+
+
+async def undo_receipt(client, auth, order: str, lot_id: str, key: str | None = None):
+    return await _act(client, auth, order, "undo-receipt", {"lot_item_id": lot_id}, key)
+
+
+async def reopen(client, auth, order: str, key: str | None = None):
+    return await _act(client, auth, order, "reopen", {}, key)
+
+
+async def cancel(client, auth, order: str, key: str | None = None):
+    return await _act(client, auth, order, "cancel", {}, key)
+
+
+async def balances(session, auth) -> dict[str, float]:
+    """Every account's posted balance (debit - credit), accounts at zero left out."""
+    session.expire_all()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry"))).scalars()
+    net: dict[str, float] = {}
+    for r in rows:
+        if (r.state or {}).get("status") != "posted":
+            continue
+        for e in r.state.get("entries") or []:
+            net[e["account"]] = round(net.get(e["account"], 0.0) + float(e.get("debit") or 0)
+                                      - float(e.get("credit") or 0), 2)
+    return {code: v for code, v in net.items() if v}

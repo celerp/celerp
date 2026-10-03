@@ -94,6 +94,12 @@ class IssueBody(BaseModel):
     idempotency_key: str | None = None
 
 
+class ReturnBody(BaseModel):
+    # Components to return from a run to their lots. Omit `items` to return everything issued.
+    items: list[MfgInput] | None = None
+    idempotency_key: str | None = None
+
+
 class ReceiveBody(BaseModel):
     # Finished-goods quantity to receive. Omit `quantity` to receive everything still outstanding.
     quantity: FiniteFloat | None = None
@@ -814,7 +820,7 @@ class BulkRunActionBody(BaseModel):
     action: str = ""
 
 
-_BULK_RUN_ACTIONS = {"start", "issue", "complete", "hold", "resume", "cancel"}
+_BULK_RUN_ACTIONS = {"start", "issue", "return", "complete", "hold", "resume", "cancel"}
 
 
 @router.post("/bulk-action")
@@ -825,7 +831,7 @@ async def bulk_run_action(
     _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Apply a lifecycle action (start/issue/complete/hold/resume/cancel) to many runs at once.
+    """Apply a lifecycle action (start/issue/return/complete/hold/resume/cancel) to many runs at once.
     Runs in a state that does not permit the action are skipped (not a hard error)."""
     action = payload.action
     if action not in _BULK_RUN_ACTIONS:
@@ -867,6 +873,8 @@ async def bulk_run_action(
                     await movements.cancel(session, company_id, user.id, run_id, None, rk, at=at)
                 elif action == "issue":
                     await movements.issue(session, company_id, user.id, run_id, None, rk, at=at)
+                elif action == "return":
+                    await movements.return_materials(session, company_id, user.id, run_id, None, rk, at=at)
                 elif action == "complete":
                     await movements.complete(session, company_id, user.id, run_id, {}, rk, at=at)
             done.append(run_id)
@@ -1524,6 +1532,25 @@ async def issue_order(
     return result
 
 
+@router.post("/{order_id}/return")
+async def return_order_materials(
+    order_id: str,
+    payload: ReturnBody | None = None,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Return issued components to the lots they came from, at the value they were issued at.
+    Omitting `items` returns everything issued."""
+    items = [i.model_dump() for i in payload.items] if (payload and payload.items) else None
+    result = await movements.return_materials(session, company_id, user.id, order_id, items,
+                                              payload.idempotency_key if payload else None,
+                                              at=datetime.now(timezone.utc).isoformat())
+    await session.commit()
+    return result
+
+
 @router.post("/{order_id}/receive")
 async def receive_order(
     order_id: str,
@@ -1574,7 +1601,7 @@ async def cancel_order(
     _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Cancel a run that has not used materials or produced output."""
+    """Cancel a run that holds no materials or output."""
     entry = await movements.cancel(session, company_id, user.id, order_id, payload.reason, payload.idempotency_key,
                                    at=datetime.now(timezone.utc).isoformat())
     await session.commit()

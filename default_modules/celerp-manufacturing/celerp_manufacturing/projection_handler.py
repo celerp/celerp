@@ -37,7 +37,9 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         # The lots this run has produced, in receipt order - the run's own record of its output,
         # used to re-cost them at completion without scanning every item.
         current.setdefault("received_lots", [])
-        current["inputs"] = [{**i, "issued_qty": float(i.get("issued_qty") or 0)} for i in current.get("inputs", [])]
+        # What was issued, and the value it took, are written only by movements.
+        current["inputs"] = [{**{k: v for k, v in i.items() if k != "issued_value"},
+                              "issued_qty": float(i.get("issued_qty") or 0)} for i in current.get("inputs", [])]
     elif event_type == "mfg.order.started":
         current["status"] = "in_progress"
         current["is_in_production"] = True
@@ -58,17 +60,35 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         current.pop("hold_reason", None)
         # The same item may appear more than once in an event; every occurrence counts.
         issued: dict = {}
+        values: dict = {}
         for i in data.get("items", []):
             issued[i.get("item_id")] = issued.get(i.get("item_id"), 0.0) + float(i.get("quantity") or 0)
+            if "value" in i:
+                values[i.get("item_id")] = Decimal(str(values.get(i.get("item_id")) or 0)) + Decimal(str(i["value"]))
         for inp in current.get("inputs", []):
-            if inp.get("item_id") in issued:
-                inp["issued_qty"] = float(inp.get("issued_qty") or 0) + issued.pop(inp["item_id"])
+            item_id = inp.get("item_id")
+            if item_id in issued:
+                # A component issued with its value keeps that value for a return; one issued
+                # without it (an older release) keeps none, and cannot be returned.
+                if item_id in values and (inp.get("issued_value") is not None or not inp.get("issued_qty")):
+                    _add(inp, "issued_value", values[item_id])
+                else:
+                    inp.pop("issued_value", None)
+                inp["issued_qty"] = float(inp.get("issued_qty") or 0) + issued.pop(item_id)
         if "value" in data:
             _add(current, "wip_issued", data["value"])
             if data.get("wip_account_code"):
                 current["wip_account_code"] = data["wip_account_code"]
         elif data.get("items"):
             current["wip_untracked"] = True
+    elif event_type == "mfg.order.returned":
+        returned = {i.get("item_id"): i for i in data.get("items", [])}
+        for inp in current.get("inputs", []):
+            line = returned.pop(inp.get("item_id"), None)
+            if line is not None:
+                inp["issued_qty"] = max(0.0, round(float(inp.get("issued_qty") or 0) - float(line["quantity"]), 9))
+                _add(inp, "issued_value", -Decimal(str(line["value"])))
+        _add(current, "wip_issued", -Decimal(str(data["value"])))
     elif event_type == "mfg.order.received":
         current["received_qty"] = float(current.get("received_qty") or 0) + float(data.get("quantity") or 0)
         lot_id = data.get("lot_item_id")
