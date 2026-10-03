@@ -190,14 +190,11 @@ def _make_archive(
 ) -> bytes:
     """Build a minimal .celerp-backup in memory and return bytes.
 
-    `version` defaults to a value guaranteed to be <= the current
-    installed version, so tests never trip the version policy in any
-    environment (CI's 0.1.dev1 vs local 1.1.11.dev20). Pass an explicit
-    string to test a specific version scenario.
+    `version` defaults to the running version: a backup this copy made itself.
+    Pass an explicit string to test a specific version scenario.
     """
     if version is None:
-        from celerp.services.backup_import import _safe_test_version
-        version = _safe_test_version()
+        from celerp import __version__ as version
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         if include_meta:

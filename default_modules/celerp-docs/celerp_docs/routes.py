@@ -22,8 +22,8 @@ import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.events.engine import (emit_event, find_event_by_idempotency, refuse_stripe_payment_removal,
-                                  stripe_origin_indexes, stripe_payment_indexes)
+from celerp.events.engine import (emit_event, find_event_by_idempotency, is_stripe_receipt,
+                                  refuse_stripe_payment_removal, stripe_payment_indexes, stripe_receipt_references)
 from celerp.importers.results import failure_reason
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
@@ -2537,12 +2537,8 @@ async def _alloc_payment_index(session, company_id, payments: list,
     idx = max(len(payments),
               1 + max((int(p.get("index") or 0) for p in payments), default=-1))
     if key_doc_id and key_type:
-        from celerp.models.ledger import LedgerEntry as _LE
-        from celerp.services.je_keys import je_idempotency_key as _je_k
-        while (await session.execute(select(_LE.id).where(
-                _LE.company_id == company_id,
-                _LE.idempotency_key == _je_k(key_doc_id, f"{key_type}:{idx}", "c"),
-        ).limit(1))).first() is not None:
+        from celerp.services.je_keys import je_minted
+        while await je_minted(session, company_id, key_doc_id, f"{key_type}:{idx}"):
             idx += 1
     return idx
 
@@ -2773,7 +2769,7 @@ async def posted_books(session, company_id, entity_id: str, row: Projection, pay
     document's rate now, as it always did."""
     if payment.get("books"):
         return PaymentBooks(**payment["books"])
-    if payment.get("index") in await stripe_origin_indexes(session, company_id, entity_id):
+    if is_stripe_receipt(payment, await stripe_receipt_references(session, company_id, entity_id)):
         return await _books_from_entry(session, company_id, entity_id, row, payment)
     company = await session.get(Company, company_id)
     return PaymentBooks(
@@ -2876,9 +2872,8 @@ async def reverse_payment_refund(session, company_id, entity_id: str, row: Proje
     *books*. Undoing the latest refund mirrors its entry; undoing an earlier one still
     leaves the books at what the refunds left in place convert to. The caller commits.
     Returns the event, flagged ``was_deduped`` when *idempotency_key* already recorded it."""
-    from celerp.services.je_keys import je_idempotency_key
+    from celerp.services.je_keys import je_idempotency_key, unminted_payment_key
     index, number = payment.get("index"), refund["refund_number"]
-    key = f"refund_{index}_{number}"
     amount = to_decimal(refund["amount"])
     left_given_back = to_stored_float(to_decimal(payment.get("refunded") or 0) - amount)
     entry = await emit_event(
@@ -2890,6 +2885,8 @@ async def reverse_payment_refund(session, company_id, entity_id: str, row: Proje
     )
     if getattr(entry, "was_deduped", False):
         return entry
+    key = await unminted_payment_key(session, company_id, entity_id, "payment.refund_reversed",
+                                     f"refund_{index}_{number}")
     lines = auto_je.payment_return_entries(
         doc_type=row.state.get("doc_type", "invoice"), bank_account_code=books.bank_account,
         amount=to_stored_float(amount),

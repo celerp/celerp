@@ -1,0 +1,175 @@
+name: Packaged Upgrade Smoke
+
+# The packaged app through a user's upgrade and downgrade: the latest release,
+# then the candidate over it, then the release again over the candidate, then the
+# in-app updater. Nightly and on demand, never per pull request.
+#
+# The candidate is the dev-latest build, or the Build Binaries run given as
+# candidate_run. Releases before GUARDED_SINCE do not check the version of an
+# install or of the data before opening it, so with such a release as "previous"
+# the downgrade step reports what happened and asserts nothing.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      previous:
+        description: "Release tag to upgrade from (blank: the latest release)"
+        type: string
+        default: ""
+      candidate_run:
+        description: "Build Binaries run id to take the candidate from (blank: dev-latest)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GUARDED_SINCE: "2.5.4"
+
+jobs:
+  upgrade:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: Celerp.AppImage
+            artifact: binaries-ubuntu-latest
+          - os: windows-latest
+            asset: Celerp-Setup.exe
+            artifact: binaries-windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download the previous release and the candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/previous" "$RUNNER_TEMP/candidate"
+          PREVIOUS="${{ inputs.previous }}"
+          [ -n "$PREVIOUS" ] || PREVIOUS=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          gh release download "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --pattern "${{ matrix.asset }}" --dir "$RUNNER_TEMP/previous"
+          if [ -n "${{ inputs.candidate_run }}" ]; then
+            gh run download "${{ inputs.candidate_run }}" --repo "$GITHUB_REPOSITORY" --name "${{ matrix.artifact }}" --dir "$RUNNER_TEMP/candidate"
+          else
+            gh release download dev-latest --repo "$GITHUB_REPOSITORY" --pattern "${{ matrix.asset }}" --dir "$RUNNER_TEMP/candidate"
+          fi
+          PREVIOUS_VERSION="${PREVIOUS#v}"
+          GUARDED=false
+          [ "$(printf '%s\n%s\n' "$GUARDED_SINCE" "$PREVIOUS_VERSION" | sort -V | head -1)" = "$GUARDED_SINCE" ] && GUARDED=true
+          echo "PREVIOUS_VERSION=$PREVIOUS_VERSION" >> "$GITHUB_ENV"
+          echo "PREVIOUS_GUARDED=$GUARDED" >> "$GITHUB_ENV"
+          echo "previous $PREVIOUS (checks before opening: $GUARDED); candidate ${{ inputs.candidate_run || 'dev-latest' }}"
+
+      # Data: each copy opens the same data directory in turn.
+      - name: Previous, candidate, downgrade, update (Linux, data)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libfuse2 >/dev/null
+          chmod +x "$RUNNER_TEMP"/previous/Celerp.AppImage "$RUNNER_TEMP"/candidate/Celerp.AppImage
+          export HOME="$RUNNER_TEMP/home"; mkdir -p "$HOME"
+          # Opens the data with one copy; prints "ready" or "not-ready" after $2 seconds at most.
+          open_data() {
+            local app="$1" wait="$2" log="$RUNNER_TEMP/$3.log"
+            export CELERP_API_PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+            setsid xvfb-run -a "$app" >"$log" 2>&1 &
+            local pid=$! deadline=$(( $(date +%s) + wait )) state=not-ready
+            while [ "$(date +%s)" -lt "$deadline" ] && kill -0 "$pid" 2>/dev/null; do
+              if curl -fs "http://127.0.0.1:$CELERP_API_PORT/health/ready" | grep -q '"db"[[:space:]]*:[[:space:]]*"ok"'; then state=ready; break; fi
+              sleep 1
+            done
+            # Stop the app with its servers and bundled database, so the next copy
+            # finds the data directory free.
+            kill -TERM -- "-$pid" 2>/dev/null || true
+            for _ in $(seq 60); do pgrep -s "$pid" >/dev/null || break; sleep 1; done
+            kill -KILL -- "-$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+            echo "$state"
+          }
+          # The data a refused copy must leave alone: the config and the modules folder.
+          data_state() {
+            find "$HOME/.config" \( -name 'celerp-config.json' -o -path '*/modules/*' \) -type f -print0 2>/dev/null |
+              sort -z | xargs -0 -r sha256sum
+          }
+          [ "$(open_data "$RUNNER_TEMP/previous/Celerp.AppImage" 180 previous)" = ready ] || { tail -100 "$RUNNER_TEMP/previous.log"; echo "::error::previous release did not open fresh data"; exit 1; }
+          echo "previous: opened fresh data"
+          [ "$(open_data "$RUNNER_TEMP/candidate/Celerp.AppImage" 240 candidate)" = ready ] || { tail -100 "$RUNNER_TEMP/candidate.log"; echo "::error::candidate did not open the previous release's data"; exit 1; }
+          echo "candidate: opened and migrated the previous release's data"
+          before=$(data_state)
+          state=$(open_data "$RUNNER_TEMP/previous/Celerp.AppImage" 90 downgrade)
+          after=$(data_state)
+          if [ "$PREVIOUS_GUARDED" = true ]; then
+            [ "$state" = not-ready ] || { echo "::error::previous release opened data the candidate had opened"; exit 1; }
+            [ "$before" = "$after" ] || { diff <(echo "$before") <(echo "$after") || true; echo "::error::previous release changed data it refused"; exit 1; }
+            echo "downgrade: refused, config and modules unchanged"
+          else
+            echo "::notice::previous release $PREVIOUS_VERSION predates the check (from $GUARDED_SINCE); downgrade result: $state, data changed: $([ "$before" = "$after" ] && echo no || echo yes). Not asserted."
+          fi
+          [ "$(open_data "$RUNNER_TEMP/candidate/Celerp.AppImage" 240 update)" = ready ] || { tail -100 "$RUNNER_TEMP/update.log"; echo "::error::candidate did not reopen the data after the downgrade attempt"; exit 1; }
+          echo "update: candidate reopened the data"
+
+      # Install: each installer runs over the install the step before left.
+      - name: Previous, candidate, downgrade, update (Windows, install)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Install([string]$setup, [string[]]$installerArgs) {
+            (Start-Process -FilePath $setup -ArgumentList $installerArgs -Wait -PassThru).ExitCode
+          }
+          function Entry {
+            Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" |
+              Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like "Celerp*" } |
+              Select-Object -First 1
+          }
+          function Installed { (Get-ItemProperty (Entry).PSPath).DisplayVersion }
+          function InstallDir {
+            $u = (Get-ItemProperty (Entry).PSPath).UninstallString
+            if ($u -notmatch '^"([^"]+)"') { throw "unexpected UninstallString: $u" }
+            Split-Path $Matches[1]
+          }
+          function Fail([string]$why) { Write-Host "::error::$why"; exit 1 }
+          function State {
+            $dir = InstallDir
+            [ordered]@{
+              exe      = (Get-FileHash (Join-Path $dir "Celerp.exe") -Algorithm SHA256).Hash
+              sentinel = (Get-FileHash (Join-Path $dir "celerp-ci-sentinel.txt") -Algorithm SHA256).Hash
+              entry    = (Get-ItemProperty (Entry).PSPath | Select-Object * -ExcludeProperty PS* | ConvertTo-Json -Compress)
+            } | ConvertTo-Json -Compress
+          }
+          $previous = "$env:RUNNER_TEMP\previous\Celerp-Setup.exe"
+          $candidate = "$env:RUNNER_TEMP\candidate\Celerp-Setup.exe"
+
+          $code = Install $previous @("/S", "/currentuser")
+          if ($code -ne 0) { Fail "previous release install exited $code" }
+          $old = Installed
+          Write-Host "previous: installed $old"
+
+          $code = Install $candidate @("/S", "/currentuser")
+          $new = Installed
+          if ($code -ne 0 -or $new -eq $old) { Fail "candidate over $old exited $code, entry $new" }
+          Write-Host "candidate: updated $old to $new"
+
+          Set-Content -Encoding Ascii (Join-Path (InstallDir) "celerp-ci-sentinel.txt") "candidate install"
+          $before = State
+          $code = Install $previous @("/S", "/currentuser")
+          $after = State
+          if ($env:PREVIOUS_GUARDED -eq "true") {
+            if ($code -ne 2) { Fail "previous release over $new exited $code (want 2)" }
+            if ($after -ne $before) { Fail "previous release changed the install:`n before $before`n after  $after" }
+            Write-Host "downgrade: stopped with exit 2; exe, sentinel and uninstall entry unchanged"
+          } else {
+            $changed = if ($after -eq $before) { "no" } else { "yes" }
+            Write-Host "::notice::previous release $env:PREVIOUS_VERSION predates the check (from $env:GUARDED_SINCE); downgrade exit $code, install changed: $changed. Not asserted."
+          }
+
+          $code = Install $candidate @("--updated", "/S", "/currentuser")
+          if ($code -ne 0 -or (Installed) -ne $new) { Fail "in-app update run: exit $code, entry $(Installed) (want exit 0, $new)" }
+          Write-Host "update: the in-app update run installed $new without a prompt"

@@ -16,7 +16,7 @@ from decimal import Decimal as _Dec
 
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
-from celerp.services.je_keys import je_idempotency_key, je_void_data
+from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.pick import doc_bound_lots, plan_lot_draws, resolve_pick_method
@@ -487,6 +487,8 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
     else:
         kind, key, trigger = "payrefund", f"refund_{payment_index}_{refund_number}", "doc.payment.refunded"
         memo = f"Auto JE for {doc_id} payment refund (index {payment_index})"
+    op = trigger.removeprefix("doc.")
+    key = await unminted_payment_key(session, company_id, doc_id, op, key)
     entries = payment_return_entries(
         doc_type=doc_type, bank_account_code=bank_account_code, amount=amount,
         already_given_back=already_given_back, base_currency=base_currency,
@@ -497,8 +499,8 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
         company_id=company_id,
         user_id=user_id,
         je_id=f"je:auto:{doc_id}:{kind}:{key}",
-        idem_create=je_idempotency_key(doc_id, f"{trigger.removeprefix('doc.')}:{key}", "c"),
-        idem_posted=je_idempotency_key(doc_id, f"{trigger.removeprefix('doc.')}:{key}", "p"),
+        idem_create=je_idempotency_key(doc_id, f"{op}:{key}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"{op}:{key}", "p"),
         memo=memo,
         ts=refund_date,
         currency=base_currency.upper(),

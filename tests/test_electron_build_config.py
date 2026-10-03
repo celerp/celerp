@@ -356,24 +356,13 @@ def test_main_js_cmd_q_quits_fully():
 # CI build identity
 # ---------------------------------------------------------------------------
 
-def test_build_workflow_stamps_electron_version_for_non_tag_builds():
-    """Develop/PR binaries must never inherit electron/package.json's 1.0.0."""
+def test_build_workflow_stamps_the_electron_version_with_the_tested_script():
+    """Every build, tag or not, stamps electron/package.json through one script."""
     workflow = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
     start = workflow.index("- name: Set Electron version from git tag or development commit")
-    step = workflow[start:start + 1800]
-    assert "if: startsWith(github.ref, 'refs/tags/')" not in step
-    assert "git describe --tags" in step
-    assert "-dev." in step
-    assert "git rev-list --count HEAD" in step
-    assert "data['version'] = os.environ['VERSION']" in step
-
-
-def test_build_workflow_keeps_exact_release_tag_version():
-    workflow = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
-    start = workflow.index("- name: Set Electron version from git tag or development commit")
-    step = workflow[start:start + 1800]
-    assert 'if [[ "$GITHUB_REF" == refs/tags/v* ]]' in step
-    assert 'VERSION="${GITHUB_REF_NAME#v}"' in step
+    step = workflow[start:workflow.index("- name:", start + 1)]
+    assert "if:" not in step
+    assert "run: python3 scripts/electron_version.py" in step
 
 
 def test_build_workflow_signs_all_non_pr_macos_dev_builds():
@@ -442,3 +431,36 @@ def test_build_workflow_exports_versioned_openapi_before_publish():
     assert "EXISTING_ASSET_ID=" in openapi_block
     assert "/releases/assets/$EXISTING_ASSET_ID" in openapi_block
     assert "assets?name=openapi.json" in openapi_block
+
+
+# ---------------------------------------------------------------------------
+# Installer upgrade and downgrade checks
+# ---------------------------------------------------------------------------
+
+_WORKFLOWS = Path(__file__).parent.parent / ".github" / "workflows"
+
+
+def _workflow(name):
+    import yaml
+    return yaml.safe_load((_WORKFLOWS / name).read_text())
+
+
+def test_windows_installer_check_covers_every_starting_point():
+    """none / same / older / newer / --updated, and a refused run changes nothing."""
+    steps = {s.get("name"): s for s in _workflow("build.yml")["jobs"]["build"]["steps"]}
+    run = steps["Installer version check (Windows)"]["run"]
+    for case in ("none:", "same:", "installed newer:", "--updated:", "installed older:"):
+        assert f'Write-Host "{case}' in run, case
+    assert 'Get-FileHash (Join-Path $dir "Celerp.exe") -Algorithm SHA256' in run
+    assert "celerp-ci-sentinel.txt" in run
+    assert 'if ($after -ne $before) { Fail "older installer changed the install' in run
+    assert 'if ($code -ne 2) { Fail "older installer over 999.0.0' in run
+
+
+def test_packaged_upgrade_smoke_runs_nightly_and_on_demand_only():
+    wf = _workflow("packaged-upgrade-smoke.yml")
+    triggers = wf[True]  # YAML 1.1 reads the bare key `on` as True
+    assert set(triggers) == {"schedule", "workflow_dispatch"}
+    steps = [s["name"] for s in wf["jobs"]["upgrade"]["steps"]]
+    assert "Previous, candidate, downgrade, update (Linux, data)" in steps
+    assert "Previous, candidate, downgrade, update (Windows, install)" in steps

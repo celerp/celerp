@@ -50,26 +50,29 @@ async def _stripe_receipts(session, company_id, entity_id) -> list[dict]:
     )).scalars().all())
 
 
-async def stripe_origin_indexes(session, company_id, entity_id) -> set[int]:
-    """Indexes of the payments on this document received through Stripe, managed or
-    not, linked to Stripe or not. Stripe confirmed the money arrived, so each is real
-    for good and is never deleted."""
-    return {data["index"] for data in await _stripe_receipts(session, company_id, entity_id)
-            if data.get("index") is not None}
-
-
-async def stripe_managed_indexes(session, company_id, entity_id) -> set[int]:
-    """Indexes of the payments on this document that the Stripe intake recorded as
-    Stripe's to manage: paid on a page that carried the books it is recorded on
+async def stripe_receipt_references(session, company_id, entity_id, *, managed: bool = False) -> set[str]:
+    """References (Stripe PaymentIntents) of the payments on this document received
+    through Stripe: each is real for good, managed or not, linked to Stripe or not, so
+    it is never deleted. With *managed*, only those the intake recorded as Stripe's
+    to manage: paid on a page that carried the books it is recorded on
     (``stripe_managed``). A payment taken before payment pages carried their books is
-    the company's to manage, like any other."""
-    return {data["index"] for data in await _stripe_receipts(session, company_id, entity_id)
-            if data.get("stripe_managed") is True and data.get("index") is not None}
+    the company's to manage, like any other.
+
+    A payment is found by its reference, never by its index: a deletion made before
+    deletions kept their place renumbered the payments after it, so the index a
+    receipt was recorded at can since belong to another payment."""
+    return {data["reference"] for data in await _stripe_receipts(session, company_id, entity_id)
+            if data.get("reference") and (not managed or data.get("stripe_managed") is True)}
+
+
+def is_stripe_receipt(payment: dict, references: set[str]) -> bool:
+    """Whether *payment* is one of the Stripe receipts *references* names."""
+    return payment.get("method") == "stripe" and payment.get("reference") in references
 
 
 async def stripe_payment_indexes(session, company_id, entity_id, payments: list[dict]) -> set[int]:
     """Indexes of the payments on this document that Stripe manages
-    (``stripe_managed_indexes``) and that are still linked to Stripe.
+    (``stripe_receipt_references``) and that are still linked to Stripe.
 
     Stripe holds the money for these, so only Stripe can give it back. Once Stripe is
     disconnected a payment is no longer linked to it (``stripe_released_at``) and is
@@ -77,19 +80,20 @@ async def stripe_payment_indexes(session, company_id, entity_id, payments: list[
     """
     if not any(p.get("method") == "stripe" for p in payments):
         return set()
-    managed = await stripe_managed_indexes(session, company_id, entity_id)
-    return {p.get("index") for p in payments if p.get("method") == "stripe" and not p.get("stripe_released_at")
-            and p.get("index") in managed}
+    managed = await stripe_receipt_references(session, company_id, entity_id, managed=True)
+    return {p.get("index") for p in payments if is_stripe_receipt(p, managed) and not p.get("stripe_released_at")}
 
 
 async def refuse_stripe_payment_removal(session, company_id, entity_id, payments: list[dict],
                                         index, event_type: str) -> None:
     """422 when *event_type* would take the payment at *index* off the document while
     Stripe holds its money (``stripe_payment_indexes``), or would delete a payment
-    received through Stripe (``stripe_origin_indexes``)."""
+    received through Stripe (``stripe_receipt_references``)."""
     if index in await stripe_payment_indexes(session, company_id, entity_id, payments):
         raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
-    if event_type == "doc.payment.deleted" and index in await stripe_origin_indexes(session, company_id, entity_id):
+    payment = next((p for p in payments if p.get("index") == index), None)
+    if (event_type == "doc.payment.deleted" and payment is not None
+            and is_stripe_receipt(payment, await stripe_receipt_references(session, company_id, entity_id))):
         raise HTTPException(status_code=422, detail=STRIPE_RECEIPT_KEPT)
 
 

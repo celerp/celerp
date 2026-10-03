@@ -253,7 +253,7 @@ def test_is_app_local_path_rejects_backslash_and_control():
     # DEFECT B: the shared predicate must reject a backslash (browsers normalise
     # "\" to "/", turning "/\evil.example" into an off-site redirect) and any
     # ASCII control char, while still accepting a legitimate app-local path.
-    from ui.security import is_app_local_path
+    from celerp.services.app_paths import is_app_local_path
     assert is_app_local_path("/inventory?x=1") is True
     assert is_app_local_path("/\\evil.example") is False
     assert is_app_local_path("//evil.example") is False

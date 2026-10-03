@@ -199,9 +199,18 @@ async def lifespan(_app: FastAPI):
         yield
         return
 
+    from celerp.migrations.compatibility import IncompatibleDatabase, check as check_compatibility
     try:
+        async with lifecycle_engine.connect() as conn:
+            compatibility = await conn.run_sync(check_compatibility)
+            await conn.rollback()
+        if not compatibility.ok:
+            raise IncompatibleDatabase(compatibility)
         async with lifecycle_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+    except IncompatibleDatabase as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        sys.exit(1)
     except Exception as exc:
         masked_url = mask_db_credentials(settings.database_url)
         print(

@@ -246,6 +246,8 @@ def _config_to_env(cfg: dict, root: Path | None = None) -> dict:
     env = runtime.base_env()
     env["DATABASE_URL"] = cfg["database"]["url"]
     env["JWT_SECRET"] = cfg["auth"]["jwt_secret"]
+    # The UI reaches the API on the configured port, whatever the shell says.
+    env["API_URL"] = runtime.api_url(cfg["server"]["api_port"])
     if cfg["cloud"]["token"]:
         env["GATEWAY_TOKEN"] = cfg["cloud"]["token"]
     # A headless service install (`init --no-start`, then a process manager runs
@@ -563,6 +565,10 @@ def _apply_migrations(db_url: str) -> None:
     # False negatives are safe: the re-applied revision fails with
     # DuplicateColumn, which _run_upgrade_with_auto_stamp catches.
     sync_url = _sync_url(db_url)
+    # A database a newer Celerp already opened is refused before anything below
+    # can restamp it back to this copy's head.
+    from celerp.migrations.compatibility import refuse_incompatible
+    refuse_incompatible(sync_url)
     engine = _sa.create_engine(sync_url, pool_pre_ping=True)
     try:
         inspector = _sa.inspect(engine)
@@ -607,8 +613,12 @@ def _apply_migrations(db_url: str) -> None:
 
 def _run_migrations(db_url: str) -> None:
     """CLI entrypoint: apply migrations, exiting non-zero with a readable message."""
+    from celerp.migrations.compatibility import IncompatibleDatabase
     try:
         _apply_migrations(db_url)
+    except IncompatibleDatabase as e:
+        click.echo(f"  ✗ {e}", err=True)
+        sys.exit(1)
     except Exception as e:
         click.echo(f"  ✗ Migration failed: {e}", err=True)
         sys.exit(1)
@@ -1381,6 +1391,25 @@ def migrate(db_url):
         click.echo("  ✓ Done")
 
 
+# `celerp compatibility` exit status when this copy must not open the database.
+COMPATIBILITY_REFUSED_EXIT = 3
+
+
+@main.command()
+@click.option("--db-url", required=True, help="Database to check.")
+def compatibility(db_url):
+    """Say, without changing anything, whether this copy may open the database.
+
+    Prints the decision as JSON; exits 0 when compatible and 3 when refused. The
+    desktop launcher runs this before it changes anything.
+    """
+    from celerp.migrations.compatibility import check_url
+    result = check_url(_sync_url(db_url))
+    click.echo(result.to_json())
+    if not result.ok:
+        sys.exit(COMPATIBILITY_REFUSED_EXIT)
+
+
 @main.command()
 def status():
     """Show configuration and connectivity status."""
@@ -1455,13 +1484,14 @@ def upgrade():
     Same steps as the in-app update (backup first, undone on failure), for use
     while Celerp is stopped.
     """
+    from celerp import runtime
     from celerp.services import update
 
     cfg = _read_config()
     if not cfg:
         click.echo("Not initialized. Run `celerp init` first.", err=True)
         sys.exit(1)
-    if update.get_json(f"http://127.0.0.1:{cfg['server']['api_port']}/health") is not None:
+    if update.get_json(f"{runtime.api_url(cfg['server']['api_port'])}/health") is not None:
         click.echo("Celerp is running. Stop it first, then run `celerp upgrade` again.", err=True)
         sys.exit(1)
     release_lock = _hold_update_lock("upgrade")

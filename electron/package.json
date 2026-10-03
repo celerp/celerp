@@ -50,6 +50,8 @@
       "config-writer.js",
       "migrate_cmd.js",
       "update-state.js",
+      "compatibility.js",
+      "boot.js",
       "preload.js",
       "assets/**"
     ],
@@ -201,7 +203,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "createDesktopShortcut": true,
+      "include": "build/installer.nsh"
     },
     "appImage": {
       "artifactName": "Celerp.AppImage"

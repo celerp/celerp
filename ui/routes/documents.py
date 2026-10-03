@@ -24,6 +24,7 @@ from celerp.services.money import to_decimal, to_stored_float, round_money, curr
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import role_has_permission
+from ui.module_slots import visible_slot_contributions
 from celerp.output.document_context import prepare_document_output
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
@@ -6473,8 +6474,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     action_btns_print.append(Span("", id="share-result"))
 
     # --- Slot: doc_detail_actions (module-contributed action buttons - go left) ---
-    from celerp.modules.slots import get as _get_slot
-    for _contrib in _get_slot("doc_detail_actions"):
+    # Only contributions from modules the company has on, and only those whose
+    # permission the role holds; the module's own route still checks it.
+    for _contrib in visible_slot_contributions("doc_detail_actions", settings or {}, role):
         _render_path = _contrib.get("render", "")
         if _render_path:
             try:
@@ -6495,7 +6497,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     _fulfill_badge = _render_fulfillment_badge(doc)
     if _fulfill_badge is not None:
         _slot_badges.append(_fulfill_badge)
-    for _contrib in _get_slot("doc_detail_badges"):
+    for _contrib in visible_slot_contributions("doc_detail_badges", settings or {}, role):
         _render_path = _contrib.get("render", "")
         if _render_path:
             try:

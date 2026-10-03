@@ -20,6 +20,7 @@ import httpx
 import pytest
 from fasthtml.common import to_xml
 
+from celerp.migrations.compatibility import running_version
 from company_backup_support import company, owner, token
 from migration_support import auth, code_config, real_client, real_engine  # noqa: F401
 from test_company_backup_ui import RECOVER, _anchors, _link, _page, ui  # noqa: F401
@@ -373,7 +374,7 @@ async def test_cloud_snapshot_relay_payload_unchanged(tmp_path, monkeypatch):
     dump = b"PGDUMP-CUSTOM-FORMAT"
 
     async def _meta():
-        return {"celerp_version": "1.0.0", "pg_version": "16", "created_at": "2026-09-29T02:00:00Z",
+        return {"celerp_version": running_version(), "pg_version": "16", "created_at": "2026-09-29T02:00:00Z",
                 "company_name": "Harbor Goods Ltd", "enabled_modules": []}
 
     monkeypatch.setattr(httpx, "AsyncClient", _client)
