@@ -3564,5 +3564,22 @@
   "inventory.wo_reopened": "Cycle rouvert.",
   "manufacturing.action_return": "Retourner les matières",
   "manufacturing.bulk_returned": "Matières retournées pour les cycles : {n}",
-  "manufacturing.confirm_return_runs": "Retourner au stock les matières sorties des cycles sélectionnés ?"
+  "manufacturing.confirm_return_runs": "Retourner au stock les matières sorties des cycles sélectionnés ?",
+  "manufacturing.reconcile_title": "Rapprocher le cycle de production",
+  "manufacturing.reconcile_intro": "La valeur des matières de ce cycle ne peut pas être déterminée à partir de son historique : {reason}. Tant qu'il n'est pas rapproché, il ne peut ni sortir, ni retourner, ni réceptionner, ni terminer. Indiquez la valeur de chaque composant encore dans le cycle et le compte d'où provient cette valeur.",
+  "manufacturing.reconcile_reason_books_disagree": "la comptabilité indique un montant différent de celui de son historique",
+  "manufacturing.reconcile_reason_received": "il a réceptionné de la production avant le suivi de la valeur des matières",
+  "manufacturing.reconcile_reason_no_account": "un composant utilisé n'a pas de compte de stock",
+  "manufacturing.reconcile_reason_elsewhere": "la comptabilité provient d'un autre système et ne montre pas ses matières",
+  "manufacturing.reconcile_account": "Provient du compte",
+  "manufacturing.reconcile_account_hint": "Un compte de stock qui détient cette valeur au-delà de son stock disponible, ou les résultats reportés pour une valeur que la comptabilité n'a jamais portée.",
+  "manufacturing.reconcile_nothing_held": "Ce cycle ne contient aucune matière. Le rapprochement enregistre qu'il ne contient rien.",
+  "manufacturing.reconcile_submit": "Rapprocher",
+  "manufacturing.reconcile_done": "Rapproché. Le cycle peut de nouveau sortir, retourner, réceptionner et terminer.",
+  "inventory.wo_needs_reconciling": "À rapprocher",
+  "mfg.not_unresolved": "Ce cycle n'a pas besoin d'être rapproché.",
+  "mfg.reconcile_values": "{item} n'est plus un composant de ce cycle, est indiqué deux fois ou a une valeur négative.",
+  "mfg.reconcile_missing": "Indiquez la valeur de chaque composant encore dans ce cycle : {items} n'en a pas.",
+  "mfg.reconcile_account": "Choisissez le compte d'où provient cette valeur : un compte de stock qui détient au moins {total} au-delà de son stock disponible, ou les résultats reportés pour une valeur que la comptabilité n'a jamais portée.",
+  "mfg.period_locked": "La comptabilité est verrouillée pour le {day}, ce cycle ne peut donc pas être rapproché tant que cette période n'est pas ouverte."
 }

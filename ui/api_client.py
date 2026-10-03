@@ -1974,6 +1974,18 @@ async def undo_mfg_receipt(token: str, order_id: str, lot_item_id: str) -> dict:
         return _raise(await c.post(f"/manufacturing/{order_id}/undo-receipt", json={"lot_item_id": lot_item_id})).json()
 
 
+async def mfg_reconcile_needs(token: str, order_id: str) -> dict:
+    """Why a run needs reconciling, and the components whose value reconciling it records."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/manufacturing/{order_id}/reconcile")).json()
+
+
+async def reconcile_mfg_order(token: str, order_id: str, data: dict) -> dict:
+    """Record the value of each component in a run needing reconciliation and the account it comes off."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/reconcile", json=data)).json()
+
+
 async def reopen_mfg_order(token: str, order_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/manufacturing/{order_id}/reopen", json={})).json()

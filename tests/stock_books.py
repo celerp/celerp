@@ -82,6 +82,8 @@ async def assert_books_carry_stock(session, company_id, *, unplaced=()) -> dict[
         value = held_value(lot)
         if value is None or lot.entity_id in unplaced:
             continue
+        if not value and not float((lot.state or {}).get("quantity") or 0):
+            continue  # used up: it holds nothing on any account
         code = (lot.state or {}).get(LOT_ACCOUNT_FIELD)
         if code not in held:
             missing.append((lot.entity_id, code))

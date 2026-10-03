@@ -231,7 +231,7 @@ async def _refused_everywhere(client, session, auth, raw: str, order: str) -> No
     assert await snapshot(session, auth, raw, order) == before
 
 
-async def test_an_older_run_on_books_holding_something_else_needs_reconciling(client, session, auth):
+async def test_an_older_run_on_books_holding_something_else_waits_for_reconciling_then_carries_on(client, session, auth):
     raw = await _item(client, auth, 100.0, qty=10)
     _, order = await _job(client, auth, raw)
     await _older_issue(session, auth, order, raw, 4)
@@ -247,11 +247,23 @@ async def test_an_older_run_on_books_holding_something_else_needs_reconciling(cl
 
     assert (await _facts(session, auth, order))["wip_unresolved"] == "books disagree"
     assert await _entry(session, auth, f"je:auto:{order}:wip-opened") is None
-    assert await _notices(session, auth, "Production runs need reconciling") == 1
+    assert await _notices(session, auth, "Production run needs reconciling") == 1
     await _refused_everywhere(client, session, auth, raw, order)
     events = await _events(session, auth)
     await _upgrade(session)
     assert await _events(session, auth) == events
+    # Settling never guesses; reconciling the run with the value its account still holds
+    # (40.00 less the 10.00 written off) lets it carry on.
+    r = await client.post(f"/manufacturing/{order}/reconcile", headers=auth["headers"], json={
+        "components": [{"item_id": raw, "value": 30.0}], "account": ob, "idempotency_key": "rec"})
+    assert r.status_code == 200, r.text
+    assert (await _facts(session, auth, order))["wip_unresolved"] is None
+    await assert_settled(client, session, auth)
+    assert (await issue(client, auth, order, [(raw, 6)], key="rest")).status_code == 200
+    r = await receive(client, auth, order, 2, key="out")
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, r.json()["lot_item_id"]))["cost_total"] == 90.0
+    await assert_settled(client, session, auth)
 
 
 async def test_an_older_run_that_received_output_needs_reconciling(client, session, auth):

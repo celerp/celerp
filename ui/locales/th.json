@@ -3564,5 +3564,22 @@
   "inventory.wo_reopened": "เปิดใบสั่งผลิตใหม่แล้ว",
   "manufacturing.action_return": "คืนวัตถุดิบ",
   "manufacturing.bulk_returned": "ใบสั่งผลิตที่คืนวัตถุดิบแล้ว: {n}",
-  "manufacturing.confirm_return_runs": "คืนวัตถุดิบที่เบิกไปของใบสั่งผลิตที่เลือกเข้าสต๊อกหรือไม่?"
+  "manufacturing.confirm_return_runs": "คืนวัตถุดิบที่เบิกไปของใบสั่งผลิตที่เลือกเข้าสต๊อกหรือไม่?",
+  "manufacturing.reconcile_title": "กระทบยอดใบสั่งผลิต",
+  "manufacturing.reconcile_intro": "คำนวณมูลค่าวัตถุดิบในใบสั่งผลิตนี้จากประวัติไม่ได้: {reason} จนกว่าจะกระทบยอด ใบสั่งผลิตนี้จะเบิก คืน รับสินค้า หรือปิดงานไม่ได้ ให้ระบุมูลค่าของวัตถุดิบแต่ละรายการที่ยังอยู่ในใบสั่งผลิต และบัญชีที่มูลค่านั้นตัดออกมา",
+  "manufacturing.reconcile_reason_books_disagree": "ยอดในบัญชีไม่ตรงกับที่ประวัติแสดง",
+  "manufacturing.reconcile_reason_received": "รับผลผลิตก่อนที่จะเริ่มติดตามมูลค่าวัตถุดิบ",
+  "manufacturing.reconcile_reason_no_account": "วัตถุดิบที่ใช้ไปรายการหนึ่งไม่มีบัญชีสินค้าคงคลัง",
+  "manufacturing.reconcile_reason_elsewhere": "บัญชีนำมาจากระบบอื่นและไม่แสดงวัตถุดิบของใบสั่งผลิตนี้",
+  "manufacturing.reconcile_account": "ตัดจากบัญชี",
+  "manufacturing.reconcile_account_hint": "บัญชีสินค้าคงคลังที่มีมูลค่านี้เกินกว่าสต๊อกคงเหลือ หรือกำไรสะสมสำหรับมูลค่าที่บัญชีไม่เคยบันทึก",
+  "manufacturing.reconcile_nothing_held": "ใบสั่งผลิตนี้ไม่มีวัตถุดิบ การกระทบยอดจะบันทึกว่าไม่มีสิ่งใดอยู่",
+  "manufacturing.reconcile_submit": "กระทบยอด",
+  "manufacturing.reconcile_done": "กระทบยอดแล้ว ใบสั่งผลิตนี้เบิก คืน รับสินค้า และปิดงานได้อีกครั้ง",
+  "inventory.wo_needs_reconciling": "ต้องกระทบยอด",
+  "mfg.not_unresolved": "ใบสั่งผลิตนี้ไม่ต้องกระทบยอด",
+  "mfg.reconcile_values": "{item} ไม่ใช่วัตถุดิบที่ยังอยู่ในใบสั่งผลิตนี้ ถูกระบุซ้ำ หรือมีมูลค่าติดลบ",
+  "mfg.reconcile_missing": "ให้ระบุมูลค่าของวัตถุดิบทุกรายการที่ยังอยู่ในใบสั่งผลิตนี้: {items} ยังไม่มีมูลค่า",
+  "mfg.reconcile_account": "เลือกบัญชีที่มูลค่านี้ตัดออกมา: บัญชีสินค้าคงคลังที่มีมูลค่าเกินสต๊อกคงเหลืออย่างน้อย {total} หรือกำไรสะสมสำหรับมูลค่าที่บัญชีไม่เคยบันทึก",
+  "mfg.period_locked": "บัญชีถูกล็อกสำหรับวันที่ {day} จึงกระทบยอดใบสั่งผลิตนี้ไม่ได้จนกว่างวดนั้นจะเปิด"
 }

@@ -3564,5 +3564,22 @@
   "inventory.wo_reopened": "Produktionslauf erneut geöffnet.",
   "manufacturing.action_return": "Material zurückgeben",
   "manufacturing.bulk_returned": "Material zurückgegeben für Produktionsläufe: {n}",
-  "manufacturing.confirm_return_runs": "Das entnommene Material der ausgewählten Produktionsläufe an den Bestand zurückgeben?"
+  "manufacturing.confirm_return_runs": "Das entnommene Material der ausgewählten Produktionsläufe an den Bestand zurückgeben?",
+  "manufacturing.reconcile_title": "Produktionslauf abstimmen",
+  "manufacturing.reconcile_intro": "Der Wert des Materials in diesem Lauf lässt sich aus seiner Historie nicht ermitteln: {reason}. Bis er abgestimmt ist, kann er nichts entnehmen, zurückgeben, einbuchen oder abschließen. Geben Sie an, was jede noch im Lauf befindliche Komponente wert ist und von welchem Konto dieser Wert abgeht.",
+  "manufacturing.reconcile_reason_books_disagree": "die Bücher weisen einen anderen Betrag aus als seine Historie",
+  "manufacturing.reconcile_reason_received": "er hat Ausbringung eingebucht, bevor Materialwerte erfasst wurden",
+  "manufacturing.reconcile_reason_no_account": "eine verwendete Komponente hat kein Bestandskonto",
+  "manufacturing.reconcile_reason_elsewhere": "die Bücher stammen aus einem anderen System und zeigen sein Material nicht",
+  "manufacturing.reconcile_account": "Geht ab von Konto",
+  "manufacturing.reconcile_account_hint": "Ein Bestandskonto, das diesen Wert über seinen Lagerbestand hinaus hält, oder Gewinnvortrag für einen Wert, den die Bücher nie geführt haben.",
+  "manufacturing.reconcile_nothing_held": "Dieser Lauf enthält kein Material. Die Abstimmung hält fest, dass er nichts enthält.",
+  "manufacturing.reconcile_submit": "Abstimmen",
+  "manufacturing.reconcile_done": "Abgestimmt. Der Lauf kann wieder entnehmen, zurückgeben, einbuchen und abschließen.",
+  "inventory.wo_needs_reconciling": "Abstimmung nötig",
+  "mfg.not_unresolved": "Dieser Lauf muss nicht abgestimmt werden.",
+  "mfg.reconcile_values": "{item} ist keine Komponente mehr in diesem Lauf, ist doppelt angegeben oder hat einen negativen Wert.",
+  "mfg.reconcile_missing": "Geben Sie den Wert jeder noch im Lauf befindlichen Komponente an: {items} hat keinen.",
+  "mfg.reconcile_account": "Wählen Sie das Konto, von dem dieser Wert abgeht: ein Bestandskonto, das mindestens {total} über seinen Lagerbestand hinaus hält, oder Gewinnvortrag für einen Wert, den die Bücher nie geführt haben.",
+  "mfg.period_locked": "Die Bücher sind für {day} gesperrt, daher kann dieser Lauf erst abgestimmt werden, wenn diese Periode offen ist."
 }

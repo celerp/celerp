@@ -30,7 +30,13 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, LOT_ACCOUNT_FIELD, SCHEMA_KEY, AccountRole
+from celerp.accounting_roles import (
+    INVENTORY_ORIGIN_KEY,
+    INVENTORY_VALUE_ROLES,
+    LOT_ACCOUNT_FIELD,
+    SCHEMA_KEY,
+    AccountRole,
+)
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
@@ -43,6 +49,8 @@ from celerp.services.account_roles import (
     lot_account,
     new_lot_account,
     resolve,
+    role_map,
+    roles_for_account,
 )
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.document_lines import listing_record
@@ -934,16 +942,89 @@ async def _settle(session: AsyncSession, company_id) -> None:
     for order, reason in sorted(unresolved.items()):
         await dataclasses.replace(base, order_id=order).emit_run(
             "mfg.order.wip_unresolved", {"reason": reason}, f"mfg:{order}:wip-unresolved")
-
-    if unresolved:
         await notification_service.create(
-            session, company_id, category="manufacturing", title="Production runs need reconciling",
-            body=(f"The value of materials in {len(unresolved)} production run(s) started before Celerp tracked it "
-                  f"cannot be worked out from their history: {', '.join(sorted(unresolved))}. They cannot issue, "
-                  "receive or complete until they are reconciled."), priority="high")
+            session, company_id, category="manufacturing", title="Production run needs reconciling",
+            body=(f"The value of the materials in production run {order} cannot be worked out from its history "
+                  f"({reason}). It cannot issue, return, receive or complete until it is reconciled: "
+                  "open it from here and record what its materials are worth."),
+            action_url=f"/manufacturing/runs/{order}/reconcile", priority="high")
     booked = sorted([*(o for o, per in plans.items() if sum(per.values(), _ZERO)), *(r.entity_id for r in unbooked)])
     if books and booked:
         await notification_service.create(
             session, company_id, category="accounting", title="Materials in production recorded",
             body=(f"The materials in production run(s) {', '.join(booked)} now carry their value on work in "
                   f"progress account {wip_code}, in entries dated {base.day}."))
+
+
+# ---------------------------------------------------------------------------
+# Reconcile
+# ---------------------------------------------------------------------------
+
+async def still_held(session: AsyncSession, company_id, order_id: str, state: dict) -> set[str]:
+    """The components a run still holds, whose value reconciling it records: every input with
+    an issued quantity, and every lot the run's history consumed."""
+    issued = {i.get("item_id") for i in state.get("inputs", []) if float(i.get("issued_qty") or 0) > _EPS}
+    return issued | set((await consumed_values(session, company_id, _ORDER_MARK, {order_id}))[order_id])
+
+
+async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, components: list[dict],
+                    account: str | None, key: str | None, *, at: str) -> dict:
+    """Record what a run needing reconciliation holds, as someone allowed to keep the books
+    states it: the value of each component still in the run, and the account that value comes
+    off. With Accounting on, that is an inventory account holding at least the total beyond its
+    stock on hand, or retained earnings for value the books never carried. The total moves onto
+    work in progress and the run carries on like any other. Nothing is worked out for the user."""
+    rk = key or uuid.uuid4().hex
+    op = await _begin(session, company_id, user_id, order_id, at)
+    request = _fingerprint({"components": components, "account": account})
+    stored = await _replayed(op, f"mfg:{order_id}:reconcile:{rk}", request)
+    if stored is not None:
+        return {"reconciled": stored.data.get("issued"), "components": stored.data.get("components")}
+    run = await _run(op)
+    _require_open(run.state, "reconciled")
+    if not run.state.get("wip_unresolved"):
+        raise refuse(409, "not_unresolved", "This run does not need reconciling.")
+
+    needed = await still_held(session, company_id, order_id, run.state)
+    values: dict[str, Decimal] = {}
+    for line in components:
+        item_id, value = line.get("item_id"), op.round(_money(line.get("value")))
+        if item_id not in needed or item_id in values or value < 0:
+            raise refuse(422, "reconcile_values", f"{item_id} is not a component still in this run, is named "
+                         "twice, or has a negative value.", item=item_id)
+        values[item_id] = value
+    if set(values) != needed:
+        missing = sorted(needed - set(values))
+        raise refuse(422, "reconcile_missing", f"Give the value of every component still in this run: "
+                     f"{', '.join(missing)} has none.", items=", ".join(missing))
+    total = sum(values.values(), _ZERO)
+
+    lots: dict[str, Decimal] = {}
+    equity = _ZERO
+    wip_code = None
+    if op.books and total:
+        settings = await current_settings(session, company_id)
+        roles = set(roles_for_account(settings, account)) if account else set()
+        if account and account == role_map(settings).get(AccountRole.RETAINED_EARNINGS.value):
+            equity = -total
+        elif (roles & {r.value for r in INVENTORY_VALUE_ROLES}
+              and await account_room(session, company_id, account) >= total):
+            lots = {account: -total}
+        else:
+            raise refuse(422, "reconcile_account",
+                         "Choose the account this value comes off: an inventory account that holds at least "
+                         f"{total} beyond its stock on hand, or retained earnings for value the books never "
+                         "carried.", total=str(total), account=account)
+        if not await period_open(session, company_id, op.day):
+            raise refuse(422, "period_locked", f"The books are locked for {op.day}, so this run cannot be "
+                         "reconciled until that period is open.", day=op.day)
+        wip_code = await _wip_target(op)
+    await op.post(f"reconcile:{rk}", f"Materials in production run {order_id} reconciled", wip_code, total,
+                  lots, equity=equity)
+    recorded = [{"item_id": i, "value": str(v)} for i, v in sorted(values.items())]
+    data = {"issued": str(total), "components": recorded, "reconciled_by": str(op.user_id), "request": request,
+            "wip_account_code": wip_code}
+    if op.books and total:
+        data["account"] = account
+    await op.emit_run("mfg.order.wip_reconciled", data, f"mfg:{order_id}:reconcile:{rk}")
+    return {"reconciled": str(total), "components": recorded}

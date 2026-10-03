@@ -3564,5 +3564,22 @@
   "inventory.wo_reopened": "生産ロットを再開しました。",
   "manufacturing.action_return": "材料を戻す",
   "manufacturing.bulk_returned": "材料を戻した生産ロット: {n}",
-  "manufacturing.confirm_return_runs": "選択した生産ロットに払い出した材料を在庫に戻しますか？"
+  "manufacturing.confirm_return_runs": "選択した生産ロットに払い出した材料を在庫に戻しますか？",
+  "manufacturing.reconcile_title": "生産ロットの照合",
+  "manufacturing.reconcile_intro": "この生産ロットの材料の価額は履歴から算出できません：{reason}。照合するまで、払出し・戻し・受入れ・完了はできません。生産ロットに残っている各部材の価額と、その価額を振り替える元の勘定を入力してください。",
+  "manufacturing.reconcile_reason_books_disagree": "帳簿の金額が履歴と一致しません",
+  "manufacturing.reconcile_reason_received": "材料の価額を追跡する前に生産品を受け入れています",
+  "manufacturing.reconcile_reason_no_account": "使用した部材に棚卸資産勘定がありません",
+  "manufacturing.reconcile_reason_elsewhere": "帳簿が他のシステムから移行されており、材料が記録されていません",
+  "manufacturing.reconcile_account": "振替元の勘定",
+  "manufacturing.reconcile_account_hint": "手持ち在庫を超えてこの価額を保有する棚卸資産勘定、または帳簿に一度も計上されなかった価額については利益剰余金。",
+  "manufacturing.reconcile_nothing_held": "この生産ロットに材料はありません。照合すると何も保有していないことが記録されます。",
+  "manufacturing.reconcile_submit": "照合",
+  "manufacturing.reconcile_done": "照合しました。この生産ロットは再び払出し・戻し・受入れ・完了ができます。",
+  "inventory.wo_needs_reconciling": "照合が必要",
+  "mfg.not_unresolved": "この生産ロットは照合の必要がありません。",
+  "mfg.reconcile_values": "{item}はこの生産ロットに残っている部材ではないか、二重に指定されているか、価額がマイナスです。",
+  "mfg.reconcile_missing": "この生産ロットに残っているすべての部材の価額を入力してください：{items}の価額がありません。",
+  "mfg.reconcile_account": "この価額の振替元の勘定を選択してください：手持ち在庫を超えて{total}以上を保有する棚卸資産勘定、または帳簿に一度も計上されなかった価額については利益剰余金。",
+  "mfg.period_locked": "{day}の帳簿はロックされているため、その期間が開くまでこの生産ロットは照合できません。"
 }

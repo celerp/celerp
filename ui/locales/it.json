@@ -3564,5 +3564,22 @@
   "inventory.wo_reopened": "Produzione riaperta.",
   "manufacturing.action_return": "Restituisci materiali",
   "manufacturing.bulk_returned": "Materiali restituiti per i cicli: {n}",
-  "manufacturing.confirm_return_runs": "Restituire al magazzino i materiali prelevati dei cicli selezionati?"
+  "manufacturing.confirm_return_runs": "Restituire al magazzino i materiali prelevati dei cicli selezionati?",
+  "manufacturing.reconcile_title": "Riconcilia produzione",
+  "manufacturing.reconcile_intro": "Il valore dei materiali di questa produzione non può essere ricavato dalla sua cronologia: {reason}. Finché non viene riconciliata non può prelevare, restituire, ricevere né completare. Indica quanto vale ogni componente ancora nella produzione e il conto da cui proviene quel valore.",
+  "manufacturing.reconcile_reason_books_disagree": "la contabilità riporta un importo diverso da quello della sua cronologia",
+  "manufacturing.reconcile_reason_received": "ha ricevuto prodotti prima che venisse registrato il valore dei materiali",
+  "manufacturing.reconcile_reason_no_account": "un componente utilizzato non ha un conto di magazzino",
+  "manufacturing.reconcile_reason_elsewhere": "la contabilità proviene da un altro sistema e non mostra i suoi materiali",
+  "manufacturing.reconcile_account": "Proviene dal conto",
+  "manufacturing.reconcile_account_hint": "Un conto di magazzino che detiene questo valore oltre alle sue giacenze, oppure utili portati a nuovo per un valore mai registrato in contabilità.",
+  "manufacturing.reconcile_nothing_held": "Questa produzione non contiene materiali. La riconciliazione registra che non contiene nulla.",
+  "manufacturing.reconcile_submit": "Riconcilia",
+  "manufacturing.reconcile_done": "Riconciliata. La produzione può di nuovo prelevare, restituire, ricevere e completare.",
+  "inventory.wo_needs_reconciling": "Da riconciliare",
+  "mfg.not_unresolved": "Questa produzione non deve essere riconciliata.",
+  "mfg.reconcile_values": "{item} non è più un componente di questa produzione, è indicato due volte o ha un valore negativo.",
+  "mfg.reconcile_missing": "Indica il valore di ogni componente ancora in questa produzione: {items} non ne ha.",
+  "mfg.reconcile_account": "Scegli il conto da cui proviene questo valore: un conto di magazzino che detiene almeno {total} oltre alle sue giacenze, oppure utili portati a nuovo per un valore mai registrato in contabilità.",
+  "mfg.period_locked": "La contabilità è bloccata per il {day}, quindi questa produzione non può essere riconciliata finché quel periodo non è aperto."
 }

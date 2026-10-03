@@ -126,6 +126,20 @@ class CompleteBody(BaseModel):
     idempotency_key: str | None = None
 
 
+class ReconcileValue(BaseModel):
+    item_id: str
+    value: FiniteFloat
+
+
+class ReconcileBody(BaseModel):
+    # The value of each component still in a run needing reconciliation, and the account it comes off.
+    model_config = ConfigDict(extra="forbid")
+
+    components: list[ReconcileValue]
+    account: str | None = None
+    idempotency_key: str | None = None
+
+
 class CancelBody(BaseModel):
     reason: str | None = None
     idempotency_key: str | None = None
@@ -1714,6 +1728,40 @@ async def complete_order(
     result = await movements.complete(session, company_id, user.id, order_id, details,
                                       payload.idempotency_key if payload else None,
                                       at=datetime.now(timezone.utc).isoformat())
+    await session.commit()
+    return result
+
+
+@router.get("/{order_id}/reconcile")
+async def reconcile_needs(
+    order_id: str,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Why a run needs reconciling and the components whose value reconciling it records."""
+    row = await _get_order(session, company_id, order_id)
+    held = sorted(await movements.still_held(session, company_id, order_id, row.state))
+    items = {i: await session.get(Projection, {"company_id": company_id, "entity_id": i}) for i in held}
+    return {"reason": row.state.get("wip_unresolved"),
+            "components": [{"item_id": i, "sku": (r.state or {}).get("sku") if r else None,
+                            "name": (r.state or {}).get("name") if r else None} for i, r in items.items()]}
+
+
+@router.post("/{order_id}/reconcile")
+async def reconcile_order(
+    order_id: str,
+    payload: ReconcileBody,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
+    __: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Record the value of the materials in a run whose history cannot prove it, and the
+    account that value comes off, so the run can carry on."""
+    result = await movements.reconcile(session, company_id, user.id, order_id,
+                                       [c.model_dump() for c in payload.components], payload.account,
+                                       payload.idempotency_key, at=datetime.now(timezone.utc).isoformat())
     await session.commit()
     return result
 

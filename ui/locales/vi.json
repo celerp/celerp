@@ -3564,5 +3564,22 @@
   "inventory.wo_reopened": "Đã mở lại đợt sản xuất.",
   "manufacturing.action_return": "Trả lại nguyên vật liệu",
   "manufacturing.bulk_returned": "Đã trả nguyên vật liệu cho các đợt sản xuất: {n}",
-  "manufacturing.confirm_return_runs": "Trả nguyên vật liệu đã phát hành của các đợt sản xuất đã chọn về kho?"
+  "manufacturing.confirm_return_runs": "Trả nguyên vật liệu đã phát hành của các đợt sản xuất đã chọn về kho?",
+  "manufacturing.reconcile_title": "Đối chiếu đợt sản xuất",
+  "manufacturing.reconcile_intro": "Không thể tính giá trị nguyên vật liệu của đợt này từ lịch sử của nó: {reason}. Cho đến khi được đối chiếu, đợt này không thể xuất, trả lại, nhập hay hoàn tất. Hãy nhập giá trị của từng thành phần còn trong đợt và tài khoản mà giá trị đó được ghi giảm.",
+  "manufacturing.reconcile_reason_books_disagree": "sổ sách ghi một số tiền khác với lịch sử của nó",
+  "manufacturing.reconcile_reason_received": "đợt này đã nhập thành phẩm trước khi giá trị nguyên vật liệu được theo dõi",
+  "manufacturing.reconcile_reason_no_account": "một thành phần đã dùng không có tài khoản hàng tồn kho",
+  "manufacturing.reconcile_reason_elsewhere": "sổ sách được đưa từ hệ thống khác sang và không thể hiện nguyên vật liệu của nó",
+  "manufacturing.reconcile_account": "Ghi giảm tài khoản",
+  "manufacturing.reconcile_account_hint": "Một tài khoản hàng tồn kho đang giữ giá trị này ngoài số hàng hiện có, hoặc lợi nhuận giữ lại cho giá trị mà sổ sách chưa từng ghi nhận.",
+  "manufacturing.reconcile_nothing_held": "Đợt này không có nguyên vật liệu. Việc đối chiếu ghi nhận rằng nó không giữ gì.",
+  "manufacturing.reconcile_submit": "Đối chiếu",
+  "manufacturing.reconcile_done": "Đã đối chiếu. Đợt này có thể xuất, trả lại, nhập và hoàn tất trở lại.",
+  "inventory.wo_needs_reconciling": "Cần đối chiếu",
+  "mfg.not_unresolved": "Đợt này không cần đối chiếu.",
+  "mfg.reconcile_values": "{item} không còn là thành phần trong đợt này, bị nêu hai lần hoặc có giá trị âm.",
+  "mfg.reconcile_missing": "Hãy nhập giá trị của mọi thành phần còn trong đợt này: {items} chưa có giá trị.",
+  "mfg.reconcile_account": "Chọn tài khoản mà giá trị này được ghi giảm: một tài khoản hàng tồn kho đang giữ ít nhất {total} ngoài số hàng hiện có, hoặc lợi nhuận giữ lại cho giá trị mà sổ sách chưa từng ghi nhận.",
+  "mfg.period_locked": "Sổ sách đã khóa cho ngày {day}, nên chưa thể đối chiếu đợt này cho đến khi kỳ đó được mở."
 }

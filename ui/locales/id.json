@@ -3564,5 +3564,22 @@
   "inventory.wo_reopened": "Proses produksi dibuka kembali.",
   "manufacturing.action_return": "Kembalikan bahan",
   "manufacturing.bulk_returned": "Bahan dikembalikan untuk proses produksi: {n}",
-  "manufacturing.confirm_return_runs": "Kembalikan bahan yang dikeluarkan dari proses produksi terpilih ke stok?"
+  "manufacturing.confirm_return_runs": "Kembalikan bahan yang dikeluarkan dari proses produksi terpilih ke stok?",
+  "manufacturing.reconcile_title": "Rekonsiliasi proses produksi",
+  "manufacturing.reconcile_intro": "Nilai bahan dalam proses ini tidak dapat dihitung dari riwayatnya: {reason}. Sampai direkonsiliasi, proses ini tidak dapat mengeluarkan, mengembalikan, menerima, atau menyelesaikan. Masukkan nilai setiap komponen yang masih ada di proses ini dan akun asal nilai tersebut.",
+  "manufacturing.reconcile_reason_books_disagree": "pembukuan mencatat jumlah yang berbeda dari riwayatnya",
+  "manufacturing.reconcile_reason_received": "proses ini menerima hasil sebelum nilai bahan dicatat",
+  "manufacturing.reconcile_reason_no_account": "komponen yang dipakai tidak memiliki akun persediaan",
+  "manufacturing.reconcile_reason_elsewhere": "pembukuan berasal dari sistem lain dan tidak menunjukkan bahannya",
+  "manufacturing.reconcile_account": "Diambil dari akun",
+  "manufacturing.reconcile_account_hint": "Akun persediaan yang memegang nilai ini di luar stok yang ada, atau laba ditahan untuk nilai yang tidak pernah dicatat di pembukuan.",
+  "manufacturing.reconcile_nothing_held": "Proses ini tidak memiliki bahan. Rekonsiliasi mencatat bahwa tidak ada isinya.",
+  "manufacturing.reconcile_submit": "Rekonsiliasi",
+  "manufacturing.reconcile_done": "Selesai direkonsiliasi. Proses ini dapat kembali mengeluarkan, mengembalikan, menerima, dan menyelesaikan.",
+  "inventory.wo_needs_reconciling": "Perlu rekonsiliasi",
+  "mfg.not_unresolved": "Proses ini tidak perlu direkonsiliasi.",
+  "mfg.reconcile_values": "{item} bukan komponen yang masih ada di proses ini, disebut dua kali, atau bernilai negatif.",
+  "mfg.reconcile_missing": "Masukkan nilai setiap komponen yang masih ada di proses ini: {items} belum memiliki nilai.",
+  "mfg.reconcile_account": "Pilih akun asal nilai ini: akun persediaan yang memegang setidaknya {total} di luar stok yang ada, atau laba ditahan untuk nilai yang tidak pernah dicatat di pembukuan.",
+  "mfg.period_locked": "Pembukuan dikunci untuk {day}, jadi proses ini baru dapat direkonsiliasi setelah periode tersebut dibuka."
 }

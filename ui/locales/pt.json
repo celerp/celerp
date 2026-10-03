@@ -3564,5 +3564,22 @@
   "inventory.wo_reopened": "Ciclo reaberto.",
   "manufacturing.action_return": "Devolver materiais",
   "manufacturing.bulk_returned": "Materiais devolvidos para os ciclos: {n}",
-  "manufacturing.confirm_return_runs": "Devolver ao estoque os materiais emitidos dos ciclos selecionados?"
+  "manufacturing.confirm_return_runs": "Devolver ao estoque os materiais emitidos dos ciclos selecionados?",
+  "manufacturing.reconcile_title": "Conciliar ciclo de produção",
+  "manufacturing.reconcile_intro": "O valor dos materiais deste ciclo não pode ser apurado a partir do seu histórico: {reason}. Até ser conciliado, não pode requisitar, devolver, receber nem concluir. Informe quanto vale cada componente que ainda está no ciclo e a conta de onde sai esse valor.",
+  "manufacturing.reconcile_reason_books_disagree": "a contabilidade registra um valor diferente do que mostra o seu histórico",
+  "manufacturing.reconcile_reason_received": "recebeu produção antes de os valores dos materiais serem registrados",
+  "manufacturing.reconcile_reason_no_account": "um componente usado não tem conta de estoque",
+  "manufacturing.reconcile_reason_elsewhere": "a contabilidade veio de outro sistema e não mostra os seus materiais",
+  "manufacturing.reconcile_account": "Sai da conta",
+  "manufacturing.reconcile_account_hint": "Uma conta de estoque que detém este valor além do seu estoque disponível, ou lucros acumulados para um valor que a contabilidade nunca registrou.",
+  "manufacturing.reconcile_nothing_held": "Este ciclo não tem materiais. A conciliação registra que não tem nada.",
+  "manufacturing.reconcile_submit": "Conciliar",
+  "manufacturing.reconcile_done": "Conciliado. O ciclo pode voltar a requisitar, devolver, receber e concluir.",
+  "inventory.wo_needs_reconciling": "Precisa de conciliação",
+  "mfg.not_unresolved": "Este ciclo não precisa de conciliação.",
+  "mfg.reconcile_values": "{item} não é um componente que ainda esteja neste ciclo, aparece duas vezes ou tem valor negativo.",
+  "mfg.reconcile_missing": "Informe o valor de cada componente que ainda está neste ciclo: {items} não tem nenhum.",
+  "mfg.reconcile_account": "Escolha a conta de onde sai este valor: uma conta de estoque que detenha pelo menos {total} além do seu estoque disponível, ou lucros acumulados para um valor que a contabilidade nunca registrou.",
+  "mfg.period_locked": "A contabilidade está bloqueada para {day}, por isso este ciclo não pode ser conciliado até esse período estar aberto."
 }

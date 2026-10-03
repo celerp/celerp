@@ -7083,7 +7083,10 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
             Td(run.get("source_contact_name") or EMPTY),
             Td(f"{qty:g}", cls="cell--number"),
             Td(run.get("source_due") or (run.get("created_at") or "")[:10] or EMPTY, cls="cell--center"),
-            Td(_wo_status_badge(status)),
+            Td(_wo_status_badge(status),
+               # A run whose materials' value its history cannot prove moves nothing until reconciled.
+               A(t("inventory.wo_needs_reconciling"), href=f"/manufacturing/runs/{rid}/reconcile",
+                 cls="table-link ml-sm") if run.get("wip_unresolved") else ""),
             Td(_wo_action_select(run), cls="cell--actions"),
             cls="data-row" + (" data-row--inactive" if status == "cancelled" else ""),
         )

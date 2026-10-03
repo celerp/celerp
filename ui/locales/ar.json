@@ -3564,5 +3564,22 @@
   "inventory.wo_reopened": "أُعيد فتح دورة الإنتاج.",
   "manufacturing.action_return": "إرجاع المواد",
   "manufacturing.bulk_returned": "دورات الإنتاج التي أُرجعت موادها: {n}",
-  "manufacturing.confirm_return_runs": "هل تريد إرجاع المواد المصروفة لدورات الإنتاج المحددة إلى المخزون؟"
+  "manufacturing.confirm_return_runs": "هل تريد إرجاع المواد المصروفة لدورات الإنتاج المحددة إلى المخزون؟",
+  "manufacturing.reconcile_title": "تسوية دورة الإنتاج",
+  "manufacturing.reconcile_intro": "لا يمكن حساب قيمة المواد في هذه الدورة من سجلها: {reason}. إلى أن تتم تسويتها لا يمكنها الصرف أو الإرجاع أو الاستلام أو الإكمال. أدخل قيمة كل مكوّن لا يزال في الدورة، والحساب الذي تُخصم منه هذه القيمة.",
+  "manufacturing.reconcile_reason_books_disagree": "الدفاتر تُظهر مبلغًا مختلفًا عما يُظهره سجلها",
+  "manufacturing.reconcile_reason_received": "استلمت مخرجات قبل تتبّع قيم المواد",
+  "manufacturing.reconcile_reason_no_account": "مكوّن استخدمته ليس له حساب مخزون",
+  "manufacturing.reconcile_reason_elsewhere": "الدفاتر جاءت من نظام آخر ولا تُظهر موادها",
+  "manufacturing.reconcile_account": "يُخصم من الحساب",
+  "manufacturing.reconcile_account_hint": "حساب مخزون يحمل هذه القيمة زيادةً على مخزونه الفعلي، أو الأرباح المحتجزة لقيمة لم تحملها الدفاتر قط.",
+  "manufacturing.reconcile_nothing_held": "لا تحتوي هذه الدورة على مواد. تسجّل التسوية أنها لا تحتوي على شيء.",
+  "manufacturing.reconcile_submit": "تسوية",
+  "manufacturing.reconcile_done": "تمت التسوية. يمكن للدورة الصرف والإرجاع والاستلام والإكمال من جديد.",
+  "inventory.wo_needs_reconciling": "تحتاج إلى تسوية",
+  "mfg.not_unresolved": "لا تحتاج هذه الدورة إلى تسوية.",
+  "mfg.reconcile_values": "{item} ليس مكوّنًا لا يزال في هذه الدورة، أو ذُكر مرتين، أو قيمته سالبة.",
+  "mfg.reconcile_missing": "أدخل قيمة كل مكوّن لا يزال في هذه الدورة: {items} بلا قيمة.",
+  "mfg.reconcile_account": "اختر الحساب الذي تُخصم منه هذه القيمة: حساب مخزون يحمل {total} على الأقل زيادةً على مخزونه الفعلي، أو الأرباح المحتجزة لقيمة لم تحملها الدفاتر قط.",
+  "mfg.period_locked": "الدفاتر مقفلة بتاريخ {day}، لذا لا يمكن تسوية هذه الدورة حتى تُفتح تلك الفترة."
 }

@@ -12,9 +12,12 @@ from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
+import uuid
+
+from ui.components.posting_accounts import account_picker
 from ui.components.shell import base_shell, page_header, page_title, toast_header
 from ui.components.table import (EMPTY, status_cards, empty_state_cta, format_value, search_bar,
-                                 bulk_toolbar, filter_th, display_enum, COLUMN_FILTER_JS)
+                                 bulk_toolbar, filter_th, display_enum, breadcrumbs, COLUMN_FILTER_JS)
 from ui.config import get_token as _token
 from ui.i18n import refusal_text, t
 
@@ -346,6 +349,70 @@ def _wc_table(centers: list[dict], loc_names: dict) -> FT:
         Tbody(*rows) if rows else Tbody(Tr(Td(t("manufacturing.no_work_centers"),
                                               colspan="7", cls="empty-row"))),
         cls="data-table", id="wc-table",
+    )
+
+
+# Why a run needs reconciling, as the server records it, in the user's language.
+_RECONCILE_REASONS = {
+    "books disagree": "manufacturing.reconcile_reason_books_disagree",
+    "received before tracking": "manufacturing.reconcile_reason_received",
+    "component without an inventory account": "manufacturing.reconcile_reason_no_account",
+    "books from elsewhere": "manufacturing.reconcile_reason_elsewhere",
+}
+
+
+def _reconcile_accounts(posting: dict) -> list[dict]:
+    """The accounts a reconciled value can come off: those that have held purchased or opening
+    inventory, and retained earnings for value the books never carried."""
+    accounts = list((posting.get("older_stock") or {}).get("candidates") or [])
+    accounts += [{"code": r["code"], "name": r.get("name") or ""} for r in posting.get("roles") or []
+                 if r.get("role") == "retained_earnings" and r.get("code")]
+    return accounts
+
+
+def _reconcile_panel(run_id: str, needs: dict, accounts: list[dict], *, key: str, values: dict | None = None,
+                     account: str = "", flash: str | None = None, kind: str = "error") -> FT:
+    """The on-page form recording what a run needing reconciliation holds: a value per component
+    still in the run and, when the books are kept, the account that value comes off."""
+    flash_el = Div(flash, cls=f"flash flash--{kind}", role="status") if flash else ""
+    if kind == "success":
+        return Div(flash_el, id="reconcile-panel", cls="detail-card recipe-block")
+    if not needs.get("reason"):
+        return Div(flash_el, P(t("mfg.not_unresolved"), cls="hint"),
+                   id="reconcile-panel", cls="detail-card recipe-block")
+    values = values or {}
+    reason = needs["reason"]
+    rows = [
+        Tr(Td(" ".join(x for x in (c.get("sku"), c.get("name")) if x) or c["item_id"]),
+           Td(Input(type="hidden", name="item_id", value=c["item_id"]),
+              Input(type="number", name="value", value=values.get(c["item_id"], ""), step="any", min="0",
+                    cls="form-input form-input--xs", aria_label=t("th.value")),
+              cls="cell--number"))
+        for c in needs.get("components") or []
+    ]
+    table = Table(
+        Thead(Tr(Th(t("th.item")), Th(t("th.value"), cls="cell--number"))),
+        Tbody(*rows), cls="data-table",
+    ) if rows else P(t("manufacturing.reconcile_nothing_held"), cls="hint")
+    picker = Div(
+        Label(t("manufacturing.reconcile_account")),
+        account_picker("account", accounts, value=account, aria_label=t("manufacturing.reconcile_account")),
+        P(t("manufacturing.reconcile_account_hint"), cls="hint"),
+        cls="form-field",
+    ) if accounts else ""
+    return Div(
+        flash_el,
+        P(t("manufacturing.reconcile_intro", reason=t(_RECONCILE_REASONS[reason]) if reason in _RECONCILE_REASONS
+            else reason), cls="hint"),
+        Form(
+            table, picker,
+            Input(type="hidden", name="idempotency_key", value=key),
+            Div(Button(t("manufacturing.reconcile_submit"), type="submit", cls="btn btn--primary"),
+                cls="form-actions mt-md"),
+            hx_post=f"/manufacturing/runs/{run_id}/reconcile", hx_target="#reconcile-panel",
+            hx_swap="outerHTML", hx_disabled_elt="find button",
+        ),
+        id="reconcile-panel", cls="detail-card recipe-block",
     )
 
 
@@ -692,6 +759,76 @@ def setup_routes(app):
             to_xml(_order_table(_runs_for_status(orders, status), today=date.today().isoformat())),
             headers=toast_header(msg, kind),
         )
+
+    async def _reconcile_context(token: str, run_id: str) -> tuple[dict, list[dict]]:
+        needs = await api.mfg_reconcile_needs(token, run_id)
+        try:
+            accounts = _reconcile_accounts(await api.get_posting_accounts(token))
+        except APIError as e:
+            if e.status == 401:
+                raise
+            accounts = []  # Accounting is off or not the user's to keep: reconciling says so
+        return needs, accounts
+
+    @app.get("/manufacturing/runs/{run_id}/reconcile")
+    async def reconcile_page(request: Request, run_id: str):
+        """A run whose materials' value its history cannot prove: record what it holds so it can
+        carry on. The notification raised for such a run links here."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            run = await api.get_mfg_order(token, run_id)
+            needs, accounts = await _reconcile_context(token, run_id)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return HTMLResponse(str(e.detail), status_code=e.status or 404)
+        out = (run.get("expected_outputs") or [{}])[0]
+        product = out.get("sku") or out.get("name") or run.get("output_item_id")
+        crumbs = [(t("manufacturing.work_in_progress"), "/manufacturing/production")]
+        if run.get("output_item_id"):
+            crumbs.append((product, f"/inventory/{run['output_item_id']}?tab=manufacturing"))
+        crumbs.append(("WO-" + run_id.split(":")[-1][:8], None))
+        return await base_shell(
+            breadcrumbs(crumbs),
+            page_header(t("manufacturing.reconcile_title")),
+            _reconcile_panel(run_id, needs, accounts, key=uuid.uuid4().hex),
+            title=page_title("manufacturing.reconcile_title"),
+            nav_active="manufacturing",
+            request=request,
+        )
+
+    @app.post("/manufacturing/runs/{run_id}/reconcile")
+    async def reconcile_submit(request: Request, run_id: str):
+        """Send the values and account entered; on a refusal keep them on the form and say why."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        entered = dict(zip(form.getlist("item_id"), (str(v).strip() for v in form.getlist("value"))))
+        account = str(form.get("account") or "")
+        key = str(form.get("idempotency_key") or uuid.uuid4().hex)
+        components = []
+        for item_id, raw in entered.items():
+            try:
+                components.append({"item_id": item_id, "value": float(raw)})
+            except ValueError:
+                pass  # left out, so the refusal names it as having no value
+        try:
+            await api.reconcile_mfg_order(token, run_id, {"components": components, "account": account or None,
+                                                          "idempotency_key": key})
+            return _reconcile_panel(run_id, {}, [], key=key, flash=t("manufacturing.reconcile_done"),
+                                    kind="success")
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            refusal = refusal_text(e.data or e.detail)
+        try:
+            needs, accounts = await _reconcile_context(token, run_id)
+        except APIError:
+            return Div(Div(refusal, cls="flash flash--error", role="status"), id="reconcile-panel", cls="detail-card recipe-block")
+        return _reconcile_panel(run_id, needs, accounts, key=key, values=entered, account=account, flash=refusal)
 
     @app.get("/manufacturing/runs/{run_id}/edit/{field}")
     async def run_field_edit(request: Request, run_id: str, field: str):

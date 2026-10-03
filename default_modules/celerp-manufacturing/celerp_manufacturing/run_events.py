@@ -33,3 +33,16 @@ class MfgOrderReopened(BaseModel):
 
 register_event_type("mfg.order.receipt_undone", MfgOrderReceiptUndone)
 register_event_type("mfg.order.reopened", MfgOrderReopened)
+
+
+class MfgOrderWipReconciled(BaseModel):
+    # What a run needing reconciliation holds, as the user stated it: each component's value, the
+    # total moved onto work in progress, and the account it came off.
+    issued: str
+    components: list[dict[str, Any]] = Field(default_factory=list)
+    account: str | None = None
+    wip_account_code: str | None = None
+    reconciled_by: str | None = None
+
+
+register_event_type("mfg.order.wip_reconciled", MfgOrderWipReconciled)

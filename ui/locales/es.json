@@ -3564,5 +3564,22 @@
   "inventory.wo_reopened": "Ciclo reabierto.",
   "manufacturing.action_return": "Devolver materiales",
   "manufacturing.bulk_returned": "Materiales devueltos para los ciclos: {n}",
-  "manufacturing.confirm_return_runs": "¿Devolver al inventario los materiales entregados de los ciclos seleccionados?"
+  "manufacturing.confirm_return_runs": "¿Devolver al inventario los materiales entregados de los ciclos seleccionados?",
+  "manufacturing.reconcile_title": "Conciliar ciclo de producción",
+  "manufacturing.reconcile_intro": "El valor de los materiales de este ciclo no se puede calcular a partir de su historial: {reason}. Hasta que se concilie, no puede entregar, devolver, recibir ni completar. Indique cuánto vale cada componente que sigue en el ciclo y la cuenta de la que sale ese valor.",
+  "manufacturing.reconcile_reason_books_disagree": "la contabilidad registra un importe distinto al que muestra su historial",
+  "manufacturing.reconcile_reason_received": "recibió producción antes de que se registraran los valores de los materiales",
+  "manufacturing.reconcile_reason_no_account": "un componente que usó no tiene cuenta de inventario",
+  "manufacturing.reconcile_reason_elsewhere": "la contabilidad proviene de otro sistema y no muestra sus materiales",
+  "manufacturing.reconcile_account": "Sale de la cuenta",
+  "manufacturing.reconcile_account_hint": "Una cuenta de inventario que tenga este valor además de sus existencias, o resultados acumulados para un valor que la contabilidad nunca registró.",
+  "manufacturing.reconcile_nothing_held": "Este ciclo no tiene materiales. La conciliación registra que no tiene nada.",
+  "manufacturing.reconcile_submit": "Conciliar",
+  "manufacturing.reconcile_done": "Conciliado. El ciclo puede volver a entregar, devolver, recibir y completar.",
+  "inventory.wo_needs_reconciling": "Requiere conciliación",
+  "mfg.not_unresolved": "Este ciclo no necesita conciliación.",
+  "mfg.reconcile_values": "{item} no es un componente que siga en este ciclo, aparece dos veces o tiene un valor negativo.",
+  "mfg.reconcile_missing": "Indique el valor de cada componente que sigue en este ciclo: {items} no tiene ninguno.",
+  "mfg.reconcile_account": "Elija la cuenta de la que sale este valor: una cuenta de inventario que tenga al menos {total} además de sus existencias, o resultados acumulados para un valor que la contabilidad nunca registró.",
+  "mfg.period_locked": "La contabilidad está cerrada para {day}, así que este ciclo no se puede conciliar hasta que ese periodo esté abierto."
 }

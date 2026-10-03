@@ -28,7 +28,9 @@ LOCALES = sorted(p.stem for p in (ROOT / "ui" / "locales").glob("*.json"))
 REFUSALS = ["mfg.reconciliation_required", "mfg.insufficient_stock", "mfg.over_receipt", "mfg.cancel_moved",
             "mfg.wip_account_missing", "mfg.issue_first", "mfg.unaccounted_value", "mfg.over_return",
             "mfg.return_quantity", "mfg.return_after_receipt", "mfg.return_lot_unavailable", "mfg.return_value",
-            "mfg.output_changed", "mfg.not_a_receipt", "mfg.reopen_first", "mfg.not_completed", "mfg.recost_conflict"]
+            "mfg.output_changed", "mfg.not_a_receipt", "mfg.reopen_first", "mfg.not_completed", "mfg.recost_conflict",
+            "mfg.not_unresolved", "mfg.reconcile_values", "mfg.reconcile_missing", "mfg.reconcile_account",
+            "mfg.period_locked"]
 SHORT = {"message": "Only 2 of RAW-1 is in stock and not reserved; 4 is needed.",
          "message_key": "mfg.insufficient_stock", "params": {"sku": "RAW-1", "available": 2.0, "needed": 4.0}}
 _TH_SHORT = "RAW-1 มีในสต๊อกที่ไม่ได้จองไว้เพียง 2 แต่ต้องใช้ 4"

@@ -3564,5 +3564,22 @@
   "inventory.wo_reopened": "Run reopened.",
   "manufacturing.action_return": "Return materials",
   "manufacturing.bulk_returned": "Materials returned for runs: {n}",
-  "manufacturing.confirm_return_runs": "Return the issued materials of the selected runs to stock?"
+  "manufacturing.confirm_return_runs": "Return the issued materials of the selected runs to stock?",
+  "manufacturing.reconcile_title": "Reconcile production run",
+  "manufacturing.reconcile_intro": "The value of the materials in this run cannot be worked out from its history: {reason}. Until it is reconciled it cannot issue, return, receive or complete. Enter what each component still in the run is worth, and the account that value comes off.",
+  "manufacturing.reconcile_reason_books_disagree": "the books hold a different amount than its history shows",
+  "manufacturing.reconcile_reason_received": "it received output before material values were tracked",
+  "manufacturing.reconcile_reason_no_account": "a component it used has no inventory account",
+  "manufacturing.reconcile_reason_elsewhere": "the books came from elsewhere and do not show its materials",
+  "manufacturing.reconcile_account": "Comes off account",
+  "manufacturing.reconcile_account_hint": "An inventory account that holds this value beyond its stock on hand, or retained earnings for value the books never carried.",
+  "manufacturing.reconcile_nothing_held": "This run holds no materials. Reconciling records that it holds nothing.",
+  "manufacturing.reconcile_submit": "Reconcile",
+  "manufacturing.reconcile_done": "Reconciled. The run can issue, return, receive and complete again.",
+  "inventory.wo_needs_reconciling": "Needs reconciling",
+  "mfg.not_unresolved": "This run does not need reconciling.",
+  "mfg.reconcile_values": "{item} is not a component still in this run, is named twice, or has a negative value.",
+  "mfg.reconcile_missing": "Give the value of every component still in this run: {items} has none.",
+  "mfg.reconcile_account": "Choose the account this value comes off: an inventory account that holds at least {total} beyond its stock on hand, or retained earnings for value the books never carried.",
+  "mfg.period_locked": "The books are locked for {day}, so this run cannot be reconciled until that period is open."
 }
