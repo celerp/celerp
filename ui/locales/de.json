@@ -3591,5 +3591,7 @@
   "mfg.reconcile_held": "{holding} enthält mehr als seinen Lagerbestand, der Wert der Materialien dieses Auftrags steht also bereits in den Büchern: Buchen Sie ihn von diesem Konto ab.",
   "mfg.reconcile_left": "{account} hält {room} über seinen Lagerbestand hinaus; {total} davon abzubuchen ließe {left} übrig, die Bücher würden also weiterhin nicht zum Bestand passen. Geben Sie den Wert an, den es hält.",
   "mfg.reconcile_excess": "Die Chargen, die dieser Auftrag bereits eingebucht hat, tragen {carried}, mehr als die angegebenen {issued}. Geben Sie den entnommenen Wert an oder buchen Sie die Differenz vom Bestandskonto ab, das sie trägt.",
+  "mfg.reconcile_kept": "{lots}, aus diesem Auftrag erhalten, kann nicht neu bewertet werden (vor dieser Version geteilt, teilweise verkauft, umgewandelt, verwendet oder abgeschrieben) und behält die {kept}, die es erhalten hat, mehr als die angegebenen {issued}. Geben Sie den Wert an, der diesem Auftrag zugeführt wurde, mindestens so viel.",
+  "mfg.output_in_production": "{sku} stammt aus Fertigungsauftrag {order}, der noch offen ist; seine Kosten stehen erst fest, wenn der Auftrag abgeschlossen ist. Schließen Sie den Auftrag ab, bevor Sie diesen Bestand teilen, umwandeln, verwenden, herunterzählen, archivieren oder abschreiben; bis dahin kann er ganz verkauft oder zusammengeführt werden.",
   "mfg.period_locked": "Die Bücher sind für {day} gesperrt, daher kann dieser Lauf erst abgestimmt werden, wenn diese Periode offen ist."
 }

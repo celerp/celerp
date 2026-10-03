@@ -575,18 +575,25 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str)
     total_in = sum(float(i.get("quantity") or 0) for i in state.get("inputs", []))
     # Waste is its share of everything issued, whether or not the output was already received: the
     # lots then give back what they took for it.
-    waste = min(op.round(issued * _money(waste_qty) / _money(total_in)), issued) if waste_qty > 0 and total_in > 0 else _ZERO
-    finished = issued - waste
     receipts = [r for r in state.get("receipts") or [] if float(r.get("quantity") or 0) > 0]
+    # Output an older release took off along a path no re-cost can follow keeps what it was
+    # given (reconcile); the finished value it does not carry is shared over the rest.
+    kept = sum((_money(r.get("value")) for r in receipts if r.get("fixed")), _ZERO)
+    live = [r for r in receipts if not r.get("fixed")]
+    waste = min(op.round(issued * _money(waste_qty) / _money(total_in)), issued - kept) if waste_qty > 0 and total_in > 0 else _ZERO
+    if receipts and not live:
+        # Every lot keeps its cost: what the run holds beyond it has no output left to go to.
+        waste = issued - kept
+    finished = issued - waste
     if finished and not receipts:
         raise refuse(409, "unaccounted_value",
                      "Nothing was received from this run, so the materials issued to it must be recorded "
                      "as waste before it can be completed.")
-    shares = allocate_pro_rata(finished, [_money(r["quantity"]) for r in receipts], op.currency) if receipts else []
+    shares = allocate_pro_rata(finished - kept, [_money(r["quantity"]) for r in live], op.currency) if live else []
 
     debits: dict[str, Decimal] = {}
     restated = []
-    for receipt, share in zip(receipts, shares):
+    for receipt, share in zip(live, shares):
         delta = share - _money(receipt.get("value"))
         if not delta:
             continue
@@ -653,6 +660,85 @@ async def _lineage_end(op: _Op, lot_id: str) -> Projection:
         raise refuse(409, "output_gone",
                      f"{s.get('sku') or current}, received from this run, is {status or 'no longer held'}, so its "
                      "final cost cannot be recorded.", lot=s.get("sku") or current, status=status)
+
+
+async def _keeps_cost(session: AsyncSession, row: Projection) -> bool:
+    """Whether a lot on a received lot's lineage can still take its final cost: it holds the
+    stock, sold it whole or was merged whole (_lineage_end), and all of its cost is still
+    where the restater can follow it."""
+    from celerp_inventory.services import cost_can_be_restated
+
+    s = row.state or {}
+    status = str(s.get("status") or "").lower()
+    return ((status in ("sold", "merged") or held_value(row) is not None)
+            and await cost_can_be_restated(session, row.company_id, row.entity_id, s))
+
+
+async def _cost_reachable(session: AsyncSession, company_id, lot_id: str) -> bool:
+    """Whether completion can still record a received lot's final cost: the lot and every lot
+    its value was merged into keep it (_keeps_cost)."""
+    seen: set[str] = set()
+    current = lot_id
+    while current not in seen:
+        seen.add(current)
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": current})
+        if row is None or row.entity_type != "item" or not await _keeps_cost(session, row):
+            return False
+        s = row.state or {}
+        if str(s.get("status") or "").lower() != "merged":
+            return True
+        current = s.get("merged_into")
+    return False
+
+
+async def _pending_output(session: AsyncSession, company_id) -> dict[str, str]:
+    """Every lot holding output of a run still open whose final cost completion is still to
+    record, and every lot it was merged into, each with that run."""
+    pending: dict[str, str] = {}
+    for run in await _open_runs(session, company_id):
+        state = run.state or {}
+        kept = {r.get("lot_item_id") for r in state.get("receipts") or [] if r.get("fixed")}
+        for lot in state.get("received_lots") or []:
+            current = None if lot in kept else lot
+            while current and current not in pending:
+                pending[current] = run.entity_id
+                row = await session.get(Projection, {"company_id": company_id, "entity_id": current})
+                s = (row.state or {}) if row is not None else {}
+                current = s.get("merged_into") if str(s.get("status") or "").lower() == "merged" else None
+    return pending
+
+
+def _may_move_cost(event_type: str, before: dict, after: dict) -> bool:
+    """Whether an item event can take cost off a lot or give up the stock: everything else
+    leaves the lot holding all of it."""
+    return (event_type in ("item.split", "item.transform", "item.consumed")
+            or str(before.get("status") or "") != str(after.get("status") or "")
+            or float(after.get("quantity") or 0) < float(before.get("quantity") or 0)
+            or before.get("children") != after.get("children")
+            or before.get("transformed_into") != after.get("transformed_into"))
+
+
+async def guard_output_lineage(*, session: AsyncSession, entry: LedgerEntry, transition) -> None:
+    """item_lineage_guard: output of a run still open takes its final cost when the run
+    completes, so until then it may only go where that cost can still reach it (sold whole
+    or merged). Anything else done to the lot or a lot it was merged into (a split, a partial
+    sale, a transform, use in another run, a count lowering it, a write-off, archiving) is
+    refused. The run's own events are its business: they carry its mark."""
+    before, after = transition.before, transition.after or {}
+    if before is None or not _may_move_cost(entry.event_type, before, after):
+        return
+    order = (await _pending_output(session, entry.company_id)).get(entry.entity_id)
+    if order is None or order in ((entry.data or {}).get(_ORDER_MARK), (entry.metadata_ or {}).get(_ORDER_MARK)):
+        return
+    row = await session.get(Projection, {"company_id": entry.company_id, "entity_id": entry.entity_id})
+    if await _keeps_cost(session, row):
+        return
+    sku = after.get("sku") or entry.entity_id
+    raise refuse(409, "output_in_production",
+                 f"{sku} came from production run {order}, which is still open, and its cost is final only when "
+                 "the run is completed. Complete the run before splitting, transforming, using, counting down, "
+                 "archiving or writing off this stock; until then it can be sold whole or merged.",
+                 sku=sku, order=order)
 
 
 # ---------------------------------------------------------------------------
@@ -744,7 +830,9 @@ async def reopen(session: AsyncSession, company_id, user_id, order_id: str, key:
         raise _reconcile()
     _require_settled(op, state)
     deltas = {lot["lot_item_id"]: _money(lot["delta"]) for lot in closing.get("lots") or []}
-    receipts = [r for r in state.get("receipts") or [] if float(r.get("quantity") or 0) > 0]
+    # Completion re-costed only the lots whose cost it could still reach; a lot that keeps what
+    # it was given (reconcile) is none of its business.
+    receipts = [r for r in state.get("receipts") or [] if float(r.get("quantity") or 0) > 0 and not r.get("fixed")]
     rows = await lock_projections(op.session, op.company_id, [r["lot_item_id"] for r in receipts])
     for r in receipts:
         lot_id = r["lot_item_id"]
@@ -1085,13 +1173,33 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
     made = max(expected, float(run.state.get("received_qty") or 0))
     receipts, transferred, carried = [], _ZERO, _ZERO
     if legacy:
-        weights = [_money(r["quantity"]) for r in legacy]
-        rest = _money(made) - sum(weights, _ZERO)
-        shares = allocate_pro_rata(total, weights + ([rest] if rest > 0 else []), op.currency) if total else []
-        for i, r in enumerate(legacy):
-            share = shares[i] if shares else _ZERO
-            receipts.append({"lot_item_id": r["lot_item_id"], "quantity": r["quantity"], "value": str(share)})
-            transferred += share
+        # A lot whose value has since gone where no re-cost can follow (split, sold in part,
+        # transformed, used, written off) keeps what it was given, for good; the rest of the
+        # value is shared over the output whose final cost can still be recorded.
+        kept = [not await _cost_reachable(session, company_id, r["lot_item_id"]) for r in legacy]
+        fixed = sum((r["value"] for r, k in zip(legacy, kept) if k), _ZERO)
+        if fixed > total:
+            names = []
+            for r, k in zip(legacy, kept):
+                row = await session.get(Projection, {"company_id": company_id, "entity_id": r["lot_item_id"]})
+                if k:
+                    names.append(((row.state or {}) if row is not None else {}).get("sku") or r["lot_item_id"])
+            names = ", ".join(sorted(names))
+            raise refuse(422, "reconcile_kept",
+                         f"{names}, received from this run, cannot be re-costed (it was split, sold in part, "
+                         f"transformed, used or written off before this release) and keeps the {op.round(fixed)} it "
+                         f"was given, more than the {op.round(total)} stated. Give the value that was issued to "
+                         "this run, at least that much.", lots=names, kept=str(op.round(fixed)),
+                         issued=str(op.round(total)))
+        weights = [_money(r["quantity"]) for r, k in zip(legacy, kept) if not k]
+        rest = _money(made) - sum((_money(r["quantity"]) for r in legacy), _ZERO)
+        weights += [rest] if rest > 0 else []
+        shares = iter(allocate_pro_rata(total - fixed, weights, op.currency) if weights else [])
+        for r, k in zip(legacy, kept):
+            value = r["value"] if k else next(shares)
+            receipts.append({"lot_item_id": r["lot_item_id"], "quantity": r["quantity"], "value": str(value),
+                             **({"fixed": True} if k else {})})
+            transferred += value
             carried += r["value"]
     amount = total - carried  # what the books get from the account: the lots already carry the rest
 

@@ -39,6 +39,8 @@ PLUGIN_MANIFEST = {
             {"handler": "celerp_manufacturing.routes:settle_open_runs_hook"},
         ],
         "inventory_in_production": {"handler": "celerp_manufacturing.movements:legacy_in_production"},
+        # Output of a run still open goes only where completion can still re-cost it.
+        "item_lineage_guard": {"handler": "celerp_manufacturing.movements:guard_output_lineage"},
         # Ordered 35-37 so the group sorts immediately after the Inventory group (orders 30-34)
         # and before Contacts (order 40). Work Centers is configured in Manufacturing Settings.
         # Demand Planning (what to make) -> Work In Progress (work orders on the floor) -> Stock Orders

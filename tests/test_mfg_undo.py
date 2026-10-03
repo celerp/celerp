@@ -384,7 +384,9 @@ _TOUCHES = {"sold": _sell, "moved": _move, "split": _split, "adjusted": _adjust,
             "on_a_document": lambda c, s, a, lot: _invoice(c, s, a, lot), "reserved": _reserve}
 
 
-@pytest.mark.parametrize("touch", list(_TOUCHES))
+# Splitting or counting down a lot of a run still open is refused outright
+# (test_mfg_output_lineage), so neither can happen before an undo.
+@pytest.mark.parametrize("touch", [t for t in _TOUCHES if t not in ("split", "adjusted")])
 async def test_undo_receipt_is_refused_once_the_lot_has_changed(client, session, auth, touch):
     raw, _, order, (lot,) = await _received(client, session, auth, take=(2.0,))
     await _TOUCHES[touch](client, session, auth, lot)

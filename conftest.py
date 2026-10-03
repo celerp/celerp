@@ -390,6 +390,13 @@ _SLOT_CONTRIBUTIONS = _nav_slot_contributions() + [
             "_module": "celerp-manufacturing",
         },
     },
+    {
+        "slot": "item_lineage_guard",
+        "contrib": {
+            "handler": "celerp_manufacturing.movements:guard_output_lineage",
+            "_module": "celerp-manufacturing",
+        },
+    },
     # The retired bom.* prefix is intentionally not registered — historical bom.* events fall
     # through to the projection engine's default merge handler on replay.
     {

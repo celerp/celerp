@@ -213,6 +213,13 @@ async def _cost_is_traceable(session: AsyncSession, company_id, entity_id: str, 
     return not any(audits_lowering.values())
 
 
+async def cost_can_be_restated(session: AsyncSession, company_id, entity_id: str, state: dict) -> bool:
+    """Whether a later change to the lot's cost can still be carried: all of its cost is on
+    it or went whole into a merge or a sale, and it was not written off."""
+    return (str(state.get("status") or "").lower() != "disposed"
+            and await _cost_is_traceable(session, company_id, entity_id, state))
+
+
 async def _invoice_line_of_sale(session: AsyncSession, company_id, entity_id: str, state: dict) -> tuple[str, int, str]:
     """(doc_id, line_index, doc_number) of the invoice line that sold this lot.
 
@@ -312,7 +319,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
             current = _lot_label(state, next_id)
             basis = goods_basis(state)
             succ_status = str(state.get("status") or "").lower()
-            if not await _cost_is_traceable(session, company_id, next_id, state) or succ_status == "disposed":
+            if not await cost_can_be_restated(session, company_id, next_id, state):
                 raise CostRestatementConflict(
                     f"{label}'s cost went into {current}, which was later split, transformed, used, or "
                     "written off, so the correction cannot be carried through it automatically"

@@ -248,7 +248,7 @@ async def _sale(client, tok: str, job: dict, *, held: bool = False, hold=None) -
     steps = []
     r = await client.post("/docs", headers=auth(tok), json={
         "doc_type": "invoice", "total": 500.0, "line_items": [
-            {"entity_id": lot, "sku": state.get("sku"), "name": "Made", "quantity": 1,
+            {"entity_id": lot, "sku": state.get("sku"), "name": "Made", "quantity": job["qty"],
              "unit_price": 500.0, "sell_by": "piece"}]})
     steps.append(r.status_code)
     if r.status_code == 200:
@@ -266,7 +266,9 @@ async def _sale_job(engine, client, user, n: int, prep) -> dict:
     await _prepare(engine, client, job, prep)
     async with maker(engine)() as s:
         lot = await _first_lot(s, job, 0)
-    return job | {"tok": await token(engine, user, job["cid"]), "lot": lot}
+        # The whole lot as received, read before the run takes it back.
+        qty = (await s.get(Projection, {"company_id": job["cid"], "entity_id": lot})).state["quantity"]
+    return job | {"tok": await token(engine, user, job["cid"]), "lot": lot, "qty": qty}
 
 
 @pytest.mark.parametrize("name, prep, shipped", [
