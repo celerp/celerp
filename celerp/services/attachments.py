@@ -559,10 +559,12 @@ async def attach_file(
     idempotency_key: str | None = None,
     document_tag: str | None = None,
     is_hero: bool | None = None,
+    description: str | None = None,
 ):
     """Attach a stored file (``meta`` from store_file) to one contact, document or item.
 
-    Returns the ledger entry of the file-attached event."""
+    Returns the ledger entry of the file-attached event. When the attachment is refused
+    (the record is gone), the stored file is deleted again so no file outlives it."""
     data = {
         "entity_id": entity_id,
         "entity_type": entity_type,
@@ -572,24 +574,31 @@ async def attach_file(
         "size": meta["size"],
         "url": meta.get("url", ""),
         "document_tag": document_tag,
-        "description": None,
+        "description": description,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
     if is_hero is not None:
         data["is_hero"] = is_hero
-    return await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type=entity_type,
-        event_type=FILE_ATTACHED_EVENTS[entity_type],
-        data=data,
-        actor_id=actor_id,
-        location_id=None,
-        source=source,
-        idempotency_key=idempotency_key or str(uuid.uuid4()),
-        metadata_={},
-    )
+    try:
+        return await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type=entity_type,
+            event_type=FILE_ATTACHED_EVENTS[entity_type],
+            data=data,
+            actor_id=actor_id,
+            location_id=None,
+            source=source,
+            idempotency_key=idempotency_key or str(uuid.uuid4()),
+            metadata_={},
+        )
+    except BaseException:
+        try:
+            await delete_stored_file(str(company_id), meta["id"], meta["mime"])
+        except Exception:
+            logger.warning("could not delete stored file %s after its attachment was refused", meta["id"])
+        raise
 
 
 def thumbnail_id(att_id: str) -> str:

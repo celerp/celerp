@@ -22,6 +22,9 @@ from celerp.models.projections import Projection
 
 log = logging.getLogger(__name__)
 
+# The events that bring an item into being; every other item event changes one that exists.
+ITEM_BIRTHS = frozenset({"item.created", "item.snapshot"})
+
 
 def _resolve_module_handler(dotted: str):
     """Import and return a handler callable from a 'module.path:function' string.

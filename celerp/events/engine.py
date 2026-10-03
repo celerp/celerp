@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 from datetime import date, datetime, timezone
 
 from fastapi import HTTPException
@@ -13,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.projections.engine import ProjectionEngine
+from celerp.projections.engine import ITEM_BIRTHS, ProjectionEngine
 from celerp.services.document_lines import assert_document_item_uniqueness, line_item_id, linked_items
 from celerp.services.business_time import business_date_of
 
@@ -232,7 +231,7 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
     from celerp.services.account_roles import source_lot_account
 
     data = kwargs["data"]
-    if kwargs["event_type"] in {"item.created", "item.snapshot"} and previous_state is None:
+    if kwargs["event_type"] in ITEM_BIRTHS and previous_state is None:
         if (kwargs["event_type"] == "item.created" and kwargs.get("source") == "migration"
                 and LOT_ACCOUNT_FIELD not in data and str(data.get("status") or "").lower() != "draft"):
             code = await source_lot_account(session, kwargs["company_id"])
@@ -280,6 +279,32 @@ def _guard_on_books(kwargs: dict) -> None:
             detail="Whether archived or expired stock stays on the books is set by Archive and Expire "
                    "and cannot be entered.",
         )
+
+
+async def _item_applied(session, entry: LedgerEntry, transition) -> None:
+    """Checks and effects of one live item event, on the state its row lock applied it to.
+
+    Only a birth (item.created, item.snapshot) may find no item: any other change that
+    finds none read an item that was removed before it committed (a deleted draft, an
+    undone import) or names one that never existed, and writing it would make an item
+    out of the change alone. Replay applies events through ProjectionEngine directly and
+    is not affected."""
+    from celerp.connectors.outbound_queue import enqueue_item_change
+    from celerp.services.lot_origin import (
+        assert_draft_not_circulated,
+        book_draft_boundary,
+        draft_boundary,
+    )
+
+    if transition.before is None and entry.event_type not in ITEM_BIRTHS:
+        raise HTTPException(status_code=404, detail="Item not found")
+    assert_draft_not_circulated(entry.event_type, transition)
+    draft_move = await draft_boundary(session, entry, transition)
+    if draft_move is not None:
+        await book_draft_boundary(session, entry, draft_move)
+    # Durable connector work is recorded in the same transaction as the item event.
+    # No network I/O occurs here; the worker re-reads current state before sending.
+    await enqueue_item_change(session, entry, previous_state=transition.before)
 
 
 async def emit_event(
@@ -408,52 +433,46 @@ async def emit_event(
         _guard_on_books(kwargs)
         await _record_lot_account(session, kwargs, previous_item_state)
 
-    # An item event is checked again on the state its row lock applied it to; a refusal
-    # there rolls back this event alone, as the dedup below does.
-    async with session.begin_nested() if item else nullcontext():
-        entry = LedgerEntry(**kwargs)
-        try:
-            # Insert inside a SAVEPOINT so a duplicate-idempotency collision only
-            # rolls back this insert — NOT the caller's whole transaction. (A bare
-            # session.rollback() here would silently undo everything the caller
-            # already emitted, e.g. the doc.finalized event before its auto-JE.)
-            async with session.begin_nested():
-                session.add(entry)
-                await session.flush()
-        except IntegrityError:
-            # Idempotency is per-company, so dedup within this company only.
-            row = (
-                await session.execute(
-                    text("SELECT id FROM ledger WHERE company_id = CAST(:cid AS uuid) AND idempotency_key=:k"),
-                    {"cid": str(kwargs["company_id"]), "k": kwargs["idempotency_key"]},
-                )
-            ).first()
-            if row is None:
-                raise
-            original = await session.get(LedgerEntry, row[0])
-            # Callers that must distinguish a replay from a fresh insert (e.g. to
-            # reject a stale form resubmitted with edited values) read this flag
-            # instead of inferring from entity ids.
-            original.was_deduped = True
-            return original
+    entry = LedgerEntry(**kwargs)
 
-        transition = await ProjectionEngine.apply_event(session, entry)
-
-        if item:
-            from celerp.connectors.outbound_queue import enqueue_item_change
-            from celerp.services.lot_origin import (
-                assert_draft_not_circulated,
-                book_draft_boundary,
-                draft_boundary,
+    # The event and its effect on the projection are one SAVEPOINT: a refused projection
+    # change (a change to an item that is gone, or one the draft rule refuses on the state
+    # its row lock applied it to) takes its ledger row with it, even when the caller
+    # catches the refusal and commits the rest of its work. A duplicate-idempotency
+    # collision likewise rolls back only this insert, NOT the caller's whole transaction.
+    # (A bare session.rollback() here would silently undo everything the caller already
+    # emitted, e.g. the doc.finalized event before its auto-JE.)
+    savepoint = await session.begin_nested()
+    try:
+        session.add(entry)
+        await session.flush()
+    except BaseException as exc:
+        await savepoint.rollback()
+        if not isinstance(exc, IntegrityError):
+            raise
+        # Idempotency is per-company, so dedup within this company only.
+        row = (
+            await session.execute(
+                text("SELECT id FROM ledger WHERE company_id = CAST(:cid AS uuid) AND idempotency_key=:k"),
+                {"cid": str(kwargs["company_id"]), "k": kwargs["idempotency_key"]},
             )
-
-            assert_draft_not_circulated(entry.event_type, transition)
-            draft_move = await draft_boundary(session, entry, transition)
-            if draft_move is not None:
-                await book_draft_boundary(session, entry, draft_move)
-            # Durable connector work is recorded in the same transaction as the item event.
-            # No network I/O occurs here; the worker re-reads current state before sending.
-            await enqueue_item_change(session, entry, previous_state=transition.before)
+        ).first()
+        if row is None:
+            raise
+        original = await session.get(LedgerEntry, row[0])
+        # Callers that must distinguish a replay from a fresh insert (e.g. to
+        # reject a stale form resubmitted with edited values) read this flag
+        # instead of inferring from entity ids.
+        original.was_deduped = True
+        return original
+    try:
+        transition = await ProjectionEngine.apply_event(session, entry)
+        if item:
+            await _item_applied(session, entry, transition)
+    except BaseException:
+        await savepoint.rollback()
+        raise
+    await savepoint.commit()
 
     # Notify listeners (LISTEN/NOTIFY) that an event landed.
     try:

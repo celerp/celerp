@@ -243,7 +243,6 @@ async def bulk_attach_files(
     Returns:
       {matched, unmatched, errors, report: [{sku, file, status, url, tag, is_hero}]}
     """
-    from datetime import datetime, timezone
     import mimetypes as _mt
     from starlette.datastructures import Headers as _Headers
 
@@ -339,31 +338,8 @@ async def bulk_attach_files(
                 if is_hero:
                     hero_assigned.add(sku_key)
 
-                await emit_event(
-                    session,
-                    company_id=company_id,
-                    entity_id=row.entity_id,
-                    entity_type="item",
-                    event_type="item.file.attached",
-                    data={
-                        "entity_id": row.entity_id,
-                        "entity_type": "item",
-                        "file_id": meta["id"],
-                        "filename": meta["filename"],
-                        "mime": meta["mime"],
-                        "size": meta["size"],
-                        "url": meta.get("url", ""),
-                        "document_tag": tag,
-                        "description": label,
-                        "uploaded_at": datetime.now(timezone.utc).isoformat(),
-                        "is_hero": is_hero,
-                    },
-                    actor_id=user.id,
-                    location_id=None,
-                    source="api",
-                    idempotency_key=str(uuid.uuid4()),
-                    metadata_={},
-                )
+                await attach_file(session, company_id, "item", row.entity_id, meta, user.id,
+                                  document_tag=tag, is_hero=is_hero, description=label)
                 # NOTE: do NOT re-apply the event here. emit_event() ->
                 # ProjectionEngine.apply_event already appended the file to this
                 # same projection row (session identity map), so row.state is
