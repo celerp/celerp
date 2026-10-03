@@ -35,7 +35,7 @@ from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_basis
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import lock_projections
-from celerp.services.permissions import require_permission
+from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
 
 from .costing import RecipeError, labor_hours, roll_up_cost, where_used
@@ -1051,6 +1051,9 @@ async def batch_import_manufacturing(
     from sqlalchemy import select as _select
     from celerp.models.ledger import LedgerEntry
 
+    # Serialize first, so the keys and runs read below include every import that
+    # committed while this one waited, and the access it acts on is judged under the lock.
+    await locked_authority(session, company_id, user.id, ("manage_manufacturing", "import_export_data"))
     keys = [r.idempotency_key for r in body.records]
     existing_keys = set((await session.execute(
         _select(LedgerEntry.idempotency_key).where(
