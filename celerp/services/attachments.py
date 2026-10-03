@@ -35,6 +35,7 @@ import os
 import shutil
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Protocol
@@ -547,6 +548,22 @@ def item_file_role(
     return is_image and (as_hero or not has_hero), document_tag
 
 
+@asynccontextmanager
+async def discarded_if_refused(company_id, meta: dict):
+    """Delete the stored file (``meta`` from store_file) again if the block recording it fails.
+
+    Every path that stores a file and then records it runs the recording inside this, so
+    a refused or failed recording never leaves a stored file that nothing points to."""
+    try:
+        yield
+    except BaseException:
+        try:
+            await delete_stored_file(str(company_id), meta["id"], meta["mime"])
+        except Exception:
+            logger.warning("could not delete stored file %s after its attachment was refused", meta["id"])
+        raise
+
+
 async def attach_file(
     session: AsyncSession,
     company_id,
@@ -564,7 +581,7 @@ async def attach_file(
     """Attach a stored file (``meta`` from store_file) to one contact, document or item.
 
     Returns the ledger entry of the file-attached event. When the attachment is refused
-    (the record is gone), the stored file is deleted again so no file outlives it."""
+    (the record is gone), the stored file is deleted again (discarded_if_refused)."""
     data = {
         "entity_id": entity_id,
         "entity_type": entity_type,
@@ -579,7 +596,7 @@ async def attach_file(
     }
     if is_hero is not None:
         data["is_hero"] = is_hero
-    try:
+    async with discarded_if_refused(company_id, meta):
         return await emit_event(
             session,
             company_id=company_id,
@@ -593,12 +610,6 @@ async def attach_file(
             idempotency_key=idempotency_key or str(uuid.uuid4()),
             metadata_={},
         )
-    except BaseException:
-        try:
-            await delete_stored_file(str(company_id), meta["id"], meta["mime"])
-        except Exception:
-            logger.warning("could not delete stored file %s after its attachment was refused", meta["id"])
-        raise
 
 
 def thumbnail_id(att_id: str) -> str:

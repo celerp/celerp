@@ -61,11 +61,17 @@ def _upload(client, tok: str, lot: str):
                                files={"file": ("photo.png", _PNG, "image/png")})
 
 
+def _attach(client, tok: str, lot: str):
+    return lambda: client.post(f"/items/{lot}/attachments", headers=auth(tok),
+                               files={"file": ("photo.png", _PNG, "image/png")})
+
+
 def _sync(client, tok: str, lot: str):
     return lambda: client.post("/items/bulk/shopify-sync", headers=auth(tok), json={"entity_ids": [lot]})
 
 
-@pytest.mark.parametrize("second", [_rename, _upload, _sync], ids=["patch", "file-upload", "shop-sync"])
+@pytest.mark.parametrize("second", [_rename, _upload, _attach, _sync],
+                         ids=["patch", "file-upload", "attachment-upload", "shop-sync"])
 async def test_an_item_event_waiting_on_a_delete_is_refused(committed_engine, race, tmp_path, monkeypatch, second):
     monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
     client, hold = race
@@ -80,7 +86,8 @@ async def test_an_item_event_waiting_on_a_delete_is_refused(committed_engine, ra
     assert _stored_files(cid) == []
 
 
-@pytest.mark.parametrize("request_", [_rename, _upload, _sync], ids=["patch", "file-upload", "shop-sync"])
+@pytest.mark.parametrize("request_", [_rename, _upload, _attach, _sync],
+                         ids=["patch", "file-upload", "attachment-upload", "shop-sync"])
 async def test_an_item_event_for_an_item_that_never_existed_is_refused(committed_engine, race, tmp_path, monkeypatch, request_):
     monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
     client, _ = race
@@ -161,3 +168,50 @@ async def test_a_refused_event_leaves_the_rest_of_the_request_intact(committed_e
     async with maker(committed_engine)() as s:
         assert (await s.get(Projection, {"company_id": cid, "entity_id": lot})).state["name"] == "Kept"
     assert await _left_behind(committed_engine, cid, ghost) == (False, 0)
+
+
+async def test_a_shop_image_pulled_while_the_item_is_deleted_leaves_no_file(committed_engine, race, tmp_path, monkeypatch):
+    """A shop pull that read the item just before its Delete committed stores the image,
+    then finds the item gone: nothing is attached and the stored image is removed."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from celerp.connectors.images import download_and_emit_file
+
+    monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
+    monkeypatch.setattr("celerp.services.outbound_url.fetch_public_bytes", AsyncMock(
+        return_value=MagicMock(status_code=200, content=_PNG, headers={"content-type": "image/png"})))
+    client, hold = race
+    cid, tok = await _company(committed_engine)
+    lot = await _draft(client, tok, 10)
+
+    async def _pull():
+        async with maker(committed_engine)() as s:
+            try:
+                return await download_and_emit_file(s, str(cid), lot, None, "https://shop.example/a.png",
+                                                    "a.png", "product_images", True)
+            except HTTPException as exc:
+                return exc
+
+    deleted, pulled = await _race(committed_engine, client, hold, _delete(client, tok, lot), _pull)
+
+    assert deleted.status_code == 200, deleted.text
+    assert isinstance(pulled, HTTPException) and pulled.status_code == 404, pulled
+    assert await _left_behind(committed_engine, cid, lot) == (False, 0)
+    assert _stored_files(cid) == []
+
+
+async def test_two_attachment_uploads_at_once_both_stay_on_the_item(committed_engine, race, tmp_path, monkeypatch):
+    """The second upload reads the item's attachments after the first one added its own,
+    so neither is dropped and every stored file is listed on the item."""
+    monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
+    client, hold = race
+    cid, tok = await _company(committed_engine)
+    lot = await _draft(client, tok, 10)
+
+    first, second = await _race(committed_engine, client, hold, _attach(client, tok, lot), _attach(client, tok, lot))
+
+    assert first.status_code == 200 and second.status_code == 200, (first.text, second.text)
+    from celerp.models.projections import Projection
+    async with maker(committed_engine)() as s:
+        listed = sorted(a["id"] for a in (await s.get(Projection, {"company_id": cid, "entity_id": lot})).state["attachments"])
+    assert listed == sorted([first.json()["id"], second.json()["id"]])
