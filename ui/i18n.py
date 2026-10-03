@@ -126,6 +126,37 @@ def t(key: str, lang: str | None = None, **kwargs) -> str:
     return text.format(**kwargs) if kwargs else text
 
 
+def t_or(key: str, fallback: str, **kwargs) -> str:
+    """Translate *key* when a catalog has it, else return *fallback* (text the server
+    already wrote in English). A translation missing one of *kwargs* falls back too."""
+    lang = _current_lang.get()
+    text = _cached_load(lang).get(key) or _cached_load("en").get(key)
+    if text is None:
+        return fallback
+    try:
+        return text.format(**kwargs) if kwargs else text
+    except (KeyError, IndexError, ValueError):
+        return fallback
+
+
+def role_label(role: str, fallback: str) -> str:
+    """Display label of a posting role (``posting.role.<role>``)."""
+    return t_or(f"posting.role.{role}", fallback)
+
+
+def refusal_text(detail) -> str:
+    """An API refusal in the user's language. A structured refusal carries ``message``
+    (English), ``message_key`` and ``params``; its ``message_key`` is translated with
+    those params. Anything else is shown as the server wrote it."""
+    if not isinstance(detail, dict):
+        return str(detail or "")
+    message = str(detail.get("message") or "")
+    key = detail.get("message_key")
+    if not key:
+        return message
+    return t_or(str(key), message, **(detail.get("params") or {}))
+
+
 def field_label(f: dict) -> str:
     """Display label for an item-schema field, resolved through t() at render time.
 

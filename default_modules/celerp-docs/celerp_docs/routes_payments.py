@@ -18,12 +18,14 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import AccountRole
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken
 from celerp.services import payments as pay
+from celerp.services.account_roles import resolve
 from celerp.services.auth import get_current_user, require_install_owner
 from celerp.services.doc_balance import outstanding_balance
 from celerp.services.money import currency_dp, to_minor_units
@@ -36,9 +38,8 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # Only these can be paid online (a bill/PO is money you owe, not money owed to you).
 _PAYABLE_TYPES = frozenset({"invoice", "proforma"})
-# GL account online payments clear to; overridable per company. Cash is seeded on
-# every chart of accounts, so it's a safe default until a company picks one.
-DEFAULT_DEPOSIT_ACCOUNT = "1110"
+# GL account online payments clear to, per channel and for online payments generally.
+# With neither chosen, payments land on the company's default deposit account.
 ONLINE_DEPOSIT_ACCOUNT_KEY = "stripe_deposit_account"
 WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY = "woocommerce_deposit_account"
 
@@ -81,13 +82,13 @@ async def deposit_account(
 ) -> str:
     """GL account a received online payment clears to: the channel's own
     setting when one is chosen, else the company's online-payments default,
-    else Cash."""
+    else the default deposit account."""
     company = await session.get(Company, company_id)
     settings = (company.settings or {}) if company else {}
     return (
         (settings.get(override_key) if override_key else None)
         or settings.get(ONLINE_DEPOSIT_ACCOUNT_KEY)
-        or DEFAULT_DEPOSIT_ACCOUNT
+        or await resolve(session, company_id, AccountRole.DEFAULT_DEPOSIT)
     )
 
 

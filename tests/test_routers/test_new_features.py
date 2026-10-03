@@ -304,9 +304,11 @@ async def test_patch_account(client):
 
 @pytest.mark.asyncio
 async def test_trial_balance_empty(client):
-    """Trial balance with no journal entries should return empty lines with balanced=True."""
+    """Trial balance with no journal entries should return empty lines with balanced=True.
+    A new company's sample stock is booked on registration, so the period asked for
+    ends before it."""
     token = await _register(client)
-    r = await client.get("/accounting/trial-balance", headers=_auth(token))
+    r = await client.get("/accounting/trial-balance", headers=_auth(token), params={"date_to": "2000-01-01"})
     assert r.status_code == 200
     data = r.json()
     assert data["balanced"] is True

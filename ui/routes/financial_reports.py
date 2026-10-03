@@ -469,7 +469,8 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
             code = l.get("code", "")
             synthetic = l.get("synthetic", False)
             is_parent = l.get("is_parent", False)
-            is_child = l.get("is_child", False)
+            # Accounts nest as deep as the chart does; each level indents one step.
+            indent = f"padding-left:{1.5 * l['depth']}rem" if l.get("depth") else None
 
             if synthetic and l.get("href_pnl"):
                 label = l.get("name", "")
@@ -479,24 +480,17 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
                 )
             elif is_parent:
                 label = f"{code} {l.get('name', '')}".strip()
-                name_cell = Td(Strong(label))
-            elif is_child:
-                label = f"{code} {l.get('name', '')}".strip()
-                name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"), style="padding-left:2rem")
+                name_cell = Td(Strong(label), style=indent)
             elif code and not synthetic:
                 label = f"{code} {l.get('name', '')}".strip()
-                name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"))
+                name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"), style=indent)
             else:
                 name_cell = Td(l.get("name", ""))
 
-            amount_style = "padding-left:2rem" if is_child else ""
             rows.append(Tr(
                 name_cell,
-                Td(fmt_money(l.get('amount', 0), currency) if not is_parent else "", cls="cell--number", style=amount_style),
-                Td(fmt_money(l.get('amount', 0), currency) if is_parent else "", cls="cell--number"),
-            ) if is_parent else Tr(
-                name_cell,
-                Td(fmt_money(l.get('amount', 0), currency), cls="cell--number"),
+                Td(Strong(fmt_money(l.get('amount', 0), currency)) if is_parent
+                   else fmt_money(l.get('amount', 0), currency), cls="cell--number"),
             ))
         total_el = fmt_money(section_data.get('total', 0), currency)
         return Div(
@@ -1514,11 +1508,14 @@ def setup_routes(app):
             data = await api.get_balance_sheet(token, {"as_of": as_of})
         except APIError as e:
             return plain_error_response(e)
-        rows: list[list] = [["Section", "Code", "Account", "Amount"]]
+        # A header's subtotal restates the balances under it, so every line says which
+        # it is and how deep it sits: the Balance lines of a section add up to its Total.
+        rows: list[list] = [["Section", "Level", "Line", "Code", "Account", "Amount"]]
         for key, label in [("assets", "Assets"), ("liabilities", "Liabilities"),
                            ("equity", "Equity")]:
             section = data.get(key, {})
             for line in section.get("lines", []):
-                rows.append([label, line.get("code", ""), line.get("name", ""), line.get("amount", 0)])
-            rows += [[f"TOTAL {label}", "", "", section.get("total", 0)], []]
+                rows.append([label, line.get("depth", 0), "Subtotal" if line.get("is_parent") else "Balance",
+                             line.get("code", ""), line.get("name", ""), line.get("amount", 0)])
+            rows += [[label, "", "Total", "", "", section.get("total", 0)], []]
         return csv_response(rows, f"balance_sheet_{fname_date(as_of)}.csv")

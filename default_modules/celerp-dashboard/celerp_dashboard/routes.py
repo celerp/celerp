@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services.lot_origin import RETIRED, held_value
 from celerp.services.doc_balance import is_awaiting_payment, is_overdue_document, outstanding_balance, today_iso
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role
 from celerp.services.permissions import get_current_company_settings
@@ -47,28 +48,20 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
     ar_outstanding = _balance(ar_docs)
     ap_outstanding = _balance(_owed("purchase_order"))
 
-    # Inventory: delegate entirely to the canonical valuation endpoint.
-    # This is the single source of truth for item counts and price totals.
+    # Inventory: item counts and the retail total come from the canonical valuation
+    # endpoint. Inventory value is what the company's stock holds on the books
+    # (lot_origin.held_value), archived and expired stock it keeps included, shown only
+    # to a role that may see costs.
     from celerp_inventory.routes import get_valuation as _get_valuation
     valuation = await _get_valuation(company_id=company_id, role=role, settings=settings, session=session)
-    total_value_cost = valuation.get("cost_total", 0.0)
+    held = [(i, held_value(i)) for i in items]
+    total_value_cost = (round(float(sum(v for _, v in held if v is not None)), 2)
+                        if "cost_total" in valuation else 0.0)
     total_value_retail = valuation.get("retail_total", 0.0)
     active_item_count_inv = valuation.get("active_item_count", 0)
 
-    # For KPI sub-fields that need per-item access, re-use already-loaded items list.
-    _CONSIGNMENT_IN = "in"
-    _INACTIVE_STATUSES = frozenset({"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired", "draft", "disposed"})
-    active_items = []
-    for i in items:
-        s = i.state
-        if s.get("consignment_flag") == _CONSIGNMENT_IN or i.consignment_flag == _CONSIGNMENT_IN:
-            continue
-        if (s.get("inventory_type") or "stocked") != "stocked":
-            continue
-        status = str(s.get("status") or "").lower()
-        if status in _INACTIVE_STATUSES:
-            continue
-        active_items.append(i)
+    # Stock on hand in the catalog, for the per-item KPI sub-fields.
+    active_items = [i for i, v in held if v is not None and str(i.state.get("status") or "").lower() not in RETIRED]
 
     # Revenue: filter to current month / year using issue_date or finalized_at
     def _doc_month(d: "Projection") -> str:

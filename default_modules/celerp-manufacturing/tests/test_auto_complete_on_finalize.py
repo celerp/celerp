@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import celerp_manufacturing.routes as mfg_routes
+from celerp_manufacturing import movements
 
 
 async def _register(client) -> str:
@@ -131,12 +131,9 @@ async def test_auto_complete_idempotent_on_refinalize(client):
 @pytest.mark.asyncio
 async def test_partial_completion_rolls_back(client):
     """A mid-completion failure rolls the line back to its savepoint: the run stays ``planned``,
-    the component consumption is undone, the invoice still finalizes, and a high-priority
-    notification names the run left open.
-
-    Failure injection deviates from the plan's deleted-component 404 (no ``DELETE /items`` route
-    exists): patching ``_receive`` to raise exercises the same per-line savepoint rollback one
-    step later in the completion, after the issue has already run.
+    the component consumption and its entry are undone, the invoice still finalizes, and a
+    high-priority notification names the run left open. Receiving the output is made to fail,
+    so the rollback has an issue already written to undo.
     """
     token = await _register(client)
     gold = await _item(client, token, "GOLDRB", quantity=100, cost_total=8000)
@@ -144,12 +141,14 @@ async def test_partial_completion_rolls_back(client):
     await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
     await _enable(client, token)
 
-    with patch.object(mfg_routes, "_receive", new=AsyncMock(side_effect=RuntimeError("boom"))):
+    with patch.object(movements, "_receive", new=AsyncMock(side_effect=RuntimeError("boom"))):
         await _finalize_invoice(client, token, ring, "RINGRB", 2)
 
     runs = await _runs_for(client, token, ring)
     assert len(runs) == 1 and runs[0]["status"] == "planned"  # savepoint rolled back the issue
     assert await _qty(client, token, gold) == 100  # consumption undone
+    ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
+    assert not any(runs[0]["id"] in (e["data"].get("memo") or "") for e in ledger)  # and its entry
     notes = await _notifs(client, token)
     assert any(n["category"] == "manufacturing" and n["priority"] == "high" for n in notes)
 

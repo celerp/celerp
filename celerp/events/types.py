@@ -24,6 +24,8 @@ class EventType(StrEnum):
     ITEM_CONSUMED = "item.consumed"
     ITEM_PRODUCED = "item.produced"
     ITEM_COST_ADJUSTED = "item.cost_adjusted"
+    ITEM_INVENTORY_ACCOUNT_RECORDED = "item.inventory_account.recorded"
+    ITEM_INVENTORY_ON_BOOKS_RECORDED = "item.inventory_on_books.recorded"
     ITEM_RECIPE_SET = "item.recipe.set"
     ITEM_WORKFLOW_SET = "item.workflow.set"
     ITEM_RESERVED = "item.reserved"
@@ -94,6 +96,8 @@ class EventType(StrEnum):
     MFG_ORDER_ISSUED = "mfg.order.issued"
     MFG_ORDER_RECEIVED = "mfg.order.received"
     MFG_ORDER_SCHEDULED = "mfg.order.scheduled"
+    MFG_ORDER_WIP_OPENED = "mfg.order.wip_opened"
+    MFG_ORDER_WIP_UNRESOLVED = "mfg.order.wip_unresolved"
 
     # Scanning
     SCAN_BARCODE = "scan.barcode"

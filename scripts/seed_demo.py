@@ -197,7 +197,7 @@ async def _advance(client: httpx.AsyncClient, headers: dict, doc_id: str, steps:
             if outstanding > 0:
                 _require(await client.post(f"/docs/{doc_id}/payment", json={
                     "amount": outstanding, "payment_date": doc.get("date") or date.today().isoformat(),
-                    "bank_account": "1110", "idempotency_key": f"{key}:payment",
+                    "bank_account": "1111", "idempotency_key": f"{key}:payment",
                 }, headers=headers), f"recording payment on {key}")
 
 

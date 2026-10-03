@@ -5046,47 +5046,6 @@ class TestSprint5ItemActions:
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert b"Merging" in r.content
-    async def test_merge_items_route_success(self, ui_client):
-        with patch("ui.api_client.merge_items", new=AsyncMock(return_value={"id": "item:new123"})):
-            r = await ui_client.post(
-                "/api/items/merge",
-                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_quantity": "10"},
-                cookies=_authed(),
-            )
-        assert r.status_code == 204
-        assert "HX-Redirect" in r.headers
-
-    @pytest.mark.asyncio
-    async def test_merge_items_route_missing_target(self, ui_client):
-        r = await ui_client.post(
-            "/api/items/merge",
-            data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": ""},
-            cookies=_authed(),
-        )
-        assert r.status_code == 200
-        assert b"required" in r.content.lower()
-
-    @pytest.mark.asyncio
-    async def test_merge_items_route_missing_sources(self, ui_client):
-        r = await ui_client.post(
-            "/api/items/merge",
-            data={"source_entity_ids": [], "target_sku_from": "item:target"},
-            cookies=_authed(),
-        )
-        assert r.status_code == 200
-        assert b"required" in r.content.lower()
-
-    @pytest.mark.asyncio
-    async def test_merge_items_route_api_error(self, ui_client):
-        from ui.api_client import APIError
-        with patch("ui.api_client.merge_items", new=AsyncMock(side_effect=APIError(400, "merge conflict"))):
-            r = await ui_client.post(
-                "/api/items/merge",
-                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a"},
-                cookies=_authed(),
-            )
-        assert r.status_code == 200
-        assert b"merge conflict" in r.content
 
     # ── Duplicate ─────────────────────────────────────────────────────────────
 
@@ -5561,53 +5520,6 @@ class TestItemActionRouteCompleteness:
         children = captured["payload"]["children"]
         assert len(children) == 3
         assert sorted(c["quantity"] for c in children) == [2.0, 3.0, 5.0]
-
-    # ── merge (additional coverage) ──────────────────────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_merge_redirects_to_new_item(self, ui_client):
-        with patch("ui.api_client.merge_items", new=AsyncMock(return_value={"id": "item:new999"})):
-            r = await ui_client.post(
-                "/api/items/merge",
-                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_quantity": "5"},
-                cookies=_authed(),
-            )
-        assert r.headers.get("HX-Redirect") == "/inventory/item:new999"
-
-    @pytest.mark.asyncio
-    async def test_merge_passes_correct_args(self, ui_client):
-        captured = {}
-        async def _mock(token, source_entity_ids, target_sku_from, resulting_quantity=None,
-                        resulting_cost_total=None, resulting_name=None, resulting_sku=None,
-                        resolved_attributes=None, idempotency_key=None):
-            captured.update({
-                "sources": source_entity_ids,
-                "target": target_sku_from,
-                "qty": resulting_quantity,
-                "sku": resulting_sku,
-            })
-            return {"id": "item:new1"}
-        with patch("ui.api_client.merge_items", new=_mock):
-            await ui_client.post(
-                "/api/items/merge",
-                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a",
-                      "resulting_quantity": "8", "resulting_sku": "CUSTOM-1"},
-                cookies=_authed(),
-            )
-        assert captured["target"] == "item:a"
-        assert captured["sources"] == ["item:a", "item:b"]
-        assert captured["qty"] == 8.0
-        assert captured["sku"] == "CUSTOM-1"  # custom SKU flows through
-
-    @pytest.mark.asyncio
-    async def test_merge_invalid_qty_shows_error(self, ui_client):
-        r = await ui_client.post(
-            "/api/items/merge",
-            data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_quantity": "notanumber"},
-            cookies=_authed(),
-        )
-        assert r.status_code == 200
-        assert b"Invalid" in r.content
 
 
 class TestSplitCardLiveRefresh:
@@ -6698,8 +6610,9 @@ class TestBulkActionsPhase1to5:
         assert b"Merge" in r.content
         assert b"Archive" in r.content
         assert b"Expire" in r.content
-        # Delete only visible when viewing archived/expired items
-        assert b"Delete" not in r.content
+        # Delete is in the dropdown on every view; the table script shows it only while
+        # every selected row is a draft (test_browser/test_bulk_delete_drafts.py).
+        assert b'value="delete"' in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_toolbar_module_action_in_dropdown(self, ui_client):

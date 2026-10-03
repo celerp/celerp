@@ -25,6 +25,8 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 import celerp.connectors.upsert as u
 
+from test_helpers import provision_company_books
+
 
 async def _seed_company(session, name: str) -> uuid.UUID:
     cid = uuid.uuid4()
@@ -42,6 +44,7 @@ async def _seed_company(session, name: str) -> uuid.UUID:
         user_id=uid, company_id=cid, role="owner", is_active=True,
     ))
     await session.flush()
+    await provision_company_books(session, cid)
     return cid
 
 
@@ -1262,7 +1265,7 @@ async def test_woocommerce_payment_applies_the_outstanding_balance_not_the_total
     await apply_doc_payment(
         session, cid, doc_id,
         {"amount": 4.0, "payment_date": "2024-06-01", "currency": "USD",
-         "method": "cash", "reference": "hand-4", "bank_account": "1110"},
+         "method": "cash", "reference": "hand-4", "bank_account": "1111"},
         source="api", actor_id=None, idempotency_key="manual:2001", commit=False,
     )
     await session.commit()
@@ -1296,7 +1299,7 @@ async def test_woocommerce_paid_order_with_a_balance_again_goes_to_a_person(use_
     await apply_doc_payment(
         session, cid, doc_id,
         {"amount": 4.0, "payment_date": "2024-06-01", "currency": "USD",
-         "method": "cash", "reference": "hand-4", "bank_account": "1110"},
+         "method": "cash", "reference": "hand-4", "bank_account": "1111"},
         source="api", actor_id=None, idempotency_key="manual:2002", commit=False,
     )
     await session.commit()
@@ -1363,7 +1366,7 @@ async def test_woocommerce_balance_put_right_in_celerp_releases_the_order(use_te
     await apply_doc_payment(
         session, cid, doc_id,
         {"amount": 4.0, "payment_date": "2024-06-01", "currency": "USD",
-         "method": "cash", "reference": "hand-4", "bank_account": "1110"},
+         "method": "cash", "reference": "hand-4", "bank_account": "1111"},
         source="api", actor_id=None, idempotency_key="manual:772", commit=False,
     )
     await session.commit()
@@ -1396,7 +1399,7 @@ async def test_woocommerce_balance_put_right_in_celerp_releases_the_order(use_te
     await apply_doc_payment(
         session, cid, doc_id,
         {"amount": 4.0, "payment_date": "2024-06-03", "currency": "USD",
-         "method": "bank_transfer", "reference": "hand-4-again", "bank_account": "1110"},
+         "method": "bank_transfer", "reference": "hand-4-again", "bank_account": "1111"},
         source="api", actor_id=None, idempotency_key="manual:772:again", commit=False,
     )
     await session.commit()
@@ -1426,15 +1429,19 @@ async def test_woocommerce_balance_put_right_in_celerp_releases_the_order(use_te
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("settings, expected", [
-    ({"woocommerce_deposit_account": "1200", "stripe_deposit_account": "1055"}, "1200"),
+    ({"woocommerce_deposit_account": "1056", "stripe_deposit_account": "1055"}, "1056"),
     ({"stripe_deposit_account": "1055"}, "1055"),
-    ({}, "1110"),
+    ({}, "1111"),
 ])
 async def test_woocommerce_payment_books_to_the_chosen_deposit_account(use_test_session, settings, expected):
     """Store payments land on the connector's own deposit account, else the
-    company's online-payments default, else Cash."""
+    company's online-payments default, else the default deposit account."""
     session = use_test_session
     cid = await _seed_company(session, "WooDeposit")
+    if expected != "1111":
+        from celerp_accounting.models import Account
+        session.add(Account(company_id=cid, code=expected, name="Store clearing",
+                            account_type="asset", parent_code="1110"))
     company = await locked_company(session, cid)
     company.settings = {**(company.settings or {}), **settings}
     await session.flush()

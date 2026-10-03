@@ -6,7 +6,7 @@
 Invoices finalized before COGS moved into the finalize JE only received their
 COGS at full fulfillment, so any of them never (or only partially) fulfilled
 carries recognized revenue with no matching cost. This backfill posts the
-missing Dr 5100 / Cr 1130-P pair once per database, dated to the invoice's own
+missing COGS / inventory pair once per database, dated to the invoice's own
 finalize JE, and tells each affected company what happened via a bell
 notification.
 
@@ -27,11 +27,14 @@ import logging
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from celerp.accounting_roles import AccountRole
 from celerp.migrations._data_reconcile import get_meta, set_meta
+from celerp.models.company import Company
 from celerp.models.notification import Notification
 from celerp.models.projections import Projection
 from celerp.notifications import service as notification_service
 from celerp.services import auto_je
+from celerp.services.account_roles import line_has_role, line_roles
 from celerp.services.auto_je import compute_doc_cogs
 
 log = logging.getLogger(__name__)
@@ -59,15 +62,22 @@ def _je_doc_id(je_id: str, doc_ids: set[str]) -> str | None:
     return None
 
 
-def _has_posted_cogs(je_states: list[dict]) -> bool:
-    """True when any posted JE already debits 5100 - the doc's COGS exists."""
+def _has_posted_cogs(settings: dict, je_states: list[dict]) -> bool | None:
+    """True when any posted JE already debits a line posted for cost of goods sold,
+    on whichever account the company used for it then - the doc's COGS exists. None
+    when it cannot be told: an older debit line on an account the company never
+    recorded for any role could be that cost."""
+    unclassified = False
     for state in je_states:
         if state.get("status") != "posted":
             continue
         for entry in state.get("entries", []):
-            if entry.get("account") == "5100" and float(entry.get("debit") or 0) > 0:
+            if not float(entry.get("debit") or 0) > 0:
+                continue
+            if line_has_role(settings, entry, AccountRole.COGS):
                 return True
-    return False
+            unclassified = unclassified or not line_roles(settings, entry)
+    return None if unclassified else False
 
 
 def _live_finalize_je(je_by_suffix: dict[str, dict]) -> dict | None:
@@ -129,7 +139,7 @@ async def run_cogs_backfill(session) -> dict:
     """Post the missing COGS JE for every affected finalized invoice.
 
     Affected: doc_type invoice, a posted finalize-family JE exists, and no
-    posted JE anywhere on the doc debits 5100. The JE amount comes from
+    posted JE anywhere on the doc debits cost of goods sold. The JE amount comes from
     compute_doc_cogs over current projections; zero-cost docs post nothing and
     are only counted. Returns aggregate counts; the caller commits.
     """
@@ -145,6 +155,7 @@ async def run_cogs_backfill(session) -> dict:
         select(Projection).where(Projection.entity_type == "journal_entry")
     )).scalars().all()
 
+    settings_by_company = dict((await session.execute(select(Company.id, Company.settings))).all())
     doc_ids_by_company: dict = {}
     for doc in docs:
         doc_ids_by_company.setdefault(doc.company_id, set()).add(doc.entity_id)
@@ -172,7 +183,8 @@ async def run_cogs_backfill(session) -> dict:
         fin_je = _live_finalize_je(je_by_suffix)
         if fin_je is None:
             continue
-        if _has_posted_cogs(list(je_by_suffix.values())):
+        posted_cogs = _has_posted_cogs(settings_by_company.get(doc.company_id) or {}, list(je_by_suffix.values()))
+        if posted_cogs:
             continue
 
         c = per_company.setdefault(doc.company_id, {
@@ -181,6 +193,12 @@ async def run_cogs_backfill(session) -> dict:
             "earliest": None, "latest": None,
         })
         ts = fin_je.get("ts") or state.get("finalized_at") or state.get("issue_date")
+        if posted_cogs is None:
+            # Posting would risk a second COGS entry; the doc is reported and retried
+            # once the books check has classified the older line.
+            c["errored"] += 1
+            log.warning("COGS backfill could not tell whether %s already has its COGS", doc.entity_id)
+            continue
         try:
             async with session.begin_nested():
                 cogs_result = await compute_doc_cogs(session, doc.company_id, state)
@@ -191,7 +209,7 @@ async def run_cogs_backfill(session) -> dict:
                         company_id=doc.company_id,
                         user_id=None,
                         doc_id=doc.entity_id,
-                        cogs=cogs,
+                        by_account=cogs_result.by_account,
                         ts=ts,
                     )
         except HTTPException as exc:

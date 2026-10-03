@@ -17,7 +17,9 @@ from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
-from test_helpers import make_authed_token, perm_setup
+from celerp.services.lot_origin import recognize_opening_lots
+from stock_books import older_release_lot
+from test_helpers import make_authed_token, perm_setup, provision_company_books
 
 
 async def _auth_company(session, currency: str = "USD") -> dict:
@@ -26,6 +28,7 @@ async def _auth_company(session, currency: str = "USD") -> dict:
     session.add(User(id=uid, email=f"inv-{uid.hex[:8]}@example.test", name="Admin", auth_hash="x", is_active=True))
     await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
+    await provision_company_books(session, cid)
     await session.commit()
     token = await make_authed_token(session, str(uid), str(cid), "admin")
     return {"company_id": cid, "user_id": uid, "headers": {"Authorization": f"Bearer {token}"}}
@@ -78,7 +81,7 @@ async def test_kwd_fulfillment_true_up_keeps_fils(client, session):
     assert adj is not None and adj.state.get("status") == "posted"
     by_account = {e["account"]: (e["debit"], e["credit"]) for e in adj.state["entries"]}
     assert by_account["5100"] == (0.004, 0.0)
-    assert by_account["1130-P"] == (0.0, 0.004)
+    assert by_account["1130-OB"] == (0.0, 0.004)
 
 
 @pytest.mark.asyncio
@@ -109,7 +112,7 @@ async def test_kwd_manual_overpayment_uses_fils_not_cent_tolerance(client, sessi
 @pytest.mark.asyncio
 async def test_kwd_opening_inventory_posts_sub_cent_gap(client, session):
     auth = await _auth_company(session, "KWD")
-    await _api_item(client, auth, f"KWD-OB-{uuid.uuid4().hex[:6]}", 1, 0.005)
+    await older_release_lot(session, auth["company_id"], auth["user_id"], 0.005)
     await auto_je.upsert_opening_inventory_je(
         session, company_id=auth["company_id"], user_id=auth["user_id"])
     await session.commit()
@@ -139,9 +142,9 @@ async def _seed_user(factory) -> uuid.UUID:
 
 
 async def _seed_chart(factory, company_id) -> None:
-    from celerp_accounting.routes import seed_chart_of_accounts
+    from celerp_accounting.routes import seed_chart_of_accounts_hook
     async with factory() as s:
-        await seed_chart_of_accounts(s, company_id)
+        await seed_chart_of_accounts_hook(session=s, company_id=company_id)
         await s.commit()
 
 
@@ -156,6 +159,7 @@ async def _seed_item(factory, company_id, item_id: str, *, qty: float, cost_tota
             actor_id=None, location_id=None, source="test",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )
+        await recognize_opening_lots(s, company_id, [item_id], None, f"seed:{item_id}")
         await s.commit()
 
 
@@ -184,10 +188,11 @@ async def _seed_audit(factory, company_id, list_id: str, item_id: str, *,
 
 
 async def _cleanup(factory, company_id, user_id) -> None:
-    from celerp_accounting.models import Account
+    from celerp_accounting.models import Account, BankAccount
     async with factory() as s:
         await s.execute(delete(Projection).where(Projection.company_id == company_id))
         await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
+        await s.execute(delete(BankAccount).where(BankAccount.company_id == company_id))
         await s.execute(delete(Account).where(Account.company_id == company_id))
         await s.execute(delete(Company).where(Company.id == company_id))
         await s.execute(delete(User).where(User.id == user_id))
@@ -229,7 +234,7 @@ async def test_audit_adjust_uses_fresh_locked_item_state(_db_engine):
             assert item.state["quantity"] == 5
             by_account = {e["account"]: (e["debit"], e["credit"]) for e in je.state["entries"]}
             assert by_account["6970"] == (30.0, 0.0)
-            assert by_account["1130-P"] == (0.0, 30.0)
+            assert by_account["1130-OB"] == (0.0, 30.0)
     finally:
         await stock.close()
         await audit.close()

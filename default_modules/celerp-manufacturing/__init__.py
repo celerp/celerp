@@ -32,7 +32,13 @@ PLUGIN_MANIFEST = {
         # companies; on_modules_ready covers a company that enables manufacturing
         # after the backfill migration ran.
         "on_company_created": {"handler": "celerp_manufacturing.routes:provision_default_work_center_hook"},
-        "on_modules_ready": {"handler": "celerp_manufacturing.routes:backfill_default_work_center_hook"},
+        # Open runs get the work in progress their history proves once Accounting has placed
+        # the company's stock; inventory_in_production tells that placement what older runs took.
+        "on_modules_ready": [
+            {"handler": "celerp_manufacturing.routes:backfill_default_work_center_hook"},
+            {"handler": "celerp_manufacturing.routes:settle_open_runs_hook"},
+        ],
+        "inventory_in_production": {"handler": "celerp_manufacturing.movements:legacy_in_production"},
         # Ordered 35-37 so the group sorts immediately after the Inventory group (orders 30-34)
         # and before Contacts (order 40). Work Centers is configured in Manufacturing Settings.
         # Demand Planning (what to make) -> Work In Progress (work orders on the floor) -> Stock Orders

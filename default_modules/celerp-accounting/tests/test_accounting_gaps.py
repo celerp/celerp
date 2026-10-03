@@ -20,6 +20,8 @@ import uuid
 
 import pytest
 
+from test_helpers import sell_item
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -600,8 +602,8 @@ async def test_ledger_debit_normal_account_balance(client):
 async def test_opening_inventory_je_excludes_inactive_items(client):
     """Regression: upsert_opening_inventory_je() included sold/archived items in catalog_total.
 
-    Strategy: load balance sheet before and after marking an item sold.
-    The OB JE amount should decrease by exactly that item's cost (200).
+    Strategy: load balance sheet before and after selling an item.
+    The opening inventory balance should decrease by exactly that item's cost (200).
     """
     tok = await _reg(client)
     auth = _h(tok)
@@ -622,20 +624,17 @@ async def test_opening_inventory_je_excludes_inactive_items(client):
     assert (await client.get("/accounting/balance-sheet", headers=auth)).status_code == 200
     r_led1 = await client.get("/accounting/ledger/1130-OB", headers=auth)
     assert r_led1.status_code == 200
-    ob_before = sum(float(ln.get("debit", 0) or 0) for ln in r_led1.json()["lines"])
+    ob_before = sum(float(ln.get("debit", 0) or 0) - float(ln.get("credit", 0) or 0) for ln in r_led1.json()["lines"])
 
-    # Mark second item as sold
-    rp = await client.patch(f"/items/{sold_id}", headers=auth, json={
-        "fields_changed": {"status": {"old": "available", "new": "sold"}}
-    })
-    assert rp.status_code == 200
+    # Sell the second item
+    await sell_item(client, auth, sold_id)
 
-    # Load balance sheet AFTER selling - OB JE must be recalculated
+    # Load balance sheet AFTER selling
     assert (await client.get("/accounting/balance-sheet", headers=auth)).status_code == 200
     r_led2 = await client.get("/accounting/ledger/1130-OB", headers=auth)
     assert r_led2.status_code == 200
-    ob_after = sum(float(ln.get("debit", 0) or 0) for ln in r_led2.json()["lines"])
+    ob_after = sum(float(ln.get("debit", 0) or 0) - float(ln.get("credit", 0) or 0) for ln in r_led2.json()["lines"])
 
-    # OB JE must decrease by exactly the sold item's cost (200)
+    # The opening inventory balance must decrease by exactly the sold item's cost (200)
     assert ob_before - ob_after == pytest.approx(200.0, abs=0.02), \
-        f"OB JE should drop by 200 after selling item; before={ob_before}, after={ob_after}"
+        f"opening inventory should drop by 200 after selling item; before={ob_before}, after={ob_after}"

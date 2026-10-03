@@ -30,13 +30,17 @@ from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCL
 from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, AccountRole
+from celerp.services.account_roles import current_settings, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
+from celerp.services.journal_accounts import require_settlement_account
+from celerp.services.lot_origin import is_stock_type
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
-from celerp.services.document_lines import line_item_id
+from celerp.services.document_lines import line_id_counts, line_item_id, linked_items
 from celerp.services.attachments import attach_file, store_upload
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
@@ -723,38 +727,33 @@ async def _validate_document_line_quantities(
 
 
 async def _validate_list_line_quantities(
-    line_items: list[dict], session: AsyncSession, company_id: str, *, require_positive: bool = True
+    line_items: list[dict], session: AsyncSession, company_id: str, *, require_positive: bool = True,
+    stored: list | None = None,
 ) -> None:
     """Reject malformed List line quantities at the function boundary before a write.
 
     A List line linked by item_id takes the item's STORED unit, never the submitted one:
     a stocked piece cannot be smuggled past the positive/decimal rule by submitting a
-    service unit. A linked item_id that resolves to no real item is rejected 422 with an
-    invalid_reference body rather than silently dropping to the free-text finiteness gate.
+    service unit. A linked item_id that resolves to no real item is rejected 422 by
+    linked_items (the rule every line writer shares) rather than silently dropping to the
+    free-text finiteness gate. ``stored`` is the stored lines these replace: as many lines
+    per id as they held are carried forward even when the item has since gone, and such a
+    line, having no stored unit, is checked as submitted.
     Delegates each line to the shared _check_line_quantity gate; an unlinked / free-text
     line (no id) uses its own submitted sell_by.
     """
     if not line_items:
         return
     unit_map = await _get_unit_map(session, company_id)
-    id_sell_by = await _line_sell_by_map(session, company_id, line_items)
+    items = await linked_items(session, company_id, line_items, known=line_id_counts(stored))
     for li in line_items:
         if not isinstance(li, dict):
             continue
         label = li.get("name") or li.get("sku") or "Line item"
         lid = line_item_id(li)
-        if lid is not None:
-            if lid not in id_sell_by:
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "code": "invalid_reference",
-                        "message": f"Line references an unknown item: {lid}",
-                        "item_id": lid,
-                    },
-                )
+        if lid in items:
             # Linked line: the stored unit governs; a submitted sell_by is ignored.
-            resolved_sell_by = id_sell_by.get(lid)
+            resolved_sell_by = items[lid].state.get("sell_by")
         else:
             resolved_sell_by = li.get("sell_by")
         _check_line_quantity(
@@ -1477,81 +1476,15 @@ async def get_doc_pdf(
     )
 
 
-async def _scan_reserved_lines(
-    session: AsyncSession, company_id, entity_id: str | None, eids,
-) -> tuple[list[str], list[dict]]:
-    """Partition the reserved items among ``eids``: entity_ids reserved by THIS
-    document (``entity_id``) vs conflict records for items reserved elsewhere,
-    each naming the owning document."""
+async def _reserved_by(session: AsyncSession, company_id, entity_id: str, eids) -> list[str]:
+    """The items among ``eids`` that the record ``entity_id`` holds reserved."""
     own: list[str] = []
-    conflicts: list[dict] = []
     for eid in sorted({e for e in eids if e}):
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
-        if not proj:
-            continue
-        st = proj.state
-        if st.get("status") != "reserved":
-            continue
-        if st.get("status_doc_id") == entity_id:
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid}, populate_existing=True)
+        st = (proj.state or {}) if proj else {}
+        if st.get("status") == "reserved" and st.get("status_doc_id") == entity_id:
             own.append(eid)
-        else:
-            owner = st.get("status_doc_number") or st.get("status_doc_id") or "another document"
-            conflicts.append({
-                "entity_id": eid,
-                "sku": st.get("sku") or eid,
-                "doc_id": st.get("status_doc_id"),
-                "doc_number": st.get("status_doc_number"),
-                "message": f"{st.get('sku') or eid}: reserved on {owner} - release it there first",
-            })
-    return own, conflicts
-
-
-async def _assert_no_foreign_reserved(
-    session: AsyncSession, company_id, doc_type: str, entity_id: str | None, eids,
-) -> None:
-    """Reject putting items reserved by ANOTHER document onto an invoice or memo,
-    naming the owning document. Only invoices and memos claim stock, so quotations
-    and shipping lists keep listing reserved items freely. Function-level validation:
-    the picker never hides these items, the add is what fails with the reason."""
-    if doc_type not in RESERVABLE_DOC_STATUSES:
-        return
-    _, conflicts = await _scan_reserved_lines(session, company_id, entity_id, eids)
-    if conflicts:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": "; ".join(c["message"] for c in conflicts),
-                "conflicts": conflicts,
-            },
-        )
-
-
-async def _assert_no_draft_items(session: AsyncSession, company_id, eids) -> None:
-    """A draft item is not stock yet: it cannot be put on any document or list.
-    Applies to EVERY doc type (a quotation listing a draft would quote phantom
-    stock). Function-level validation: an id can still arrive via scan, import,
-    or a stale form, so the add is what fails, with the reason."""
-    conflicts: list[dict] = []
-    for eid in sorted({e for e in eids if e}):
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
-        if proj is None:
-            continue
-        st = proj.state or {}
-        if str(st.get("status") or "").lower() == "draft":
-            sku = st.get("sku") or eid
-            conflicts.append({
-                "entity_id": eid,
-                "sku": sku,
-                "message": f"{sku}: item is a draft - make it available first",
-            })
-    if conflicts:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": "; ".join(c["message"] for c in conflicts),
-                "conflicts": conflicts,
-            },
-        )
+    return own
 
 
 @router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
@@ -1571,14 +1504,18 @@ async def create_doc(
         if replay is not None:
             return _replay_result(replay, event_type="doc.created", digest=digest)
 
+    # The contact first, as every contact-reference writer takes it (its lock takes the
+    # company lock, then the contact row). The company lock comes before any line check: Revert to Draft and Reserve take it too, so
+    # the lines are checked as the last of them left the items, and numbering is serialized.
+    contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
+    company = await locked_company(session, company_id)
+
     if payload.doc_type == "credit_note" and payload.original_doc_id:
-        inv = await _get_doc(session, company_id, payload.original_doc_id)
+        # Locked, so the balance reduced below is the one the invoice's last writer left.
+        inv = await _get_doc(session, company_id, payload.original_doc_id, for_update=True)
         original_total = float(inv.state.get("total", 0) or 0)
         if payload.total > original_total + 1e-9:
             raise HTTPException(status_code=409, detail="Credit note total cannot exceed original invoice total")
-
-    # Contact before company, the lock order every contact-reference writer takes.
-    contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
     require_currency_code(payload.currency)
 
     _assert_date_order(payload.model_dump(exclude_none=True))
@@ -1591,16 +1528,6 @@ async def create_doc(
             resolved_sell_by = li.sell_by or (sell_by_map.get(li.sku) if li.sku else None)
             validate_line_quantity(li.quantity, resolved_sell_by, unit_map, label=li.name or li.sku or "Line item")
 
-        # A brand-new doc cannot own a reservation yet, so any reserved line is foreign.
-        await _assert_no_foreign_reserved(
-            session, company_id, payload.doc_type, None,
-            (li.entity_id or li.item_id for li in payload.line_items),
-        )
-        await _assert_no_draft_items(
-            session, company_id,
-            (li.entity_id or li.item_id for li in payload.line_items),
-        )
-
         # Price-override gate: on a sales document, a new line whose unit_price
         # deviates from the item's catalog price is a price override, rejected when
         # the caller lacks set_sales_doc_prices. This closes the create path so the
@@ -1611,10 +1538,7 @@ async def create_doc(
                 [li.model_dump() for li in payload.line_items], None,
             )
 
-    # Concurrent doc creation must not read the same numbering counter and
-    # mint duplicate refs (e.g. two CN-2606-0002).
-    company = await locked_company(session, company_id)
-    # Re-check under the same serialization lock that owns numbering. A concurrent
+    # Re-check under the company lock, which also owns numbering. A concurrent
     # retry can only reach this point before the first request commits; once it does,
     # the second request observes the original event and returns without consuming a
     # second document number.
@@ -1698,7 +1622,7 @@ async def create_doc(
         data["subtotal"] = to_stored_float(round_money(subtotal_d, currency))
         # Persist the EFFECTIVE tax (doc-level + line-level) into `tax`. Previously this was computed
         # for `total` but discarded, leaving `tax`=0 for line-level taxes — so the finalize JE booked
-        # the tax-inclusive total entirely to revenue (4100) and recorded zero output VAT (2120),
+        # the tax-inclusive total entirely to revenue and recorded zero output VAT,
         # overstating revenue and understating the VAT liability. total = subtotal + tax + shipping.
         data["tax"] = to_stored_float(round_money(effective_tax_d, currency))
 
@@ -1854,14 +1778,6 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
                     status_code=409,
                     detail=f"Cannot delete fulfilled line item {eid!r}. Revert fulfillment first.",
                 )
-
-        # Newly added lines must not be reserved by another document; lines already on
-        # the doc (including ones this doc reserved) pass untouched.
-        await _assert_no_foreign_reserved(
-            session, company_id, row.state.get("doc_type") or "", entity_id,
-            incoming_eids - existing_eids,
-        )
-        await _assert_no_draft_items(session, company_id, incoming_eids - existing_eids)
 
     # Money fields are stored at currency precision. The client computes subtotal/tax/total as
     # raw JS floats and legacy values may already carry IEEE-754 tails, so round both old and new
@@ -2154,7 +2070,7 @@ async def _finalize_doc_impl(
                     idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
                 )
     elif doc_type in ("purchase_order", "bill"):
-        # Bill conversion JE: debit expense/inventory accounts, credit AP (2110)
+        # Bill conversion JE: debit expense/inventory accounts, credit accounts payable
         # Covers both PO->bill conversion and directly-created bills finalized directly.
         # Pass revert_count so cycle-aware idempotency keys are used on re-finalize.
         _revert_count = int(_initial_doc_state.get("revert_count", 0))
@@ -2554,7 +2470,7 @@ async def bulk_delete_drafts(
     drafts = []
     for eid in ids:
         row = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
-        if row is None or row.state.get("status") != "draft":
+        if row is None or row.entity_type != "doc" or row.state.get("status") != "draft":
             continue
         drafts.append(row)
 
@@ -2625,7 +2541,7 @@ async def _alloc_payment_index(session, company_id, payments: list,
 
 async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
                             *, source: str, actor_id, idempotency_key: str,
-                            request: str | None = None, commit: bool = True):
+                            request: str | None = None, commit: bool = True, moves_cash: bool = True):
     """Record a payment against a doc: guard, emit doc.payment.received, post the cash
     JE, fire the payment lifecycle hook. Shared by the manual route and online payment
     so a Stripe payment lands identically to a hand-entered one. Commits per success and
@@ -2635,7 +2551,11 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     Takes the doc row under SELECT ... FOR UPDATE and validates against that fresh,
     committed read: the doc-row lock is the single serializer across every payment
     path and across connections, so two recorders on one doc are ordered at the row
-    and cannot compute a duplicate or colliding payment_index."""
+    and cannot compute a duplicate or colliding payment_index.
+
+    The money moves through ``bank_account``, which must be able to hold it. Only
+    an imported debit note passes ``moves_cash=False``: it settles its bill against
+    the bill's own payable account, so no money moves."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:
@@ -2691,6 +2611,8 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     bank_code = body.get("bank_account")
     if not bank_code:
         raise HTTPException(status_code=422, detail="bank_account is required")
+    if moves_cash:
+        await require_settlement_account(session, company_id, bank_code)
     body["currency"] = doc_currency
     # A payment carries its own rate because the rate moves between issuing a
     # foreign-currency document and being paid for it. On a document in the
@@ -2831,7 +2753,7 @@ async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = 
     await auto_je.void_for_doc_payment(
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
         payment_index=payload.payment_index, amount=to_stored_float(amount_d),
-        bank_account_code=payment.get("bank_account") or "1111",
+        bank_account_code=payment.get("bank_account"),
         doc_type=row.state.get("doc_type", "invoice"), refund_date=payload.payment_date,
         base_currency=(company.settings.get("currency", "USD") if company else "USD"),
         doc_rate=float(row.state.get("conversion_rate") or 1),
@@ -2887,10 +2809,9 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
     )
     doc_type = row.state.get("doc_type", "invoice")
     if payment.get("method") not in ("credit_note", "applied"):
-        # Reverse the payment JE - use stored bank_account; fall back to "1111"
-        # (default account that always exists) for historical payments recorded
-        # before bank_account was required.
-        bank_code = payment.get("bank_account") or "1111"
+        # Reverse the payment JE. A payment recorded before bank_account was required
+        # has none stored; the reversal then mirrors its original entry.
+        bank_code = payment.get("bank_account")
         _void_company = await session.get(Company, company_id)
         _void_base_currency = (_void_company.settings.get("currency", "USD") if _void_company else "USD")
         await auto_je.void_for_doc_payment(
@@ -3340,6 +3261,7 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
     if not payload.bank_account:
         raise HTTPException(status_code=422, detail="bank_account is required")
     bank_code = payload.bank_account
+    await require_settlement_account(session, company_id, bank_code)
 
     _refund_company = await session.get(Company, company_id)
     _refund_base_currency = (_refund_company.settings.get("currency", "USD") if _refund_company else "USD")
@@ -3430,6 +3352,7 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
         raise HTTPException(status_code=422, detail="Payment amount must be positive")
     if not payload.bank_account:
         raise HTTPException(status_code=422, detail="bank_account is required")
+    await require_settlement_account(session, company_id, payload.bank_account)
 
     payable.sort(key=lambda x: (
         x[1].get("due_date") or x[1].get("issue_date") or "9999",
@@ -3744,6 +3667,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     _recv_barcodes = await allocate_internal_codes(session, company_id, _new_parcel_count) if _new_parcel_count else []
     _recv_barcode_idx = 0
     added_to_lot: dict[int, dict] = {}  # line -> what it added to a lot already on hand
+    line_lot_account: dict[int, str] = {}  # line -> inventory account of the lot it added stock to
+    landed_by_account: dict[str, float] = {}  # landed cost capitalised, per receiving lot's account
+    purchased_account = await new_lot_account(session, company_id, AccountRole.INVENTORY_PURCHASED)
 
     for line_no, (it, (conversion, stock_qty_received, received_cost)) in enumerate(zip(payload.received_items, priced)):
         if it.item_id and not is_inbound and it.receive_as == "stock":
@@ -3763,6 +3689,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 idempotency_key=_step_key(key, "line", line_no), metadata_={"source_doc": entity_id},
             )
             added_to_lot[line_no] = {"lot_quantity_added": stock_qty_received, "lot_cost_added": received_cost}
+            if not is_consignment:
+                line_lot_account[line_no] = lot_account(item.state)
         else:
             # Inbound doc (bill, consignment_in): always create a new parcel.
             # If item_id is set it refers to a catalog template - use it for attribute inheritance only.
@@ -3856,6 +3784,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 item_data["landed_contributions"] = {f"{entity_id}::{k}": u for k, u in _landed.items()}
                 for _k, _u in _landed.items():
                     landed_drawdown[_k] = round_basis(landed_drawdown.get(_k, 0.0) + _u * stock_qty_received)
+            if not is_consignment:
+                # Received goods are booked as purchased inventory, so the lot records that account.
+                item_data[LOT_ACCOUNT_FIELD] = purchased_account
             if is_consignment:
                 item_data["consignment_flag"] = "in"
                 # Pair the new parcel with the consignment doc: inventory renders the
@@ -3877,6 +3808,13 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 idempotency_key=_step_key(key, "line", line_no),
                 metadata_={"source_doc": entity_id},
             )
+            if not is_consignment and (doc_type == "purchase_order" or _landed):
+                parcel = await session.get(Projection, {"company_id": company_id, "entity_id": new_eid})
+                line_lot_account[line_no] = lot_account(parcel.state)
+                if _landed:
+                    code = line_lot_account[line_no]
+                    landed_by_account[code] = landed_by_account.get(code, 0.0) + sum(
+                        u * stock_qty_received for u in _landed.values())
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.received",
@@ -3895,10 +3833,13 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     if doc_type == "purchase_order":
         # A purchase order books the goods this receipt brought in: Dr inventory / Cr AP. The
         # bill it becomes books only what its receipts have not.
-        debits: dict[str, float] = {}
-        for it, (_, _, received_cost) in zip(payload.received_items, priced):
-            account = auto_je.po_receipt_account(row.state, it.receive_as)
-            debits[account] = debits.get(account, 0.0) + received_cost
+        # Goods added to stock are booked on their lot's inventory account; anything else
+        # on the account of the role it was received as.
+        debits: dict = {}
+        for line_no, (it, (_, _, received_cost)) in enumerate(zip(payload.received_items, priced)):
+            role = auto_je.po_receipt_role(row.state, it.receive_as)
+            target = line_lot_account.get(line_no, role) if role == AccountRole.INVENTORY_PURCHASED else role
+            debits[target] = debits.get(target, 0.0) + received_cost
         await auto_je.create_for_po_receipt(
             session, company_id=company_id, user_id=user.id, po_id=entity_id,
             receipt_key=key, debits=debits,
@@ -3907,10 +3848,10 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     elif doc_type == "bill" and landed_drawdown:
         # A bill already recognised goods + AP at finalize (create_for_bill_conversion); receiving must
         # NOT re-post that JE (it would double-count inventory and AP). Receipt only capitalises the
-        # received landed cost from the clearing accounts into 1130-P (Dr 1130-P / Cr clearing).
+        # received landed cost from the clearing accounts into inventory (Dr inventory / Cr clearing).
         await auto_je.create_for_landed_capitalisation(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-            landed_by_kind=landed_drawdown, receive_suffix=key,
+            landed_by_kind=landed_drawdown, landed_by_account=landed_by_account, receive_suffix=key,
             receive_date=datetime.now(timezone.utc).date().isoformat(),
         )
     # consignment_in: no JE (goods not owned).
@@ -4161,8 +4102,10 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     lots = await lock_projections(session, company_id, [it.item_id for it in payload.items])
     added = _lot_additions(row.state)
     currency = await auto_je.company_currency(session, company_id)
-    goods_cost = 0.0
+    goods_role = auto_je.po_receipt_role(row.state)
+    goods: dict = {}  # cost leaving, per lot inventory account (or role, for goods not held as stock)
     landed_by_kind: dict[str, float] = {}
+    landed_by_account: dict[str, float] = {}
     returned: list[dict] = []
     for line_no, it in enumerate(payload.items):
         item = lots.get(it.item_id)
@@ -4200,13 +4143,16 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             share = basis if new_qty == 0 else min(
                 basis, to_stored_float(round_money(taken_cost + others_cost, currency)))
             adjustment["cost_base"] = round_basis(basis - share)
-            goods_cost += share
+            origin = lot_account(item.state)
+            target = origin if goods_role == AccountRole.INVENTORY_PURCHASED else goods_role
+            goods[target] = goods.get(target, 0.0) + share
             if it.item_id in added:
                 taken_cost = min(share, to_stored_float(round_money(taken_cost, currency)))
                 returned[-1].update({"lot_quantity_taken": taken, "lot_cost_taken": taken_cost})
             for contribution, unit in (item.state.get("landed_contributions") or {}).items():
                 kind = contribution.rsplit("::", 1)[-1]
                 landed_by_kind[kind] = landed_by_kind.get(kind, 0.0) + float(unit or 0) * it.quantity_returned
+                landed_by_account[origin] = landed_by_account.get(origin, 0.0) + float(unit or 0) * it.quantity_returned
         await emit_event(
             session, company_id=company_id, entity_id=it.item_id, entity_type="item",
             event_type="item.quantity.adjusted", data=adjustment,
@@ -4217,8 +4163,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     if owned:
         await auto_je.create_for_supplier_return(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id, return_key=key,
-            goods_account=auto_je.po_receipt_account(row.state), goods=goods_cost,
-            landed_by_kind=landed_by_kind, return_date=datetime.now(timezone.utc).date().isoformat(),
+            goods=goods, landed_by_kind=landed_by_kind, landed_by_account=landed_by_account, return_date=datetime.now(timezone.utc).date().isoformat(),
         )
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
@@ -4364,19 +4309,10 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         valid_until = state.get("valid_until")
         if valid_until and valid_until < datetime.now(timezone.utc).date().isoformat():
             raise HTTPException(status_code=409, detail="Cannot convert expired quotation")
-        # Quotation docs never own reservations, so any reserved line belongs to
-        # another document and must be released there before invoicing.
-        await _assert_no_foreign_reserved(
-            session, company_id, "invoice", None,
-            (li.get("entity_id") or li.get("item_id") or "" for li in state.get("line_items") or []),
-        )
-        await _assert_no_draft_items(
-            session, company_id,
-            (li.get("entity_id") or li.get("item_id") or "" for li in state.get("line_items") or []),
-        )
         ref = next_doc_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
-        new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type"}}
+        # The invoice is a new draft: none of the quotation's own lifecycle carries over.
+        new_data = {k: v for k, v in state.items() if k not in LIFECYCLE_OWNED_FIELDS}
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_quotation_id": entity_id, "status": "draft"})
         await emit_event(
             session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,
@@ -4504,9 +4440,11 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
 
         filtered_state = {**state, "line_items": qualifying_line_items}
         # Strip monetary totals: invoice may have fewer items than memo, so memo totals are stale.
-        # The invoice will recompute totals from its own line items.
+        # The invoice will recompute totals from its own line items. It is a new draft, so none
+        # of the memo's own lifecycle (finalized, sent, fulfilled) carries over: finalizing the
+        # invoice is what books its revenue and the cost of the goods sold.
         _MEMO_TOTAL_FIELDS = frozenset({"total", "outstanding", "tax_total", "discount_total", "subtotal", "amount_due"})
-        new_data = {k: v for k, v in filtered_state.items() if k not in {"status", "entity_type"} | _MEMO_TOTAL_FIELDS}
+        new_data = {k: v for k, v in filtered_state.items() if k not in LIFECYCLE_OWNED_FIELDS | _MEMO_TOTAL_FIELDS}
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_memo_id": entity_id, "status": "draft"})
         await emit_event(
             session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,
@@ -5363,7 +5301,8 @@ async def create_list(
     if (done := await _replay()) is not None:
         return done
     require_currency_code(payload.currency)
-    # Contact before company, the lock order every contact-reference writer takes.
+    # The contact first, as every contact-reference writer takes it (its lock takes the
+    # company lock, then the contact row).
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
     # Lock the company row so concurrent creates cannot read the same numbering counter, then
     # re-check the key under that lock: a retry racing the first request returns the original
@@ -5388,10 +5327,6 @@ async def create_list(
             session, company_id, settings, role, data,
             kind="list", contact_id=payload.contact_id, contact=contact, client_values=data, chosen=chosen,
         ))
-    await _assert_no_draft_items(
-        session, company_id,
-        (li.get("item_id") or li.get("entity_id") for li in data.get("line_items") or []),
-    )
     await _validate_list_line_quantities(
         data.get("line_items") or [], session, company_id,
         require_positive=(payload.list_type != "audit"),
@@ -5465,14 +5400,10 @@ async def patch_list(
         raise HTTPException(status_code=422, detail="Discount must be a number")
     if isinstance(_new_lines, list):
         _normalize_line_item_ids(_new_lines)  # keep the item link the editable UI sends as entity_id
-        _existing = {li.get("item_id") for li in row.state.get("line_items") or []}
-        await _assert_no_draft_items(
-            session, company_id,
-            {li.get("item_id") for li in _new_lines} - _existing,
-        )
         await _validate_list_line_quantities(
             _new_lines, session, company_id,
             require_positive=((row.state.get("list_type") or DEFAULT_LIST_TYPE) != "audit"),
+            stored=row.state.get("line_items"),
         )
         if is_money_list(row.state.get("list_type")):
             await _assert_sales_line_price_permission(
@@ -5907,11 +5838,6 @@ class ListLinePagePatch(BaseModel):
     expected_version: int | None = None
 
 
-def _line_identity(li: dict) -> str | None:
-    """The stable identity of a catalog-backed line, or None for a free-text line that carries none."""
-    return line_item_id(li)
-
-
 @lists_router.patch("/{entity_id}/line-page")
 async def patch_list_line_page(
     entity_id: str,
@@ -5981,15 +5907,10 @@ async def patch_list_line_page(
     # `stored`. Concurrency is guarded by the version pin (every save bumps the list version), not by
     # matching incoming rows to stored positions, which would falsely reject a mid-window delete.
 
-    # A draft item is not stock and must never reach a list, on this path as on the full save.
-    _existing = {_line_identity(li) for li in stored}
-    await _assert_no_draft_items(
-        session, company_id,
-        {_line_identity(li) for li in page} - _existing,
-    )
     await _validate_list_line_quantities(
         page, session, company_id,
         require_positive=((row.state.get("list_type") or DEFAULT_LIST_TYPE) != "audit"),
+        stored=stored[offset:offset + original_count],
     )
     if is_money_list(row.state.get("list_type")):
         stored_window = stored[offset:offset + original_count]
@@ -6160,30 +6081,14 @@ async def convert_list(
         raise HTTPException(status_code=409, detail="Finalize the quotation before converting it")
 
     # Reservation ownership moves with the conversion: lines this list reserved are
-    # re-stamped to the new document below; lines reserved elsewhere block it here.
-    to_transfer, _conflicts = await _scan_reserved_lines(
+    # re-stamped to the new document first, so they are its own when it is created;
+    # the create then refuses a line reserved elsewhere or a draft.
+    to_transfer = await _reserved_by(
         session, company_id, entity_id,
         [li.get("item_id") or li.get("entity_id") or "" for li in state.get("line_items") or []],
     )
-    if _conflicts:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": "; ".join(c["message"] for c in _conflicts),
-                "conflicts": _conflicts,
-            },
-        )
-
     ref = next_doc_ref(company, payload.target_type)
     new_doc_id = f"doc:{ref}"
-    new_data = {k: v for k, v in state.items()
-                if k not in {"status", "result", "entity_type", "list_type", "finalized_at", "sent_at", "accepted_at"}}
-    new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft"})
-    await emit_event(
-        session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
-        event_type="doc.created", data=new_data, actor_id=user.id, location_id=None,
-        source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
-    )
     for li_eid in to_transfer:
         await emit_event(
             session, company_id=company_id, entity_id=li_eid, entity_type="item",
@@ -6192,6 +6097,14 @@ async def convert_list(
             actor_id=user.id, location_id=None, source="reservation",
             idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": new_doc_id},
         )
+    new_data = {k: v for k, v in state.items()
+                if k not in {"status", "result", "entity_type", "list_type", "finalized_at", "sent_at", "accepted_at"}}
+    new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft"})
+    await emit_event(
+        session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
+        event_type="doc.created", data=new_data, actor_id=user.id, location_id=None,
+        source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
     entry = await _emit_list(session, company_id, entity_id, "list.closed",
                              {"result": "converted", "converted_to": new_doc_id,
                               "converted_to_type": payload.target_type}, user)
@@ -7539,6 +7452,7 @@ async def receive_return(
     # --- Create returned inventory items ---
     now = datetime.now(timezone.utc).isoformat()
     total_cogs = 0.0
+    lot_costs: dict[str, float] = {}
     received_items = []
 
     _CORE_KEYS = frozenset({
@@ -7598,6 +7512,9 @@ async def receive_return(
             # the barcode is freshly minted above.
             "gtin": ref.get("gtin") or li_fallback.get("gtin") or None,
             "description": ref.get("description") or li_fallback.get("description") or "",
+            # Returned goods go back onto the account the sold lot was valued in.
+            **({LOT_ACCOUNT_FIELD: lot_account(ref)}
+               if ref and float(ref.get("cost_price") or 0) * it.quantity > 0 else {}),
             "category": ref.get("category") or li_fallback.get("category") or "",
             "attributes": ref.get("attributes") or li_fallback.get("attributes") or {},
             **extra_prices,
@@ -7622,6 +7539,7 @@ async def receive_return(
         )
         cost_price = item_data["cost_price"]
         total_cogs += cost_price * it.quantity
+        lot_costs[item_id] = cost_price * it.quantity
         received_items.append({
             "item_id": item_id,
             "sku": it.sku,
@@ -7656,8 +7574,9 @@ async def receive_return(
         company_id=company_id,
         user_id=user.id,
         cn_id=entity_id,
-        total_cogs=total_cogs,
+        lot_costs=lot_costs,
         je_suffix=key,
+        received_at=now,
     )
 
     await session.commit()
@@ -7687,10 +7606,11 @@ async def undo_receive_return(
 
     now = datetime.now(timezone.utc).isoformat()
     item_ids = [r["item_id"] for r in received_items if r.get("item_id")]
-    total_cogs = sum(
-        float(r.get("cost_total") or 0) or (float(r.get("cost_price") or 0) * float(r.get("quantity") or 0))
-        for r in received_items
-    )
+    lot_costs = {
+        r["item_id"]: float(r.get("cost_total") or 0) or (float(r.get("cost_price") or 0) * float(r.get("quantity") or 0))
+        for r in received_items if r.get("item_id")
+    }
+    total_cogs = sum(lot_costs.values())
 
     # Pre-flight: verify every returned item is still "available" before archiving.
     # If an item was re-sold or already archived, we cannot silently remove it.
@@ -7756,8 +7676,9 @@ async def undo_receive_return(
             company_id=company_id,
             user_id=user.id,
             cn_id=entity_id,
-            total_cogs=total_cogs,
+            lot_costs=lot_costs,
             unique_suffix=undo_suffix,
+            undone_at=now,
         )
 
     await session.commit()
@@ -8047,8 +7968,6 @@ async def delete_doc_file(
 # See context/2026-0617-unified-lists-lifecycle-plan.md.
 # ---------------------------------------------------------------------------
 
-# Physical item types an audit counts (services / non-stocked have no stock to count).
-_AUDIT_STOCK_TYPES = frozenset({"stocked", "component"})
 
 
 class AuditCreateBody(BaseModel):
@@ -8213,7 +8132,7 @@ async def create_audit_list(
             continue
         if (st.get("status") or "available") != "available":
             continue
-        if (st.get("inventory_type") or "stocked") not in _AUDIT_STOCK_TYPES:
+        if not is_stock_type(st):  # services / non-stocked have no stock to count
             continue
         lines.append({"item_id": r.entity_id, "sku": st.get("sku"), "name": st.get("name"),
                       "barcode": st.get("barcode"), "quantity": float(st.get("quantity") or 0)})
@@ -8469,6 +8388,7 @@ async def adjust_audit(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Apply a finalized audit against fresh, locked inventory state."""
+    at = datetime.now(timezone.utc).isoformat()  # one business day for the whole adjustment
     row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Finalize the count before adjusting stock")
@@ -8495,6 +8415,9 @@ async def adjust_audit(
 
     shrink_val = Decimal(0)
     over_val = Decimal(0)
+    # Value lost and gained per inventory account of the lots counted.
+    shrink_by: dict[str, float] = {}
+    over_by: dict[str, float] = {}
     adjusted = 0
     skipped = 0
     for l in lines:
@@ -8517,6 +8440,10 @@ async def adjust_audit(
             continue
         unit_cost = auto_je.lot_unit_cost(item.state)
         value = abs(to_decimal(live) - to_decimal(cqf)) * to_decimal(unit_cost)
+        if value:
+            bucket = shrink_by if cqf < live else over_by
+            origin = lot_account(item.state)
+            bucket[origin] = bucket.get(origin, 0.0) + float(value)
         if cqf < live:
             shrink_val += value
         else:
@@ -8532,11 +8459,9 @@ async def adjust_audit(
         l["adjustment_unit_cost"] = unit_cost
         l["adjusted"] = True
         adjusted += 1
-    if shrink_val > 0:
-        await _validate_writeoff_account(session, company_id, auto_je._AUDIT_SHRINKAGE_ACCT)
     await auto_je.create_for_audit_adjustment(
         session, company_id=company_id, user_id=user.id, list_id=entity_id,
-        shrinkage_value=float(shrink_val), overage_value=float(over_val), cycle=cycle,
+        shrinkage=shrink_by, overage=over_by, cycle=cycle, recorded=at,
     )
     await _emit_list(session, company_id, entity_id, "list.closed",
                      {"result": "stock_adjusted", "line_items": lines, "adjust_count": cycle + 1}, user)
@@ -8673,12 +8598,13 @@ async def _validate_writeoff_account(session, company_id, code: str) -> None:
         )
 
 
-def _writeoff_seed_line(item: Projection) -> dict:
-    """One draft write-off line for an item, seeded with its live on-hand and blank entry fields."""
+def _writeoff_seed_line(item: Projection, settings: dict) -> dict:
+    """One draft write-off line for an item, seeded with its live on-hand, the company's shrinkage
+    and write-off account (blank when none is set) and blank entry fields."""
     st = item.state
     return {"line_id": uuid.uuid4().hex, "item_id": item.entity_id, "sku": st.get("sku"),
             "name": st.get("name"), "quantity": float(st.get("quantity") or 0),
-            "qty_out": None, "account": "6970", "comment": ""}
+            "qty_out": None, "account": role_map(settings).get(AccountRole.STOCK_SHRINKAGE.value), "comment": ""}
 
 
 @lists_router.post("/writeoff")
@@ -8702,7 +8628,7 @@ async def create_writeoff_list(
         item = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
         if item is None or item.entity_type != "item":
             continue  # non-item ids in the selection are skipped, never seeded as phantom lines
-        lines.append(_writeoff_seed_line(item))
+        lines.append(_writeoff_seed_line(item, company.settings or {}))
     if not lines:
         raise HTTPException(status_code=422, detail="No inventory items in the selection")
     ref_id = next_doc_ref(company, "writeoff")
@@ -8741,7 +8667,7 @@ async def set_writeoff_line(
         item = await session.get(Projection, {"company_id": company_id, "entity_id": payload.item_id})
         if item is None or item.entity_type != "item":
             raise HTTPException(status_code=404, detail="Item not found")
-        line = _writeoff_seed_line(item)
+        line = _writeoff_seed_line(item, await current_settings(session, company_id))
         lines.insert(0, line)  # newest line to the top (GDR 2n)
     else:
         raise HTTPException(status_code=422, detail="line_id or item_id is required")
@@ -8779,6 +8705,7 @@ async def write_off_stock(
     quantity but an invalid account/item/quantity rejects the whole action. Reversible via
     undo-write-off."""
     from celerp_inventory.routes import split_off_child
+    at = datetime.now(timezone.utc).isoformat()  # one business day for the whole write-off
     # Row-lock the list for the whole transaction: this terminal moves ledger value, so a second
     # concurrent run must serialize (a double run would double-carve and post twice). The audit terminal
     # only reads status; the ledger effect here is why the write-off locks and the audit does not.
@@ -8858,17 +8785,21 @@ async def write_off_stock(
     # finalize and the disposal are atomic - a later failure rolls both back and the list stays a draft.
     if status == DRAFT:
         await _emit_list(session, company_id, entity_id, "list.finalized",
-                         {"status": FINALIZED, "finalized_at": datetime.now(timezone.utc).isoformat()}, user)
+                         {"status": FINALIZED, "finalized_at": at}, user)
     # Each line's value is money in the company currency; the account debits and the Inventory
     # credit are sums of those rounded values, so the entry balances.
     currency = await auto_je.company_currency(session, company_id)
+    origins = {item.entity_id: lot_account(item.state or {}) for _l, item, _q in prepared}
     debits: dict[str, Decimal] = {}
+    credits: dict[str, Decimal] = {}
     written_off = 0
     remaining: dict[str, float] = dict(live_by_item)
     for l, item, qty_out in prepared:
         account = l.get("account")
         unit_cost = unit_cost_by_item[item.entity_id]
         value = round_money(unit_cost * qty_out, currency)
+        origin = origins[item.entity_id]
+        credits[origin] = credits.get(origin, Decimal(0)) + value
         sku = item.state.get("sku") or ""  # read before any rollback expires the ORM row
         rem = remaining[item.entity_id]
         try:
@@ -8907,10 +8838,11 @@ async def write_off_stock(
     total_value = to_stored_float(sum(debits.values(), Decimal(0)))
     entries = [{"account": acct, "debit": to_stored_float(val), "credit": 0.0} for acct, val in debits.items()]
     if entries:
-        entries.append({"account": auto_je._INVENTORY_ACCT, "debit": 0.0, "credit": total_value})
+        entries += await auto_je.stock_relief_lines(
+            session, company_id, {code: to_stored_float(v) for code, v in credits.items()})
     await auto_je.create_for_line_adjustment(
         session, company_id=company_id, user_id=user.id, list_id=entity_id,
-        kind="writeoff", entries=entries, cycle=cycle,
+        kind="writeoff", entries=entries, cycle=cycle, recorded=at,
     )
     await _emit_list(session, company_id, entity_id, "list.closed",
                      {"result": "written_off", "line_items": lines, "adjust_count": cycle + 1}, user)

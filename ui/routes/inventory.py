@@ -22,17 +22,18 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
-from ui.components.shell import base_shell, minimal_shell, page_header, search_help, toast_header, page_title
-from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
+from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
+from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
+from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from celerp.services.cost_visibility import COST_ITEM_KEYS
-from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, cost_columns
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, SYSTEM_ITEM_KEYS, cost_columns
 from celerp.services.field_schema import union_category_attr_keys as _union_category_attr_keys
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, is_price_item_key, price_key, price_lists_in, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
-from ui.i18n import t, get_lang, is_rtl, field_label
+from ui.i18n import t, get_lang, is_rtl, field_label, refusal_text
 from celerp.services.units import is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import splitting_allowed
 from celerp_inventory.services import (
@@ -1176,7 +1177,8 @@ async def _import_export_allowed(request: Request, token: str) -> bool:
 def _duplicate_payload(source: dict, new_sku: str, *, can_set_prices: bool) -> dict:
     """Build a create payload from an existing item, carrying every field except
     id, status, location_name, created_at, updated_at (status is reset by the create
-    path) and barcode. Barcode is globally unique, so a copy never inherits the
+    path), barcode and the fields only the app sets (SYSTEM_ITEM_KEYS: a copy starts
+    with no files, lineage, documents or inventory account of its own). Barcode is globally unique, so a copy never inherits the
     source's: auto_barcode tells the create path to mint a fresh unique one from the
     shared sequence (the same reset a split child gets). Core columns and any *_price
     stay top-level; everything else goes into attributes. Without set_inventory_prices
@@ -1184,7 +1186,7 @@ def _duplicate_payload(source: dict, new_sku: str, *, can_set_prices: bool) -> d
     because the copy is a draft its creator may still cost. Shared by the single-item
     and bulk duplicate paths."""
     _SKIP = {"id", "status", "location_name", "created_at", "updated_at", "barcode",
-             "idempotency_key", "external_links", "_channel_state"}
+             "idempotency_key", "external_links", "_channel_state"} | SYSTEM_ITEM_KEYS
     _CORE = {"sku", "name", "quantity", "category", "location_id",
              "description", "unit", "sell_by", "tax_codes"}
     payload: dict = {"sku": new_sku, "auto_barcode": True}
@@ -1830,7 +1832,8 @@ def setup_routes(app):
             Span("", id="item-header-error"),
             Script(_SPLIT_DELTA_JS),
             Script(_BULK_SPLIT_JS),
-            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview, role=_item_role, settings=_item_settings),
+            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview, role=_item_role, settings=_item_settings,
+                              manufacturing=module_active(request, "celerp-manufacturing")),
             title=page_title("page.item_detail"),
             nav_active="inventory",
             request=request,
@@ -1941,13 +1944,14 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(e.detail, cls="cell-error"), id="recipe-section")
 
     async def _production_block_response(token: str, entity_id: str, flash_msg: str | None = None,
-                                         flash_kind: str = "success"):
+                                         flash_kind: str = "success", kept_keys: dict[str, str] | None = None):
         item, company, hub = await asyncio.gather(
             api.get_item(token, entity_id), api.get_company(token),
             api.manufacturing_item_hub(token, entity_id),
         )
         cur = currency_symbol(company.get("currency") or (company.get("settings") or {}).get("currency") or "")
-        return _production_block(entity_id, item, hub, cur, flash_msg=flash_msg, flash_kind=flash_kind)
+        return _production_block(entity_id, item, hub, cur, flash_msg=flash_msg, flash_kind=flash_kind,
+                                 kept_keys=kept_keys)
 
     @app.get("/api/items/{entity_id}/production-block")
     async def production_block(request: Request, entity_id: str):
@@ -1961,11 +1965,13 @@ function celerpPrintLabel(entityId, templateId) {
                 return P(t("error.unauthorized"), cls="cell-error")
             return Div(P(e.detail, cls="cell-error"), id="production-block")
 
-    _RUN_ACTIONS = {
-        "start": api.start_mfg_order, "complete": lambda tok, rid: api.complete_mfg_order(tok, rid),
-        "hold": lambda tok, rid: api.hold_mfg_order(tok, rid), "resume": api.resume_mfg_order,
-        "cancel": lambda tok, rid: api.cancel_mfg_order(tok, rid),
-    }
+    # The client call each action makes, looked up when it is made. "undo:<lot id>" names the receipt to undo.
+    _RUN_ACTIONS = {"start": "start_mfg_order", "complete": "complete_mfg_order", "hold": "hold_mfg_order",
+                    "resume": "resume_mfg_order", "cancel": "cancel_mfg_order", "return": "return_mfg_materials",
+                    "reopen": "reopen_mfg_order", "undo": "undo_mfg_receipt"}
+    # The undo actions change nothing the run's row shows, so they say what they did.
+    _RUN_ACTION_DONE = {"return": "inventory.wo_returned", "undo": "inventory.wo_receipt_undone",
+                        "reopen": "inventory.wo_reopened"}
 
     @app.post("/api/items/{entity_id}/runs/{run_id}/act")
     async def run_action(request: Request, entity_id: str, run_id: str):
@@ -1974,16 +1980,25 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
-        fn = _RUN_ACTIONS.get(str(form.get("action") or ""))
+        action, _, lot = str(form.get("action") or "").partition(":")
+        fn = getattr(api, _RUN_ACTIONS[action]) if action in _RUN_ACTIONS else None
         if fn is None:
             return await _production_block_response(token, entity_id)
         try:
-            await fn(token, run_id)
-            return await _production_block_response(token, entity_id)
+            # The run's action list carries the key it was rendered with, so a choice sent
+            # again after a lost answer is recorded once; the refreshed block brings new keys.
+            key = required_operation_key(form, str(form.get("action")))
+            await (fn(token, run_id, lot, idempotency_key=key) if action == "undo"
+                   else fn(token, run_id, idempotency_key=key))
+            done = _RUN_ACTION_DONE.get(action)
+            return await _production_block_response(token, entity_id, flash_msg=t(done) if done else None)
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
-            return await _production_block_response(token, entity_id, flash_msg=e.detail, flash_kind="error")
+            # Whether it happened is not known (the answer may have been lost): the run's
+            # action list keeps its key, so sending it again is the same action.
+            return await _production_block_response(token, entity_id, flash_msg=refusal_text(e.data or e.detail),
+                                                    flash_kind="error", kept_keys={run_id: kept_operation_key(form)})
 
     @app.post("/api/items/{entity_id}/recipe-section")
     async def recipe_section_edit(request: Request, entity_id: str):
@@ -3165,13 +3180,17 @@ function celerpPrintLabel(entityId, templateId) {
 
     # ── Bulk actions (list-level) ─────────────────────────────────────────────
 
-    def _bulk_destructive_success(message: str, redirect_qs: str = "", cls: str = "flash--success") -> Response:
+    def _bulk_destructive_success(message: str, redirect_qs: str = "", cls: str = "flash--success",
+                                  notice: str = "") -> Response:
         """Return a bulk-action result response that clears the client-side selection.
 
         Sends HX-Trigger: celerpSelectionClear so the JS handler resets CelerpSelection
         and the toolbar before the table reloads.  Used for bulk actions (merge, delete,
         archive, expire, duplicate) that reload the table; `cls` selects the flash
-        variant (success, or warning for a partial-success count).
+        variant (success, or warning for a partial-success count). Clearing the
+        selection hides the toolbar that holds the flash, so a ``notice`` the user must
+        read (what a merge did to the books) is also raised as a toast that stays until
+        dismissed.
         """
         from starlette.responses import HTMLResponse
         content = Div(
@@ -3183,7 +3202,9 @@ function celerpPrintLabel(entityId, templateId) {
             hx_swap="outerHTML",
             **({"hx_push_url": f"/inventory{redirect_qs}"} if redirect_qs else {}),
         )
-        return HTMLResponse(to_xml(content), headers={"HX-Trigger": "celerpSelectionClear"})
+        headers = (toast_header(f"{message} {notice}", persist=True, celerpSelectionClear=True) if notice
+                   else {"HX-Trigger": "celerpSelectionClear"})
+        return HTMLResponse(to_xml(content), headers=headers)
 
     def _bulk_toast_error(msg: str) -> Response:
         """Surface a bulk-action error as the standard lower-right toast (no inline swap), so
@@ -3422,18 +3443,19 @@ function celerpPrintLabel(entityId, templateId) {
         entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
         target_sku_from = str(form.get("target_sku_from", "")).strip()
         resulting_sku = str(form.get("resulting_sku", "")).strip() or None
+        idempotency_key = str(form.get("idempotency_key", "")).strip() or None
+        plan_fingerprint = str(form.get("plan_fingerprint", "")).strip() or None
         if len(entity_ids) < 2:
             return Div(P(t("inv.select_at_least_2_items_to_merge"), cls="flash flash--warning"), id="bulk-action-result")
         if not target_sku_from:
             return Div(P(t("inv.target_item_selection_is_required"), cls="flash flash--warning"), id="bulk-action-result")
-        # Fetch items to compute totals and resolve attribute conflicts
+        # Fetch items to name the merged SKU in the post-merge filter.
         items = []
         for eid in entity_ids:
             try:
                 items.append(await api.get_item(token, eid))
             except APIError as e:
                 return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
-        total_qty = sum(float(it.get("quantity", 0) or 0) for it in items)
         # Attribute conflict resolution lives entirely in the merge endpoint (schema-aware: dropdowns
         # and custom attributes collapse to the "Mixed" system value, numeric fields drop). The UI
         # must not duplicate that logic.
@@ -3442,8 +3464,9 @@ function celerpPrintLabel(entityId, templateId) {
                 token,
                 source_entity_ids=entity_ids,
                 target_sku_from=target_sku_from,
-                resulting_quantity=total_qty,
                 resulting_sku=resulting_sku,
+                idempotency_key=idempotency_key,
+                plan_fingerprint=plan_fingerprint,
             )
         except APIError as e:
             # Surface merge failures (e.g. a weight-unit mismatch) as the standard lower-right toast.
@@ -3453,7 +3476,38 @@ function celerpPrintLabel(entityId, templateId) {
         target_item = next((it for it in items if it.get("entity_id") == target_sku_from or it.get("id") == target_sku_from), None)
         target_sku = resulting_sku or (target_item.get("sku", "") if target_item else "")
         redirect_qs = f"?q={target_sku}" if target_sku else ""
-        return _bulk_destructive_success(t("inv.items_merged_successfully"), redirect_qs)
+        moved = _merge_reclass_sentence(result.get("inventory_reclassification"), done=True)
+        return _bulk_destructive_success(t("inv.items_merged_successfully"), redirect_qs, notice=moved)
+
+    @app.post("/api/items/merge/preview")
+    async def item_merge_preview(request: Request):
+        """The inventory accounts the pending merge moves value between, as one sentence
+        for the merge confirmation (empty when the items share an account), and the
+        fingerprint the confirmation sends back so a changed item or request stops the merge."""
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+        target_sku_from = str(form.get("target_sku_from", "")).strip()
+        resulting_sku = str(form.get("resulting_sku", "")).strip() or None
+        try:
+            preview = await api.preview_merge(token, entity_ids, target_sku_from, resulting_sku)
+        except APIError as e:
+            return JSONResponse({"error": str(e.detail)}, status_code=e.status)
+        return JSONResponse({"message": _merge_reclass_sentence(preview.get("inventory_reclassification")),
+                             "plan_fingerprint": preview.get("plan_fingerprint")})
+
+    @app.post("/api/items/{entity_id}/undo-merge")
+    async def item_undo_merge(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            await api.undo_merge(token, entity_id)
+        except APIError as e:
+            return _bulk_toast_error(e.detail)
+        return Div(P(t("inv.merge_undone"), cls="flash flash--success"), id="merge-undo")
 
     async def _next_transform_sku(token: str, parent_sku: str) -> str:
         """Suggest a fresh child SKU for a TRANSFORM (a new, distinct product derived from
@@ -4504,56 +4558,6 @@ function celerpPrintLabel(entityId, templateId) {
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
         return _split_redirect(orig_sku, [])   # children share the parent SKU
 
-    @app.post("/api/items/merge")
-    async def item_merge(request: Request):
-        token = _token(request)
-        if not token:
-            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
-        form = await request.form()
-        source_entity_ids = [v.strip() for v in form.getlist("source_entity_ids") if v.strip()]
-        target_sku_from = str(form.get("target_sku_from", "")).strip()
-        if not source_entity_ids or not target_sku_from:
-            return Span(t("inv.source_items_and_target_selection_are_required"), cls="flash flash--error")
-        raw_qty = str(form.get("resulting_quantity", "")).strip()
-        raw_cost = str(form.get("resulting_cost_total", "")).strip()
-        resulting_name = str(form.get("resulting_name", "")).strip() or None
-        resulting_sku = str(form.get("resulting_sku", "")).strip() or None
-        try:
-            resulting_quantity = float(raw_qty) if raw_qty else None
-        except ValueError:
-            return Span(t("error.invalid_resulting_quantity"), cls="flash flash--error")
-        try:
-            resulting_cost_total = float(raw_cost) if raw_cost else None
-        except ValueError:
-            return Span(t("inv.invalid_resulting_cost_price"), cls="flash flash--error")
-        # Collect resolved attributes for string conflicts.
-        resolved_attributes: dict = {}
-        for key, val in form.multi_items():
-            if key.startswith("resolved_attr_"):
-                attr_key = key[len("resolved_attr_"):]
-                resolved_attributes[attr_key] = str(val)
-            elif key.startswith("numeric_attr_"):
-                attr_key = key[len("numeric_attr_"):]
-                try:
-                    resolved_attributes[attr_key] = str(float(val))
-                except (TypeError, ValueError):
-                    pass
-        try:
-            result = await api.merge_items(
-                token,
-                source_entity_ids=source_entity_ids,
-                target_sku_from=target_sku_from,
-                resulting_quantity=resulting_quantity,
-                resulting_cost_total=resulting_cost_total,
-                resulting_name=resulting_name,
-                resulting_sku=resulting_sku,
-                resolved_attributes=resolved_attributes or None,
-            )
-        except APIError as e:
-            return Span(str(e.detail), cls="flash flash--error")
-        new_id = result.get("id", "")
-        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{new_id}"})
-
     @app.post("/api/items/{entity_id}/duplicate")
     async def item_duplicate(request: Request, entity_id: str):
         token = _token(request)
@@ -4870,12 +4874,13 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     action_options.append(Option(t("inv.expire"), value="expire"))
     if role_has_permission(settings or {}, role, "edit_inventory"):
         action_options.append(Option(t("inv.duplicate"), value="duplicate"))
-    # Restore and Delete only shown when viewing archived/expired items
+    # Restore only shown when viewing archived/expired items
     active_status = (p or {}).get("status", "")
     if active_status in ("archived", "expired"):
         action_options.append(Option(t("inv.restore"), value="restore"))
+    # JS shows/hides these three based on the actual checked rows' statuses (updateBulkToolbar).
+    if role_has_permission(settings or {}, role, "adjust_inventory"):
         action_options.append(Option(t("btn.delete"), value="delete"))
-    # JS shows/hides these two based on the actual checked rows' statuses (updateBulkToolbar).
     if role_has_permission(settings or {}, role, "edit_inventory"):
         action_options.append(Option(t("inventory.make_available"), value="make_available"))
     if role_has_permission(settings or {}, role, "revert_items_to_draft"):
@@ -6991,7 +6996,8 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
 
 
 def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
-                      flash_msg: str | None = None, flash_kind: str = "success") -> FT:
+                      flash_msg: str | None = None, flash_kind: str = "success",
+                      kept_keys: dict[str, str] | None = None) -> FT:
     """The product Manufacturing-tab production hub: open demand for this product (with coverage) +
     its work orders. Both tables are client-sortable and Excel-filterable with from/to due-date
     filters, and paginate when long. Completed/cancelled work orders are hidden by default via the
@@ -7041,7 +7047,8 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         return Span(s.replace("_", " ").title(), cls=f"badge badge--{s.replace('_', '-')}",
                     **({"title": help_txt} if help_txt else {}))
 
-    def _wo_action_select(rid: str, status: str) -> FT:
+    def _wo_action_select(run: dict) -> FT:
+        rid, status = run.get("id"), run.get("status", "planned")
         opts = [Option(t("inventory.wo_action"), value="", disabled=True, selected=True)]
         if status == "planned":
             opts.append(Option(t("btn.start"), value="start"))
@@ -7050,12 +7057,20 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         if status == "on_hold":
             opts.append(Option(t("btn.resume"), value="resume"))
         if status not in ("completed", "cancelled"):
+            # Each step of a run can be taken back: its receipts, then the materials it holds.
+            opts += [Option(t("inventory.wo_undo_receipt", lot=r.get("sku") or r.get("lot_item_id")),
+                            value=f"undo:{r.get('lot_item_id')}") for r in run.get("receipts") or []]
+            if any(float(i.get("issued_qty") or 0) > 0 for i in run.get("inputs") or []):
+                opts.append(Option(t("inventory.wo_return"), value="return"))
             opts.append(Option(t("btn.cancel"), value="cancel"))
-        if len(opts) == 1:  # closed run - no further actions
+        if status == "completed":
+            opts.append(Option(t("btn.reopen"), value="reopen"))
+        if len(opts) == 1:  # a cancelled run - no further actions
             return Span(EMPTY)
         return Select(*opts, name="action", cls="wo-action-select", hx_trigger="change",
                       hx_post=f"/api/items/{entity_id}/runs/{rid}/act",
-                      hx_target="#production-block", hx_swap="outerHTML", hx_disabled_elt="this")
+                      hx_target="#production-block", hx_swap="outerHTML", hx_disabled_elt="this",
+                      hx_vals=operation_key_vals((kept_keys or {}).get(rid, "")))
 
     def _wo_source_cell(run: dict) -> FT:
         src_id, src_no = run.get("source_doc_id"), run.get("source_doc_number")
@@ -7073,8 +7088,11 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
             Td(run.get("source_contact_name") or EMPTY),
             Td(f"{qty:g}", cls="cell--number"),
             Td(run.get("source_due") or (run.get("created_at") or "")[:10] or EMPTY, cls="cell--center"),
-            Td(_wo_status_badge(status)),
-            Td(_wo_action_select(rid, status), cls="cell--actions"),
+            Td(_wo_status_badge(status),
+               # A run whose materials' value its history cannot prove moves nothing until reconciled.
+               A(t("inventory.wo_needs_reconciling"), href=f"/manufacturing/runs/{rid}/reconcile",
+                 cls="table-link ml-sm") if run.get("wip_unresolved") else ""),
+            Td(_wo_action_select(run), cls="cell--actions"),
             cls="data-row" + (" data-row--inactive" if status == "cancelled" else ""),
         )
 
@@ -7126,9 +7144,15 @@ def _item_detail_tabs(
     split_preview: dict | None = None,
     role: str = "owner",
     settings: dict | None = None,
+    *,
+    manufacturing: bool,
 ) -> FT:
-    """Tabbed item detail: Details | Pricing | Manufacturing | Activity."""
-    tabs = [("details", t("th.details")), ("pricing", t("page.pricing")), ("manufacturing", t("nav.manufacturing")), ("activity", t("inventory.tab_activity"))]
+    """Tabbed item detail: Details | Pricing | Manufacturing | Activity. The Manufacturing
+    tab exists only while the manufacturing module is on; asking for it otherwise shows Details."""
+    tabs = [("details", t("th.details")), ("pricing", t("page.pricing")),
+            *([("manufacturing", t("nav.manufacturing"))] if manufacturing else []), ("activity", t("inventory.tab_activity"))]
+    if active_tab not in {key for key, _ in tabs}:
+        active_tab = "details"
     tab_bar = Div(
         *[
             A(
@@ -7171,6 +7195,7 @@ def _item_detail_tabs(
         )
     elif active_tab == "activity":
         panel = Div(
+            _undo_merge_block(entity_id, ledger),
             _ledger_table(ledger, entity_id=entity_id, currency=currency),
             cls="detail-grid detail-grid--single",
         )
@@ -7432,6 +7457,35 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str | N
             cls="detail-table",
         ),
         cls="detail-card",
+    )
+
+
+def _merge_reclass_sentence(disclosure: dict | None, *, done: bool = False) -> str:
+    """The merge's inventory reclassification in words: how much moves from which
+    inventory account into the surviving one. A role that cannot see cost is told the
+    accounts without the amounts. Empty when the merge moves nothing."""
+    if not disclosure:
+        return ""
+    moves = disclosure["moves"]
+    to = disclosure["destination_name"]
+    tense = "done" if done else "pending"
+    if any(m["amount"] is None for m in moves):
+        return t(f"inv.merge_reclass_accounts_{tense}", accounts=", ".join(m["name"] for m in moves), to=to)
+    parts = ", ".join(t("inv.merge_reclass_move", amount=fmt_money(m["amount"], disclosure["currency"]),
+                        account=m["name"]) for m in moves)
+    return t(f"inv.merge_reclass_{tense}", moves=parts, to=to)
+
+
+def _undo_merge_block(entity_id: str, ledger: list[dict]) -> FT | str:
+    """Undo for a merge result, offered while the merge is still the item's latest event
+    (the API explains any other reason it cannot be undone)."""
+    if not ledger or ledger[0].get("event_type") != "item.merged":
+        return ""
+    return Div(
+        Button(t("inv.undo_merge"), type="button", cls="btn btn--secondary btn--sm",
+               hx_post=f"/api/items/{entity_id}/undo-merge", hx_target="#merge-undo", hx_swap="outerHTML",
+               hx_confirm=t("inv.undo_merge_confirm")),
+        id="merge-undo", style="margin-bottom:0.75rem",
     )
 
 

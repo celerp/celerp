@@ -56,8 +56,8 @@ def _connected_panel(deposit_account: str, bank_accounts: list[dict], saved: boo
     """Post-connect operating page: status line, deposit selector, disconnect."""
     _new_opt, _new_js = add_new_option(t("acct.add_bank_account"), "/settings/accounting/bank-accounts/new")
     deposit_select = Select(
-        # Blank = the server-side default: payments book to Cash (1110).
-        Option(t("pay.deposit_cash_option"), value="", selected=not deposit_account),
+        # Blank = the server-side default: payments book to the default deposit account.
+        Option(t("pay.deposit_default_option"), value="", selected=not deposit_account),
         *bank_account_options(bank_accounts, default_code=deposit_account or None),
         _new_opt,
         name="stripe_deposit_account", cls="form-input", onchange=_new_js,

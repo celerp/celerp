@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -284,7 +285,7 @@ async def get_auth_context(
     request: Request,
     token: str = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_session),
-) -> AuthContext:
+) -> AsyncIterator[AuthContext]:
     """FastAPI dependency: the one validated auth context for the request.
 
     FastAPI dependency caching resolves this once per request even when a route
@@ -297,7 +298,14 @@ async def get_auth_context(
     ctx = await validate_access_token(session, token)
     if ctx.company.is_migration_staged and not request.url.path.startswith(STAGED_ALLOWED_PREFIX):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=STAGED_COMPANY)
-    return ctx
+    # The authority the request starts with is judged again under the company lock
+    # (company_lock), so a write that waits there never runs on revoked access.
+    from celerp.services.permissions import authorize_request, end_request
+    authority = authorize_request(session, ctx.company_id, ctx.user.id, ctx.role)
+    try:
+        yield ctx
+    finally:
+        end_request(session, authority)
 
 
 async def get_current_user(ctx: AuthContext = Depends(get_auth_context)) -> User:

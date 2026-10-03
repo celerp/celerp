@@ -7,6 +7,8 @@ Group 12: Detail page smoke tests.
 Strategy: create entity via API → navigate to its detail URL → assert no 500/traceback.
 Uses `api` (pre-authed httpx) and `page` (Playwright) fixtures from conftest.py.
 """
+import uuid
+
 import pytest
 from playwright.sync_api import Page
 
@@ -46,40 +48,26 @@ def test_subscription_detail_loads(page, ui_server, api):
 def test_manufacturing_order_detail_loads(page, ui_server, api):
     """SUB-02: Create mfg order via API → navigate to /manufacturing/{id} → no crash.
 
-    Requires ≥1 input item. We seed a dummy item first.
+    Seeds an input item and the product the run makes first.
     """
-    # Seed an inventory item for use as input
-    item_r = api.post("/items", json={
-        "sku": "MFG-DETAIL-INPUT",
-        "sell_by": "piece",
-        "name": "Mfg Detail Input Item",
-        "quantity": 50,
+    tag = uuid.uuid4().hex[:6].upper()
+    item_id = api.post("/items", json={
+        "sku": f"MFG-DETAIL-IN-{tag}", "sell_by": "piece", "name": "Mfg Detail Input Item", "quantity": 50,
         "category": "Raw Material",
-    })
-    if item_r.status_code not in {200, 201}:
-        # Item may already exist — fetch it
-        search_r = api.get("/items", params={"search": "MFG-DETAIL-INPUT"})
-        items = search_r.json().get("items", []) if search_r.status_code == 200 else []
-        if not items:
-            pytest.skip(f"Could not seed input item: {item_r.text}")
-        item_id = items[0].get("entity_id") or items[0].get("id", "")
-    else:
-        item_id = item_r.json().get("id", item_r.json().get("entity_id", ""))
-
-    if not item_id:
-        pytest.skip("Could not determine item_id for mfg order seed")
+    }).json()["id"]
+    output_id = api.post("/items", json={
+        "sku": f"MFG-DETAIL-OUT-{tag}", "sell_by": "piece", "name": "Mfg Detail Output Item", "quantity": 0,
+    }).json()["id"]
 
     r = api.post("/manufacturing", json={
         "description": "Detail Test Order",
         "order_type": "assembly",
         "inputs": [{"item_id": item_id, "quantity": 1}],
+        "output_item_id": output_id,
+        "quantity": 1,
     })
-    if r.status_code not in {200, 201}:
-        pytest.skip(f"POST /manufacturing not available or failed: {r.status_code} {r.text}")
-
-    order_id = r.json().get("id", "")
-    if not order_id:
-        pytest.skip(f"No id in mfg order response: {r.json()}")
+    assert r.status_code in {200, 201}, f"POST /manufacturing failed: {r.text}"
+    order_id = r.json()["id"]
 
     resp = page.goto(f"{ui_server}/manufacturing/{order_id}", wait_until="domcontentloaded")
     assert resp.status != 500, f"/manufacturing/{order_id} returned HTTP 500"

@@ -24,7 +24,10 @@ PLUGIN_MANIFEST = {
             {"group": "Purchasing Documents", "key": "consignment-in", "href": "/docs?type=consignment_in", "label": "Consignment In", "label_key": "nav.consignment_in", "order": 27, "permission": "view_documents"},
             {"group": "Finance", "key": "payments", "href": "/payments", "label": "Payments", "label_key": "nav.payments", "order": 51.5, "permission": "view_payments"},
         ],
-        "on_modules_ready": {"handler": "celerp_docs.received_legacy:move_legacy_imports_hook"},
+        "on_modules_ready": [
+            {"handler": "celerp_docs.received_legacy:move_legacy_imports_hook"},
+            {"handler": "celerp_docs.legacy_receipts:record_legacy_receipts_hook"},
+        ],
         "projection_handler": [
             {"prefix": "doc.", "handler": "celerp_docs.doc_projections:apply_documents_event"},
             {"prefix": "list.", "handler": "celerp_docs.doc_projections:apply_documents_event"},

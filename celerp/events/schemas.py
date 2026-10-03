@@ -129,6 +129,8 @@ def _normalize_updated_codes(fields_changed: dict) -> None:
 
 class ItemUpdated(BaseModel):
     fields_changed: dict[str, dict[str, Any]]
+    # Set by an edit that archives stock the company keeps (lot_origin.in_stock).
+    inventory_on_books: bool | None = None
 
     @classmethod
     def normalize_for_storage(cls, data: dict) -> None:
@@ -151,6 +153,10 @@ class ItemStatusSet(BaseModel):
     new_status: str
     # Set by revert-to-draft only.
     reason: str | None = None
+    # When a move between draft and stock happened: the business day its entry carries.
+    ts: str | None = None
+    # Set by Archive: the lot keeps its stock on the books (lot_origin.in_stock).
+    inventory_on_books: bool | None = None
 
 
 class ItemTransferred(BaseModel):
@@ -178,6 +184,9 @@ class ItemQuantityAdjusted(BaseModel):
     # stock position carries the source's value. Omitted by ordinary stock adjustments,
     # which leave the lot's cost alone.
     cost_base: float | None = None
+    # Set only when stock consumed earlier is given back (materials returned from production):
+    # the quantity no longer counts as used.
+    quantity_returned: float | None = None
 
 
 class ItemLandedCostApplied(BaseModel):
@@ -204,6 +213,8 @@ class ItemFulfillmentReversed(BaseModel):
 
 class ItemExpired(BaseModel):
     reason: str | None = None
+    # Set by Expire: the lot keeps its stock on the books (lot_origin.in_stock).
+    inventory_on_books: bool | None = None
 
 
 class ItemWrittenOff(BaseModel):
@@ -284,6 +295,23 @@ class ItemPatched(_SkuGuard):
 
 class ItemSourceDeactivated(BaseModel):
     merged_into: str
+    # What the source was before the merge, restored if the merge is undone.
+    original_status: str | None = None
+    original_status_doc_id: str | None = None
+    original_status_doc_number: str | None = None
+
+
+class ItemMergeUndone(BaseModel):
+    """On a merge result whose merge was undone: its sources hold the stock again."""
+    source_entity_ids: list[str]
+
+
+class ItemUnmerged(BaseModel):
+    """On a merge source when its merge is undone."""
+    merged_into: str
+    restored_status: str
+    source_doc_id: str | None = None
+    doc_number: str | None = None
 
 
 class ItemConsumed(BaseModel):
@@ -300,6 +328,19 @@ class ItemCostAdjusted(BaseModel):
     # absolute cost_base; landed contributions rescale from it.
     cost_total: float
     manufacturing_order_id: str | None = None   # the run that re-costed the lot (audit trail)
+
+
+class ItemInventoryAccountRecorded(BaseModel):
+    # A lot from before lots recorded their inventory account: the account the upgrade
+    # placed it on, or the one the user picked for it. Only a lot with no account can take one.
+    inventory_account_code: str
+
+
+class ItemInventoryOnBooksRecorded(BaseModel):
+    # A lot an older release archived or expired at the user's request that the books
+    # show still holds the company's stock, recognized once on upgrade
+    # (lot_origin.normalize_legacy_inventory_origins).
+    pass
 
 
 # --- Manufacturing recipe (materials + labor + overhead) attached to an item ---
@@ -853,6 +894,9 @@ class MfgOrderStarted(BaseModel):
 
 class MfgOrderCompleted(BaseModel):
     completed_by: str | None = None
+    # Value moved out of work in progress at completion: into the finished lots, and to waste.
+    transferred: str | None = None
+    wasted: str | None = None
 
 
 class MfgOrderCancelled(BaseModel):
@@ -871,6 +915,9 @@ class MfgOrderIssued(BaseModel):
     # Components issued from stock into a run (decrements the components). Partial issues allowed.
     items: list[dict[str, Any]] = Field(default_factory=list)
     issued_by: str | None = None
+    # The stock value that left with the components, and the account it went to.
+    value: str | None = None
+    wip_account_code: str | None = None
 
 
 class MfgOrderReceived(BaseModel):
@@ -879,6 +926,21 @@ class MfgOrderReceived(BaseModel):
     quantity: float
     lot_item_id: str | None = None
     received_by: str | None = None
+    # The work in progress value the received lot carries.
+    value: str | None = None
+
+
+class MfgOrderWipOpened(BaseModel):
+    # An older run's work in progress, reconstructed from its own history.
+    issued: str
+    transferred: str
+    receipts: list[dict[str, Any]] = Field(default_factory=list)
+    wip_account_code: str | None = None
+
+
+class MfgOrderWipUnresolved(BaseModel):
+    # An older run whose work in progress cannot be proved from its history.
+    reason: str
 
 
 class MfgOrderScheduled(BaseModel):
@@ -978,6 +1040,11 @@ class JELine(BaseModel):
     # posted amounts are the only ones such a line carries.
     fx_currency: str | None = None
     fx_rate: float | None = None
+    # The posting roles the line served when it was written, set once by the
+    # journal boundary and never rewritten: what a line meant does not change when
+    # a role later points at another account. Absent on lines posted before roles
+    # existed; an empty list is a line deliberately left unclassified.
+    account_roles: list[str] | None = None
 
 
 class AccJournalEntryFx(BaseModel):
@@ -1216,10 +1283,14 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.transformed_from": ItemTransformedFrom,
     "item.merged": ItemMerged,
     "item.source_deactivated": ItemSourceDeactivated,
+    "item.merge_undone": ItemMergeUndone,
+    "item.unmerged": ItemUnmerged,
     "item.patched": ItemPatched,
     "item.consumed": ItemConsumed,
     "item.produced": ItemProduced,
     "item.cost_adjusted": ItemCostAdjusted,
+    "item.inventory_account.recorded": ItemInventoryAccountRecorded,
+    "item.inventory_on_books.recorded": ItemInventoryOnBooksRecorded,
     "item.recipe.set": ItemRecipeSet,
     "item.workflow.set": ItemWorkflowSet,
     "item.reserved": ItemReserved,
@@ -1313,6 +1384,8 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "mfg.order.issued": MfgOrderIssued,
     "mfg.order.received": MfgOrderReceived,
     "mfg.order.scheduled": MfgOrderScheduled,
+    "mfg.order.wip_opened": MfgOrderWipOpened,
+    "mfg.order.wip_unresolved": MfgOrderWipUnresolved,
 
     # Scanning
     "scan.barcode": ScanBarcode,

@@ -57,6 +57,7 @@ ALL_CHECKS = [
     "fractional_piece_quantities",
     "contact_file_schema",
     "physical_code_conflicts",
+    "posting_origins",
 ]
 
 
@@ -609,7 +610,7 @@ async def _emit_payment_je(
     await _auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id,
         amount=amount, payment_index=payment_index,
-        bank_account_code=payment.get("bank_account") or "1111",
+        bank_account_code=payment.get("bank_account"),
         doc_type=state.get("doc_type", "invoice"),
         payment_date=str(payment.get("payment_date") or state.get("issue_date") or state.get("created_at") or __import__("datetime").date.today().isoformat())[:10],
         base_currency=base_currency,
@@ -986,6 +987,56 @@ async def _write_upgrade_report(
     return report_path
 
 
+async def _check_posting_origins(
+    session: AsyncSession, company_id, user_id, *, fix: bool,
+) -> dict:
+    """Find what automatic posting cannot proceed on without a decision: a posting
+    account the company needs but has not set or cannot use, and an older document
+    whose receivable or payable was recorded on more than one account. Report-only: each needs the user to choose
+    an account, never a guess."""
+    from celerp.accounting_roles import POSTING_ACCOUNTS_PATH
+    from celerp.models.company import Company
+    from celerp.services.account_roles import AmbiguousOriginError, current_settings
+    from celerp.services.auto_je import _control_role, party_origin
+    from celerp.services.posting_readiness import panel
+
+    findings: list[dict] = []
+    if not await session.scalar(select(Company.is_migration_staged).where(Company.id == company_id)):
+        roles = await panel(session, company_id)
+        for row in (roles or {}).get("roles", []):
+            if row["required"] and row["status"] != "ready":
+                findings.append({"kind": "posting_account", "role": row["role"], "problem": row["problem"],
+                                 "fix": POSTING_ACCOUNTS_PATH})
+
+        settings = await current_settings(session, company_id)
+        docs = {row.entity_id: (row.state or {}).get("doc_type") for row in (await session.execute(
+            select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "doc")
+        )).scalars().all()}
+        jes = (await session.execute(select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+            Projection.entity_id.startswith("je:auto:", autoescape=True),
+        ))).scalars().all()
+        older: set[str] = set()
+        for row in jes:
+            if all(e.get("account_roles") is not None for e in (row.state or {}).get("entries") or []):
+                continue
+            rest = row.entity_id[len("je:auto:"):]
+            older.update(doc for doc in docs if rest.startswith(f"{doc}:"))
+        for doc_id in sorted(older):
+            try:
+                await party_origin(session, company_id, doc_id, _control_role(docs[doc_id] or ""), settings)
+            except AmbiguousOriginError as exc:
+                findings.append({"kind": "party_origin", "entity_id": doc_id, "problem": exc.detail})
+
+    return {
+        "check": "posting_origins",
+        "found": len(findings),
+        "fixed": 0,
+        "auto_fixable": False,
+        "details": findings[:100],
+    }
+
+
 _CHECK_FNS = {
     "missing_jes": _check_missing_jes,
     "uncaused_recognition_jes": _check_uncaused_recognition_jes,
@@ -1000,6 +1051,7 @@ _CHECK_FNS = {
     "fractional_piece_quantities": _check_fractional_piece_quantities,
     "contact_file_schema": _check_contact_file_schema,
     "physical_code_conflicts": _check_physical_code_conflicts,
+    "posting_origins": _check_posting_origins,
 }
 
 

@@ -10,6 +10,7 @@ import uuid
 import pytest
 
 from celerp.services.je_keys import je_idempotency_key
+from stock_books import SAMPLE_STOCK_ENTRY
 
 
 async def _register(client) -> str:
@@ -19,6 +20,14 @@ async def _register(client) -> str:
     })
     assert r.status_code == 200
     return r.json()["access_token"]
+
+
+async def _document_jes(client, token) -> list[dict]:
+    """The company's journal entry events, less the opening entry its sample stock is
+    booked with at registration: the entries a document wrote."""
+    r = await client.get("/ledger?entity_type=journal_entry", headers=_h(token))
+    assert r.status_code == 200, r.text
+    return [e for e in r.json()["items"] if not e["entity_id"].startswith(SAMPLE_STOCK_ENTRY)]
 
 
 def _h(token: str) -> dict:
@@ -111,7 +120,7 @@ async def test_doctor_all_checks_run(client, session):
     r = await client.post("/admin/doctor", headers=_h(token))
     assert r.status_code == 200
     data = r.json()
-    assert len(data["results"]) == 13
+    assert len(data["results"]) == 14
     check_names = [c["check"] for c in data["results"]]
     assert "missing_jes" in check_names
     assert "duplicate_jes" in check_names
@@ -122,6 +131,7 @@ async def test_doctor_all_checks_run(client, session):
     assert "zero_amount_jes" in check_names
     assert "fractional_piece_quantities" in check_names
     assert "physical_code_conflicts" in check_names
+    assert "posting_origins" in check_names
 
 
 @pytest.mark.asyncio
@@ -224,8 +234,7 @@ async def test_import_paid_invoice_creates_jes(client, session):
     assert r.status_code == 200
 
     # Check JE projections were created
-    r = await client.get("/ledger?entity_type=journal_entry", headers=_h(token))
-    jes = r.json()["items"]
+    jes = await _document_jes(client, token)
     # Only finalization JE is created on import (no synthetic payment JE)
     je_types = [e["event_type"] for e in jes]
     assert je_types.count("acc.journal_entry.created") == 1
@@ -251,8 +260,7 @@ async def test_import_draft_invoice_no_jes(client, session):
     })
     assert r.status_code == 200
 
-    r = await client.get("/ledger?entity_type=journal_entry", headers=_h(token))
-    assert len(r.json()["items"]) == 0
+    assert await _document_jes(client, token) == []
 
 
 @pytest.mark.asyncio
@@ -268,8 +276,7 @@ async def test_import_void_invoice_no_jes(client, session):
     })
     assert r.status_code == 200
 
-    r = await client.get("/ledger?entity_type=journal_entry", headers=_h(token))
-    assert len(r.json()["items"]) == 0
+    assert await _document_jes(client, token) == []
 
 
 # --- Doc-scoped idempotency: import + API can't duplicate ---
@@ -287,8 +294,7 @@ async def test_api_finalize_after_import_no_duplicate_je(client, session):
     assert r.status_code == 200
 
     # Check: exactly 1 finalization JE (2 events: created + posted)
-    r = await client.get("/ledger?entity_type=journal_entry", headers=_h(token))
-    jes = r.json()["items"]
+    jes = await _document_jes(client, token)
     created_events = [e for e in jes if e["event_type"] == "acc.journal_entry.created"]
     assert len(created_events) == 1
 
@@ -352,8 +358,7 @@ async def test_batch_import_paid_invoices_create_jes(client, session):
     assert r.json()["created"] == 3
 
     # Should have 6 JE created events (3 finalization + 3 payment) = 12 total events
-    r = await client.get("/ledger?entity_type=journal_entry", headers=_h(token))
-    jes = r.json()["items"]
+    jes = await _document_jes(client, token)
     created = [e for e in jes if e["event_type"] == "acc.journal_entry.created"]
     assert len(created) == 3  # 3 finalization only; no synthetic payment JEs on import
 
@@ -383,8 +388,7 @@ async def test_doctor_fix_creates_missing_jes(client, session):
     await _emit_legacy_doc_event(client, session, token, entity_id, "doc.finalized", {})
 
     # No JEs yet (finalize via import doesn't trigger auto-JE)
-    r = await client.get("/ledger?entity_type=journal_entry", headers=_h(token))
-    assert len(r.json()["items"]) == 0
+    assert await _document_jes(client, token) == []
 
     # Doctor dry-run: should find missing JE
     r = await client.post("/admin/doctor?checks=missing_jes", headers=_h(token))
@@ -402,8 +406,7 @@ async def test_doctor_fix_creates_missing_jes(client, session):
     assert missing["fixed"] == 1
 
     # Verify JEs exist now
-    r = await client.get("/ledger?entity_type=journal_entry", headers=_h(token))
-    assert len(r.json()["items"]) > 0
+    assert await _document_jes(client, token)
 
     # Running doctor again: no more missing
     r = await client.post("/admin/doctor?checks=missing_jes", headers=_h(token))
@@ -537,8 +540,7 @@ async def test_doctor_missing_je_po_no_missing_after_api(client, session):
     assert missing["found"] == 0
 
     # Verify PO JE events created
-    r3 = await client.get("/ledger?entity_type=journal_entry", headers=_h(token))
-    created = [e for e in r3.json()["items"] if e["event_type"] == "acc.journal_entry.created"]
+    created = [e for e in await _document_jes(client, token) if e["event_type"] == "acc.journal_entry.created"]
     assert len(created) == 1
 
 

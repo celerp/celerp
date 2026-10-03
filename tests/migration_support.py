@@ -380,6 +380,36 @@ async def creator_run(session, run_id):
     return await migrations.get_owned_migration_run(session, run_id, creator)
 
 
+def posting_choices_from(readiness: list[dict]) -> dict:
+    """The posting accounts a user finishing a migration would pick: for each needed
+    role not already settled, the first account offered, or the proposed one to add."""
+    roles, add_accounts = {}, []
+    for row in readiness:
+        if not row["required"] or row["current"] or row["preselect"]:
+            continue
+        if row["candidates"]:
+            roles[row["role"]] = row["candidates"][0]["code"]
+        else:
+            add_accounts.append({**row["proposal"], "role": row["role"]})
+    return {"roles": roles, "add_accounts": add_accounts}
+
+
+async def finalize_run(session, run):
+    """Finish ``run`` the way a user would, choosing its posting accounts."""
+    from celerp.services import migrations
+    from celerp.services.posting_readiness import readiness
+
+    choices = posting_choices_from(await readiness(session, run.company_id) or [])
+    return await migrations.finalize(session, run, choices)
+
+
+async def finalize_body(client, headers: dict, run_id) -> dict:
+    """The finalize request body a user would send for ``run_id``."""
+    r = await client.get(f"/migrations/{run_id}/posting-accounts", headers=headers)
+    assert r.status_code == 200, r.text
+    return posting_choices_from(r.json()["roles"])
+
+
 @pytest_asyncio.fixture
 async def real_client(real_engine):
     """An API client whose request sessions commit for real on `real_engine`, so

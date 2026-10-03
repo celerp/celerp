@@ -39,6 +39,7 @@ from celerp.services.attachments import (
     AttachmentType,
     attach_file,
     check_file_size,
+    discarded_if_refused,
     get_or_create_thumbnail,
     item_file_role,
     local_attachment_url_path,
@@ -48,6 +49,7 @@ from celerp.services.attachments import (
     store_upload,
 )
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.company_lock import lock_projections
 from celerp.services.cost_visibility import restricted_field_keys
 from celerp.services.field_schema import get_effective_field_schema
 from celerp.services.permissions import require_permission
@@ -94,6 +96,17 @@ async def _patch_item_attachments(
     )
 
 
+async def _locked_item(session: AsyncSession, company_id, entity_id: str) -> Projection:
+    """The item row, locked and fresh, for a write that replaces its whole attachment list.
+
+    Two such writes at once would each start from the same list and the later one would
+    drop the earlier one's change, so each waits for the last to commit before reading."""
+    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+    if row is None or row.entity_type != "item":
+        raise HTTPException(status_code=404, detail="Item not found")
+    return row
+
+
 @router.post("/{entity_id}/attachments")
 async def upload_attachment(
     entity_id: str,
@@ -111,7 +124,7 @@ async def upload_attachment(
     if attachment_type is not None and attachment_type not in _VALID_TYPES:
         raise HTTPException(status_code=422, detail=f"Invalid attachment_type: {attachment_type!r}")
 
-    row = await get_item_projection(session, company_id, entity_id)
+    await get_item_projection(session, company_id, entity_id)
 
     try:
         att = await store_upload(
@@ -122,11 +135,15 @@ async def upload_attachment(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    existing: list[dict] = row.state.get("attachments") or []
-    updated = merge_attachments(existing, att)
-    existing_preview: str | None = row.state.get("preview_image_id")
-    new_preview = resolve_preview_image_id(existing_preview, updated)
-    await _patch_item_attachments(session, company_id, entity_id, user.id, updated, new_preview)
+    async with discarded_if_refused(company_id, att):
+        row = await _locked_item(session, company_id, entity_id)
+        existing: list[dict] = row.state.get("attachments") or []
+        updated = merge_attachments(existing, att)
+        existing_preview: str | None = row.state.get("preview_image_id")
+        new_preview = resolve_preview_image_id(existing_preview, updated)
+        await _patch_item_attachments(session, company_id, entity_id, user.id, updated, new_preview)
+    # Committed outside the discard: a commit that lands and then reports a failure
+    # leaves the item pointing at the file, so the file must stay.
     await session.commit()
     return att
 
@@ -141,7 +158,7 @@ async def delete_attachment(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     """Remove one attachment from an item."""
-    row = await get_item_projection(session, company_id, entity_id)
+    row = await _locked_item(session, company_id, entity_id)
 
     existing: list[dict] = row.state.get("attachments") or []
     updated = remove_attachment(existing, att_id)
@@ -165,7 +182,7 @@ async def set_preview_image(
     The referenced attachment must exist and have type == "image".
     Returns {"preview_image_id": att_id}.
     """
-    row = await get_item_projection(session, company_id, entity_id)
+    row = await _locked_item(session, company_id, entity_id)
 
     attachments: list[dict] = row.state.get("attachments") or []
     target = next((a for a in attachments if a["id"] == att_id), None)
@@ -243,7 +260,6 @@ async def bulk_attach_files(
     Returns:
       {matched, unmatched, errors, report: [{sku, file, status, url, tag, is_hero}]}
     """
-    from datetime import datetime, timezone
     import mimetypes as _mt
     from starlette.datastructures import Headers as _Headers
 
@@ -339,31 +355,8 @@ async def bulk_attach_files(
                 if is_hero:
                     hero_assigned.add(sku_key)
 
-                await emit_event(
-                    session,
-                    company_id=company_id,
-                    entity_id=row.entity_id,
-                    entity_type="item",
-                    event_type="item.file.attached",
-                    data={
-                        "entity_id": row.entity_id,
-                        "entity_type": "item",
-                        "file_id": meta["id"],
-                        "filename": meta["filename"],
-                        "mime": meta["mime"],
-                        "size": meta["size"],
-                        "url": meta.get("url", ""),
-                        "document_tag": tag,
-                        "description": label,
-                        "uploaded_at": datetime.now(timezone.utc).isoformat(),
-                        "is_hero": is_hero,
-                    },
-                    actor_id=user.id,
-                    location_id=None,
-                    source="api",
-                    idempotency_key=str(uuid.uuid4()),
-                    metadata_={},
-                )
+                await attach_file(session, company_id, "item", row.entity_id, meta, user.id,
+                                  document_tag=tag, is_hero=is_hero, description=label)
                 # NOTE: do NOT re-apply the event here. emit_event() ->
                 # ProjectionEngine.apply_event already appended the file to this
                 # same projection row (session identity map), so row.state is

@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from migration_support import OWNER_EMAIL, auth, maker, real_client, real_engine  # noqa: F401
+from migration_support import OWNER_EMAIL, auth, finalize_run, maker, real_client, real_engine  # noqa: F401
 from test_migration_e2e import migrate
 
 pytestmark = pytest.mark.asyncio
@@ -41,7 +41,6 @@ async def test_migrated_bill_cannot_be_received_twice(real_engine, real_client, 
     from celerp.models.company import User
     from celerp.models.migration import MigrationEntityMap, MigrationRun
     from celerp.models.projections import Projection
-    from celerp.services import migrations
     from fixtures.manager_io.support import BASIC, ref
     from test_helpers import make_authed_token
 
@@ -49,7 +48,7 @@ async def test_migrated_bill_cannot_be_received_twice(real_engine, real_client, 
     assert rejected == []
     assert run.status == "ready_to_finalize", run.error_summary
     async with maker(real_engine)() as s:
-        await migrations.finalize(s, await s.get(MigrationRun, run.id))
+        await finalize_run(s, await s.get(MigrationRun, run.id))
     async with maker(real_engine)() as s:
         maps = {(m.source_type, m.source_external_id): m.target_entity_id for m in (await s.execute(
             select(MigrationEntityMap).where(MigrationEntityMap.migration_run_id == run.id))).scalars()}

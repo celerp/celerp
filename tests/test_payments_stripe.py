@@ -209,13 +209,16 @@ async def test_backup_push_records_and_is_idempotent(client, session, payments_o
 
 @pytest.mark.asyncio
 async def test_backup_push_uses_company_deposit_account(client, session, payments_on):
-    """The deposit GL account is the company setting, defaulting to Cash."""
+    """The deposit GL account is the company setting, defaulting to the default deposit account."""
     from celerp.models.projections import Projection
     from celerp_docs.routes_payments import record_stripe_payment
 
     tok = await _register(client)
     eid, token = await _payable_invoice(client, tok)
     cid = _company_id(tok)
+    r = await client.post("/accounting/accounts", headers={"Authorization": f"Bearer {tok}"}, json={
+        "code": "1055", "name": "Stripe balance", "account_type": "asset", "parent_code": "1110"})
+    assert r.status_code == 200, r.text
     company = await locked_company(session, cid)
     company.settings = {**(company.settings or {}), "stripe_deposit_account": "1055"}
     await session.commit()
@@ -359,7 +362,7 @@ async def test_manual_payment_racing_online_confirm(client, session, payments_on
     stale = dict((await session.get(Projection, (cid, eid))).state)
 
     r = await client.post(f"/docs/{eid}/payment", json={
-        "amount": 500.0, "payment_date": "2026-07-13", "bank_account": "1110",
+        "amount": 500.0, "payment_date": "2026-07-13", "bank_account": "1111",
     }, headers=_h(tok))
     assert r.status_code == 200, r.text
 
@@ -426,7 +429,7 @@ async def test_paid_invoice_share_view_drops_pay_bar(client, payments_on):
     tok = await _register(client)
     eid, token = await _payable_invoice(client, tok)
     r = await client.post(f"/docs/{eid}/payment", json={
-        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1110",
+        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1111",
     }, headers=_h(tok))
     assert r.status_code == 200, r.text
     html = (await client.get(f"/share/{token}")).text

@@ -10,29 +10,30 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.events.engine import emit_event
+from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.events.schemas import (
     _WORKFLOW_TIME_UNITS,
     RecipeSpec,
     WorkflowSpec,
     workflow_step_minutes,
 )
-from celerp.models.company import Company, User, WorkCenter
+from celerp.models.company import Company, WorkCenter
+from celerp.importers.results import failure_reason
 from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
-from celerp.services import auto_je, migrations
-from celerp.services.line_measures import splitting_allowed
-from celerp.services.money import round_basis
+from celerp.services import migrations
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.permissions import require_permission
 from celerp.schemas.numbers import FiniteFloat
 
@@ -41,7 +42,8 @@ from .costing import RecipeError, labor_hours, roll_up_cost, where_used
 # Default hours-per-day for converting daily labor lines into the est-hours column.
 # Set per work center; the company's default center supplies the value.
 DEFAULT_HOURS_PER_DAY = 8.0
-from .expansion import expand_recipe, explode_demand, is_manufacturable
+from .expansion import expand_recipe, explode_demand, is_manufacturable, merge_inputs, mfg_idem_key, output_line
+from . import movements
 from .labor import apply_labor_providers
 from .search import _INCOMPLETE_STATUSES, search_orders
 
@@ -59,18 +61,16 @@ class MfgInput(BaseModel):
     quantity: FiniteFloat
 
 
-class MfgOutput(BaseModel):
-    sku: str
-    name: str
-    quantity: FiniteFloat
-    category: str | None = None
-
-
 class MfgOrderCreate(BaseModel):
+    # A run makes `quantity` of one product, `output_item_id`; what it expects to make is taken
+    # from that product. Fields it does not know, such as a list of outputs, are refused.
+    model_config = ConfigDict(extra="forbid")
+
     description: str
     order_type: str = "assembly"
     inputs: list[MfgInput] = Field(default_factory=list)
-    expected_outputs: list[MfgOutput] = Field(default_factory=list)
+    output_item_id: str | None = None
+    quantity: FiniteFloat = 1.0
     location_id: str | None = None
     assigned_to: str | None = None
     due_date: str | None = None
@@ -94,6 +94,21 @@ class IssueBody(BaseModel):
     idempotency_key: str | None = None
 
 
+class ReturnBody(BaseModel):
+    # Components to return from a run to their lots. Omit `items` to return everything issued.
+    items: list[MfgInput] | None = None
+    idempotency_key: str | None = None
+
+
+class UndoReceiptBody(BaseModel):
+    lot_item_id: str
+    idempotency_key: str | None = None
+
+
+class KeyBody(BaseModel):
+    idempotency_key: str | None = None
+
+
 class ReceiveBody(BaseModel):
     # Finished-goods quantity to receive. Omit `quantity` to receive everything still outstanding.
     quantity: FiniteFloat | None = None
@@ -101,11 +116,27 @@ class ReceiveBody(BaseModel):
 
 
 class CompleteBody(BaseModel):
-    actual_outputs: list[MfgOutput] | None = None
+    # What a run made is what was received from it; a declared yield is refused, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     waste_quantity: FiniteFloat | None = Field(default=None, ge=0)
     waste_unit: str | None = None
     waste_reason: str | None = None
     labor_hours: FiniteFloat | None = None
+    idempotency_key: str | None = None
+
+
+class ReconcileValue(BaseModel):
+    item_id: str
+    value: FiniteFloat
+
+
+class ReconcileBody(BaseModel):
+    # The value of each component still in a run needing reconciliation, and the account it comes off.
+    model_config = ConfigDict(extra="forbid")
+
+    components: list[ReconcileValue]
+    account: str | None = None
     idempotency_key: str | None = None
 
 
@@ -145,6 +176,72 @@ async def _get_order(session: AsyncSession, company_id, order_id: str) -> Projec
     return row
 
 
+def _order_item_ids(data: dict) -> list[str]:
+    """Every item a new run names: its components and the product it makes."""
+    inputs = data.get("inputs", [])
+    if not isinstance(inputs, list):
+        raise HTTPException(status_code=422, detail="A run's components must be a list")
+    ids = []
+    for line in inputs:
+        item_id = line.get("item_id") if isinstance(line, dict) else None
+        if not isinstance(item_id, str) or not item_id:
+            raise HTTPException(status_code=422, detail="Every component of a run must name an item")
+        ids.append(item_id)
+    output = data.get("output_item_id")
+    if not isinstance(output, str) or not output:
+        raise HTTPException(status_code=422, detail="A run must name the product it makes")
+    return [*ids, output]
+
+
+async def _created_before(session: AsyncSession, company_id, key: str, fingerprint: str):
+    """The run a creation key already made for this same request, or None when the key is new.
+    A key that made something else, or a run from a different request, is refused."""
+    stored = await find_event_by_idempotency(session, company_id, key)
+    if stored is not None and (stored.event_type != "mfg.order.created"
+                               or (stored.metadata_ or {}).get("request") != fingerprint):
+        raise movements.refuse(409, "key_reused", "This request key was already used for a different run. "
+                               "Send the request again without reusing the key.")
+    return stored
+
+
+async def _emit_order_created(session: AsyncSession, company_id, order_id: str, data: dict, *, quantity: float,
+                              request: dict, actor_id, idempotency_key: str | None, location_id=None,
+                              source: str = "api", metadata_: dict | None = None,
+                              locked: dict[str, Projection] | None = None):
+    """The one way a new run is written, by every door that creates one.
+
+    A run makes ``quantity`` of one product, ``data["output_item_id"]``, from the components
+    in ``data["inputs"]``; what it expects to make is taken from the product. Every item it
+    names must be a stocked item or component of this company, so a run never stores an item
+    that does not exist or one production cannot move. The items are locked first
+    (``locked`` when the caller already locked them), so a Delete of one either finishes
+    before the run is checked, and the run is refused, or waits until the run is saved.
+
+    ``request`` is what the caller asked for. A key sent again with the same request returns
+    the run it first created; sent with a different request it is refused."""
+    await lock_company(session, company_id)
+    key = f"mfg:created:{idempotency_key or uuid.uuid4().hex}"
+    fingerprint = movements._fingerprint(request)
+    stored = await _created_before(session, company_id, key, fingerprint)
+    if stored is not None:
+        return stored
+    if not quantity > 0:
+        raise HTTPException(status_code=422, detail="A run must make a quantity greater than zero")
+    ids = _order_item_ids(data)
+    rows = locked if locked is not None else await lock_projections(session, company_id, ids)
+    for item_id in ids:
+        row = rows.get(item_id)
+        if row is None or row.entity_type != "item":
+            raise HTTPException(status_code=422, detail=f"Not an item in this company: {item_id}")
+        movements.require_stock(row.state or {}, item_id)
+    data = {**data, "expected_outputs": [output_line(rows[data["output_item_id"]].state or {}, quantity)]}
+    return await emit_event(
+        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
+        event_type="mfg.order.created", data=data, actor_id=actor_id, location_id=location_id,
+        source=source, idempotency_key=key, metadata_={**(metadata_ or {}), "request": fingerprint},
+    )
+
+
 async def _load_recipe_graph(session: AsyncSession, company_id, root_id: str, root_state: dict) -> tuple[dict[str, dict], list[str]]:
     """Load every item referenced (transitively) by ``root_state``'s recipe into a
     lookup dict, so the pure cost roll-up can resolve nested sub-assemblies offline.
@@ -152,22 +249,27 @@ async def _load_recipe_graph(session: AsyncSession, company_id, root_id: str, ro
     Returns ``(graph, missing)`` where graph maps entity_id -> item state (the root is
     keyed by root_id with its *new* recipe already overlaid) and missing lists any
     referenced item_id that does not resolve to an item in this company.
+
+    Each level of the graph is locked as it is read (the caller holds the company lock), so a
+    Delete of any item it names either finished before, and the item is missing, or waits
+    until the caller commits.
     """
     graph: dict[str, dict] = {root_id: root_state}
     missing: list[str] = []
     seen: set[str] = {root_id}
-    queue: list[str] = [c.get("item_id") for c in (root_state.get("recipe") or {}).get("components", [])]
-    while queue:
-        cid = queue.pop()
-        if not cid or cid in seen:
-            continue
-        seen.add(cid)
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": cid})
-        if row is None or row.entity_type != "item":
-            missing.append(cid)
-            continue
-        graph[cid] = row.state
-        queue.extend(c.get("item_id") for c in (row.state.get("recipe") or {}).get("components", []))
+    level = {c.get("item_id") for c in (root_state.get("recipe") or {}).get("components", [])} - seen
+    while level:
+        seen |= level
+        rows = await lock_projections(session, company_id, level)
+        following: set[str] = set()
+        for cid in level:
+            row = rows.get(cid)
+            if row is None or row.entity_type != "item":
+                missing.append(cid)
+                continue
+            graph[cid] = row.state
+            following.update(c.get("item_id") for c in (row.state.get("recipe") or {}).get("components", []))
+        level = {c for c in following if c} - seen
     return graph, missing
 
 
@@ -188,11 +290,14 @@ async def set_item_recipe(
 
     Validates components, rolls the standard cost up from current component costs,
     and emits ``item.recipe.set``. Hard errors (422) on self-reference, unknown
-    component SKUs, and recipe cycles — per GDR, validation lives at the function level.
+    component SKUs, items that are not stock, and recipe cycles — per GDR, validation lives
+    at the function level. The company lock is taken before anything is read, so the items
+    the recipe names are checked and saved in one step that a Delete cannot come between.
     """
-    item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+    item = (await lock_projections(session, company_id, [item_id])).get(item_id)
     if item is None or item.entity_type != "item":
         raise HTTPException(status_code=404, detail="Item not found")
+    movements.require_stock(item.state or {}, item_id)
 
     recipe = payload.model_dump()
     if any(c.get("item_id") == item_id for c in recipe["components"]):
@@ -209,6 +314,7 @@ async def set_item_recipe(
     # The component unit is not free text — it is the component item's own sell unit.
     for comp in recipe["components"]:
         cstate = graph.get(comp.get("item_id")) or {}
+        movements.require_stock(cstate, comp.get("item_id"))
         comp["unit"] = cstate.get("sell_by") or cstate.get("unit") or comp.get("unit")
         comp["sku"] = cstate.get("sku") or comp.get("sku")
 
@@ -352,36 +458,30 @@ async def build_item(
     item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
     if item is None or item.entity_type != "item":
         raise HTTPException(status_code=404, detail="Item not found")
+    movements.require_stock(item.state or {}, item_id)
     if not is_manufacturable(item.state):
         raise HTTPException(status_code=422, detail="Item has no recipe to build from")
     if str((item.state or {}).get("status") or "").lower() == "draft":
         raise HTTPException(status_code=422, detail="Cannot build into a draft item; make it available first.")
-    if payload.quantity <= 0:
-        raise HTTPException(status_code=422, detail="Build quantity must be greater than zero")
-    inputs, outputs = expand_recipe(item.state, payload.quantity)
-    order_id = f"mfg:{uuid.uuid4()}"
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-        event_type="mfg.order.created",
-        data={
+    key = payload.idempotency_key or str(uuid.uuid4())
+    # The run id follows the key, so a retried build finds the run it made instead of a second one.
+    order_id = f"mfg:{uuid.uuid5(movements.MFG_LOT_NS, f'build:{key}')}"
+    entry = await _emit_order_created(
+        session, company_id, order_id,
+        {
             "description": f"Build {payload.quantity:g} x {item.state.get('sku', '')}",
-            "order_type": "assembly", "inputs": inputs, "expected_outputs": outputs,
+            "order_type": "assembly", "inputs": expand_recipe(item.state, payload.quantity),
             # The product this run makes — links the run to its product Manufacturing tab.
             "output_item_id": item_id,
         },
-        actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        quantity=payload.quantity, request={"build": item_id, **payload.model_dump(exclude={"idempotency_key"})},
+        actor_id=user.id, idempotency_key=key,
     )
     if payload.complete:
-        states = await _all_item_states(session, company_id)
-        run = await _get_order(session, company_id, order_id)
-        await _lock_code_namespace_for_completion(session, company_id)
-        await _issue_and_record(session, company_id, user, order_id, run.state.get("inputs", []), states)
-        await _receive(session, company_id, user, order_id, run.state, payload.quantity, states)
-        run = await _get_order(session, company_id, order_id)
-        await _close_run(session, company_id, user, order_id, run.state, states)
+        await movements.complete(session, company_id, user.id, order_id, {}, f"build:{key}",
+                                 at=datetime.now(timezone.utc).isoformat(), quantity=payload.quantity)
     await session.commit()
-    return {"event_id": entry.id, "id": order_id}
+    return {"event_id": entry.id, "id": entry.entity_id}
 
 
 async def _all_item_states(session: AsyncSession, company_id) -> dict[str, dict]:
@@ -622,33 +722,30 @@ class BulkBuildBody(BaseModel):
 
 
 async def _emit_work_order(session, company_id, actor_id, item_id: str, item_state: dict, qty: float,
-                           source: dict | None = None) -> str:
+                           source: dict | None = None, *, key: str | None = None,
+                           request: dict | None = None) -> str:
     """Create a work order (mfg_order) to build qty of item_id, optionally linked 1:1 to a source
-    order line via source_doc_* fields. Returns the new order id; the caller commits."""
-    inputs, outputs = expand_recipe(item_state, qty)
-    order_id = f"mfg:{uuid.uuid4()}"
+    order line via source_doc_* fields. With ``key`` the run's id follows the key and ``request``
+    identifies it, so the same request names the same run. Returns the order id; the caller commits."""
+    order_id = f"mfg:{uuid.uuid5(movements.MFG_LOT_NS, key) if key else uuid.uuid4()}"
     data = {
         "description": f"Build {qty:g} x {item_state.get('sku', '')}",
-        "order_type": "assembly", "inputs": inputs, "expected_outputs": outputs,
-        "output_item_id": item_id,
+        "order_type": "assembly", "inputs": expand_recipe(item_state, qty), "output_item_id": item_id,
     }
     if source:
         data.update({k: v for k, v in source.items() if v not in (None, "")})
-    await emit_event(
-        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-        event_type="mfg.order.created", data=data, actor_id=actor_id, location_id=None,
-        source="api", idempotency_key=str(uuid.uuid4()), metadata_={})
+    await _emit_order_created(session, company_id, order_id, data, quantity=qty, request=request or data,
+                              actor_id=actor_id, idempotency_key=key)
     return order_id
 
 
-async def _complete_work_order_now(session, company_id, user, order_id: str, qty: float, states: dict) -> None:
-    """One-tap: issue all components, receive the output and close the work order."""
-    run = await _get_order(session, company_id, order_id)
-    await _lock_code_namespace_for_completion(session, company_id)
-    await _issue_and_record(session, company_id, user, order_id, run.state.get("inputs", []), states)
-    await _receive(session, company_id, user, order_id, run.state, qty, states)
-    run = await _get_order(session, company_id, order_id)
-    await _close_run(session, company_id, user, order_id, run.state, states)
+def _reserve(row: dict, qty: float) -> None:
+    """Count ``qty`` more in progress for a Demand Planning row, as the board would show once
+    a run for it exists: what is left to make, and each document's FIFO-pegged shortfall."""
+    row["in_progress"] += qty
+    supply = row["on_hand"] + row["in_progress"]
+    row["to_make"] = max(0.0, row["demand"] - supply)
+    _peg(supply, row["docs"])
 
 
 def _line_source(doc: dict) -> dict:
@@ -668,6 +765,7 @@ class WorkOrderLineRef(BaseModel):
 class MakeWorkOrdersBody(BaseModel):
     lines: list[WorkOrderLineRef] = Field(default_factory=list)
     complete: bool = False  # one-tap: also issue components, receive output and close each work order
+    idempotency_key: str | None = None
 
 
 @router.post("/to-make/make")
@@ -681,29 +779,58 @@ async def make_work_orders(
     """Create one work order per selected demand line, linked 1:1 to its source order, for the
     line's net shortfall (the FIFO-pegged uncovered quantity). With ``complete=true`` each is also
     issued, received and closed. This is Demand Planning's 'Make selected' / 'Make & complete'."""
-    if not payload.lines:
+    out = await make_selected(session, company_id, user.id, payload.lines, payload.complete,
+                              payload.idempotency_key or uuid.uuid4().hex)
+    await session.commit()
+    return out
+
+
+async def make_selected(session: AsyncSession, company_id, user_id, lines: list[WorkOrderLineRef],
+                        complete: bool, operation: str) -> dict:
+    """Make selected: the shortfall is judged under the company lock, from demand and supply
+    as they stand once any other Make selected has finished, and each run made counts as
+    supply for the lines after it. Each selected line makes at most one run per action
+    ``operation``: the same action sent again returns the runs it made. The caller commits."""
+    selected = list(dict.fromkeys((ln.item_id, ln.doc_id) for ln in lines))
+    if not selected:
         return {"created": [], "skipped": []}
+    await lock_company(session, company_id)
+    at = datetime.now(timezone.utc).isoformat()
     rows = {r["item_id"]: r for r in await _compute_to_make(session, company_id)}
     states = await _all_item_states(session, company_id)
     created: list[dict] = []
     skipped: list[dict] = []
-    for ln in payload.lines:
-        row = rows.get(ln.item_id)
-        st = states.get(ln.item_id)
-        if not row or not is_manufacturable(st):
-            skipped.append({"item_id": ln.item_id, "doc_id": ln.doc_id, "reason": "not manufacturable"})
+    # Each product's orders are made in the order supply is pegged to them, soonest due
+    # first, and stock last, so each run covers the order it is made for.
+    first = {item_id: n for n, (item_id, _) in reversed(list(enumerate(selected)))}
+    due = {(r["item_id"], d["doc_id"]): d.get("due") for r in rows.values() for d in r["docs"]}
+
+    def pegged(line):
+        item_id, doc_id = line
+        return first[item_id], not doc_id, due.get(line) is None, due.get(line) or ""
+    for item_id, doc_id in sorted(selected, key=pegged):
+        key = mfg_idem_key(doc_id, item_id, operation)
+        request = {"make": item_id, "doc": doc_id, "complete": complete}
+        made = await _created_before(session, company_id, f"mfg:created:{key}", movements._fingerprint(request))
+        if made is not None:
+            qty = float(made.data["expected_outputs"][0]["quantity"])
+            created.append({"item_id": item_id, "doc_id": doc_id, "run_id": made.entity_id, "quantity": qty})
             continue
-        doc = next((d for d in row.get("docs", []) if d.get("doc_id") == ln.doc_id), None) if ln.doc_id else None
+        row, st = rows.get(item_id), states.get(item_id)
+        if not row or not is_manufacturable(st):
+            skipped.append({"item_id": item_id, "doc_id": doc_id, "reason": "not manufacturable"})
+            continue
+        doc = next((d for d in row["docs"] if d.get("doc_id") == doc_id), None) if doc_id else None
         qty = float((doc.get("shortfall") if doc else row.get("to_make")) or 0)
         if qty <= 0:
-            skipped.append({"item_id": ln.item_id, "doc_id": ln.doc_id, "reason": "nothing to make"})
+            skipped.append({"item_id": item_id, "doc_id": doc_id, "reason": "nothing to make"})
             continue
-        order_id = await _emit_work_order(session, company_id, user.id, ln.item_id, st, qty,
-                                          _line_source(doc) if doc else None)
-        if payload.complete:
-            await _complete_work_order_now(session, company_id, user, order_id, qty, states)
-        created.append({"item_id": ln.item_id, "doc_id": ln.doc_id, "run_id": order_id, "quantity": qty})
-    await session.commit()
+        order_id = await _emit_work_order(session, company_id, user_id, item_id, st, qty,
+                                          _line_source(doc) if doc else None, key=key, request=request)
+        if complete:
+            await movements.complete(session, company_id, user_id, order_id, {}, key, at=at, quantity=qty)
+        _reserve(row, qty)
+        created.append({"item_id": item_id, "doc_id": doc_id, "run_id": order_id, "quantity": qty})
     return {"created": created, "skipped": skipped}
 
 
@@ -712,13 +839,14 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
     """doc_finalize_hook: when the company has work-order auto-creation enabled, create a linked work
     order for each manufacturable line on the just-finalized order (ordered qty minus on-hand). Runs
     inside the finalize transaction (the caller commits); failures are logged and non-fatal."""
-    settings = await _mfg_settings(session, company_id)
+    settings = await movements.mfg_settings(session, company_id)
     if not settings.get("auto_create_work_orders"):
         return
     auto_complete = bool(settings.get("auto_complete_work_orders"))
-    user = await session.get(User, user_id) if auto_complete else None
+    at = datetime.now(timezone.utc).isoformat()
     completed: list[str] = []
     failed: list[str] = []
+    not_created: list[str] = []
     states = await _all_item_states(session, company_id)
     # Idempotent across re-finalize: skip items already linked to an open work order for this order.
     existing = (await session.execute(
@@ -742,7 +870,12 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
         make_qty = max(0.0, qty - float((st or {}).get("quantity") or 0))
         if make_qty <= 0:
             continue
-        order_id = await _emit_work_order(session, company_id, user_id, item_id, st, make_qty, source)
+        try:
+            order_id = await _emit_work_order(session, company_id, user_id, item_id, st, make_qty, source)
+        except HTTPException as exc:
+            # The recipe names something that is no longer an item: nothing was written.
+            not_created.append(f"{st.get('sku') or item_id} ({failure_reason(exc)})")
+            continue
         linked.add(item_id)
         if auto_complete:
             # Complete the planned run on the spot, inside a savepoint so a mid-completion failure
@@ -750,33 +883,43 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
             # aborts the loop nor escapes the hook into the finalize commit.
             try:
                 async with session.begin_nested():
-                    await _complete_work_order_now(session, company_id, user, order_id, make_qty, states)
+                    await movements.complete(session, company_id, user_id, order_id, {}, "finalize", at=at,
+                                             quantity=make_qty)
                 completed.append(order_id)
             except Exception as exc:
                 failed.append(order_id)
                 log.warning("auto-complete failed for %s: %s", order_id, exc)
 
-    if auto_complete and (completed or failed):
-        # Disclose the automatic action (GDR 2d), itself savepoint-guarded so a failed notification
-        # flush/prune cannot abort the invoice commit.
-        try:
-            async with session.begin_nested():
-                if failed:
-                    await notif_svc.create(
-                        session, company_id, category="manufacturing",
-                        title="Work orders need completing",
-                        body=(f"{len(failed)} work order(s) could not auto-complete on invoice posting "
-                              f"and are left planned: {', '.join(failed)}. Complete them manually."),
-                        priority="high", action_url="/manufacturing/production?status=planned")
-                else:
-                    await notif_svc.create(
-                        session, company_id, category="manufacturing",
-                        title="Work orders auto-completed",
-                        body=(f"{len(completed)} work order(s) were completed automatically on invoice "
-                              f"posting: {', '.join(completed)}."),
-                        priority="medium", action_url="/manufacturing/production")
-        except Exception as exc:
-            log.warning("auto-complete notification failed: %s", exc)
+    if not (not_created or (auto_complete and (completed or failed))):
+        return
+    # Disclose the automatic action (GDR 2d), itself savepoint-guarded so a failed notification
+    # flush/prune cannot abort the invoice commit.
+    try:
+        async with session.begin_nested():
+            if not_created:
+                await notif_svc.create(
+                    session, company_id, category="manufacturing",
+                    title="Work orders not created",
+                    body=(f"{len(not_created)} work order(s) could not be created on invoice posting because "
+                          f"the recipe names a missing item: {', '.join(not_created)}. Fix the recipe, "
+                          f"then create the work order from the To-Make board."),
+                    priority="high", action_url="/manufacturing/to-make")
+            if auto_complete and failed:
+                await notif_svc.create(
+                    session, company_id, category="manufacturing",
+                    title="Work orders need completing",
+                    body=(f"{len(failed)} work order(s) could not auto-complete on invoice posting "
+                          f"and are left planned: {', '.join(failed)}. Complete them manually."),
+                    priority="high", action_url="/manufacturing/production?status=planned")
+            elif auto_complete and completed:
+                await notif_svc.create(
+                    session, company_id, category="manufacturing",
+                    title="Work orders auto-completed",
+                    body=(f"{len(completed)} work order(s) were completed automatically on invoice "
+                          f"posting: {', '.join(completed)}."),
+                    priority="medium", action_url="/manufacturing/production")
+    except Exception as exc:
+        log.warning("work order notification failed: %s", exc)
 
 
 @router.post("/to-make/requirements")
@@ -824,10 +967,10 @@ async def bulk_requirements(
 class BulkRunActionBody(BaseModel):
     run_ids: list[str] = Field(default_factory=list)
     action: str = ""
+    idempotency_key: str | None = None
 
 
-_BULK_RUN_ACTIONS = {"start", "issue", "complete", "hold", "resume", "cancel"}
-_CLOSED_RUN_STATUSES = {"completed", "cancelled"}
+_BULK_RUN_ACTIONS = {"start", "issue", "return", "complete", "hold", "resume", "cancel"}
 
 
 @router.post("/bulk-action")
@@ -838,61 +981,50 @@ async def bulk_run_action(
     _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Apply a lifecycle action (start/issue/complete/hold/resume/cancel) to many runs at once.
+    """Apply a lifecycle action (start/issue/return/complete/hold/resume/cancel) to many runs at once.
     Runs in a state that does not permit the action are skipped (not a hard error)."""
     action = payload.action
     if action not in _BULK_RUN_ACTIONS:
         raise HTTPException(status_code=422, detail=f"Unknown bulk action: {action}")
-    states = await _all_item_states(session, company_id) if action in ("issue", "complete") else {}
-    require_issued = (action == "complete" and bool(
-        (await _mfg_settings(session, company_id)).get("require_issued_before_complete")))
-
-    async def _emit(run_id: str, event_type: str, data: dict) -> None:
-        await emit_event(session, company_id=company_id, entity_id=run_id, entity_type="mfg_order",
-                         event_type=event_type, data=data, actor_id=user.id, location_id=None,
-                         source="api", idempotency_key=str(uuid.uuid4()), metadata_={})
+    at = datetime.now(timezone.utc).isoformat()
+    # One key for this request: each run's movements derive their own keys from it and the run id,
+    # so sending the same request again changes nothing it already changed.
+    rk = payload.idempotency_key or uuid.uuid4().hex
 
     done: list[str] = []
     skipped: list[dict] = []
     for run_id in payload.run_ids:
         try:
-            row = await _get_order(session, company_id, run_id)
+            await _get_order(session, company_id, run_id)
         except HTTPException:
             skipped.append({"id": run_id, "reason": "not found"})
             continue
-        st = row.state or {}
-        status = (st.get("status") or "").lower()
         try:
-            if action in ("start", "hold", "cancel", "issue", "complete") and status in _CLOSED_RUN_STATUSES:
-                raise ValueError("run is already closed")
-            if action == "start":
-                await _emit(run_id, "mfg.order.started", {"started_by": str(user.id)})
-            elif action == "hold":
-                await _emit(run_id, "mfg.order.on_hold", {"reason": None})
-            elif action == "resume":
-                if status != "on_hold":
-                    raise ValueError("only an on-hold run can be resumed")
-                await _emit(run_id, "mfg.order.resumed", {"resumed_by": str(user.id)})
-            elif action == "cancel":
-                await _emit(run_id, "mfg.order.cancelled", {})
-            elif action == "issue":
-                await _issue_and_record(session, company_id, user, run_id, _outstanding_inputs(st), states)
-            elif action == "complete":
-                outstanding = _outstanding_inputs(st)
-                if outstanding:
-                    if require_issued:
-                        raise ValueError("components must be issued before completing (required by settings)")
-                    await _lock_code_namespace_for_completion(session, company_id)
-                    await _issue_and_record(session, company_id, user, run_id, outstanding, states)
-                    st = (await _get_order(session, company_id, run_id)).state
-                qty = _outstanding_output(st)
-                if qty > 0:
-                    await _receive(session, company_id, user, run_id, st, qty, states)
-                    st = (await _get_order(session, company_id, run_id)).state
-                await _close_run(session, company_id, user, run_id, st, states)
+            # Each run commits or rolls back on its own, so a run that cannot take the action
+            # leaves nothing half done and the others still go through.
+            async with session.begin_nested():
+                if action == "start":
+                    await movements.transition(session, company_id, user.id, run_id, "start",
+                                               {"started_by": str(user.id)}, rk, at=at)
+                elif action == "hold":
+                    await movements.transition(session, company_id, user.id, run_id, "hold", {"reason": None}, rk, at=at)
+                elif action == "resume":
+                    await movements.transition(session, company_id, user.id, run_id, "resume",
+                                               {"resumed_by": str(user.id)}, rk, at=at)
+                elif action == "cancel":
+                    await movements.cancel(session, company_id, user.id, run_id, None, rk, at=at)
+                elif action == "issue":
+                    await movements.issue(session, company_id, user.id, run_id, None, rk, at=at)
+                elif action == "return":
+                    await movements.return_materials(session, company_id, user.id, run_id, None, rk, at=at)
+                elif action == "complete":
+                    await movements.complete(session, company_id, user.id, run_id, {}, rk, at=at)
             done.append(run_id)
-        except ValueError as e:
-            skipped.append({"id": run_id, "reason": str(e)})
+        except HTTPException as e:
+            # A refusal keeps its message_key and params so the UI can say why in the user's language.
+            detail = e.detail if isinstance(e.detail, dict) else {"message": str(e.detail)}
+            skipped.append({"id": run_id, "reason": detail.get("message"),
+                            **{k: v for k, v in detail.items() if k in ("message_key", "params")}})
     await session.commit()
     return {"done": done, "skipped": skipped}
 
@@ -938,7 +1070,7 @@ async def item_manufacturing_hub(
                     "due": st.get("due_date") or st.get("promised_date") or None,
                 })
 
-    # Runs that make this product, newest first, with input SKUs resolved.
+    # Runs that make this product, newest first, with input and received lot SKUs resolved.
     run_rows = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id, Projection.entity_type == "mfg_order",
@@ -954,7 +1086,8 @@ async def item_manufacturing_hub(
              "name": (states.get(i.get("item_id")) or {}).get("name")}
             for i in rs.get("inputs", [])
         ]
-        runs.append({**rs, "id": r.entity_id, "inputs": inputs,
+        receipts = [{**x, "sku": (states.get(x.get("lot_item_id")) or {}).get("sku")} for x in rs.get("receipts") or []]
+        runs.append({**rs, "id": r.entity_id, "inputs": inputs, "receipts": receipts,
                      "created_at": r.created_at.isoformat() if r.created_at else None})
     runs.sort(key=lambda x: x.get("created_at") or "", reverse=True)
 
@@ -981,6 +1114,40 @@ async def import_manufacturing_template():
     )
 
 
+# What an imported run may say about itself: what it makes and from what, and its planning
+# fields. Progress, status and value come only from the run's own movements.
+_IMPORTED_FIELDS = ("planned_start", "priority", "source_doc_id", "source_doc_number",
+                    "source_doc_type", "source_contact_name", "source_due")
+# Listing outputs is refused on import as on every other door: a run's output is its product.
+_REFUSED_ON_IMPORT = ("expected_outputs", "outputs")
+
+
+def _imported_order(data: dict) -> tuple[dict, float]:
+    """An imported run's creation data and quantity, held to the same model as POST /manufacturing."""
+    order = MfgOrderCreate(**{k: v for k, v in data.items()
+                              if k in MfgOrderCreate.model_fields or k in _REFUSED_ON_IMPORT}
+                           ).model_dump(exclude_none=True, exclude={"idempotency_key"})
+    quantity = order.pop("quantity")
+    order["inputs"] = merge_inputs(order.get("inputs", []))
+    return {**order, **{k: data[k] for k in _IMPORTED_FIELDS if data.get(k) not in (None, "")}}, quantity
+
+
+async def _imported_before(session: AsyncSession, company_id, rec, fingerprint: str) -> bool:
+    """Whether this record is already imported: its key made this same run (the same key with
+    anything different is refused), or an older release imported this exact record under it.
+    Any other record whose id is already taken is refused, never skipped."""
+    if await _created_before(session, company_id, f"mfg:created:{rec.idempotency_key}", fingerprint) is not None:
+        return True
+    older = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
+    if older is not None and older.event_type == "mfg.order.created" and older.entity_id == rec.entity_id \
+            and older.data == rec.data:
+        return True
+    if await session.get(Projection, {"company_id": company_id, "entity_id": rec.entity_id}) is not None:
+        raise HTTPException(status_code=409, detail="A record with this id already exists and differs from this "
+                                                    "one; it was not imported again.")
+    return False
+
+
 @router.post("/import/batch", response_model=BatchImportResult)
 async def batch_import_manufacturing(
     body: MfgBatchImportRequest,
@@ -990,25 +1157,16 @@ async def batch_import_manufacturing(
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    from sqlalchemy import select as _select
-    from celerp.models.ledger import LedgerEntry
-
-    keys = [r.idempotency_key for r in body.records]
-    existing_keys = set((await session.execute(
-        _select(LedgerEntry.idempotency_key).where(
-            LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key.in_(keys)
-        )
-    )).scalars().all())
-
-    create_entity_ids = [r.entity_id for r in body.records if r.event_type == "mfg.order.created"]
-    existing_entities: set[str] = set()
-    if create_entity_ids:
-        existing_entities = set((await session.execute(
-            _select(Projection.entity_id).where(
-                Projection.company_id == company_id,
-                Projection.entity_id.in_(create_entity_ids),
-            )
-        )).scalars().all())
+    # The company, then every item any record names in one sorted pass, before the first
+    # check or write: the order every other writer takes them in.
+    await lock_company(session, company_id)
+    named: set[str] = set()
+    for rec in body.records:
+        try:
+            named.update(_order_item_ids(rec.data))
+        except HTTPException:
+            pass  # refused with its reason when the record itself is written
+    locked = await lock_projections(session, company_id, named)
 
     created = skipped = 0
     errors: list[str] = []
@@ -1018,45 +1176,24 @@ async def batch_import_manufacturing(
                 errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
             skipped += 1
             continue
-        if rec.idempotency_key in existing_keys:
-            skipped += 1
-            continue
-        if rec.event_type == "mfg.order.created" and rec.entity_id in existing_entities:
-            skipped += 1
-            continue
         try:
-            await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=rec.entity_id,
-                entity_type="mfg_order",
-                event_type=rec.event_type,
-                data=rec.data,
-                actor_id=user.id,
-                location_id=None,
-                source=rec.source,
-                idempotency_key=rec.idempotency_key,
-                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
+            order, quantity = _imported_order(rec.data)
+            request = {"import": rec.entity_id, **order, "quantity": quantity}
+            if await _imported_before(session, company_id, rec, movements._fingerprint(request)):
+                skipped += 1
+                continue
+            await _emit_order_created(
+                session, company_id, rec.entity_id, order, quantity=quantity, request=request,
+                actor_id=user.id, source=rec.source, idempotency_key=rec.idempotency_key,
+                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {}, locked=locked,
             )
-            existing_keys.add(rec.idempotency_key)
-            if rec.event_type == "mfg.order.created":
-                existing_entities.add(rec.entity_id)
             created += 1
         except Exception as exc:
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {exc}")
+                errors.append(f"{rec.entity_id}: {failure_reason(exc)}")
 
     await session.commit()
     return BatchImportResult(created=created, skipped=skipped, errors=errors)
-
-
-# ---------------------------------------------------------------------------
-# Manufacturing settings (stored under company.settings["manufacturing"])
-# ---------------------------------------------------------------------------
-
-async def _mfg_settings(session: AsyncSession, company_id) -> dict:
-    company = await session.get(Company, company_id)
-    return (company.settings or {}).get("manufacturing", {}) if company else {}
 
 
 # ---------------------------------------------------------------------------
@@ -1116,6 +1253,23 @@ async def backfill_default_work_center_hook(*, session: AsyncSession) -> None:
         if await migrations.is_company_migration_staged(session, company_id):
             continue
         await seed_default_work_center(session, company_id)
+
+
+async def settle_open_runs_hook(*, session: AsyncSession) -> None:
+    """on_modules_ready: give every open run the work in progress its history proves
+    (movements.settle_open_runs). Modules load by name, so Accounting has placed each
+    company's stock first; a company whose stock is not placed yet waits for a later start.
+    A company staged for a data migration is left alone, and one that fails is logged and
+    retried on the next start."""
+    company_ids = (await session.execute(select(Company.id).order_by(Company.id))).scalars().all()
+    for company_id in company_ids:
+        if await migrations.is_company_migration_staged(session, company_id):
+            continue
+        try:
+            await movements.settle_open_runs(session, company_id)
+        except Exception:
+            log.exception("Open production runs of company %s were not settled; retrying on the next start",
+                          company_id)
 
 
 class WorkCenterCreate(BaseModel):
@@ -1317,59 +1471,12 @@ async def delete_work_center(
 
 
 # ---------------------------------------------------------------------------
-# Production-run execution (issue components / receive finished goods)
+# Produced lots
 # ---------------------------------------------------------------------------
 
 # Item statuses whose stock does not count toward a product's on-hand:
 # sold/consumed/etc., plus draft (created but not yet committed to stock).
 _INACTIVE_ITEM_STATUSES = frozenset({"sold", "memo_out", "archived", "merged", "expired", "draft", "disposed"})
-
-
-async def _reject_draft_item(session: AsyncSession, company_id, item_id: str, action: str) -> dict:
-    """A draft isn't stock yet, so it cannot be consumed or produced into. Returns the
-    item's state so the caller can reuse it instead of fetching twice."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
-    if row is None or row.entity_type != "item":
-        raise HTTPException(status_code=404, detail=f"Item not found: {item_id}")
-    if str((row.state or {}).get("status") or "").lower() == "draft":
-        raise HTTPException(status_code=422, detail=f"Cannot {action} a draft item ({item_id}); make it available first.")
-    return row.state
-
-
-def _component_unit_cost(state: dict | None) -> float:
-    """Standard unit cost of a component: cost_price if set, else cost_total / quantity."""
-    if not state:
-        return 0.0
-    cp = state.get("cost_price")
-    try:
-        if cp is not None:
-            return float(cp)
-        total = state.get("cost_total")
-        qty = float(state.get("quantity") or 0)
-        if total is not None and qty > 0:
-            return float(total) / qty
-    except (TypeError, ValueError):
-        return 0.0
-    return 0.0
-
-
-def _run_input_cost(run_state: dict, states: dict[str, dict]) -> float:
-    """Actual input cost of a run = sum(quantity issued x component unit cost), falling back to the
-    planned required quantity for an input nothing has been issued against yet so a bare run still
-    costs something. Feeds both the produced lot cost and the completion JE input relief, so the
-    actuals propagate from this one edit."""
-    total = 0.0
-    for inp in run_state.get("inputs", []):
-        unit = _component_unit_cost(states.get(inp.get("item_id")))
-        issued = float(inp.get("issued_qty") or 0)
-        qty = issued if issued > 0 else float(inp.get("quantity") or 0)
-        total += qty * unit
-    return round_basis(total)
-
-
-# Namespace for deterministic produced-lot ids: a receipt re-submitted with the same idempotency
-# key resolves to the same lot id, so the deduped event stream never mints a phantom second lot.
-_MFG_LOT_NS = uuid.UUID("6f1d0c2a-7b3e-4a9c-8d5f-2e0a1b4c6d8e")
 
 
 def _lot_qty_by_parent(states: dict[str, dict]) -> dict[str, float]:
@@ -1380,194 +1487,6 @@ def _lot_qty_by_parent(states: dict[str, dict]) -> dict[str, float]:
         if pid and str(st.get("status") or "available") not in _INACTIVE_ITEM_STATUSES:
             out[pid] = out.get(pid, 0.0) + float(st.get("quantity") or 0)
     return out
-
-
-async def _consume_components(session: AsyncSession, company_id, user, order_id: str,
-                              items: list[dict]) -> list[dict]:
-    """Emit item.consumed for each issued component (the projection floors quantity at zero, which
-    keeps made-to-order producible even when a component is briefly short). Returns what was issued."""
-    consumed: list[dict] = []
-    for it in items:
-        item_id = it.get("item_id")
-        qty = float(it.get("quantity") or 0)
-        if not item_id or qty <= 0:
-            continue
-        await _reject_draft_item(session, company_id, item_id, "consume")
-        await emit_event(
-            session, company_id=company_id, entity_id=item_id, entity_type="item",
-            event_type="item.consumed", data={"quantity_consumed": qty}, actor_id=user.id,
-            location_id=None, source="api", idempotency_key=str(uuid.uuid4()),
-            metadata_={"manufacturing_order_id": order_id},
-        )
-        consumed.append({"item_id": item_id, "quantity": qty})
-    return consumed
-
-
-async def _lock_code_namespace_for_completion(session: AsyncSession, company_id) -> None:
-    """Take the company code-namespace lock BEFORE the first component event of a completion.
-
-    `_receive` mints the output lot's barcode under this same company lock
-    (celerp_inventory.services.allocate_internal_codes), and a concurrent barcode edit takes the
-    company lock first and the item-projection lock second. Claiming the company lock up front here
-    makes completion agree on that order, so the (company row, component projection row) pair can
-    never form an AB/BA cycle between the two flows. The lock itself is FOR NO KEY UPDATE, so it also
-    does not deadlock against the KEY SHARE this transaction already holds on the company from its own
-    ledger inserts. Issue-only and receive-only flows hold a single lock and never form the cycle, so
-    they do not call this."""
-    from celerp_inventory.services import lock_item_code_namespace
-    await lock_item_code_namespace(session, company_id)
-
-
-async def _issue_and_record(session: AsyncSession, company_id, user, order_id: str,
-                            items: list[dict], states: dict[str, dict]) -> list[dict]:
-    """Consume the given components and record the issue on the run (auto-advances to In Progress)."""
-    consumed = await _consume_components(session, company_id, user, order_id, items)
-    if consumed:
-        await emit_event(
-            session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-            event_type="mfg.order.issued", data={"items": consumed, "issued_by": str(user.id)},
-            actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
-        )
-    return consumed
-
-
-async def _receive(session: AsyncSession, company_id, user, order_id: str, run_state: dict,
-                   qty: float, states: dict[str, dict], idempotency_key: str | None = None) -> str | None:
-    """Restock `qty` of the run's output as a new discrete lot and record the receipt on the run.
-
-    Every receipt mints its own lot under the product, exactly like a received purchase, so a
-    fungible product carries a true weighted-average cost across batches. The lot inherits the
-    product's splittability (so a fungible product's lot stays partially sellable) and takes a
-    provisional unit cost of issued-to-date input over received-to-date quantity; completion re-costs
-    it to the final actual output cost. A key re-submitted with the same request resolves to the same
-    lot id and deduped events, so a retry never mints a phantom second lot. Returns the lot id
-    (or None if the run has no resolvable output product).
-    """
-    rk = idempotency_key or uuid.uuid4().hex
-    out_id = run_state.get("output_item_id")
-    product = states.get(out_id) if out_id else None
-    if out_id and product is None:
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": out_id})
-        product = row.state if row is not None and row.entity_type == "item" else None
-
-    lot_id: str | None = None
-    if out_id and product is not None:
-        if str(product.get("status") or "").lower() == "draft":
-            raise HTTPException(status_code=422, detail=f"Cannot produce into a draft item ({out_id}); make it available first.")
-        loc = product.get("location_id")
-        received_after = float(run_state.get("received_qty") or 0) + qty
-        unit_cost = _run_input_cost(run_state, states) / (received_after or 1)
-        lot_id = f"item:{uuid.uuid5(_MFG_LOT_NS, f'{order_id}:{rk}')}"
-        # A produced lot is a new physical parcel: give it a fresh barcode from the
-        # inventory code service (under its code-namespace lock) so it is scannable
-        # and the one-barcode-per-item contract holds for manufactured stock too.
-        from celerp_inventory.services import allocate_internal_codes
-        lot_barcode = (await allocate_internal_codes(session, company_id))[0]
-        await emit_event(
-            session, company_id=company_id, entity_id=lot_id, entity_type="item",
-            event_type="item.created",
-            data={
-                "sku": product.get("sku"), "name": product.get("name"),
-                "sell_by": product.get("sell_by"), "category": product.get("category"),
-                "inventory_type": product.get("inventory_type"),
-                "allow_splitting": splitting_allowed(product),
-                "quantity": 0, "location_id": loc, "parent_item_id": out_id, "lot": True,
-                "barcode": lot_barcode,
-                "manufacturing_order_id": order_id, "cost_total": round_basis(unit_cost * qty),
-            },
-            actor_id=user.id, location_id=loc, source="api",
-            idempotency_key=f"mfg:{order_id}:receive:{rk}:created",
-            metadata_={"manufacturing_order_id": order_id},
-        )
-        await emit_event(
-            session, company_id=company_id, entity_id=lot_id, entity_type="item",
-            event_type="item.produced", data={"quantity_produced": qty}, actor_id=user.id,
-            location_id=loc, source="api",
-            idempotency_key=f"mfg:{order_id}:receive:{rk}:produced",
-            metadata_={"manufacturing_order_id": order_id},
-        )
-
-    await emit_event(
-        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-        event_type="mfg.order.received",
-        data={"quantity": qty, "lot_item_id": lot_id, "received_by": str(user.id)},
-        actor_id=user.id, location_id=None, source="api",
-        idempotency_key=f"mfg:{order_id}:receive:{rk}:received", metadata_={},
-    )
-    return lot_id
-
-
-async def _close_run(session: AsyncSession, company_id, user, order_id: str, run_state: dict,
-                     states: dict[str, dict], payload: "CompleteBody | None" = None) -> None:
-    """Close a run: record the actual yield, post the completion journal entry, and re-cost the run's
-    lots to the final actual output cost so they reconcile exactly against that entry.
-
-    Idempotent: the completion event, its journal entry, and every lot re-cost carry deterministic
-    keys derived from the order id, so closing the same run twice dedups rather than double posting."""
-    input_cost = _run_input_cost(run_state, states)
-    waste = None
-    waste_cost = 0.0
-    if payload is not None and payload.waste_quantity is not None:
-        waste = {"quantity": payload.waste_quantity, "unit": payload.waste_unit, "reason": payload.waste_reason}
-        total_in = sum(float(i.get("quantity", 0) or 0) for i in run_state.get("inputs", [])) or 0.0
-        if payload.waste_quantity and total_in > 0:
-            # Clamp so waste can never exceed the input cost and drive output cost negative.
-            waste_cost = min(input_cost * (float(payload.waste_quantity) / total_in), input_cost)
-    if payload is not None and payload.actual_outputs is not None:
-        actual_outputs = [o.model_dump() for o in payload.actual_outputs]
-    else:
-        # No explicit yield given: record what was actually received as the actual output.
-        received = float(run_state.get("received_qty") or 0)
-        expected = (run_state.get("expected_outputs") or [{}])[0]
-        actual_outputs = [{**expected, "quantity": received}] if expected else []
-    await emit_event(
-        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-        event_type="mfg.order.completed",
-        data={
-            "completed_by": str(user.id),
-            "actual_outputs": actual_outputs,
-            "waste": waste,
-            "labor_hours": payload.labor_hours if payload is not None else None,
-        },
-        actor_id=user.id, location_id=None, source="api",
-        idempotency_key=f"mfg:{order_id}:completed",
-        metadata_={},
-    )
-    await auto_je.create_for_mfg_completed(
-        session, company_id=company_id, user_id=user.id, order_id=order_id,
-        input_cost=input_cost, waste_cost=waste_cost,
-    )
-    await _recost_run_lots(session, company_id, user, order_id, run_state, input_cost - waste_cost)
-
-
-async def _recost_run_lots(session: AsyncSession, company_id, user, order_id: str, run_state: dict,
-                           output_cost: float) -> None:
-    """Restate every lot this run produced to a shared unit cost of output_cost / total received, so
-    the sum of the lots' cost equals the completion entry's output leg under single or multiple
-    receipts and with or without waste. Emits one deterministic item.cost_adjusted per lot."""
-    total_received = float(run_state.get("received_qty") or 0)
-    if total_received <= 0:
-        return  # nothing received: no lot to re-cost, and never divide by a zero yield
-    unit_cost = float(output_cost) / total_received
-    fresh = await _all_item_states(session, company_id)
-    from celerp_inventory.services import CostRestatementConflict, restate_item_cost
-    for lot_id in run_state.get("received_lots") or []:
-        lot = fresh.get(lot_id)
-        if lot is None:
-            continue
-        new_total = round_basis(unit_cost * float(lot.get("quantity") or 0))
-        event = dict(
-            entity_id=lot_id, event_type="item.cost_adjusted",
-            data={"cost_total": new_total, "manufacturing_order_id": order_id},
-            actor_id=user.id, source="api", idempotency_key=f"mfg:{order_id}:recost:{lot_id}",
-        )
-        # Manufacturing re-cost is a historical cost correction regardless of the lot's
-        # current state. The canonical restater either carries that delta through merge/COGS
-        # consequences or refuses the operation before anything is written.
-        try:
-            await restate_item_cost(session, company_id, **event)
-        except CostRestatementConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -1611,22 +1530,17 @@ async def create_order(
         raise HTTPException(status_code=422, detail="description is required")
     if len(payload.inputs) == 0:
         raise HTTPException(status_code=409, detail="Cannot create/start order with no inputs")
-    entity_id = f"mfg:{uuid.uuid4()}"
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="mfg_order",
-        event_type="mfg.order.created",
-        data=payload.model_dump(exclude_none=True),
-        actor_id=user.id,
+    request = payload.model_dump(exclude={"idempotency_key"})
+    entry = await _emit_order_created(
+        session, company_id, f"mfg:{uuid.uuid4()}",
+        {**payload.model_dump(exclude_none=True, exclude={"idempotency_key", "quantity"}),
+         "inputs": merge_inputs(i.model_dump() for i in payload.inputs)},
+        quantity=payload.quantity, request=request, actor_id=user.id,
         location_id=uuid.UUID(payload.location_id) if payload.location_id else None,
-        source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
+        idempotency_key=payload.idempotency_key,
     )
     await session.commit()
-    return {"event_id": entry.id, "id": entity_id}
+    return {"event_id": entry.id, "id": entry.entity_id}
 
 
 @router.get("/{order_id}")
@@ -1642,27 +1556,15 @@ async def get_order(
 @router.post("/{order_id}/start")
 async def start_order(
     order_id: str,
+    payload: KeyBody | None = None,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_order(session, company_id, order_id)
-    if row.state.get("status") == "completed":
-        raise HTTPException(status_code=409, detail="Order already completed")
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=order_id,
-        entity_type="mfg_order",
-        event_type="mfg.order.started",
-        data={"started_by": str(user.id)},
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
-    )
+    entry = await movements.transition(session, company_id, user.id, order_id, "start",
+                                       {"started_by": str(user.id)}, payload.idempotency_key if payload else None,
+                                       at=datetime.now(timezone.utc).isoformat())
     await session.commit()
     return {"event_id": entry.id}
 
@@ -1677,14 +1579,10 @@ async def hold_order(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Put an active run on hold (paused). Reversible via /resume."""
-    row = await _get_order(session, company_id, order_id)
-    if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot hold a closed run")
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-        event_type="mfg.order.on_hold", data={"reason": (payload.reason if payload else None)},
-        actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
-    )
+    entry = await movements.transition(session, company_id, user.id, order_id, "hold",
+                                       {"reason": payload.reason if payload else None},
+                                       payload.idempotency_key if payload else None,
+                                       at=datetime.now(timezone.utc).isoformat())
     await session.commit()
     return {"event_id": entry.id}
 
@@ -1692,20 +1590,16 @@ async def hold_order(
 @router.post("/{order_id}/resume")
 async def resume_order(
     order_id: str,
+    payload: KeyBody | None = None,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Resume an on-hold run (back to In Progress)."""
-    row = await _get_order(session, company_id, order_id)
-    if row.state.get("status") != "on_hold":
-        raise HTTPException(status_code=409, detail="Only an on-hold run can be resumed")
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-        event_type="mfg.order.resumed", data={"resumed_by": str(user.id)},
-        actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
-    )
+    entry = await movements.transition(session, company_id, user.id, order_id, "resume",
+                                       {"resumed_by": str(user.id)}, payload.idempotency_key if payload else None,
+                                       at=datetime.now(timezone.utc).isoformat())
     await session.commit()
     return {"event_id": entry.id}
 
@@ -1721,35 +1615,13 @@ async def schedule_order(
 ) -> dict:
     """Set scheduling fields (due date / planned start / priority) on a run. Only provided keys are
     written; a blank value clears that field. A closed run cannot be rescheduled."""
-    row = await _get_order(session, company_id, order_id)
-    if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot reschedule a closed run")
     data = payload.model_dump(exclude_unset=True, exclude={"idempotency_key"})
     if not data:
         raise HTTPException(status_code=422, detail="No scheduling fields provided")
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-        event_type="mfg.order.scheduled", data=data, actor_id=user.id, location_id=None,
-        source="api", idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
-    )
+    entry = await movements.transition(session, company_id, user.id, order_id, "schedule", data,
+                                       payload.idempotency_key, at=datetime.now(timezone.utc).isoformat())
     await session.commit()
     return {"event_id": entry.id}
-
-
-def _outstanding_inputs(run_state: dict) -> list[dict]:
-    """Per input, the quantity still to issue (required - already issued)."""
-    out = []
-    for inp in run_state.get("inputs", []):
-        rem = float(inp.get("quantity") or 0) - float(inp.get("issued_qty") or 0)
-        if rem > 1e-9:
-            out.append({"item_id": inp.get("item_id"), "quantity": round(rem, 6)})
-    return out
-
-
-def _outstanding_output(run_state: dict) -> float:
-    """Finished-goods quantity still to receive (expected - already received)."""
-    expected = float((run_state.get("expected_outputs") or [{}])[0].get("quantity") or 0)
-    return max(0.0, expected - float(run_state.get("received_qty") or 0))
 
 
 @router.post("/{order_id}/issue")
@@ -1761,17 +1633,66 @@ async def issue_order(
     _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Issue components from stock into a run (decrements them). Partial issues are allowed; omitting
-    `items` issues everything still outstanding. Issuing auto-advances a planned run to In Progress."""
-    row = await _get_order(session, company_id, order_id)
-    if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot issue to a closed run")
-    states = await _all_item_states(session, company_id)
-    items = ([{"item_id": i.item_id, "quantity": i.quantity} for i in payload.items]
-             if (payload and payload.items) else _outstanding_inputs(row.state))
-    consumed = await _issue_and_record(session, company_id, user, order_id, items, states)
+    """Issue components from stock into a run. Partial issues are allowed; omitting `items`
+    issues everything still outstanding. Issuing auto-advances a planned run to In Progress."""
+    items = [i.model_dump() for i in payload.items] if (payload and payload.items) else None
+    result = await movements.issue(session, company_id, user.id, order_id, items,
+                                   payload.idempotency_key if payload else None,
+                                   at=datetime.now(timezone.utc).isoformat())
     await session.commit()
-    return {"issued": consumed}
+    return result
+
+
+@router.post("/{order_id}/return")
+async def return_order_materials(
+    order_id: str,
+    payload: ReturnBody | None = None,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Return issued components to the lots they came from, at the value they were issued at.
+    Omitting `items` returns everything issued."""
+    items = [i.model_dump() for i in payload.items] if (payload and payload.items) else None
+    result = await movements.return_materials(session, company_id, user.id, order_id, items,
+                                              payload.idempotency_key if payload else None,
+                                              at=datetime.now(timezone.utc).isoformat())
+    await session.commit()
+    return result
+
+
+@router.post("/{order_id}/undo-receipt")
+async def undo_order_receipt(
+    order_id: str,
+    payload: UndoReceiptBody,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Take back a lot this run received, while it is exactly as the run left it."""
+    result = await movements.undo_receipt(session, company_id, user.id, order_id, payload.lot_item_id,
+                                          payload.idempotency_key, at=datetime.now(timezone.utc).isoformat())
+    await session.commit()
+    return result
+
+
+@router.post("/{order_id}/reopen")
+async def reopen_order(
+    order_id: str,
+    payload: KeyBody | None = None,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Reopen a completed run, reversing what completing it did."""
+    result = await movements.reopen(session, company_id, user.id, order_id,
+                                    payload.idempotency_key if payload else None,
+                                    at=datetime.now(timezone.utc).isoformat())
+    await session.commit()
+    return result
 
 
 @router.post("/{order_id}/receive")
@@ -1784,23 +1705,13 @@ async def receive_order(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Receive finished goods from a run as a discrete lot under the product. Omitting
-    `quantity` receives everything still outstanding; once fully received the run auto-completes."""
-    row = await _get_order(session, company_id, order_id)
-    if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot receive into a closed run")
-    qty = (payload.quantity if (payload and payload.quantity is not None)
-           else _outstanding_output(row.state))
-    if qty <= 0:
-        raise HTTPException(status_code=422, detail="Receive quantity must be greater than zero")
-    states = await _all_item_states(session, company_id)
-    lot_id = await _receive(session, company_id, user, order_id, row.state, qty, states,
-                            idempotency_key=(payload.idempotency_key if payload else None))
-    # Auto-complete once the full expected output has been received.
-    row = await _get_order(session, company_id, order_id)
-    if _outstanding_output(row.state) <= 1e-9:
-        await _close_run(session, company_id, user, order_id, row.state, states)
+    `quantity` receives everything still outstanding; once fully received the run completes."""
+    result = await movements.receive(session, company_id, user.id, order_id,
+                                     payload.quantity if payload else None,
+                                     payload.idempotency_key if payload else None,
+                                     at=datetime.now(timezone.utc).isoformat())
     await session.commit()
-    return {"received": qty, "lot_item_id": lot_id}
+    return result
 
 
 @router.post("/{order_id}/complete")
@@ -1817,26 +1728,52 @@ async def complete_order(
     This is the one-tap close used by the product hub's Complete action; the output lands as a
     discrete lot under the product, never a nameless throwaway item.
     """
-    row = await _get_order(session, company_id, order_id)
-    if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot complete a closed run")
-    states = await _all_item_states(session, company_id)
-    outstanding = _outstanding_inputs(row.state)
-    if outstanding:
-        # When the company requires components issued first, completing must not silently auto-issue.
-        if (await _mfg_settings(session, company_id)).get("require_issued_before_complete"):
-            raise HTTPException(status_code=409,
-                                detail="Issue all components before completing this run (required by settings)")
-        await _lock_code_namespace_for_completion(session, company_id)
-        await _issue_and_record(session, company_id, user, order_id, outstanding, states)
-        row = await _get_order(session, company_id, order_id)
-    qty = _outstanding_output(row.state)
-    if qty > 0:
-        await _receive(session, company_id, user, order_id, row.state, qty, states)
-        row = await _get_order(session, company_id, order_id)
-    await _close_run(session, company_id, user, order_id, row.state, states, payload)
+    details = payload.model_dump(exclude={"idempotency_key"}) if payload else {}
+    result = await movements.complete(session, company_id, user.id, order_id, details,
+                                      payload.idempotency_key if payload else None,
+                                      at=datetime.now(timezone.utc).isoformat())
     await session.commit()
-    return {"status": "completed"}
+    return result
+
+
+@router.get("/{order_id}/reconcile")
+async def reconcile_needs(
+    order_id: str,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Why a run needs reconciling, the components whose value reconciling it records, and the
+    output an older release already received from it, which takes its share of that value."""
+    row = await _get_order(session, company_id, order_id)
+    held = sorted(await movements.still_held(session, company_id, order_id, row.state))
+    items = {i: await session.get(Projection, {"company_id": company_id, "entity_id": i}) for i in held}
+    received = await movements.legacy_output(session, company_id, order_id, row.state) or []
+    return {"reason": row.state.get("wip_unresolved"),
+            "components": [{"item_id": i, "sku": (r.state or {}).get("sku") if r else None,
+                            "name": (r.state or {}).get("name") if r else None} for i, r in items.items()],
+            "received": [{"lot_item_id": r["lot_item_id"], "quantity": r["quantity"], "value": str(r["value"]),
+                          "sku": ((await session.get(Projection, {"company_id": company_id,
+                                                                  "entity_id": r["lot_item_id"]})).state or {}).get("sku")}
+                         for r in received]}
+
+
+@router.post("/{order_id}/reconcile")
+async def reconcile_order(
+    order_id: str,
+    payload: ReconcileBody,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
+    __: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Record the value of the materials in a run whose history cannot prove it, and the
+    account that value comes off, so the run can carry on."""
+    result = await movements.reconcile(session, company_id, user.id, order_id,
+                                       [c.model_dump() for c in payload.components], payload.account,
+                                       payload.idempotency_key, at=datetime.now(timezone.utc).isoformat())
+    await session.commit()
+    return result
 
 
 @router.post("/{order_id}/cancel")
@@ -1848,22 +1785,9 @@ async def cancel_order(
     _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_order(session, company_id, order_id)
-    if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot cancel a closed run")
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=order_id,
-        entity_type="mfg_order",
-        event_type="mfg.order.cancelled",
-        data=payload.model_dump(exclude_none=True),
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
-    )
+    """Cancel a run that holds no materials or output."""
+    entry = await movements.cancel(session, company_id, user.id, order_id, payload.reason, payload.idempotency_key,
+                                   at=datetime.now(timezone.utc).isoformat())
     await session.commit()
     return {"event_id": entry.id}
 

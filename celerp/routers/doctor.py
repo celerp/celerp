@@ -521,7 +521,7 @@ async def _emit_payment_je(
     await _auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id,
         amount=amount, payment_index=payment_index,
-        bank_account_code=payment.get("bank_account") or "1111",
+        bank_account_code=payment.get("bank_account"),
         doc_type=state.get("doc_type", "invoice"),
         payment_date=str(payment.get("payment_date") or state.get("issue_date") or state.get("created_at") or __import__("datetime").date.today().isoformat())[:10],
         base_currency=base_currency,

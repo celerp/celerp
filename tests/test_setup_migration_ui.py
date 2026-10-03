@@ -146,6 +146,9 @@ class FakeMigrationAPI:
         self.scans: dict[str, dict] = {}
         self.runs: dict[str, dict] = {}
         self.recon: dict[str, dict] = {}
+        self.posting: dict[str, list[dict]] = {}  # run -> the posting accounts it needs
+        self.finalized_with: list[dict] = []
+        self.refuse_finalize = ""
         self.decisions_posted: list[dict] = []
         self.started: dict[str, str] = {}  # scan token -> the run a company-mode start created
         self.scan_error = False
@@ -205,13 +208,15 @@ class FakeMigrationAPI:
                 return _json(201, {"run_id": run_id})
             return _json(201, {"access_token": make_test_token("owner"),
                                "refresh_token": "refresh-new", "run_id": run_id})
-        m = re.fullmatch(r"/migrations/([0-9a-f-]{36})(/[a-z/]+)?", path)
+        m = re.fullmatch(r"/migrations/([0-9a-f-]{36})(/[a-z/-]+)?", path)
         if not m or m.group(1) not in self.runs:
             return _json(404, {"detail": "Migration not found."})
         run_id, tail = m.group(1), m.group(2) or ""
         run = self.runs[run_id]
         if method == "GET" and tail == "":
             return _json(200, run)
+        if method == "GET" and tail == "/posting-accounts":
+            return _json(200, {"roles": self.posting.get(run_id, [])})
         if method == "GET" and tail == "/reconciliation":
             return _json(200, self.recon[run_id])
         if method == "GET" and tail == "/reconciliation/pack":
@@ -228,6 +233,9 @@ class FakeMigrationAPI:
         if method == "POST" and tail == "/finalize":
             if run["status"] != "ready_to_finalize":
                 return _json(409, {"detail": f"Cannot finalize a migration that is {run['status']}."})
+            if self.refuse_finalize:
+                return _json(409, {"detail": self.refuse_finalize})
+            self.finalized_with.append(json.loads(body) if body else {})
             run["status"] = "completed"
             return _json(200, run)
         if method == "POST" and tail == "/discard":
@@ -751,6 +759,64 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     assert _link(page, "/setup/new-company/migrate", "Move your first company")
     assert _link(page, f"/switch-company/{fake_api.runs[sample_id]['company_id']}", "Open")
     assert "Download company backup" not in page
+
+
+def _posting_row(role: str, label: str, *, required: bool = True, current: str | None = None,
+                 preselect: str | None = None, candidates: tuple = (), proposal: dict | None = None) -> dict:
+    return {"role": role, "label": label, "group": "core", "required": required, "current": current,
+            "controls": [], "preselect": preselect,
+            "candidates": [{"code": c, "name": n, "account_type": ty} for c, n, ty in candidates],
+            "proposal": proposal or {"code": "9999", "name": label, "account_type": "expense"}}
+
+
+_EXPENSE_PROPOSAL = {"code": "6950", "name": "General expenses", "account_type": "expense"}
+
+
+@pytest.mark.asyncio
+async def test_finishing_asks_for_each_posting_account_the_company_needs(ui, router, fake_api):
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize")
+    fake_api.posting[run_id] = [
+        _posting_row("receivable", "Accounts receivable", current="120"),
+        _posting_row("payable", "Accounts payable", preselect="210",
+                     candidates=(("210", "Creditors", "liability"), ("211", "Other creditors", "liability"))),
+        _posting_row("general_expense", "General expenses", proposal=_EXPENSE_PROPOSAL),
+        _posting_row("sales_revenue", "Sales revenue",
+                     candidates=tuple((f"4{n:02d}", f"Sales {n}", "revenue") for n in range(12))),
+        _posting_row("fx_gain", "Exchange gain", required=False),
+    ]
+    verify = _visible(await ui.get(f"/migrations/{run_id}/verify"))
+    assert "Posting accounts" in verify
+    # An account already set is shown, not asked for again.
+    assert re.search(r"<td>Accounts receivable</td>\s*<td>120</td>", verify)
+    assert 'name="role.receivable"' not in verify
+    # The source's single control account is offered already chosen.
+    assert re.search(r'<select[^>]*name="role.payable"[^>]*>.*?<option value="210" selected>210 Creditors</option>',
+                     verify, re.S)
+    # Where the chart has nothing suitable, adding the proposed account is offered.
+    assert re.search(r'<option value="__new__">Add account 6950 General expenses \(Expense\)</option>', verify)
+    # More than ten options become a searchable picker.
+    assert re.search(r'class="combobox-wrap".*?name="role.sales_revenue"', verify, re.S)
+    # A role no workflow needs yet is not asked for.
+    assert "Exchange gain" not in verify
+
+    fake_api.refuse_finalize = "Choose the posting account for: Sales revenue."
+    r = await ui.post(f"/migrations/{run_id}/finalize",
+                      data={"role.payable": "211", "role.general_expense": "__new__", "role.sales_revenue": ""})
+    assert r.status_code == 200
+    page = _visible(r)
+    assert "Choose the posting account for: Sales revenue." in page
+    assert re.search(r'<option value="211" selected>', page)
+    assert fake_api.runs[run_id]["status"] == "ready_to_finalize"
+
+    fake_api.refuse_finalize = ""
+    r = await ui.post(f"/migrations/{run_id}/finalize",
+                      data={"role.payable": "211", "role.general_expense": "__new__", "role.sales_revenue": "405"})
+    assert r.status_code == 303 and r.headers["location"] == f"/migrations/{run_id}/complete"
+    assert fake_api.finalized_with == [{
+        "roles": {"payable": "211", "sales_revenue": "405"},
+        "add_accounts": [{**_EXPENSE_PROPOSAL, "role": "general_expense"}],
+    }]
 
 
 @pytest.mark.asyncio

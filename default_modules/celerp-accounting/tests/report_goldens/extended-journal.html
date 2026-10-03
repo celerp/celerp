@@ -57,6 +57,10 @@
     if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
     var form=document.createElement('form');
     ids.forEach(function(id){var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;form.appendChild(inp);});
+    // A table that carries its render's operation key sends it, so an action sent again
+    // after a lost answer is recorded once (see ui/components/operation_key.py).
+    var key=t.getAttribute('data-operation-key');
+    if(key){var k=document.createElement('input');k.type='hidden';k.name='idempotency_key';k.value=key;form.appendChild(k);}
     bar.querySelectorAll('.bulk-field[name]').forEach(function(f){
       var inp=document.createElement('input');inp.type='hidden';
       inp.name=f.getAttribute('name');inp.value=f.value;form.appendChild(inp);});
@@ -181,20 +185,6 @@
           <td class="cell--number"></td>
           <td class="cell--number">฿30.00</td>
         </tr>
-        <tr>
-          <td class="col-checkbox"></td>
-          <td class="cell--mono">2026-02-10</td>
-          <td>
-<a href="/docs/doc:<id>" class="drilldown-link">INV-<ref></a>          </td>
-          <td>--</td>
-          <td>2120 VAT Payable (Output VAT)</td>
-          <td class="cell--muted">Auto JE for doc:<id> finalized</td>
-          <td class="cell--mono">THB</td>
-          <td class="cell--number">--</td>
-          <td class="cell--number">--</td>
-          <td class="cell--number"></td>
-          <td class="cell--number"></td>
-        </tr>
         <tr class="data-row">
           <td class="col-checkbox">
             <input type="checkbox" name="selected" value="je:manual:<uuid>" class="bulk-select">
@@ -282,20 +272,6 @@
           <td class="cell--number">฿100.00</td>
           <td class="cell--number"></td>
           <td class="cell--number">฿100.00</td>
-        </tr>
-        <tr>
-          <td class="col-checkbox"></td>
-          <td class="cell--mono">2026-01-05</td>
-          <td>
-<a href="/docs/doc:<id>" class="drilldown-link">INV-<ref></a>          </td>
-          <td>--</td>
-          <td>2120 VAT Payable (Output VAT)</td>
-          <td class="cell--muted">Auto JE for doc:<id> finalized</td>
-          <td class="cell--mono">THB</td>
-          <td class="cell--number">--</td>
-          <td class="cell--number">--</td>
-          <td class="cell--number"></td>
-          <td class="cell--number"></td>
         </tr>
       </tbody>
     </table>

@@ -141,13 +141,14 @@ async def test_manual_je_posts_and_reaches_reports(client):
 @pytest.mark.asyncio
 async def test_manual_je_unbalanced_rejected(client):
     tok = await _reg(client)
+    start = await _journal(client, tok)  # a new company opens with its sample stock booked
     r = await _post_manual_je(client, tok, [
         {"account": "1111", "debit": 100.0, "credit": 0},
         {"account": "4100", "debit": 0, "credit": 90.0},
     ])
     assert r.status_code == 422
     assert "balance" in r.json()["detail"].lower()
-    assert (await _journal(client, tok))["entries"] == []
+    assert (await _journal(client, tok))["entries"] == start["entries"]
 
 
 @pytest.mark.asyncio
@@ -242,6 +243,7 @@ async def test_manual_je_double_submit_dedupes(client):
 @pytest.mark.asyncio
 async def test_void_manual_je(client):
     tok = await _reg(client)
+    start = await _journal(client, tok)  # a new company opens with its sample stock booked
     je_id = (await _post_manual_je(client, tok, _bal(80.0))).json()["je_id"]
 
     r = await client.post(f"/accounting/journal-entries/{je_id}/void",
@@ -253,7 +255,7 @@ async def test_void_manual_je(client):
     assert entry["status"] == "void"
     assert entry["void_reason"] == "Entered twice"
     # Voided entries are visible in the journal but out of the totals and reports
-    assert abs(data["total_debit"]) < 0.01
+    assert abs(data["total_debit"] - start["total_debit"]) < 0.01
     tb = (await client.get("/accounting/trial-balance", headers=_h(tok))).json()
     cash = [l for l in tb["lines"] if l["code"] == "1111"]
     assert not cash or abs(cash[0]["total_debit"]) < 0.01
@@ -695,8 +697,12 @@ async def test_extended_journal_leaves_a_fulfilment_cost_posting_as_no_items(cli
     # `no_items` on its own merits, not `no_document` because the doc had gone.
     doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 60.0)])
     company_id, user_id = _ids(tok)
+    r = await client.post("/items", headers=_h(tok), json={
+        "sku": "WIDGET-LOT", "name": "Widget", "quantity": 1, "sell_by": "piece", "cost_total": 42.0,
+        "status": "available"})  # stock that can be fulfilled, not a draft
+    assert r.status_code == 200, r.text
     await create_for_doc_fulfilled(session, company_id=company_id, user_id=user_id,
-                                   doc_id=doc, total_cogs=42.0, ts="2026-02-02")
+                                   doc_id=doc, lot_costs={r.json()["id"]: 42.0}, ts="2026-02-02")
     await session.commit()
 
     entry = next(e for e in (await _extended(client, tok))["entries"]
@@ -794,13 +800,14 @@ async def test_journal_search_by_account_returns_whole_entries(client):
 async def test_journal_search_totals_are_the_filtered_totals(client):
     """The totals foot to what was shown, so a filtered page cross-foots."""
     tok = await _reg(client)
+    start = await _journal(client, tok)  # a new company opens with its sample stock booked
     await _two_entries(client, tok)
 
     data = await _journal(client, tok, q="4100")
     assert abs(data["total_debit"] - 40.0) < 0.01
     assert abs(data["total_credit"] - 40.0) < 0.01
     whole = await _journal(client, tok)
-    assert abs(whole["total_debit"] - 65.0) < 0.01
+    assert abs(whole["total_debit"] - start["total_debit"] - 65.0) < 0.01
     assert whole["filtered"] is False
 
 
@@ -862,11 +869,12 @@ async def test_blank_search_is_no_filter(client):
     """Clearing the box submits it empty, which is not an invalid value, and a
     stray comma leaves no term rather than matching everything."""
     tok = await _reg(client)
+    start = await _journal(client, tok)  # a new company opens with its sample stock booked
     await _two_entries(client, tok)
 
     for blank in ("", "  ", ",", " , "):
         data = await _journal(client, tok, q=blank)
-        assert len(data["entries"]) == 2, blank
+        assert len(data["entries"]) == len(start["entries"]) + 2, blank
         assert data["filtered"] is False, blank
 
 
@@ -898,6 +906,7 @@ async def test_journal_search_cap_is_422(client):
 async def test_extended_journal_applies_the_same_search(client):
     """The twin narrows identically, or the two books disagree under a search."""
     tok = await _reg(client)
+    start = await _journal(client, tok)  # a new company opens with its sample stock booked
     sale, _bank = await _two_entries(client, tok)
 
     data = await _extended(client, tok, q="4100")
@@ -909,7 +918,7 @@ async def test_extended_journal_applies_the_same_search(client):
     assert data["total_credit"] == classical["total_credit"]
 
     blank = await _extended(client, tok, q="")
-    assert len(blank["entries"]) == 2
+    assert len(blank["entries"]) == len(start["entries"]) + 2
     assert blank["filtered"] is False
 
 
@@ -1110,6 +1119,7 @@ async def test_soa_dual_role_contact_nets(client):
 @pytest.mark.asyncio
 async def test_manual_je_rejects_non_finite_amounts(client):
     tok = await _reg(client)
+    start = await _journal(client, tok)  # a new company opens with its sample stock booked
     r = await _post_manual_je(client, tok, [
         {"account": "1111", "debit": "nan", "credit": 0},
         {"account": "4100", "debit": 0, "credit": "nan"},
@@ -1118,7 +1128,7 @@ async def test_manual_je_rejects_non_finite_amounts(client):
     errors = r.json()["detail"]
     assert {e["loc"][-1] for e in errors} == {"debit", "credit"}
     assert all("finite number" in e["msg"] for e in errors)
-    assert (await _journal(client, tok))["entries"] == []
+    assert (await _journal(client, tok))["entries"] == start["entries"]
 
 
 @pytest.mark.asyncio
@@ -1187,6 +1197,7 @@ async def test_trial_balance_requires_manager(client, session):
 @pytest.mark.asyncio
 async def test_manual_je_token_reuse_with_different_payload_conflicts(client):
     tok = await _reg(client)
+    start = await _journal(client, tok)  # a new company opens with its sample stock booked
     shared = uuid.uuid4().hex
     r1 = await _post_manual_je(client, tok, _bal(25.0), token=shared)
     assert r1.status_code == 200
@@ -1194,7 +1205,7 @@ async def test_manual_je_token_reuse_with_different_payload_conflicts(client):
     assert r2.status_code == 409
     assert "already posted" in r2.json()["detail"].lower()
     # The books still hold only the original entry
-    entries = (await _journal(client, tok))["entries"]
+    entries = [e for e in (await _journal(client, tok))["entries"] if e not in start["entries"]]
     assert len(entries) == 1
     assert abs(entries[0]["lines"][0]["debit"] - 25.0) < 0.01
 
@@ -1245,6 +1256,7 @@ async def test_batch_import_tolerates_null_amounts(client):
     """External serializers emit explicit nulls for optional numerics; the
     shape-permissive import contract must keep accepting them."""
     tok = await _reg(client)
+    start = await _journal(client, tok)  # a new company opens with its sample stock booked
     r = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
         "entity_id": f"je:{uuid.uuid4()}",
         "event_type": "acc.journal_entry.created",
@@ -1265,7 +1277,7 @@ async def test_batch_import_tolerates_null_amounts(client):
     # The journal renders the same entry with the account-less line skipped
     # rather than crashing. This endpoint did not exist before this change, so
     # the assertion is red against the pre-change tree.
-    entries = (await _journal(client, tok))["entries"]
+    entries = [e for e in (await _journal(client, tok))["entries"] if e not in start["entries"]]
     assert len(entries) == 1
     assert [l["account"] for l in entries[0]["lines"]] == ["1111", "4100"]
 
@@ -1445,9 +1457,23 @@ async def test_general_ledger_rejects_a_contact_filter_that_matches_no_contact(c
 # Account codes with no chart entry
 # ---------------------------------------------------------------------------
 
+async def _remove_account(client, session, tok, code) -> None:
+    """Leave ``code`` posted but with no chart entry, as books written before every
+    journal line was checked against the chart can be. Writers now refuse a code
+    the chart does not hold, so a test posts to a real account and then removes it."""
+    from sqlalchemy import delete
+
+    from celerp_accounting.models import Account
+
+    r = await client.get("/companies/me", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    await session.execute(delete(Account).where(
+        Account.company_id == uuid.UUID(r.json()["id"]), Account.code == code))
+    await session.commit()
+
+
 async def _import_je(client, tok, entries, ts="2026-01-10", fx=None):
-    """Post straight to the projection, the only way a code with no chart entry
-    gets a posted line (manual entry refuses an account that does not exist).
+    """Post straight to the projection.
 
     `fx` writes the entry-level shape used before currency moved to the line,
     which is the only way to produce one now that the writer is gone.
@@ -1465,14 +1491,18 @@ async def _import_je(client, tok, entries, ts="2026-01-10", fx=None):
 
 
 @pytest.mark.asyncio
-async def test_ledger_opens_a_posted_code_that_has_no_account_row(client):
+async def test_ledger_opens_a_posted_code_that_has_no_account_row(client, session):
     """The general ledger lists such a code, so its drilldown must open. The
     type is reported as unknown rather than guessed."""
     tok = await _reg(client)
+    r = await client.post("/accounting/accounts", headers=_h(tok), json={
+        "code": "9999", "name": "Removed", "account_type": "expense"})
+    assert r.status_code == 200, r.text
     await _import_je(client, tok, [
         {"account": "9999", "debit": 70.0, "credit": 0},
         {"account": "3200", "debit": 0, "credit": 70.0},
     ])
+    await _remove_account(client, session, tok, "9999")
 
     led = await _ledger(client, tok, "9999")
     assert led["account_type"] == "unknown"
@@ -1480,7 +1510,7 @@ async def test_ledger_opens_a_posted_code_that_has_no_account_row(client):
 
 
 @pytest.mark.asyncio
-async def test_ledger_and_general_ledger_agree_on_the_normal_side(client):
+async def test_ledger_and_general_ledger_agree_on_the_normal_side(client, session):
     """One debit-normal rule for both endpoints: a drilldown can never
     contradict the sign of the report row it was opened from.
 
@@ -1491,10 +1521,14 @@ async def test_ledger_and_general_ledger_agree_on_the_normal_side(client):
     r = await client.post("/accounting/accounts", headers=_h(tok), json={
         "code": "9100", "name": "Suspense", "account_type": "other"})
     assert r.status_code == 200, r.text
+    r = await client.post("/accounting/accounts", headers=_h(tok), json={
+        "code": "9999", "name": "Removed", "account_type": "expense"})
+    assert r.status_code == 200, r.text
     await _import_je(client, tok, [
         {"account": "9100", "debit": 0, "credit": 40.0},
         {"account": "9999", "debit": 40.0, "credit": 0},
     ])
+    await _remove_account(client, session, tok, "9999")
 
     _, rows = await _gl_rows(client, tok)
     for code in ("9100", "9999"):
@@ -1511,6 +1545,8 @@ async def test_ledger_and_general_ledger_agree_on_the_normal_side(client):
 @pytest.mark.asyncio
 async def test_close_year_zeroes_revenue_expense_cogs(client):
     tok = await _reg(client)
+    tb = (await client.get("/accounting/trial-balance", headers=_h(tok))).json()
+    opening_re = next((l["net"] for l in tb["lines"] if l["code"] == "3200"), 0.0)  # the sample stock's
     await _post_manual_je(client, tok, [
         {"account": "1111", "debit": 500.0, "credit": 0},
         {"account": "4100", "debit": 0, "credit": 500.0},
@@ -1535,7 +1571,7 @@ async def test_close_year_zeroes_revenue_expense_cogs(client):
     assert abs(nets.get("5100", 0.0)) < 0.01
     assert abs(nets.get("6100", 0.0)) < 0.01
     # Net income 500 - 120 - 80 = 300 lands in retained earnings (credit-normal)
-    assert abs(nets.get("3200", 0.0) + 300.0) < 0.01
+    assert abs(nets.get("3200", 0.0) - opening_re + 300.0) < 0.01
 
 
 @pytest.mark.asyncio
@@ -1543,6 +1579,8 @@ async def test_close_year_rerun_posts_residual(client):
     """Re-closing a year after an unlock-edit cycle posts a NEW residual
     closing entry instead of silently deduping into the first close."""
     tok = await _reg(client)
+    tb = (await client.get("/accounting/trial-balance", headers=_h(tok))).json()
+    opening_re = next((l["net"] for l in tb["lines"] if l["code"] == "3200"), 0.0)  # the sample stock's
     await _post_manual_je(client, tok, [
         {"account": "1111", "debit": 500.0, "credit": 0},
         {"account": "4100", "debit": 0, "credit": 500.0},
@@ -1566,7 +1604,7 @@ async def test_close_year_rerun_posts_residual(client):
                            params={"date_to": "2027-01-01"})).json()
     nets = {l["code"]: l["net"] for l in tb["lines"]}
     assert abs(nets.get("4100", 0.0)) < 0.01  # revenue fully closed after the re-run
-    assert abs(nets.get("3200", 0.0) + 700.0) < 0.01  # both closes in retained earnings
+    assert abs(nets.get("3200", 0.0) - opening_re + 700.0) < 0.01  # both closes in retained earnings
 
 
 # ---------------------------------------------------------------------------
@@ -1860,6 +1898,7 @@ async def test_manual_je_conversion_difference_is_refused_not_plugged(client):
     that do not. The author decides where that difference belongs, so the entry
     comes back with the gap named rather than a line appearing on its own."""
     tok = await _reg(client)
+    start = await _journal(client, tok)  # a new company opens with its sample stock booked
     await _thb(client, tok)
     r = await _post_manual_je(client, tok, [
         _fx({"account": "6100", "debit": 33.33, "credit": 0}, "USD", 3.0025),
@@ -1872,13 +1911,14 @@ async def test_manual_je_conversion_difference_is_refused_not_plugged(client):
     assert r.status_code == 422
     detail = r.json()["detail"]
     assert "0.01" in detail and "debit" in detail
-    assert (await _journal(client, tok))["entries"] == []
+    assert (await _journal(client, tok))["entries"] == start["entries"]
 
 
 async def test_manual_je_the_author_posts_the_difference_themselves(client):
     """The same entry with the difference written as its own line goes through,
     and that line is the author's, on the account they chose."""
     tok = await _reg(client)
+    start = await _journal(client, tok)  # a new company opens with its sample stock booked
     await _thb(client, tok)
     r = await _post_manual_je(client, tok, [
         _fx({"account": "6100", "debit": 33.33, "credit": 0}, "USD", 3.0025),
@@ -1896,7 +1936,7 @@ async def test_manual_je_the_author_posts_the_difference_themselves(client):
     assert difference["debit"] == 0.01
     # A base-currency line: no foreign figure, because none was typed.
     assert difference["fx_debit"] is None and difference["fx_currency"] is None
-    assert j["total_debit"] == j["total_credit"] == 300.25
+    assert j["total_debit"] == j["total_credit"] == round(start["total_debit"] + 300.25, 2)
 
 
 async def test_manual_je_nothing_is_posted_to_the_difference_account_on_its_own(client):
@@ -2027,6 +2067,7 @@ async def test_void_manual_je_preserves_the_stored_line_fx(client):
     """Voiding removes the entry from the books but not from the record: the
     foreign amounts, currency and rate stay for the audit trail."""
     tok = await _reg(client)
+    start = await _journal(client, tok)  # a new company opens with its sample stock booked
     await _thb(client, tok)
     posted = await _post_manual_je(client, tok, [
         _fx({"account": "1111", "debit": 10.0, "credit": 0}, "USD", 35.0),
@@ -2043,7 +2084,7 @@ async def test_void_manual_je_preserves_the_stored_line_fx(client):
     line = next(l for l in entry["lines"] if l["fx_debit"])
     assert line["fx_debit"] == 10.0 and line["fx_currency"] == "USD"
     # Out of the books: a voided entry contributes nothing to the totals.
-    assert (await _journal(client, tok))["total_debit"] == 0.0
+    assert (await _journal(client, tok))["total_debit"] == start["total_debit"]
 
 
 async def test_an_entry_posted_before_per_line_currency_still_reads_back(client, session):
@@ -2364,13 +2405,14 @@ async def test_a_line_naming_a_contact_that_is_not_there_is_refused(client):
     """A party that resolves to nothing would post to a control account and then
     be missing from every statement, with nothing on screen to say why."""
     tok = await _reg(client)
+    start = await _journal(client, tok)  # a new company opens with its sample stock booked
     r = await _post_manual_je(client, tok, [
         {"account": "1120", "debit": 10.0, "credit": 0, "contact": "contact:nobody"},
         {"account": "4100", "debit": 0, "credit": 10.0},
     ])
     assert r.status_code == 422, r.text
     assert "contact:nobody" in r.json()["detail"]
-    assert (await _journal(client, tok))["entries"] == []
+    assert (await _journal(client, tok))["entries"] == start["entries"]
 
 
 @pytest.mark.asyncio
@@ -2378,6 +2420,7 @@ async def test_an_imported_line_naming_an_unknown_contact_is_refused(client):
     """Same rule at the import boundary, which writes entries without going
     through the manual entry endpoint."""
     tok = await _reg(client)
+    start = await _journal(client, tok)  # a new company opens with its sample stock booked
     r = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
         "entity_id": f"je:{uuid.uuid4()}",
         "event_type": "acc.journal_entry.created",
@@ -2391,4 +2434,4 @@ async def test_an_imported_line_naming_an_unknown_contact_is_refused(client):
     body = r.json()
     assert body["created"] == 0, "the entry was imported despite naming no real contact"
     assert any("contact:nobody" in e for e in body["errors"]), body["errors"]
-    assert (await _journal(client, tok))["entries"] == []
+    assert (await _journal(client, tok))["entries"] == start["entries"]

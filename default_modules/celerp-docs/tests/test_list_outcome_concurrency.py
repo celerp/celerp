@@ -28,11 +28,13 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
+from celerp.services.account_roles import reconcile_company
 from celerp_accounting.routes import seed_chart_of_accounts
 from celerp_accounting.models import Account
 from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services.lot_origin import recognize_opening_lots
 
 
 def _factory(engine):
@@ -50,6 +52,7 @@ async def _seed_company(factory):
                    auth_hash="x"))
         await s.flush()
         await seed_chart_of_accounts(s, company_id)
+        await reconcile_company(s, company_id)
         await s.commit()
     return company_id, user_id, types.SimpleNamespace(id=user_id)
 
@@ -80,6 +83,7 @@ async def _seed_item(factory, company_id, user, *, sku, name, qty, barcode) -> s
             actor_id=user.id, location_id=None, source="test",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )
+        await recognize_opening_lots(s, company_id, [entity_id], user.id, f"seed:{entity_id}")
         await s.commit()
     return entity_id
 

@@ -33,6 +33,13 @@ async def _register(client, suffix: str = "") -> str:
     return r.json()["access_token"]
 
 
+async def _product(client, token: str, sku: str) -> str:
+    """An item for a run to make."""
+    r = await client.post("/items", headers=_h(token), json={"sku": sku, "name": sku, "quantity": 0, "sell_by": "piece", "status": "available"})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
 def _h(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
@@ -365,7 +372,7 @@ class TestManufacturingModuleHTTP:
             json={
                 "description": "Make FG",
                 "inputs": [{"item_id": item_id, "quantity": 2}],
-                "expected_outputs": [{"sku": "FG1", "name": "Finished 1", "quantity": 1}],
+                "output_item_id": await _product(client, token, "FG1"),
             },
         )
         assert r.status_code == 200
@@ -379,7 +386,7 @@ class TestManufacturingModuleHTTP:
     @pytest.mark.asyncio
     async def test_full_order_lifecycle(self, client):
         token = await _register(client, "lifecycle")
-        item_r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "RAW-L", "name": "Raw L", "quantity": 10, "sell_by": "piece"})
+        item_r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "RAW-L", "name": "Raw L", "quantity": 10, "sell_by": "piece", "cost_price": 4.0})
         item_id = item_r.json()["id"]
 
         # Create
@@ -389,7 +396,7 @@ class TestManufacturingModuleHTTP:
             json={
                 "description": "Full lifecycle",
                 "inputs": [{"item_id": item_id, "quantity": 3}],
-                "expected_outputs": [{"sku": "OUT-L", "name": "Output L", "quantity": 1}],
+                "output_item_id": await _product(client, token, "OUT-L"),
             },
         )
         assert order_r.status_code == 200
@@ -400,9 +407,12 @@ class TestManufacturingModuleHTTP:
         assert (await client.get(f"/manufacturing/{oid}", headers=_h(token))).json()["status"] == "in_progress"
         assert (await client.get(f"/items/{item_id}", headers=_h(token))).json()["quantity"] == 7  # 10 - 3
 
-        # Complete -> finishes the run.
+        # Complete -> receives the product, carrying the components' value, and finishes the run.
         assert (await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})).status_code == 200
-        assert (await client.get(f"/manufacturing/{oid}", headers=_h(token))).json()["status"] == "completed"
+        run = (await client.get(f"/manufacturing/{oid}", headers=_h(token))).json()
+        assert run["status"] == "completed" and run["received_qty"] == 1.0
+        lot = (await client.get(f"/items/{run['receipts'][0]['lot_item_id']}", headers=_h(token))).json()
+        assert lot["cost_total"] == 12.0
 
     @pytest.mark.asyncio
     async def test_cannot_complete_order_twice(self, client):
@@ -413,7 +423,7 @@ class TestManufacturingModuleHTTP:
         order_r = await client.post(
             "/manufacturing", headers=_h(token),
             json={"description": "Twice", "inputs": [{"item_id": item_id, "quantity": 2}],
-                  "expected_outputs": [{"sku": "OUT-T", "name": "Out T", "quantity": 1}]},
+                  "output_item_id": await _product(client, token, "OUT-T")},
         )
         oid = order_r.json()["id"]
         await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})
@@ -429,7 +439,7 @@ class TestManufacturingModuleHTTP:
         order_r = await client.post(
             "/manufacturing", headers=_h(token),
             json={"description": "CC", "inputs": [{"item_id": item_id, "quantity": 1}],
-                  "expected_outputs": [{"sku": "OUT-CC", "name": "Out CC", "quantity": 1}]},
+                  "output_item_id": await _product(client, token, "OUT-CC")},
         )
         oid = order_r.json()["id"]
         await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})
@@ -443,7 +453,7 @@ class TestManufacturingModuleHTTP:
                                      json={"status": "available", "sku": "RAW-IC", "name": "Raw IC", "quantity": 5, "sell_by": "piece"})).json()["id"]
         oid = (await client.post("/manufacturing", headers=_h(token),
                json={"description": "IC", "inputs": [{"item_id": item_id, "quantity": 1}],
-                     "expected_outputs": [{"sku": "OUT-IC", "name": "Out IC", "quantity": 1}]})).json()["id"]
+                     "output_item_id": await _product(client, token, "OUT-IC")})).json()["id"]
         await client.post(f"/manufacturing/{oid}/cancel", headers=_h(token), json={"reason": "x"})
         assert (await client.post(f"/manufacturing/{oid}/issue", headers=_h(token))).status_code == 409
 
@@ -456,7 +466,7 @@ class TestManufacturingModuleHTTP:
         order_r = await client.post(
             "/manufacturing", headers=_h(token),
             json={"description": "SC", "inputs": [{"item_id": item_id, "quantity": 1}],
-                  "expected_outputs": [{"sku": "OUT-SC", "name": "Out SC", "quantity": 1}]},
+                  "output_item_id": await _product(client, token, "OUT-SC")},
         )
         oid = order_r.json()["id"]
         await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})
@@ -476,7 +486,7 @@ class TestManufacturingModuleHTTP:
         item_id = item_r.json()["id"]
         oid = (await client.post("/manufacturing", headers=_h(token),
                json={"description": "Hold flow", "inputs": [{"item_id": item_id, "quantity": 1}],
-                     "expected_outputs": [{"sku": "OUT-H", "name": "Out H", "quantity": 1}]})).json()["id"]
+                     "output_item_id": await _product(client, token, "OUT-H")})).json()["id"]
         await client.post(f"/manufacturing/{oid}/start", headers=_h(token))
         # Hold -> on_hold; cannot resume something not on hold; resume -> in_progress.
         assert (await client.post(f"/manufacturing/{oid}/hold", headers=_h(token), json={"reason": "wait"})).status_code == 200
@@ -492,10 +502,10 @@ class TestManufacturingModuleHTTP:
         item_r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "RAW-SF", "name": "Raw SF", "quantity": 9, "sell_by": "piece"})
         item_id = item_r.json()["id"]
 
-        def _mk(desc):
-            return client.post("/manufacturing", headers=_h(token),
+        async def _mk(desc):
+            return await client.post("/manufacturing", headers=_h(token),
                                json={"description": desc, "inputs": [{"item_id": item_id, "quantity": 1}],
-                                     "expected_outputs": [{"sku": f"O-{desc}", "name": desc, "quantity": 1}]})
+                                     "output_item_id": await _product(client, token, f"O-{desc}")})
         planned = (await _mk("p")).json()["id"]
         prog = (await _mk("ip")).json()["id"]
         await client.post(f"/manufacturing/{prog}/start", headers=_h(token))

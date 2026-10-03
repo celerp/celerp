@@ -23,7 +23,7 @@ from sqlalchemy import select
 
 from fixtures.manager_io import specs
 from fixtures.manager_io.support import INVENTORY, ref
-from migration_support import OWNER_EMAIL, auth, maker, real_client, real_engine  # noqa: F401 - fixtures
+from migration_support import OWNER_EMAIL, auth, finalize_run, maker, real_client, real_engine  # noqa: F401 - fixtures
 from test_migration_e2e import _maps, _passing, _projections, migrate
 
 MODES = [{"mode": "full_history"}, {"mode": "cutover", "cutover_date": specs.LIFECYCLE_CUTOVER.isoformat()}]
@@ -54,14 +54,13 @@ class Books:
 async def _migrated(real_engine, monkeypatch, tmp_path, decisions=MODES[0], source: Path = INVENTORY) -> Books:
     from celerp.models.company import Company, User
     from celerp.models.migration import MigrationRun
-    from celerp.services import migrations
     from celerp.services.auth import issue_token_pair
 
     run, rejected = await migrate(real_engine, source.read_bytes(), source.name, decisions, monkeypatch, tmp_path)
     assert rejected == []
     _passing(run)
     async with maker(real_engine)() as s:
-        await migrations.finalize(s, await s.get(MigrationRun, run.id))
+        await finalize_run(s, await s.get(MigrationRun, run.id))
     maps = {(m.source_type, m.source_external_id): m.target_entity_id for m in await _maps(real_engine, run)}
     items = await _projections(real_engine, run, "item")
     async with maker(real_engine)() as s:

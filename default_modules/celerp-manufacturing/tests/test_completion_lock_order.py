@@ -7,8 +7,8 @@ already emitted a ledger event for the same company.
 Every ledger insert takes an implicit foreign-key KEY SHARE lock on its company row
 (celerp/models/ledger.py: LedgerEntry.company_id -> companies.id) and holds it until the
 transaction ends. A one-tap build (celerp_manufacturing.routes.build_item with complete=True)
-emits mfg.order.created and then, in the same transaction, locks the company row to mint the
-output lot's barcode (_lock_code_namespace_for_completion -> lock_item_code_namespace). If
+emits mfg.order.created and then, in the same transaction, completes the run, which takes the
+company lock before it moves anything (celerp_manufacturing.movements, lock_company). If
 that lock is FOR UPDATE it has to upgrade past the transaction's own KEY SHARE, and two such
 transactions - each already holding KEY SHARE on the company, each now requesting the row
 lock - block on each other, so Postgres aborts one with a deadlock (SQLSTATE 40P01). The same
@@ -36,7 +36,7 @@ import types
 import uuid
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
@@ -45,7 +45,10 @@ from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
+from celerp_accounting.models import Account, BankAccount
+from celerp_accounting.routes import seed_chart_of_accounts_hook
 from celerp_inventory.services import lock_item_code_namespace
+from celerp.services.lot_origin import recognize_opening_lots
 
 
 def _is_deadlock(exc: BaseException) -> bool:
@@ -72,6 +75,8 @@ async def _cleanup(factory, company_id, user_id) -> None:
     async with factory() as s:
         await s.execute(delete(Projection).where(Projection.company_id == company_id))
         await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
+        await s.execute(delete(BankAccount).where(BankAccount.company_id == company_id))
+        await s.execute(delete(Account).where(Account.company_id == company_id))
         await s.execute(delete(Company).where(Company.id == company_id))
         await s.execute(delete(User).where(User.id == user_id))
         await s.commit()
@@ -83,6 +88,8 @@ async def _seed_company(factory) -> tuple[uuid.UUID, uuid.UUID, types.SimpleName
         s.add(Company(id=company_id, name="Lockrace Co", slug=f"lockrace-{company_id.hex[:8]}"))
         s.add(User(id=user_id, email=f"race-{user_id.hex[:8]}@lockrace.test", name="Race User",
                    auth_hash="x"))
+        await s.flush()
+        await seed_chart_of_accounts_hook(session=s, company_id=company_id)
         await s.commit()
     # A bare .id accessor is all production code reads off `user` on these paths (actor_id on
     # emitted events); the FK target is the committed row above.
@@ -171,6 +178,7 @@ async def _seed_buildable(factory, company_id, user, i: int) -> str:
             actor_id=user.id, location_id=None, source="test",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )
+        await recognize_opening_lots(s, company_id, [component_id, product_id], user.id, f"seed:{product_id}")
         await s.commit()
     return product_id
 
@@ -179,11 +187,12 @@ async def _seed_buildable(factory, company_id, user, i: int) -> str:
 async def test_concurrent_one_tap_builds_no_deadlock(_db_engine):
     """Two real one-tap builds of two independent products (each with its own component, so
     the company row is the only lock they share) run concurrently on separately committed
-    sessions. Each emits mfg.order.created and then locks the company to mint its output lot -
-    the exact create-and-complete lock upgrade. Both must complete with no deadlock; before
-    the fix this pair aborts one side with 40P01."""
+    sessions. Each creates its run and then locks the company to mint its output lot - the
+    create-and-complete lock upgrade. Both must complete with no deadlock; before the fix this
+    pair aborts one side with 40P01. Creating a run now locks the company (and its items) up
+    front, so the second build may instead wait for the first to commit; either way both finish."""
     from celerp_manufacturing.routes import build_item, BuildBody
-    import celerp_inventory.services as inventory_services
+    from celerp_manufacturing import movements
 
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
     company_id, user_id, user = await _seed_company(factory)
@@ -191,21 +200,28 @@ async def test_concurrent_one_tap_builds_no_deadlock(_db_engine):
     product_b = await _seed_buildable(factory, company_id, user, 1)
     results: dict[str, dict | BaseException] = {}
 
-    # By the time a completion reaches _lock_code_namespace_for_completion it has already
-    # emitted mfg.order.created and flushed it (the _all_item_states read autoflushes), so it
-    # holds the company KEY SHARE. Barrier the FIRST namespace-lock acquisition per session so
-    # both builds hold KEY SHARE before either takes the company lock, making the upgrade
-    # contention deterministic instead of a matter of scheduling luck. This wraps the real
-    # lock (never delays it beyond the barrier) and _lock_code_namespace_for_completion imports
-    # the name from this module each call, so the wrapper is what completion sees.
-    both_hold_key_share = asyncio.Barrier(2)
-    orig_lock = inventory_services.lock_item_code_namespace
+    # By the time a completion takes the company lock it has already emitted
+    # mfg.order.created, so it holds the company KEY SHARE. Hold the FIRST company-lock
+    # acquisition per session until both builds hold KEY SHARE before either takes the lock,
+    # making the upgrade contention deterministic instead of a matter of scheduling luck. This
+    # wraps the real lock (never delays it beyond that point).
+    # The wait also ends when the other build is already waiting on a lock this one holds,
+    # since that build can never arrive while this one waits for it.
+    orig_lock = movements.lock_company
     synced: set[int] = set()
+
+    async def _other_is_waiting() -> bool:
+        async with _db_engine.connect() as conn:
+            return bool((await conn.execute(text(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+            ))).scalar_one())
 
     async def _barrier_then_lock(session, cid):
         if cid == company_id and id(session) not in synced:
             synced.add(id(session))
-            await both_hold_key_share.wait()
+            while len(synced) < 2 and not await _other_is_waiting():
+                await asyncio.sleep(0.02)
         return await orig_lock(session, cid)
 
     async def _one_tap(label: str, product_id: str) -> None:
@@ -220,7 +236,7 @@ async def test_concurrent_one_tap_builds_no_deadlock(_db_engine):
         finally:
             await s.close()
 
-    inventory_services.lock_item_code_namespace = _barrier_then_lock
+    movements.lock_company = _barrier_then_lock
     try:
         await asyncio.wait_for(
             asyncio.gather(_one_tap("a", product_a), _one_tap("b", product_b)), timeout=30
@@ -236,5 +252,5 @@ async def test_concurrent_one_tap_builds_no_deadlock(_db_engine):
                 order = await s.get(Projection, {"company_id": company_id, "entity_id": order_id})
                 assert order.state["status"] == "completed", f"build {label} did not complete"
     finally:
-        inventory_services.lock_item_code_namespace = orig_lock
+        movements.lock_company = orig_lock
         await _cleanup(factory, company_id, user_id)

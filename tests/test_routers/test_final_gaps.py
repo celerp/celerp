@@ -257,12 +257,9 @@ async def test_events_engine_integrity_error_reraise():
     mock_session.flush = AsyncMock(side_effect=IntegrityError("dup", {}, Exception()))
     mock_session.execute = AsyncMock(return_value=mock_result)
     mock_session.add = MagicMock()
-    # emit_event runs the insert inside `async with session.begin_nested()`.
-    # begin_nested() is a sync call returning an async CM; __aexit__ must NOT
-    # suppress the IntegrityError (return False) so it reaches the handler.
-    _sp = AsyncMock()
-    _sp.__aexit__ = AsyncMock(return_value=False)
-    mock_session.begin_nested = MagicMock(return_value=_sp)
+    # emit_event opens a savepoint with `await session.begin_nested()` and rolls it
+    # back before the IntegrityError reaches the dedup handler.
+    mock_session.begin_nested = AsyncMock(return_value=AsyncMock())
 
     with pytest.raises(IntegrityError):
         await emit_event(
@@ -410,7 +407,7 @@ def test_db_engine_and_session_factory():
 async def test_events_engine_pg_notify_exception_swallowed():
     """pg_notify Exception is swallowed and does not fail emission (lines 42-45)."""
     from celerp.events.engine import emit_event
-    from celerp.projections.engine import ProjectionEngine
+    from celerp.projections.engine import ProjectionEngine, Transition
 
     mock_session = AsyncMock()
     mock_session.flush = AsyncMock()
@@ -421,10 +418,8 @@ async def test_events_engine_pg_notify_exception_swallowed():
     # pg_notify raises an exception
     mock_session.execute = AsyncMock(side_effect=Exception("pg_notify failed"))
     mock_session.add = MagicMock()
-    # begin_nested() is a sync call returning an async CM (savepoint).
-    _sp = AsyncMock()
-    _sp.__aexit__ = AsyncMock(return_value=False)
-    mock_session.begin_nested = MagicMock(return_value=_sp)
+    # emit_event opens its savepoint with `await session.begin_nested()`.
+    mock_session.begin_nested = AsyncMock(return_value=AsyncMock())
 
     added_entry = None
 
@@ -434,7 +429,11 @@ async def test_events_engine_pg_notify_exception_swallowed():
 
     mock_session.add = capture_add
 
-    with patch.object(ProjectionEngine, "apply_event", new_callable=AsyncMock) as mock_apply:
+    # The mocked session cannot read company settings, so the new lot books into no account.
+    # The item did not exist before: a birth.
+    born = Transition(before=None, after={"sku": "PG", "name": "PGTest"})
+    with patch.object(ProjectionEngine, "apply_event", AsyncMock(return_value=born)) as mock_apply, \
+            patch("celerp.services.account_roles.new_lot_account", AsyncMock(return_value=None)):
         result = await emit_event(
             mock_session,
             company_id="c1",

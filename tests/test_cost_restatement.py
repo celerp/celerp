@@ -12,7 +12,6 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -22,6 +21,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from test_helpers import merge_items
 
 TZ = "Pacific/Kiritimati"
 
@@ -33,14 +33,19 @@ def ids():
 
 @pytest_asyncio.fixture
 async def auth(session, ids):
-    cid, uid = ids["company_id"], ids["user_id"]
+    return await company_auth(session, ids["company_id"], ids["user_id"])
+
+
+async def company_auth(session, cid, uid) -> dict:
+    """A company with its books and an admin, and the admin's request headers."""
     session.add(Company(id=cid, name="CostCo", slug=f"costco-{cid.hex[:8]}",
                         settings={"currency": "USD", "timezone": TZ}))
     session.add(User(id=uid, email=f"admin-{cid.hex[:8]}@test.co", name="Admin", auth_hash="x", is_active=True))
     await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
+    from test_helpers import make_authed_token, provision_company_books
+    await provision_company_books(session, cid)
     await session.commit()
-    from test_helpers import make_authed_token
     token = await make_authed_token(session, str(uid), str(cid), "admin")
     return {"headers": {"Authorization": f"Bearer {token}"}, "company_id": cid, "user_id": uid}
 
@@ -56,7 +61,7 @@ async def _item(client, auth, cost_total: float | None, qty: float = 1, sku: str
 
 
 async def _merge(client, auth, sources: list[str], **extra) -> str:
-    r = await client.post("/items/merge", headers=auth["headers"],
+    r = await merge_items(client, headers=auth["headers"],
                           json={"source_entity_ids": sources, "target_sku_from": sources[0], **extra})
     assert r.status_code == 200, r.text
     return r.json()["id"]
@@ -180,14 +185,6 @@ async def test_independent_adjustment_of_the_result_is_preserved(client, session
     assert (await _set_cost(client, auth, a, 120.0)).status_code == 200
     # 200 kept, plus the inherited +20; never rebuilt from source totals (170).
     assert await _cost(session, auth, c) == 220.0
-
-
-@pytest.mark.asyncio
-async def test_merge_cost_override_is_the_baseline_for_later_deltas(client, session, auth):
-    a, b = await _item(client, auth, 100.0), await _item(client, auth, 50.0)
-    c = await _merge(client, auth, [a, b], resulting_cost_total=130.0)
-    assert (await _set_cost(client, auth, b, 45.0)).status_code == 200
-    assert await _cost(session, auth, c) == 125.0
 
 
 @pytest.mark.asyncio
@@ -406,9 +403,18 @@ async def test_broken_lineage_refuses_correction_atomically(client, session, aut
 
 @pytest.mark.asyncio
 async def test_sale_without_an_exact_invoice_line_refuses_correction(client, session, auth):
+    # Sold by converting a memo to an invoice: no invoice line ever fulfilled it.
     item = await _item(client, auth, 100.0)
-    r = await client.post(f"/items/{item}/status", headers=auth["headers"], json={"new_status": "sold"})
+    sku = (await _state(session, auth, item))["sku"]
+    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "memo", "line_items": [
+        {"entity_id": item, "sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "sell_by": "piece"}]})
     assert r.status_code == 200, r.text
+    memo = r.json()["id"]
+    for path, body in ((f"/docs/{memo}/finalize", {}), (f"/docs/{memo}/fulfill-lines", {"line_entity_ids": [item]}),
+                       (f"/docs/{memo}/convert", {})):
+        r = await client.post(path, headers=auth["headers"], json=body)
+        assert r.status_code == 200, r.text
+    assert (await _state(session, auth, item))["status"] == "sold"
     await _assert_refused(client, session, auth, item, [], fragment="invoice line")
 
 
@@ -426,7 +432,7 @@ async def test_cost_permission_is_unchanged(client, session):
             "sku": f"P-{uuid.uuid4().hex[:6]}", "name": "Lot", "quantity": 1, "sell_by": "piece",
             "status": "available", "cost_total": cost})
         ids.append(r.json()["id"])
-    r = await client.post("/items/merge", headers=admin,
+    r = await merge_items(client, headers=admin,
                           json={"source_entity_ids": ids, "target_sku_from": ids[0]})
     c = r.json()["id"]
     body = {"fields_changed": {"cost_total": {"old": 100.0, "new": 120.0}}}
@@ -472,41 +478,6 @@ async def test_csv_cost_upsert_that_cannot_reconcile_changes_nothing(client, ses
     assert body["updated"] == 0 and any("cannot be carried" in e for e in body["errors"]), body
     state = await _state(session, auth, a)
     assert state["cost_total"] == 100.0 and state["name"] == "Lot"
-
-
-@pytest.mark.asyncio
-async def test_manufacturing_recost_of_sold_lot_adjusts_cogs(client, session, auth):
-    from celerp_manufacturing.routes import _recost_run_lots
-
-    lot = await _item(client, auth, 100.0)
-    doc = await _sell(client, session, auth, lot)
-    user = SimpleNamespace(id=auth["user_id"])
-    run = {"received_qty": 1, "received_lots": [lot]}
-    await _recost_run_lots(session, auth["company_id"], user, "mfg:order-sold", run, 120.0)
-    await session.commit()
-
-    assert await _cost(session, auth, lot) == 120.0
-    adjustments = await _cogs_adjustments(session, auth, doc)
-    assert len(adjustments) == 1
-    assert [_cogs(state) for state in adjustments.values()] == [20.0]
-
-
-@pytest.mark.asyncio
-async def test_manufacturing_recost_follows_merge_lineage(client, session, auth):
-    from celerp_manufacturing.routes import _recost_run_lots
-
-    lot, other = await _item(client, auth, 100.0, qty=2), await _item(client, auth, 50.0)
-    merged = await _merge(client, auth, [lot, other])
-    user = SimpleNamespace(id=auth["user_id"])
-    run = {"received_qty": 2, "received_lots": [lot]}
-    await _recost_run_lots(session, auth["company_id"], user, "mfg:order-1", run, 130.0)
-    await session.commit()
-    assert await _cost(session, auth, lot) == 130.0
-    assert await _cost(session, auth, merged) == 180.0
-    # Completing the same run again adds nothing.
-    await _recost_run_lots(session, auth["company_id"], user, "mfg:order-1", run, 130.0)
-    await session.commit()
-    assert await _cost(session, auth, merged) == 180.0
 
 
 # -- Zero-quantity unit cost: one normalization for price, edit and CSV -------

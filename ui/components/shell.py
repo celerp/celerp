@@ -594,6 +594,19 @@ document.addEventListener('click', function(e) {
     }
   });
 });
+// A tab strip wider than the screen scrolls sideways inside itself; bring its current
+// tab into view whenever the strip is drawn, without moving the page.
+function revealActiveTabs() {
+  document.querySelectorAll('.category-tabs').forEach(function(strip) {
+    var tab = strip.querySelector('.category-tab--active');
+    if (!tab || strip.scrollWidth <= strip.clientWidth) return;
+    var left = tab.offsetLeft - strip.offsetLeft;
+    if (left < strip.scrollLeft || left + tab.offsetWidth > strip.scrollLeft + strip.clientWidth)
+      strip.scrollLeft = left - (strip.clientWidth - tab.offsetWidth) / 2;
+  });
+}
+document.addEventListener('DOMContentLoaded', revealActiveTabs);
+document.addEventListener('htmx:afterSettle', revealActiveTabs);
 """
 
 
@@ -2214,49 +2227,50 @@ def _resolve_active_nav_key(active: str, all_items: list[dict], request=None) ->
     return str(best_match.get("key") or active) if best_match else active
 
 
-def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, settings: dict | None = None) -> FT:
-    """Build sidebar entirely from module nav slots + kernel entries."""
-    from collections import defaultdict
+def module_nav(request=None) -> list[dict]:
+    """Nav entries of the modules running in this process and enabled for the caller's
+    company, in display order. Kernel entries (no _module key) always count, as do
+    core-folded components (wired at app construction, never subject to per-company
+    enablement - their pages do their own plan gating). With no modules claim on the
+    token (an older JWT), every running module counts, as a safe fallback. Anything that
+    shows or links to a module's pages asks this, so a module that is off leaves no trace."""
     from ui.config import get_enabled_modules
     from celerp.modules.loader import CORE_FOLDED
-    from celerp.services.permissions import role_has_permission
 
-    settings = settings or {}
-    enabled_modules = get_enabled_modules(request) if request else set()
-
-    def _allowed(item: dict) -> bool:
-        perm = item.get("permission")
-        return role_has_permission(settings, role, perm) if perm else True
-
-    def _module_enabled(item: dict) -> bool:
-        """Kernel entries (no _module key) always show, as do core-folded
-        components (wired at app construction, never subject to per-company
-        enablement - their pages do their own plan gating). Other module
-        entries only show if their module is in the company's enabled set, or
-        if enabled set is empty (old JWT without modules claim - show
-        everything as safe fallback)."""
-        mod = item.get("_module")
-        if mod is None or mod in CORE_FOLDED:
-            return True
-        if not enabled_modules:
-            return True
-        return mod in enabled_modules
-
-    # Collect all nav items from loaded modules
+    enabled = get_enabled_modules(request) if request else set()
     try:
         from celerp.modules.slots import get as get_slot
         slot_items: list[dict] = get_slot("nav")
     except Exception:
         slot_items = []
+    return [item for item in sorted(slot_items + _KERNEL_NAV, key=lambda x: x.get("order", 99))
+            if item.get("_module") is None or item["_module"] in CORE_FOLDED
+            or not enabled or item["_module"] in enabled]
 
-    all_items_raw = sorted(slot_items + _KERNEL_NAV, key=lambda x: x.get("order", 99))
+
+def module_active(request, name: str) -> bool:
+    """Whether module ``name`` is running here and enabled for the caller's company."""
+    return any(item.get("_module") == name for item in module_nav(request))
+
+
+def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, settings: dict | None = None) -> FT:
+    """Build sidebar entirely from module nav slots + kernel entries."""
+    from collections import defaultdict
+    from celerp.services.permissions import role_has_permission
+
+    settings = settings or {}
+
+    def _allowed(item: dict) -> bool:
+        perm = item.get("permission")
+        return role_has_permission(settings, role, perm) if perm else True
+
     # Drop what this company cannot see before deduplicating, not after. Two modules
     # may offer the same section: accounting and reports both declare "reports",
     # because the financial reports stay reachable when the reports module is off.
     # Deduplicating first lets a disabled module's entry win the key and then be
     # filtered out, taking the enabled module's entry with it and leaving the
     # section missing from the nav altogether.
-    visible = [item for item in all_items_raw if _allowed(item) and _module_enabled(item)]
+    visible = [item for item in module_nav(request) if _allowed(item)]
 
     # Deduplicate by key (first occurrence wins - kernel entries are last, so module wins)
     seen_keys: set[str] = set()
@@ -2321,7 +2335,8 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         )
 
     # Blank install: only kernel entries visible — show a helpful prompt
-    has_module_nav = bool(slot_items)
+    from celerp.modules.slots import get as get_slot
+    has_module_nav = bool(get_slot("nav"))
     if not has_module_nav:
         empty_state: list[FT] = [Div(
             P(t("msg.no_modules_installed"), cls="sidebar-empty-title"),

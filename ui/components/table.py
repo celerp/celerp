@@ -183,6 +183,10 @@ BULK_TOOLBAR_JS = """
     if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
     var form=document.createElement('form');
     ids.forEach(function(id){var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;form.appendChild(inp);});
+    // A table that carries its render's operation key sends it, so an action sent again
+    // after a lost answer is recorded once (see ui/components/operation_key.py).
+    var key=t.getAttribute('data-operation-key');
+    if(key){var k=document.createElement('input');k.type='hidden';k.name='idempotency_key';k.value=key;form.appendChild(k);}
     bar.querySelectorAll('.bulk-field[name]').forEach(function(f){
       var inp=document.createElement('input');inp.type='hidden';
       inp.name=f.getAttribute('name');inp.value=f.value;form.appendChild(inp);});
@@ -238,7 +242,7 @@ def bulk_toolbar(table_id: str, actions: list[dict], fields: list | None = None)
     action list appears only when there is a selection for it to act on.
     actions: [{value, label, method('post'|'open'), url, confirm?, target?, swap?}].
     POST actions submit the selected ids (name='selected') via htmx; 'open' actions open
-    url?ids=<csv> in a new tab. Pair with `.bulk-select` row checkboxes + a `.bulk-select-all`
+    url?ids=<csv> in a new tab. A table carrying `operation_key_attrs()` has its key posted too. Pair with `.bulk-select` row checkboxes + a `.bulk-select-all`
     header checkbox in #table_id. `data-table` lives on the outer Div (the JS reads it there).
 
     `confirm` text may contain `{n}`, replaced with the number selected at click time.
@@ -1947,6 +1951,30 @@ function _populateMergeTargets(){
     if(skuInput){skuInput.style.display=isNewSku?'':'none';skuInput.value='';}
     if(skuArrow){skuArrow.style.display=isNewSku?'':'none';}
     if(isNewSku&&skuInput){skuInput.focus();}
+    // Items held in different inventory accounts: say how much value the merge moves
+    // between them before the user confirms.
+    var survivor=isNewSku?CelerpSelection.ids()[0]:sel.value;
+    var note=document.createElement('span');
+    note.id='merge-reclass-note';
+    note.style.fontSize='0.85rem';
+    note.style.display='none';
+    // The confirmation carries the fingerprint of a preview of exactly what it asks
+    // for, so the merge refuses if the items change after the user saw this.
+    function preview(resultingSku){
+      var pf=new FormData();
+      CelerpSelection.ids().forEach(function(id){pf.append('selected',id);});
+      pf.append('target_sku_from',survivor);
+      if(resultingSku) pf.append('resulting_sku',resultingSku);
+      return fetch('/api/items/merge/preview',{method:'POST',body:pf})
+        .then(function(r){return r.json();})
+        .then(function(d){return {message:(d&&(d.message||d.error))||'',fingerprint:(d&&d.plan_fingerprint)||''};})
+        .catch(function(){return {message:'',fingerprint:''};});
+    }
+    function show(p){note.textContent=p.message;note.style.display=p.message?'':'none';}
+    var planned=preview('');
+    planned.then(show);
+    // One key per confirmation, so a repeated click merges once.
+    var mergeKey='merge-'+(window.crypto&&crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());
     var btnRow=document.createElement('div');
     btnRow.style.display='flex';
     btnRow.style.gap='0.5rem';
@@ -1960,23 +1988,37 @@ function _populateMergeTargets(){
         if(skuEl) skuEl.focus();
         return;
       }
-      var form=document.createElement('form');
-      CelerpSelection.ids().forEach(function(id){
-        var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
-        form.appendChild(inp);
-      });
-      var t=document.createElement('input');t.type='hidden';t.name='target_sku_from';
-      t.value=isNewSku?CelerpSelection.ids()[0]:sel.value;
-      form.appendChild(t);
-      if(isNewSku){
-        var sk=document.createElement('input');sk.type='hidden';sk.name='resulting_sku';sk.value=skuEl.value.trim();
-        form.appendChild(sk);
+      var resultingSku=isNewSku?skuEl.value.trim():'';
+      // The typed SKU is part of the merge, so it is previewed with it. If what the
+      // merge moves changed since the user read it, show the new note and wait for
+      // another click.
+      var reviewed=planned;
+      if(resultingSku){
+        reviewed=preview(resultingSku).then(function(p){
+          if(p.message!==note.textContent){show(p);return null;}
+          return p;
+        });
       }
-      document.body.appendChild(form);
-      // Keep the form attached until the request finishes - removing it early detaches the htmx
-      // event source so HX-Trigger toasts (e.g. a unit-mismatch error) never reach the listener.
-      htmx.ajax('POST','/api/items/bulk/merge',{source:form,target:'#bulk-action-result',swap:'outerHTML'})
-        .then(function(){form.remove();},function(){form.remove();});
+      reviewed.then(function(p){
+        if(!p) return;
+        var fingerprint=p.fingerprint;
+        var form=document.createElement('form');
+        CelerpSelection.ids().forEach(function(id){
+          var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
+          form.appendChild(inp);
+        });
+        var fields={target_sku_from:survivor,idempotency_key:mergeKey,resulting_sku:resultingSku,plan_fingerprint:fingerprint};
+        Object.keys(fields).forEach(function(name){
+          if(!fields[name]) return;
+          var inp=document.createElement('input');inp.type='hidden';inp.name=name;inp.value=fields[name];
+          form.appendChild(inp);
+        });
+        document.body.appendChild(form);
+        // Keep the form attached until the request finishes - removing it early detaches the htmx
+        // event source so HX-Trigger toasts (e.g. a unit-mismatch error) never reach the listener.
+        htmx.ajax('POST','/api/items/bulk/merge',{source:form,target:'#bulk-action-result',swap:'outerHTML'})
+          .then(function(){form.remove();},function(){form.remove();});
+      });
     });
     var cancel=document.createElement('button');
     cancel.type='button';cancel.className='btn btn--ghost btn--sm';cancel.textContent='Cancel';
@@ -1988,6 +2030,7 @@ function _populateMergeTargets(){
       _clearBulkResult();
     });
     confirmDiv.appendChild(msg);
+    confirmDiv.appendChild(note);
     btnRow.appendChild(btn);
     btnRow.appendChild(cancel);
     confirmDiv.appendChild(btnRow);
@@ -2033,6 +2076,8 @@ function sendToTypeChanged(docType, docLabel){
     var revertOpt=document.querySelector('#bulk-action-select option[value="revert_to_draft"]');
     if(makeAvailOpt) makeAvailOpt.hidden=!hasDraft;
     if(revertOpt) revertOpt.hidden=!hasNonDraft;
+    var deleteOpt=document.querySelector('#bulk-action-select option[value="delete"]');
+    if(deleteOpt) deleteOpt.hidden=!(hasDraft&&!hasNonDraft);
   }
   var table=document.getElementById('data-table');
   if(!table) return;
