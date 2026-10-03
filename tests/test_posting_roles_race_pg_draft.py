@@ -254,8 +254,8 @@ async def test_fulfil_racing_revert_loser_clean_conflict(committed_engine, race)
 
 
 async def test_reserve_racing_revert_rejected_from_locked_state(committed_engine, race):
-    """Revert to Draft holds its commit; a reservation, whose own check saw the lot still
-    available, waits for the lot. Applied to the draft it finds, it is refused."""
+    """Revert to Draft holds its commit; a reservation waits for the lot, then its own
+    check reads the draft it finds and refuses."""
     client, hold = race
     cid, tok = await _company(committed_engine)
     lot = await _available(client, tok, 100.0)
@@ -266,7 +266,7 @@ async def test_reserve_racing_revert_rejected_from_locked_state(committed_engine
         lambda: client.post(f"/items/{lot}/reserve", headers=auth(tok), json={"quantity": 1}))
 
     assert revert.status_code == 200, revert.text
-    assert reserve.status_code == 409, reserve.text
+    assert reserve.status_code == 422, reserve.text
     assert "make it available first" in reserve.json()["detail"]
     assert (await _state(committed_engine, cid, lot))["status"] == "draft"
     await _books(committed_engine, cid)
