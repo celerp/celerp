@@ -11,7 +11,8 @@ Five states, five jobs:
                    action, reconnect the same account so they can be checked
 
 Below any of the last four, the payments received for a company or invoice that no
-longer exists, when there are any.
+longer exists, and the refunds of online payments that could not be applied yet, when
+there are any.
 """
 
 from __future__ import annotations
@@ -97,8 +98,14 @@ def _revoked() -> FT:
     )
 
 
-def _unmatched(payments: list[dict]) -> FT | str:
-    """Payments received that could not be recorded on an invoice, newest first."""
+def _unmatched(unmatched: dict) -> FT | str:
+    """Payments received that could not be recorded on an invoice, then the refunds of
+    online payments that could not be applied yet, each newest first."""
+    return Div(_unmatched_payments(unmatched.get("items", [])),
+               _unmatched_refunds(unmatched.get("refunds", [])))
+
+
+def _unmatched_payments(payments: list[dict]) -> FT | str:
     if not payments:
         return ""
     return Div(
@@ -116,9 +123,29 @@ def _unmatched(payments: list[dict]) -> FT | str:
     )
 
 
+def _unmatched_refunds(refunds: list[dict]) -> FT | str:
+    if not refunds:
+        return ""
+    return Div(
+        H3(t("pay.unmatched_refunds_head"), cls="section-title"),
+        P(t("pay.unmatched_refunds_hint"), cls="form-hint"),
+        Table(
+            Thead(Tr(Th(t("pay.unmatched_received")), Th(t("pay.unmatched_refunded_on")), Th(t("label.reference")),
+                     Th(t("label.amount"), cls="cell--number"), Th(t("th.type")), Th(t("th.company")),
+                     Th(t("th.document")))),
+            Tbody(*[Tr(Td(r["received_at"][:10]), Td((r.get("occurred_at") or "")[:10] or EMPTY), Td(r["reference"]),
+                       Td(fmt_money(r["amount"], r["currency"]), cls="cell--money"),
+                       Td(t(f"pay.refund_{r['transition']}")), Td(r["company_id"]), Td(r["document_id"]))
+                    for r in refunds]),
+            cls="data-table",
+        ),
+        cls="settings-card", style="margin-top:24px;",
+    )
+
+
 def _page(relay_ok: bool, enabled: bool, deposit_account: str,
           bank_accounts: list[dict], has_team_features: bool, saved: bool = False,
-          state: str | None = None, unmatched: list[dict] | None = None) -> FT:
+          state: str | None = None, unmatched: dict | None = None) -> FT:
     if not relay_ok:
         body = upgrade_banner(t("nav.payments"), t("pay.upgrade_desc"), plan="cloud")
     elif state == "revoked":
@@ -133,11 +160,11 @@ def _page(relay_ok: bool, enabled: bool, deposit_account: str,
         page_header(t("nav.payments")),
         _cloud_tabs("payments", has_team_features=has_team_features),
         body,
-        _unmatched(unmatched or []) if relay_ok else "",
+        _unmatched(unmatched or {}) if relay_ok else "",
     )
 
 
-async def _load(token: str) -> tuple[bool, bool, str, list[dict], str | None, list[dict]]:
+async def _load(token: str) -> tuple[bool, bool, str, list[dict], str | None, dict]:
     relay_ok = False
     try:
         relay_ok = _relay_has_paid_access(await api.get_relay_status(token))
@@ -153,9 +180,9 @@ async def _load(token: str) -> tuple[bool, bool, str, list[dict], str | None, li
             banks = (await api.get_bank_accounts(token)).get("items", [])
         except APIError:
             pass
-    unmatched: list[dict] = []
+    unmatched: dict = {}
     try:
-        unmatched = (await api.get_unmatched_payments(token)).get("items", [])
+        unmatched = await api.get_unmatched_payments(token)
     except APIError:
         pass  # only the installation owner sees them
     return relay_ok, enabled, deposit, banks, status.get("state"), unmatched

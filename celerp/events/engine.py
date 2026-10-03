@@ -54,7 +54,10 @@ async def stripe_payment_indexes(session, company_id, entity_id, payments: list[
 
 
 async def _refuse_stripe_payment_removal(session, kwargs: dict) -> None:
-    """Refuse to void, delete or refund a payment Stripe holds the money for."""
+    """Refuse to void, delete or refund a payment Stripe holds the money for, except
+    a refund Stripe itself reports (``payments.receive_refund``)."""
+    if kwargs.get("event_type") == "doc.payment.refunded" and kwargs.get("source") == "stripe":
+        return
     row = await session.get(Projection, (kwargs.get("company_id"), kwargs.get("entity_id")))
     if row is None or row.entity_type != "doc":
         return

@@ -22,7 +22,7 @@ import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.events.engine import emit_event, find_event_by_idempotency, stripe_payment_indexes
+from celerp.events.engine import STRIPE_OWNED_PAYMENT, emit_event, find_event_by_idempotency, stripe_payment_indexes
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
@@ -2819,29 +2819,33 @@ def _refundable(payment: dict, currency: str):
     return round_money(payment.get("amount") or 0, currency) - round_money(payment.get("refunded") or 0, currency)
 
 
-@router.post("/{entity_id}/refund")
-async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id, for_update=True)
-    key, digest = _operation("refund", entity_id, payload)
-    if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.refunded",
-                                   entity_id=entity_id, digest=digest)) is not None:
-        return done
+@dataclass(frozen=True)
+class RefundBooks:
+    """The books a refund of a payment posts on: the bank the payment went to, the
+    company currency and the two rates the payment posted at."""
+    bank_account: str
+    base_currency: str
+    doc_rate: float
+    settlement_rate: float
+
+
+async def apply_payment_refund(session, company_id, entity_id: str, row: Projection, payment: dict, *,
+                               amount, refund_date: str, books: RefundBooks, data: dict,
+                               actor_id, source: str, idempotency_key: str, metadata_: dict | None = None):
+    """Give back *amount* of *payment* on the locked document *row*: emit
+    doc.payment.refunded and post the entry that reverses the refunded share of the
+    payment, on *books*. The one refund implementation, for the refund route and for
+    a refund Stripe reports (``payments.receive_refund``). 422/409 when the payment
+    cannot give that much back; the caller commits. Returns the event, flagged
+    ``was_deduped`` when *idempotency_key* already recorded it."""
     _reject_if_closed(row.state, "refund a payment")
     currency = str(row.state.get("currency") or "USD").upper()
-    if payload.currency and str(payload.currency).upper() != currency:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Refund currency {str(payload.currency).upper()} does not match document currency {currency}",
-        )
-    payment = next((p for p in row.state.get("payments", []) if p.get("index") == payload.payment_index), None)
-    if payment is None or payment.get("status") != "active":
-        raise HTTPException(status_code=422, detail="Choose a payment on this document to refund.")
     if payment.get("method") in ("credit_note", "applied"):
         raise HTTPException(
             status_code=422,
             detail="A credit note application moved no money, so it cannot be refunded. Void it instead.",
         )
-    amount_d = round_money(payload.amount, currency)
+    amount_d = round_money(amount, currency)
     if amount_d <= 0:
         raise HTTPException(status_code=422, detail="Refund amount must be positive")
     left = min(_refundable(payment, currency), round_money(row.state.get("amount_paid", 0) or 0, currency))
@@ -2852,26 +2856,93 @@ async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = 
         )
     refund_number = int(payment.get("refund_count", 0))
     given_back = float(payment.get("refunded") or 0)
-    refund_data = payload.model_dump(exclude_none=True, exclude={"payment_date", "idempotency_key"})
-    refund_data.update(amount=to_stored_float(amount_d), currency=currency, refund_date=payload.payment_date,
-                       method=payload.method or payment.get("method"))
+    refund_data = {**data, "amount": to_stored_float(amount_d), "currency": currency, "refund_date": refund_date,
+                   "payment_index": payment.get("index"), "method": data.get("method") or payment.get("method"),
+                   "refund_number": refund_number}
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.refunded",
-        data=refund_data, actor_id=user.id, location_id=None, source="api",
-        idempotency_key=key, metadata_={"request": digest},
+        data=refund_data, actor_id=actor_id, location_id=None, source=source,
+        idempotency_key=idempotency_key, metadata_=metadata_ or {},
     )
-    company = await session.get(Company, company_id)
+    if getattr(entry, "was_deduped", False):
+        return entry
     # The refund gives back this payment's money: the same bank, at the same two rates
     # the payment posted at, in proportion to the amount refunded.
     await auto_je.void_for_doc_payment(
-        session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-        payment_index=payload.payment_index, amount=to_stored_float(amount_d),
-        bank_account_code=payment.get("bank_account") or "1111",
-        doc_type=row.state.get("doc_type", "invoice"), refund_date=payload.payment_date,
-        base_currency=(company.settings.get("currency", "USD") if company else "USD"),
-        doc_rate=float(row.state.get("conversion_rate") or 1),
-        settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1),
+        session, company_id=company_id, user_id=actor_id, doc_id=entity_id,
+        payment_index=payment.get("index"), amount=to_stored_float(amount_d),
+        bank_account_code=books.bank_account, doc_type=row.state.get("doc_type", "invoice"),
+        refund_date=refund_date, base_currency=books.base_currency,
+        doc_rate=books.doc_rate, settlement_rate=books.settlement_rate,
         refund_number=refund_number, already_given_back=given_back,
+    )
+    return entry
+
+
+async def reverse_payment_refund(session, company_id, entity_id: str, row: Projection, payment: dict,
+                                 refund: dict, *, reversal_date: str, actor_id, source: str,
+                                 idempotency_key: str):
+    """Undo *refund*, the data of a doc.payment.refunded event of *payment* on the locked
+    document *row*, when the money it gave back came back: emit
+    doc.payment.refund_reversed and post the exact mirror of the refund's entry. The
+    caller commits. Returns the event, flagged ``was_deduped`` when *idempotency_key*
+    already recorded it."""
+    from celerp.services.je_keys import je_idempotency_key
+    index, number = payment.get("index"), refund["refund_number"]
+    key = f"refund_{index}_{number}"
+    refund_je = await session.get(Projection, {"company_id": company_id,
+                                                "entity_id": f"je:auto:{entity_id}:payrefund:{key}"})
+    if refund_je is None:
+        raise HTTPException(status_code=409, detail="The refund being reversed has no journal entry to reverse.")
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
+        event_type="doc.payment.refund_reversed",
+        data={"payment_index": index, "refund_number": number, "amount": refund["amount"],
+              "refund_id": refund.get("refund_id"), "reversal_date": reversal_date},
+        actor_id=actor_id, location_id=None, source=source, idempotency_key=idempotency_key,
+    )
+    if getattr(entry, "was_deduped", False):
+        return entry
+    await auto_je._emit_auto_posted_je(
+        session, company_id=company_id, user_id=actor_id,
+        je_id=f"je:auto:{entity_id}:payrefundrev:{key}",
+        idem_create=je_idempotency_key(entity_id, f"payment.refund_reversed:{key}", "c"),
+        idem_posted=je_idempotency_key(entity_id, f"payment.refund_reversed:{key}", "p"),
+        memo=f"Auto JE for {entity_id} payment refund reversed (index {index})",
+        ts=reversal_date, currency=refund_je.state.get("currency"),
+        entries=[{"account": e["account"], "debit": e.get("credit") or 0.0, "credit": e.get("debit") or 0.0}
+                 for e in refund_je.state.get("entries", [])],
+        metadata_={"trigger": "doc.payment.refund_reversed", "doc_id": entity_id, "payment_index": index},
+    )
+    return entry
+
+
+@router.post("/{entity_id}/refund")
+async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("refund", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.refunded",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
+    currency = str(row.state.get("currency") or "USD").upper()
+    if payload.currency and str(payload.currency).upper() != currency:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Refund currency {str(payload.currency).upper()} does not match document currency {currency}",
+        )
+    payment = next((p for p in row.state.get("payments", []) if p.get("index") == payload.payment_index), None)
+    if payment is None or payment.get("status") != "active":
+        raise HTTPException(status_code=422, detail="Choose a payment on this document to refund.")
+    company = await session.get(Company, company_id)
+    entry = await apply_payment_refund(
+        session, company_id, entity_id, row, payment, amount=payload.amount, refund_date=payload.payment_date,
+        books=RefundBooks(
+            bank_account=payment.get("bank_account") or "1111",
+            base_currency=(company.settings.get("currency", "USD") if company else "USD"),
+            doc_rate=float(row.state.get("conversion_rate") or 1),
+            settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1)),
+        data=payload.model_dump(exclude_none=True, exclude={"payment_date", "idempotency_key", "amount", "currency"}),
+        actor_id=user.id, source="api", idempotency_key=key, metadata_={"request": digest},
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -3078,6 +3149,9 @@ async def delete_payment(
         raise HTTPException(status_code=422, detail="Invalid payment index")
     if payment.get("status") != "active":
         raise HTTPException(status_code=409, detail="Only active payments can be deleted")
+    if payment_index in await stripe_payment_indexes(session, company_id, entity_id, payments):
+        # Said before "void it instead": a Stripe payment can be voided only in Stripe either.
+        raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
     if payment.get("refunded"):
         raise HTTPException(
             status_code=409,

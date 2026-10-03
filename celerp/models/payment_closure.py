@@ -74,3 +74,30 @@ class UnmatchedPayment(Base):
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False)
     # When the customer paid, as the payment provider reported it; None when not reported.
     paid_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+
+
+class UnmatchedRefund(Base):
+    """A change to a Stripe refund of an online payment, delivered by Celerp Cloud, that
+    could not be applied to the payment yet: the payment is among the unmatched
+    payments or has not arrived, its company or invoice no longer exists, or the
+    payment cannot take it. Kept with the unmatched payments under the payment's
+    reference, with the books the payment was recorded on, and applied in the order
+    Stripe reported, as soon as its payment is on its invoice.
+
+    ``transition`` is "applied" (the refund succeeded) or "reversed" (an applied refund
+    later failed or was canceled)."""
+
+    __tablename__ = "unmatched_refunds"
+
+    refund_id: Mapped[str] = mapped_column(sa.String(255), primary_key=True)
+    transition: Mapped[str] = mapped_column(sa.String(16), primary_key=True)
+    reference: Mapped[str] = mapped_column(sa.String(255), nullable=False, index=True)
+    amount_minor: Mapped[int] = mapped_column(sa.BigInteger, nullable=False)
+    currency: Mapped[str] = mapped_column(sa.String(8), nullable=False)
+    former_company: Mapped[str] = mapped_column(sa.String(64), nullable=False)
+    document: Mapped[str] = mapped_column(sa.String(255), nullable=False)
+    # When Stripe reported the change; None when not reported.
+    occurred_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    context: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False)

@@ -70,6 +70,7 @@ class EventType(StrEnum):
     DOC_SENT = "doc.sent"
     DOC_PAYMENT_RECEIVED = "doc.payment.received"
     DOC_PAYMENT_REFUNDED = "doc.payment.refunded"
+    DOC_PAYMENT_REFUND_REVERSED = "doc.payment.refund_reversed"
     DOC_CONVERTED = "doc.converted"
     DOC_RECEIVED = "doc.received"
     DOC_ITEMS_RETURNED = "doc.items_returned"

@@ -149,7 +149,8 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     The same charge (Stripe payment_intent) recorded again is a quiet None. A charge
     the invoice cannot take whole (it is already paid, or owes less than the charge)
     raises the invoice's 409: apply_doc_payment decides that under the document's
-    row lock, against what it owes at that moment."""
+    row lock, against what it owes at that moment. The caller commits, so the refunds
+    Stripe reported before the payment could be recorded apply with it."""
     if not reference:
         return None
     if any(p.get("reference") == reference and p.get("status") != "deleted"
@@ -170,7 +171,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
         entry, _amount = await apply_doc_payment(
             session, company_id, entity_id, body,
             source="stripe", actor_id=await _company_owner_id(session, company_id),
-            idempotency_key=reference, books=(base, rate),
+            idempotency_key=reference, books=(base, rate), commit=False,
         )
     except HTTPException as exc:
         if exc.status_code == 409 and exc.detail == "Payment already recorded":
@@ -178,8 +179,72 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
         raise
     if getattr(entry, "was_deduped", False):
         return None
-    await session.commit()
     return entry
+
+
+REFUND_TRANSITIONS = ("applied", "reversed")
+
+
+def stripe_refund_key(refund_id: str, transition: str) -> str:
+    """The ledger idempotency key of one change to a Stripe refund."""
+    return f"stripe-refund:{refund_id}:{transition}"
+
+
+async def record_stripe_refund(session, company_id, row: Projection, *, refund_id: str, transition: str,
+                               reference: str, amount_minor: int, currency: str,
+                               occurred_at: datetime.datetime | None, context):
+    """Apply a change Stripe reported to a refund of the online payment *reference* on
+    the locked document *row*. Only ``payments.receive_refund`` and the drain of
+    parked refunds call it; the caller commits.
+
+    "applied" gives the money back from the payment (``apply_payment_refund``) on
+    *context*, the books the payment was recorded on, dated their business day at
+    *occurred_at*. "reversed" undoes an applied refund with one mirror entry. The same
+    change recorded again is a quiet None. A change that cannot be applied raises a
+    4xx and is kept for later: the payment is not on the invoice, the refund was never
+    applied, it gives back more than is left of the payment (never cut down to fit),
+    or it carries no usable books, currency or time."""
+    from celerp.events.engine import find_event_by_idempotency
+    from celerp_docs.routes import RefundBooks, apply_payment_refund, reverse_payment_refund
+    entity_id = row.entity_id
+    key = stripe_refund_key(refund_id, transition)
+    if await find_event_by_idempotency(session, company_id, key) is not None:
+        return None
+    account, timezone, base, rate = await _checked_books(session, company_id, context)
+    if occurred_at is None:
+        raise HTTPException(status_code=422, detail="The refund carries no time it happened")
+    doc_currency = str(row.state.get("currency") or "USD").upper()
+    if currency.upper() != doc_currency:
+        raise HTTPException(status_code=422, detail=f"Refund currency {currency.upper()} does not match "
+                                                    f"document currency {doc_currency}")
+    payment = next((p for p in row.state.get("payments", [])
+                    if p.get("reference") == reference and p.get("status") == "active"), None)
+    if payment is None or payment.get("method") != "stripe":
+        raise HTTPException(status_code=409, detail="The refunded payment is not on this document")
+    if payment.get("bank_account") != account or Decimal(str(payment.get("conversion_rate"))) != rate:
+        raise HTTPException(status_code=422, detail="The refund carries other books than its payment was recorded on")
+    try:
+        amount = pay.from_stripe_amount(amount_minor, currency)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    day = business_date_at(occurred_at, timezone)
+    actor = await _company_owner_id(session, company_id)
+    if transition == "applied":
+        return await apply_payment_refund(
+            session, company_id, entity_id, row, payment, amount=float(amount), refund_date=day,
+            books=RefundBooks(bank_account=account, base_currency=base, doc_rate=float(rate),
+                              settlement_rate=float(rate)),
+            data={"method": "stripe", "reference": reference, "refund_id": refund_id},
+            actor_id=actor, source="stripe", idempotency_key=key)
+    applied = await find_event_by_idempotency(session, company_id, stripe_refund_key(refund_id, "applied"))
+    if applied is None:
+        raise HTTPException(status_code=409, detail="The refund being reversed was never applied")
+    refund = dict(applied.data or {})
+    if refund.get("payment_index") != payment.get("index") or Decimal(str(refund.get("amount"))) != amount:
+        raise HTTPException(status_code=422, detail="The reversal does not match the refund it reverses")
+    return await reverse_payment_refund(session, company_id, entity_id, row, payment, refund,
+                                        reversal_date=day, actor_id=actor, source="stripe",
+                                        idempotency_key=key)
 
 
 # ── Public: pay, and the customer's return ───────────────────────────────────
@@ -267,10 +332,16 @@ async def payments_disconnect() -> dict:
 @router.get("/payments/unmatched", dependencies=[Depends(require_install_owner)])
 async def payments_unmatched(session: AsyncSession = Depends(get_session)) -> dict:
     """Online payments received for a company or invoice that no longer exists, or
-    that the invoice refused, newest first."""
+    that the invoice refused, and the refunds of online payments kept until their
+    payment is on its invoice, each newest first."""
     return {"items": [{
         "reference": p.reference, "amount": float(pay.stripe_amount(p.amount_minor, p.currency)),
         "currency": p.currency, "company_id": p.former_company, "document_id": p.document,
         "received_at": p.received_at.isoformat(),
         "paid_at": p.paid_at.isoformat() if p.paid_at else None,
-    } for p in await pay.unmatched_payments(session)]}
+    } for p in await pay.unmatched_payments(session)], "refunds": [{
+        "refund_id": r.refund_id, "transition": r.transition, "reference": r.reference,
+        "amount": float(pay.stripe_amount(r.amount_minor, r.currency)), "currency": r.currency,
+        "company_id": r.former_company, "document_id": r.document, "received_at": r.received_at.isoformat(),
+        "occurred_at": r.occurred_at.isoformat() if r.occurred_at else None,
+    } for r in await pay.unmatched_refunds(session)]}

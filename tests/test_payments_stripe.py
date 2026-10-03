@@ -342,6 +342,7 @@ async def test_backup_push_records_and_is_idempotent(client, session, payments_o
     await record_stripe_payment(session, cid, eid, dict(row.state),
                                 reference="pi_push", amount_minor=107000, currency="usd",
                                 paid_at=PAID, context=BOOKS)
+    await session.commit()
     doc = await _doc_state(client, tok, eid)
     assert doc["status"] == "paid"
     assert len([p for p in doc["payments"] if p.get("reference") == "pi_push"]) == 1
@@ -350,6 +351,7 @@ async def test_backup_push_records_and_is_idempotent(client, session, payments_o
     await record_stripe_payment(session, cid, eid, dict(row2.state),
                                 reference="pi_push", amount_minor=107000, currency="usd",
                                 paid_at=PAID, context=BOOKS)
+    await session.commit()
     doc2 = await _doc_state(client, tok, eid)
     assert len([p for p in doc2["payments"] if p.get("reference") == "pi_push"]) == 1
 
@@ -382,6 +384,7 @@ async def test_a_payment_clears_to_the_deposit_account_its_page_opened_with(clie
     row = await session.get(Projection, (cid, eid))
     await record_stripe_payment(session, cid, eid, dict(row.state), reference="pi_acct", amount_minor=107000,
                                 currency="usd", paid_at=PAID, context=opened)
+    await session.commit()
     doc = await _doc_state(client, tok, eid)
     pay_entry = next(p for p in doc["payments"] if p.get("reference") == "pi_acct")
     assert opened["deposit_account"] == "1111" and pay_entry["bank_account"] == "1111"
@@ -667,6 +670,7 @@ async def test_online_payment_posts_exactly_one_journal_entry(client, session, p
     await record_stripe_payment(session, cid, eid, dict(row.state),
                                 reference="pi_je", amount_minor=107000, currency="usd",
                                 paid_at=PAID, context=BOOKS)
+    await session.commit()
     assert await _pay_je_entities(session, cid, eid) == [f"je:auto:{eid}:pay:0"]
 
 
@@ -879,7 +883,7 @@ async def test_unmatched_payments_are_listed_newest_first(client, session):
         {"reference": "pi_old", "amount": 1070.0, "currency": "USD", "company_id": "c-old",
          "document_id": "doc:1", "received_at": "2026-09-28T09:00:00+00:00",
          "paid_at": "2026-09-25T09:00:00+00:00"},
-    ]}
+    ], "refunds": []}
 
 
 @pytest.mark.asyncio

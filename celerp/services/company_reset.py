@@ -42,6 +42,7 @@ INSTALL_WIDE = {
     "payment_closures": "requests to close a company's online payments, which outlive the company",
     "payment_recoveries": "the installation's System Recovery restores, as Celerp Cloud must learn of them",
     "unmatched_payments": "online payments received for a company or invoice that no longer exists",
+    "unmatched_refunds": "refunds of online payments kept until their payment is on its invoice",
 }
 
 NAME_MISMATCH = "The name you typed does not match this company's name. Nothing was deleted."

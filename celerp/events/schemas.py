@@ -645,6 +645,18 @@ class DocPaymentRefunded(BaseModel):
     method: str | None = None
     payment_index: int | None = None  # the payment the money is given back from
     refund_date: str | None = None
+    refund_number: int | None = None  # which refund of the payment; names its journal entry
+    refund_id: str | None = None  # the Stripe refund, for a refund Stripe reported
+
+
+class DocPaymentRefundReversed(BaseModel):
+    """A refund Stripe reported failed or was canceled after it was applied: its money
+    came back to the payment."""
+    payment_index: int
+    refund_number: int
+    amount: float
+    refund_id: str | None = None
+    reversal_date: str | None = None
 
 
 class DocPaymentVoided(BaseModel):
@@ -1273,6 +1285,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.sent": DocSent,
     "doc.payment.received": DocPaymentReceived,
     "doc.payment.refunded": DocPaymentRefunded,
+    "doc.payment.refund_reversed": DocPaymentRefundReversed,
     "payment_batch.recorded": PaymentBatchRecorded,
     "doc.payment.voided": DocPaymentVoided,
     "doc.payment.deleted": DocPaymentDeleted,

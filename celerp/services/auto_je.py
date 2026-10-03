@@ -480,6 +480,7 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
         idem_posted=je_idempotency_key(doc_id, f"{trigger.removeprefix('doc.')}:{key}", "p"),
         memo=memo,
         ts=refund_date,
+        currency=base_currency.upper(),
         entries=entries,
         metadata_={"trigger": trigger, "doc_id": doc_id, "payment_index": payment_index},
     )
