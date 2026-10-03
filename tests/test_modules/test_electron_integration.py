@@ -128,7 +128,10 @@ class TestElectronMainJS:
         """seedDefaultModules must re-seed bundled modules when the app version
         changes, so shipped module fixes reach users who upgrade in place."""
         assert "app.getVersion()" in self._src
-        assert ".default-modules-version" in self._src
+        # The version record's name is shared with the startup data-version guard.
+        assert "writeMarker(markerPath, appVersion)" in self._src
+        assert 'MARKER_NAME = ".default-modules-version"' in (
+            ELECTRON_MAIN.parent / "data-version.js").read_text()
         # A version change replaces the installed copy (remove + re-copy).
         assert "fs.rmSync(dst" in self._src
 
