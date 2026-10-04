@@ -150,14 +150,21 @@ def snapshot(url: str) -> dict:
                 "indexes": rows(
                     "SELECT tablename, indexname, indexdef FROM pg_indexes "
                     "WHERE schemaname = 'public' ORDER BY 1, 2"),
-                # Who owns what, and every privilege granted on the database, the
+                # Who owns what, and the privileges in effect on the database, the
                 # schema and its tables: what init's ownership and grant steps change.
+                # Effective, so granting an owner what it already holds is no change.
                 "owners": rows(
-                    "SELECT c.relname, pg_get_userbyid(c.relowner), coalesce(c.relacl::text, '') "
+                    "SELECT c.relname, pg_get_userbyid(c.relowner), "
+                    "(SELECT array_agg(a::text ORDER BY a::text) FROM aclexplode("
+                    "coalesce(c.relacl, acldefault(CASE c.relkind WHEN 'S' THEN 's' ELSE 'r' END::\"char\", c.relowner))) a) "
                     "FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace ORDER BY 1"),
                 "acl": rows(
-                    "SELECT coalesce((SELECT datacl::text FROM pg_database WHERE datname = current_database()), ''), "
-                    "coalesce((SELECT nspacl::text FROM pg_namespace WHERE nspname = 'public'), ''), "
+                    "SELECT (SELECT array_agg(a::text ORDER BY a::text) FROM pg_database d, "
+                    "aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) a "
+                    "WHERE d.datname = current_database()), "
+                    "(SELECT array_agg(a::text ORDER BY a::text) FROM pg_namespace n, "
+                    "aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) a "
+                    "WHERE n.nspname = 'public'), "
                     "(SELECT count(*) FROM pg_default_acl)"),
                 "constraints": rows(
                     "SELECT conrelid::regclass::text, conname, pg_get_constraintdef(oid) FROM pg_constraint "
