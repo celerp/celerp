@@ -37,12 +37,17 @@ version, so a process that dies releases it with its connection. Other dialects
 
 A process can also lose its fence while it lives: its fence session ends (a
 Postgres restart, a dropped connection, a terminated backend) and the pool simply
-reconnects. So a long-running process ``guard``s the engines it writes through:
-every transaction on them first takes this version's fence lock for its own
-lifetime and confirms the process's fence session still holds it. If the fence
-is gone it is taken again, after the database is classified again, before the
-transaction may go on; when the database now records a newer version, the
-process ends instead.
+reconnects. So every engine a process writes through is ``guard``ed: every
+transaction on it first takes this version's fence lock for its own lifetime and
+confirms the process's fence session still holds it. If the fence is gone it is
+taken again, after the database is classified again, before the transaction may
+go on; when the database now records a newer version, the process ends instead.
+
+``mutating_scope`` is the one way a command changes a database: it joins the
+fence and admits this copy first, and inside it every engine comes from
+``Fence.engine`` (guarded) and every writer outside SQLAlchemy (psql, pg_restore)
+runs inside ``Fence.write_window``. A long-running server joins once and guards
+its own pooled engines.
 """
 from __future__ import annotations
 
@@ -273,14 +278,8 @@ _OTHER_HOLDERS = sa.text(
 )
 
 
-# Fences this process holds, newest last (see current_fence).
+# Fences this process holds, newest last (see held_fence).
 _HELD: list["Fence"] = []
-
-
-def current_fence() -> "Fence | None":
-    """The fence this process most recently joined and still holds, for a writer
-    that opens its own engine inside it (migrations, restore) to ``guard``."""
-    return _HELD[-1] if _HELD else None
 
 
 class Fence:
@@ -292,7 +291,8 @@ class Fence:
     """
 
     def __init__(self, sync_url: str, accept: str | None = None):
-        self._engine = sa.create_engine(sync_url, poolclass=sa.pool.NullPool)
+        self._url = sa.engine.make_url(sync_url)
+        self._engine = sa.create_engine(self._url, poolclass=sa.pool.NullPool)
         self._conn: sa.Connection | None = None
         self._accept = accept
         self._key = _cohort_key(running_version())
@@ -357,6 +357,25 @@ class Fence:
             sa.event.listen(target, "begin", self._gate)
             self._guarded.append(target)
 
+    @contextlib.contextmanager
+    def engine(self, **kwargs):
+        """A new engine on the fenced database, guarded for as long as it is open."""
+        engine = sa.create_engine(self._url, **kwargs)
+        self.guard(engine)
+        try:
+            yield engine
+        finally:
+            self.unguard(engine)
+            engine.dispose()
+
+    @contextlib.contextmanager
+    def write_window(self):
+        """Hold a guarded transaction open while a writer outside SQLAlchemy (psql,
+        pg_restore) runs, so it cannot outlast the fence it started under: no
+        other version is admitted until the block ends."""
+        with self.engine(poolclass=sa.pool.NullPool) as engine, engine.begin():
+            yield
+
     def unguard(self, *engines) -> None:
         """Stop gating *engines* (a writer's own engine, before it is disposed)."""
         for engine in engines:
@@ -419,10 +438,12 @@ class Fence:
         finally:
             self._conn.rollback()
 
-    def admit(self, accept: str | None = None) -> Compatibility:
-        """Admit this copy and commit the record (see admit)."""
-        with self._conn.begin():
-            return admit(self._conn, accept)
+    def admit(self) -> Compatibility:
+        """Admit this copy and commit the record (see admit), in a guarded
+        transaction: a fence lost since it was joined is confirmed or taken again
+        first."""
+        with self.engine(poolclass=sa.pool.NullPool) as engine, engine.begin() as conn:
+            return admit(conn, self._accept)
 
     def release(self) -> None:
         """Give up the fence. Closing the connection releases the lock; safe to repeat."""
@@ -444,25 +465,32 @@ def _end_process(exc: IncompatibleDatabase) -> None:
     os._exit(1)
 
 
+def _same_database(a: sa.engine.URL, b: sa.engine.URL) -> bool:
+    return ((a.host, a.port, a.database, dict(a.query))
+            == (b.host, b.port, b.database, dict(b.query)))
+
+
+def held_fence(sync_url: str) -> "Fence | None":
+    """The fence this process holds on *sync_url*'s database, if any."""
+    url = sa.engine.make_url(sync_url)
+    return next((f for f in reversed(_HELD) if _same_database(f._url, url)), None)
+
+
 @contextlib.contextmanager
-def fence(sync_url: str, accept: str | None = None):
-    """Join the fence and admit this copy for the wrapped block."""
+def mutating_scope(sync_url: str, accept: str | None = None):
+    """The one scope a command changes a database in (see the module docstring):
+    this version's fence, joined and admitted before anything else, yielded for
+    the block's engines (``Fence.engine``) and outside writers
+    (``Fence.write_window``). Inside a fence this process already holds on the
+    same database, that fence is reused and admitted again."""
+    held = held_fence(sync_url)
+    if held is not None:
+        held.admit()
+        yield held
+        return
     held = Fence.join(sync_url, accept)
     try:
-        held.admit(accept)
+        held.admit()
         yield held
-    finally:
-        held.release()
-
-
-def admit_url(sync_url: str) -> Compatibility:
-    """Admit this copy to *sync_url*'s database and commit the record (see admit).
-
-    Takes the fence only for the admission: callers that go on writing hold a
-    fence of their own around this.
-    """
-    held = Fence.join(sync_url)
-    try:
-        return held.admit()
     finally:
         held.release()

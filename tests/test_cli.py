@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import subprocess
@@ -189,7 +190,7 @@ def test_init_force_stops_servers_and_regenerates_secret(tmp_config, valid_cfg):
 
 def test_init_migrates_through_the_shared_path(tmp_config):
     """init takes the same migrate path as start, so grants land after migrations,
-    and holds this version's fence from before the ownership fix until it is done.
+    and is admitted, in its mutating scope, before the ownership fix and until it is done.
 
     Sequences and tables created by a migration are not covered by the ALTER
     DEFAULT PRIVILEGES set by the ownership fix, so the order is what makes them
@@ -198,23 +199,21 @@ def test_init_migrates_through_the_shared_path(tmp_config):
     """
     order: list[str] = []
 
-    class _Held:
-        def release(self):
-            order.append("release")
-
-    def _join(url, accept=None):
-        order.append("join")
-        return _Held()
+    @contextlib.contextmanager
+    def _scope(url, accept=None):
+        order.append("admit")
+        yield None
+        order.append("release")
 
     runner = CliRunner()
     with patch(_INIT_PATCHES["test_db"], return_value=None), \
-         patch("celerp.migrations.compatibility.Fence.join", side_effect=_join), \
+         patch("celerp.migrations.compatibility.mutating_scope", side_effect=_scope), \
          patch("celerp.cli._needs_ownership_fix", side_effect=lambda url: order.append("ownership") or False), \
          patch("celerp.cli._migrate_to_head", side_effect=lambda url: order.append(url)), \
          patch(_INIT_PATCHES["start"]):
         result = runner.invoke(main, ["init"])
     assert result.exit_code == 0, result.output
-    assert order[:2] == ["join", "ownership"] and order[-1] == "release", order
+    assert order[:2] == ["admit", "ownership"] and order[-1] == "release", order
     assert len(order) == 4 and order[2].startswith("postgresql"), order
 
 

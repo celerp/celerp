@@ -93,6 +93,58 @@ elif path == "migrate":
     result = CliRunner().invoke(main, ["migrate", "--db-url", url])
     print(result.output, flush=True)
     sys.exit(result.exit_code)
+elif path in ("backfill", "ownership"):
+    # `celerp migrate` (backfill) or init's ownership fix (ownership), paused at
+    # chosen points: it prints PAUSED and waits for a "go" line. The first pause
+    # is inside the first backfill or outside write; the second is just before
+    # the next transaction's fence check after it.
+    import sqlalchemy as sa
+    from celerp import cli
+    from celerp.migrations import _data_reconcile
+    armed = []
+    def pause():
+        print("PAUSED", flush=True)
+        assert sys.stdin.readline().strip() == "go"
+    gate = compatibility.Fence._gate
+    def paused_gate(self, conn):
+        if armed == [True]:
+            armed.append(False)
+            pause()
+        gate(self, conn)
+    compatibility.Fence._gate = paused_gate
+    def write(conn, note):
+        conn.execute(sa.text("UPDATE zz_sentinel SET note = :n WHERE id = 1"), {"n": note})
+    if path == "backfill":
+        from alembic import op
+        class Backfill:
+            def __init__(self, n):
+                self.revision, self.module = f"backfill{n}", self
+            def upgrade(self):
+                write(op.get_bind(), f"{self.revision}-by-{sys.argv[1]}")
+                if self.revision == "backfill1":
+                    pause()
+                    armed.append(True)
+        _data_reconcile.data_backfill_scripts = lambda: [Backfill(1), Backfill(2)]
+        cli.main(["migrate", "--db-url", url])
+    import subprocess
+    observed = []
+    def psql(sql, db="postgres", *flags):
+        # Stands in for psql, a writer outside this process's engines: it writes
+        # through a connection of its own and records the version it found.
+        engine = sa.create_engine(url.replace("+asyncpg", ""), poolclass=sa.pool.NullPool)
+        with engine.begin() as conn:
+            observed.append(conn.execute(sa.text(
+                "SELECT value FROM instance_meta WHERE key = 'newest_celerp_version'")).scalar())
+            write(conn, f"psql{len(observed)}-by-{sys.argv[1]}")
+        engine.dispose()
+        print(f"OBSERVED {observed[-1]}", flush=True)
+        if len(observed) == 1:
+            pause()
+            armed.append(True)
+        return subprocess.CompletedProcess(["psql"], 0, "", "")
+    cli._psql = psql
+    cli._needs_ownership_fix = lambda db_url: True
+    cli._init_database(url)
 elif path == "reset":
     from click.testing import CliRunner
     from celerp import cli
@@ -469,3 +521,68 @@ def test_a_restore_keeps_the_fence_while_pg_restore_runs(scratch, tmp_path, monk
     code, out = seen["newer"]
     assert code == 1, out
     assert "Another version of Celerp is still using this data" in out, out
+
+
+# --- Every change a command makes is inside its fence ----------------------------
+
+
+def _paused(proc: subprocess.Popen, count: int, timeout: float = 120) -> None:
+    """Wait until *proc* has paused *count* times."""
+    deadline = time.monotonic() + timeout
+    while _output(proc).splitlines().count("PAUSED") < count:
+        assert proc.poll() is None and time.monotonic() < deadline, _output(proc)
+        time.sleep(0.2)
+
+
+@pytest.mark.parametrize("path", ["backfill", "ownership"])
+def test_a_command_that_lost_its_fence_mid_write_makes_no_write_after_a_newer_version_opened(
+        scratch, tmp_path, path):
+    """`celerp migrate` replaying data backfills, and init changing table ownership
+    through psql, lose the fence session part way. A newer version stays out until
+    that write ends, and once it is in, the older command writes nothing more."""
+    url = scratch()
+    old = _spawn(OLDER, path, url, tmp_path / "old")
+    new = None
+    try:
+        _paused(old, 1)
+        _kill_fence_backend(url, OLDER)
+        before = snapshot(url)
+        code, out = _run(NEWER, "migrate", url, tmp_path / "early", wait=3)
+        assert code == 1, out
+        assert "Another version of Celerp is still using this data" in out, out
+        assert snapshot(url) == before
+        _send(old, "go")
+        _paused(old, 2)
+        new = _hold(NEWER, "api", url, tmp_path / "new")
+        assert _meta(url)["newest_celerp_version"] == NEWER
+        before = snapshot(url)
+        _send(old, "go")
+        old.wait(timeout=60)
+        assert old.returncode != 0, _output(old)
+        assert f"last opened with Celerp {NEWER}" in _output(old), _output(old)
+        assert snapshot(url) == before
+        observed = [ln.split()[1] for ln in _output(old).splitlines() if ln.startswith("OBSERVED")]
+        assert set(observed) <= {OLDER}, observed
+    finally:
+        _stop(old)
+        if new is not None:
+            _stop(new)
+
+
+def test_init_records_its_version_before_changing_ownership(scratch, monkeypatch):
+    """The ownership fix runs as the superuser through psql; it never starts on a
+    database this copy has not been admitted to."""
+    from celerp import cli
+    monkeypatch.setattr(celerp, "__version__", OLDER)
+    url = scratch()
+    seen = []
+
+    def psql(sql, db="postgres", *flags):
+        seen.append(_meta(url).get("newest_celerp_version"))
+        return subprocess.CompletedProcess(["psql"], 0, "", "")
+
+    monkeypatch.setattr(cli, "_psql", psql)
+    monkeypatch.setattr(cli, "_needs_ownership_fix", lambda db_url: True)
+    monkeypatch.setattr(cli, "_migrate_to_head", lambda db_url: True)
+    cli._init_database(url)
+    assert seen and set(seen) == {OLDER}, seen

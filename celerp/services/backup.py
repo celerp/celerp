@@ -15,7 +15,6 @@ cloud snapshot client (``backup_repo``).
 from __future__ import annotations
 
 import base64
-import contextlib
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -183,39 +182,21 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
 
 
 def restore_database_file(dump_path: Path, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
-    """Restore a database from a pg_dump custom-format file.
+    """Restore a database from a pg_dump custom-format file, in the database's
+    mutating scope (celerp.migrations.compatibility): pg_restore writes from a
+    process of its own, so it runs inside the fence's write window."""
+    from sqlalchemy import pool, text
 
-    Inside a version fence (celerp.migrations.compatibility) the restore runs while
-    a fenced transaction stays open, so pg_restore, which writes from a process of
-    its own, cannot outlast the fence it started under."""
-    from celerp.migrations.compatibility import current_fence
+    from celerp.db_url import sync_url
+    from celerp.migrations.compatibility import mutating_scope
 
-    held = current_fence()
-    engine = None
-    if clean_schema or held is not None:
-        from sqlalchemy import create_engine
-
-        from celerp.db_url import sync_url
-
-        engine = create_engine(sync_url(database_url))
-        if held is not None:
-            held.guard(engine)
-    try:
-        with contextlib.ExitStack() as stack:
-            if clean_schema:
-                from sqlalchemy import text
-
-                with engine.begin() as conn:
-                    conn.execute(text("DROP SCHEMA public CASCADE"))
-                    conn.execute(text("CREATE SCHEMA public"))
-            if held is not None:
-                stack.enter_context(engine.begin())
+    with mutating_scope(sync_url(database_url)) as held:
+        if clean_schema:
+            with held.engine(poolclass=pool.NullPool) as engine, engine.begin() as conn:
+                conn.execute(text("DROP SCHEMA public CASCADE"))
+                conn.execute(text("CREATE SCHEMA public"))
+        with held.write_window():
             _run_pg_restore(dump_path, database_url, clean_schema, runner)
-    finally:
-        if engine is not None:
-            if held is not None:
-                held.unguard(engine)
-            engine.dispose()
 
 
 def _run_pg_restore(dump_path: Path, database_url: str, clean_schema: bool, runner) -> None:

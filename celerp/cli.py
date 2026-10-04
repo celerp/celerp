@@ -162,6 +162,16 @@ def _stop_servers() -> None:
         pass  # pkill not available; ignore
 
 
+@contextmanager
+def _db_engine(db_url: str, **kwargs):
+    """An engine for a step that may change the database, inside its mutating
+    scope (celerp.migrations.compatibility.mutating_scope)."""
+    from celerp.migrations.compatibility import mutating_scope
+
+    with mutating_scope(_sync_url(db_url)) as held, held.engine(**kwargs) as engine:
+        yield engine
+
+
 def _fix_ownership(db_url: str) -> str | None:
     """Reassign ownership of user-created objects to the app user and grant privileges.
 
@@ -172,8 +182,15 @@ def _fix_ownership(db_url: str) -> str | None:
     parts = _parse_db_url(db_url)
     if not parts:
         return None
+    from celerp.migrations.compatibility import mutating_scope
+
     user = parts["user"]
     dbname = parts["dbname"]
+    with mutating_scope(_sync_url(db_url)) as held, held.write_window():
+        return _fix_ownership_statements(user, dbname)
+
+
+def _fix_ownership_statements(user: str, dbname: str) -> str | None:
     # Change ownership per-table/sequence (avoids REASSIGN system object error)
     for fix_sql in [
         f"DO $$ DECLARE r record; BEGIN "
@@ -207,18 +224,17 @@ def _needs_ownership_fix(db_url: str) -> bool:
     if not parts:
         return False
     user = parts["user"]
-    sync_url = _sync_url(db_url)
-    try:
-        from sqlalchemy import create_engine, text
-        engine = create_engine(sync_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
-        with engine.connect() as conn:
-            result = conn.execute(text(
-                "SELECT count(*) FROM pg_tables "
-                "WHERE schemaname = 'public' AND tableowner != :user"
-            ), {"user": user})
-            return result.scalar() > 0
-    except Exception:
-        return False
+    from sqlalchemy import text
+    with _db_engine(db_url, pool_pre_ping=True, connect_args={"connect_timeout": 5}) as engine:
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text(
+                    "SELECT count(*) FROM pg_tables "
+                    "WHERE schemaname = 'public' AND tableowner != :user"
+                ), {"user": user})
+                return result.scalar() > 0
+        except Exception:
+            return False
 
 
 def _post_migration_grants(db_url: str) -> None:
@@ -237,19 +253,15 @@ def _post_migration_grants(db_url: str) -> None:
     if not parts:
         return
     user = parts["user"]
-    sync_url = _sync_url(db_url)
-    try:
-        from sqlalchemy import create_engine, text
-        engine = create_engine(sync_url)
+    from sqlalchemy import text
+    with _db_engine(db_url) as engine:
         try:
             with engine.begin() as conn:
                 conn.execute(text(f'GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "{user}";'))
                 conn.execute(text(f'GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO "{user}";'))
-        finally:
-            engine.dispose()
-    except Exception:
-        # Best-effort: on the bundled cluster the app user already owns its objects.
-        pass
+        except Exception:
+            # Best-effort: on the bundled cluster the app user already owns its objects.
+            pass
 
 
 
@@ -534,8 +546,7 @@ def _run_upgrade_with_auto_stamp(alembic_cfg, engine_url: str) -> None:
 
             # Find the revision currently stamped and advance it by one so the
             # offending migration is skipped on the next attempt.
-            engine2 = _sa2.create_engine(engine_url, pool_pre_ping=True)
-            try:
+            with _db_engine(engine_url, pool_pre_ping=True) as engine2:
                 with engine2.connect() as conn:
                     current = conn.execute(
                         _sa2.text("SELECT version_num FROM alembic_version")
@@ -562,8 +573,6 @@ def _run_upgrade_with_auto_stamp(alembic_cfg, engine_url: str) -> None:
                     raise RuntimeError(
                         f"Cannot auto-stamp past failed migration. Error: {msg}"
                     )
-            finally:
-                engine2.dispose()
 
     raise RuntimeError("Migration auto-stamp loop exceeded safety cap.")
 
@@ -600,52 +609,51 @@ def _apply_migrations(db_url: str) -> None:
     # there — forward or back — and let alembic upgrade apply the rest.
     # False negatives are safe: the re-applied revision fails with
     # DuplicateColumn, which _run_upgrade_with_auto_stamp catches.
+    #
+    # All of it runs in the database's mutating scope: a database a newer Celerp
+    # already opened is refused before anything below can restamp it back to
+    # this copy's head; otherwise this copy is recorded as having opened it
+    # before anything below changes it.
+    from celerp.migrations.compatibility import mutating_scope
     sync_url = _sync_url(db_url)
-    # A database a newer Celerp already opened is refused before anything below
-    # can restamp it back to this copy's head; otherwise this copy is recorded as
-    # having opened it before anything below changes it.
-    from celerp.migrations.compatibility import admit_url
-    admit_url(sync_url)
-    engine = _sa.create_engine(sync_url, pool_pre_ping=True)
-    try:
-        inspector = _sa.inspect(engine)
-        existing_tables = set(inspector.get_table_names())
-        if "alembic_version" in existing_tables:
-            with engine.connect() as conn:
-                stamped = conn.execute(_sa.text("SELECT version_num FROM alembic_version")).scalar()
-        else:
-            stamped = None
+    with mutating_scope(sync_url) as held:
+        with held.engine(pool_pre_ping=True) as engine:
+            inspector = _sa.inspect(engine)
+            existing_tables = set(inspector.get_table_names())
+            if "alembic_version" in existing_tables:
+                with engine.connect() as conn:
+                    stamped = conn.execute(_sa.text("SELECT version_num FROM alembic_version")).scalar()
+            else:
+                stamped = None
 
-        if "companies" in existing_tables:
-            from celerp.migrations._auto_stamp import (
-                extract_signatures, find_safe_stamp, load_kernel_metadata,
-            )
-            from pathlib import Path as _Path
-            script = ScriptDirectory.from_config(alembic_cfg)
-            versions_dir = _Path(alembic_cfg.get_main_option("script_location")) / "versions"
-            sigs_by_rev: dict = {}
-            for mig in versions_dir.glob("*.py"):
-                if mig.name == "__init__.py":
-                    continue
-                sigs = extract_signatures(mig)
-                if sigs:
-                    sigs_by_rev[sigs[0].rev] = sigs
-            # walk_revisions() yields head→base, the order the walker
-            # requires.
-            revs_newest_first = list(script.walk_revisions())
-            safe = find_safe_stamp(
-                revs_newest_first, sigs_by_rev, inspector,
-                expected_metadata=load_kernel_metadata(),
-            )
-            if safe != "base" and safe != stamped:
-                click.echo(
-                    f"  · Live schema matches revision {safe} — "
-                    f"restamping (was {stamped or 'unstamped'})..."
+            if "companies" in existing_tables:
+                from celerp.migrations._auto_stamp import (
+                    extract_signatures, find_safe_stamp, load_kernel_metadata,
                 )
-                command.stamp(alembic_cfg, safe, purge=True)
-    finally:
-        engine.dispose()
-    _run_upgrade_with_auto_stamp(alembic_cfg, engine_url=sync_url)
+                from pathlib import Path as _Path
+                script = ScriptDirectory.from_config(alembic_cfg)
+                versions_dir = _Path(alembic_cfg.get_main_option("script_location")) / "versions"
+                sigs_by_rev: dict = {}
+                for mig in versions_dir.glob("*.py"):
+                    if mig.name == "__init__.py":
+                        continue
+                    sigs = extract_signatures(mig)
+                    if sigs:
+                        sigs_by_rev[sigs[0].rev] = sigs
+                # walk_revisions() yields head→base, the order the walker
+                # requires.
+                revs_newest_first = list(script.walk_revisions())
+                safe = find_safe_stamp(
+                    revs_newest_first, sigs_by_rev, inspector,
+                    expected_metadata=load_kernel_metadata(),
+                )
+                if safe != "base" and safe != stamped:
+                    click.echo(
+                        f"  · Live schema matches revision {safe} — "
+                        f"restamping (was {stamped or 'unstamped'})..."
+                    )
+                    command.stamp(alembic_cfg, safe, purge=True)
+        _run_upgrade_with_auto_stamp(alembic_cfg, engine_url=sync_url)
 
 
 def _run_migrations(db_url: str) -> None:
@@ -670,14 +678,9 @@ def _stamped_revision(db_url: str) -> str | None:
     deciding whether the schema is sound.
     """
     from alembic.runtime.migration import MigrationContext
-    from sqlalchemy import create_engine
 
-    engine = create_engine(_sync_url(db_url), pool_pre_ping=True)
-    try:
-        with engine.connect() as conn:
-            return MigrationContext.configure(conn).get_current_revision()
-    finally:
-        engine.dispose()
+    with _db_engine(db_url, pool_pre_ping=True) as engine, engine.connect() as conn:
+        return MigrationContext.configure(conn).get_current_revision()
 
 
 @contextmanager
@@ -695,30 +698,23 @@ def _migration_lock(db_url: str):
     duplicate-object handler, which reaches the right answer for the wrong
     reason. The second holder waits here and then finds nothing pending.
     """
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import text
 
     from celerp.db import _MIGRATION_LOCK_KEY
-    from celerp.migrations.compatibility import Fence
 
-    # Joined before the migration lock, so a process still waiting for the fence
-    # never holds the migration lock a fence holder (the restore reconcile inside
-    # a running server) may be waiting for.
-    held = Fence.join(_sync_url(db_url))
-    engine = create_engine(_sync_url(db_url), pool_pre_ping=True).execution_options(
-        isolation_level="AUTOCOMMIT"
-    )
-    try:
-        with engine.connect() as lock_conn:
-            lock_conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY})
-            try:
-                yield
-            finally:
-                lock_conn.execute(
-                    text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
-                )
-    finally:
-        engine.dispose()
-        held.release()
+    # The mutating scope is entered before the migration lock, so a process still
+    # waiting for the fence never holds the migration lock a fence holder (the
+    # restore reconcile inside a running server) may be waiting for. Inside a
+    # fence this process holds already, that fence is reused.
+    with _db_engine(db_url, pool_pre_ping=True, isolation_level="AUTOCOMMIT") as engine, \
+            engine.connect() as lock_conn:
+        lock_conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY})
+        try:
+            yield
+        finally:
+            lock_conn.execute(
+                text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
+            )
 
 
 def _migrate_to_head(db_url: str) -> bool:
@@ -776,8 +772,6 @@ def _reconcile_after_migrate(db_url: str) -> None:
     transaction with the replay, so its own failure cannot roll back committed
     backfills.
     """
-    import sqlalchemy as _sa
-
     from celerp import __version__
     from celerp.migrations._data_reconcile import (
         BACKFILL_VERSION_KEY,
@@ -786,9 +780,7 @@ def _reconcile_after_migrate(db_url: str) -> None:
         set_meta,
     )
 
-    sync_url = _sync_url(db_url)
-    engine = _sa.create_engine(sync_url, pool_pre_ping=True)
-    try:
+    with _db_engine(db_url, pool_pre_ping=True) as engine:
         with engine.begin() as conn:
             if get_meta(conn, BACKFILL_VERSION_KEY) == __version__:
                 return  # already reconciled for this version
@@ -804,8 +796,6 @@ def _reconcile_after_migrate(db_url: str) -> None:
                 set_meta(conn, BACKFILL_VERSION_KEY, __version__)
         if replayed:
             click.echo(f"  · Reconciled {len(replayed)} data-backfill migration(s) for {__version__}")
-    finally:
-        engine.dispose()
 
 
 def _wipe_attachment_dirs(purge_dirs: list) -> None:
@@ -843,42 +833,43 @@ def _init_embedded(cfg: dict, config_dir: "Path", *, force: bool, purge_dirs: li
 
 def _init_database(db_url_val: str) -> None:
     """Bring the database init points at up to date: table ownership, then
-    migrations. An existing database is checked, and this version's fence taken,
+    migrations, inside the database's mutating scope: an existing database is admitted
     before either changes it, and before init writes the config; an incompatible
     one exits having changed nothing."""
-    from celerp.migrations.compatibility import Fence, IncompatibleDatabase
+    from celerp.migrations.compatibility import IncompatibleDatabase, mutating_scope
     try:
-        held = Fence.join(_sync_url(db_url_val))
+        with mutating_scope(_sync_url(db_url_val)):
+            _init_admitted_database(db_url_val)
     except IncompatibleDatabase as e:
         click.echo(f"  ✗ {e}", err=True)
         sys.exit(1)
-    try:
-        # Fix table ownership before migrations (covers tables created by postgres superuser)
-        if _needs_ownership_fix(db_url_val):
-            click.echo("Fixing table ownership...")
-            err = _fix_ownership(db_url_val)
-            if err:
-                parts = _parse_db_url(db_url_val)
-                user = parts["user"] if parts else "celerp"
-                dbname = parts["dbname"] if parts else "celerp"
-                click.echo(f"  ✗ Could not fix ownership: {err}", err=True)
-                click.echo(
-                    f"\nFix manually:\n"
-                    f"  sudo -u postgres psql -d {dbname} -c "
-                    f"\"REASSIGN OWNED BY postgres TO {user};\"",
-                    err=True,
-                )
-                sys.exit(1)
-            click.echo("  ✓ Table ownership fixed")
 
-        # Run migrations. The grants are part of that path, not a step here:
-        # sequences and tables created by migrations are not covered by the ALTER
-        # DEFAULT PRIVILEGES set by _fix_ownership, so they are re-granted after.
-        click.echo("Running migrations...")
-        if _migrate_to_head(db_url_val):
-            click.echo("  ✓ Database ready")
-    finally:
-        held.release()
+
+def _init_admitted_database(db_url_val: str) -> None:
+    # Fix table ownership before migrations (covers tables created by postgres superuser)
+    if _needs_ownership_fix(db_url_val):
+        click.echo("Fixing table ownership...")
+        err = _fix_ownership(db_url_val)
+        if err:
+            parts = _parse_db_url(db_url_val)
+            user = parts["user"] if parts else "celerp"
+            dbname = parts["dbname"] if parts else "celerp"
+            click.echo(f"  ✗ Could not fix ownership: {err}", err=True)
+            click.echo(
+                f"\nFix manually:\n"
+                f"  sudo -u postgres psql -d {dbname} -c "
+                f"\"REASSIGN OWNED BY postgres TO {user};\"",
+                err=True,
+            )
+            sys.exit(1)
+        click.echo("  ✓ Table ownership fixed")
+
+    # Run migrations. The grants are part of that path, not a step here:
+    # sequences and tables created by migrations are not covered by the ALTER
+    # DEFAULT PRIVILEGES set by _fix_ownership, so they are re-granted after.
+    click.echo("Running migrations...")
+    if _migrate_to_head(db_url_val):
+        click.echo("  ✓ Database ready")
 
 
 def _init_external(cfg: dict, *, force: bool, db_url: str | None, purge_dirs: list) -> None:
@@ -1414,26 +1405,18 @@ def reset_password(email: str, password: str) -> None:
         sys.exit(1)
     ensure_database(cfg)
     db_url = cfg["database"]["url"]
-    sync_url = _sync_url(db_url)
     try:
-        from sqlalchemy import create_engine, text
-        from celerp.migrations.compatibility import fence
+        from sqlalchemy import text
         from celerp.services.auth import hash_password
-        with fence(sync_url) as held:
-            engine = create_engine(sync_url)
-            held.guard(engine)
-            try:
-                with engine.begin() as conn:
-                    row = conn.execute(text("SELECT id, name FROM users WHERE email = :e"), {"e": email}).fetchone()
-                    if not row:
-                        click.echo(f"No user found with email: {email}", err=True)
-                        sys.exit(1)
-                    conn.execute(
-                        text("UPDATE users SET auth_hash = :h, reset_token = NULL, reset_token_expires = NULL WHERE id = :id"),
-                        {"h": hash_password(password), "id": row[0]},
-                    )
-            finally:
-                engine.dispose()
+        with _db_engine(db_url) as engine, engine.begin() as conn:
+            row = conn.execute(text("SELECT id, name FROM users WHERE email = :e"), {"e": email}).fetchone()
+            if not row:
+                click.echo(f"No user found with email: {email}", err=True)
+                sys.exit(1)
+            conn.execute(
+                text("UPDATE users SET auth_hash = :h, reset_token = NULL, reset_token_expires = NULL WHERE id = :id"),
+                {"h": hash_password(password), "id": row[0]},
+            )
         click.echo(f"  \u2713 Password reset for {row[1]} ({email})")
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)

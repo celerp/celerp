@@ -846,9 +846,9 @@ class SupervisorSteps(Steps):
         opened the database, so this copy is let in under that record; the fence
         still waits for every process of the target version to have stopped."""
         from celerp.db_url import sync_url
-        from celerp.migrations.compatibility import fence
+        from celerp.migrations.compatibility import mutating_scope
 
-        with fence(sync_url(self.db_url), accept=target):
+        with mutating_scope(sync_url(self.db_url), accept=target):
             self._backup.restore_database_file(
                 path, self.db_url, clean_schema=True, runner=_bound_run
             )
