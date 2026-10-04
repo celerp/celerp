@@ -289,6 +289,66 @@ class TestSlotPermission:
         assert registered["_note"] == "kept"
 
 
+# Slots whose entries the UI shows only while the company is connected to the
+# entry's "requires_connector" (ui.module_slots.module_contribution_visible).
+_CONNECTOR_GATED_SLOTS = ["item_action", "pricing_action", "doc_detail_actions",
+                          "doc_detail_badges", "bulk_action", "send_to_targets",
+                          "catalog_channel"]
+
+
+def _slot_with_connector(slot: str, name: str, connector) -> tuple[dict, dict]:
+    """(slot map, files) for a valid entry of *slot* naming connector."""
+    slot_map, files = _slot_with_permission(slot, name, "view_inventory")
+    [entry] = slot_map[slot]
+    del entry["permission"]
+    entry["requires_connector"] = connector
+    return slot_map, files
+
+
+class TestConnectorGatedSlots:
+    """Every slot the UI gates on a connector admits "requires_connector" from a
+    real manifest, and the loaded entry shows only while that connector is connected."""
+
+    @pytest.mark.parametrize("slot", _CONNECTOR_GATED_SLOTS)
+    def test_requires_connector_loads_and_follows_the_connection(self, slot, tmp_path, monkeypatch):
+        from ui.module_slots import visible_slot_contributions
+        name = f"slotmod_gated_{slot}"
+        slot_map, files = _slot_with_connector(slot, name, "shopify")
+        _write(tmp_path, name, slot_map, files)
+        _accepted(tmp_path, name, monkeypatch)
+        [registered] = slots.get(slot)
+        assert registered["requires_connector"] == "shopify"
+        assert visible_slot_contributions(slot, {}, "owner", {"shopify"}) == [registered]
+        for connected in (set(), {"woocommerce"}, None):
+            assert visible_slot_contributions(slot, {}, "owner", connected) == []
+
+    @pytest.mark.parametrize("slot", _CONNECTOR_GATED_SLOTS)
+    def test_malformed_requires_connector_refused(self, slot, tmp_path, monkeypatch):
+        name = f"slotmod_badconn_{slot}"
+        slot_map, files = _slot_with_connector(slot, name, ["shopify"])
+        _write(tmp_path, name, slot_map, files)
+        assert "requires_connector" in _refused(tmp_path, name, monkeypatch)
+
+    def test_loaded_pricing_action_shows_on_the_pricing_tab_only_when_connected(
+            self, tmp_path, monkeypatch):
+        from fasthtml.common import to_xml
+        from ui.routes.inventory import _pricing_form
+        name = "slotmod_gated_pricing_tab"
+        _write(tmp_path, name, {"pricing_action": [
+            {"label": "Push to Shopify", "href_template": "/shopify/{entity_id}",
+             "requires_connector": "shopify"}]})
+        _accepted(tmp_path, name, monkeypatch)
+
+        def tab(connected):
+            return to_xml(_pricing_form(
+                "item:1", {"retail_price": 10}, [{"name": "Retail", "description": ""}],
+                "USD", [{"key": "retail_price", "editable": True}], "Retail",
+                settings={}, connected_connectors=connected))
+
+        assert "/shopify/item%3A1" in tab({"shopify"})
+        assert "/shopify/item%3A1" not in tab(set())
+
+
 class TestSlotVisibilityFailsClosed:
     """Visibility applies the load rule: a present permission must be a valid key
     the role holds. An entry that reached the registry some other way with a

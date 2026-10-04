@@ -1244,9 +1244,11 @@ _SEARCH_RESULT_KEYS = frozenset({"items", "entries"})
 # pricing_action: a link on rows of an item's Pricing tab. Its placeholders are the
 # row context core fills in; show_on lists row traits, all of which a row must carry.
 # Actions open as a page: the Pricing tab has no in-page host for module content.
+# requires_connector is checked by the rules every slot entry follows (_validate_slot_entry).
 _PRICING_ACTION_SLOT = "pricing_action"
 _PRICING_ACTION_KEYS = frozenset(
-    {"label", "label_key", "href_template", "permission", "show_on", "presentation"}
+    {"label", "label_key", "href_template", "permission", "show_on", "presentation",
+     "requires_connector"}
 )
 _PRICING_ACTION_PLACEHOLDERS = frozenset({"entity_id", "price_list", "field_name"})
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]*)\}")

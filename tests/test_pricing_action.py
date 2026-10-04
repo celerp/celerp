@@ -3,10 +3,11 @@
 """The pricing_action slot: module actions on the rows of an item's Pricing tab.
 
 A contribution names an href_template with {entity_id}, {price_list} and
-{field_name}, an optional permission, and optional show_on row traits
-(editable/readonly, sell/cost, manual/derived; a row must carry every listed
-trait). Visibility uses the same module-enabled and permission gate as every
-other module contribution, item_action included, and every placeholder value is
+{field_name}, an optional permission, an optional requires_connector, and
+optional show_on row traits (editable/readonly, sell/cost, manual/derived; a row
+must carry every listed trait). Visibility uses the same module-enabled,
+permission and connector gate as every other module contribution, item_action
+included, and every placeholder value is
 URL-encoded. With nothing to show, the Pricing tab renders exactly as before.
 """
 from __future__ import annotations
@@ -218,7 +219,7 @@ def test_loader_rejects_a_stray_brace_in_href_template(tmp_path, href):
     assert slots.get("pricing_action") == []
 
 
-@pytest.mark.parametrize("key", ["href", "show", "presentaton", "requires_connector"])
+@pytest.mark.parametrize("key", ["href", "show", "presentaton", "requires_connectr"])
 def test_loader_rejects_an_unknown_pricing_action_key(tmp_path, key):
     """A misspelled key would otherwise be dead configuration nobody hears about."""
     with pytest.raises(ModuleLoadError, match=repr(key)):
