@@ -32,18 +32,9 @@ from alembic.runtime.migration import MigrationContext
 from celerp.db import _MIGRATION_LOCK_KEY, lifecycle_timeouts_disabled, mask_db_credentials
 from celerp.modules import loader
 
-# A prefix is well-formed when it is a non-empty string of at least this length
-# that ends in an underscore, so "acme_" scopes cleanly and can never be a bare
-# word that swallows unrelated tables.
-_MIN_PREFIX_LEN = 3
-
 # Bounds every per-module migration transaction. A lock wait or runaway statement
 # past this becomes a caught per-module failure, never an unbounded boot stall.
 _MIGRATION_TIMEOUT = "30s"
-
-
-def _prefix_ok(prefix: str) -> bool:
-    return bool(prefix) and len(prefix) >= _MIN_PREFIX_LEN and prefix.endswith("_")
 
 
 class GuardedOperations(Operations):
@@ -134,15 +125,16 @@ def run_module_migrations(sync_conn, module_name, module_path, migrations_pkg,
     run sorted by filename; files starting with ``_`` are skipped. Each file must
     define ``upgrade()``, which is executed with the guarded ``op.*`` proxy bound.
 
-    Fails closed on a malformed prefix. Exceptions propagate to the caller (the
+    Fails closed on a prefix that fails table_prefix_problem. Exceptions propagate to the caller (the
     phase), which decides isolate-or-reraise. An absent or empty migrations
     directory is a no-op, not an error.
     """
-    if not _prefix_ok(table_prefix):
+    from celerp.modules.importer import table_prefix_problem
+
+    problem = table_prefix_problem(module_name, table_prefix)
+    if problem:
         raise ValueError(
-            f"Module {module_name!r} declares migrations but its table_prefix "
-            f"{table_prefix!r} is malformed (need >= {_MIN_PREFIX_LEN} characters, "
-            "ending in '_'); refusing to run its migrations."
+            f"Module {module_name!r}: {problem} Refusing to run its migrations."
         )
 
     sync_conn.execute(sa.text(f"SET LOCAL lock_timeout = '{_MIGRATION_TIMEOUT}'"))

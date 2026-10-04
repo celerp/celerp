@@ -1924,6 +1924,13 @@ async def purge_module_data(
             detail="Disable this module and restart before purging its data.")
 
     prefix = (read_manifest(pkg_path) or {}).get("table_prefix") or ""
+    if prefix:
+        # Re-checked here: a module copied in by hand never passed the install check.
+        from celerp.modules.importer import table_prefix_problem
+        problem = table_prefix_problem(module_name, prefix)
+        if problem:
+            raise HTTPException(status_code=409,
+                                detail=f"Could not purge: {problem} Nothing was deleted.")
     tables = await _module_tables_with_row_counts(session, prefix)
     names = [t["name"] for t in tables]
     if not names:
