@@ -879,6 +879,35 @@ async def test_malformed_hand_copied_prefix_does_not_take_over_a_module_table(re
         await _bk_drop(real_engine, "zz_widgets")
 
 
+async def test_hand_copied_prefix_claiming_a_core_table_owns_nothing(real_engine, real_client, tmp_path,
+                                                                       monkeypatch):
+    """A hand-copied module whose prefix reaches Celerp's own schema stamp is not its owner:
+    the stamp is never attributed to the module, so its say-so neither stops nor shapes
+    the backup."""
+    cb = _bk_cb()
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    pkg = tmp_path / "bk-modules" / "zz-stamper"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(
+        'PLUGIN_MANIFEST = {"name": "zz-stamper", "version": "1.0.0", "table_prefix": "alembic_", '
+        '"company_backup": {"alembic_version": "include"}}\n')
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    async with real_engine.connect() as conn:
+        stamped = (await conn.execute(text("SELECT to_regclass('alembic_version')"))).scalar() is not None
+    if not stamped:
+        await _bk_sql(real_engine, "CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)")
+    try:
+        async with maker(real_engine)() as s:
+            plan = await cb._classify(s, strict=False)
+        assert "alembic_version" not in plan.owners and "alembic_version" not in plan.order
+        data = await download(real_client, tok)
+        assert "alembic_version" not in manifest(data)["tables"]
+    finally:
+        if not stamped:
+            await _bk_drop(real_engine, "alembic_version")
+
+
 async def test_overlapping_hand_copied_prefix_stops_the_export_instead_of_dropping_a_table(
         real_engine, real_client, tmp_path, monkeypatch):
     """Two modules whose sound prefixes overlap own nothing, so the table is refused by name
