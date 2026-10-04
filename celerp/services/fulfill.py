@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid as _uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -382,3 +383,108 @@ async def execute_unfulfill(
         )
 
     return {"success": True, "reversed_items": reversed_items}
+
+
+@dataclass(frozen=True)
+class OutstandingLine:
+    """A physical stock line of a document: what it ordered and what it has received."""
+    index: int
+    item_id: str
+    ordered: float
+    fulfilled: float
+
+    @property
+    def outstanding(self) -> float:
+        return max(0.0, self.ordered - self.fulfilled)
+
+
+async def outstanding_physical_lines(session: AsyncSession, company_id, docs: list[Projection]) -> dict[str, list[OutstandingLine]]:
+    """For each document, its physical stock lines with what each ordered and what has been
+    sent against it and not taken back. Service, freight and other non-stock lines, and lines
+    naming no item, are left out; document lines are never changed.
+
+    What is sent is read from the fulfillment record, as the invoice's cost of sales reads
+    it: each lot whose latest fulfillment event for the document ships it counts at its
+    quantity, on the line it belongs to (auto_je.line_of_lot), so a reversal asks for the
+    goods again. Goods an invoice bills from a memo were sent under the memo, so the memo's
+    record counts for the invoice. A lot no line can claim is put on the document's lines
+    of its SKU in order, each taking at most what it ordered."""
+    from sqlalchemy import select
+
+    from celerp.models.ledger import LedgerEntry
+
+    docs = [d for d in docs if d is not None]
+    if not docs:
+        return {}
+    cid = _to_uuid(company_id)
+    # The document whose deliveries a fulfillment event records: its own, or the invoice a
+    # memo was billed on.
+    owner: dict[str, str] = {d.entity_id: d.entity_id for d in docs}
+    for d in docs:
+        memo = (d.state or {}).get("source_memo_id")
+        if memo:
+            owner[memo] = d.entity_id
+    events = (await session.execute(
+        select(LedgerEntry).where(
+            LedgerEntry.company_id == cid,
+            LedgerEntry.entity_type == "item",
+            LedgerEntry.event_type.in_(("item.fulfilled", "item.fulfillment_reversed")),
+            LedgerEntry.data["source_doc_id"].as_string().in_(list(owner)),
+        ).order_by(LedgerEntry.id)
+    )).scalars().all()
+    latest: dict[tuple[str, str], LedgerEntry] = {}  # (document, lot) -> latest event
+    recorded: dict[tuple[str, str], int | None] = {}  # (document, lot) -> line its latest fulfillment named
+    for e in events:
+        source = (e.data or {}).get("source_doc_id")
+        key = (owner[source], e.entity_id)
+        latest[key] = e
+        if e.event_type == "item.fulfilled":
+            # A memo's line numbers are the memo's, not the invoice's.
+            recorded[key] = auto_je.recorded_line_index(e) if source == owner[source] else None
+    out_lots = {key: e for key, e in latest.items() if e.event_type == "item.fulfilled"}
+
+    wanted = {lot for _doc, lot in out_lots}
+    for d in docs:
+        for li in (d.state or {}).get("line_items") or []:
+            if li.get("entity_id") or li.get("item_id"):
+                wanted.add(li.get("entity_id") or li.get("item_id"))
+    items = {r.entity_id: (r.state or {}) for r in (await session.execute(
+        select(Projection).where(Projection.company_id == cid, Projection.entity_id.in_(list(wanted)))
+    )).scalars().all()} if wanted else {}
+
+    result: dict[str, list[OutstandingLine]] = {}
+    for d in docs:
+        line_items = (d.state or {}).get("line_items") or []
+        physical: dict[int, str] = {}
+        for idx, li in enumerate(line_items):
+            item_id = li.get("entity_id") or li.get("item_id")
+            st = items.get(item_id) if item_id else None
+            if st is not None and not is_non_stock_line(st.get("inventory_type"), st.get("sell_by")):
+                physical[idx] = item_id
+        ordered = {idx: float(line_items[idx].get("quantity") or 0) for idx in physical}
+        sent = dict.fromkeys(physical, 0.0)
+        unclaimed: list[tuple[str, float]] = []
+        for (doc_id, lot), e in out_lots.items():
+            if doc_id != d.entity_id:
+                continue
+            lot_state = items.get(lot)
+            qty = float((lot_state or {}).get("quantity") or (e.data or {}).get("quantity_fulfilled") or 0)
+            idx = auto_je.line_of_lot(line_items, lot, lot_state or {}, recorded.get((doc_id, lot)))
+            if idx in sent:
+                sent[idx] += qty
+            else:
+                unclaimed.append((str((lot_state or {}).get("sku") or "").strip(), qty))
+        for sku, qty in unclaimed:
+            for idx in physical:
+                if qty <= 1e-9:
+                    break
+                if str(line_items[idx].get("sku") or "").strip() != sku:
+                    continue
+                take = min(qty, max(0.0, ordered[idx] - sent[idx]))
+                sent[idx] += take
+                qty -= take
+        result[d.entity_id] = [
+            OutstandingLine(index=idx, item_id=item_id, ordered=ordered[idx], fulfilled=min(sent[idx], ordered[idx]))
+            for idx, item_id in physical.items()
+        ]
+    return result

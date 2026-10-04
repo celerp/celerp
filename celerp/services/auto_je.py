@@ -1574,15 +1574,30 @@ async def void_for_merge_reclassification(session, *, company_id, user_id, merge
     )
 
 
-async def doc_line_of_lot(session, company_id, doc_id: str, doc_state: dict, lot_id: str, lot_state: dict) -> int | None:
-    """The index of the doc line a lot belongs to: the line naming the lot, else the
-    line its latest fulfillment for this doc recorded, else the only line of its SKU."""
-    from celerp.models.ledger import LedgerEntry
+def recorded_line_index(event) -> int | None:
+    """The doc line index an item.fulfilled event recorded, if it recorded one."""
+    idx = (event.metadata_ or {}).get("line_index")
+    return idx if isinstance(idx, int) and not isinstance(idx, bool) else None
 
-    line_items = doc_state.get("line_items", [])
+
+def line_of_lot(line_items: list[dict], lot_id: str, lot_state: dict, recorded: int | None) -> int | None:
+    """The index of the doc line a lot belongs to: the line naming the lot, else the
+    line its latest fulfillment for the doc recorded (``recorded``), else the only line
+    of its SKU."""
     for idx, line in enumerate(line_items):
         if (line.get("entity_id") or line.get("item_id")) == lot_id:
             return idx
+    if recorded is not None:
+        return recorded
+    sku = str(lot_state.get("sku") or "").strip()
+    matches = [idx for idx, line in enumerate(line_items) if str(line.get("sku") or "").strip() == sku]
+    return matches[0] if len(matches) == 1 else None
+
+
+async def doc_line_of_lot(session, company_id, doc_id: str, doc_state: dict, lot_id: str, lot_state: dict) -> int | None:
+    """line_of_lot for one lot, reading its latest fulfillment for this doc from the ledger."""
+    from celerp.models.ledger import LedgerEntry
+
     rows = (await session.execute(
         _select(LedgerEntry).where(
             LedgerEntry.company_id == company_id,
@@ -1590,16 +1605,9 @@ async def doc_line_of_lot(session, company_id, doc_id: str, doc_state: dict, lot
             LedgerEntry.event_type == "item.fulfilled",
         ).order_by(LedgerEntry.id.desc())
     )).scalars().all()
-    for event in rows:
-        if (event.data or {}).get("source_doc_id") != doc_id:
-            continue
-        idx = (event.metadata_ or {}).get("line_index")
-        if isinstance(idx, int) and not isinstance(idx, bool):
-            return idx
-        break
-    sku = str(lot_state.get("sku") or "").strip()
-    matches = [idx for idx, line in enumerate(line_items) if str(line.get("sku") or "").strip() == sku]
-    return matches[0] if len(matches) == 1 else None
+    latest = next((e for e in rows if (e.data or {}).get("source_doc_id") == doc_id), None)
+    recorded = recorded_line_index(latest) if latest is not None else None
+    return line_of_lot(doc_state.get("line_items", []), lot_id, lot_state, recorded)
 
 
 async def allocations_naming_lot(session, company_id, lot_id: str) -> dict[tuple[str, str, int], float]:

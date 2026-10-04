@@ -34,6 +34,7 @@ from celerp.notifications import service as notif_svc
 from celerp.services import migrations
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import lock_company, lock_projections
+from celerp.services.fulfill import outstanding_physical_lines
 from celerp.services.permissions import require_permission
 from celerp.schemas.numbers import FiniteFloat
 
@@ -582,15 +583,31 @@ async def recost_dependents(
 # Manufacture-from-document endpoints (List / Pro Forma / Invoice → orders)
 # ---------------------------------------------------------------------------
 
-def _doc_lines(doc_state: dict) -> list[tuple[int, str | None, str, float, str]]:
-    """Normalize a document's line_items to (index, item_id, line_id, qty, label)."""
-    out = []
-    for idx, li in enumerate(doc_state.get("line_items", [])):
-        item_id = li.get("entity_id") or li.get("item_id")
-        line_id = str(li.get("id") or li.get("line_id") or idx)
-        qty = float(li.get("quantity") or 0)
-        label = li.get("sku") or li.get("name") or item_id or f"line {idx + 1}"
-        out.append((idx, item_id, line_id, qty, label))
+def _product_of(item_id: str, states: dict[str, dict]) -> str:
+    """The product a document line or a lot stands for: a lot of a manufacturable product (a
+    produced lot, or units carved off the product or one of its lots) is that product."""
+    st = states.get(item_id) or {}
+    for owner in (st.get("parent_item_id"), st.get("catalog_item_id")):
+        if owner and owner != item_id and is_manufacturable(states.get(owner)):
+            return owner
+    return item_id
+
+
+async def _open_demand(session: AsyncSession, company_id, states: dict[str, dict],
+                       docs: list[Projection]) -> list[tuple[Projection, str, float]]:
+    """(document, product, quantity) for what each demand document still has to receive of
+    each product: what its physical lines ordered less what has been sent against them and
+    not taken back, read from the fulfillment record."""
+    docs = [d for d in docs if not _skip_as_demand(d.state or {})]
+    out: list[tuple[Projection, str, float]] = []
+    lines = await outstanding_physical_lines(session, company_id, docs)
+    for doc in docs:
+        per_product: dict[str, float] = {}
+        for line in lines.get(doc.entity_id, []):
+            product = _product_of(line.item_id, states)
+            if line.outstanding > 1e-9:
+                per_product[product] = per_product.get(product, 0.0) + line.outstanding
+        out.extend((doc, product, qty) for product, qty in per_product.items())
     return out
 
 
@@ -664,31 +681,26 @@ async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
     )).scalars().all()
 
     agg: dict[str, dict] = {}
-    for doc in docs:
-        st = doc.state or {}
-        if _skip_as_demand(st):
+    for doc, item_id, qty in await _open_demand(session, company_id, states, docs):
+        if not is_manufacturable(states.get(item_id)):
             continue
+        st = doc.state or {}
         ref = st.get("ref_id") or doc.entity_id
         due = st.get("due_date") or st.get("promised_date") or None
-        for _idx, item_id, _line_id, qty, _label in _doc_lines(st):
-            if not item_id or qty <= 0:
-                continue
-            ist = states.get(item_id)
-            if not is_manufacturable(ist):
-                continue
-            row = agg.setdefault(item_id, {
-                "item_id": item_id, "sku": (ist or {}).get("sku"), "name": (ist or {}).get("name"),
-                "demand": 0.0, "docs": {}, "due": None,
-            })
-            row["demand"] += qty
-            d = row["docs"].setdefault(doc.entity_id, {
-                "doc_id": doc.entity_id, "doc_number": ref,
-                "doc_type": st.get("doc_type") or doc.entity_type,
-                "contact_name": st.get("contact_name") or "", "due": due, "quantity": 0.0,
-            })
-            d["quantity"] += qty
-            if due and (row["due"] is None or due < row["due"]):
-                row["due"] = due
+        ist = states.get(item_id)
+        row = agg.setdefault(item_id, {
+            "item_id": item_id, "sku": (ist or {}).get("sku"), "name": (ist or {}).get("name"),
+            "demand": 0.0, "docs": {}, "due": None,
+        })
+        row["demand"] += qty
+        d = row["docs"].setdefault(doc.entity_id, {
+            "doc_id": doc.entity_id, "doc_number": ref,
+            "doc_type": st.get("doc_type") or doc.entity_type,
+            "contact_name": st.get("contact_name") or "", "due": due, "quantity": 0.0,
+        })
+        d["quantity"] += qty
+        if due and (row["due"] is None or due < row["due"]):
+            row["due"] = due
 
     runs = (await session.execute(
         select(Projection).where(
@@ -698,12 +710,12 @@ async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
     in_progress = _in_progress_by_item(runs)
 
     # Every produced output is a discrete lot under the product, so on-hand must include them.
-    lot_qty = _lot_qty_by_parent(states)
+    on_hand_by_product = _on_hand_by_product(states)
     hours_per_day = await _default_hours_per_day(session, company_id)
     items: list[dict] = []
     for item_id, row in agg.items():
         ist = states.get(item_id) or {}
-        on_hand = float(ist.get("quantity") or 0) + lot_qty.get(item_id, 0.0)
+        on_hand = on_hand_by_product.get(item_id, 0.0)
         wip = in_progress.get(item_id, 0.0)
         supply = on_hand + wip
         to_make_qty = max(0.0, row["demand"] - supply)
@@ -900,8 +912,9 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
     states = await _all_item_states(session, company_id)
     # One action per finalize: a re-finalize after a revert to draft is a new one.
     operation = f"finalize:{entity_id}:{int((doc_state or {}).get('revert_count') or 0)}"
-    products = dict.fromkeys(item_id for _idx, item_id, _line_id, qty, _label in _doc_lines(doc_state)
-                             if item_id and qty > 0)
+    doc = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    products = dict.fromkeys(item_id for _doc, item_id, _qty in await _open_demand(
+        session, company_id, states, [doc] if doc is not None else []))
     for item_id in products:
         # Each product in a savepoint, so one that cannot be made leaves the others' runs.
         try:
@@ -1101,18 +1114,15 @@ async def item_manufacturing_hub(
         )
     )).scalars().all()
     demand = []
-    for doc in docs:
-        st = doc.state or {}
-        if _skip_as_demand(st):
-            continue
-        for _idx, lid, _line_id, qty, _label in _doc_lines(st):
-            if lid == item_id and qty > 0:
-                demand.append({
-                    "doc_id": doc.entity_id, "doc_number": st.get("ref_id") or doc.entity_id,
-                    "doc_type": st.get("doc_type") or doc.entity_type,
-                    "contact_name": st.get("contact_name") or "", "quantity": qty,
-                    "due": st.get("due_date") or st.get("promised_date") or None,
-                })
+    for doc, product, qty in await _open_demand(session, company_id, states, docs):
+        if product == item_id:
+            st = doc.state or {}
+            demand.append({
+                "doc_id": doc.entity_id, "doc_number": st.get("ref_id") or doc.entity_id,
+                "doc_type": st.get("doc_type") or doc.entity_type,
+                "contact_name": st.get("contact_name") or "", "quantity": qty,
+                "due": st.get("due_date") or st.get("promised_date") or None,
+            })
 
     # Runs that make this product, newest first, with input and received lot SKUs resolved.
     run_rows = (await session.execute(
@@ -1523,13 +1533,14 @@ async def delete_work_center(
 _INACTIVE_ITEM_STATUSES = frozenset({"sold", "memo_out", "archived", "merged", "expired", "draft", "disposed"})
 
 
-def _lot_qty_by_parent(states: dict[str, dict]) -> dict[str, float]:
-    """Sum on-hand quantity of every lot (non-splittable produced entry) by its parent product id."""
+def _on_hand_by_product(states: dict[str, dict]) -> dict[str, float]:
+    """Stock on hand per product: the product's own quantity and its lots' (see _product_of),
+    each counted only while it is in stock (not sold, out on memo, gone, or a draft)."""
     out: dict[str, float] = {}
-    for st in states.values():
-        pid = st.get("parent_item_id")
-        if pid and str(st.get("status") or "available") not in _INACTIVE_ITEM_STATUSES:
-            out[pid] = out.get(pid, 0.0) + float(st.get("quantity") or 0)
+    for item_id, st in states.items():
+        if str(st.get("status") or "available") not in _INACTIVE_ITEM_STATUSES:
+            product = _product_of(item_id, states)
+            out[product] = out.get(product, 0.0) + float(st.get("quantity") or 0)
     return out
 
 
