@@ -37,6 +37,9 @@ SOURCE_CONTROLS_KEY = "posting_source_controls"
 
 # The item-state field holding the inventory account a lot's value sits in.
 LOT_ACCOUNT_FIELD = "inventory_account_code"
+# The event-metadata key naming the lot a new lot takes its cost from (goods back on a
+# credit note come in at the cost of the lot that was sold).
+VALUED_FROM_KEY = "valued_from"
 # Company.settings key set once every lot's stock records its inventory account or has
 # been left for the user to place (celerp.services.lot_origin). A company without it
 # predates lots recording their account.

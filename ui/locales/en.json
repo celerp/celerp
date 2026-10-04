@@ -3594,5 +3594,6 @@
   "mfg.reconcile_kept": "{lots}, received from this run, cannot be re-costed (it was split, sold in part, transformed, used or written off before this release) and keeps the {kept} it was given, more than the {issued} stated. Give the value that was issued to this run, at least that much.",
   "mfg.output_in_production": "{sku} came from production run {order}, which is still open, and its cost is final only when the run is completed. Complete the run before splitting, transforming, using, counting down or writing off this stock; until then it can be sold whole or merged.",
   "mfg.output_memo_conversion": "Complete this production run before converting this memo to an invoice. Its finished-goods cost is not final yet.",
+  "mfg.output_cost_pending": "{sku} comes back at the cost of stock from production run {order}, which is still open, so that cost is not final yet. Complete the run before receiving this return.",
   "mfg.period_locked": "The books are locked for {day}, so this run cannot be reconciled until that period is open."
 }

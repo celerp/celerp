@@ -30,7 +30,7 @@ from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCL
 from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD, AccountRole
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole
 from celerp.services.account_roles import current_settings, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.journal_accounts import require_settlement_account
@@ -7523,6 +7523,16 @@ async def receive_return(
             "created_at": now,
         }
 
+        # The returned parcel is stock of the sold lot's product.
+        if ref.get("id"):
+            from celerp_inventory.services import resolve_catalog_anchor_for_item
+            try:
+                item_data["catalog_item_id"] = (
+                    await resolve_catalog_anchor_for_item(session, company_id, ref["id"])
+                ).entity_id
+            except ValueError:
+                pass  # A historical lot with no resolvable product stays unlinked.
+
         item_id = f"item:{_step_id(key, 'line', _ridx)}"
         await emit_event(
             session,
@@ -7535,7 +7545,8 @@ async def receive_return(
             location_id=None,
             source="return",
             idempotency_key=_step_key(key, "line", _ridx),
-            metadata_={"source_return_cn": entity_id},
+            metadata_={"source_return_cn": entity_id,
+                       **({VALUED_FROM_KEY: ref["id"]} if ref.get("id") else {})},
         )
         cost_price = item_data["cost_price"]
         total_cogs += cost_price * it.quantity

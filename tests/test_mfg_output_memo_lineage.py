@@ -140,3 +140,35 @@ async def test_a_conversion_already_recorded_still_replays(client, session, auth
     session.expire_all()
     assert (await _state(session, auth, lot))["status"] == "sold"
     assert (await _state(session, auth, order))["status"] != "completed"
+
+
+async def test_a_return_of_open_output_sold_waits_for_completion(client, session, auth):
+    """Goods back on a credit note come in at the cost of the lot that was sold; while the run
+    is open that cost is not final, so the return waits and then comes back at 20.00 a unit."""
+    made, order, lot = await open_output(client, session, auth)
+    sku = (await _state(session, auth, lot))["sku"]
+    invoice = await _sell(client, session, auth, lot)
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "credit_note", "original_doc_id": invoice, "total": 500, "subtotal": 500, "tax": 0,
+        "line_items": [{"name": "Lot", "sku": sku, "quantity": 2, "unit_price": 250, "sell_by": "piece"}]})
+    assert r.status_code == 200, r.text
+    note = r.json()["id"]
+    assert (await client.post(f"/docs/{note}/finalize", headers=auth["headers"])).status_code == 200
+
+    def back():
+        return client.post(f"/docs/{note}/receive-return", headers=auth["headers"],
+                           json={"items": [{"sku": sku, "quantity": 2, "item_id": lot}]})
+
+    before = await snapshot(session, auth, order, lot, note)
+    detail = refusal(await back(), 409, "output_cost_pending")
+    await session.rollback()
+    assert sku in detail["message"] and "still open" in detail["message"], detail
+    assert await snapshot(session, auth, order, lot, note) == before
+    assert await _supply(session, auth, made) == (0.0, 2.0)
+
+    await completes_recosted(client, session, auth, order)
+    r = await back()
+    assert r.status_code == 200, r.text
+    assert r.json()["total_cogs_reversed"] == 40.0
+    await assert_settled(client, session, auth)
+    assert await _supply(session, auth, made) == (4.0, 0.0)

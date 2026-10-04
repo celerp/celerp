@@ -3594,5 +3594,6 @@
   "mfg.reconcile_kept": "{lots}, reçu de cet ordre, ne peut pas être revalorisé (divisé, vendu en partie, transformé, utilisé ou mis au rebut avant cette version) et conserve les {kept} qui lui ont été attribués, plus que les {issued} indiqués. Indiquez la valeur sortie pour cet ordre, au moins ce montant.",
   "mfg.output_in_production": "{sku} provient de l'ordre de fabrication {order}, encore ouvert, et son coût n'est définitif qu'à la clôture de l'ordre. Terminez l'ordre avant de diviser, transformer, utiliser, réduire ou mettre au rebut ce stock ; d'ici là, il peut être vendu entier ou fusionné.",
   "mfg.output_memo_conversion": "Terminez cet ordre de fabrication avant de convertir ce mémo en facture. Le coût des produits finis n'est pas encore définitif.",
+  "mfg.output_cost_pending": "{sku} revient au coût d'un stock issu de l'ordre de fabrication {order}, encore ouvert, et ce coût n'est donc pas encore définitif. Terminez l'ordre avant de réceptionner ce retour.",
   "mfg.period_locked": "La comptabilité est verrouillée pour le {day}, ce cycle ne peut donc pas être rapproché tant que cette période n'est pas ouverte."
 }

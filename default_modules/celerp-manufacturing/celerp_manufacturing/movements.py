@@ -35,6 +35,7 @@ from celerp.accounting_roles import (
     INVENTORY_VALUE_ROLES,
     LOT_ACCOUNT_FIELD,
     SCHEMA_KEY,
+    VALUED_FROM_KEY,
     AccountRole,
 )
 from celerp.events.engine import emit_event, find_event_by_idempotency
@@ -723,9 +724,20 @@ async def guard_output_lineage(*, session: AsyncSession, entry: LedgerEntry, tra
     completes, so until then it may only go where that cost can still reach it (held, sold
     whole on an invoice line, or merged). Anything else done to the lot or a lot it was merged
     into (a split, a partial sale, a sale no invoice line shipped, a transform, use in another
-    run, a count lowering it, a write-off) is refused. The run's own events are its business: they carry its mark."""
+    run, a count lowering it, a write-off) is refused, as is a new lot taking its cost from such
+    a lot (goods back on a credit note). The run's own events are its business: they carry its mark."""
     before, after = transition.before, transition.after or {}
-    if before is None or not _may_move_cost(entry.event_type, before, after):
+    if before is None:
+        source = (entry.metadata_ or {}).get(VALUED_FROM_KEY)
+        order = (await _pending_output(session, entry.company_id)).get(source) if source else None
+        if order is not None:
+            sku = after.get("sku") or source
+            raise refuse(409, "output_cost_pending",
+                         f"{sku} comes back at the cost of stock from production run {order}, which is still open, "
+                         "so that cost is not final yet. Complete the run before receiving this return.",
+                         sku=sku, order=order)
+        return
+    if not _may_move_cost(entry.event_type, before, after):
         return
     order = (await _pending_output(session, entry.company_id)).get(entry.entity_id)
     if order is None or order in ((entry.data or {}).get(_ORDER_MARK), (entry.metadata_ or {}).get(_ORDER_MARK)):
