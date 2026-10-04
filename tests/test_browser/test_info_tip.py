@@ -12,6 +12,16 @@ pytestmark = pytest.mark.browser
 _BUBBLE = "[role=tooltip]"
 
 
+def _open_settled(page, url: str) -> None:
+    """Open the page and let its system-health check answer before pointing at anything. On a
+    busy machine that reply adds a banner above the page; arriving mid-hover, it moves the icon
+    out from under the pointer, which correctly closes the tip."""
+    with page.expect_response("**/health/system") as health:
+        page.goto(url, wait_until="load")
+    health.value.finished()
+    page.evaluate("() => new Promise(r => requestAnimationFrame(() => r()))")
+
+
 def _bubble_box(page) -> dict:
     bubble = page.locator(_BUBBLE)
     bubble.wait_for(state="visible", timeout=5000)
@@ -41,7 +51,7 @@ def _visible_area(page, box: dict) -> float:
 
 def test_company_details_tip_is_fully_visible(page, ui_server, api):
     page.set_viewport_size({"width": 1280, "height": 800})
-    page.goto(f"{ui_server}/finance/company-details", wait_until="load")
+    _open_settled(page, f"{ui_server}/finance/company-details")
     tip = page.locator(".info-tip").first
     tip.hover()
     box = _bubble_box(page)
@@ -52,7 +62,7 @@ def test_company_details_tip_is_fully_visible(page, ui_server, api):
 
 def test_manufacturing_settings_uses_the_same_tip(page, ui_server, api):
     page.set_viewport_size({"width": 1280, "height": 800})
-    page.goto(f"{ui_server}/settings/manufacturing", wait_until="load")
+    _open_settled(page, f"{ui_server}/settings/manufacturing")
     page.locator(".info-tip").first.hover()
     box = _bubble_box(page)
     assert _inside_viewport(page, box), box
