@@ -983,8 +983,10 @@ async def test_hand_copied_prefix_claiming_a_turned_off_bundled_module_table_own
 
 async def test_overlapping_hand_copied_prefix_stops_the_export_instead_of_dropping_a_table(
         real_engine, real_client, tmp_path, monkeypatch):
-    """Two modules whose sound prefixes overlap own nothing, so the table is refused by name
-    rather than silently left out of the backup on the copied module's say-so."""
+    """Two modules whose sound prefixes overlap own nothing, so the table stops the export of
+    a company holding rows in it rather than being silently left out of the backup on the
+    copied module's say-so."""
+    cb = _bk_cb()
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch)
     _bk_shadow_module(tmp_path, "zz-zshadow", _BK_PREFIX)
@@ -992,10 +994,15 @@ async def test_overlapping_hand_copied_prefix_stops_the_export_instead_of_droppi
     await _bk_sql(real_engine, "CREATE TABLE zz_widgets (id uuid primary key, "
                                "company_id uuid not null references companies(id) on delete cascade, note text)")
     try:
+        async with maker(real_engine)() as s:
+            plan = await cb._classify(s, strict=True)
+        assert "zz_widgets" in plan.blocked and "zz_widgets" not in plan.owners
+        await _bk_sql(real_engine, "INSERT INTO zz_widgets (id, company_id, note) VALUES (:i, :c, 'kept')",
+                      i=uuid.uuid4(), c=cid)
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert "zz_widgets" in detail and detail.endswith("Nothing was backed up."), detail
+        assert detail == cb.UNSUPPORTED and detail.endswith("Nothing was backed up."), detail
     finally:
         await _bk_drop(real_engine, "zz_widgets")
 
