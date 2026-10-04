@@ -3060,9 +3060,23 @@ async def undo_import_batch(token: str, batch_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def get_modules(token: str) -> list[dict]:
-    """GET /companies/me/modules — list installed modules with enabled state."""
+    """GET /companies/me/modules — list installed modules with enabled state.
+
+    The API reports what its own process loaded. A module can also fail in this
+    (UI) process, for example when its UI routes do not register, so this
+    process's own load failures are laid over the rows: such a module shows as
+    not running, with its reason."""
+    from celerp.modules.loader import load_errors
+
     async with _api_client(token) as c:
-        return _raise(await c.get("/companies/me/modules")).json()
+        rows = _raise(await c.get("/companies/me/modules")).json()
+    local_errors = load_errors()
+    for row in rows:
+        error = local_errors.get(row.get("name"))
+        if error:
+            row["running"] = False
+            row["load_error"] = error
+    return rows
 
 
 async def enable_module(token: str, module_name: str) -> dict:

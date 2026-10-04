@@ -405,22 +405,44 @@ def test_route_module_without_its_setup_function_is_refused(_modules):
     assert "setup_api_routes" in loader.load_errors()[folder]
 
 
-def test_setup_borrowed_from_another_module_is_refused(_modules, tmp_path):
-    """The route file is the module's own, but the setup it exposes is another
-    module's code: provenance is proven on the resolved callable."""
+def test_setup_imported_from_another_module_is_refused_before_import(_modules, tmp_path):
     marker = tmp_path / "borrowed_setup_ran.txt"
-    _other, other_inner = _route_module(_modules, f"acme-{_uid()}", body=(
-        "def setup_api_routes(app):\n" + "    " + _marker_line(marker)))
+    other, other_inner = _route_module(_modules, f"acme-{_uid()}", body=(
+        _marker_line(marker) + "def setup_api_routes(app):\n    pass\n"))
     folder = f"acme-{_uid()}"
     _route_module(_modules, folder,
                   body=f"from {other_inner}.routes import setup_api_routes  # noqa: F401\n")
 
-    loaded = loader.load_all(str(_modules), {folder, _other.name})
+    loaded = loader.load_all(str(_modules), {folder})
     loader.register_api_routes(_App(), loaded)
 
     assert not marker.exists()
     assert not loader.is_running(folder)
-    assert folder in loader.load_errors()
+    assert "outside the module" in loader.load_errors()[folder]
+
+
+def test_setup_rebound_to_another_module_is_refused(_modules, tmp_path):
+    """The route file defines its setup, then rebinds the name to another module's
+    function: provenance is proven on the callable import actually returns,
+    before core calls it."""
+    marker = tmp_path / "borrowed_setup_ran.txt"
+    other, other_inner = _route_module(_modules, f"acme-{_uid()}", kind="ui", body=(
+        "def setup_ui_routes(app):\n    pass\n\n"
+        "def setup_api_routes(app):\n    " + _marker_line(marker)))
+    folder = f"acme-{_uid()}"
+    _route_module(_modules, folder, depends_on=[other.name], body=(
+        "def setup_api_routes(app):\n    pass\n\n"
+        f"from {other_inner}.routes import setup_api_routes  # noqa: E402,F811\n"))
+
+    loaded = loader.load_all(str(_modules), {folder, other.name})
+    assert loader.is_running(folder)
+    loader.register_api_routes(_App(), loaded)
+
+    assert not marker.exists()
+    assert not loader.is_running(folder)
+    assert loader.is_running(other.name)
+    assert "api_routes setup" in loader.load_errors()[folder]
+    assert "outside" in loader.load_errors()[folder]
 
 
 def test_owned_route_module_registers(_modules):
@@ -517,6 +539,12 @@ def test_route_failure_drops_the_module_locale_catalog(_modules):
 
 
 # ── A3b: the Modules page shows a failure from the process that renders it ──
+
+
+@pytest.fixture
+def _mock_get_modules_default():
+    """The real get_modules: overrides the suite-wide mock of the same name."""
+    yield
 
 
 async def test_modules_listing_reports_this_process_load_failures(monkeypatch):

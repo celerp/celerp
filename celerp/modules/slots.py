@@ -100,6 +100,12 @@ def get(slot: str) -> list[dict]:
     return list(_slots.get(slot, []))
 
 
+def unregister_module(module: str) -> None:
+    """Remove every contribution the named module registered, in every slot."""
+    for slot, entries in list(_slots.items()):
+        _slots[slot] = [e for e in entries if e.get("_module") != module]
+
+
 def clear() -> None:
     """Clear all registered slots. Used in tests only."""
     _slots.clear()
