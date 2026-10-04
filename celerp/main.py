@@ -194,7 +194,7 @@ def _held_back_body(modules: list[str]) -> str:
            "restore a backup.")
     return ("This start could not update the stored records to this release, so Celerp is "
             "read-only: records can be viewed but not changed, and the updates that depend on "
-            f"them (such as settling manufacturing runs) were held back. Nothing was changed. {fix}")
+            f"them (such as settling manufacturing runs) were held back. {fix}")
 
 
 async def _tell_projections_held_back(modules: list[str]) -> None:
@@ -248,21 +248,23 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
         # instance that already has companies).
         from celerp.modules.slots import fire_lifecycle as _fire
         from celerp.db import LifecycleSessionLocal as _LifecycleSession
-        # Best-effort: a hook that fails
-        # during flush poisons the shared session, so the commit raises.
-        # Roll back and log at ERROR rather than let that crash boot - the
-        # manufacturing seed hook, for one, must never be able to take the
-        # app down. Seed hooks can replay large ledgers, so they run on the
-        # unbounded lifecycle engine, not the timeout-bounded request pool.
+        # Each hook runs in its own savepoint (fire_lifecycle), so one that
+        # fails rolls back only its own work and never takes the app down. Until
+        # a start runs every hook the records are not current: changes stay
+        # refused and the next start runs the hooks again. Seed hooks can replay
+        # large ledgers, so they run on the unbounded lifecycle engine, not the
+        # timeout-bounded request pool.
+        failed: list[str] = ["?"]
         async with _LifecycleSession() as _sess:
             try:
-                await _fire("on_modules_ready", session=_sess)
+                failed = await _fire("on_modules_ready", session=_sess)
                 await _sess.commit()
             except Exception:
                 await _sess.rollback()
-                logging.getLogger(__name__).exception(
-                    "on_modules_ready hooks failed (non-fatal); their data was rolled back"
-                )
+                logging.getLogger(__name__).exception("on_modules_ready hooks could not be saved")
+        if failed:
+            await _tell_projections_held_back([])
+            return False
 
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links
