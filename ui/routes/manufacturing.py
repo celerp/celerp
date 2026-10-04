@@ -388,6 +388,7 @@ def _reconcile_panel(run_id: str, needs: dict, accounts: list[dict], *, key: str
     reason = needs["reason"]
     rows = [
         Tr(Td(" ".join(x for x in (c.get("sku"), c.get("name")) if x) or c["item_id"]),
+           Td(f"{c['quantity']:g}", cls="cell--number"),
            Td(Input(type="hidden", name="item_id", value=c["item_id"]),
               Input(type="number", name="value", value=values.get(c["item_id"], ""), step="any", min="0",
                     cls="form-input form-input--xs", aria_label=t("th.value")),
@@ -395,7 +396,7 @@ def _reconcile_panel(run_id: str, needs: dict, accounts: list[dict], *, key: str
         for c in needs.get("components") or []
     ]
     table = Table(
-        Thead(Tr(Th(t("th.item")), Th(t("th.value"), cls="cell--number"))),
+        Thead(Tr(Th(t("th.item")), Th(t("th.qty"), cls="cell--number"), Th(t("th.value"), cls="cell--number"))),
         Tbody(*rows), cls="data-table",
     ) if rows else P(t("manufacturing.reconcile_nothing_held"), cls="hint")
     unlotted = float(needs.get("unlotted") or 0)

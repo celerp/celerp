@@ -22,7 +22,8 @@ pytestmark = pytest.mark.asyncio
 
 RUN = {"id": "mfg:abc12345", "output_item_id": "item:p", "expected_outputs": [{"item_id": "item:p", "sku": "CAKE"}],
        "wip_unresolved": "books disagree"}
-NEEDS = {"reason": "books disagree", "components": [{"item_id": "item:flour", "sku": "FLOUR", "name": "Flour"}]}
+NEEDS = {"reason": "books disagree",
+         "components": [{"item_id": "item:flour", "quantity": 2.5, "sku": "FLOUR", "name": "Flour"}]}
 POSTING = {"roles": [{"role": "retained_earnings", "code": "3200", "name": "Retained earnings"},
                      {"role": "work_in_progress", "code": "1130", "name": "Work in progress"}],
            "older_stock": {"lots": [], "candidates": [{"code": "1120", "name": "Inventory", "account_type": "asset"}]}}
@@ -66,6 +67,7 @@ async def test_the_page_says_why_and_asks_for_each_value_and_the_account(ui_clie
     assert r.status_code == 200, r.text
     assert "the books hold a different amount than its history shows" in r.text
     assert "FLOUR Flour" in r.text and 'name="value"' in r.text and 'value="item:flour"' in r.text
+    assert '<td class="cell--number">2.5</td>' in r.text  # how much of it the run holds
     assert 'value="1120"' in r.text and 'value="3200"' in r.text and 'value="1130"' not in r.text
     assert 'name="idempotency_key"' in r.text
     assert 'href="/inventory/item:p?tab=manufacturing"' in r.text  # the way back to the run's product
