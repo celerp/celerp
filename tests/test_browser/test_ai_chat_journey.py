@@ -131,13 +131,17 @@ def test_new_conversation_button_returns_to_empty_chat_without_creating_row(page
     _open_chat(page, ui_server)
     _send(page, "existing question")
     page.wait_for_url("**/ai?conversation=*")
-    history_before = page.locator("#ai-history .ai-sidebar__item").count()
+    items = page.locator("#ai-history .ai-sidebar__item")
+    # The sidebar list loads in its own request; count only once it shows the new thread.
+    expect(items.filter(has_text="existing question")).to_have_count(1)
+    history_before = items.count()
 
     page.locator(".ai-sidebar__new").click()
     page.wait_for_url("**/ai")
     assert "conversation=" not in page.url
     expect(page.locator("#ai-empty-state")).to_be_visible()
-    assert page.locator("#ai-history .ai-sidebar__item").count() == history_before
+    expect(items.filter(has_text="existing question")).to_have_count(1)
+    assert items.count() == history_before
 
 
 def test_send_creates_conversation_and_pushes_url(page: Page, ui_server):
