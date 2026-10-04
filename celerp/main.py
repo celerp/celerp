@@ -221,14 +221,6 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
     Returns whether the stored records are current, and records it as
     ``app.state.data_current``: while it is False, changes to records are refused
     (``DrainMiddleware``) and nothing that reads the projections to change data runs."""
-    # Register kernel projection handler for sys.* events (not module-owned)
-    from celerp.modules.slots import register as register_slot
-    register_slot("projection_handler", {
-        "prefix": "sys.",
-        "handler": "celerp.projections.handlers.system:apply_system_event",
-        "_module": "_kernel",
-    })
-
     # Upgrade guard: after a develop build, or a change in projection semantics,
     # rebuild projections with this build's handlers (now that all handlers are
     # registered). Gated by markers so it runs once per change. A failure must not
@@ -342,6 +334,18 @@ async def lifespan(_app: FastAPI):
     if _MODULE_DIR:
         from celerp.modules.loader import load_all, register_api_routes
         from celerp.config import read_config as _read_config
+        if not update_verify:
+            # Registration's starter records are kept by the starter modules, which are
+            # enabled here before the module list is read (once per install). A failure
+            # must not block boot; the next start retries.
+            try:
+                from celerp.db import LifecycleSessionLocal as _StarterSession
+                from celerp.services.starter_modules import enable_starter_modules
+                async with _StarterSession() as _starter_sess:
+                    await enable_starter_modules(_starter_sess)
+                    await _starter_sess.commit()
+            except Exception:
+                logging.getLogger(__name__).exception("Enabling the starter modules failed (non-fatal)")
         _enabled_env = _os.environ.get("ENABLED_MODULES", "")
         if _enabled_env:
             _enabled = set(_enabled_env.split(","))

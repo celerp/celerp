@@ -77,18 +77,18 @@ async def test_modules_ready_commit_guarded(monkeypatch):
     monkeypatch.setattr("celerp.modules.loader.register_api_routes", lambda *a, **k: None)
     monkeypatch.setattr("celerp.modules.loader.record_load_error", lambda *a, **k: None)
     monkeypatch.setattr("celerp.modules.loader.demoted_first_party", lambda *a, **k: [])
-    made: list[_FakeSession] = []
 
-    def _session():
-        s = _FakeSession(rollback_spy)
-        if not made:  # the upgrade guard's session, ahead of the hooks', commits
-            s.commit = AsyncMock()
-        made.append(s)
-        return s
+    def _commits(result=None):
+        """A start step whose own session, unlike the hooks', commits."""
+        async def step(session):
+            session.commit = AsyncMock()
+            return result
+        return step
 
-    monkeypatch.setattr("celerp.db.LifecycleSessionLocal", _session)
+    monkeypatch.setattr("celerp.services.starter_modules.enable_starter_modules", _commits())
+    monkeypatch.setattr("celerp.db.LifecycleSessionLocal", lambda: _FakeSession(rollback_spy))
     monkeypatch.setattr("celerp.services.dev_release_guard.run_upgrade_guard",
-                        AsyncMock(return_value={"changed": False, "rebuilt": False, "current": True}))
+                        _commits({"changed": False, "rebuilt": False, "current": True}))
     monkeypatch.setattr("celerp.connectors.outbound_queue.adopt_legacy_connector_configs", AsyncMock())
 
     # Keep the relay tunnel down (no public url, no live share).
@@ -135,7 +135,9 @@ async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
     fire = AsyncMock()
     associate = AsyncMock()
     adopt = AsyncMock()
+    starter = AsyncMock()
     monkeypatch.setattr("celerp.modules.slots.fire_lifecycle", fire)
+    monkeypatch.setattr("celerp.services.starter_modules.enable_starter_modules", starter)
     monkeypatch.setattr("celerp.gateway.bootstrap.associate_partner_deployment", associate)
     monkeypatch.setattr("celerp.connectors.outbound_queue.adopt_legacy_connector_configs", adopt)
 
@@ -155,6 +157,7 @@ async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
 
     fire.assert_not_awaited()
     associate.assert_not_awaited()
+    starter.assert_not_awaited()
     adopt.assert_awaited_once()
 
 
@@ -203,6 +206,7 @@ async def _boot_in_order(monkeypatch, guard) -> tuple[list[str], AsyncMock, Magi
     monkeypatch.setattr("celerp.modules.loader.register_api_routes", lambda *a, **k: None)
     monkeypatch.setattr("celerp.modules.loader.record_load_error", lambda *a, **k: None)
     monkeypatch.setattr("celerp.modules.loader.demoted_first_party", lambda *a, **k: [])
+    monkeypatch.setattr("celerp.services.starter_modules.enable_starter_modules", AsyncMock())
     monkeypatch.setattr("celerp.db.LifecycleSessionLocal", _Session)
     monkeypatch.setattr("celerp.services.dev_release_guard.run_upgrade_guard", _guard)
     monkeypatch.setattr("celerp.modules.slots.fire_lifecycle", _fire)

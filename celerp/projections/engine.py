@@ -20,6 +20,7 @@ from celerp.inventory_codes import (
 )
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.projections.handlers.system import apply_system_event
 from celerp.projections.retired import RETIRED
 
 log = logging.getLogger(__name__)
@@ -36,7 +37,12 @@ MERGE_EVENTS = frozenset({
     "scan.barcode", "scan.rfid", "scan.nfc", "scan.resolved",
     "sub.created", "sub.updated", "sub.paused", "sub.cancelled", "sub.resumed",
     "sub.generated", "sub.expired",
+    "crm.deal.created", "crm.deal.updated", "crm.deal.stage_changed", "crm.deal.won",
+    "crm.deal.lost", "crm.deal.reopened", "crm.deal.deleted",
 })
+
+# The kernel's own events, applied whichever modules are loaded.
+_KERNEL_PREFIX = "sys."
 
 
 _TYPE_LABELS = {"item": "Item", "doc": "Document", "list": "List", "contact": "Contact"}
@@ -100,6 +106,8 @@ def _replay_handler(event_type: str):
     if event_type in RETIRED:
         retired = RETIRED[event_type]
         return lambda state, _event_type, data: retired(state, data)
+    if event_type.startswith(_KERNEL_PREFIX):
+        return apply_system_event
     for prefix, fn in _get_module_handlers().items():
         if event_type.startswith(prefix):
             return fn
@@ -122,10 +130,10 @@ class ProjectionEngine:
 
     @staticmethod
     def _apply(state: dict, event_type: str, data: dict) -> dict:
-        # An event written while its module is not loaded (a new company's starter records,
-        # before setup enables the modules) is kept as its data. A rebuild never replays one
-        # that way: it waits until every event is replayable (unreplayable).
-        return (_replay_handler(event_type) or _merge)(state, event_type, data)
+        handler = _replay_handler(event_type)
+        if handler is None:
+            raise ValueError(f"No enabled module applies {event_type} events")
+        return handler(state, event_type, data)
 
     @staticmethod
     def _next_fields(state: dict, entry: LedgerEntry, fallback_version: int) -> dict:

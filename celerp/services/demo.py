@@ -1679,7 +1679,10 @@ async def replace_demo_items(
     not commit. Returns how many demo items were replaced and how many were kept."""
     import sqlalchemy as sa
     from celerp.models.company import Location
+    from celerp.projections.engine import ProjectionEngine
 
+    if not ProjectionEngine.replayable("item.created"):
+        return {"replaced": 0, "kept": 0}  # demo items change only through the loaded Inventory module
     replaced, kept = await delete_untouched_demo_items(session, company_id)
     if replaced:
         default_location = (await session.execute(
@@ -1715,6 +1718,7 @@ async def seed_demo_items(
 
     A demo SKU already held by an item is skipped, so seeding never duplicates a SKU.
     The stock seeded is booked as opening stock (lot_origin.recognize_opening_lots)."""
+    from celerp.projections.engine import ProjectionEngine
     from celerp.services.company_lock import locked_company
     from celerp.services.lot_origin import recognize_opening_lots
 
@@ -1736,6 +1740,8 @@ async def seed_demo_items(
         if "terms_conditions" not in settings:
             settings["terms_conditions"] = terms_conditions_for(vertical)
         company.settings = settings
+    if not ProjectionEngine.replayable("item.created"):
+        return  # starter items are written only through the loaded Inventory module
     items = _VERTICAL_ITEMS.get(vertical or "", _GENERIC_ITEMS) if vertical else _GENERIC_ITEMS
     taken = await _skus_in_use(session, company_id, [data["sku"] for data in items])
     seeded: list[str] = []
@@ -1745,11 +1751,8 @@ async def seed_demo_items(
             continue
         entity_id = f"item:demo-{uuid.uuid4()}"
         prices = data.get("prices") or {}
-        # Build price fields keyed by lowercase price list name + "_price".
-        # These go directly into the item.created payload so they land at top-level
-        # in projection state even when the inventory module (and its item.pricing.set
-        # handler) is not yet loaded - which is always the case during initial
-        # registration (modules are enabled after the setup wizard completes).
+        # Build price fields keyed by lowercase price list name + "_price", carried in the
+        # item.created payload so each price lands on the item as it is created.
         price_fields = {
             f"{pl_name.lower()}_price": float(pv)
             for pl_name, pv in prices.items()
@@ -1810,9 +1813,12 @@ async def seed_self_contacts(
     Called from both the initial registration flow and the create-additional-company flow.
     """
     import logging as _logging
+    from celerp.projections.engine import ProjectionEngine
     from celerp.services.company_lock import locked_company
     _log = _logging.getLogger(__name__)
 
+    if not ProjectionEngine.replayable("crm.contact.created"):
+        return  # the own contact is written only through the loaded Contacts module
     entity_id = f"contact:{uuid.uuid4()}"
     try:
         await emit_event(
