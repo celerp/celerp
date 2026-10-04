@@ -3170,6 +3170,19 @@ async def marketplace_install(token: str, path: str) -> dict:
                                    json={"path": path})).json()
 
 
+async def installation_owner(token: str) -> bool:
+    """GET /system/installation-owner - whether this login owns the installation.
+
+    Any error reads as not the owner, so installation-wide controls are offered
+    only on a confirmed answer."""
+    try:
+        async with _api_client(token) as c:
+            r = _raise(await c.get("/system/installation-owner"))
+        return r.json().get("installation_owner") is True
+    except Exception:
+        return False
+
+
 async def restart_system(token: str) -> dict:
     """POST /system/restart - graceful restart; the process manager respawns."""
     async with _api_client(token) as c:

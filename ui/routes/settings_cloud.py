@@ -34,6 +34,16 @@ from ui.routes.settings_general import _section_breadcrumb
 _VALID_STORAGE_BACKENDS = {"local", "s3"}
 
 
+async def _infra_refused(request: Request) -> bool:
+    """The database and file storage serve the whole installation, and changing
+    them restarts it: the installation owner only, on top of the page's own
+    permission. Its fragments are gated the same way."""
+    if await _check_permission(request, "manage_integrations"):
+        return True
+    import ui.api_client as _api
+    return not await _api.installation_owner(_token(request) or "")
+
+
 def _relay_has_paid_access(status: dict) -> bool:
     """Interpret /cloud-status once for UI capability gating.
 
@@ -698,12 +708,16 @@ def _grace_notice(state: dict, lang: str = "en") -> FT | None:
     return Div(*children, cls="flash flash--warning", style="margin-bottom:12px;")
 
 
-def _infrastructure_tab(grace_notice: FT | None = None) -> FT:
+def _infrastructure_tab(grace_notice: FT | None = None, owner: bool = False) -> FT:
     """Team plan infrastructure config: external DB + S3 storage. The grace or
-    after-grace notice, when present, sits above the config sections."""
+    after-grace notice, when present, sits above the config sections. Only the
+    installation owner is offered the config sections."""
     children: list = []
     if grace_notice is not None:
         children.append(grace_notice)
+    if not owner:
+        children.append(P(t("settings_cloud.infra_owner_only"), cls="text-muted"))
+        return Div(*children, cls="settings-card")
     _packaged_infra = _packaged_infra_or_none()
     children.extend([_infra_db_section(_packaged_infra), _infra_storage_section(_packaged_infra)])
     return Div(*children, cls="settings-card")
@@ -980,7 +994,8 @@ def setup_routes(app):
         grace_notice = _grace_notice(get_local_infra_state(), lang=lang)
 
         if tab == "infrastructure" and has_team:
-            content = _infrastructure_tab(grace_notice=grace_notice)
+            content = _infrastructure_tab(grace_notice=grace_notice,
+                                          owner=await _api.installation_owner(token))
         elif tab in ("website", "accounting"):
             from ui.routes.settings_connectors import connectors_tab_content
             company = getattr(request.state, "auth_company", None)
@@ -1085,9 +1100,7 @@ def setup_routes(app):
         configured password when the field is left blank so testing does not
         force retyping a password that is already saved."""
         token = _token(request)
-        # Infra changes (DB/storage endpoints) are admin/owner actions - the
-        # page is role-gated, so its fragments must be too.
-        if await _check_permission(request, "manage_integrations"):
+        if await _infra_refused(request):
             return Div()
         # RBAC alone is not enough: probing an external target establishes/
         # re-probes external infra, which requires a live Team entitlement.
@@ -1147,9 +1160,7 @@ def setup_routes(app):
         currently configured secret key when the field is left blank so
         testing does not force retyping a secret that is already saved."""
         token = _token(request)
-        # Infra changes (DB/storage endpoints) are admin/owner actions - the
-        # page is role-gated, so its fragments must be too.
-        if await _check_permission(request, "manage_integrations"):
+        if await _infra_refused(request):
             return Div()
         # As with test-db, probing external storage requires a live Team
         # entitlement, not RBAC alone; a lapsed install gets the neutral gate.
@@ -1208,9 +1219,7 @@ def setup_routes(app):
         reload via SIGHUP.
         """
         token = _token(request)
-        # Infra changes (DB/storage endpoints) are admin/owner actions - the
-        # page is role-gated, so its fragments must be too.
-        if await _check_permission(request, "manage_integrations"):
+        if await _infra_refused(request):
             return Div()
         # Saving external infra ESTABLISHES it, so it requires a live Team
         # entitlement, not RBAC alone. A lapsed-but-configured caller is
@@ -1235,9 +1244,7 @@ def setup_routes(app):
         and relaunches Electron; self-hosted swaps config.toml and reloads.
         """
         token = _token(request)
-        # Infra changes (DB/storage endpoints) are admin/owner actions - the
-        # page is role-gated, so its fragments must be too.
-        if await _check_permission(request, "manage_integrations"):
+        if await _infra_refused(request):
             return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")

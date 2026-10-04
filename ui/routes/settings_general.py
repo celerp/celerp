@@ -68,18 +68,6 @@ def _section_breadcrumb(section_key: str) -> FT:
     )
 
 
-async def _is_install_owner(token: str) -> bool:
-    """True when the API lets this session read the installation backup status.
-
-    That status is gated to the installation owner, so any refusal or error
-    reads as not the owner and nothing whole-installation is offered."""
-    try:
-        await api.get_backup_status(token)
-    except Exception:
-        return False
-    return True
-
-
 def setup_routes(app):
 
     @app.get("/settings/system-recovery")
@@ -167,7 +155,7 @@ def setup_routes(app):
                 content = _users_tab(users, company.get("settings"), lang=lang, is_owner=is_owner)
             elif tab == "backup":
                 content = _backup_tab(
-                    is_install_owner=await _is_install_owner(token),
+                    is_install_owner=await api.installation_owner(token),
                     company_backup=_company_backup_section()
                     if role_has_permission(settings or {}, role, "manage_company_lifecycle") else "",
                 )

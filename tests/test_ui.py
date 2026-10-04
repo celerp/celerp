@@ -9193,6 +9193,14 @@ _MODULES_LIST = [
     },
 ]
 
+@pytest.fixture
+def as_installation_owner():
+    """The module install, remove and restart controls are the installation
+    owner's; these flows run as that owner."""
+    with patch("ui.api_client.installation_owner", new=AsyncMock(return_value=True)):
+        yield
+
+
 _SETTINGS_MOCKS_MODULES = {
     "ui.api_client.get_company": AsyncMock(return_value={"name": "T", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01", "current_role": "owner"}),
     "ui.api_client.get_taxes": AsyncMock(return_value={"taxes": []}),
@@ -9206,6 +9214,7 @@ _SETTINGS_MOCKS_MODULES = {
 }
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 class TestModulesUI:
     """Modules page (top-level, owner/admin only) - list, enable, disable,
     import, restart, load-error surfacing."""
@@ -9694,6 +9703,7 @@ _CATALOG_FIXTURE = [
 ]
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 class TestMarketplaceUI:
     """Marketplace tab (paid/official listings only) and the separate Community
     tab: tiers, trust icons, the one-step acknowledgment, cache and failure
