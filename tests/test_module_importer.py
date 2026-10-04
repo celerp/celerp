@@ -639,6 +639,50 @@ def test_model_only_table_prefix_overlapping_installed_module_refused(module_dir
     assert not (module_dir / "second-mod").exists()
 
 
+@pytest.mark.parametrize("second", ["zip", "folder"])
+def test_overlapping_modules_installed_at_once_only_one_lands(module_dir, tmp_path, monkeypatch, second):
+    """Two installs whose prefixes overlap, started together: exactly one lands."""
+    import threading
+    import time
+
+    from celerp.modules import importer
+
+    real_write_meta = importer.write_meta
+
+    def slow_write_meta(*args, **kwargs):
+        time.sleep(0.3)
+        return real_write_meta(*args, **kwargs)
+
+    monkeypatch.setattr(importer, "write_meta", slow_write_meta)
+    src = tmp_path / "src" / "second-mod"
+    src.mkdir(parents=True)
+    (src / "__init__.py").write_text(_migrations_manifest("second-mod", prefix="acme_sub_"))
+    installs = [
+        lambda: install_from_zip(_zip_bytes(
+            {"__init__.py": _migrations_manifest("first-mod", prefix="acme_")})),
+        (lambda: install_from_zip(_zip_bytes({"__init__.py": src.joinpath("__init__.py").read_text()})))
+        if second == "zip" else (lambda: install_from_folder(src)),
+    ]
+    outcomes: list = []
+
+    def run(install):
+        try:
+            outcomes.append(install()["name"])
+        except ModuleImportError as exc:
+            outcomes.append(exc)
+
+    threads = [threading.Thread(target=run, args=(install,)) for install in installs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    landed = sorted(p.name for p in module_dir.iterdir() if not p.name.startswith("."))
+    assert len(landed) == 1, (landed, outcomes)
+    refused = [o for o in outcomes if isinstance(o, ModuleImportError)]
+    assert len(refused) == 1 and "overlaps" in str(refused[0]), outcomes
+
+
 def test_model_only_module_without_table_prefix_installs(module_dir):
     install_from_zip(_zip_bytes(
         {"__init__.py": _migrations_manifest("plain-mod", prefix=None, migrations=False)}))

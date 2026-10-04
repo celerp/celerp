@@ -24,6 +24,7 @@ are separate, deliberate steps (see the modules UI).
 from __future__ import annotations
 
 import ast
+import contextlib
 import errno
 import functools
 import os
@@ -410,11 +411,47 @@ def remove_module_dir(name: str) -> None:
         raise ModuleImportError(f"Module '{name}' is not installed.")
 
 
+@contextlib.contextmanager
+def _one_install_at_a_time():
+    """Run the block while no other install, in any process, is in its own.
+
+    What an install is checked against (the names and table prefixes already on
+    disk) only stays true until the package lands if nothing else lands first."""
+    path = _module_dir() / ".install.lock"
+    with open(path, "a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    continue
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _finish(staged: Path, manifest: dict, *, official: bool = False,
             premium: bool = False, source: str = "sideloaded") -> dict:
     name = str(manifest.get("name", ""))
     _validate_name(name, official=official)
     _check_min_version(manifest)
+    with _one_install_at_a_time():
+        return _land(staged, manifest, name, premium=premium, source=source)
+
+
+def _land(staged: Path, manifest: dict, name: str, *, premium: bool, source: str) -> dict:
     _validate_table_prefix(name, manifest)
     # Reconcile the marker in BOTH directions - belt and suspenders alongside
     # the explicit reserved-name refusals above: this is the one place every
@@ -437,12 +474,8 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
     # disk-full), then os.replace the finished tree into place. On any failure
     # the partial temp dir is removed and the error is a clean ModuleImportError,
     # not a 500.
-    # os.getpid() is identical across concurrent requests in the same process
-    # (installs run via asyncio.to_thread, i.e. real OS threads sharing one
-    # PID) - two simultaneous installs of the same slug would then race on
-    # this exact path, corrupting each other's copytree/replace. A per-call
-    # random suffix makes every attempt's landing dir unique regardless of
-    # concurrency.
+    # A per-call random suffix keeps a landing dir left by a crashed install
+    # from ever being reused.
     landing = target.parent / f".{name}.incoming-{uuid.uuid4().hex}"
     try:
         shutil.rmtree(landing, ignore_errors=True)
@@ -450,10 +483,10 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
         os.replace(landing, target)
     except OSError as exc:
         shutil.rmtree(landing, ignore_errors=True)
-        # A concurrent install of the same slug can land the target between
-        # _target_for()'s check and this replace. os.replace onto a populated
-        # dir raises FileExistsError (EEXIST) or, on Linux, OSError(ENOTEMPTY) -
-        # both mean "already there", so surface the same friendly message.
+        # A folder copied in by hand can appear between _target_for()'s check
+        # and this replace. os.replace onto a populated dir raises
+        # FileExistsError (EEXIST) or, on Linux, OSError(ENOTEMPTY) - both mean
+        # "already there", so surface the same friendly message.
         if isinstance(exc, FileExistsError) or exc.errno == errno.ENOTEMPTY:
             raise ModuleImportError(
                 f"A module named '{name}' already exists. Remove it first, then import."
