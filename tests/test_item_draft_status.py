@@ -629,7 +629,7 @@ async def test_opening_inventory_je_excludes_draft(client, session):
 def test_manufacturing_lot_qty_excludes_draft_lots():
     """On-hand lot totals never count a draft lot; a lot with no status counts as
     available, matching the projection default for pre-draft data."""
-    from celerp_manufacturing.routes import _on_hand_by_product
+    from celerp_manufacturing.routes import _stock_by_product
 
     states = {
         "item:prod": {"quantity": 0.0, "status": "available", "recipe": {"components": [{"item_id": "item:raw"}]}},
@@ -637,7 +637,7 @@ def test_manufacturing_lot_qty_excludes_draft_lots():
         "item:lot-2": {"parent_item_id": "item:prod", "quantity": 3.0, "status": "draft"},
         "item:lot-3": {"parent_item_id": "item:prod", "quantity": 2.0},
     }
-    assert _on_hand_by_product(states)["item:prod"] == 6.0
+    assert _stock_by_product(states)[0]["item:prod"] == 6.0
 
 
 # ── Drafts cannot circulate onto documents or lists ───────────────────────────

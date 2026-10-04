@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.projections import Projection
-from celerp_manufacturing.routes import _all_item_states, _in_progress_by_item, _on_hand_by_product
+from celerp_manufacturing.routes import _all_item_states, _in_progress_by_item, _stock_by_product
 from mfg_runs import refusal, snapshot
 from stock_books import assert_settled
 from test_cost_restatement import _sell, _state, auth, ids  # noqa: F401  (fixtures)
@@ -36,7 +36,8 @@ async def _supply(session, auth, made: str) -> tuple[float, float]:
     cid = auth["company_id"]
     runs = (await session.execute(select(Projection).where(
         Projection.company_id == cid, Projection.entity_type == "mfg_order"))).scalars().all()
-    on_hand = _on_hand_by_product(await _all_item_states(session, cid)).get(made, 0.0)
+    free, _held = _stock_by_product(await _all_item_states(session, cid))
+    on_hand = free.get(made, 0.0)
     return on_hand, _in_progress_by_item(runs).get(made, 0.0)
 
 

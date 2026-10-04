@@ -633,18 +633,21 @@ def _skip_as_demand(doc_state: dict) -> bool:
     return False
 
 
-def _peg(supply: float, docs: list[dict]) -> None:
-    """FIFO-assign available supply (on hand + in progress) to demand documents by due date —
-    soonest due first, undated last — so each doc shows how much of its demand is covered.
-    Annotates each doc in place with covered / shortfall / coverage (covered|partial|short)."""
-    remaining = max(0.0, supply)
-    for d in sorted(docs, key=lambda x: (x.get("due") is None, x.get("due") or "")):
+def _peg(row: dict) -> None:
+    """Settle a Demand Planning row: each document's own reserved stock (``reserved``) covers it
+    first, then free stock (on hand less what is reserved) plus what open runs still have to give
+    is FIFO-assigned to what is left - soonest due first, undated last. Annotates each doc in place
+    with covered / shortfall / coverage (covered|partial|short) and sets the row's to_make."""
+    remaining = max(0.0, row["on_hand"] - sum(d["reserved"] for d in row["docs"]) + row["in_progress"])
+    for d in sorted(row["docs"], key=lambda x: (x.get("due") is None, x.get("due") or "")):
         q = float(d.get("quantity") or 0)
-        cov = min(remaining, q)
-        remaining -= cov
+        free = min(remaining, q - d["reserved"])
+        remaining -= free
+        cov = d["reserved"] + free
         d["covered"] = round(cov, 4)
         d["shortfall"] = round(max(0.0, q - cov), 4)
         d["coverage"] = "covered" if cov >= q else ("partial" if cov > 0 else "short")
+    row["to_make"] = max(0.0, row["demand"] - row["on_hand"] - row["in_progress"])
 
 
 def _in_progress_by_item(runs: list) -> dict[str, float]:
@@ -665,11 +668,17 @@ def _in_progress_by_item(runs: list) -> dict[str, float]:
 async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
     """Open demand aggregated BY PRODUCT across every open demand document (customer
     invoices/pro formas/lists + internal production orders), netted against on-hand stock AND
-    in-progress production, with each demanding document FIFO-pegged to available supply.
+    in-progress production, with each demanding document pegged to supply (see _peg).
+
+    Stock reserved to a document serves only that document, as fulfillment ships it: each
+    document's own reserved stock covers its demand first and no other document may take it;
+    stock reserved to a memo or any document not on the row covers nothing. On hand is the free
+    stock plus what the row's documents hold for themselves (up to their demand).
 
     Each row: the manufacturable product, total open demand, on hand, in progress, net to make
     (demand - on hand - in progress, clamped at 0), the soonest due date, the per-document
-    breakdown with pegged coverage, and the rolled est unit cost / est cost / est hours. Rows
+    breakdown with what it holds reserved and its pegged coverage, and the rolled est unit cost /
+    est cost / est hours. Rows
     where the product is not manufacturable (no recipe) are skipped. Sort: no-due-date first,
     then earliest due, then name (act on undated/soonest first)."""
     states = await _all_item_states(session, company_id)
@@ -680,6 +689,7 @@ async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
         )
     )).scalars().all()
 
+    free, held = _stock_by_product(states)
     agg: dict[str, dict] = {}
     for doc, item_id, qty in await _open_demand(session, company_id, states, docs):
         if not is_manufacturable(states.get(item_id)):
@@ -699,6 +709,7 @@ async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
             "contact_name": st.get("contact_name") or "", "due": due, "quantity": 0.0,
         })
         d["quantity"] += qty
+        d["reserved"] = min(d["quantity"], held.get((item_id, doc.entity_id), 0.0))
         if due and (row["due"] is None or due < row["due"]):
             row["due"] = due
 
@@ -709,18 +720,15 @@ async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
     )).scalars().all()
     in_progress = _in_progress_by_item(runs)
 
-    # Every produced output is a discrete lot under the product, so on-hand must include them.
-    on_hand_by_product = _on_hand_by_product(states)
     hours_per_day = await _default_hours_per_day(session, company_id)
     items: list[dict] = []
     for item_id, row in agg.items():
         ist = states.get(item_id) or {}
-        on_hand = on_hand_by_product.get(item_id, 0.0)
-        wip = in_progress.get(item_id, 0.0)
-        supply = on_hand + wip
-        to_make_qty = max(0.0, row["demand"] - supply)
         docs_list = list(row["docs"].values())
-        _peg(supply, docs_list)
+        plan = {"demand": row["demand"], "docs": docs_list, "in_progress": in_progress.get(item_id, 0.0),
+                "on_hand": free.get(item_id, 0.0) + sum(d["reserved"] for d in docs_list)}
+        _peg(plan)
+        to_make_qty = plan["to_make"]
         recipe = ist.get("recipe") or {}
         unit_cost = float(recipe.get("unit_cost") or 0)
         try:
@@ -730,7 +738,7 @@ async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
         items.append({
             **{k: row[k] for k in ("item_id", "sku", "name", "due")},
             "unit": ist.get("sell_by") or ist.get("unit"),
-            "demand": row["demand"], "on_hand": on_hand, "in_progress": wip,
+            "demand": row["demand"], "on_hand": plan["on_hand"], "in_progress": plan["in_progress"],
             "to_make": to_make_qty,
             "doc_count": len(docs_list), "docs": docs_list,
             "est_unit_cost": round(unit_cost, 4),
@@ -775,11 +783,9 @@ async def _emit_work_order(session, company_id, actor_id, item_id: str, item_sta
 
 def _reserve(row: dict, qty: float) -> None:
     """Count ``qty`` more in progress for a Demand Planning row, as the board would show once
-    a run for it exists: what is left to make, and each document's FIFO-pegged shortfall."""
+    a run for it exists: what is left to make, and each document's pegged shortfall."""
     row["in_progress"] += qty
-    supply = row["on_hand"] + row["in_progress"]
-    row["to_make"] = max(0.0, row["demand"] - supply)
-    _peg(supply, row["docs"])
+    _peg(row)
 
 
 def _line_source(doc: dict) -> dict:
@@ -1533,15 +1539,25 @@ async def delete_work_center(
 _INACTIVE_ITEM_STATUSES = frozenset({"sold", "memo_out", "archived", "merged", "expired", "draft", "disposed"})
 
 
-def _on_hand_by_product(states: dict[str, dict]) -> dict[str, float]:
-    """Stock on hand per product: the product's own quantity and its lots' (see _product_of),
-    each counted only while it is in stock (not sold, out on memo, gone, or a draft)."""
-    out: dict[str, float] = {}
+def _stock_by_product(states: dict[str, dict]) -> tuple[dict[str, float], dict[tuple[str, str | None], float]]:
+    """Stock on hand per product - the product's own quantity and its lots' (see _product_of), each
+    counted only while it is in stock (not sold, out on memo, gone, or a draft) - split as
+    fulfillment draws it: (free stock by product, reserved stock by (product, the document it is
+    reserved to)). Only that document can ship reserved stock. A quantity held with
+    item.reserved (``reserved_quantity``) does not stop fulfillment drawing the lot, so it is free."""
+    free: dict[str, float] = {}
+    held: dict[tuple[str, str | None], float] = {}
     for item_id, st in states.items():
-        if str(st.get("status") or "available") not in _INACTIVE_ITEM_STATUSES:
-            product = _product_of(item_id, states)
-            out[product] = out.get(product, 0.0) + float(st.get("quantity") or 0)
-    return out
+        status = str(st.get("status") or "available")
+        if status in _INACTIVE_ITEM_STATUSES:
+            continue
+        product, qty = _product_of(item_id, states), float(st.get("quantity") or 0)
+        if status == "reserved":
+            key = (product, st.get("status_doc_id"))
+            held[key] = held.get(key, 0.0) + qty
+        else:
+            free[product] = free.get(product, 0.0) + qty
+    return free, held
 
 
 # ---------------------------------------------------------------------------
