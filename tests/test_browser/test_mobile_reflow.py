@@ -144,3 +144,25 @@ def test_the_stock_merge_journey_fits_a_phone_screen(page, ui_server, fresh_comp
     assert "riverside_showroom" in page.locator(".toast-container .toast").first.inner_text()
     _fits(page, "result toast")
     _on_screen(page, ".toast-container .toast", "result toast")
+
+
+@pytest.mark.parametrize("width", [320, 390])
+def test_the_dashboard_fits_a_phone_screen(page, ui_server, fresh_company, width):
+    # Recent activity with a long unbroken word, so the activity table has content to fit.
+    r = fresh_company.post("/items", json={
+        "status": "available", "sku": f"DASH-{uuid.uuid4().hex[:6].upper()}",
+        "name": "Consignment_stock_held_at_the_riverside_showroom_warehouse",
+        "quantity": 2, "sell_by": "piece", "cost_total": 20.0})
+    assert r.status_code in (200, 201), r.text
+
+    page.set_viewport_size({"width": width, "height": 740})
+    page.goto(f"{ui_server}/dashboard", wait_until="domcontentloaded")
+    page.wait_for_selector(".chart-card", timeout=8000)
+    page.wait_for_selector("table.activity-table", timeout=8000)
+    page.wait_for_timeout(500)
+    _fits(page, "dashboard")
+    page.locator("table.activity-table").first.scroll_into_view_if_needed()
+    _fits(page, "dashboard activity")
+    for selector in (".chart-card", "table.activity-table"):
+        assert page.locator(selector).first.evaluate(
+            f"e => !!e.closest('{_OWN_SCROLL}') || e.getBoundingClientRect().right <= {width} + 0.5")

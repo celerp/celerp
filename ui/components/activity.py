@@ -1105,7 +1105,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
 
     return Div(
         Div(*header_parts, cls="section-header") if icon else H3(title, cls="section-title"),
-        table,
+        Div(table, cls="table-scroll-wrap"),
         footer,
         resizer,
         cls=section_cls,

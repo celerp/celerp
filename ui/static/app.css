@@ -1092,9 +1092,9 @@ a:hover { text-decoration: underline; }
 
 /* Charts */
 .charts-section { margin-bottom: 24px; }
-.charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-@media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } }
-.chart-card { background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 16px; }
+.charts-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+@media (max-width: 768px) { .charts-grid { grid-template-columns: minmax(0, 1fr); } }
+.chart-card { min-width: 0; background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 16px; }
 .chart-card--wide { margin-bottom: 20px; }
 .chart-line-wrap { position: relative; height: 230px; }
 .chart-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--c-text); }
