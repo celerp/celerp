@@ -477,8 +477,8 @@ if _MODULE_DIR and _ENABLED_MODULES:
     from celerp.config import settings as _settings
     from celerp.modules.outcome import admission_as_reported, reported_by_api
     from ui.config import API_BASE as _API_BASE
-    _admission = admission_as_reported(
-        _MODULE_DIR, _ENABLED_MODULES, reported_by_api(_API_BASE, _settings.database_url))
+    _api_record = reported_by_api(_API_BASE, _settings.database_url)
+    _admission = admission_as_reported(_MODULE_DIR, _ENABLED_MODULES, _api_record)
     _OFFERED_MODULES = {m.name for m in _admission.admitted}
 
 # Kernel UI routes — always registered
@@ -536,6 +536,9 @@ if _admission is not None:
     from celerp.modules.loader import load_all, register_ui_routes
     _ui_loaded = load_all(_MODULE_DIR, _ENABLED_MODULES, admission=_admission)
     register_ui_routes(app, _ui_loaded)
+    # A module that failed here stops in the API process too.
+    from celerp.modules.outcome import report_stopped
+    report_stopped(_settings.database_url, _api_record)
 
 if __name__ == "__main__":
     import uvicorn

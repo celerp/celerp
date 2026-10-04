@@ -7,7 +7,8 @@ the migration phase or the loader executes anything it ships. A refused module
 runs nothing, in either process, and the refusal is reported. Route entrypoints
 are proven to be the module's own code, and a module whose routes fail to
 register is taken out of that process whole, together with every module that
-depends on it.
+depends on it. A module that fails in the UI process stops in the API process
+too, through the outcome record both processes share.
 
 Every fixture module is written under tmp_path with a unique inner package, so
 nothing depends on an installed module or on another test's imports.
@@ -886,23 +887,15 @@ def test_stopped_module_keeps_its_table_prefix_reserved(_modules):
     assert installed_table_prefixes(exclude="")[folder] == prefix
 
 
-@pytest.mark.parametrize("dashboard_running", [True, False])
-async def test_ui_process_offers_core_pages_only_for_running_modules(
-        dashboard_running, committed_engine, tmp_path):
-    """The UI process at import: a core page gated on a bundled module is offered
-    only when the API process reports that module running."""
+def _ui_process(token: str, database_url: str, module_dir: Path, enabled: str,
+                data_dir: Path) -> dict:
+    """Import ui.app in a separate process, as the UI process does at startup,
+    against an API whose /health serves ``token``. Returns the routes it offers
+    and its load errors."""
     import os
     import subprocess
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
-
-    from celerp.migrations._data_reconcile import set_meta
-
-    token = uuid.uuid4().hex
-    record = {"boot": token, "running": ["celerp-dashboard"] if dashboard_running else [],
-              "failed": {} if dashboard_running else {"celerp-dashboard": "dashboard boom"}}
-    async with committed_engine.begin() as conn:
-        await conn.run_sync(lambda c: set_meta(c, "module_outcome", json.dumps(record)))
 
     class _Health(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -918,10 +911,9 @@ async def test_ui_process_offers_core_pages_only_for_running_modules(
     server = HTTPServer(("127.0.0.1", 0), _Health)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     repo = Path(__file__).resolve().parents[2]
-    env = {**os.environ,
-           "MODULE_DIR": str(repo / "default_modules"), "ENABLED_MODULES": "celerp-dashboard",
+    env = {**os.environ, "MODULE_DIR": str(module_dir), "ENABLED_MODULES": enabled,
            "API_URL": f"http://127.0.0.1:{server.server_port}",
-           "DATABASE_URL": _engine_url(committed_engine), "CELERP_DATA_DIR": str(tmp_path)}
+           "DATABASE_URL": database_url, "CELERP_DATA_DIR": str(data_dir)}
     env.pop("CELERP_API_URL", None)
     try:
         out = subprocess.run(
@@ -934,8 +926,123 @@ async def test_ui_process_offers_core_pages_only_for_running_modules(
     finally:
         server.shutdown()
     assert out.returncode == 0, out.stderr[-2000:]
-    result = json.loads(out.stdout.strip().splitlines()[-1])
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.parametrize("dashboard_running", [True, False])
+async def test_ui_process_offers_core_pages_only_for_running_modules(
+        dashboard_running, committed_engine, tmp_path):
+    """The UI process at import: a core page gated on a bundled module is offered
+    only when the API process reports that module running."""
+    from celerp.migrations._data_reconcile import set_meta
+
+    token = uuid.uuid4().hex
+    record = {"boot": token, "running": ["celerp-dashboard"] if dashboard_running else [],
+              "failed": {} if dashboard_running else {"celerp-dashboard": "dashboard boom"}}
+    async with committed_engine.begin() as conn:
+        await conn.run_sync(lambda c: set_meta(c, "module_outcome", json.dumps(record)))
+
+    repo = Path(__file__).resolve().parents[2]
+    result = _ui_process(token, _engine_url(committed_engine), repo / "default_modules",
+                         "celerp-dashboard", tmp_path)
 
     assert ("/dashboard" in result["paths"]) is dashboard_running
     if not dashboard_running:
         assert result["errors"]["celerp-dashboard"] == "dashboard boom"
+
+
+# ── A6: a module that fails in the UI process stops in the API process ──────
+
+
+def _two_sided_module(base: Path, folder: str, *, fail_ui: bool = False,
+                      depends_on=None) -> tuple[Path, str]:
+    """A module with API routes, UI routes and a nav entry; ``fail_ui`` makes its
+    UI route setup raise."""
+    inner = f"acme_{_uid()}"
+    manifest = {"name": folder, "version": "1.0.0",
+                "api_routes": f"{inner}.api", "ui_routes": f"{inner}.ui",
+                "slots": {"nav": {"label": folder, "href": f"/{inner}/home"}}}
+    if depends_on:
+        manifest["depends_on"] = depends_on
+    ui_body = ("    raise RuntimeError('ui setup exploded')\n" if fail_ui else
+               f"    app.router.add_route('/{inner}/home', lambda r: PlainTextResponse('ok'))\n")
+    files = {
+        f"{inner}/__init__.py": "",
+        f"{inner}/api.py": (
+            "from starlette.responses import PlainTextResponse\n\n"
+            "def setup_api_routes(app):\n"
+            f"    app.router.add_route('/{inner}/api', lambda r: PlainTextResponse('ok'))\n"),
+        f"{inner}/ui.py": (
+            "from starlette.responses import PlainTextResponse\n\n"
+            "def setup_ui_routes(app):\n" + ui_body),
+    }
+    return _write_module(base, folder, manifest, files), inner
+
+
+async def test_ui_route_failure_stops_the_module_in_the_api_process(
+        committed_engine, _modules, tmp_path):
+    """Two processes: this one is the API, the UI is a real ui.app import. A module
+    whose UI routes fail there stops here too, with its dependents."""
+    import asyncio
+
+    from celerp.modules import outcome
+
+    failing, failing_inner = _two_sided_module(_modules, f"acme-{_uid()}", fail_ui=True)
+    dependent, dependent_inner = _two_sided_module(
+        _modules, f"acme-{_uid()}", depends_on=[failing.name])
+    healthy, healthy_inner = _two_sided_module(_modules, f"acme-{_uid()}")
+    enabled = {failing.name, dependent.name, healthy.name}
+    api = _App()
+    loader.register_api_routes(api, loader.load_all(str(_modules), enabled))
+    async with committed_engine.begin() as conn:
+        await conn.run_sync(outcome.publish)
+    assert all(loader.is_running(n) for n in enabled)
+
+    ui = _ui_process(outcome.BOOT_TOKEN, _engine_url(committed_engine), _modules,
+                     ",".join(sorted(enabled)), tmp_path)
+    assert "ui setup exploded" in ui["errors"][failing.name]
+
+    watcher = asyncio.create_task(
+        outcome.watch_reported_stops(api, committed_engine, interval=0.05))
+    try:
+        for _ in range(200):
+            if not loader.is_running(failing.name):
+                break
+            await asyncio.sleep(0.05)
+    finally:
+        watcher.cancel()
+
+    for name, inner in ((failing.name, failing_inner), (dependent.name, dependent_inner)):
+        assert not loader.is_running(name)
+        assert f"/{inner}/api" not in _paths(api)
+        assert all(e["_module"] != name for entries in slots.all_slots().values()
+                   for e in entries)
+    assert "ui setup exploded" in loader.load_errors()[failing.name]
+    assert loader.load_errors()[dependent.name] == (
+        f"Requires {failing.name!r}, which failed to load.")
+    async with committed_engine.connect() as conn:
+        record = await conn.run_sync(outcome.read)
+    assert record["boot"] == outcome.BOOT_TOKEN
+    assert record["running"] == [healthy.name]
+    assert "ui setup exploded" in record["failed"][failing.name]
+    # Control: the module that works in both processes keeps running in both.
+    assert loader.is_running(healthy.name)
+    assert f"/{healthy_inner}/api" in _paths(api)
+    assert f"/{healthy_inner}/home" in ui["paths"]
+
+
+async def test_report_from_an_earlier_api_process_stops_nothing(committed_engine, _modules):
+    """A UI that read another API process's record cannot stop this one's modules."""
+    from celerp.modules import outcome
+
+    healthy, inner = _two_sided_module(_modules, f"acme-{_uid()}")
+    api = _App()
+    loader.register_api_routes(api, loader.load_all(str(_modules), {healthy.name}))
+    async with committed_engine.begin() as conn:
+        await conn.run_sync(outcome.publish)
+    stale = {"boot": "an-earlier-api-process", "running": [healthy.name], "failed": {}}
+    loader._loaded.clear()  # this "UI" is not running it
+
+    assert outcome.report_stopped(_engine_url(committed_engine), stale) == {}
+    async with committed_engine.connect() as conn:
+        assert (await conn.run_sync(outcome.read))["running"] == [healthy.name]

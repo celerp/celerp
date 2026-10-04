@@ -401,6 +401,8 @@ _admitted: dict[str, "AdmittedModule"] = {}
 _module_tables: dict[str, set[str]] = {}
 # Tables taken off the shared metadata because the module behind them is not running
 _removed_tables: set[str] = set()
+# The routes each running module registered, by name, so taking it out removes them
+_module_routes: dict[str, list] = {}
 
 # Proprietary cloud components folded into core: wired directly at app construction (celerp/main.py,
 # ui/app.py), never loaded as pluggable/replaceable modules.
@@ -924,6 +926,7 @@ def load_all(
     _loaded.clear()
     _load_errors.clear()
     _admitted.clear()
+    _module_routes.clear()
     # Every core table is on the metadata before any module code runs, so a table
     # a module adds is told apart from one it merely caused to be imported.
     import celerp.models  # noqa: F401
@@ -1221,7 +1224,7 @@ def _deactivate(name: str, reason: str) -> set[str]:
     tables off the shared metadata, and the module locale catalogs rebuilt from the
     modules still loaded. Each gets a
     load error; a dependent's names the module it needed. Returns the names
-    taken out, so route registration can remove routes they already added."""
+    taken out; :func:`stop_module` also removes the routes they registered."""
     from ui.i18n import clear_registry
 
     out = {name: reason}
@@ -1241,6 +1244,24 @@ def _deactivate(name: str, reason: str) -> set[str]:
         if module is not None:
             _register_locales(module.name, module.path, manifest)
     return set(out)
+
+
+def stop_module(app, name: str, reason: str) -> set[str]:
+    """Take a running module, and every module depending on it, out of this process
+    after startup (:func:`_deactivate`), with every route they registered on *app*.
+    Returns the names taken out."""
+    gone = _deactivate(name, reason)
+    _remove_routes(app, gone)
+    return gone
+
+
+def _remove_routes(app, names: set[str]) -> None:
+    stale = {id(r) for name in names for r in _module_routes.pop(name, [])}
+    if not stale:
+        return
+    app.router.routes[:] = [r for r in app.router.routes if id(r) not in stale]
+    if getattr(app, "openapi_schema", None) is not None:
+        app.openapi_schema = None  # rebuilt without them on the next request
 
 
 class RouteConflictError(Exception):
@@ -1274,7 +1295,6 @@ def _register_module_routes(app, loaded: list[dict], kind: str) -> None:
     any of them added is removed, so nothing half-registers."""
     manifest_key = f"{kind}_routes"
     setup_attr = f"setup_{kind}_routes"
-    added: dict[str, list] = {}
     for manifest in loaded:
         name = manifest["name"]
         route_mod_path = manifest.get(manifest_key)
@@ -1303,14 +1323,12 @@ def _register_module_routes(app, loaded: list[dict], kind: str) -> None:
             failure = RouteConflictError(
                 "route path(s) already registered: " + ", ".join(clashes)) if clashes else None
         if failure is None:
-            added[name] = list(routes[start:])
+            _module_routes[name] = list(routes[start:])
             log.info("Module %r: %s routes registered", name, kind.upper())
             continue
         del routes[start:]
         _route_failure(manifest, manifest_key, failure)
-        for gone in set(added) - {m["name"] for m in _loaded}:
-            stale = {id(r) for r in added.pop(gone)}
-            routes[:] = [r for r in routes if id(r) not in stale]
+        _remove_routes(app, set(_module_routes) - {m["name"] for m in _loaded})
 
 
 def register_api_routes(app, loaded: list[dict]) -> None:

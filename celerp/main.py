@@ -387,6 +387,10 @@ async def _serve(_app: FastAPI, held):
     # payments close for good, a kept one's reopen). Until then they stay closed.
     from celerp.services.payments import reconcile_payments_loop
     background = [asyncio.create_task(reconcile_payments_loop())]
+    if _loaded_modules:
+        # A module that fails in the UI process stops here too.
+        from celerp.modules.outcome import watch_reported_stops
+        background.append(asyncio.create_task(watch_reported_stops(_app, lifecycle_engine)))
 
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links
