@@ -122,10 +122,10 @@ class ProjectionEngine:
 
     @staticmethod
     def _apply(state: dict, event_type: str, data: dict) -> dict:
-        handler = _replay_handler(event_type)
-        if handler is None:
-            raise ValueError(f"No enabled module applies {event_type} events")
-        return handler(state, event_type, data)
+        # An event written while its module is not loaded (a new company's starter records,
+        # before setup enables the modules) is kept as its data. A rebuild never replays one
+        # that way: it waits until every event is replayable (unreplayable).
+        return (_replay_handler(event_type) or _merge)(state, event_type, data)
 
     @staticmethod
     def _next_fields(state: dict, entry: LedgerEntry, fallback_version: int) -> dict:

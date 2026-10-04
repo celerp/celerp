@@ -297,15 +297,15 @@ async def test_an_event_of_a_module_not_enabled_holds_the_upgrade_back(session, 
     assert state["status"] == "in_progress" and state["inputs"][0]["issued_qty"] == 0.0
 
 
-def test_a_module_event_without_its_handler_is_not_applied_as_a_merge(without_manufacturing):
+def test_a_module_event_without_its_handler_is_not_replayable(without_manufacturing):
     """The engine and the upgrade guard answer "can this be replayed" from one place: an
-    event whose module handler is not registered is refused, never merged."""
+    event whose module handler is not registered cannot be replayed. A live write of one
+    (a new company's starter records, before setup enables the modules) keeps its data."""
     from celerp.projections.engine import ProjectionEngine
 
     without_manufacturing()
     assert ProjectionEngine.replayable("mfg.order.created") is False
-    with pytest.raises(ValueError):
-        ProjectionEngine._apply({}, "mfg.order.created", _RUN_DATA)
+    assert ProjectionEngine._apply({}, "mfg.order.created", _RUN_DATA) == _RUN_DATA
 
 
 def test_a_schema_alone_never_makes_an_event_replayable(monkeypatch):
