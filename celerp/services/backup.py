@@ -15,6 +15,7 @@ cloud snapshot client (``backup_repo``).
 from __future__ import annotations
 
 import base64
+import contextlib
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -182,23 +183,43 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
 
 
 def restore_database_file(dump_path: Path, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
-    """Restore a database from a pg_dump custom-format file."""
-    if clean_schema:
-        from sqlalchemy import create_engine, text
+    """Restore a database from a pg_dump custom-format file.
+
+    Inside a version fence (celerp.migrations.compatibility) the restore runs while
+    a fenced transaction stays open, so pg_restore, which writes from a process of
+    its own, cannot outlast the fence it started under."""
+    from celerp.migrations.compatibility import current_fence
+
+    held = current_fence()
+    engine = None
+    if clean_schema or held is not None:
+        from sqlalchemy import create_engine
 
         from celerp.db_url import sync_url
 
         engine = create_engine(sync_url(database_url))
-        try:
-            with engine.begin() as conn:
-                conn.execute(text("DROP SCHEMA public CASCADE"))
-                conn.execute(text("CREATE SCHEMA public"))
-        finally:
-            engine.dispose()
-        mode = ["--single-transaction", "--exit-on-error"]
-    else:
-        mode = ["--clean", "--if-exists"]
+        if held is not None:
+            held.guard(engine)
+    try:
+        with contextlib.ExitStack() as stack:
+            if clean_schema:
+                from sqlalchemy import text
 
+                with engine.begin() as conn:
+                    conn.execute(text("DROP SCHEMA public CASCADE"))
+                    conn.execute(text("CREATE SCHEMA public"))
+            if held is not None:
+                stack.enter_context(engine.begin())
+            _run_pg_restore(dump_path, database_url, clean_schema, runner)
+    finally:
+        if engine is not None:
+            if held is not None:
+                held.unguard(engine)
+            engine.dispose()
+
+
+def _run_pg_restore(dump_path: Path, database_url: str, clean_schema: bool, runner) -> None:
+    mode = ["--single-transaction", "--exit-on-error"] if clean_schema else ["--clean", "--if-exists"]
     runner = runner or subprocess.run
     try:
         command = _restore_command(database_url, mode)

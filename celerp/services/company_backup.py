@@ -554,11 +554,16 @@ async def export_company_snapshot(company_id, out: Path, *, provenance: dict | N
     deleted before its backup is finished."""
     partial = out.with_name(out.name + ".partial")
     try:
-        async with AsyncSession(bind=celerp.db.engine, expire_on_commit=False) as session, session.begin():
-            if session.get_bind().dialect.name != "sqlite":
-                await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
-                await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
-            manifest = await _export_company(session, company_id, partial, provenance=provenance)
+        async with celerp.db.engine.connect() as conn:
+            if conn.dialect.name != "sqlite":
+                # Set on the connection, not with SET TRANSACTION: the version fence's
+                # check is the first statement of every transaction.
+                conn = await conn.execution_options(
+                    isolation_level="REPEATABLE READ", postgresql_readonly=True)
+            async with AsyncSession(bind=conn, expire_on_commit=False) as session, session.begin():
+                if conn.dialect.name != "sqlite":
+                    await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
+                manifest = await _export_company(session, company_id, partial, provenance=provenance)
         # The snapshot does not hold the company, so it can be reset meanwhile. The file is
         # published only while the company is held: a reset that already committed leaves
         # nothing behind, and a later one deletes the published file with the company.

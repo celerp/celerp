@@ -53,7 +53,8 @@ class _SuperuserPsql:
         assert list(args[:4]) == ["sudo", "-u", "postgres", "psql"], args
         sql = args[args.index("-c") + 1]
         db = args[args.index("-d") + 1] if "-d" in args else "postgres"
-        if not sql.lstrip().upper().startswith("SELECT"):
+        # Ending other sessions is a change too, though it is spelled as a SELECT.
+        if not sql.lstrip().upper().startswith("SELECT") or "pg_terminate_backend" in sql:
             self.changes.append(sql)
             return subprocess.CompletedProcess(args, 0, "", "")
         self.reads.append(sql)

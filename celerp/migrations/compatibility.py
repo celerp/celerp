@@ -34,6 +34,15 @@ until the last holder of the current version has gone, and is refused if it neve
 goes. On Postgres, embedded or external, the fence is a session advisory lock per
 version, so a process that dies releases it with its connection. Other dialects
 (SQLite in tests) have no fence; only the record applies there.
+
+A process can also lose its fence while it lives: its fence session ends (a
+Postgres restart, a dropped connection, a terminated backend) and the pool simply
+reconnects. So a long-running process ``guard``s the engines it writes through:
+every transaction on them first takes this version's fence lock for its own
+lifetime and confirms the process's fence session still holds it. If the fence
+is gone it is taken again, after the database is classified again, before the
+transaction may go on; when the database now records a newer version, the
+process ends instead.
 """
 from __future__ import annotations
 
@@ -41,6 +50,10 @@ import contextlib
 import dataclasses
 import functools
 import json
+import logging
+import os
+import sys
+import threading
 import time
 import zlib
 
@@ -50,6 +63,8 @@ from packaging.version import InvalidVersion, Version
 # instance_meta is owned by _data_reconcile; read here without its get_meta helper,
 # which creates the table.
 from celerp.migrations._data_reconcile import _META_TABLE, PROJECTION_VERSION_KEY, set_meta
+
+log = logging.getLogger(__name__)
 
 # The newest Celerp version that has begun opening this database. Only admit()
 # writes it. projection_version belongs to the projection reconcile; it is read
@@ -258,6 +273,16 @@ _OTHER_HOLDERS = sa.text(
 )
 
 
+# Fences this process holds, newest last (see current_fence).
+_HELD: list["Fence"] = []
+
+
+def current_fence() -> "Fence | None":
+    """The fence this process most recently joined and still holds, for a writer
+    that opens its own engine inside it (migrations, restore) to ``guard``."""
+    return _HELD[-1] if _HELD else None
+
+
 class Fence:
     """This process's hold on a database for its version, from ``join`` to
     ``release`` (see the module docstring).
@@ -266,9 +291,15 @@ class Fence:
     no transaction open between them.
     """
 
-    def __init__(self, sync_url: str):
+    def __init__(self, sync_url: str, accept: str | None = None):
         self._engine = sa.create_engine(sync_url, poolclass=sa.pool.NullPool)
         self._conn: sa.Connection | None = None
+        self._accept = accept
+        self._key = _cohort_key(running_version())
+        # The fence session, as (pid, backend_start): a pid alone can be reused.
+        self._session: tuple[int, str] | None = None
+        self._guarded: list[sa.Engine] = []
+        self._retaking = threading.Lock()
 
     @classmethod
     def join(cls, sync_url: str, accept: str | None = None) -> "Fence":
@@ -280,35 +311,106 @@ class Fence:
         database, or when the other version is still there after
         FENCE_WAIT_SECONDS.
         """
-        fence = cls(sync_url)
+        fence = cls(sync_url, accept)
         try:
             fence._conn = fence._engine.connect()
             if fence._conn.dialect.name == "postgresql":
-                fence._enter(accept)
+                deadline = time.monotonic() + FENCE_WAIT_SECONDS
+                while not fence._try_enter():
+                    if time.monotonic() >= deadline:
+                        raise IncompatibleDatabase(Compatibility(IN_USE, running_version()))
+                    time.sleep(_FENCE_POLL_SECONDS)
         except BaseException:
             fence.release()
             raise
+        _HELD.append(fence)
         return fence
 
-    def _enter(self, accept: str | None) -> None:
+    def _try_enter(self) -> bool:
+        """Take the fence lock unless another version holds one. Raises
+        IncompatibleDatabase when this copy may not open the database."""
         conn = self._conn
-        running = running_version()
-        params = {"ns": _FENCE_NAMESPACE, "mine": _cohort_key(running)}
-        deadline = time.monotonic() + FENCE_WAIT_SECONDS
-        while True:
-            with conn.begin():
-                conn.execute(sa.text("SELECT pg_advisory_xact_lock(:k)"), {"k": _ADMIT_LOCK_KEY})
-                result = _classify(conn)[0]
-                if not _accepted(result, accept):
-                    raise IncompatibleDatabase(result)
-                if not conn.execute(_OTHER_HOLDERS, params).scalar():
-                    # Taken under the admit lock, so no other version can pass the
-                    # checks above between them and this lock.
-                    conn.execute(sa.text("SELECT pg_advisory_lock_shared(:ns, :mine)"), params)
-                    return
-            if time.monotonic() >= deadline:
-                raise IncompatibleDatabase(Compatibility(IN_USE, running))
-            time.sleep(_FENCE_POLL_SECONDS)
+        params = {"ns": _FENCE_NAMESPACE, "mine": self._key}
+        with conn.begin():
+            conn.execute(sa.text("SELECT pg_advisory_xact_lock(:k)"), {"k": _ADMIT_LOCK_KEY})
+            result = _classify(conn)[0]
+            if not _accepted(result, self._accept):
+                raise IncompatibleDatabase(result)
+            if conn.execute(_OTHER_HOLDERS, params).scalar():
+                return False
+            # Taken under the admit lock, so no other version can pass the checks
+            # above between them and this lock.
+            conn.execute(sa.text("SELECT pg_advisory_lock_shared(:ns, :mine)"), params)
+            pid, started = conn.execute(sa.text(
+                "SELECT pid, backend_start::text FROM pg_stat_activity "
+                "WHERE pid = pg_backend_pid()")).one()
+            self._session = (pid, started)
+            return True
+
+    def guard(self, *engines) -> None:
+        """Gate every transaction on *engines* (sync or async) on this fence until
+        ``release`` (see the module docstring)."""
+        for engine in engines:
+            target = getattr(engine, "sync_engine", engine)
+            if self._session is None or target.dialect.name != "postgresql":
+                continue
+            sa.event.listen(target, "begin", self._gate)
+            self._guarded.append(target)
+
+    def unguard(self, *engines) -> None:
+        """Stop gating *engines* (a writer's own engine, before it is disposed)."""
+        for engine in engines:
+            target = getattr(engine, "sync_engine", engine)
+            if target in self._guarded:
+                sa.event.remove(target, "begin", self._gate)
+                self._guarded.remove(target)
+
+    def _gate(self, conn: sa.Connection) -> None:
+        # Runs before the transaction's first statement, on its own connection, so
+        # the fence lock below lasts exactly as long as the transaction: a newer
+        # version cannot be admitted while it is open.
+        cursor = conn.connection.cursor()
+        try:
+            cursor.execute(f"SELECT pg_advisory_xact_lock_shared({_FENCE_NAMESPACE}, {self._key})")
+            cursor.fetchall()
+            session = self._session
+            if not self._holds(cursor, session):
+                self._retake(session)
+        finally:
+            cursor.close()
+
+    def _holds(self, cursor, session: tuple[int, str] | None) -> bool:
+        if session is None:
+            return False
+        pid, started = session
+        cursor.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid "
+            f"WHERE l.pid = {int(pid)} AND a.backend_start::text = '{started.replace(chr(39), '')}' "
+            f"AND l.locktype = 'advisory' AND l.granted AND l.mode = 'ShareLock' "
+            f"AND l.objsubid = 2 AND l.classid::bigint = {_FENCE_NAMESPACE} "
+            f"AND l.objid::bigint = {self._key})")
+        return bool(cursor.fetchone()[0])
+
+    def _retake(self, lost: tuple[int, str] | None) -> None:
+        """Take the fence again on a new session, classifying the database first.
+        Ends the process when it now records a version this copy may not open;
+        raises IncompatibleDatabase (IN_USE) while another version holds it."""
+        with self._retaking:
+            if self._session != lost:
+                return  # another transaction already took it again
+            log.warning("The database version fence was lost; taking it again before writing")
+            if self._conn is not None:
+                with contextlib.suppress(Exception):
+                    self._conn.close()
+            self._session = None
+            self._conn = self._engine.connect()
+            try:
+                if not self._try_enter():
+                    raise IncompatibleDatabase(Compatibility(IN_USE, running_version()))
+            except IncompatibleDatabase as exc:
+                if exc.result.status != IN_USE:
+                    _end_process(exc)
+                raise
 
     def check(self) -> Compatibility:
         """Classify the database for this copy (see check). Reads only."""
@@ -324,11 +426,22 @@ class Fence:
 
     def release(self) -> None:
         """Give up the fence. Closing the connection releases the lock; safe to repeat."""
+        if self in _HELD:
+            _HELD.remove(self)
+        self.unguard(*self._guarded)
         if self._conn is not None:
             with contextlib.suppress(Exception):
                 self._conn.close()
             self._conn = None
         self._engine.dispose()
+
+
+def _end_process(exc: IncompatibleDatabase) -> None:
+    """A newer version has opened the database since this process lost its fence:
+    stop at once, before anything else of this process can write."""
+    log.critical("Stopping: %s", exc)
+    print(f"\n{exc}\n", file=sys.stderr, flush=True)
+    os._exit(1)
 
 
 @contextlib.contextmanager
