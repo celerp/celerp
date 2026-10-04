@@ -274,13 +274,12 @@ class TestProjectionEngineSlotDispatch:
         )
         assert result["quantity"] == 7
 
-    def test_engine_mfg_event_falls_through_to_passthrough_when_no_slot(self):
-        """Without mfg slot, mfg.* has no built-in handler — falls through to passthrough."""
+    def test_engine_mfg_event_without_its_slot_is_refused(self):
+        """Without the mfg slot nothing applies mfg.* events, so applying one is refused
+        rather than merged into the state unread."""
         from celerp.projections.engine import ProjectionEngine
-        result = ProjectionEngine._apply({"existing": "data"}, "mfg.order.created", {"description": "x"})
-        # Passthrough merge: no entity_type set (no handler ran the proper logic)
-        assert result["description"] == "x"
-        assert "entity_type" not in result  # Confirms handler was not invoked
+        with pytest.raises(ValueError, match="No enabled module applies mfg.order.created"):
+            ProjectionEngine._apply({"existing": "data"}, "mfg.order.created", {"description": "x"})
 
     def test_engine_module_handler_takes_precedence_over_builtin(self):
         """Module handler for a prefix beats any built-in with same prefix."""
@@ -308,33 +307,20 @@ class TestProjectionEngineSlotDispatch:
         finally:
             pass  # teardown_method clears slots
 
-    def test_engine_bad_handler_path_logs_and_skips(self):
-        """A malformed handler path is logged and skipped; falls through to built-in."""
+    @pytest.mark.parametrize("contribution, event_type, data", [
+        ({"prefix": "mfg.", "handler": "nonexistent.module:no_such_func"}, "mfg.order.created", {"description": "y"}),
+        ({"handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event"}, "item.consumed",
+         {"quantity_consumed": 1}),
+        ({"prefix": "mfg."}, "mfg.order.created", {"description": "z"}),
+    ], ids=["bad_handler_path", "missing_prefix", "missing_handler"])
+    def test_engine_malformed_contribution_is_skipped_and_the_event_refused(self, contribution, event_type, data):
+        """A malformed projection_handler contribution is logged and skipped; with nothing
+        else applying the event, applying it is refused."""
         from celerp.modules.slots import register
-        register("projection_handler", {
-            "prefix": "mfg.",
-            "handler": "nonexistent.module:no_such_func",
-            "_module": "bad-module",
-        })
+        register("projection_handler", {**contribution, "_module": "bad-module"})
         from celerp.projections.engine import ProjectionEngine
-        # Should not raise — bad handler is skipped, falls through to passthrough
-        result = ProjectionEngine._apply({"x": 1}, "mfg.order.created", {"description": "y"})
-        assert result["description"] == "y"
-
-    def test_engine_missing_prefix_key_is_skipped(self):
-        from celerp.modules.slots import register
-        register("projection_handler", {"handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event", "_module": "x"})
-        from celerp.projections.engine import ProjectionEngine
-        # Should not raise
-        result = ProjectionEngine._apply({}, "item.consumed", {"quantity_consumed": 1})
-        assert isinstance(result, dict)
-
-    def test_engine_missing_handler_key_is_skipped(self):
-        from celerp.modules.slots import register
-        register("projection_handler", {"prefix": "mfg.", "_module": "x"})
-        from celerp.projections.engine import ProjectionEngine
-        result = ProjectionEngine._apply({}, "mfg.order.created", {"description": "z"})
-        assert isinstance(result, dict)
+        with pytest.raises(ValueError, match=f"No enabled module applies {event_type}"):
+            ProjectionEngine._apply({"x": 1}, event_type, data)
 
 
 # ---------------------------------------------------------------------------
