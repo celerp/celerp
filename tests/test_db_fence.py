@@ -131,6 +131,7 @@ elif path in ("backfill", "ownership"):
     # the next transaction's fence check after it.
     import sqlalchemy as sa
     from celerp import cli
+    from celerp.db_url import sync_url
     from celerp.migrations import _data_reconcile
     armed = []
     def pause():
@@ -162,7 +163,7 @@ elif path in ("backfill", "ownership"):
     def psql(sql, db="postgres", *flags):
         # Stands in for psql, a writer outside this process's engines: it writes
         # through a connection of its own and records the version it found.
-        engine = sa.create_engine(url.replace("+asyncpg", ""), poolclass=sa.pool.NullPool)
+        engine = sa.create_engine(sync_url(url), poolclass=sa.pool.NullPool)
         with engine.begin() as conn:
             observed.append(conn.execute(sa.text(
                 "SELECT value FROM instance_meta WHERE key = 'newest_celerp_version'")).scalar())
