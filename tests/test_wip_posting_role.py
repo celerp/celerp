@@ -102,6 +102,23 @@ async def test_an_existing_account_holding_the_code_is_never_changed_or_mapped_w
     assert WIP not in (await _roles(session, cid))[ROLES_KEY]
 
 
+async def test_a_user_account_holding_the_code_is_never_taken_to_be_work_in_progress(session, auth):
+    """An asset the user opened under the seeded number before work in progress existed is
+    theirs, whatever it holds; the company chooses its account in Posting Accounts."""
+    cid = auth["company_id"]
+    await _older_release(session, cid)
+    session.add(Account(company_id=cid, code="1130-WIP", name="Workbench tools", account_type="asset",
+                        parent_code="1200"))
+    await session.commit()
+
+    await _startup(session)
+    await _startup(session)
+
+    account = await _account(session, cid, "1130-WIP")
+    assert (account.name, account.account_type, account.parent_code) == ("Workbench tools", "asset", "1200")
+    assert WIP not in (await _roles(session, cid))[ROLES_KEY]
+
+
 @pytest.mark.parametrize("change", ["renamed_parent", "inactive_purchased", "missing_opening"])
 async def test_a_chart_whose_inventory_accounts_are_not_as_seeded_gets_no_account(session, auth, change):
     cid = auth["company_id"]

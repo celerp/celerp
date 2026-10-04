@@ -92,23 +92,24 @@ def with_role(settings: dict, role: str, code: str) -> dict:
     return {**settings, SCHEMA_KEY: POSTING_ROLES_SCHEMA, ROLES_KEY: roles, SCOPES_KEY: scopes}
 
 
-def reconciled_settings(settings: dict, accounts: dict[str, dict]) -> dict:
+def reconciled_settings(settings: dict, accounts: dict[str, dict], claim=frozenset()) -> dict:
     """``settings`` with every unmapped role pointed at its seeded target, where the
     chart (``accounts``, keyed by code) holds that account active and of a type the
     role can use. A role already mapped is never changed, a missing or colliding
     account leaves its role unmapped, and no account is ever created. Running it
     again changes nothing. A company whose roles come from its source books (a
     migration) keeps its own chart's numbering: a default number its chart happens
-    to hold proves nothing there, and neither does it for a role added after a
-    restored backup's chart was written (UNGUESSED_ROLES)."""
+    to hold proves nothing there. Nor does it for a role added after the chart was
+    written (UNGUESSED_ROLES), whose number the user may already have used for
+    something else: such a role takes its seeded account only when Celerp has just
+    created that account itself (``claim``)."""
     out = {**settings, SCHEMA_KEY: POSTING_ROLES_SCHEMA}
     if SOURCE_CONTROLS_KEY in out:
         return out
     current = role_map(out)
     trial = {**{r.value: c for r, c in SEEDED_TARGETS.items()}, **current}
-    restored = bool(out.get("restored_backup"))
     for role, code in SEEDED_TARGETS.items():
-        if restored and role in UNGUESSED_ROLES:
+        if role in UNGUESSED_ROLES and role not in claim:
             continue
         if not current.get(role.value) and target_problem(role.value, trial, accounts.get(code)) is None:
             out = with_role(out, role.value, code)
@@ -120,9 +121,9 @@ def unmapped_roles(settings: dict | None) -> list[str]:
     return [role.value for role in AccountRole if not current.get(role.value)]
 
 
-async def reconcile_company(session: AsyncSession, company_id) -> list[str]:
+async def reconcile_company(session: AsyncSession, company_id, claim=frozenset()) -> list[str]:
     """Map the company's unmapped roles to the seeded chart's accounts where they
-    exist and fit (see ``reconciled_settings``). Returns the roles left unmapped.
+    exist and fit (see ``reconciled_settings``, and ``claim`` there). Returns the roles left unmapped.
     Does nothing when accounting is not running."""
     from celerp.services.company_lock import lock_chart, locked_company
     from celerp.services.journal_accounts import lock_accounts
@@ -137,7 +138,7 @@ async def reconcile_company(session: AsyncSession, company_id) -> list[str]:
     if accounts is None:
         return []
     before = dict(company.settings or {})
-    after = reconciled_settings(before, accounts)
+    after = reconciled_settings(before, accounts, claim)
     if after != before:
         company.settings = after
         await session.flush()

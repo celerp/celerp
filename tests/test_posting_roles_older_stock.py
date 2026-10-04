@@ -31,6 +31,7 @@ import pytest
 from sqlalchemy import delete, func, select
 
 from celerp.events.engine import emit_event
+from celerp_accounting.models import Account
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.auto_je import _emit_auto_posted_je
@@ -52,9 +53,11 @@ _REPAIR = "Settings > Accounting > Posting accounts"
 
 
 async def _older_release(session, auth) -> None:
-    """The company as an older release left it: no posting accounts at all."""
+    """The company as an older release left it: no posting accounts at all, and no work in
+    progress account, which came later."""
     company = await locked_company(session, auth["company_id"])
     company.settings = {k: v for k, v in company.settings.items() if not k.startswith("posting_") and k != _MARK}
+    await session.execute(delete(Account).where(Account.company_id == auth["company_id"], Account.code == "1130-WIP"))
     await session.commit()
 
 

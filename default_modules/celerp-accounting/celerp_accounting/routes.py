@@ -241,12 +241,13 @@ async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUI
 _NATIVE_INVENTORY = ("1130", "1130-P", "1130-OB")
 
 
-async def _add_seeded_wip_account(session: AsyncSession, company_id: uuid.UUID) -> None:
+async def _add_seeded_wip_account(session: AsyncSession, company_id: uuid.UUID) -> bool:
     """Add the seeded work-in-progress account to a chart written before it existed,
     only when the chart is provably Celerp's own seeded one: its inventory accounts
     are present exactly as seeded and nothing holds the work-in-progress code yet.
     A chart from a migration or a restored backup is never extended; its company
-    chooses the account in Posting Accounts. An existing account is never changed."""
+    chooses the account in Posting Accounts. An existing account is never changed.
+    Returns whether the account was added."""
     from celerp.accounting_roles import ROLES_KEY, SOURCE_CONTROLS_KEY, SEEDED_TARGETS, AccountRole
     from celerp.services.company_lock import lock_chart, locked_company
     from sqlalchemy import select as _select
@@ -256,34 +257,35 @@ async def _add_seeded_wip_account(session: AsyncSession, company_id: uuid.UUID) 
     role = AccountRole.WORK_IN_PROGRESS
     if (company is None or SOURCE_CONTROLS_KEY in settings or settings.get("restored_backup")
             or (settings.get(ROLES_KEY) or {}).get(role.value)):
-        return
+        return False
     await lock_chart(session, company_id)
     entry = next(e for e in THAI_CHART_OF_ACCOUNTS if e["code"] == SEEDED_TARGETS[role])
     seeded = {e["code"]: e for e in THAI_CHART_OF_ACCOUNTS if e["code"] in _NATIVE_INVENTORY}
     rows = {a.code: a for a in (await session.execute(_select(Account).where(
         Account.company_id == company_id, Account.code.in_([*_NATIVE_INVENTORY, entry["code"]])))).scalars()}
     if entry["code"] in rows:
-        return
+        return False
     for code, want in seeded.items():
         row = rows.get(code)
         if row is None or not row.is_active or (row.account_type, row.parent_code) != (
                 want["account_type"], want["parent_code"]):
-            return
+            return False
     session.add(_seeded_account(company_id, entry))
     await session.flush()
+    return True
 
 
 async def seed_chart_of_accounts_hook(*, session: AsyncSession, company_id: uuid.UUID) -> None:
     """Lifecycle hook called via on_company_created slot. A new company's lots record
     their inventory account from the start, so it is marked as never needing the
     older-stock upgrade."""
-    from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, INVENTORY_ORIGIN_SCHEMA
+    from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, INVENTORY_ORIGIN_SCHEMA, UNGUESSED_ROLES
     from celerp.models.company import Company
     from celerp.services.account_roles import reconcile_company
 
     await seed_chart_of_accounts(session, company_id)
     await _seed_default_bank_account(session, company_id)
-    await reconcile_company(session, company_id)
+    await reconcile_company(session, company_id, UNGUESSED_ROLES)
     company = await session.get(Company, company_id)
     company.settings = {**(company.settings or {}), INVENTORY_ORIGIN_KEY: INVENTORY_ORIGIN_SCHEMA}
 
@@ -308,7 +310,7 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     staged for a migration is left alone: its chart and posting accounts come from the
     imported books when the migration is finalized.
     """
-    from celerp.accounting_roles import INVENTORY_ORIGIN_KEY
+    from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, UNGUESSED_ROLES
     from celerp.models.company import Company
     from celerp.services import migrations
     from celerp.services.account_roles import current_settings, reconcile_company
@@ -328,9 +330,10 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
         if company_id in unseeded:
             await seed_chart_of_accounts(session, company_id)
             await _seed_default_bank_account(session, company_id)
+            seeded = True
         else:
-            await _add_seeded_wip_account(session, company_id)
-        if await reconcile_company(session, company_id):
+            seeded = await _add_seeded_wip_account(session, company_id)
+        if await reconcile_company(session, company_id, UNGUESSED_ROLES if seeded else frozenset()):
             await notify_unmapped(session, company_id)
         if INVENTORY_ORIGIN_KEY in await current_settings(session, company_id):
             continue
