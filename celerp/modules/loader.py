@@ -1291,7 +1291,8 @@ def _validate_pricing_action(contribution) -> None:
     for item in contribution if isinstance(contribution, list) else [contribution]:
         if not isinstance(item, dict):
             raise ModuleLoadError(f"Slot {_PRICING_ACTION_SLOT!r} items must be dicts.")
-        unknown_keys = sorted(set(item) - _PRICING_ACTION_KEYS)
+        # repr orders keys of any type: a manifest literal can mix str and int keys.
+        unknown_keys = sorted(set(item) - _PRICING_ACTION_KEYS, key=repr)
         if unknown_keys:
             raise ModuleLoadError(
                 f"Slot {_PRICING_ACTION_SLOT!r} has unknown key "
@@ -1300,7 +1301,8 @@ def _validate_pricing_action(contribution) -> None:
             )
         _validate_href_template(_PRICING_ACTION_SLOT, item, _PRICING_ACTION_PLACEHOLDERS)
         show_on = item.get("show_on", [])
-        if not isinstance(show_on, list) or not set(show_on) <= traits:
+        if (not isinstance(show_on, list) or not all(isinstance(t, str) for t in show_on)
+                or not set(show_on) <= traits):
             raise ModuleLoadError(
                 f"Slot {_PRICING_ACTION_SLOT!r} show_on must be a list of {sorted(traits)}."
             )

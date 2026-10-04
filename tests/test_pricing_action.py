@@ -226,6 +226,21 @@ def test_loader_rejects_an_unknown_pricing_action_key(tmp_path, key):
     assert slots.get("pricing_action") == []
 
 
+@pytest.mark.parametrize("show_on", [[{}], [["sell"]], [1], ["sell", None]])
+def test_loader_rejects_a_show_on_entry_that_is_not_a_trait_name(tmp_path, show_on):
+    """A non-string entry is refused as a load error the loader reports, not a crash
+    that stops every module after it from loading."""
+    with pytest.raises(ModuleLoadError, match="show_on"):
+        _load(tmp_path, {"label": "Quote", "href_template": "/q", "show_on": show_on})
+    assert slots.get("pricing_action") == []
+
+
+def test_loader_names_unknown_keys_of_mixed_types(tmp_path):
+    with pytest.raises(ModuleLoadError, match=r"unknown key 'zz', 1;"):
+        _load(tmp_path, {"label": "Quote", "href_template": "/q", 1: "x", "zz": "y"})
+    assert slots.get("pricing_action") == []
+
+
 @pytest.mark.parametrize("contribution", [
     {"label": "Quote", "href_template": "/q"},
     {"label_key": "nav.inventory", "href_template": "/q/{entity_id}/{price_list}/{field_name}"},
