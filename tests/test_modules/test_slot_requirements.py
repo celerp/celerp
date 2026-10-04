@@ -25,6 +25,16 @@ _CODE = {
     "search.py": "async def find(*a):\n    return {'items': []}\n",
     "render.py": "def render(doc):\n    return None\n",
     "events.py": "def handle(state, event_type, data):\n    return state\n",
+    "lineage.py": (
+        "async def guard(*, session, entry, transition):\n    return None\n"
+        "async def in_production(session, company_id):\n    return 0\n"
+        "def sync_guard(*, session, entry, transition):\n    return None\n"
+        "async def short_guard(*, session, entry):\n    return None\n"
+        "async def loose_guard(*, session, entry, transition, **more):\n    return None\n"
+        "async def positional_guard(session, entry, transition, /):\n    return None\n"
+        "async def misnamed_in_production(*, db, company_id):\n    return 0\n"
+        "async def extra_in_production(*, session, company_id, when=None):\n    return 0\n"
+    ),
 }
 
 # One correct entry for every slot. "{inner}" names the module's own package.
@@ -51,6 +61,8 @@ _VALID = {
                         "show_on": ["sell"]}],
     "doc_finalize_hook": [{"handler": "{inner}.hooks:hook"}],
     "on_doc_payment": [{"handler": "{inner}.hooks:hook"}],
+    "item_lineage_guard": [{"handler": "{inner}.lineage:guard"}],
+    "inventory_in_production": [{"handler": "{inner}.lineage:in_production"}],
 }
 
 # (slot, the entry's wrong key and value, the text the refusal names).
@@ -90,6 +102,12 @@ _WRONG = [
     ("projection_handler", {"prefix": 1}, "prefix"),
     ("doc_detail_actions", {"render": None}, "module.path:function"),
     ("on_doc_payment", {"handler": 5}, "module.path:function"),
+    ("item_lineage_guard", {"handler": "{inner}.lineage:sync_guard"}, "must be async"),
+    ("item_lineage_guard", {"handler": "{inner}.lineage:short_guard"}, "session, entry, transition"),
+    ("item_lineage_guard", {"handler": "{inner}.lineage:loose_guard"}, "session, entry, transition"),
+    ("item_lineage_guard", {"handler": "{inner}.lineage:positional_guard"}, "session, entry, transition"),
+    ("inventory_in_production", {"handler": "{inner}.lineage:misnamed_in_production"}, "session, company_id"),
+    ("inventory_in_production", {"handler": "{inner}.lineage:extra_in_production"}, "session, company_id"),
 ]
 
 
@@ -150,3 +168,25 @@ def test_entry_a_slot_cannot_read_is_refused_before_module_code_runs(module_dir,
 
     assert admission.admitted == []
     assert reason in admission.refused[name], admission.refused
+
+
+@pytest.mark.parametrize("slot,wrapped", [
+    ("item_lineage_guard", "async def target(session, entry):\n    return None\n"),
+    ("inventory_in_production", "async def target(*, session):\n    return 0\n"),
+])
+def test_handler_whose_signature_only_loading_shows_is_refused_at_load(module_dir, slot, wrapped):
+    """A handler bound by a call cannot have its signature read from source, so
+    admission leaves it to loading, which refuses the wrong one before it is
+    registered."""
+    name = _write(module_dir, {slot: [{"handler": "{inner}.wrapped:handler"}]})
+    inner = next(p.name for p in (module_dir / name).iterdir() if p.is_dir())
+    (module_dir / name / inner / "wrapped.py").write_text(
+        wrapped + "def keep(fn):\n    return fn\nhandler = keep(target)\n")
+
+    admission = loader.admit_modules(str(module_dir), {name})
+    assert admission.refused == {}
+    loader.load_all(str(module_dir), {name}, admission=admission)
+
+    assert not loader.is_running(name)
+    assert "keyword arguments" in loader.load_errors()[name]
+    assert slots.get(slot) == []

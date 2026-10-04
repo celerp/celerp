@@ -68,7 +68,8 @@ from celerp.modules.importer import (
 from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
 from celerp.modules.meta import META_FILENAME, read_meta
 from celerp.modules.slots import (
-    register as register_slot, resolve_handler, unregister_module as unregister_module_slots,
+    SLOT_NAMES, register as register_slot, resolve_handler,
+    unregister_module as unregister_module_slots,
 )
 from celerp.services.app_paths import is_app_local_path
 from celerp.services.permissions import is_permission_key
@@ -1206,6 +1207,10 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
     for slot_name, contribution in slots_manifest.items():
         if slot_name == _SEARCH_PROVIDER_SLOT:
             continue
+        if slot_name not in SLOT_NAMES:
+            log.warning("Module %r fills unknown slot %r; Celerp does not read it, so it "
+                        "is ignored.", pkg_name, slot_name)
+            continue
         for item in contribution if isinstance(contribution, list) else [contribution]:
             register_slot(slot_name, {**item, **_runtime_keys(pkg_name, trusted)})
 
@@ -1667,7 +1672,7 @@ def _validate_href_template(slot: str, item: dict, placeholders: frozenset[str])
         )
 
 
-def _validate_item_action(contribution) -> None:
+def _validate_item_action(pkg_path: Path, contribution) -> None:
     """Raise :class:`ModuleLoadError` unless every item_action item is a dict with an
     app-local href_template whose only placeholder is {entity_id}."""
     for item in contribution if isinstance(contribution, list) else [contribution]:
@@ -1676,7 +1681,7 @@ def _validate_item_action(contribution) -> None:
         _validate_href_template(_ITEM_ACTION_SLOT, item, _ITEM_ACTION_PLACEHOLDERS)
 
 
-def _validate_pricing_action(contribution) -> None:
+def _validate_pricing_action(pkg_path: Path, contribution) -> None:
     """Raise :class:`ModuleLoadError` unless every pricing_action item has only the
     known keys, an app-local href_template whose braces only wrap known
     placeholders, a show_on list of known traits that some row can carry, and no
@@ -1774,6 +1779,15 @@ _CALLABLE_SLOTS = {
     "doc_finalize_hook": ("handler", True),
     "on_doc_payment": ("handler", True),
     "projection_handler": ("handler", False),
+    "inventory_in_production": ("handler", True),
+    "item_lineage_guard": ("handler", True),
+}
+# Callable slots core calls with keyword arguments only, and those arguments. The
+# handler takes exactly these: no other parameter, none positional-only, and no
+# *args or **kwargs (lot_origin._in_production, events.engine._item_applied).
+_HANDLER_KEYWORDS = {
+    "inventory_in_production": ("session", "company_id"),
+    "item_lineage_guard": ("session", "entry", "transition"),
 }
 # Entry keys naming a permission. Gating surfaces index the permission registry,
 # so a value outside it must never reach them.
@@ -1791,7 +1805,7 @@ def _runtime_keys(pkg_name: str, trusted: bool) -> dict:
     return {"_module": pkg_name, "_first_party": trusted}
 
 
-def _validate_bulk_action(contribution) -> None:
+def _validate_bulk_action(pkg_path: Path, contribution) -> None:
     """Raise :class:`ModuleLoadError` unless every bulk_action names an
     action_type the inventory toolbar knows, when it names one."""
     for item in contribution if isinstance(contribution, list) else [contribution]:
@@ -1801,7 +1815,7 @@ def _validate_bulk_action(contribution) -> None:
                 f"{sorted(_BULK_ACTION_TYPES)}, not {item['action_type']!r}.")
 
 
-def _validate_category_schema(contribution) -> None:
+def _validate_category_schema(pkg_path: Path, contribution) -> None:
     """Raise :class:`ModuleLoadError` unless every category_schema entry's fields
     are field definitions: dicts with a key, and text label and type and a list
     of options where given."""
@@ -1817,11 +1831,54 @@ def _validate_category_schema(contribution) -> None:
                     f"where given, not {field!r}.")
 
 
-# Per-slot checks beyond the entry keys every slot declares (_SLOT_ENTRY_KEYS).
+def _takes_exactly(params: list[tuple], keywords: tuple[str, ...]) -> bool:
+    """Whether a callable with these (name, kind) parameters can be called with
+    exactly ``keywords`` as keyword arguments and nothing else."""
+    return (sorted(name for name, _ in params) == sorted(keywords)
+            and all(kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+                    for _, kind in params))
+
+
+def _source_params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[tuple]:
+    """A def's parameters as (name, kind), the way inspect.signature reports them."""
+    a, kind = node.args, inspect.Parameter
+    return ([(p.arg, kind.POSITIONAL_ONLY) for p in a.posonlyargs]
+            + [(p.arg, kind.POSITIONAL_OR_KEYWORD) for p in a.args]
+            + ([(a.vararg.arg, kind.VAR_POSITIONAL)] if a.vararg else [])
+            + [(p.arg, kind.KEYWORD_ONLY) for p in a.kwonlyargs]
+            + ([(a.kwarg.arg, kind.VAR_KEYWORD)] if a.kwarg else []))
+
+
+def _check_keywords(slot: str, dotted: str, params) -> None:
+    """Refuse a handler that cannot be called with exactly the slot's keywords."""
+    keywords = _HANDLER_KEYWORDS[slot]
+    if not _takes_exactly(params, keywords):
+        raise ModuleLoadError(
+            f"Slot {slot!r} callable {dotted!r} must take exactly the keyword arguments "
+            f"{', '.join(keywords)}; core calls it with those and nothing else.")
+
+
+def _keyword_validator(slot: str):
+    """The admission check for a slot in _HANDLER_KEYWORDS: each handler's
+    parameters, read from the module's source where it shows them. A handler whose
+    source does not show them (bound by a call, or decorated) is checked at load."""
+    def validate(pkg_path: Path, contribution) -> None:
+        for item in contribution if isinstance(contribution, list) else [contribution]:
+            dotted = item["handler"]
+            source = _owned_callable_source(pkg_path, f"Slot {slot!r}", dotted)
+            node = _source_callable(pkg_path, source, dotted.split(":")[1])
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                _check_keywords(slot, dotted, _source_params(node))
+    return validate
+
+
+# Per-slot checks beyond the entry keys every slot declares (_SLOT_ENTRY_KEYS),
+# each called as validate(pkg_path, contribution) at admission.
 _SLOT_VALIDATORS = {
     **_LINK_SLOT_VALIDATORS,
     "bulk_action": _validate_bulk_action,
     "category_schema": _validate_category_schema,
+    **{slot: _keyword_validator(slot) for slot in _HANDLER_KEYWORDS},
 }
 
 _BULK_ACTION_TYPES = frozenset({"htmx", "navigate"})
@@ -1850,6 +1907,8 @@ _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "on_modules_ready": {},
     "doc_finalize_hook": {},
     "on_doc_payment": {},
+    "inventory_in_production": {},
+    "item_lineage_guard": {},
 }
 _TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true or false",
                list: "a list", type(None): "None"}
@@ -1961,7 +2020,7 @@ def _check_slot_contracts(pkg_path: Path, slots_manifest: dict) -> None:
                                   awaited=awaited)
         validate = _SLOT_VALIDATORS.get(slot_name)
         if validate is not None:
-            validate(contribution)
+            validate(pkg_path, contribution)
 
 
 def _resolve_slot_callables(
@@ -1979,9 +2038,17 @@ def _resolve_slot_callables(
             continue
         key, awaited = _CALLABLE_SLOTS[slot_name]
         for item in contribution if isinstance(contribution, list) else [contribution]:
-            _check_owned_callable(
+            func = _check_owned_callable(
                 pkg_name, pkg_path, f"Slot {slot_name!r}", item[key],
                 awaited=awaited, trusted=trusted)
+            if slot_name in _HANDLER_KEYWORDS:
+                try:
+                    params = [(p.name, p.kind) for p in inspect.signature(func).parameters.values()]
+                except (TypeError, ValueError):
+                    raise ModuleLoadError(
+                        f"Slot {slot_name!r} callable {item[key]!r} has no readable signature."
+                    ) from None
+                _check_keywords(slot_name, item[key], params)
         if slot_name == _SEARCH_PROVIDER_SLOT:
             # Runtime-owned trust metadata goes AFTER the manifest contribution,
             # and the descriptor's closed key set already refuses a manifest that
@@ -2047,11 +2114,11 @@ def _top_level_binding(tree: ast.Module, name: str):
     return owner
 
 
-def _source_is_async(pkg_path: Path, source: Path, name: str, seen: set | None = None) -> bool | None:
-    """Whether the callable ``name`` in ``source`` is async, read from the
-    module's own source without running it: followed through plain aliases and
-    imports of the module's own files to an undecorated def, async def, class or
-    lambda. None when the source alone cannot tell; loading then decides."""
+def _source_callable(pkg_path: Path, source: Path, name: str, seen: set | None = None):
+    """The undecorated def, async def, class or lambda that ``name`` in ``source``
+    is, read from the module's own source without running it: followed through
+    plain aliases and imports of the module's own files. None when the source
+    alone cannot tell; loading then decides."""
     seen = set() if seen is None else seen
     if (source, name) in seen:
         return None
@@ -2062,25 +2129,30 @@ def _source_is_async(pkg_path: Path, source: Path, name: str, seen: set | None =
         return None
     binding = _top_level_binding(tree, name)
     if isinstance(binding, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        if binding.decorator_list:
-            return None
-        return isinstance(binding, ast.AsyncFunctionDef)
+        return None if binding.decorator_list else binding
     if isinstance(binding, (ast.Assign, ast.AnnAssign)):
         targets = binding.targets if isinstance(binding, ast.Assign) else [binding.target]
         if len(targets) != 1 or not isinstance(targets[0], ast.Name):
             return None
         if isinstance(binding.value, ast.Lambda):
-            return False
+            return binding.value
         if isinstance(binding.value, ast.Name):
-            return _source_is_async(pkg_path, source, binding.value.id, seen)
+            return _source_callable(pkg_path, source, binding.value.id, seen)
         return None
     if isinstance(binding, ast.ImportFrom):
         alias = next(a for a in binding.names if (a.asname or a.name) == name)
         target = _resolve_local_import(pkg_path, source, binding.module, binding.level)
         if target is None:
             return None
-        return _source_is_async(pkg_path, target, alias.name, seen)
+        return _source_callable(pkg_path, target, alias.name, seen)
     return None
+
+
+def _source_is_async(pkg_path: Path, source: Path, name: str) -> bool | None:
+    """Whether the callable ``name`` in ``source`` is async, from its source
+    (_source_callable); None when the source alone cannot tell."""
+    node = _source_callable(pkg_path, source, name)
+    return None if node is None else isinstance(node, ast.AsyncFunctionDef)
 
 
 def _check_owned_callable(

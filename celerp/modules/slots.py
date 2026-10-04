@@ -8,7 +8,7 @@ Core checks each slot at render/startup time and injects module contributions.
 Defined slots
 -------------
 These are every slot core or a bundled module reads; a slot name not listed here
-is ignored at load time.
+is ignored at load time, and the loader logs it as unknown.
 
 nav                Sidebar navigation entry
 bulk_action        Action in the inventory bulk toolbar
@@ -33,6 +33,17 @@ on_company_created Async callback(session, company_id) fired after a new company
 on_modules_ready   Async callback(session) fired once after every module has loaded
 doc_finalize_hook  Async callback fired when a document is finalized, before commit
 on_doc_payment     Async callback fired after a payment is recorded on a document
+inventory_in_production
+                   {"handler": "module.path:function"} naming
+                   `async def handler(*, session, company_id) -> Decimal`, called with
+                   exactly those keyword arguments: stock value an older release issued
+                   to work still open, which its books still carry on the inventory
+                   accounts
+item_lineage_guard {"handler": "module.path:function"} naming
+                   `async def handler(*, session, entry, transition) -> None`, called
+                   with exactly those keyword arguments on every live item event, after
+                   it is applied and before its effects are booked; raising refuses the
+                   event
 search_provider    Contributes rows to the global search bar. Exactly one descriptor
                    dict per module: {"handler", "result_key", "permission"}. handler
                    names an in-module "module.path:function" resolved and validated
@@ -52,7 +63,9 @@ send_to_targets "doc_type" and catalog_channel "id" non-empty text, catalog_chan
 "write_permission"), when present, is a key from the permission registry; a
 "requires_connector", when set, is a connector id; nav "href" / "settings_href"
 and bulk_action "form_action" (required) are app-local paths; and every callable
-an entry names is the module's own code, async exactly where core awaits it.
+an entry names is the module's own code, async exactly where core awaits it,
+and takes exactly the keyword arguments core passes where the slot names them
+(inventory_in_production, item_lineage_guard).
 
 Whether a company uses a module is one rule, celerp.modules.registry.uses_module.
 item_action, pricing_action, doc_detail_actions, doc_detail_badges, bulk_action,
@@ -82,7 +95,7 @@ SLOT_NAMES = frozenset({
     "nav", "bulk_action", "send_to_targets", "catalog_channel", "item_action",
     "pricing_action", "doc_detail_actions", "doc_detail_badges", "category_schema",
     "projection_handler", "on_company_created", "on_modules_ready", "doc_finalize_hook",
-    "on_doc_payment", "search_provider",
+    "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
 })
 
 _slots: dict[str, list[dict]] = {}

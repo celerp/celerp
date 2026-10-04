@@ -269,6 +269,27 @@ def _case_item_action_link_out(base, marker, monkeypatch):
         "item_action": [{"label": "Go", "href_template": "//example.com/{entity_id}"}]}), "href_template"
 
 
+def _case_lineage_guard_not_async(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             slots={"item_lineage_guard": [{"handler": "{inner}.lineage:guard"}]},
+                             code={"lineage.py": "def guard(*, session, entry, transition):\n    return None\n"}
+                             ), "must be async"
+
+
+def _case_lineage_guard_wrong_arity(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             slots={"item_lineage_guard": [{"handler": "{inner}.lineage:guard"}]},
+                             code={"lineage.py": "async def guard(session, entry):\n    return None\n"}
+                             ), "session, entry, transition"
+
+
+def _case_in_production_wrong_arity(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             slots={"inventory_in_production": [{"handler": "{inner}.wip:held"}]},
+                             code={"wip.py": "async def held(session, company_id, extra):\n    return 0\n"}
+                             ), "session, company_id"
+
+
 @pytest.mark.parametrize("case", [
     _case_async_api_setup,
     _case_async_ui_setup_imported,
@@ -281,6 +302,9 @@ def _case_item_action_link_out(base, marker, monkeypatch):
     _case_connector_not_text,
     _case_pricing_show_on_entry,
     _case_item_action_link_out,
+    _case_lineage_guard_not_async,
+    _case_lineage_guard_wrong_arity,
+    _case_in_production_wrong_arity,
     _case_name_mismatch,
     _case_reserved_prefix,
     _case_min_version,
