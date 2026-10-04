@@ -253,14 +253,15 @@ class TestSlotPermission:
         _write(tmp_path, name, {"catalog_channel": [{"id": "c", "label": "C", "write_permission": perm}]})
         assert "permission" in _refused(tmp_path, name, monkeypatch)
 
-    @pytest.mark.parametrize("value", [["woocommerce"], {"id": "x"}, 5, True], ids=repr)
+    @pytest.mark.parametrize("value", [["woocommerce"], {"id": "x"}, 5, True, 0, False, [], {}],
+                             ids=repr)
     def test_malformed_requires_connector_refused(self, value, tmp_path, monkeypatch):
         name = "slotmod_conn"
         _write(tmp_path, name, {"bulk_action": [
             {"label": "L", "form_action": "/x", "requires_connector": value}]})
         assert "requires_connector" in _refused(tmp_path, name, monkeypatch)
 
-    @pytest.mark.parametrize("value", ["", 0, None, False], ids=repr)
+    @pytest.mark.parametrize("value", ["", None], ids=repr)
     def test_empty_requires_connector_means_no_connector_needed(self, value, tmp_path, monkeypatch):
         from ui.module_slots import module_contribution_visible
         name = "slotmod_noconn"

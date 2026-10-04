@@ -66,6 +66,8 @@ _WRONG = [
     ("nav", {"label_key": ["nav.acme"]}, "label_key"),
     ("bulk_action", {"action_type": "navgate"}, "action_type"),
     ("bulk_action", {"requires_connector": ["shop"]}, "requires_connector"),
+    ("bulk_action", {"requires_connector": 0}, "requires_connector"),
+    ("catalog_channel", {"requires_connector": False}, "requires_connector"),
     ("bulk_action", {"label": {"en": "Go"}}, "label"),
     ("send_to_targets", {"doc_type": None}, "doc_type"),
     ("send_to_targets", {"doc_type": ""}, "doc_type"),

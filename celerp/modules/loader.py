@@ -1867,8 +1867,8 @@ def _validate_slot_entry(slot: str, item) -> None:
     its slot reads (_SLOT_ENTRY_KEYS) in the type it is read as, with the
     required ones present; has a "permission" / "write_permission", when
     present, that is a key from the permission registry (a falsy or malformed
-    value is refused, never read as "ungated"); has a "requires_connector", when
-    set, that is a connector id string (an empty value means no connector is
+    value is refused, never read as "ungated"); has a "requires_connector" that
+    is None or a string, a connector id (None or "" means no connector is
     needed); and has every destination its slot reads (_DESTINATION_KEYS) as an
     app-local path, with the required ones present.
     """
@@ -1894,7 +1894,7 @@ def _validate_slot_entry(slot: str, item) -> None:
                 f"closest existing key, or leave {key} out."
             )
     connector = item.get("requires_connector")
-    if connector and not isinstance(connector, str):
+    if connector is not None and not isinstance(connector, str):
         raise ModuleLoadError(
             f"Slot {slot!r} requires_connector must be a connector id, not {connector!r}."
         )
