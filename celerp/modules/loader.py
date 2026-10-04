@@ -553,6 +553,26 @@ def module_label(pkg_name: str) -> str:
     return meta.get("display_name") or meta.get("label") or pkg_name
 
 
+def modules_owning_events(event_types: set[str]) -> list[str]:
+    """The display names of the installed modules whose projection handlers own these
+    event types, enabled or not; an event type no installed module owns is named as is."""
+    owners: dict[str, str] = {}
+    for entry in module_search_path().split(","):
+        root = Path(entry)
+        if not root.is_dir():
+            continue
+        for pkg in sorted(root.iterdir()):
+            if not (pkg / "__init__.py").exists():
+                continue
+            manifest = read_manifest(pkg)
+            label = manifest.get("display_name") or manifest.get("name") or pkg.name
+            for contrib in (manifest.get("slots") or {}).get("projection_handler") or []:
+                owners.setdefault(contrib.get("prefix") or "", label)
+    names = {next((label for prefix, label in owners.items() if prefix and t.startswith(prefix)), t)
+             for t in event_types}
+    return sorted(names)
+
+
 # Fields to extract from PLUGIN_MANIFEST for display purposes.
 # All must be string or list-of-strings literals in __init__.py (safe for ast.literal_eval).
 _MANIFEST_DISPLAY_FIELDS: frozenset[str] = frozenset({

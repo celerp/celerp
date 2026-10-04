@@ -13,8 +13,9 @@ it runs before the modules' start hooks, which read the projections.
 Gated by the `projection_version` and `projection_semantics` markers so it runs
 once per change. Before
 rebuilding it pre-checks that this build can replay every `event_type` in the
-ledger (`ProjectionEngine.replayable`); one it cannot means a downgrade or a
-missing module, so we skip the rebuild rather than silently fold those events
+ledger with its own semantics (`ProjectionEngine.replayable`: a retired handler, an
+enabled module's handler, or an event no module owns); one it cannot means a downgrade or
+a module that is not enabled, so we skip the rebuild rather than silently fold those events
 into wrong state. The result says whether the projections are current, and the
 caller runs nothing that reads them when they are not.
 
@@ -37,16 +38,6 @@ log = logging.getLogger(__name__)
 # that changes no handler leaves it alone and its upgrade skips the rebuild.
 PROJECTION_SEMANTICS = 1
 PROJECTION_SEMANTICS_KEY = "projection_semantics"
-
-
-async def unknown_event_types(session: "AsyncSession") -> set[str]:
-    """Ledger event types this build cannot replay."""
-    from sqlalchemy import text
-
-    from celerp.projections.engine import ProjectionEngine
-
-    rows = await session.execute(text("SELECT DISTINCT event_type FROM ledger"))
-    return {r[0] for r in rows if not ProjectionEngine.replayable(r[0])}
 
 
 def _is_dev_version(v: str) -> bool:
@@ -95,7 +86,7 @@ async def run_upgrade_guard(session: "AsyncSession") -> dict:
 
     rebuilt = False
     if _should_rebuild(marker, semantics):
-        unknown = await unknown_event_types(session)
+        unknown = await ProjectionEngine.unreplayable(session)
         if unknown:
             # Downgrade or missing module: replaying these events would produce
             # wrong state. Skip the rebuild and leave the marker as-is so a later

@@ -30,7 +30,6 @@ from celerp.services.dev_release_guard import (
     PROJECTION_SEMANTICS,
     PROJECTION_SEMANTICS_KEY,
     run_upgrade_guard,
-    unknown_event_types,
 )
 
 
@@ -206,7 +205,138 @@ async def test_guard_skips_rebuild_on_unknown_event_type(session):
 
 
 @pytest.mark.asyncio
-async def test_unknown_event_types_empty_for_known_events(session):
-    """All kernel/module event types emitted normally are in the catalog."""
+async def test_unreplayable_empty_for_known_events(session):
+    """All kernel/module event types emitted normally are replayable."""
+    from celerp.projections.engine import ProjectionEngine
+
     await _seed_item(session)
-    assert await unknown_event_types(session) == set()
+    assert await ProjectionEngine.unreplayable(session) == set()
+
+
+# --- replay capability: a module's events replay only through its own handler ----------
+
+_RUN_DATA = {
+    "product_sku": "FG", "quantity": 1,
+    "inputs": [{"item_id": "item:c", "quantity": 2}],
+    "outputs": [{"item_id": "item:fg", "quantity": 1}],
+}
+
+
+async def _seed_run(session) -> uuid.UUID:
+    cid = uuid.uuid4()
+    session.add(Company(id=cid, name="RunCo", slug=f"runco-{cid.hex[:8]}"))
+    await session.flush()
+    for event_type, data in (("mfg.order.created", _RUN_DATA), ("mfg.order.started", {})):
+        await emit_event(
+            session, company_id=cid, entity_id="mfg:1", entity_type="mfg_order",
+            event_type=event_type, data=data, actor_id=None, location_id=None,
+            source="test", idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+    return cid
+
+
+async def _rows(session, cid) -> list[tuple]:
+    from sqlalchemy import select
+    rows = (await session.execute(
+        select(Projection).where(Projection.company_id == cid).order_by(Projection.entity_id)
+    )).scalars().all()
+    return [(r.entity_id, r.entity_type, r.version, r.state) for r in rows]
+
+
+@pytest.fixture
+def without_manufacturing(monkeypatch):
+    """The manufacturing module is not enabled: its projection handler is not registered,
+    while its event schemas stay in the catalog."""
+    from celerp.modules import slots
+
+    registered = slots.get("projection_handler")
+
+    def disable():
+        kept = [c for c in registered if c.get("prefix") != "mfg."]
+        monkeypatch.setitem(slots._slots, "projection_handler", kept)
+
+    def enable():
+        monkeypatch.setitem(slots._slots, "projection_handler", registered)
+
+    disable.enable = enable
+    return disable
+
+
+@pytest.mark.asyncio
+async def test_an_event_of_a_module_not_enabled_holds_the_upgrade_back(session, without_manufacturing):
+    """A manufacturing run in the ledger while manufacturing is not enabled: the events have
+    a schema but nothing here can apply them as manufacturing does, so the upgrade is held
+    back with the rows and markers as they were. Once manufacturing is enabled again, the
+    next start rebuilds the run exactly as manufacturing applies it, not as a plain merge."""
+    from celerp_manufacturing.projection_handler import apply_manufacturing_event
+
+    cid = await _seed_run(session)
+    await _set_marker(session, "0.0.1")
+    await _set_semantics(session, "0")
+    rows = await _rows(session, cid)
+
+    without_manufacturing()
+    result = await run_upgrade_guard(session)
+
+    assert result["current"] is False and result["rebuilt"] is False
+    assert {"mfg.order.created", "mfg.order.started"} <= set(result["unknown_event_types"])
+    assert await _rows(session, cid) == rows
+    assert await _marker(session) == "0.0.1" and await _semantics(session) == "0"
+
+    without_manufacturing.enable()
+    await session.execute(text("UPDATE projections SET state = '{}'::json WHERE company_id = :c"), {"c": cid})
+
+    result = await run_upgrade_guard(session)
+
+    assert result["current"] is True and result["rebuilt"] is True
+    expected = apply_manufacturing_event(apply_manufacturing_event({}, "mfg.order.created", _RUN_DATA),
+                                         "mfg.order.started", {})
+    [(_, _, _, state)] = await _rows(session, cid)
+    assert state == expected
+    assert state != {**_RUN_DATA}
+    assert state["status"] == "in_progress" and state["inputs"][0]["issued_qty"] == 0.0
+
+
+def test_a_module_event_without_its_handler_is_not_applied_as_a_merge(without_manufacturing):
+    """The engine and the upgrade guard answer "can this be replayed" from one place: an
+    event whose module handler is not registered is refused, never merged."""
+    from celerp.projections.engine import ProjectionEngine
+
+    without_manufacturing()
+    assert ProjectionEngine.replayable("mfg.order.created") is False
+    with pytest.raises(ValueError):
+        ProjectionEngine._apply({}, "mfg.order.created", _RUN_DATA)
+
+
+def test_a_schema_alone_never_makes_an_event_replayable(monkeypatch):
+    """With no module handler registered, only retired events and the events no module
+    owns (their projection is the plain merge of their data) can be replayed; every
+    module's events, each with a schema in the catalog, cannot."""
+    from celerp.events.schemas import EVENT_SCHEMA_MAP
+    from celerp.modules import slots
+    from celerp.projections.engine import ProjectionEngine
+
+    monkeypatch.setitem(slots._slots, "projection_handler", [])
+    for event_type in ("sub.created", "scan.barcode", "payment_batch.recorded", "bom.created"):
+        assert ProjectionEngine.replayable(event_type), event_type
+    for event_type in ("mfg.order.created", "item.created", "doc.created", "crm.deal.created",
+                       "crm.contact.created", "acc.journal_entry.created", "sys.user.created"):
+        assert event_type in EVENT_SCHEMA_MAP
+        assert not ProjectionEngine.replayable(event_type), event_type
+
+
+@pytest.mark.asyncio
+async def test_a_manual_rebuild_refuses_events_it_cannot_replay(session, without_manufacturing):
+    """Rebuilding from the ledger by hand (Doctor, the ledger rebuild) refuses before it
+    deletes anything when a module the ledger needs is not enabled."""
+    from fastapi import HTTPException
+
+    from celerp.projections.engine import ProjectionEngine
+
+    cid = await _seed_run(session)
+    rows = await _rows(session, cid)
+    without_manufacturing()
+    with pytest.raises(HTTPException) as err:
+        await ProjectionEngine.rebuild(session, company_id=cid)
+    assert err.value.status_code == 409 and "Manufacturing" in err.value.detail
+    assert await _rows(session, cid) == rows

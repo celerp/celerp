@@ -27,6 +27,17 @@ log = logging.getLogger(__name__)
 # The events that bring an item into being; every other item event changes one that exists.
 ITEM_BIRTHS = frozenset({"item.created", "item.snapshot"})
 
+# The events no module owns: each one's projection is its data merged onto the record's
+# state, whichever modules are enabled. Any other event is replayed only by a retired
+# handler or by the projection handler of the module that owns it. A schema in the event
+# catalog says an event may be written, never how a rebuild must apply it.
+MERGE_EVENTS = frozenset({
+    "payment_batch.recorded",
+    "scan.barcode", "scan.rfid", "scan.nfc", "scan.resolved",
+    "sub.created", "sub.updated", "sub.paused", "sub.cancelled", "sub.resumed",
+    "sub.generated", "sub.expired",
+})
+
 
 _TYPE_LABELS = {"item": "Item", "doc": "Document", "list": "List", "contact": "Contact"}
 
@@ -78,23 +89,43 @@ class Transition:
     after: dict
 
 
+def _merge(state: dict, _event_type: str, data: dict) -> dict:
+    return {**state, **data}
+
+
+def _replay_handler(event_type: str):
+    """The one answer to "can this build apply this event as it is meant to": the retired
+    handler, the registered projection handler that owns its prefix, or the plain merge for
+    a MERGE_EVENTS event; None when nothing here can (its module is not enabled)."""
+    if event_type in RETIRED:
+        retired = RETIRED[event_type]
+        return lambda state, _event_type, data: retired(state, data)
+    for prefix, fn in _get_module_handlers().items():
+        if event_type.startswith(prefix):
+            return fn
+    return _merge if event_type in MERGE_EVENTS else None
+
+
 class ProjectionEngine:
     @staticmethod
     def replayable(event_type: str) -> bool:
-        """Whether this build can replay a historical ledger event: one in the (modules-loaded)
-        event catalog, or a retired one replayed as the release that emitted it applied it."""
-        from celerp.events.schemas import EVENT_SCHEMA_MAP
+        """Whether this build can replay a historical ledger event with its own semantics."""
+        return _replay_handler(event_type) is not None
 
-        return event_type in EVENT_SCHEMA_MAP or event_type in RETIRED
+    @staticmethod
+    async def unreplayable(session, company_id=None) -> set[str]:
+        """The ledger's event types (one company's, or every company's) this build cannot replay."""
+        query = select(LedgerEntry.event_type).distinct()
+        if company_id is not None:
+            query = query.where(LedgerEntry.company_id == company_id)
+        return {t for t in (await session.execute(query)).scalars() if not ProjectionEngine.replayable(t)}
 
     @staticmethod
     def _apply(state: dict, event_type: str, data: dict) -> dict:
-        if event_type in RETIRED:
-            return RETIRED[event_type](state, data)
-        for prefix, fn in _get_module_handlers().items():
-            if event_type.startswith(prefix):
-                return fn(state, event_type, data)
-        return {**state, **data}
+        handler = _replay_handler(event_type)
+        if handler is None:
+            raise ValueError(f"No enabled module applies {event_type} events")
+        return handler(state, event_type, data)
 
     @staticmethod
     def _next_fields(state: dict, entry: LedgerEntry, fallback_version: int) -> dict:
@@ -225,6 +256,15 @@ class ProjectionEngine:
 
     @staticmethod
     async def rebuild(session, company_id=None) -> None:
+        """Replace the projections with a replay of the ledger. Refused, before anything is
+        deleted, when the ledger holds events of a module that is not enabled: replaying
+        without its handler would rebuild those records wrong."""
+        unknown = await ProjectionEngine.unreplayable(session, company_id)
+        if unknown:
+            from celerp.modules.loader import modules_owning_events
+            raise HTTPException(status_code=409, detail=(
+                "Records cannot be rebuilt while these modules are not enabled: "
+                f"{', '.join(modules_owning_events(unknown))}. Enable them in Modules, then try again."))
         await session.execute(delete(Projection) if company_id is None else delete(Projection).where(Projection.company_id == company_id))
         query = select(LedgerEntry).order_by(LedgerEntry.id.asc())
         if company_id:
