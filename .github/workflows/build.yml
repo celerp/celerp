@@ -648,6 +648,36 @@ jobs:
       # (relaunches at a restricted token), so we launch it normally and just pass
       # the port via machine env — the relaunched, restricted process inherits the
       # machine environment (it would not inherit our process env).
+      # Windows Error Reporting writes a full memory dump when the installer or the
+      # uninstaller it runs crashes, so a crash in CI can be diagnosed from the dump
+      # instead of only an exit code. The NSIS uninstaller runs as a temp copy named
+      # Un_A.exe (Au_.exe in older NSIS). Celerp.exe is left out: Electron handles
+      # its own crashes, which WER local dumps do not cover.
+      - name: Enable installer crash dumps (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dumps = "C:\CrashDumps"
+          New-Item -ItemType Directory -Force $dumps | Out-Null
+          # The boot smoke installs as a standard user; its dumps land here too.
+          icacls $dumps /grant "*S-1-5-32-545:(OI)(CI)M" | Out-Null
+          $wer = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting"
+          New-Item -Force $wer | Out-Null
+          Set-ItemProperty $wer -Name Disabled -Value 0 -Type DWord
+          Set-ItemProperty $wer -Name DontShowUI -Value 1 -Type DWord
+          foreach ($img in "Celerp-Setup.exe", "Uninstall Celerp.exe", "Un_A.exe", "Au_.exe") {
+            $k = "$wer\LocalDumps\$img"
+            New-Item -Force $k | Out-Null
+            Set-ItemProperty $k -Name DumpFolder -Value $dumps -Type ExpandString
+            Set-ItemProperty $k -Name DumpType -Value 2 -Type DWord
+            Set-ItemProperty $k -Name DumpCount -Value 10 -Type DWord
+          }
+          Set-Service WerSvc -StartupType Manual
+          Start-Service WerSvc
+          Write-Host "crash dumps: WerSvc $((Get-Service WerSvc).Status); full dumps to $dumps for:"
+          Get-ChildItem "$wer\LocalDumps" | ForEach-Object { Write-Host "  $($_.PSChildName)" }
+
       - name: Boot smoke (Windows, require db:ok)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -851,6 +881,35 @@ jobs:
           if ($code -ne 0 -or (Installed) -ne $built) { Fail "newer installer over 0.0.1: exit $code, entry $(Installed) (want exit 0, $built)" }
           Write-Host "installed older: updated 0.0.1 to $built"
           Write-Host "installer version check OK on Windows"
+
+      # Any dump from the installer or uninstaller fails the job, even when the step
+      # that ran it passed: a crash in the shipped installer is never a pass. The
+      # dump is analysed here and uploaded for offline debugging.
+      - name: Installer crash dumps (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          $files = @(Get-ChildItem "C:\CrashDumps" -Filter *.dmp -EA SilentlyContinue)
+          if ($files.Count -eq 0) { Write-Host "no installer crash dumps"; exit 0 }
+          $kits = "${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers"
+          foreach ($f in $files) {
+            Write-Host "::error::installer crash dump $($f.Name) ($($f.Length) bytes, $($f.LastWriteTime.ToString('o')))"
+            # The NSIS installer is a 32-bit process, so the x86 debugger reads it natively.
+            $cdb = @("$kits\x86\cdb.exe", "$kits\x64\cdb.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (-not $cdb) { Write-Host "cdb.exe not found under $kits; analyse the uploaded dump offline"; continue }
+            $env:_NT_SYMBOL_PATH = "srv*C:\symcache*https://msdl.microsoft.com/download/symbols"
+            & $cdb -z $f.FullName -c ".ecxr; r; kv 64; !analyze -v; lmv; q" 2>&1 | Out-Host
+          }
+          exit 1
+
+      - name: Upload installer crash dumps (Windows)
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: installer-crash-dumps
+          path: C:\CrashDumps
+          if-no-files-found: ignore
 
       - name: Verify YML artifact names
         if: "!startsWith(github.ref, 'refs/tags/v')"
