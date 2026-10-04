@@ -389,3 +389,37 @@ def test_upgrade_that_cannot_check_exits_nonzero(tmp_path):
     assert res.exit_code == 1
     assert "could not reach the package index" in res.output
     run_update.assert_not_called()
+
+
+def test_a_stop_while_the_servers_start_stops_them_and_the_database(tmp_path):
+    """A SIGTERM that arrives before both servers accept connections still runs the
+    supervisor's shutdown: the servers are terminated and it exits normally, so the
+    embedded database it started is stopped on the way out instead of left running."""
+    import signal
+
+    from celerp.cli import _start
+
+    handlers: dict = {}
+    spawned: list[_Proc] = []
+
+    def fake_popen(cmd, env, **kwargs):
+        proc = _Proc("api" if any("celerp.main" in s for s in cmd) else "ui")
+        spawned.append(proc)
+        return proc
+
+    def stopped_while_starting(*_servers, **_kw):
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    with (
+        patch("subprocess.Popen", side_effect=fake_popen),
+        patch("celerp.cli._read_config", return_value=CFG),
+        patch("celerp.cli._config_to_env", return_value={}),
+        patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
+        patch("celerp.cli._migrate_to_head"),
+        patch("celerp.cli._wait_ready", side_effect=stopped_while_starting),
+        patch("signal.signal", side_effect=lambda sig, handler: handlers.__setitem__(sig, handler)),
+        pytest.raises(SystemExit) as stopped,
+    ):
+        _start({**CFG, "database": dict(CFG["database"])})
+    assert stopped.value.code == 0
+    assert [p.name for p in spawned] == ["api", "ui"] and all(p.terminated for p in spawned)

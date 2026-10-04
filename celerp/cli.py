@@ -1323,6 +1323,22 @@ def _supervise(cfg: dict, release_lock) -> None:
     api_port = cfg["server"]["api_port"]
     ui_port = cfg["server"]["ui_port"]
 
+    api_proc = ui_proc = None
+
+    # Installed before the servers start, so a stop while they are still starting
+    # also ends them and lets this process stop the database it started on exit.
+    def _shutdown(sig, frame):
+        click.echo("\nShutting down...")
+        children = [p for p in (api_proc, ui_proc) if p is not None]
+        for proc in children:
+            proc.terminate()
+        for proc in children:
+            proc.wait()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
     click.echo("Starting Celerp...")
     click.echo(f"  API starting on port {api_port} ...")
     click.echo(f"  UI  starting on port {ui_port} ...")
@@ -1335,17 +1351,6 @@ def _supervise(cfg: dict, release_lock) -> None:
     # importing modules.
     _wait_ready((api_proc, api_port), (ui_proc, ui_port))
     click.echo("Press Ctrl+C to stop.\n")
-
-    def _shutdown(sig, frame):
-        click.echo("\nShutting down...")
-        api_proc.terminate()
-        ui_proc.terminate()
-        api_proc.wait()
-        ui_proc.wait()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
 
     while True:
         if api_proc.poll() is not None:
