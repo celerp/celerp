@@ -199,15 +199,26 @@ def installed_table_prefixes(exclude: str) -> dict[str, str]:
 MIN_TABLE_PREFIX_LEN = 3
 
 
+def core_owned_tables() -> frozenset[str]:
+    """Every table no module prefix may claim: the tables Celerp's models declare
+    (core, and any loaded module's), plus the two Celerp manages without a model,
+    alembic's schema stamp and the instance's upgrade markers. The one source for
+    install, migrations, purge and backup attribution, through table_prefix_problem."""
+    from celerp.migrations._data_reconcile import _META_TABLE
+    from celerp.models.base import Base
+    import celerp.models  # noqa: F401  (registers every core table)
+
+    return frozenset(Base.metadata.tables) | {"alembic_version", _META_TABLE}
+
+
 def _foreign_tables(name: str) -> list[str]:
-    """Every table Celerp's models declare except module *name*'s own: those whose
-    model class is defined in a file inside an installed copy of *name* (its inner
-    package name need not match the folder, e.g. acme-widgets/acme_widgets)."""
+    """Every core-owned table except module *name*'s own: those whose model class
+    is defined in a file inside an installed copy of *name* (its inner package
+    name need not match the folder, e.g. acme-widgets/acme_widgets)."""
     import inspect
     import sys
 
     from celerp.models.base import Base
-    import celerp.models  # noqa: F401  (registers every core table)
     from celerp.modules.loader import module_search_path
 
     roots = [os.path.realpath(Path(entry) / name) + os.sep
@@ -220,8 +231,9 @@ def _foreign_tables(name: str) -> list[str]:
             return False
         return os.path.realpath(source).startswith(tuple(roots))
 
+    core = core_owned_tables()
     own = {mapper.local_table.name for mapper in Base.registry.mappers if _owned(mapper.class_)}
-    return [table for table in Base.metadata.tables if table not in own]
+    return sorted(core - own)
 
 
 def table_prefix_problem(name: str, prefix: object,

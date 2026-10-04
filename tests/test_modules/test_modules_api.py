@@ -705,6 +705,27 @@ class TestPurgeRechecksTablePrefix:
             text('SELECT count(*) FROM "connector_configs"'))).scalar_one() == before
 
     @pytest.mark.asyncio
+    async def test_hand_copied_module_claiming_a_core_table_without_a_model_cannot_purge_it(
+            self, client, session, tmp_path):
+        from sqlalchemy import text
+        token = await _register(client)
+        await session.execute(text(
+            "CREATE TABLE IF NOT EXISTS instance_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"))
+        await session.execute(text(
+            "INSERT INTO instance_meta VALUES ('zz_marker', 'kept') ON CONFLICT (key) DO NOTHING"))
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg_prefix(module_dir, "acme-grabber", "instance_")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.post(
+                "/companies/me/modules/acme-grabber/purge-data", headers=_h(token))
+        assert r.status_code == 409, r.text
+        assert "instance_meta" in r.json()["detail"]
+        assert "Nothing was deleted" in r.json()["detail"]
+        assert (await session.execute(text(
+            "SELECT value FROM instance_meta WHERE key = 'zz_marker'"))).scalar_one() == "kept"
+
+    @pytest.mark.asyncio
     async def test_hand_copied_module_overlapping_another_cannot_purge_its_tables(
             self, client, session, tmp_path):
         from sqlalchemy import text

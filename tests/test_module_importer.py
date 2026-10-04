@@ -576,6 +576,20 @@ def test_table_prefix_colliding_with_core_table_refused(module_dir):
         install_from_zip(data)
 
 
+@pytest.mark.parametrize("prefix, table", [("alembic_", "alembic_version"),
+                                           ("instance_", "instance_meta")])
+def test_table_prefix_claiming_a_core_table_without_a_model_refused(module_dir, tmp_path, prefix, table):
+    """Celerp owns its schema stamp and upgrade markers though no model declares them."""
+    data = _zip_bytes({"__init__.py": _migrations_manifest("mig-mod", prefix=prefix)})
+    with pytest.raises(ModuleImportError, match=table):
+        install_from_zip(data)
+    src = tmp_path / "src" / "mig-mod"
+    src.mkdir(parents=True)
+    (src / "__init__.py").write_text(_migrations_manifest("mig-mod", prefix=prefix))
+    with pytest.raises(ModuleImportError, match=table):
+        install_from_folder(src)
+
+
 def test_table_prefix_overlapping_installed_module_refused(module_dir):
     install_from_zip(_zip_bytes(
         {"__init__.py": _migrations_manifest("first-mod", prefix="acme_")}))
