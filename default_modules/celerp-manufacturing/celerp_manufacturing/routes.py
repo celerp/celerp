@@ -631,8 +631,8 @@ def _peg(supply: float, docs: list[dict]) -> None:
 
 
 def _in_progress_by_item(runs: list) -> dict[str, float]:
-    """Expected output still coming from open production runs (planned/in_progress/on_hold),
-    summed per product. This is supply already committed, so it offsets net demand."""
+    """Output open production runs (planned/in_progress/on_hold) still have to receive, summed
+    per product. What a run already received is a lot on hand, so only the rest is supply to come."""
     out: dict[str, float] = {}
     for r in runs:
         rs = r.state or {}
@@ -641,8 +641,7 @@ def _in_progress_by_item(runs: list) -> dict[str, float]:
         item_id = rs.get("output_item_id")
         if not item_id:
             continue
-        out[item_id] = out.get(item_id, 0.0) + sum(
-            float(o.get("quantity") or 0) for o in rs.get("expected_outputs", []))
+        out[item_id] = out.get(item_id, 0.0) + movements.outstanding_output(rs)
     return out
 
 
