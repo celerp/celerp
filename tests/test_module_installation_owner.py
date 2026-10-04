@@ -83,13 +83,17 @@ def _depends_on(dependant, target) -> bool:
 
 
 def _module_and_restart_routes():
-    from celerp.main import app
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
-        if route.path.startswith("/companies/me/modules") or route.path == "/system/restart":
-            for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
-                yield method, route
+    """Walk the owning routers, mounted at /companies and /system in celerp.main:
+    newer Starlette keeps an included router as one opaque entry in app.routes."""
+    from celerp.routers import companies, system
+    for prefix, router in (("/companies", companies.router), ("/system", system.router)):
+        for route in router.routes:
+            if not isinstance(route, APIRoute):
+                continue
+            path = prefix + route.path
+            if path.startswith("/companies/me/modules") or path == "/system/restart":
+                for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
+                    yield method, path, route
 
 
 def test_every_module_installation_route_requires_the_installation_owner():
@@ -98,12 +102,12 @@ def test_every_module_installation_route_requires_the_installation_owner():
     from celerp.services.auth import require_install_owner
 
     seen = set()
-    for method, route in _module_and_restart_routes():
-        seen.add((method, route.path))
-        if (method, route.path) in _COMPANY_SCOPED:
-            assert not _depends_on(route.dependant, require_install_owner), route.path
+    for method, path, route in _module_and_restart_routes():
+        seen.add((method, path))
+        if (method, path) in _COMPANY_SCOPED:
+            assert not _depends_on(route.dependant, require_install_owner), path
             continue
         assert _depends_on(route.dependant, require_install_owner), (
-            f"{method} {route.path} changes the installation but does not require the installation owner")
+            f"{method} {path} changes the installation but does not require the installation owner")
     assert {(m.upper(), p.replace("no-such-module", "{module_name}")) for m, p, _k in _INSTALLATION_ACTIONS} <= seen
     assert _COMPANY_SCOPED <= seen
