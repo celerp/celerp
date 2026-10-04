@@ -4447,12 +4447,13 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         ]
 
         filtered_state = {**state, "line_items": qualifying_line_items}
-        # Strip monetary totals: invoice may have fewer items than memo, so memo totals are stale.
-        # The invoice will recompute totals from its own line items. It is a new draft, so none
+        # The invoice may bill fewer goods than the memo held, so the memo's totals are stale:
+        # the invoice's money is computed from the lines it bills. It is a new draft, so none
         # of the memo's own lifecycle (finalized, sent, fulfilled) carries over: finalizing the
         # invoice is what books its revenue and the cost of the goods sold.
         _MEMO_TOTAL_FIELDS = frozenset({"total", "outstanding", "tax_total", "discount_total", "subtotal", "amount_due"})
         new_data = {k: v for k, v in filtered_state.items() if k not in LIFECYCLE_OWNED_FIELDS | _MEMO_TOTAL_FIELDS}
+        new_data.update(document_money(new_data, qualifying_line_items, _currency, keep_unrated_tax=True))
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_memo_id": entity_id, "status": "draft"})
         await emit_event(
             session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,

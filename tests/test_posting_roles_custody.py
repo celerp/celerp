@@ -102,3 +102,22 @@ async def test_a_sold_lot_is_archived_to_tidy_the_catalog(session, client, auth)
         assert r.status_code == 200, (route, r.text)
         assert (await _state(session, auth, lot))["status"] == "archived"
     await assert_books_carry_stock(session, auth["company_id"])
+
+
+async def test_a_memo_converted_to_an_invoice_bills_what_the_customer_kept(session, client, auth):
+    """Red before: the invoice carried no total, so the customer owed nothing while finalize
+    booked the cost of the goods."""
+    from stock_books import assert_settled
+    lot = await _available(client, auth, 100.0)
+    memo = (await _ok(client, auth, "POST", "/docs", {"doc_type": "memo", "tax_rate": 10, "line_items": [
+        {"entity_id": lot, "name": "Lot", "quantity": 1, "unit_price": 150.0, "sell_by": "piece"}]}))["id"]
+    await _ok(client, auth, "POST", f"/docs/{memo}/finalize")
+    await _ok(client, auth, "POST", f"/docs/{memo}/fulfill-lines", {"line_entity_ids": [lot]})
+    invoice = (await _ok(client, auth, "POST", f"/docs/{memo}/convert"))["target_doc_id"]
+    state = await _state(session, auth, invoice)
+    assert (state["subtotal"], state["tax"], state["total"], state["amount_outstanding"]) == (150.0, 15.0, 165.0, 165.0)
+    await _ok(client, auth, "POST", f"/docs/{invoice}/finalize")
+    session.expire_all()
+    state = await _state(session, auth, invoice)
+    assert (state["status"], state["amount_outstanding"]) == ("final", 165.0)
+    await assert_settled(client, session, auth)
