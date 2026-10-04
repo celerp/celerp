@@ -94,6 +94,25 @@ async def test_discard_removes_the_files_and_its_cleanup_task(real_client, real_
 
 
 @pytest.mark.asyncio
+async def test_discard_removes_the_notices_the_staged_company_was_told(real_client, real_engine, migration_env):
+    """RED before the change: a notice told to every company (a start that held its updates
+    back, say) reached the staged company too, and discard refused it as data it could not
+    remove."""
+    from celerp.notifications.service import notify_every_company
+
+    token, run_id, company_id = await _staged(real_client, real_engine, migration_env)
+    async with maker(real_engine)() as s:
+        assert await notify_every_company(s, "system", "Held back", "Updates were held back.") >= 1
+        await s.commit()
+    assert await count(real_engine, "notifications", "company_id = :c", c=company_id) == 1
+
+    r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+    assert r.status_code == 200, r.text
+    assert await count(real_engine, "companies", "id = :c", c=company_id) == 0
+    assert await count(real_engine, "notifications", "company_id = :c", c=company_id) == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("fail", [_fail_source_delete, _fail_attachment_delete])
 async def test_a_storage_failure_keeps_the_task_and_startup_finishes_it(real_client, real_engine, migration_env,
                                                                        monkeypatch, caplog, fail):
