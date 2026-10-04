@@ -130,3 +130,22 @@ async def test_auto_setting_rejects_non_booleans(client, session, cfg_dir, body)
     owner_h, _ = await _owner_and_member(client, session)
     r = await client.patch("/system/update/settings", headers=owner_h, json=body)
     assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_updating_still_works_while_records_are_held_back(client, session, cfg_dir, monkeypatch):
+    """A start that could not bring the stored records current refuses changes to them,
+    but not updating Celerp: a newer release is one way to bring them current."""
+    from celerp.main import app
+
+    tmp_path, sigterms = cfg_dir
+    owner_h, _ = await _owner_and_member(client, session)
+    monkeypatch.setattr(app.state, "data_current", False, raising=False)
+
+    assert (await client.post("/companies/me/locations", headers=owner_h,
+                              json={"name": "W", "type": "warehouse"})).status_code == 503
+    assert (await client.patch("/system/update/settings", headers=owner_h, json={"auto": False})).status_code == 200
+    assert (await client.post("/system/update/check", headers=owner_h)).status_code == 200
+    r = await client.post("/system/update", headers=owner_h)
+    assert r.status_code == 202, r.text
+    assert sigterms == [1]

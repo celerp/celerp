@@ -254,10 +254,10 @@ def log_unhandled_exception(request: Request, exc: Exception) -> None:
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _DRAIN_BYPASS_PREFIXES = ("/__celerp/", "/health")
 # What still changes while the stored records are not current: signing in and out,
-# reading notices, enabling or installing the module that holds them back, and the
-# repairs that bring them current. Nothing here changes a business record.
+# reading notices, enabling or installing the module that holds them back, updating
+# Celerp, and the repairs that bring them current. Nothing here changes a business record.
 _HELD_BACK_ALLOWED_PREFIXES = ("/auth/", "/notifications", "/companies/me/modules/", "/system/restart",
-                               "/ledger/rebuild", "/admin/doctor")
+                               "/system/update", "/ledger/rebuild", "/admin/doctor")
 _HELD_BACK_REFUSED_SUFFIXES = ("/purge-data",)
 _HELD_BACK_REFUSAL = (
     "Stored records could not be brought up to date at the last start, so changes are refused "
@@ -284,7 +284,7 @@ class DrainMiddleware:
     a DB hiccup doesn't hard-block all mutations.
 
     Safe paths (bypass): /__celerp/*, /health. While the records are not current,
-    only the sign-in, notice, module and repair paths above still accept writes.
+    only the sign-in, notice, module, update and repair paths above still accept writes.
     """
 
     def __init__(self, app: ASGIApp) -> None:
