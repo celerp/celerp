@@ -283,6 +283,8 @@ def _join_version_fence() -> None:
     except Exception as exc:
         print(f"\n{exc}\n", file=sys.stderr)
         sys.exit(1)
+    from celerp.db import engine, lifecycle_engine
+    _version_fence.guard(engine, lifecycle_engine)
 
 
 def _release_version_fence() -> None:

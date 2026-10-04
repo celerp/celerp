@@ -1426,8 +1426,9 @@ def reset_password(email: str, password: str) -> None:
         from sqlalchemy import create_engine, text
         from celerp.migrations.compatibility import fence
         from celerp.services.auth import hash_password
-        with fence(sync_url):
+        with fence(sync_url) as held:
             engine = create_engine(sync_url)
+            held.guard(engine)
             try:
                 with engine.begin() as conn:
                     row = conn.execute(text("SELECT id, name FROM users WHERE email = :e"), {"e": email}).fetchone()

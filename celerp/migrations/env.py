@@ -72,14 +72,22 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
 
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            render_as_batch=False,
-        )
-        with context.begin_transaction():
-            context.run_migrations()
+    from celerp.migrations.compatibility import current_fence
+    held = current_fence()
+    if held is not None:
+        held.guard(connectable)
+    try:
+        with connectable.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                render_as_batch=False,
+            )
+            with context.begin_transaction():
+                context.run_migrations()
+    finally:
+        if held is not None:
+            held.unguard(connectable)
 
 
 if context.is_offline_mode():

@@ -231,6 +231,8 @@ async def lifespan(_app: FastAPI):
             Fence.join, sync_url(lifecycle_engine.url.render_as_string(hide_password=False)))
     except Exception as exc:
         _refuse_start(exc)
+    # Every request and background transaction goes through these two engines.
+    held.guard(engine, lifecycle_engine)
     try:
         async with _serve(_app, held):
             yield
