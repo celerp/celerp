@@ -234,6 +234,17 @@ def test_check_never_creates_instance_meta(scratch):
     assert snapshot(url)["instance_meta"] is None
 
 
+@pytest.mark.parametrize("case", ["current", "newer_marker"])
+def test_status_reads_the_revision_without_opening_the_database(scratch, case):
+    """celerp status only reports: it records nothing, and it still reads a database
+    a newer version has claimed."""
+    from celerp import cli
+    url = scratch("head", None) if case == "current" else scratch.refused(case)
+    before = snapshot(url)
+    assert cli._stamped_revision(url) == _head()
+    assert snapshot(url) == before
+
+
 def test_check_runs_read_only(scratch):
     """The check's own transaction cannot write, whatever a later change to it reads."""
     from celerp.migrations.compatibility import check

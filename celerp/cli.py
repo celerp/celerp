@@ -675,12 +675,18 @@ def _stamped_revision(db_url: str) -> str | None:
     The stamp records what alembic believes; on a develop database built by
     create_all it can sit behind or ahead of the real schema, which is what
     `_apply_migrations` repairs. So this is for reporting what changed, never for
-    deciding whether the schema is sound.
+    deciding whether the schema is sound. It only reads, so `celerp status` can
+    report on any database, a newer version's included, without opening it.
     """
     from alembic.runtime.migration import MigrationContext
+    from sqlalchemy import create_engine
 
-    with _db_engine(db_url, pool_pre_ping=True) as engine, engine.connect() as conn:
-        return MigrationContext.configure(conn).get_current_revision()
+    engine = create_engine(_sync_url(db_url), pool_pre_ping=True)
+    try:
+        with engine.connect() as conn:
+            return MigrationContext.configure(conn).get_current_revision()
+    finally:
+        engine.dispose()
 
 
 @contextmanager
