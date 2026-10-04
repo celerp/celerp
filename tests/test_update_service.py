@@ -42,7 +42,7 @@ class FakeSteps(update.Steps):
         runtime.release_dir(target).mkdir(parents=True)
 
     def migrate(self, target): self._do("migrate")
-    def restore(self, path): self._do("restore")
+    def restore(self, path, target): self._do("restore")
     def stop_children(self, children): self._do("stop_children")
 
     def verify(self, target):
@@ -202,7 +202,7 @@ def test_rollback_step_is_recorded_before_undo(cfg_dir):
     seen = {}
 
     class Spy(FakeSteps):
-        def restore(self, path):
+        def restore(self, path, target):
             seen["restore"] = update.read_state()["in_progress"]["step"]
 
     update.run_update("1.1.0", Spy(fail="verify"))

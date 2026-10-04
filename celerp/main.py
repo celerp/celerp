@@ -202,8 +202,44 @@ async def _stop_background_tasks(tasks: list[asyncio.Task | None]) -> None:
                     len(pending), _SHUTDOWN_GRACE_S, ", ".join(t.get_name() for t in pending))
 
 
+def _refuse_start(exc: BaseException) -> None:
+    """Exit with the reason this copy cannot open the database."""
+    from celerp.migrations.compatibility import IncompatibleDatabase
+    if isinstance(exc, IncompatibleDatabase):
+        print(f"\n{exc}\n", file=sys.stderr)
+        sys.exit(1)
+    masked_url = mask_db_credentials(settings.database_url)
+    print(
+        f"\nFATAL: Cannot connect to database at {masked_url}\n"
+        f"  → {type(exc).__name__}: {exc}\n\n"
+        "Fix: check DATABASE_URL in .env and make sure Postgres is running.\n"
+        "  Ubuntu: sudo systemctl start postgresql\n"
+        "  macOS:  brew services start postgresql@15\n",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # The version fence is held from before the first change (recovery included)
+    # until the process stops, so no other Celerp version writes alongside this one.
+    from celerp.db_url import sync_url
+    from celerp.migrations.compatibility import Fence
+    try:
+        held = await asyncio.to_thread(
+            Fence.join, sync_url(lifecycle_engine.url.render_as_string(hide_password=False)))
+    except Exception as exc:
+        _refuse_start(exc)
+    try:
+        async with _serve(_app, held):
+            yield
+    finally:
+        await asyncio.to_thread(held.release)
+
+
+@asynccontextmanager
+async def _serve(_app: FastAPI, held):
     update_verify = _os.environ.get(_runtime.UPDATE_VERIFY_ENV) == "1"
     (settings.data_dir / "static" / "attachments").mkdir(parents=True, exist_ok=True)
 
@@ -220,26 +256,12 @@ async def lifespan(_app: FastAPI):
     # This copy is admitted, and recorded as having opened the database, in a
     # transaction of its own before its first change, so even a start that fails or
     # stops early below leaves an older copy refusing the database.
-    from celerp.migrations.compatibility import IncompatibleDatabase, admit
     try:
-        async with lifecycle_engine.begin() as conn:
-            await conn.run_sync(admit)
+        await asyncio.to_thread(held.admit)
         async with lifecycle_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-    except IncompatibleDatabase as exc:
-        print(f"\n{exc}\n", file=sys.stderr)
-        sys.exit(1)
     except Exception as exc:
-        masked_url = mask_db_credentials(settings.database_url)
-        print(
-            f"\nFATAL: Cannot connect to database at {masked_url}\n"
-            f"  → {type(exc).__name__}: {exc}\n\n"
-            "Fix: check DATABASE_URL in .env and make sure Postgres is running.\n"
-            "  Ubuntu: sudo systemctl start postgresql\n"
-            "  macOS:  brew services start postgresql@15\n",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        _refuse_start(exc)
 
     # Load external modules (opt-in: no-op if MODULE_DIR not set)
     _loaded_modules = []

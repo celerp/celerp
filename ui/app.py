@@ -267,6 +267,29 @@ async def _close_ui_api_client() -> None:
     await close_shared_client()
 
 
+_version_fence = None
+
+
+def _join_version_fence() -> None:
+    """Hold this version's database fence while the UI runs: it writes to the
+    database directly, so another Celerp version must not run alongside it
+    (celerp.migrations.compatibility)."""
+    global _version_fence
+    from celerp.config import settings as _settings
+    from celerp.db_url import sync_url
+    from celerp.migrations.compatibility import Fence
+    try:
+        _version_fence = Fence.join(sync_url(_settings.database_url))
+    except Exception as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        sys.exit(1)
+
+
+def _release_version_fence() -> None:
+    if _version_fence is not None:
+        _version_fence.release()
+
+
 def _cleanup_import_stages() -> None:
     """Remove expired staged import files at startup, so they do not linger on
     an installation where nobody imports again."""
@@ -280,8 +303,8 @@ def _cleanup_import_stages() -> None:
 app = FastHTML(
     before=Beforeware(_auth_guard, skip=[r"/login", r"/login-force", r"/setup.*", r"/logout", r"/static/.*", r"/health"]),
     secret_key=os.environ.get("JWT_SECRET", "dev-secret"),
-    on_startup=[_cleanup_import_stages],
-    on_shutdown=[_close_ui_api_client],
+    on_startup=[_join_version_fence, _cleanup_import_stages],
+    on_shutdown=[_close_ui_api_client, _release_version_fence],
 )
 
 app.add_middleware(TokenRefreshMiddleware)

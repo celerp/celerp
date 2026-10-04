@@ -476,7 +476,7 @@ class Steps:
     def migrate(self, target: str) -> None: ...
     def verify(self, target: str) -> tuple: ...
     def stop_children(self, children: tuple) -> None: ...
-    def restore(self, path: Path) -> None: ...
+    def restore(self, path: Path, target: str) -> None: ...
 
 
 def _mark(state: dict, current: str, target: str, step: str, reason: str = "") -> None:
@@ -511,7 +511,7 @@ def _undo(steps: Steps, state: dict, current: str, target: str, reason: str) -> 
     dump = dump_path()
     _mark(state, current, target, "rollback", reason)
     try:
-        steps.restore(dump)
+        steps.restore(dump, target)
     except Exception:
         log.exception("Restoring the database failed; it is retried at every start. The "
                       "pre-update database is at %s (pg_restore --clean -d <url> %s).", dump, dump)
@@ -841,10 +841,17 @@ class SupervisorSteps(Steps):
         for proc in children:
             _terminate(proc)
 
-    def restore(self, path: Path) -> None:
-        self._backup.restore_database_file(
-            path, self.db_url, clean_schema=True, runner=_bound_run
-        )
+    def restore(self, path: Path, target: str) -> None:
+        """Restore the pre-update dump. `target` may already be recorded as having
+        opened the database, so this copy is let in under that record; the fence
+        still waits for every process of the target version to have stopped."""
+        from celerp.db_url import sync_url
+        from celerp.migrations.compatibility import fence
+
+        with fence(sync_url(self.db_url), accept=target):
+            self._backup.restore_database_file(
+                path, self.db_url, clean_schema=True, runner=_bound_run
+            )
 
     def stop_cluster(self) -> None:
         """Stop the embedded database, so the next supervisor starts it with

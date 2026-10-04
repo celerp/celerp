@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import signal
@@ -44,14 +45,56 @@ def _parse_db_url(db_url: str) -> dict:
     }
 
 
+def _psql(sql: str, db: str = "postgres", *flags: str) -> subprocess.CompletedProcess:
+    """Run one statement through psql as the postgres OS user."""
+    return subprocess.run(
+        ["sudo", "-u", "postgres", "psql", "-d", db, "-v", "ON_ERROR_STOP=1", *flags, "-c", sql],
+        capture_output=True,
+        text=True,
+    )
+
+
+def _psql_value(sql: str, db: str = "postgres") -> str:
+    """The unaligned single value *sql* returns. Raises RuntimeError on failure."""
+    r = _psql(sql, db, "-At")
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip())
+    return r.stdout.strip()
+
+
+def _existing_db_compatibility(dbname: str):
+    """Classify an existing database for this copy, reading it as the superuser
+    (the app role may not reach it yet). None when the database does not exist."""
+    from celerp.migrations._data_reconcile import _META_TABLE
+    from celerp.migrations.compatibility import decide
+
+    if _psql_value(f"SELECT 1 FROM pg_database WHERE datname = '{dbname}';") != "1":
+        return None
+    tables = _psql_value(
+        f"SELECT to_regclass('public.{_META_TABLE}') IS NOT NULL, "
+        f"to_regclass('public.alembic_version') IS NOT NULL;", dbname)
+    has_meta, has_stamp = (flag == "t" for flag in tables.split("|"))
+    meta = json.loads(_psql_value(
+        f"SELECT coalesce(json_object_agg(key, value), '{{}}') FROM public.{_META_TABLE};",
+        dbname)) if has_meta else {}
+    stamped = json.loads(_psql_value(
+        "SELECT coalesce(json_agg(version_num), '[]') FROM public.alembic_version;",
+        dbname)) if has_stamp else []
+    return decide(meta, stamped)
+
+
 def _provision_db(db_url: str, drop_existing: bool = False) -> None:
     """Create Postgres user + database by shelling out to psql as the postgres OS user.
 
     Uses `sudo -u postgres psql` — works on any standard Postgres install regardless
     of pg_hba.conf configuration, since the postgres OS user always has superuser access.
     If drop_existing=True, drops and recreates the database (used by init --force).
+    Otherwise an existing database must be one this copy may open before the role,
+    ownership or grants change: IncompatibleDatabase is raised, having changed nothing.
     Raises RuntimeError on failure.
     """
+    from celerp.migrations.compatibility import IncompatibleDatabase
+
     parts = _parse_db_url(db_url)
     if not parts:
         raise RuntimeError(f"Could not parse DB URL: {db_url}")
@@ -60,12 +103,10 @@ def _provision_db(db_url: str, drop_existing: bool = False) -> None:
     password = parts["password"]
     dbname = parts["dbname"]
 
-    def _psql(sql: str, db: str = "postgres") -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["sudo", "-u", "postgres", "psql", "-d", db, "-v", "ON_ERROR_STOP=1", "-c", sql],
-            capture_output=True,
-            text=True,
-        )
+    if not drop_existing:
+        existing = _existing_db_compatibility(dbname)
+        if existing is not None and not existing.ok:
+            raise IncompatibleDatabase(existing)
 
     # Create user if not exists, or reset password if it does
     r = _psql(f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{user}') THEN CREATE USER {user} WITH PASSWORD '{password}'; ELSE ALTER USER {user} WITH PASSWORD '{password}'; END IF; END $$;")
@@ -82,10 +123,7 @@ def _provision_db(db_url: str, drop_existing: bool = False) -> None:
         click.echo(f"  · Dropped database '{dbname}'")
 
     # Create database if not exists
-    r = _psql(f"SELECT 1 FROM pg_database WHERE datname = '{dbname}';")
-    if r.returncode != 0:
-        raise RuntimeError(r.stderr.strip())
-    if "1 row" not in r.stdout:
+    if _psql_value(f"SELECT 1 FROM pg_database WHERE datname = '{dbname}';") != "1":
         r = _psql(f"CREATE DATABASE {dbname} OWNER {user};")
         if r.returncode != 0:
             raise RuntimeError(r.stderr.strip())
@@ -98,31 +136,35 @@ def _provision_db(db_url: str, drop_existing: bool = False) -> None:
     if not drop_existing:
         # Reassign user-created objects. Can't reassign postgres system objects,
         # so instead change ownership per-table.
-        for fix_sql in [
-            f"DO $$ DECLARE r record; BEGIN "
-            f"FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public' AND tableowner='postgres' LOOP "
-            f"EXECUTE 'ALTER TABLE public.' || quote_ident(r.tablename) || ' OWNER TO {user}'; "
-            f"END LOOP; END $$;",
-            f"DO $$ DECLARE r record; BEGIN "
-            f"FOR r IN SELECT sequencename FROM pg_sequences WHERE schemaname='public' AND sequenceowner='postgres' LOOP "
-            f"EXECUTE 'ALTER SEQUENCE public.' || quote_ident(r.sequencename) || ' OWNER TO {user}'; "
-            f"END LOOP; END $$;",
-        ]:
-            subprocess.run(
-                ["sudo", "-u", "postgres", "psql", "-d", dbname, "-c", fix_sql],
-                capture_output=True, text=True,
-            )
+        for fix_sql in _ownership_sql(user):
+            _psql(fix_sql, dbname)
     # Ensure schema-level privileges are correct regardless of ownership history
-    for grant_sql in [
+    for grant_sql in _schema_grant_sql(dbname, user):
+        _psql(grant_sql, dbname)
+
+
+def _ownership_sql(user: str) -> list[str]:
+    """Hand every public table and sequence the postgres role owns to *user*."""
+    return [
+        f"DO $$ DECLARE r record; BEGIN "
+        f"FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public' AND tableowner='postgres' LOOP "
+        f"EXECUTE 'ALTER TABLE public.' || quote_ident(r.tablename) || ' OWNER TO {user}'; "
+        f"END LOOP; END $$;",
+        f"DO $$ DECLARE r record; BEGIN "
+        f"FOR r IN SELECT sequencename FROM pg_sequences WHERE schemaname='public' AND sequenceowner='postgres' LOOP "
+        f"EXECUTE 'ALTER SEQUENCE public.' || quote_ident(r.sequencename) || ' OWNER TO {user}'; "
+        f"END LOOP; END $$;",
+    ]
+
+
+def _schema_grant_sql(dbname: str, user: str) -> list[str]:
+    """Database and schema privileges, and the defaults for objects created later."""
+    return [
         f"GRANT ALL PRIVILEGES ON DATABASE {dbname} TO {user};",
         f"GRANT ALL PRIVILEGES ON SCHEMA public TO {user};",
         f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {user};",
         f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO {user};",
-    ]:
-        subprocess.run(
-            ["sudo", "-u", "postgres", "psql", "-d", dbname, "-c", grant_sql],
-            capture_output=True, text=True,
-        )
+    ]
 
 
 def _stop_servers() -> None:
@@ -152,35 +194,17 @@ def _fix_ownership(db_url: str) -> str | None:
     user = parts["user"]
     dbname = parts["dbname"]
     # Change ownership per-table/sequence (avoids REASSIGN system object error)
-    for fix_sql in [
-        f"DO $$ DECLARE r record; BEGIN "
-        f"FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public' AND tableowner='postgres' LOOP "
-        f"EXECUTE 'ALTER TABLE public.' || quote_ident(r.tablename) || ' OWNER TO {user}'; "
-        f"END LOOP; END $$;",
-        f"DO $$ DECLARE r record; BEGIN "
-        f"FOR r IN SELECT sequencename FROM pg_sequences WHERE schemaname='public' AND sequenceowner='postgres' LOOP "
-        f"EXECUTE 'ALTER SEQUENCE public.' || quote_ident(r.sequencename) || ' OWNER TO {user}'; "
-        f"END LOOP; END $$;",
-    ]:
-        r = subprocess.run(
-            ["sudo", "-u", "postgres", "psql", "-d", dbname, "-v", "ON_ERROR_STOP=1", "-c", fix_sql],
-            capture_output=True, text=True,
-        )
+    for fix_sql in _ownership_sql(user):
+        r = _psql(fix_sql, dbname)
         if r.returncode != 0:
             return r.stderr.strip()
     # Grant schema-level privileges + defaults for future objects
     for sql in [
-        f"GRANT ALL PRIVILEGES ON DATABASE {dbname} TO {user};",
-        f"GRANT ALL PRIVILEGES ON SCHEMA public TO {user};",
-        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {user};",
-        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO {user};",
+        *_schema_grant_sql(dbname, user),
         f"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {user};",
         f"GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {user};",
     ]:
-        subprocess.run(
-            ["sudo", "-u", "postgres", "psql", "-d", dbname, "-c", sql],
-            capture_output=True, text=True,
-        )
+        _psql(sql, dbname)
     return None
 
 
@@ -665,7 +689,8 @@ def _stamped_revision(db_url: str) -> str | None:
 
 @contextmanager
 def _migration_lock(db_url: str):
-    """Hold the shared Postgres migration advisory lock for the wrapped block.
+    """Hold this version's fence and the shared Postgres migration advisory
+    lock for the wrapped block.
 
     Single source of the lock protocol (acquire, guaranteed release, engine
     disposal), so every path that migrates a database serializes the same way
@@ -680,7 +705,12 @@ def _migration_lock(db_url: str):
     from sqlalchemy import create_engine, text
 
     from celerp.db import _MIGRATION_LOCK_KEY
+    from celerp.migrations.compatibility import Fence
 
+    # Joined before the migration lock, so a process still waiting for the fence
+    # never holds the migration lock a fence holder (the restore reconcile inside
+    # a running server) may be waiting for.
+    held = Fence.join(_sync_url(db_url))
     engine = create_engine(_sync_url(db_url), pool_pre_ping=True).execution_options(
         isolation_level="AUTOCOMMIT"
     )
@@ -695,6 +725,7 @@ def _migration_lock(db_url: str):
                 )
     finally:
         engine.dispose()
+        held.release()
 
 
 def _migrate_to_head(db_url: str) -> bool:
@@ -716,16 +747,21 @@ def _migrate_to_head(db_url: str) -> bool:
         # the half-replaced one.
         click.echo("  System Recovery unfinished; the database is migrated when it completes.")
         return False
+    from celerp.migrations.compatibility import IncompatibleDatabase
     before = after = None
-    with _migration_lock(db_url):
-        before = _stamped_revision(db_url)
-        _run_migrations(db_url)
-        _post_migration_grants(db_url)
-        _reconcile_after_migrate(db_url)
-        # Read inside the lock: outside it, a process queued behind this one
-        # could move the stamp further and this would report a transition that
-        # never happened here.
-        after = _stamped_revision(db_url)
+    try:
+        with _migration_lock(db_url):
+            before = _stamped_revision(db_url)
+            _run_migrations(db_url)
+            _post_migration_grants(db_url)
+            _reconcile_after_migrate(db_url)
+            # Read inside the lock: outside it, a process queued behind this one
+            # could move the stamp further and this would report a transition that
+            # never happened here.
+            after = _stamped_revision(db_url)
+    except IncompatibleDatabase as e:
+        click.echo(f"  ✗ {e}", err=True)
+        sys.exit(1)
     if after != before:
         click.echo(f"  ✓ Database migrated: {before or 'base'} -> {after}")
     return True
@@ -812,6 +848,46 @@ def _init_embedded(cfg: dict, config_dir: "Path", *, force: bool, purge_dirs: li
     click.echo(f"  ✓ Using embedded PostgreSQL at {embedded_pg.pgdata_dir(config_dir)}")
 
 
+def _init_database(db_url_val: str) -> None:
+    """Bring the database init points at up to date: table ownership, then
+    migrations. An existing database is checked, and this version's fence taken,
+    before either changes it, and before init writes the config; an incompatible
+    one exits having changed nothing."""
+    from celerp.migrations.compatibility import Fence, IncompatibleDatabase
+    try:
+        held = Fence.join(_sync_url(db_url_val))
+    except IncompatibleDatabase as e:
+        click.echo(f"  ✗ {e}", err=True)
+        sys.exit(1)
+    try:
+        # Fix table ownership before migrations (covers tables created by postgres superuser)
+        if _needs_ownership_fix(db_url_val):
+            click.echo("Fixing table ownership...")
+            err = _fix_ownership(db_url_val)
+            if err:
+                parts = _parse_db_url(db_url_val)
+                user = parts["user"] if parts else "celerp"
+                dbname = parts["dbname"] if parts else "celerp"
+                click.echo(f"  ✗ Could not fix ownership: {err}", err=True)
+                click.echo(
+                    f"\nFix manually:\n"
+                    f"  sudo -u postgres psql -d {dbname} -c "
+                    f"\"REASSIGN OWNED BY postgres TO {user};\"",
+                    err=True,
+                )
+                sys.exit(1)
+            click.echo("  ✓ Table ownership fixed")
+
+        # Run migrations. The grants are part of that path, not a step here:
+        # sequences and tables created by migrations are not covered by the ALTER
+        # DEFAULT PRIVILEGES set during provisioning, so they are re-granted after.
+        click.echo("Running migrations...")
+        if _migrate_to_head(db_url_val):
+            click.echo("  ✓ Database ready")
+    finally:
+        held.release()
+
+
 def _init_external(cfg: dict, *, force: bool, db_url: str | None, purge_dirs: list) -> None:
     """Connect to (and, as root, provision) an external PostgreSQL server.
 
@@ -839,8 +915,12 @@ def _init_external(cfg: dict, *, force: bool, db_url: str | None, purge_dirs: li
         return
     if _is_root():
         click.echo("  · Could not connect — attempting to provision database...")
+        from celerp.migrations.compatibility import IncompatibleDatabase
         try:
             _provision_db(cfg["database"]["url"])
+        except IncompatibleDatabase as e:
+            click.echo(f"  ✗ {e}", err=True)
+            sys.exit(1)
         except RuntimeError as e:
             click.echo(f"  ✗ Provisioning failed: {e}", err=True)
             click.echo("\nEnsure PostgreSQL is installed and running, then retry with sudo.", err=True)
@@ -1025,31 +1105,8 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, wa
     else:
         _init_external(cfg, force=force, db_url=db_url, purge_dirs=_purge_dirs if force else [])
 
-    # Fix table ownership before migrations (covers tables created by postgres superuser)
     db_url_val = cfg["database"]["url"]
-    if _needs_ownership_fix(db_url_val):
-        click.echo("Fixing table ownership...")
-        err = _fix_ownership(db_url_val)
-        if err:
-            parts = _parse_db_url(db_url_val)
-            user = parts["user"] if parts else "celerp"
-            dbname = parts["dbname"] if parts else "celerp"
-            click.echo(f"  ✗ Could not fix ownership: {err}", err=True)
-            click.echo(
-                f"\nFix manually:\n"
-                f"  sudo -u postgres psql -d {dbname} -c "
-                f"\"REASSIGN OWNED BY postgres TO {user};\"",
-                err=True,
-            )
-            sys.exit(1)
-        click.echo("  ✓ Table ownership fixed")
-
-    # Run migrations. The grants are part of that path, not a step here:
-    # sequences and tables created by migrations are not covered by the ALTER
-    # DEFAULT PRIVILEGES set during provisioning, so they are re-granted after.
-    click.echo("Running migrations...")
-    if _migrate_to_head(db_url_val):
-        click.echo("  ✓ Database ready")
+    _init_database(db_url_val)
 
     # Headless installs (a process manager runs `start`) are network-exposed, so the
     # first-admin page shouldn't be claimable by whoever reaches it first. Mint a
@@ -1367,19 +1424,22 @@ def reset_password(email: str, password: str) -> None:
     sync_url = _sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
-        from celerp.migrations.compatibility import admit_url
+        from celerp.migrations.compatibility import fence
         from celerp.services.auth import hash_password
-        admit_url(sync_url)
-        engine = create_engine(sync_url)
-        with engine.begin() as conn:
-            row = conn.execute(text("SELECT id, name FROM users WHERE email = :e"), {"e": email}).fetchone()
-            if not row:
-                click.echo(f"No user found with email: {email}", err=True)
-                sys.exit(1)
-            conn.execute(
-                text("UPDATE users SET auth_hash = :h, reset_token = NULL, reset_token_expires = NULL WHERE id = :id"),
-                {"h": hash_password(password), "id": row[0]},
-            )
+        with fence(sync_url):
+            engine = create_engine(sync_url)
+            try:
+                with engine.begin() as conn:
+                    row = conn.execute(text("SELECT id, name FROM users WHERE email = :e"), {"e": email}).fetchone()
+                    if not row:
+                        click.echo(f"No user found with email: {email}", err=True)
+                        sys.exit(1)
+                    conn.execute(
+                        text("UPDATE users SET auth_hash = :h, reset_token = NULL, reset_token_expires = NULL WHERE id = :id"),
+                        {"h": hash_password(password), "id": row[0]},
+                    )
+            finally:
+                engine.dispose()
         click.echo(f"  \u2713 Password reset for {row[1]} ({email})")
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
