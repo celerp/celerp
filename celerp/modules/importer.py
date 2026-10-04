@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import errno
+import functools
 import os
 import shutil
 import stat
@@ -199,22 +200,60 @@ def installed_table_prefixes(exclude: str) -> dict[str, str]:
 MIN_TABLE_PREFIX_LEN = 3
 
 
-def core_owned_tables() -> frozenset[str]:
-    """Every table no module prefix may claim: the tables Celerp's models declare
-    (core, and any loaded module's), plus the two Celerp manages without a model,
-    alembic's schema stamp and the instance's upgrade markers. The one source for
-    install, migrations, purge and backup attribution, through table_prefix_problem."""
+def reserved_tables(name: str) -> frozenset[str]:
+    """Every table module *name*'s prefix may not claim, whichever modules this process
+    has loaded: every table Celerp's migration history has created or changed (obsolete
+    ones included), every table a bundled module declares or migrates, the tables the
+    loaded models declare other than *name*'s own, and the two Celerp manages without a
+    model, alembic's schema stamp and the instance's upgrade markers. The one source
+    for install, migrations, purge and backup attribution, through table_prefix_problem."""
     from celerp.migrations._data_reconcile import _META_TABLE
     from celerp.models.base import Base
     import celerp.models  # noqa: F401  (registers every core table)
 
-    return frozenset(Base.metadata.tables) | {"alembic_version", _META_TABLE}
+    loaded = frozenset(Base.metadata.tables) - _loaded_tables_of(name)
+    return _historical_tables() | loaded | {"alembic_version", _META_TABLE}
 
 
-def _foreign_tables(name: str) -> list[str]:
-    """Every core-owned table except module *name*'s own: those whose model class
-    is defined in a file inside an installed copy of *name* (its inner package
-    name need not match the folder, e.g. acme-widgets/acme_widgets)."""
+@functools.lru_cache(maxsize=1)
+def _historical_tables() -> frozenset[str]:
+    """Tables named in Celerp's migration history and in the bundled modules (their
+    migrations and model declarations), read from the source files, never imported.
+    A turned-off module's models are never loaded, so its tables are known only here."""
+    from celerp.migrations import _auto_stamp
+    from celerp.modules.loader import BUNDLED_SOURCE_DIR, read_manifest
+
+    migration_files = list((Path(_auto_stamp.__file__).parent / "versions").glob("*.py"))
+    declared: set[str] = set()
+    for module in sorted(BUNDLED_SOURCE_DIR.iterdir()) if BUNDLED_SOURCE_DIR.is_dir() else ():
+        if not (module / "__init__.py").is_file():
+            continue
+        package = read_manifest(module).get("migrations")
+        if isinstance(package, str) and package:
+            migration_files += module.joinpath(*package.split(".")).glob("*.py")
+        for source in module.rglob("*.py"):
+            if "tests" not in source.relative_to(module).parts:
+                declared |= _declared_table_names(source)
+    history = {sig.table for path in migration_files for sig in _auto_stamp.extract_signatures(path)}
+    return frozenset(history | declared)
+
+
+def _declared_table_names(source: Path) -> set[str]:
+    """The literal ``__tablename__`` values a source file assigns."""
+    try:
+        tree = ast.parse(source.read_text())
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return set()
+    return {node.value.value for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "__tablename__" for t in node.targets)
+            and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)}
+
+
+def _loaded_tables_of(name: str) -> frozenset[str]:
+    """The loaded tables whose model class is defined in a file inside an installed
+    copy of module *name* (its inner package name need not match the folder, e.g.
+    acme-widgets/acme_widgets)."""
     import inspect
     import sys
 
@@ -231,9 +270,8 @@ def _foreign_tables(name: str) -> list[str]:
             return False
         return os.path.realpath(source).startswith(tuple(roots))
 
-    core = core_owned_tables()
-    own = {mapper.local_table.name for mapper in Base.registry.mappers if _owned(mapper.class_)}
-    return sorted(core - own)
+    return frozenset(mapper.local_table.name for mapper in Base.registry.mappers
+                     if _owned(mapper.class_))
 
 
 def table_prefix_problem(name: str, prefix: object,
@@ -255,7 +293,7 @@ def table_prefix_problem(name: str, prefix: object,
                 f'{MIN_TABLE_PREFIX_LEN} characters.')
     if not prefix.endswith("_"):
         return f'table_prefix "{prefix}" must end with an underscore (for example "acme_").'
-    for table_name in _foreign_tables(name):
+    for table_name in sorted(reserved_tables(name)):
         if table_name.startswith(prefix):
             return (f'table_prefix "{prefix}" collides with the existing table '
                     f'"{table_name}". Choose a prefix that no core or installed '

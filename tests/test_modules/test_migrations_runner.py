@@ -388,6 +388,18 @@ async def test_runner_refuses_a_hand_copied_prefix_claiming_a_core_table(_db_eng
         await conn.close()
 
 
+@pytest.mark.parametrize("prefix", ["label_", "marketplace_", "bank_"])
+async def test_runner_refuses_a_hand_copied_prefix_claiming_a_turned_off_bundled_module_table(
+        _db_engine, tmp_path, bundled_modules_unloaded, prefix):
+    pkg = _make_module(tmp_path / "modules", f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": "def upgrade():\n    pass\n"}, table_prefix=prefix)
+    async with _db_engine.connect() as conn:
+        def _do(sc):
+            with pytest.raises(ValueError, match=bundled_modules_unloaded[prefix]):
+                run_module_migrations(sc, pkg.name, pkg, "inner.migrations", prefix)
+        await conn.run_sync(_do)
+
+
 async def test_runner_sets_statement_and_lock_timeouts(_db_engine, tmp_path):
     result = tmp_path / "timeouts.txt"
     body = _MIG_TIMEOUT.replace("__RESULT__", str(result))

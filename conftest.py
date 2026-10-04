@@ -785,3 +785,26 @@ async def client(session: AsyncSession):
     app.dependency_overrides.clear()
     await _clear_tracker(session)
     _set_session_token(_saved_token or "")
+
+
+_DISABLED_MODULE_TABLES = {"label_": "label_templates", "marketplace_": "marketplace_configs",
+                           "bank_": "bank_accounts"}
+
+
+@pytest.fixture
+def bundled_modules_unloaded(monkeypatch):
+    """The table metadata of a process that runs no bundled module: core tables only,
+    since a module that is turned off never has its models imported. Yields
+    {prefix: table} for module tables such a process does not declare."""
+    import sqlalchemy as sa
+    from celerp.models.base import Base
+
+    module_tables = {m.local_table.name for m in Base.registry.mappers
+                     if m.class_.__module__.startswith("celerp_")}
+    assert set(_DISABLED_MODULE_TABLES.values()) <= module_tables
+    core = sa.MetaData()
+    for table in Base.metadata.tables.values():
+        if table.name not in module_tables:
+            table.to_metadata(core)
+    monkeypatch.setattr(Base, "metadata", core)
+    return dict(_DISABLED_MODULE_TABLES)

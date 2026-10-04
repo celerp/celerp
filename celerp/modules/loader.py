@@ -76,8 +76,11 @@ _MODULE_AI_API_URL = "https://celerp.com/docs/modules/ai-api"
 # Electron installs seed default_modules/ into DATA_DIR/modules/ (outside APP_DIR).
 # The Electron main process sets CELERP_TRUSTED_MODULE_DIRS to the original source
 # directory so the loader can recognise seeded copies as first-party trusted modules.
+BUNDLED_SOURCE_DIR = Path(__file__).resolve().parent.parent.parent / "default_modules"
+
+
 def _resolve_bundled_dirs() -> tuple[Path, ...]:
-    base = Path(__file__).resolve().parent.parent.parent / "default_modules"
+    base = BUNDLED_SOURCE_DIR
     extra_raw = os.environ.get("CELERP_TRUSTED_MODULE_DIRS", "")
     extras = [Path(p.strip()).resolve() for p in extra_raw.split(",") if p.strip()]
     return tuple({base.resolve(), *extras})
@@ -212,7 +215,7 @@ def module_content_digest(pkg_path: Path) -> str | None:
 def _lock_path() -> Path:
     """Path to the committed first-party lock, installed beside default_modules/.
     A separate function so tests can patch it without touching the read logic."""
-    return Path(__file__).resolve().parent.parent.parent / "default_modules" / "first_party.lock.json"
+    return BUNDLED_SOURCE_DIR / "first_party.lock.json"
 
 
 @functools.lru_cache(maxsize=1)

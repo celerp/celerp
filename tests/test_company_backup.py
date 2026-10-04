@@ -908,6 +908,22 @@ async def test_hand_copied_prefix_claiming_a_core_table_owns_nothing(real_engine
             await _bk_drop(real_engine, "alembic_version")
 
 
+@pytest.mark.parametrize("prefix", ["label_", "marketplace_", "bank_"])
+async def test_hand_copied_prefix_claiming_a_turned_off_bundled_module_table_owns_nothing(
+        real_engine, tmp_path, monkeypatch, bundled_modules_unloaded, prefix):
+    """A bundled module's tables are never attributed to a hand-copied module claiming
+    them, even while the bundled module is turned off."""
+    from celerp.modules.importer import valid_table_prefixes
+    cb = _bk_cb()
+    _bk_fake_module(tmp_path, monkeypatch)
+    _bk_shadow_module(tmp_path, "zz-claimer", prefix)
+    assert "zz-claimer" not in valid_table_prefixes()
+    async with maker(real_engine)() as s:
+        plan = await cb._classify(s, strict=False)
+    assert plan.owners.get(bundled_modules_unloaded[prefix]) != "zz-claimer"
+    assert "zz-claimer" not in plan.owners.values()
+
+
 async def test_overlapping_hand_copied_prefix_stops_the_export_instead_of_dropping_a_table(
         real_engine, real_client, tmp_path, monkeypatch):
     """Two modules whose sound prefixes overlap own nothing, so the table is refused by name
