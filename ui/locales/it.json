@@ -3593,5 +3593,6 @@
   "mfg.reconcile_excess": "I lotti già ricevuti da questo ordine portano {carried}, più dei {issued} indicati. Indica il valore prelevato, oppure storna la differenza dal conto di magazzino che li porta.",
   "mfg.reconcile_kept": "{lots}, ricevuto da questo ordine, non può essere ricalcolato (diviso, venduto in parte, trasformato, usato o stornato prima di questa versione) e mantiene i {kept} assegnati, più dei {issued} indicati. Indica il valore prelevato per questo ordine, almeno tale importo.",
   "mfg.output_in_production": "{sku} proviene dall'ordine di produzione {order}, ancora aperto, e il suo costo è definitivo solo quando l'ordine è completato. Completa l'ordine prima di dividere, trasformare, usare, ridurre o stornare questo stock; fino ad allora può essere venduto intero o unito.",
+  "mfg.output_memo_conversion": "Completa questo ordine di produzione prima di convertire questo memo in fattura. Il costo dei prodotti finiti non è ancora definitivo.",
   "mfg.period_locked": "La contabilità è bloccata per il {day}, quindi questa produzione non può essere riconciliata finché quel periodo non è aperto."
 }

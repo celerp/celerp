@@ -3593,5 +3593,6 @@
   "mfg.reconcile_excess": "Các lô mà lệnh này đã nhận mang giá trị {carried}, nhiều hơn {issued} đã nhập. Hãy nhập giá trị đã xuất, hoặc ghi giảm phần chênh lệch từ tài khoản hàng tồn kho đang ghi nhận các lô đó.",
   "mfg.reconcile_kept": "{lots}, nhận từ lệnh này, không thể tính lại giá vốn (đã bị tách, bán một phần, chuyển đổi, sử dụng hoặc xóa sổ trước phiên bản này) và giữ giá trị {kept} đã được gán, nhiều hơn {issued} đã nêu. Hãy nhập giá trị đã xuất cho lệnh này, ít nhất bằng mức đó.",
   "mfg.output_in_production": "{sku} đến từ lệnh sản xuất {order} vẫn đang mở, và giá vốn chỉ cố định khi lệnh hoàn tất. Hãy hoàn tất lệnh trước khi tách, chuyển đổi, sử dụng, giảm số lượng hoặc xóa sổ hàng này; trong lúc đó vẫn có thể bán nguyên lô hoặc gộp.",
+  "mfg.output_memo_conversion": "Hãy hoàn tất lệnh sản xuất này trước khi chuyển bản ghi nhớ này thành hóa đơn. Giá vốn thành phẩm chưa được chốt.",
   "mfg.period_locked": "Sổ sách đã khóa cho ngày {day}, nên chưa thể đối chiếu đợt này cho đến khi kỳ đó được mở."
 }

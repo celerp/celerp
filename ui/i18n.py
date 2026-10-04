@@ -147,10 +147,11 @@ def role_label(role: str, fallback: str) -> str:
 def refusal_text(detail) -> str:
     """An API refusal in the user's language. A structured refusal carries ``message``
     (English), ``message_key`` and ``params``; its ``message_key`` is translated with
-    those params. Anything else is shown as the server wrote it."""
+    those params. Anything else is shown as the server wrote it, the ``detail`` of a body
+    carrying a machine code included."""
     if not isinstance(detail, dict):
         return str(detail or "")
-    message = str(detail.get("message") or "")
+    message = str(detail.get("message") or detail.get("detail") or "")
     key = detail.get("message_key")
     if not key:
         return message

@@ -214,14 +214,17 @@ async def _cost_is_traceable(session: AsyncSession, company_id, entity_id: str, 
 
 
 async def cost_can_be_restated(session: AsyncSession, company_id, entity_id: str, state: dict) -> bool:
-    """Whether a later change to the lot's cost can still be carried: all of its cost is on
-    it or went whole into a merge or a sale, and it was not written off."""
-    return (str(state.get("status") or "").lower() != "disposed"
-            and await _cost_is_traceable(session, company_id, entity_id, state))
+    """Whether a later change to the lot's cost can still be carried (restate_item_cost): all
+    of its cost is on it or went whole into a merge or a sale, it was not written off, and a
+    sale is one exact invoice line whose cost of goods sold the change can adjust."""
+    status = str(state.get("status") or "").lower()
+    return (status != "disposed"
+            and await _cost_is_traceable(session, company_id, entity_id, state)
+            and (status != "sold" or await _sale_line(session, company_id, entity_id, state) is not None))
 
 
-async def _invoice_line_of_sale(session: AsyncSession, company_id, entity_id: str, state: dict) -> tuple[str, int, str]:
-    """(doc_id, line_index, doc_number) of the invoice line that sold this lot.
+async def _sale_line(session: AsyncSession, company_id, entity_id: str, state: dict) -> tuple[str, int, str] | None:
+    """(doc_id, line_index, doc_number) of the invoice line that sold this lot, or None.
 
     Only a sale fulfilled from one line of a finalized invoice whose recognized
     COGS is on record is exact enough to adjust."""
@@ -243,11 +246,19 @@ async def _invoice_line_of_sale(session: AsyncSession, company_id, entity_id: st
         or isinstance(line_index, bool)
         or await auto_je.recognized_cogs(session, company_id, doc_id) is None
     ):
+        return None
+    return doc_id, line_index, data.get("doc_number") or doc_id
+
+
+async def _invoice_line_of_sale(session: AsyncSession, company_id, entity_id: str, state: dict) -> tuple[str, int, str]:
+    """_sale_line, refusing a sale it cannot match to one invoice line."""
+    sale = await _sale_line(session, company_id, entity_id, state)
+    if sale is None:
         raise CostRestatementConflict(
             f"{_lot_label(state, entity_id)} is sold, but the sale cannot be matched to one invoice "
             "line, so its cost of goods sold cannot be adjusted automatically"
         )
-    return doc_id, line_index, data.get("doc_number") or doc_id
+    return sale
 
 
 @dataclass

@@ -721,9 +721,9 @@ def _may_move_cost(event_type: str, before: dict, after: dict) -> bool:
 async def guard_output_lineage(*, session: AsyncSession, entry: LedgerEntry, transition) -> None:
     """item_lineage_guard: output of a run still open takes its final cost when the run
     completes, so until then it may only go where that cost can still reach it (held, sold
-    whole or merged). Anything else done to the lot or a lot it was merged into (a split, a partial
-    sale, a transform, use in another run, a count lowering it, a write-off) is
-    refused. The run's own events are its business: they carry its mark."""
+    whole on an invoice line, or merged). Anything else done to the lot or a lot it was merged
+    into (a split, a partial sale, a sale no invoice line shipped, a transform, use in another
+    run, a count lowering it, a write-off) is refused. The run's own events are its business: they carry its mark."""
     before, after = transition.before, transition.after or {}
     if before is None or not _may_move_cost(entry.event_type, before, after):
         return
@@ -734,6 +734,11 @@ async def guard_output_lineage(*, session: AsyncSession, entry: LedgerEntry, tra
     if await _keeps_cost(session, row):
         return
     sku = after.get("sku") or entry.entity_id
+    if (str(before.get("status") or ""), str(after.get("status") or "")) == ("memo_out", "sold"):
+        # Billed from out on memo, the sale has no invoice line a later cost can adjust.
+        raise refuse(409, "output_memo_conversion",
+                     "Complete this production run before converting this memo to an invoice. Its "
+                     "finished-goods cost is not final yet.", sku=sku, order=order)
     raise refuse(409, "output_in_production",
                  f"{sku} came from production run {order}, which is still open, and its cost is final only when "
                  "the run is completed. Complete the run before splitting, transforming, using, counting down "

@@ -31,7 +31,7 @@ REFUSALS = ["mfg.reconciliation_required", "mfg.insufficient_stock", "mfg.over_r
             "mfg.output_changed", "mfg.not_a_receipt", "mfg.reopen_first", "mfg.not_completed", "mfg.recost_conflict",
             "mfg.not_unresolved", "mfg.reconcile_values", "mfg.reconcile_missing", "mfg.reconcile_account",
             "mfg.reconcile_held", "mfg.reconcile_left", "mfg.reconcile_excess", "mfg.output_unknown", "mfg.not_on_hold",
-            "mfg.not_planned", "mfg.already_on_hold", "mfg.period_locked"]
+            "mfg.not_planned", "mfg.already_on_hold", "mfg.period_locked", "mfg.output_memo_conversion"]
 SHORT = {"message": "Only 2 of RAW-1 is in stock and not reserved; 4 is needed.",
          "message_key": "mfg.insufficient_stock", "params": {"sku": "RAW-1", "available": 2.0, "needed": 4.0}}
 _TH_SHORT = "RAW-1 มีในสต๊อกที่ไม่ได้จองไว้เพียง 2 แต่ต้องใช้ 4"
@@ -141,3 +141,33 @@ async def test_a_bulk_action_says_why_each_run_was_skipped(ui_client):
     assert r.status_code == 200, r.text
     message = json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
     assert _TH_SHORT in message and "not found" in message
+
+
+@pytest.mark.asyncio
+async def test_a_document_action_refused_by_a_run_says_why_in_the_users_language(ui_client):
+    """Converting a memo whose goods a run has not finished costing: the toast is in Thai."""
+    th = _catalog("th")["mfg.output_memo_conversion"]
+    english = _catalog("en")["mfg.output_memo_conversion"]
+    refused = APIError(409, english, {"message": english, "message_key": "mfg.output_memo_conversion",
+                                      "params": {"sku": "FG-1", "order": "mfg:1"}})
+    with patch("ui.api_client.convert_doc", new=AsyncMock(side_effect=refused)):
+        r = await ui_client.post("/docs/doc:MEMO-1/convert", cookies={**_authed(), "celerp_lang": "th"})
+    assert r.status_code == 200, r.text
+    assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == th
+
+
+def test_a_refusal_carrying_only_a_code_is_shown_as_the_server_wrote_it():
+    assert i18n.refusal_text({"detail": "Scan run changed.", "code": "scan_run_conflict"}) == "Scan run changed."
+
+
+@pytest.mark.asyncio
+async def test_shipping_open_run_output_in_part_says_why_in_the_users_language(ui_client):
+    params = {"sku": "FG-1", "order": "mfg:1"}
+    english = _catalog("en")["mfg.output_in_production"].format(**params)
+    refused = APIError(409, english, {"message": english, "message_key": "mfg.output_in_production", "params": params})
+    with patch("ui.api_client.fulfill_lines", new=AsyncMock(side_effect=refused)):
+        r = await ui_client.post("/docs/doc:INV-1/fulfill-lines", data={"selected": "item:1"},
+                                 cookies={**_authed(), "celerp_lang": "th"})
+    assert r.status_code == 200, r.text
+    assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == _catalog("th")[
+        "mfg.output_in_production"].format(**params)

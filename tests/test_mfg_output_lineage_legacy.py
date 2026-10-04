@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Output an older release received, then split, sold in part, transformed, used in another
-run or wrote off, before this release kept such lots whole until their run completed.
+run, wrote off or sold by converting a memo, before this release kept such lots whole until their run completed.
 
 Its cost has left the lot along a path no re-cost can follow, so reconciling the run keeps
 what that lot was given and shares the rest of what was issued over the run's other output;
@@ -85,6 +85,20 @@ async def older_run(client, session, auth) -> tuple[str, str, str]:
     return raw, order, lot
 
 
+async def _memo_convert(client, auth, lot):
+    """Sent out whole on memo and billed by converting the memo to an invoice."""
+    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "memo", "line_items": [
+        {"entity_id": lot, "sku": "OUT", "name": "Lot", "quantity": 2, "unit_price": 150.0, "sell_by": "piece"}]})
+    assert r.status_code == 200, r.text
+    memo = r.json()["id"]
+    for path, body in ((f"/docs/{memo}/finalize", {}), (f"/docs/{memo}/fulfill-lines", {"line_entity_ids": [lot]}),
+                       (f"/docs/{memo}/convert", {})):
+        r = await client.post(path, headers=auth["headers"], json=body)
+        assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{r.json()['target_doc_id']}/finalize", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+
+
 async def _older_consume(client, session, auth, lot):
     """Used as a component of another run, as the older release issued it."""
     await _older_issue(session, auth, await run(client, auth, await product(client, auth, [(lot, 1)]), 1), lot, 1)
@@ -104,6 +118,7 @@ _LINEAGES = {
     "transform": (True, lambda c, s, a, lot: _ok_(_transform(c, a, lot))),
     "consume": (True, _older_consume),
     "write_off": (False, lambda c, s, a, lot: _ok_(_write_off_one(c, a, lot))),
+    "memo_convert": (False, lambda c, s, a, lot: _memo_convert(c, a, lot)),
 }
 
 
