@@ -438,6 +438,22 @@ class TestFindSafeStamp:
         result = find_safe_stamp(revs, sigs_by_rev, inspector)
         assert result == "rev1"
 
+    def test_applied_revision_between_two_gaps_does_not_cover_the_older_gap(self):
+        """A database holding one revision's change while missing a newer and an
+        older one is safe only up to the older gap. Stamping at the applied
+        revision would mark the older missing revision as done and never run it."""
+        from unittest.mock import MagicMock
+        inspector = self._make_inspector(("users", ["id", "email"]))
+        revs = [MagicMock(revision=f"rev{i}") for i in (4, 3, 2, 1)]  # newest first
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="users")],
+            "rev2": [RevisionSignature(rev="rev2", kind="create_table", table="runs")],
+            "rev3": [RevisionSignature(rev="rev3", kind="add_column",
+                                        table="users", column="email")],
+            "rev4": [RevisionSignature(rev="rev4", kind="create_table", table="refunds")],
+        }
+        assert find_safe_stamp(revs, sigs_by_rev, inspector) == "rev1"
+
 
 class TestRealMigrationsVsSchema:
     """Integration: run the walker against every real migration in the repo
