@@ -33,19 +33,17 @@ async def link_historical_lots(session: AsyncSession, company_id, lots: list[str
     from celerp.notifications.service import notify_once
     from celerp_inventory.services import product_of_stock
 
-    query = select(LedgerEntry).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.source == "migration",
-        LedgerEntry.event_type.in_(("item.created", "item.fulfilled")))
-    if lots is not None:
-        query = query.where(LedgerEntry.entity_id.in_(lots))
-    made: dict[str, str] = {}  # lot -> the line's item it was taken from
-    sold_on: dict[str, str] = {}  # lot -> the invoice it was delivered on
-    for e in (await session.execute(query)).scalars():
-        if e.event_type == "item.created" and (e.metadata_ or {}).get("parent_id"):
-            made[e.entity_id] = e.metadata_["parent_id"]
-        elif e.event_type == "item.fulfilled":
-            sold_on[e.entity_id] = (e.data or {}).get("source_doc_id")
-    made = {lot: item for lot, item in made.items() if lot in sold_on}
+    def migrated(event_type: str, ids=None):
+        query = select(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.source == "migration",
+                                          LedgerEntry.event_type == event_type)
+        return query if ids is None else query.where(LedgerEntry.entity_id.in_(ids))
+
+    # lot -> the invoice it was delivered on, then -> the line's item it was taken from
+    sold_on = {e.entity_id: (e.data or {}).get("source_doc_id")
+               for e in (await session.execute(migrated("item.fulfilled", lots))).scalars()}
+    made = {e.entity_id: e.metadata_["parent_id"]
+            for e in (await session.execute(migrated("item.created", list(sold_on)))).scalars()
+            if (e.metadata_ or {}).get("parent_id")} if sold_on else {}
     if not made:
         return {"linked": 0, "unlinked": 0}
     rows = {r.entity_id: r.state or {} for r in (await session.execute(select(Projection).where(
