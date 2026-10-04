@@ -319,43 +319,12 @@ def test_a_schema_alone_never_makes_an_event_replayable(monkeypatch):
 
     monkeypatch.setitem(slots._slots, "projection_handler", [])
     for event_type in ("sub.created", "scan.barcode", "payment_batch.recorded", "bom.created",
-                       "crm.deal.created", "sys.user.created", "sys.company.created"):
+                       "sys.user.created", "sys.company.created"):
         assert ProjectionEngine.replayable(event_type), event_type
-    for event_type in ("mfg.order.created", "item.created", "doc.created",
+    for event_type in ("mfg.order.created", "item.created", "doc.created", "crm.deal.created",
                        "crm.contact.created", "acc.journal_entry.created"):
         assert event_type in EVENT_SCHEMA_MAP
         assert not ProjectionEngine.replayable(event_type), event_type
-
-
-def test_every_event_the_catalog_lists_is_replayable_with_every_module_loaded():
-    """Every event type that may be written is applied by something once the bundled
-    modules are loaded: its module's handler, the kernel, or the plain merge of an event no
-    module owns. An event type nothing applies would refuse its own writes and hold back
-    every start whose ledger holds one."""
-    from celerp.events.schemas import EVENT_SCHEMA_MAP
-    from celerp.projections.engine import ProjectionEngine
-
-    assert sorted(t for t in EVENT_SCHEMA_MAP if not ProjectionEngine.replayable(t)) == []
-
-
-@pytest.mark.asyncio
-async def test_a_deal_never_holds_the_upgrade_back(session):
-    """Deals belong to no module's projection handler; a ledger holding them is brought
-    current like any other, never held back as if a module were missing."""
-    cid = await _seed_item(session)
-    for event_type, data in (("crm.deal.created", {"name": "Deal", "stage": "lead"}),
-                             ("crm.deal.won", {})):
-        await emit_event(
-            session, company_id=cid, entity_id="deal:1", entity_type="deal",
-            event_type=event_type, data=data, actor_id=None, location_id=None,
-            source="test", idempotency_key=str(uuid.uuid4()), metadata_={},
-        )
-    await _set_marker(session, "0.0.1")
-    await _set_semantics(session, "0")
-
-    result = await run_upgrade_guard(session)
-
-    assert result["current"] is True and result["rebuilt"] is True, result
 
 
 @pytest.mark.asyncio

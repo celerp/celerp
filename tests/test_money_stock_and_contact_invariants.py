@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import types
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import delete, select
@@ -356,14 +357,15 @@ async def test_delete_refuses_contact_named_on_a_deal(client, session):
     h = ctx["admin_h"]
     source = await _contact(client, h, "Deal Old")
     company_id = uuid.UUID((await client.get("/companies/me", headers=h)).json()["id"])
+    # A deal as the optional sales-funnel module stores it (that module is not loaded here).
     deal_id = f"deal:{uuid.uuid4()}"
-    await emit_event(
-        session, company_id=company_id, entity_id=deal_id, entity_type="deal",
-        event_type="crm.deal.created",
-        data={"name": "Open deal", "stage": "lead", "contact_id": source},
-        actor_id=None, location_id=None, source="test",
-        idempotency_key=str(uuid.uuid4()), metadata_={},
-    )
+    deal = {"name": "Open deal", "stage": "lead", "contact_id": source}
+    now = datetime.now(timezone.utc)
+    session.add(LedgerEntry(company_id=company_id, entity_id=deal_id, entity_type="deal",
+                            event_type="crm.deal.created", data=deal, actor_id=None, location_id=None,
+                            source="test", idempotency_key=str(uuid.uuid4()), metadata_={}))
+    session.add(Projection(company_id=company_id, entity_id=deal_id, entity_type="deal", state=deal,
+                           version=1, location_id=None, created_at=now, updated_at=now))
     await session.commit()
 
     blocked = await client.post("/crm/contacts/bulk/delete", headers=h, json={"contact_ids": [source]})

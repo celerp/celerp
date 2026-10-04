@@ -37,8 +37,6 @@ MERGE_EVENTS = frozenset({
     "scan.barcode", "scan.rfid", "scan.nfc", "scan.resolved",
     "sub.created", "sub.updated", "sub.paused", "sub.cancelled", "sub.resumed",
     "sub.generated", "sub.expired",
-    "crm.deal.created", "crm.deal.updated", "crm.deal.stage_changed", "crm.deal.won",
-    "crm.deal.lost", "crm.deal.reopened", "crm.deal.deleted",
 })
 
 # The kernel's own events, applied whichever modules are loaded.
