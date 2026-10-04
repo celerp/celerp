@@ -19,12 +19,12 @@ Company ``generic`` (component C at 2), runs by name:
 - ``generic_received`` / ``generic_open``: created with an output named by text only (no
   output item); 2 x C issued to each, and 1 of 2 "received" by the first, which made no lot.
 
-Company ``shortage`` (A at 1 x 10, C at 2 x 6, D at 4 x 2, E none on hand, F at 3 x 10), runs
+Company ``shortage`` (A at 1 x 10, C at 2 x 6, D at 4 x 2, E none on hand, F at 3 x 4), runs
 created through the generic API and issued, each recorded as issued in full:
 - ``short``: 5 x D required and issued with 2 on hand.
 - ``none_on_hand``: 5 x E required and issued with none on hand.
 - ``undeclared``: 1 x A required; 1 x A and 2 x C issued (C is not an input of the run).
-- ``twice``: 5 x F required, issued as 2 and then 3.
+- ``twice``: 7 x F required, issued as 2, 3 and 2 with 4 on hand.
 
 Company ``shape`` (G at 1 x 100, product FG), 2 x G issued to every run:
 - ``out_empty`` / ``out_zero`` / ``out_negative`` / ``out_multi``: generic runs declaring no

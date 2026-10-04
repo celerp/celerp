@@ -6172,13 +6172,13 @@
      "timezone": "Pacific/Kiritimati"
     }
    },
-   "company_id": "e3c49c95-369d-41b3-89c5-206780c9c3e1",
+   "company_id": "fbd7eb93-d934-4390-ad49-ab699ff1ac87",
    "items": {
-    "A": "item:597d2265-8bc8-4de8-b1e6-6061870ba38c",
-    "C": "item:b91225c4-f8ec-47ca-a830-715d8977e2d9",
-    "D": "item:5b1d1d13-bd71-44a9-993e-5170fcc99776",
-    "E": "item:75186adb-ebb9-46c9-b0c1-3a9180700353",
-    "F": "item:ee8e6c08-1996-41ab-b8c9-c1c27272fdde"
+    "A": "item:e683a1cb-9eac-4503-a48c-5518def54862",
+    "C": "item:fa5a3208-4d35-400e-895c-6eb641bec2ca",
+    "D": "item:080a3dbc-10f4-47a6-a923-3f7257acb4f4",
+    "E": "item:6900b589-7431-4724-bbd1-742a1f1a2737",
+    "F": "item:67032348-8867-41eb-9e36-c694c94c53f9"
    },
    "ledger": [
     {
@@ -6194,13 +6194,13 @@
       "status": "available",
       "tax_codes": []
      },
-     "entity_id": "item:5b1d1d13-bd71-44a9-993e-5170fcc99776",
+     "entity_id": "item:080a3dbc-10f4-47a6-a923-3f7257acb4f4",
      "entity_type": "item",
      "event_type": "item.created",
-     "idempotency_key": "932ab57a-25cf-437d-bd40-cc0128dcc701",
+     "idempotency_key": "01f4b8dd-dc4f-4157-9f56-1a0898027525",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
@@ -6208,13 +6208,13 @@
       "new_price": 8.0,
       "price_type": "cost_total"
      },
-     "entity_id": "item:5b1d1d13-bd71-44a9-993e-5170fcc99776",
+     "entity_id": "item:080a3dbc-10f4-47a6-a923-3f7257acb4f4",
      "entity_type": "item",
      "event_type": "item.pricing.set",
-     "idempotency_key": "932ab57a-25cf-437d-bd40-cc0128dcc701:price:cost_total",
+     "idempotency_key": "01f4b8dd-dc4f-4157-9f56-1a0898027525:price:cost_total",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
@@ -6229,13 +6229,13 @@
       "status": "available",
       "tax_codes": []
      },
-     "entity_id": "item:75186adb-ebb9-46c9-b0c1-3a9180700353",
+     "entity_id": "item:6900b589-7431-4724-bbd1-742a1f1a2737",
      "entity_type": "item",
      "event_type": "item.created",
-     "idempotency_key": "f0cc7ec5-56fe-4639-9435-237efc2590ae",
+     "idempotency_key": "e5572f49-f23b-491b-a2b2-6f13edbb5205",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
@@ -6243,13 +6243,13 @@
       "new_price": 0.0,
       "price_type": "cost_total"
      },
-     "entity_id": "item:75186adb-ebb9-46c9-b0c1-3a9180700353",
+     "entity_id": "item:6900b589-7431-4724-bbd1-742a1f1a2737",
      "entity_type": "item",
      "event_type": "item.pricing.set",
-     "idempotency_key": "f0cc7ec5-56fe-4639-9435-237efc2590ae:price:cost_total",
+     "idempotency_key": "e5572f49-f23b-491b-a2b2-6f13edbb5205:price:cost_total",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
@@ -6258,33 +6258,33 @@
       "attributes": {},
       "inventory_type": "stocked",
       "name": "Lot",
-      "quantity": 10.0,
+      "quantity": 4.0,
       "sell_by": "piece",
       "sku": "COMP-F",
       "status": "available",
       "tax_codes": []
      },
-     "entity_id": "item:ee8e6c08-1996-41ab-b8c9-c1c27272fdde",
+     "entity_id": "item:67032348-8867-41eb-9e36-c694c94c53f9",
      "entity_type": "item",
      "event_type": "item.created",
-     "idempotency_key": "412be1e4-3902-4b11-9619-0a1ed1518ae0",
+     "idempotency_key": "bf9a378e-c31b-4b49-b05b-9d5936b7735e",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
      "data": {
-      "new_price": 30.0,
+      "new_price": 12.0,
       "price_type": "cost_total"
      },
-     "entity_id": "item:ee8e6c08-1996-41ab-b8c9-c1c27272fdde",
+     "entity_id": "item:67032348-8867-41eb-9e36-c694c94c53f9",
      "entity_type": "item",
      "event_type": "item.pricing.set",
-     "idempotency_key": "412be1e4-3902-4b11-9619-0a1ed1518ae0:price:cost_total",
+     "idempotency_key": "bf9a378e-c31b-4b49-b05b-9d5936b7735e:price:cost_total",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
@@ -6299,13 +6299,13 @@
       "status": "available",
       "tax_codes": []
      },
-     "entity_id": "item:b91225c4-f8ec-47ca-a830-715d8977e2d9",
+     "entity_id": "item:fa5a3208-4d35-400e-895c-6eb641bec2ca",
      "entity_type": "item",
      "event_type": "item.created",
-     "idempotency_key": "1d7409e8-d18d-441b-8911-ffe3f0e3e4c4",
+     "idempotency_key": "794faec9-e0b0-4530-b4ca-e62e71f62db1",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
@@ -6313,13 +6313,13 @@
       "new_price": 12.0,
       "price_type": "cost_total"
      },
-     "entity_id": "item:b91225c4-f8ec-47ca-a830-715d8977e2d9",
+     "entity_id": "item:fa5a3208-4d35-400e-895c-6eb641bec2ca",
      "entity_type": "item",
      "event_type": "item.pricing.set",
-     "idempotency_key": "1d7409e8-d18d-441b-8911-ffe3f0e3e4c4:price:cost_total",
+     "idempotency_key": "794faec9-e0b0-4530-b4ca-e62e71f62db1:price:cost_total",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
@@ -6334,13 +6334,13 @@
       "status": "available",
       "tax_codes": []
      },
-     "entity_id": "item:597d2265-8bc8-4de8-b1e6-6061870ba38c",
+     "entity_id": "item:e683a1cb-9eac-4503-a48c-5518def54862",
      "entity_type": "item",
      "event_type": "item.created",
-     "idempotency_key": "fffe4287-d265-4f95-ba4d-e7cba708e8ea",
+     "idempotency_key": "b14df5ee-8562-4de5-971e-7c700f4c7433",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
@@ -6348,13 +6348,13 @@
       "new_price": 10.0,
       "price_type": "cost_total"
      },
-     "entity_id": "item:597d2265-8bc8-4de8-b1e6-6061870ba38c",
+     "entity_id": "item:e683a1cb-9eac-4503-a48c-5518def54862",
      "entity_type": "item",
      "event_type": "item.pricing.set",
-     "idempotency_key": "fffe4287-d265-4f95-ba4d-e7cba708e8ea:price:cost_total",
+     "idempotency_key": "b14df5ee-8562-4de5-971e-7c700f4c7433:price:cost_total",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
@@ -6363,41 +6363,41 @@
        {
         "account": "1130-OB",
         "credit": 0.0,
-        "debit": 60.0
+        "debit": 42.0
        },
        {
         "account": "3200",
-        "credit": 60.0,
+        "credit": 42.0,
         "debit": 0.0
        }
       ],
       "memo": "Opening inventory balance (pre-system stock)",
       "ts": "2026-10-04"
      },
-     "entity_id": "je:auto:opening-inventory:e3c49c95-369d-41b3-89c5-206780c9c3e1",
+     "entity_id": "je:auto:opening-inventory:fbd7eb93-d934-4390-ad49-ab699ff1ac87",
      "entity_type": "journal_entry",
      "event_type": "acc.journal_entry.created",
-     "idempotency_key": "opening-inv:e3c49c95-369d-41b3-89c5-206780c9c3e1:c:60.0:2026-10-04",
+     "idempotency_key": "opening-inv:fbd7eb93-d934-4390-ad49-ab699ff1ac87:c:42.0:2026-10-04",
      "metadata": {
       "trigger": "opening_inventory.auto"
      },
      "source": "auto_je",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
      "data": {
       "ts": "2026-10-04"
      },
-     "entity_id": "je:auto:opening-inventory:e3c49c95-369d-41b3-89c5-206780c9c3e1",
+     "entity_id": "je:auto:opening-inventory:fbd7eb93-d934-4390-ad49-ab699ff1ac87",
      "entity_type": "journal_entry",
      "event_type": "acc.journal_entry.posted",
-     "idempotency_key": "opening-inv:e3c49c95-369d-41b3-89c5-206780c9c3e1:p:60.0:2026-10-04",
+     "idempotency_key": "opening-inv:fbd7eb93-d934-4390-ad49-ab699ff1ac87:p:42.0:2026-10-04",
      "metadata": {
       "trigger": "opening_inventory.auto"
      },
      "source": "auto_je",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
@@ -6412,53 +6412,53 @@
       ],
       "inputs": [
        {
-        "item_id": "item:5b1d1d13-bd71-44a9-993e-5170fcc99776",
+        "item_id": "item:080a3dbc-10f4-47a6-a923-3f7257acb4f4",
         "quantity": 5.0
        }
       ],
       "order_type": "assembly"
      },
-     "entity_id": "mfg:8e694272-59dc-44cb-9103-26affc7f7071",
+     "entity_id": "mfg:bdbf6cfd-0b66-4ed3-83f2-74551b03978e",
      "entity_type": "mfg_order",
      "event_type": "mfg.order.created",
-     "idempotency_key": "47497bf3-3b7f-425b-86b3-80b13953a05f",
+     "idempotency_key": "95d8d4e9-2f46-4e1d-a49d-513a2036d1a7",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
      "data": {
       "quantity_consumed": 5.0
      },
-     "entity_id": "item:5b1d1d13-bd71-44a9-993e-5170fcc99776",
+     "entity_id": "item:080a3dbc-10f4-47a6-a923-3f7257acb4f4",
      "entity_type": "item",
      "event_type": "item.consumed",
-     "idempotency_key": "500a1838-16ad-4fe5-a642-f6a0aaf84054",
+     "idempotency_key": "6892f9c9-0617-46e0-b77f-6767ef8c40f5",
      "metadata": {
-      "manufacturing_order_id": "mfg:8e694272-59dc-44cb-9103-26affc7f7071"
+      "manufacturing_order_id": "mfg:bdbf6cfd-0b66-4ed3-83f2-74551b03978e"
      },
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
      "data": {
-      "issued_by": "32911afc-c215-4aff-8ba8-a26a989a2ee0",
+      "issued_by": "a075f232-b8aa-4b55-9b06-9b218212da2c",
       "items": [
        {
-        "item_id": "item:5b1d1d13-bd71-44a9-993e-5170fcc99776",
+        "item_id": "item:080a3dbc-10f4-47a6-a923-3f7257acb4f4",
         "quantity": 5.0
        }
       ]
      },
-     "entity_id": "mfg:8e694272-59dc-44cb-9103-26affc7f7071",
+     "entity_id": "mfg:bdbf6cfd-0b66-4ed3-83f2-74551b03978e",
      "entity_type": "mfg_order",
      "event_type": "mfg.order.issued",
-     "idempotency_key": "3a565df7-1c3f-45b3-a6af-8a3d67646a21",
+     "idempotency_key": "906cb49e-8f8b-4961-be70-8b953a42a26d",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
@@ -6473,53 +6473,53 @@
       ],
       "inputs": [
        {
-        "item_id": "item:75186adb-ebb9-46c9-b0c1-3a9180700353",
+        "item_id": "item:6900b589-7431-4724-bbd1-742a1f1a2737",
         "quantity": 5.0
        }
       ],
       "order_type": "assembly"
      },
-     "entity_id": "mfg:22dd3caa-61ca-4045-990d-175c66d379df",
+     "entity_id": "mfg:2c1a4703-edf6-4ced-93cb-95d498f66542",
      "entity_type": "mfg_order",
      "event_type": "mfg.order.created",
-     "idempotency_key": "02c1871a-905d-496d-98df-02859639d3bb",
+     "idempotency_key": "5f0f12c8-0618-4a7a-bacf-3a52459eecb6",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
      "data": {
       "quantity_consumed": 5.0
      },
-     "entity_id": "item:75186adb-ebb9-46c9-b0c1-3a9180700353",
+     "entity_id": "item:6900b589-7431-4724-bbd1-742a1f1a2737",
      "entity_type": "item",
      "event_type": "item.consumed",
-     "idempotency_key": "e096ef9e-bc3a-4d0e-a1b5-4bef3306f6e4",
+     "idempotency_key": "ac61d598-b786-4070-9f35-a86c394e4bc8",
      "metadata": {
-      "manufacturing_order_id": "mfg:22dd3caa-61ca-4045-990d-175c66d379df"
+      "manufacturing_order_id": "mfg:2c1a4703-edf6-4ced-93cb-95d498f66542"
      },
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
      "data": {
-      "issued_by": "32911afc-c215-4aff-8ba8-a26a989a2ee0",
+      "issued_by": "a075f232-b8aa-4b55-9b06-9b218212da2c",
       "items": [
        {
-        "item_id": "item:75186adb-ebb9-46c9-b0c1-3a9180700353",
+        "item_id": "item:6900b589-7431-4724-bbd1-742a1f1a2737",
         "quantity": 5.0
        }
       ]
      },
-     "entity_id": "mfg:22dd3caa-61ca-4045-990d-175c66d379df",
+     "entity_id": "mfg:2c1a4703-edf6-4ced-93cb-95d498f66542",
      "entity_type": "mfg_order",
      "event_type": "mfg.order.issued",
-     "idempotency_key": "c8d891e4-b112-40c2-a36f-109bed315125",
+     "idempotency_key": "cf78ff40-5bb5-4e77-87f5-e5c0a7c06838",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
@@ -6534,72 +6534,72 @@
       ],
       "inputs": [
        {
-        "item_id": "item:597d2265-8bc8-4de8-b1e6-6061870ba38c",
+        "item_id": "item:e683a1cb-9eac-4503-a48c-5518def54862",
         "quantity": 1.0
        }
       ],
       "order_type": "assembly"
      },
-     "entity_id": "mfg:36d2138b-71f0-46aa-bea7-c081abbffaa5",
+     "entity_id": "mfg:c1d167fb-0d6a-413a-9c86-20bc8c9d5b36",
      "entity_type": "mfg_order",
      "event_type": "mfg.order.created",
-     "idempotency_key": "4869687f-9bf1-42db-8750-de5b9f4b7399",
+     "idempotency_key": "f56e2fe4-6623-4255-847f-d8d6c661bc86",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
      "data": {
       "quantity_consumed": 1.0
      },
-     "entity_id": "item:597d2265-8bc8-4de8-b1e6-6061870ba38c",
+     "entity_id": "item:e683a1cb-9eac-4503-a48c-5518def54862",
      "entity_type": "item",
      "event_type": "item.consumed",
-     "idempotency_key": "0375d873-d4dd-4c50-ae9f-23c82efae407",
+     "idempotency_key": "a77f45b6-c4d5-426d-ab70-dfb66dfd7cf1",
      "metadata": {
-      "manufacturing_order_id": "mfg:36d2138b-71f0-46aa-bea7-c081abbffaa5"
+      "manufacturing_order_id": "mfg:c1d167fb-0d6a-413a-9c86-20bc8c9d5b36"
      },
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
      "data": {
       "quantity_consumed": 2.0
      },
-     "entity_id": "item:b91225c4-f8ec-47ca-a830-715d8977e2d9",
+     "entity_id": "item:fa5a3208-4d35-400e-895c-6eb641bec2ca",
      "entity_type": "item",
      "event_type": "item.consumed",
-     "idempotency_key": "8a87c0d9-30b5-4828-ad3c-45cb4c0c5707",
+     "idempotency_key": "9e75f27f-5aaf-4e19-aeb4-901376170239",
      "metadata": {
-      "manufacturing_order_id": "mfg:36d2138b-71f0-46aa-bea7-c081abbffaa5"
+      "manufacturing_order_id": "mfg:c1d167fb-0d6a-413a-9c86-20bc8c9d5b36"
      },
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
      "data": {
-      "issued_by": "32911afc-c215-4aff-8ba8-a26a989a2ee0",
+      "issued_by": "a075f232-b8aa-4b55-9b06-9b218212da2c",
       "items": [
        {
-        "item_id": "item:597d2265-8bc8-4de8-b1e6-6061870ba38c",
+        "item_id": "item:e683a1cb-9eac-4503-a48c-5518def54862",
         "quantity": 1.0
        },
        {
-        "item_id": "item:b91225c4-f8ec-47ca-a830-715d8977e2d9",
+        "item_id": "item:fa5a3208-4d35-400e-895c-6eb641bec2ca",
         "quantity": 2.0
        }
       ]
      },
-     "entity_id": "mfg:36d2138b-71f0-46aa-bea7-c081abbffaa5",
+     "entity_id": "mfg:c1d167fb-0d6a-413a-9c86-20bc8c9d5b36",
      "entity_type": "mfg_order",
      "event_type": "mfg.order.issued",
-     "idempotency_key": "bb48421d-2d97-4da6-a012-ed641ce4384d",
+     "idempotency_key": "9795a8a5-566c-47ee-8fdf-b4fcf8313f8f",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
@@ -6614,123 +6614,127 @@
       ],
       "inputs": [
        {
-        "item_id": "item:ee8e6c08-1996-41ab-b8c9-c1c27272fdde",
-        "quantity": 5.0
+        "item_id": "item:67032348-8867-41eb-9e36-c694c94c53f9",
+        "quantity": 7.0
        }
       ],
       "order_type": "assembly"
      },
-     "entity_id": "mfg:cafe8ed5-6fb4-4653-9532-2dc6aab31335",
+     "entity_id": "mfg:4de52921-f2a3-40bf-9f51-7e5f078d21e0",
      "entity_type": "mfg_order",
      "event_type": "mfg.order.created",
-     "idempotency_key": "5d8b17c9-137b-4a47-a43c-32b2cd87c7ba",
+     "idempotency_key": "d7cc2b89-2a22-42db-a91d-e607bcdaa00d",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
      "data": {
       "quantity_consumed": 2.0
      },
-     "entity_id": "item:ee8e6c08-1996-41ab-b8c9-c1c27272fdde",
+     "entity_id": "item:67032348-8867-41eb-9e36-c694c94c53f9",
      "entity_type": "item",
      "event_type": "item.consumed",
-     "idempotency_key": "2f6bdff7-51d1-4312-be09-220b3d74a2df",
+     "idempotency_key": "672bd205-7e0c-4a21-a253-b3f11436b3e9",
      "metadata": {
-      "manufacturing_order_id": "mfg:cafe8ed5-6fb4-4653-9532-2dc6aab31335"
+      "manufacturing_order_id": "mfg:4de52921-f2a3-40bf-9f51-7e5f078d21e0"
      },
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
      "data": {
-      "issued_by": "32911afc-c215-4aff-8ba8-a26a989a2ee0",
+      "issued_by": "a075f232-b8aa-4b55-9b06-9b218212da2c",
       "items": [
        {
-        "item_id": "item:ee8e6c08-1996-41ab-b8c9-c1c27272fdde",
+        "item_id": "item:67032348-8867-41eb-9e36-c694c94c53f9",
         "quantity": 2.0
        }
       ]
      },
-     "entity_id": "mfg:cafe8ed5-6fb4-4653-9532-2dc6aab31335",
+     "entity_id": "mfg:4de52921-f2a3-40bf-9f51-7e5f078d21e0",
      "entity_type": "mfg_order",
      "event_type": "mfg.order.issued",
-     "idempotency_key": "1ff18dbd-29b8-4a62-b0d7-4273780a91c4",
+     "idempotency_key": "cfb20fa4-770c-42b4-ae61-8940a57a36f4",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
      "data": {
       "quantity_consumed": 3.0
      },
-     "entity_id": "item:ee8e6c08-1996-41ab-b8c9-c1c27272fdde",
+     "entity_id": "item:67032348-8867-41eb-9e36-c694c94c53f9",
      "entity_type": "item",
      "event_type": "item.consumed",
-     "idempotency_key": "1fcf3792-7b51-4c95-a41c-2c7bef4d6793",
+     "idempotency_key": "50069f78-a30b-467d-bcff-5638773dcf59",
      "metadata": {
-      "manufacturing_order_id": "mfg:cafe8ed5-6fb4-4653-9532-2dc6aab31335"
+      "manufacturing_order_id": "mfg:4de52921-f2a3-40bf-9f51-7e5f078d21e0"
      },
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     },
     {
      "actor": true,
      "data": {
-      "issued_by": "32911afc-c215-4aff-8ba8-a26a989a2ee0",
+      "issued_by": "a075f232-b8aa-4b55-9b06-9b218212da2c",
       "items": [
        {
-        "item_id": "item:ee8e6c08-1996-41ab-b8c9-c1c27272fdde",
+        "item_id": "item:67032348-8867-41eb-9e36-c694c94c53f9",
         "quantity": 3.0
        }
       ]
      },
-     "entity_id": "mfg:cafe8ed5-6fb4-4653-9532-2dc6aab31335",
+     "entity_id": "mfg:4de52921-f2a3-40bf-9f51-7e5f078d21e0",
      "entity_type": "mfg_order",
      "event_type": "mfg.order.issued",
-     "idempotency_key": "5fbe3769-e497-4cc6-9dbd-3a6bbc383d51",
+     "idempotency_key": "f4ea4948-799a-47fc-a4b4-87dc8aea72b5",
      "metadata": {},
      "source": "api",
-     "ts": "2026-10-04T09:32:06.386659+00:00"
+     "ts": "2026-10-04T11:43:30.848342+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "quantity_consumed": 2.0
+     },
+     "entity_id": "item:67032348-8867-41eb-9e36-c694c94c53f9",
+     "entity_type": "item",
+     "event_type": "item.consumed",
+     "idempotency_key": "444e2c87-a7b2-4da7-baf2-2ce5b246fe3a",
+     "metadata": {
+      "manufacturing_order_id": "mfg:4de52921-f2a3-40bf-9f51-7e5f078d21e0"
+     },
+     "source": "api",
+     "ts": "2026-10-04T11:43:30.848342+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "issued_by": "a075f232-b8aa-4b55-9b06-9b218212da2c",
+      "items": [
+       {
+        "item_id": "item:67032348-8867-41eb-9e36-c694c94c53f9",
+        "quantity": 2.0
+       }
+      ]
+     },
+     "entity_id": "mfg:4de52921-f2a3-40bf-9f51-7e5f078d21e0",
+     "entity_type": "mfg_order",
+     "event_type": "mfg.order.issued",
+     "idempotency_key": "29949c32-5d1a-42ed-9d78-e019ae5d0f96",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T11:43:30.848342+00:00"
     }
    ],
    "projections": [
     {
-     "created_at": "2026-10-04T09:32:06.970028+00:00",
-     "entity_id": "item:597d2265-8bc8-4de8-b1e6-6061870ba38c",
-     "entity_type": "item",
-     "expires_at": null,
-     "is_available": null,
-     "is_expired": null,
-     "is_in_production": null,
-     "is_on_marketplace": null,
-     "is_on_memo": null,
-     "is_sync_to_shopify": null,
-     "state": {
-      "allow_splitting": true,
-      "attributes": {},
-      "cost_base": 9.0,
-      "cost_landed": 0.0,
-      "cost_total": 9.0,
-      "inventory_type": "stocked",
-      "name": "Lot",
-      "purchase_conversion_factor": 1,
-      "purchase_unit": "piece",
-      "quantity": 9.0,
-      "sell_by": "piece",
-      "sku": "COMP-A",
-      "status": "available",
-      "tax_codes": []
-     },
-     "updated_at": "2026-10-04T09:32:07.114507+00:00",
-     "version": 55
-    },
-    {
-     "created_at": "2026-10-04T09:32:06.873356+00:00",
-     "entity_id": "item:5b1d1d13-bd71-44a9-993e-5170fcc99776",
+     "created_at": "2026-10-04T11:43:30.972464+00:00",
+     "entity_id": "item:080a3dbc-10f4-47a6-a923-3f7257acb4f4",
      "entity_type": "item",
      "expires_at": null,
      "is_available": null,
@@ -6753,12 +6757,40 @@
       "status": "available",
       "tax_codes": []
      },
-     "updated_at": "2026-10-04T09:32:07.045392+00:00",
-     "version": 49
+     "updated_at": "2026-10-04T11:43:31.208117+00:00",
+     "version": 14
     },
     {
-     "created_at": "2026-10-04T09:32:06.897028+00:00",
-     "entity_id": "item:75186adb-ebb9-46c9-b0c1-3a9180700353",
+     "created_at": "2026-10-04T11:43:31.059255+00:00",
+     "entity_id": "item:67032348-8867-41eb-9e36-c694c94c53f9",
+     "entity_type": "item",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "allow_splitting": true,
+      "attributes": {},
+      "cost_price": 3.0,
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "purchase_conversion_factor": 1,
+      "purchase_unit": "piece",
+      "quantity": 0.0,
+      "sell_by": "piece",
+      "sku": "COMP-F",
+      "status": "available",
+      "tax_codes": []
+     },
+     "updated_at": "2026-10-04T11:43:31.342967+00:00",
+     "version": 28
+    },
+    {
+     "created_at": "2026-10-04T11:43:31.018434+00:00",
+     "entity_id": "item:6900b589-7431-4724-bbd1-742a1f1a2737",
      "entity_type": "item",
      "expires_at": null,
      "is_available": null,
@@ -6783,12 +6815,42 @@
       "status": "available",
       "tax_codes": []
      },
-     "updated_at": "2026-10-04T09:32:07.077838+00:00",
-     "version": 52
+     "updated_at": "2026-10-04T11:43:31.240992+00:00",
+     "version": 17
     },
     {
-     "created_at": "2026-10-04T09:32:06.950317+00:00",
-     "entity_id": "item:b91225c4-f8ec-47ca-a830-715d8977e2d9",
+     "created_at": "2026-10-04T11:43:31.135155+00:00",
+     "entity_id": "item:e683a1cb-9eac-4503-a48c-5518def54862",
+     "entity_type": "item",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "allow_splitting": true,
+      "attributes": {},
+      "cost_base": 9.0,
+      "cost_landed": 0.0,
+      "cost_total": 9.0,
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "purchase_conversion_factor": 1,
+      "purchase_unit": "piece",
+      "quantity": 9.0,
+      "sell_by": "piece",
+      "sku": "COMP-A",
+      "status": "available",
+      "tax_codes": []
+     },
+     "updated_at": "2026-10-04T11:43:31.273576+00:00",
+     "version": 20
+    },
+    {
+     "created_at": "2026-10-04T11:43:31.100819+00:00",
+     "entity_id": "item:fa5a3208-4d35-400e-895c-6eb641bec2ca",
      "entity_type": "item",
      "expires_at": null,
      "is_available": null,
@@ -6813,42 +6875,12 @@
       "status": "available",
       "tax_codes": []
      },
-     "updated_at": "2026-10-04T09:32:07.120053+00:00",
-     "version": 56
+     "updated_at": "2026-10-04T11:43:31.277788+00:00",
+     "version": 21
     },
     {
-     "created_at": "2026-10-04T09:32:06.927104+00:00",
-     "entity_id": "item:ee8e6c08-1996-41ab-b8c9-c1c27272fdde",
-     "entity_type": "item",
-     "expires_at": null,
-     "is_available": null,
-     "is_expired": null,
-     "is_in_production": null,
-     "is_on_marketplace": null,
-     "is_on_memo": null,
-     "is_sync_to_shopify": null,
-     "state": {
-      "allow_splitting": true,
-      "attributes": {},
-      "cost_base": 15.0,
-      "cost_landed": 0.0,
-      "cost_total": 15.0,
-      "inventory_type": "stocked",
-      "name": "Lot",
-      "purchase_conversion_factor": 1,
-      "purchase_unit": "piece",
-      "quantity": 5.0,
-      "sell_by": "piece",
-      "sku": "COMP-F",
-      "status": "available",
-      "tax_codes": []
-     },
-     "updated_at": "2026-10-04T09:32:07.161804+00:00",
-     "version": 61
-    },
-    {
-     "created_at": "2026-10-04T09:32:06.988513+00:00",
-     "entity_id": "je:auto:opening-inventory:e3c49c95-369d-41b3-89c5-206780c9c3e1",
+     "created_at": "2026-10-04T11:43:31.151464+00:00",
+     "entity_id": "je:auto:opening-inventory:fbd7eb93-d934-4390-ad49-ab699ff1ac87",
      "entity_type": "journal_entry",
      "expires_at": null,
      "is_available": null,
@@ -6863,11 +6895,11 @@
        {
         "account": "1130-OB",
         "credit": 0.0,
-        "debit": 60.0
+        "debit": 42.0
        },
        {
         "account": "3200",
-        "credit": 60.0,
+        "credit": 42.0,
         "debit": 0.0
        }
       ],
@@ -6875,12 +6907,12 @@
       "status": "posted",
       "ts": "2026-10-04"
      },
-     "updated_at": "2026-10-04T09:32:06.992339+00:00",
-     "version": 47
+     "updated_at": "2026-10-04T11:43:31.154336+00:00",
+     "version": 12
     },
     {
-     "created_at": "2026-10-04T09:32:07.061795+00:00",
-     "entity_id": "mfg:22dd3caa-61ca-4045-990d-175c66d379df",
+     "created_at": "2026-10-04T11:43:31.224971+00:00",
+     "entity_id": "mfg:2c1a4703-edf6-4ced-93cb-95d498f66542",
      "entity_type": "mfg_order",
      "expires_at": null,
      "is_available": null,
@@ -6903,7 +6935,7 @@
       "inputs": [
        {
         "issued_qty": 5.0,
-        "item_id": "item:75186adb-ebb9-46c9-b0c1-3a9180700353",
+        "item_id": "item:6900b589-7431-4724-bbd1-742a1f1a2737",
         "quantity": 5.0
        }
       ],
@@ -6913,12 +6945,12 @@
       "received_qty": 0.0,
       "status": "in_progress"
      },
-     "updated_at": "2026-10-04T09:32:07.086487+00:00",
-     "version": 53
+     "updated_at": "2026-10-04T11:43:31.244529+00:00",
+     "version": 18
     },
     {
-     "created_at": "2026-10-04T09:32:07.097317+00:00",
-     "entity_id": "mfg:36d2138b-71f0-46aa-bea7-c081abbffaa5",
+     "created_at": "2026-10-04T11:43:31.293380+00:00",
+     "entity_id": "mfg:4de52921-f2a3-40bf-9f51-7e5f078d21e0",
      "entity_type": "mfg_order",
      "expires_at": null,
      "is_available": null,
@@ -6929,7 +6961,7 @@
      "is_sync_to_shopify": null,
      "state": {
       "actual_outputs": [],
-      "description": "undeclared",
+      "description": "twice",
       "entity_type": "mfg_order",
       "expected_outputs": [
        {
@@ -6940,9 +6972,9 @@
       ],
       "inputs": [
        {
-        "issued_qty": 1.0,
-        "item_id": "item:597d2265-8bc8-4de8-b1e6-6061870ba38c",
-        "quantity": 1.0
+        "issued_qty": 7.0,
+        "item_id": "item:67032348-8867-41eb-9e36-c694c94c53f9",
+        "quantity": 7.0
        }
       ],
       "is_in_production": true,
@@ -6951,12 +6983,12 @@
       "received_qty": 0.0,
       "status": "in_progress"
      },
-     "updated_at": "2026-10-04T09:32:07.123488+00:00",
-     "version": 57
+     "updated_at": "2026-10-04T11:43:31.346338+00:00",
+     "version": 29
     },
     {
-     "created_at": "2026-10-04T09:32:07.022444+00:00",
-     "entity_id": "mfg:8e694272-59dc-44cb-9103-26affc7f7071",
+     "created_at": "2026-10-04T11:43:31.181239+00:00",
+     "entity_id": "mfg:bdbf6cfd-0b66-4ed3-83f2-74551b03978e",
      "entity_type": "mfg_order",
      "expires_at": null,
      "is_available": null,
@@ -6979,7 +7011,7 @@
       "inputs": [
        {
         "issued_qty": 5.0,
-        "item_id": "item:5b1d1d13-bd71-44a9-993e-5170fcc99776",
+        "item_id": "item:080a3dbc-10f4-47a6-a923-3f7257acb4f4",
         "quantity": 5.0
        }
       ],
@@ -6989,12 +7021,12 @@
       "received_qty": 0.0,
       "status": "in_progress"
      },
-     "updated_at": "2026-10-04T09:32:07.049153+00:00",
-     "version": 50
+     "updated_at": "2026-10-04T11:43:31.211943+00:00",
+     "version": 15
     },
     {
-     "created_at": "2026-10-04T09:32:07.133558+00:00",
-     "entity_id": "mfg:cafe8ed5-6fb4-4653-9532-2dc6aab31335",
+     "created_at": "2026-10-04T11:43:31.258692+00:00",
+     "entity_id": "mfg:c1d167fb-0d6a-413a-9c86-20bc8c9d5b36",
      "entity_type": "mfg_order",
      "expires_at": null,
      "is_available": null,
@@ -7005,7 +7037,7 @@
      "is_sync_to_shopify": null,
      "state": {
       "actual_outputs": [],
-      "description": "twice",
+      "description": "undeclared",
       "entity_type": "mfg_order",
       "expected_outputs": [
        {
@@ -7016,9 +7048,9 @@
       ],
       "inputs": [
        {
-        "issued_qty": 5.0,
-        "item_id": "item:ee8e6c08-1996-41ab-b8c9-c1c27272fdde",
-        "quantity": 5.0
+        "issued_qty": 1.0,
+        "item_id": "item:e683a1cb-9eac-4503-a48c-5518def54862",
+        "quantity": 1.0
        }
       ],
       "is_in_production": true,
@@ -7027,17 +7059,17 @@
       "received_qty": 0.0,
       "status": "in_progress"
      },
-     "updated_at": "2026-10-04T09:32:07.164387+00:00",
-     "version": 62
+     "updated_at": "2026-10-04T11:43:31.281474+00:00",
+     "version": 22
     }
    ],
    "runs": {
-    "none_on_hand": "mfg:22dd3caa-61ca-4045-990d-175c66d379df",
-    "short": "mfg:8e694272-59dc-44cb-9103-26affc7f7071",
-    "twice": "mfg:cafe8ed5-6fb4-4653-9532-2dc6aab31335",
-    "undeclared": "mfg:36d2138b-71f0-46aa-bea7-c081abbffaa5"
+    "none_on_hand": "mfg:2c1a4703-edf6-4ced-93cb-95d498f66542",
+    "short": "mfg:bdbf6cfd-0b66-4ed3-83f2-74551b03978e",
+    "twice": "mfg:4de52921-f2a3-40bf-9f51-7e5f078d21e0",
+    "undeclared": "mfg:c1d167fb-0d6a-413a-9c86-20bc8c9d5b36"
    },
-   "user_id": "32911afc-c215-4aff-8ba8-a26a989a2ee0"
+   "user_id": "a075f232-b8aa-4b55-9b06-9b218212da2c"
   }
  },
  "release": "1.1.19.dev158"

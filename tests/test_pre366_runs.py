@@ -355,10 +355,12 @@ async def test_a_component_issued_without_being_listed_is_held_and_returned_exac
 async def test_issues_of_one_component_add_up(client, session):
     old = await pre366.upgraded(session, "shortage")
     state = await _state(session, old, "twice")
-    assert _held(state, old["items"]["F"]) == (5.0, Decimal("15")), state
-    assert Decimal(state["wip_issued"]) == Decimal("15"), state
+    # Asked 2, 3 and 2 with 4 on hand at 3 each: 2, then 2 of the 3, then none left the shelf.
+    assert _held(state, old["items"]["F"]) == (4.0, Decimal("12")), state
+    assert _outstanding(state, old["items"]["F"]) == 3.0 and Decimal(state["wip_issued"]) == Decimal("12"), state
+    assert await _stock(session, old, "F") == (0.0, 0)
     await _books(session, old)
-    await _unwinds(client, session, old, "twice", {"F": (5.0, Decimal("15"))})
+    await _unwinds(client, session, old, "twice", {"F": (4.0, Decimal("12"))})
 
 
 # Runs an older release stored without exactly one product expected at a quantity above zero

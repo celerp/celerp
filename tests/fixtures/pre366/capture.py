@@ -183,7 +183,7 @@ async def _shortage(client, session):
     h = auth["headers"]
     d = await _item(client, auth, 8.0, qty=2, sku="COMP-D")      # 2 on hand at 4
     e = await _item(client, auth, 0.0, qty=0, sku="COMP-E")      # none on hand
-    f = await _item(client, auth, 30.0, qty=10, sku="COMP-F")    # 10 at 3
+    f = await _item(client, auth, 12.0, qty=4, sku="COMP-F")     # 4 at 3
     c = await _item(client, auth, 12.0, qty=6, sku="COMP-C")     # 6 at 2
     a = await _item(client, auth, 10.0, qty=10, sku="COMP-A")    # 10 at 1
     await _balance_sheet(client, auth)
@@ -194,8 +194,9 @@ async def _shortage(client, session):
         "undeclared": await _generic(client, h, "undeclared", [{"item_id": a, "quantity": 1}], out,
                                      issue=[{"item_id": a, "quantity": 1}, {"item_id": c, "quantity": 2}]),
     }
-    oid = await _generic(client, h, "twice", [{"item_id": f, "quantity": 5}], out, issue=[{"item_id": f, "quantity": 2}])
-    await _ok(await client.post(f"/manufacturing/{oid}/issue", headers=h, json={"items": [{"item_id": f, "quantity": 3}]}))
+    oid = await _generic(client, h, "twice", [{"item_id": f, "quantity": 7}], out, issue=[{"item_id": f, "quantity": 2}])
+    for qty in (3, 2):  # 2 of the 3 left the shelf, then none of the 2
+        await _ok(await client.post(f"/manufacturing/{oid}/issue", headers=h, json={"items": [{"item_id": f, "quantity": qty}]}))
     runs["twice"] = oid
     return await _dump(session, auth, {"A": a, "C": c, "D": d, "E": e, "F": f}, runs)
 
