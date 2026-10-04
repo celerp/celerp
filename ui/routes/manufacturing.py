@@ -379,7 +379,7 @@ def _reconcile_panel(run_id: str, needs: dict, accounts: list[dict], *, key: str
     """The on-page form recording what a run needing reconciliation holds: a value per component
     still in the run and, when the books are kept, the account that value comes off."""
     flash_el = Div(flash, cls=f"flash flash--{kind}", role="status") if flash else ""
-    if kind == "success":
+    if kind == "success" and not needs:
         return Div(flash_el, id="reconcile-panel", cls="detail-card recipe-block")
     if not needs.get("reason"):
         return Div(flash_el, P(t("mfg.not_unresolved"), cls="hint"),
@@ -398,6 +398,15 @@ def _reconcile_panel(run_id: str, needs: dict, accounts: list[dict], *, key: str
         Thead(Tr(Th(t("th.item")), Th(t("th.value"), cls="cell--number"))),
         Tbody(*rows), cls="data-table",
     ) if rows else P(t("manufacturing.reconcile_nothing_held"), cls="hint")
+    unlotted = float(needs.get("unlotted") or 0)
+    discard = Form(
+        P(t("manufacturing.reconcile_unlotted", qty=f"{unlotted:g}"), cls="hint"),
+        Input(type="hidden", name="idempotency_key", value=key),
+        Div(Button(t("manufacturing.reconcile_discard"), type="submit", cls="btn btn--secondary"),
+            cls="form-actions"),
+        hx_post=f"/manufacturing/runs/{run_id}/repair-output", hx_target="#reconcile-panel",
+        hx_swap="outerHTML", hx_disabled_elt="find button",
+    ) if unlotted > 0 else ""
     received = needs.get("received") or []
     output = P(t("manufacturing.reconcile_received", lots=", ".join(
         f"{r.get('sku') or r['lot_item_id']} ({r['quantity']:g})" for r in received)), cls="hint") if received else ""
@@ -411,6 +420,7 @@ def _reconcile_panel(run_id: str, needs: dict, accounts: list[dict], *, key: str
         flash_el,
         P(t("manufacturing.reconcile_intro", reason=t(_RECONCILE_REASONS[reason]) if reason in _RECONCILE_REASONS
             else reason), cls="hint"),
+        discard,
         output,
         Form(
             table, picker,
@@ -853,6 +863,30 @@ def setup_routes(app):
         except APIError:
             return Div(Div(refusal, cls="flash flash--error", role="status"), id="reconcile-panel", cls="detail-card recipe-block")
         return _reconcile_panel(run_id, needs, accounts, key=key, values=entered, account=account, flash=refusal)
+
+    @app.post("/manufacturing/runs/{run_id}/repair-output")
+    async def repair_output_submit(request: Request, run_id: str):
+        """Discard what an older release recorded as received without making any stock; on a
+        refusal keep the offer on the page and say why."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        key = str(form.get("idempotency_key") or "")
+        try:
+            await api.repair_mfg_output(token, run_id, idempotency_key=required_operation_key(form))
+            refusal, kind = t("manufacturing.reconcile_discarded"), "success"
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            refusal, kind = refusal_text(e.data or e.detail), "error"
+        try:
+            needs, accounts = await _reconcile_context(token, run_id)
+        except APIError:
+            return Div(Div(refusal, cls=f"flash flash--{kind}", role="status"), id="reconcile-panel",
+                       cls="detail-card recipe-block")
+        return _reconcile_panel(run_id, needs, accounts, key=uuid.uuid4().hex if kind == "success" else key,
+                                flash=refusal, kind=kind)
 
     @app.get("/manufacturing/runs/{run_id}/edit/{field}")
     async def run_field_edit(request: Request, run_id: str, field: str):

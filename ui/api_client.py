@@ -2005,6 +2005,13 @@ async def reconcile_mfg_order(token: str, order_id: str, data: dict, *, idempote
                                    json={**data, "idempotency_key": idempotency_key})).json()
 
 
+async def repair_mfg_output(token: str, order_id: str, *, idempotency_key: str) -> dict:
+    """Discard what an older release recorded as received from a run without making any stock."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/repair-output",
+                                   json={"idempotency_key": idempotency_key})).json()
+
+
 async def reopen_mfg_order(token: str, order_id: str, *, idempotency_key: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/manufacturing/{order_id}/reopen",

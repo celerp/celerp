@@ -1252,6 +1252,13 @@ async def _untracked_lots(session: AsyncSession, company_id, order_id: str, stat
     return found
 
 
+async def unlotted(session: AsyncSession, company_id, order_id: str, state: dict) -> float | None:
+    """What an older release recorded as received from a run without making a lot for it
+    (_untracked_lots). None when the lots' history cannot say."""
+    lots = await _untracked_lots(session, company_id, order_id, state)
+    return None if lots is None else round(_untracked_qty(state) - sum(r["quantity"] for r in lots), 9)
+
+
 async def legacy_output(session: AsyncSession, company_id, order_id: str, state: dict) -> list[dict] | None:
     """The output an older release received from a run before value was tracked
     (_untracked_lots). None when that history does not account for everything the run received."""
@@ -1280,9 +1287,8 @@ async def repair_output(session: AsyncSession, company_id, user_id, order_id: st
     run = await _run(op)
     _require_open(run.state, "repaired")
     state = run.state
-    lots = await _untracked_lots(session, company_id, order_id, state)
-    discarded = round(_untracked_qty(state) - sum(r["quantity"] for r in lots or []), 9)
-    if lots is None or discarded < -_EPS:
+    discarded = await unlotted(session, company_id, order_id, state)
+    if discarded is None or discarded < -_EPS:
         raise refuse(409, "output_unknown", "Output was received from this run, but its history does not show "
                      "which lots it went into, so what it received cannot be put right.")
     data: dict = {"discarded": max(discarded, 0.0), "repaired_by": str(op.user_id), "request": request}

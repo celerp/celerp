@@ -137,3 +137,41 @@ async def test_output_already_received_is_listed_so_the_value_given_is_the_whole
 
     assert r.status_code == 200, r.text
     assert "Output this run already received: CAKE (1)." in r.text
+
+
+UNLOTTED = {"reason": "received before tracking", "unlotted": 1.0, "components": [], "received": []}
+
+
+async def test_a_receipt_that_made_no_stock_is_offered_for_discarding(ui_client):
+    r = await _page(ui_client, needs=UNLOTTED)
+
+    assert r.status_code == 200, r.text
+    assert "recorded 1 as received without making any stock" in r.text
+    assert f'hx-post="/manufacturing/runs/{RUN["id"]}/repair-output"' in r.text
+    assert "Discard" in r.text
+    assert "repair-output" not in (await _page(ui_client)).text  # nothing to discard, nothing offered
+
+
+async def test_discarding_says_what_comes_next(ui_client):
+    repair = AsyncMock(return_value={"discarded": 1.0, "output_item_id": None})
+    a, b, c = _reading(needs=UNLOTTED)
+    with a, b, c, patch("ui.api_client.repair_mfg_output", new=repair):
+        r = await ui_client.post(f"/manufacturing/runs/{RUN['id']}/repair-output", content=b"idempotency_key=k2",
+                                 headers={"content-type": "application/x-www-form-urlencoded"}, cookies=_authed())
+
+    assert r.status_code == 200, r.text
+    assert repair.await_args.args[1:] == (RUN["id"],) and repair.await_args.kwargs == {"idempotency_key": "k2"}
+    assert "Discarded." in r.text
+
+
+async def test_a_refused_discard_says_why_and_keeps_the_offer(ui_client):
+    refused = {"message": "This run is cancelled, so it cannot be repaired.", "message_key": "mfg.run_closed",
+               "params": {"status": "cancelled"}}
+    a, b, c = _reading(needs=UNLOTTED)
+    with a, b, c, patch("ui.api_client.repair_mfg_output",
+                        new=AsyncMock(side_effect=APIError(409, refused["message"], refused))):
+        r = await ui_client.post(f"/manufacturing/runs/{RUN['id']}/repair-output", content=b"idempotency_key=k2",
+                                 headers={"content-type": "application/x-www-form-urlencoded"}, cookies=_authed())
+
+    assert r.status_code == 200, r.text
+    assert refused["message"] in r.text and "repair-output" in r.text

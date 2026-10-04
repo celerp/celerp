@@ -1839,13 +1839,15 @@ async def reconcile_needs(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Why a run needs reconciling, the components whose value reconciling it records, and the
-    output an older release already received from it, which takes its share of that value."""
+    """Why a run needs reconciling, the components whose value reconciling it records, the
+    output an older release already received from it, which takes its share of that value,
+    and the quantity it recorded as received without making any stock."""
     row = await _get_order(session, company_id, order_id)
     held = sorted(await movements.still_held(session, company_id, order_id, row.state))
     items = {i: await session.get(Projection, {"company_id": company_id, "entity_id": i}) for i in held}
     received = await movements.legacy_output(session, company_id, order_id, row.state) or []
     return {"reason": row.state.get("wip_unresolved"),
+            "unlotted": max(await movements.unlotted(session, company_id, order_id, row.state) or 0.0, 0.0),
             "components": [{"item_id": i, "sku": (r.state or {}).get("sku") if r else None,
                             "name": (r.state or {}).get("name") if r else None} for i, r in items.items()],
             "received": [{"lot_item_id": r["lot_item_id"], "quantity": r["quantity"], "value": str(r["value"]),

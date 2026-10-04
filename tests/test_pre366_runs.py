@@ -173,6 +173,13 @@ async def test_a_run_naming_no_product_cannot_go_ahead(client, session):
         assert await _state(session, old, run) == state and await _ledger(session, old) == count
 
 
+async def test_reconciling_says_what_a_run_recorded_as_received_without_making_stock(client, session):
+    old = await pre366.upgraded(session, "generic")
+    needs = (await client.get(f"/manufacturing/{old['runs']['generic_received']}/reconcile",
+                              headers=old["headers"])).json()
+    assert needs["reason"] == "received before tracking" and needs["unlotted"] == 1.0, needs
+
+
 async def test_a_receipt_that_made_no_lot_is_discarded_and_the_run_unwinds(client, session):
     old = await pre366.upgraded(session, "generic")
     assert (await _state(session, old, "generic_received"))["wip_unresolved"] == "received before tracking"
