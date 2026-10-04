@@ -47,7 +47,7 @@ from pathlib import Path
 from celerp.modules.importer import PREMIUM_MARKER
 from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
 from celerp.modules.meta import META_FILENAME
-from celerp.modules.slots import register as register_slot, resolve_handler
+from celerp.modules.slots import SLOT_ACCESS, register as register_slot, resolve_handler
 from celerp.services.app_paths import is_app_local_path
 from celerp.services.permissions import is_permission_key
 
@@ -757,6 +757,13 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
     return list(_loaded)
 
 
+def _evict_module(pkg_name: str) -> None:
+    """Drop a refused module and its submodules from sys.modules."""
+    for key in list(sys.modules.keys()):
+        if key == pkg_name or key.startswith(pkg_name + "."):
+            sys.modules.pop(key, None)
+
+
 def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict | None:
     """Import a single module package and register its slots.
 
@@ -813,9 +820,7 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
                 "See %s and %s",
                 pkg_name, violation_list, _BSL_DOCS_URL, _MODULE_AI_API_URL,
             )
-            for key in list(sys.modules.keys()):
-                if key == pkg_name or key.startswith(pkg_name + "."):
-                    sys.modules.pop(key, None)
+            _evict_module(pkg_name)
             raise ModuleLoadError(
                 f"Module {pkg_name!r} imports protected BSL internals "
                 f"({violation_list}).\n\n"
@@ -861,9 +866,7 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
                 "See %s and %s",
                 pkg_name, violation_list, _BSL_DOCS_URL, _MODULE_AI_API_URL,
             )
-            for key in list(sys.modules.keys()):
-                if key == pkg_name or key.startswith(pkg_name + "."):
-                    sys.modules.pop(key, None)
+            _evict_module(pkg_name)
             raise ModuleLoadError(
                 f"Module {pkg_name!r} has lazy imports of protected BSL internals "
                 f"({violation_list}) in route files.\n\n"
@@ -877,62 +880,17 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
 
     slots_manifest = manifest.get("slots") or {}
 
-    # A slot item naming a permission key outside the registry would KeyError in
-    # the sidebar builder on every page render, taking the whole UI down for
-    # every user. Refuse the module here, with the bad key named, instead. The
-    # search_provider slot has its own stricter validation below (which also
-    # checks its permission), so it is skipped here.
-    for slot_name, contribution in slots_manifest.items():
-        if slot_name == _SEARCH_PROVIDER_SLOT:
-            continue
-        items = contribution if isinstance(contribution, list) else [contribution]
-        for item in items:
-            perm = item.get("permission") if isinstance(item, dict) else None
-            if perm and not is_permission_key(perm):
-                log.error(
-                    "Module %r rejected: slot %r names unknown permission key %r",
-                    pkg_name, slot_name, perm,
-                )
-                for key in list(sys.modules.keys()):
-                    if key == pkg_name or key.startswith(pkg_name + "."):
-                        sys.modules.pop(key, None)
-                raise ModuleLoadError(
-                    f"Slot {slot_name!r} names unknown permission key {perm!r}. "
-                    f"Permission keys come from Celerp's own registry; pick the "
-                    f"closest existing key."
-                )
-
-    # A malformed item or pricing action would render a broken link, or one leading
-    # out of Celerp, on every item page; refuse the module with the reason instead.
-    for slot_name, validate in _LINK_SLOT_VALIDATORS.items():
-        if slots_manifest.get(slot_name) is None:
-            continue
-        try:
-            validate(slots_manifest[slot_name])
-        except ModuleLoadError:
-            log.error("Module %r rejected: invalid %s slot", pkg_name, slot_name)
-            for key in list(sys.modules.keys()):
-                if key == pkg_name or key.startswith(pkg_name + "."):
-                    sys.modules.pop(key, None)
-            raise
-
-    # Validate the search_provider descriptor and resolve its handler BEFORE any
-    # slot is registered, so a broken provider rejects the whole module cleanly
-    # (no half-registered slots) rather than first surfacing as a degraded source
-    # when a user types into search.
-    prepared_search_provider = None
-    if _SEARCH_PROVIDER_SLOT in slots_manifest:
-        try:
-            prepared_search_provider = _prepare_search_provider(
-                pkg_name, pkg_path, slots_manifest[_SEARCH_PROVIDER_SLOT],
-                trusted=trusted,
-            )
-        except ModuleLoadError:
-            log.error("Module %r rejected: invalid search_provider slot", pkg_name)
-            for key in list(sys.modules.keys()):
-                if key == pkg_name or key.startswith(pkg_name + "."):
-                    sys.modules.pop(key, None)
-            raise
+    # Check every slot entry BEFORE any is registered, so a module with one bad
+    # entry is refused whole (no half-registered slots) with the reason named,
+    # instead of first surfacing as a broken page, a link out of Celerp, an entry
+    # shown to every role, or a hook bound to code the module does not own.
+    try:
+        prepared_search_provider = _validate_slots(
+            pkg_name, pkg_path, slots_manifest, trusted=trusted)
+    except ModuleLoadError:
+        log.error("Module %r rejected: invalid slots", pkg_name)
+        _evict_module(pkg_name)
+        raise
 
     # Register extension slots (search_provider is registered from its prepared
     # descriptor below, never through the generic path).
@@ -1366,6 +1324,222 @@ def _handler_source_owned(
     return _enclosing_first_party_module(real, pkg_name) is not None
 
 
+# Slots whose entries name code core imports and calls: the entry key holding the
+# "module.path:function", and whether core awaits the call (True) or calls it
+# plainly (False). fire_lifecycle awaits the hooks and the search aggregator awaits
+# providers; the document page calls render(doc) and the projection engine calls
+# handler(state, event_type, data) without awaiting.
+_CALLABLE_SLOTS = {
+    _SEARCH_PROVIDER_SLOT: ("handler", True),
+    "doc_detail_actions": ("render", False),
+    "doc_detail_badges": ("render", False),
+    "on_company_created": ("handler", True),
+    "on_modules_ready": ("handler", True),
+    "doc_finalize_hook": ("handler", True),
+    "on_doc_payment": ("handler", True),
+    "projection_handler": ("handler", False),
+}
+# Entry keys naming a permission. Gating surfaces index the permission registry,
+# so a value outside it must never reach them.
+_PERMISSION_ENTRY_KEYS = ("permission", "write_permission")
+# Entry keys naming where a click goes, and whether the entry must carry the key.
+_DESTINATION_KEYS = {
+    "nav": {"href": False, "settings_href": False},
+    "bulk_action": {"form_action": True},
+}
+
+
+def _validate_projection_handler(contribution) -> None:
+    """Raise :class:`ModuleLoadError` unless every projection_handler entry names
+    the event-type prefix it handles."""
+    for item in contribution if isinstance(contribution, list) else [contribution]:
+        prefix = item.get("prefix")
+        if not isinstance(prefix, str) or not prefix:
+            raise ModuleLoadError(
+                "Slot 'projection_handler' needs a prefix: the event-type prefix it handles."
+            )
+
+
+# Per-slot checks beyond the generic entry rules.
+_SLOT_VALIDATORS = {
+    **_LINK_SLOT_VALIDATORS,
+    "projection_handler": _validate_projection_handler,
+}
+
+
+def _validate_slot_entry(slot: str, item) -> None:
+    """The rules every slot entry follows, whatever its slot.
+
+    Raise :class:`ModuleLoadError` unless ``item`` is a dict; carries no key
+    starting with "_" (those are set by the loader, e.g. _module); has a
+    "permission" / "write_permission", when present, that is a key from the
+    permission registry (a falsy or malformed value is refused, never read as
+    "ungated"); has a "requires_connector", when present, that is a non-empty
+    string; and has every destination its slot reads (_DESTINATION_KEYS) as an
+    app-local path, with the required ones present.
+    """
+    if not isinstance(item, dict):
+        raise ModuleLoadError(
+            f"Slot {slot!r} entries must be dicts, not {type(item).__name__}."
+        )
+    reserved = sorted(k for k in item if isinstance(k, str) and k.startswith("_"))
+    if reserved:
+        raise ModuleLoadError(
+            f"Slot {slot!r} entry key {reserved[0]!r} is reserved: keys starting "
+            f"with _ are set by Celerp's loader."
+        )
+    for key in _PERMISSION_ENTRY_KEYS:
+        if key in item and not is_permission_key(item[key]):
+            raise ModuleLoadError(
+                f"Slot {slot!r} {key} names unknown permission key {item[key]!r}. "
+                f"Permission keys come from Celerp's own registry; pick the "
+                f"closest existing key, or leave {key} out."
+            )
+    if "requires_connector" in item:
+        connector = item["requires_connector"]
+        if not isinstance(connector, str) or not connector:
+            raise ModuleLoadError(
+                f"Slot {slot!r} requires_connector must be a connector id, "
+                f"not {connector!r}."
+            )
+    for key, required in _DESTINATION_KEYS.get(slot, {}).items():
+        if key not in item:
+            if required:
+                raise ModuleLoadError(f"Slot {slot!r} needs a {key}.")
+            continue
+        if not is_app_local_path(item[key]):
+            raise ModuleLoadError(
+                f"Slot {slot!r} {key} {item[key]!r} must be a path inside Celerp: "
+                f"one leading /, never //, no backslash and no control character."
+            )
+
+
+def _validate_slots(
+    pkg_name: str, pkg_path: Path, slots_manifest, *, trusted: bool
+) -> dict | None:
+    """Check a module's whole ``slots`` manifest before anything is registered.
+
+    Per slot: an internal slot (celerp.modules.slots.SLOT_ACCESS) is refused to a
+    module that is not first-party; search_provider goes through its stricter
+    descriptor contract; every other entry follows the generic entry rules, has
+    its callable proven (_check_slot_callable) when the slot is callable, and
+    passes its slot's own validator. Returns the prepared search_provider
+    descriptor, or None. Raises :class:`ModuleLoadError` on any violation.
+    """
+    if not isinstance(slots_manifest, dict):
+        raise ModuleLoadError(
+            f"'slots' must be a dict of slot name to entries, "
+            f"not {type(slots_manifest).__name__}."
+        )
+    prepared = None
+    for slot_name, contribution in slots_manifest.items():
+        if SLOT_ACCESS.get(slot_name) == "internal" and not trusted:
+            public = sorted(s for s, access in SLOT_ACCESS.items() if access == "public")
+            raise ModuleLoadError(
+                f"Slot {slot_name!r} is internal to Celerp's own modules; a "
+                f"third-party module cannot fill it. The public slots are "
+                f"{', '.join(public)}."
+            )
+        if slot_name == _SEARCH_PROVIDER_SLOT:
+            prepared = _prepare_search_provider(
+                pkg_name, pkg_path, contribution, trusted=trusted)
+            continue
+        items = contribution if isinstance(contribution, list) else [contribution]
+        for item in items:
+            _validate_slot_entry(slot_name, item)
+            if slot_name in _CALLABLE_SLOTS:
+                key, awaited = _CALLABLE_SLOTS[slot_name]
+                _check_slot_callable(
+                    pkg_name, pkg_path, slot_name, item.get(key),
+                    awaited=awaited, trusted=trusted)
+        validate = _SLOT_VALIDATORS.get(slot_name)
+        if validate is not None:
+            validate(contribution)
+    return prepared
+
+
+def _check_slot_callable(
+    pkg_name: str, pkg_path: Path, slot: str, dotted, *, awaited: bool, trusted: bool
+) -> None:
+    """Prove at load time that ``dotted`` names a callable this module owns.
+
+    ``dotted`` must be "module.path:function" naming source inside this module's
+    own tree, must import no protected BSL internal (third-party only), and must
+    resolve to a callable that is async exactly when core awaits it. Provenance
+    is then proven on what importlib actually returned, not on the file that
+    matched the dotted path (_handler_source_owned). A slot entry that cannot pass
+    fails module load rather than first surfacing when core calls it. Raises
+    :class:`ModuleLoadError` on any violation.
+    """
+    if (not isinstance(dotted, str) or dotted.count(":") != 1
+            or not all(dotted.split(":"))):
+        raise ModuleLoadError(
+            f"Slot {slot!r} callable {dotted!r} must be 'module.path:function'."
+        )
+    module_path = dotted.split(":")[0]
+    # Local ownership: the callable must resolve to source inside this module's own
+    # tree, so a manifest can never point core at 'celerp.some_internal:fn' and
+    # have it imported on demand around the protected-import gate.
+    if _module_source_file(pkg_path, module_path) is None:
+        raise ModuleLoadError(
+            f"Slot {slot!r} callable {dotted!r} does not resolve to source inside "
+            f"module {pkg_name!r}."
+        )
+    # The callable is a lazily-imported entry point, so it goes through the same
+    # transitive protected-BSL scan as the route entry modules (third-party only).
+    if not trusted:
+        violations = _ast_scan_module_file(pkg_path, module_path)
+        if violations:
+            raise ModuleLoadError(
+                f"Slot {slot!r} callable {dotted!r} imports protected BSL "
+                f"internals ({', '.join(sorted(violations))})."
+            )
+    try:
+        func = resolve_handler(dotted)
+    except Exception as exc:
+        raise ModuleLoadError(
+            f"Slot {slot!r} callable {dotted!r} failed to resolve ({type(exc).__name__})."
+        )
+    if not callable(func):
+        raise ModuleLoadError(f"Slot {slot!r} callable {dotted!r} is not callable.")
+    if awaited and not inspect.iscoroutinefunction(func):
+        raise ModuleLoadError(
+            f"Slot {slot!r} callable {dotted!r} must be async; core awaits it."
+        )
+    if not awaited and inspect.iscoroutinefunction(func):
+        raise ModuleLoadError(
+            f"Slot {slot!r} callable {dotted!r} must not be async; core calls it "
+            f"without awaiting."
+        )
+    # Provenance: an on-disk file matching the dotted path is not proof of what
+    # importlib actually resolved. A decoy source shipped inside the module's own
+    # tree (e.g. a celerp/ai/service.py) satisfies the existence and AST checks
+    # above, yet importlib returns the already-loaded REAL core module of the same
+    # dotted name, binding the slot to arbitrary code. Require that BOTH the
+    # resolved module's file AND the callable's own source file be owned by this
+    # module (_handler_source_owned): under its own package root, or - for a
+    # content-verified first-party module only - inside the same first-party module
+    # (same lock name and digest) loaded from another root. realpath collapses
+    # symlinks and '..' so neither can point a proof outside the tree. This runs for
+    # every module: a first-party manifest whose callable resolves to core, or to a
+    # different module, is rejected exactly as an untrusted decoy is.
+    pkg_root = os.path.realpath(pkg_path)
+    try:
+        module_file = getattr(importlib.import_module(module_path), "__file__", None)
+        func_file = inspect.getsourcefile(inspect.unwrap(func))
+    except Exception as exc:
+        raise ModuleLoadError(
+            f"Slot {slot!r} callable {dotted!r} source could not be located "
+            f"({type(exc).__name__})."
+        )
+    for proof in (module_file, func_file):
+        if not _handler_source_owned(proof, pkg_root, pkg_name, trusted):
+            raise ModuleLoadError(
+                f"Slot {slot!r} callable {dotted!r} resolves to source outside "
+                f"module {pkg_name!r}'s own package tree."
+            )
+
+
 def _prepare_search_provider(
     pkg_name: str, pkg_path: Path, contribution, *, trusted: bool
 ) -> dict:
@@ -1376,12 +1550,10 @@ def _prepare_search_provider(
     bucket, so a module can never overwrite its own search bucket. The descriptor
     must carry exactly ``{handler, result_key, permission}`` (extra keys are
     rejected, never ignored, so a misspelling fails loudly); ``result_key`` is one
-    of ``{items, entries}``; ``permission`` is a known key. The handler
-    ``module:function`` must name source that lives inside this module's own tree,
-    must import no protected BSL internal (third-party only), and must resolve at
-    load to an async callable. A provider that cannot pass all of this fails
-    module load rather than first surfacing as a degraded source when a user types
-    into search. Raises :class:`ModuleLoadError` on any violation.
+    of ``{items, entries}``; ``permission`` is a known key. The handler goes
+    through the callable-slot proof every callable slot uses
+    (_check_slot_callable): in-module source, no protected import (third-party
+    only), async, provenance. Raises :class:`ModuleLoadError` on any violation.
     """
     if not isinstance(contribution, dict):
         raise ModuleLoadError(
@@ -1391,95 +1563,22 @@ def _prepare_search_provider(
     keys = set(contribution)
     if keys != set(_SEARCH_PROVIDER_KEYS):
         missing = sorted(_SEARCH_PROVIDER_KEYS - keys)
-        extra = sorted(keys - _SEARCH_PROVIDER_KEYS)
+        extra = sorted(keys - _SEARCH_PROVIDER_KEYS, key=repr)
         raise ModuleLoadError(
             f"Slot {_SEARCH_PROVIDER_SLOT!r} descriptor keys must be exactly "
             f"{sorted(_SEARCH_PROVIDER_KEYS)} (missing={missing}, extra={extra})."
         )
     result_key = contribution["result_key"]
-    if result_key not in _SEARCH_RESULT_KEYS:
+    if not isinstance(result_key, str) or result_key not in _SEARCH_RESULT_KEYS:
         raise ModuleLoadError(
             f"Slot {_SEARCH_PROVIDER_SLOT!r} result_key {result_key!r} must be one "
             f"of {sorted(_SEARCH_RESULT_KEYS)}."
         )
-    perm = contribution["permission"]
-    if not is_permission_key(perm):
-        raise ModuleLoadError(
-            f"Slot {_SEARCH_PROVIDER_SLOT!r} names unknown permission key {perm!r}."
-        )
-    handler_path = contribution["handler"]
-    if not isinstance(handler_path, str) or handler_path.count(":") != 1:
-        raise ModuleLoadError(
-            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} must be "
-            f"'module.path:function'."
-        )
-    module_path, func_name = handler_path.split(":", 1)
-    if not module_path or not func_name:
-        raise ModuleLoadError(
-            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} must name a "
-            f"non-empty module path and function."
-        )
-    # Local ownership: the handler must resolve to source inside this module's own
-    # tree, so a manifest can never point core at 'celerp.some_internal:fn' and
-    # have it imported on demand around the protected-import gate.
-    if _module_source_file(pkg_path, module_path) is None:
-        raise ModuleLoadError(
-            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} does not "
-            f"resolve to source inside module {pkg_name!r}."
-        )
-    # The handler is a lazily-imported entry point, so it goes through the same
-    # transitive protected-BSL scan as the route entry modules (third-party only).
-    if not trusted:
-        violations = _ast_scan_module_file(pkg_path, module_path)
-        if violations:
-            raise ModuleLoadError(
-                f"Slot {_SEARCH_PROVIDER_SLOT!r} handler imports protected BSL "
-                f"internals ({', '.join(sorted(violations))})."
-            )
-    try:
-        handler = resolve_handler(handler_path)
-    except Exception as exc:
-        raise ModuleLoadError(
-            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} failed to "
-            f"resolve ({type(exc).__name__})."
-        )
-    if not callable(handler):
-        raise ModuleLoadError(
-            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} is not callable."
-        )
-    if not inspect.iscoroutinefunction(handler):
-        raise ModuleLoadError(
-            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} must be async; "
-            f"the aggregator awaits it."
-        )
-    # Provenance: an on-disk file matching the dotted path is not proof of what
-    # importlib actually resolved. A decoy source shipped inside the module's own
-    # tree (e.g. a celerp/ai/service.py) satisfies the existence and AST checks
-    # above, yet importlib returns the already-loaded REAL core module of the same
-    # dotted name, binding the provider to arbitrary code. Require that BOTH the
-    # resolved module's file AND the handler's own source file be owned by this
-    # module (_handler_source_owned): under its own package root, or - for a
-    # content-verified first-party module only - inside the same first-party module
-    # (same lock name and digest) loaded from another root. realpath collapses
-    # symlinks and '..' so neither can point a proof outside the tree. This runs for
-    # every module: a first-party manifest whose handler resolves to core, or to a
-    # different module, is rejected exactly as an untrusted decoy is.
-    pkg_root = os.path.realpath(pkg_path)
-    try:
-        resolved_module = importlib.import_module(module_path)
-        module_file = getattr(resolved_module, "__file__", None)
-        handler_file = inspect.getsourcefile(inspect.unwrap(handler))
-    except Exception as exc:
-        raise ModuleLoadError(
-            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} source could "
-            f"not be located ({type(exc).__name__})."
-        )
-    for proof in (module_file, handler_file):
-        if not _handler_source_owned(proof, pkg_root, pkg_name, trusted):
-            raise ModuleLoadError(
-                f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} resolves to "
-                f"source outside module {pkg_name!r}'s own package tree."
-            )
+    _validate_slot_entry(_SEARCH_PROVIDER_SLOT, contribution)
+    key, awaited = _CALLABLE_SLOTS[_SEARCH_PROVIDER_SLOT]
+    _check_slot_callable(
+        pkg_name, pkg_path, _SEARCH_PROVIDER_SLOT, contribution[key],
+        awaited=awaited, trusted=trusted)
     # Runtime-owned trust metadata is injected AFTER the manifest contribution, and
     # the closed key set above already rejects a manifest that tries to supply
     # _module / _first_party itself, so neither can be spoofed.
