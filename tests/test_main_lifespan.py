@@ -12,6 +12,7 @@ and asserts boot survives and the session is rolled back.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -40,8 +41,10 @@ class _FakeSession:
         return False
 
 
+@contextmanager
 def _mock_db():
-    """Make celerp.main.lifecycle_engine.begin() a no-op (no real DDL at boot).
+    """Make celerp.main.lifecycle_engine.begin() a no-op (no real DDL at boot), and
+    the version fence, which joins through that engine's URL, a held no-op.
 
     Boot's create_all runs on the lifecycle engine, so that is the one to stub."""
     mock_conn = AsyncMock()
@@ -51,7 +54,10 @@ def _mock_db():
     mock_begin.__aexit__ = AsyncMock(return_value=False)
     mock_engine = MagicMock()
     mock_engine.begin = MagicMock(return_value=mock_begin)
-    return patch("celerp.main.lifecycle_engine", mock_engine)
+    mock_engine.url.render_as_string.return_value = "postgresql+asyncpg://celerp@localhost/mocked"
+    with patch("celerp.main.lifecycle_engine", mock_engine), \
+         patch("celerp.migrations.compatibility.Fence.join", return_value=MagicMock()):
+        yield
 
 
 @pytest.mark.asyncio
