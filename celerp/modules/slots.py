@@ -51,7 +51,8 @@ entry names resolves to the module's own code, async exactly where core awaits i
 
 item_action, pricing_action, doc_detail_actions, doc_detail_badges, bulk_action,
 send_to_targets and catalog_channel are shown only when the company has the
-contributing module switched on and the role holds the entry's "permission"
+contributing module switched on, the role holds the entry's "permission", and
+the company is connected to the entry's "requires_connector", if any
 (ui.module_slots); the sidebar applies the same permission rule to nav. Hiding is
 presentation: the route an entry leads to must still check the permission itself.
 
