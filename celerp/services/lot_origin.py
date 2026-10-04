@@ -339,11 +339,13 @@ async def _in_production(session: AsyncSession, company_id) -> Decimal:
     return total
 
 
-async def consumed_values(session: AsyncSession, company_id, marker: str,
-                          owners: set[str]) -> dict[str, dict[str, Decimal]]:
-    """Per owner, the value each lot gave up to the item.consumed events marked
-    ``marker`` == owner, in money: what the lot held just before each such event less what
-    it held just after, replayed from the lot's own events. History, never today's costs."""
+async def consumed_facts(session: AsyncSession, company_id, marker: str,
+                         owners: set[str]) -> dict[str, dict[str, tuple[float, Decimal]]]:
+    """Per owner, what each lot gave up to the item.consumed events marked ``marker`` ==
+    owner: the quantity that left it and the value, in money, that left with it. Each is what
+    the lot held just before such an event less what it held just after, replayed from the
+    lot's own events, so a request beyond the stock on hand counts only what was there.
+    History, never today's stock or costs."""
     from celerp.projections.engine import ProjectionEngine
 
     currency = (await current_settings(session, company_id)).get("currency", "USD")
@@ -351,7 +353,7 @@ async def consumed_values(session: AsyncSession, company_id, marker: str,
         LedgerEntry.company_id == company_id, LedgerEntry.entity_type == "item",
         LedgerEntry.event_type == "item.consumed"))).scalars().all()
     lots = sorted({e.entity_id for e in consumed if (e.metadata_ or {}).get(marker) in owners})
-    found: dict[str, dict[str, Decimal]] = {o: {} for o in owners}
+    found: dict[str, dict[str, tuple[float, Decimal]]] = {o: {} for o in owners}
     for lot in lots:
         row = await session.get(Projection, {"company_id": company_id, "entity_id": lot})
         flag = row.consignment_flag if row is not None else None
@@ -359,13 +361,15 @@ async def consumed_values(session: AsyncSession, company_id, marker: str,
         for e in (await session.execute(select(LedgerEntry).where(
                 LedgerEntry.company_id == company_id, LedgerEntry.entity_type == "item",
                 LedgerEntry.entity_id == lot).order_by(LedgerEntry.id))).scalars():
-            before = held_value(SimpleNamespace(state=state, consignment_flag=flag))
+            before = state
             state = ProjectionEngine._apply(state, e.event_type, e.data)
             owner = (e.metadata_ or {}).get(marker)
             if e.event_type == "item.consumed" and owner in owners:
-                after = held_value(SimpleNamespace(state=state, consignment_flag=flag))
-                moved = round_money(before or 0, currency) - round_money(after or 0, currency)
-                found[owner][lot] = found[owner].get(lot, Decimal("0")) + moved
+                held = [held_value(SimpleNamespace(state=s, consignment_flag=flag)) for s in (before, state)]
+                left = float(before.get("quantity") or 0) - float(state.get("quantity") or 0)
+                moved = round_money(held[0] or 0, currency) - round_money(held[1] or 0, currency)
+                qty, value = found[owner].get(lot, (0.0, Decimal("0")))
+                found[owner][lot] = (round(qty + left, 9), value + moved)
     return found
 
 

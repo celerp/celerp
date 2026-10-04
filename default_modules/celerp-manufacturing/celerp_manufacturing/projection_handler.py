@@ -25,12 +25,21 @@ def _add(current: dict, key: str, value) -> None:
     current[key] = _money(Decimal(current.get(key) or "0") + Decimal(str(value or 0)))
 
 
-def _issued_values(current: dict, data: dict) -> None:
-    """Each component's value as ``data["components"]`` records it, for the components it names."""
-    values = {c.get("item_id"): c.get("value") for c in data.get("components") or []}
+def _held(current: dict, data: dict) -> None:
+    """What the run holds is exactly ``data["components"]``: each component's quantity and value
+    go on its line, a component no positive line lists gets a line of its own for just that
+    quantity (an older release could consume one the run did not list), and every other line
+    holds nothing."""
+    held = {c["item_id"]: c for c in data.get("components") or []}
     for inp in current.get("inputs", []):
-        if inp.get("item_id") in values:
-            inp["issued_value"] = _money(values[inp["item_id"]])
+        inp["issued_qty"] = 0.0
+        inp.pop("issued_value", None)
+        c = held.pop(inp.get("item_id"), None) if _positive(inp) else None
+        if c is not None:
+            inp["issued_qty"], inp["issued_value"] = float(c["quantity"]), _money(c["value"])
+    current["inputs"] = [*current.get("inputs", []), *(
+        {"item_id": i, "quantity": float(c["quantity"]), "issued_qty": float(c["quantity"]),
+         "issued_value": _money(c["value"])} for i, c in held.items() if float(c["quantity"]) > 0)]
 
 
 def _positive(line: dict) -> bool:
@@ -160,8 +169,10 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
             current["wip_wasted"] = _money(data.get("wasted"))
     elif event_type == "mfg.order.wip_opened":
         # An older run's value, reconstructed from its own history when it was settled: in all,
-        # and for each component, so a return gives back exactly what each took.
-        _issued_values(current, data)
+        # and for each component, so a return gives back exactly what each took. A run issued
+        # on this release while Accounting was off is only booked: it already holds what it records.
+        if "components" in data:
+            _held(current, data)
         current["wip_issued"] = _money(data.get("issued"))
         current["wip_transferred"] = _money(data.get("transferred"))
         current["receipts"] = list(data.get("receipts") or [])
@@ -183,7 +194,7 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "mfg.order.wip_reconciled":
         # The run was issued what the user stated, and output received before it took the
         # share the reconciliation recorded for each lot.
-        _issued_values(current, data)
+        _held(current, data)
         current["wip_issued"] = _money(data.get("issued"))
         current["wip_transferred"] = _money(data.get("transferred"))
         current.pop("wip_wasted", None)

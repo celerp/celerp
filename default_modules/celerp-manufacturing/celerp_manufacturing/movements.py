@@ -61,7 +61,7 @@ from celerp.services.lot_origin import (
     account_room,
     account_rooms,
     books_from_elsewhere,
-    consumed_values,
+    consumed_facts,
     held_value,
     is_stock_type,
     period_open,
@@ -1072,8 +1072,8 @@ async def legacy_in_production(*, session: AsyncSession, company_id) -> Decimal:
     Output they received from such a run is a lot of its own, carrying the cost it was given
     then: that much of the value is stock (on hand, or sold off the books), not production."""
     runs = {r.entity_id: r.state for r in await _open_runs(session, company_id) if (r.state or {}).get("wip_untracked")}
-    values = await consumed_values(session, company_id, _ORDER_MARK, set(runs)) if runs else {}
-    total = sum((v for per in values.values() for v in per.values()), _ZERO)
+    facts = await consumed_facts(session, company_id, _ORDER_MARK, set(runs)) if runs else {}
+    total = sum((v for per in facts.values() for _, v in per.values()), _ZERO)
     for order, state in sorted(runs.items()):
         total -= sum((r["value"] for r in await legacy_output(session, company_id, order, state) or []), _ZERO)
     return total
@@ -1083,8 +1083,10 @@ async def settle_open_runs(session: AsyncSession, company_id) -> None:
     """Give every open run the work in progress its history proves, in one savepoint per
     company. Never priced from today's costs.
 
-    A run an older release started records what it issued but not its value: that value is
-    replayed from each component's own events (lot_origin.consumed_values). With Accounting
+    A run an older release started records the quantity each Issue asked for, not what left
+    the shelf, and no value: both are replayed from each component's own events
+    (lot_origin.consumed_facts), and they replace what the run recorded, a component it
+    consumed without listing it included. With Accounting
     on, the books carry it on the components' inventory accounts, so it moves onto the work in
     progress account when each of those accounts holds exactly that value beyond its stock on
     hand; when none holds any of it, the books never recognized it and it is opened against
@@ -1128,7 +1130,7 @@ async def _settle(session: AsyncSession, company_id) -> None:
                currency=str(settings.get("currency") or "USD").upper())
     native = not books or not await books_from_elsewhere(session, company_id, settings)
 
-    values = await consumed_values(session, company_id, _ORDER_MARK, {r.entity_id for r in older})
+    facts = await consumed_facts(session, company_id, _ORDER_MARK, {r.entity_id for r in older})
     plans: dict[str, dict[str | None, Decimal]] = {}
     unresolved: dict[str, str] = {}
     for run in older:
@@ -1137,7 +1139,7 @@ async def _settle(session: AsyncSession, company_id) -> None:
             unresolved[order] = "received before tracking"
             continue
         per: dict[str | None, Decimal] = {}
-        for lot_id, value in sorted(values[order].items()):
+        for lot_id, (_, value) in sorted(facts[order].items()):
             lot = await session.get(Projection, {"company_id": company_id, "entity_id": lot_id})
             code = ((lot.state or {}) if lot is not None else {}).get(LOT_ACCOUNT_FIELD) if books else None
             if books and value and not code:
@@ -1185,7 +1187,7 @@ async def _settle(session: AsyncSession, company_id) -> None:
                           wip_code, total, {}, equity=-total)
         await op.emit_run("mfg.order.wip_opened", {
             "issued": str(total), "transferred": "0", "receipts": [],
-            "components": [{"item_id": lot, "value": str(v)} for lot, v in sorted(values[order].items())],
+            "components": _held_lines(facts[order]),
             "wip_account_code": wip_code if books and total else None}, f"mfg:{order}:wip-opened")
     for run in unbooked:
         state = rows[run.entity_id].state
@@ -1219,11 +1221,24 @@ async def _settle(session: AsyncSession, company_id) -> None:
 # Reconcile
 # ---------------------------------------------------------------------------
 
-async def still_held(session: AsyncSession, company_id, order_id: str, state: dict) -> set[str]:
-    """The components a run still holds, whose value reconciling it records: every input with
-    an issued quantity, and every lot the run's history consumed."""
-    issued = {i.get("item_id") for i in state.get("inputs", []) if float(i.get("issued_qty") or 0) > _EPS}
-    return issued | set((await consumed_values(session, company_id, _ORDER_MARK, {order_id}))[order_id])
+def _held_lines(held: dict[str, tuple[float, Decimal | None]]) -> list[dict]:
+    """``components`` of wip_opened / wip_reconciled: everything the run holds, each with the
+    quantity it holds and its value. They replace what the run recorded as issued."""
+    return [{"item_id": i, "quantity": q, "value": str(v)} for i, (q, v) in sorted(held.items())]
+
+
+async def still_held(session: AsyncSession, company_id, order_id: str, state: dict) -> dict[str, float]:
+    """The components a run still holds and how many of each, whose value reconciling it
+    records: for a run an older release issued to, what its history consumed
+    (lot_origin.consumed_facts); otherwise what it recorded as issued."""
+    if state.get("wip_untracked"):
+        facts = (await consumed_facts(session, company_id, _ORDER_MARK, {order_id}))[order_id]
+        return {i: q for i, (q, _) in facts.items() if q > _EPS}
+    held: dict[str, float] = {}
+    for i in state.get("inputs", []):
+        if float(i.get("issued_qty") or 0) > _EPS:
+            held[i["item_id"]] = held.get(i["item_id"], 0.0) + float(i["issued_qty"])
+    return held
 
 
 def _untracked_qty(state: dict) -> float:
@@ -1358,8 +1373,8 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
             raise refuse(422, "reconcile_values", f"{item_id} is not a component still in this run, is named "
                          "twice, or has a negative value.", item=item_id)
         values[item_id] = value
-    if set(values) != needed:
-        missing = sorted(needed - set(values))
+    if set(values) != set(needed):
+        missing = sorted(set(needed) - set(values))
         raise refuse(422, "reconcile_missing", f"Give the value of every component still in this run: "
                      f"{', '.join(missing)} has none.", items=", ".join(missing))
     total = sum(values.values(), _ZERO)
@@ -1455,7 +1470,7 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
                 lots[code] = lots.get(code, _ZERO) + delta
     await op.post(f"reconcile:{rk}", f"Materials in production run {order_id} reconciled", wip_code,
                   total - transferred, lots, equity=equity)
-    recorded = [{"item_id": i, "value": str(v)} for i, v in sorted(values.items())]
+    recorded = _held_lines({i: (needed[i], v) for i, v in values.items()})
     data = {"issued": str(total), "transferred": str(transferred), "receipts": receipts, "components": recorded,
             "reconciled_by": str(op.user_id), "request": request, "wip_account_code": wip_code}
     if op.books and amount:

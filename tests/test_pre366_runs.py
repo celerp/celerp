@@ -288,3 +288,74 @@ async def test_repairing_needs_manufacturing_permission(client, session):
     r = await client.post(f"/manufacturing/{old['runs']['generic_received']}/repair-output", json={}, headers=viewer)
     assert r.status_code == 403, r.text
     assert await _state(session, old, "generic_received") == state and await _ledger(session, old) == count
+
+
+# Issues an older release recorded at the quantity asked for (company ``shortage``): what a
+# run holds is what actually left each component's shelf, replayed from that component's own
+# history, never the request and never today's stock or cost.
+
+def _held(state: dict, item: str) -> tuple[float, Decimal]:
+    lines = [i for i in state["inputs"] if i["item_id"] == item]
+    return (sum(float(i.get("issued_qty") or 0) for i in lines),
+            sum((Decimal(str(i.get("issued_value") or 0)) for i in lines), Decimal("0")))
+
+
+def _outstanding(state: dict, item: str) -> float:
+    return sum(float(i["quantity"]) - float(i.get("issued_qty") or 0) for i in state["inputs"]
+               if i["item_id"] == item and float(i["quantity"]) > 0)
+
+
+async def _unwinds(client, session, old, run: str, back: dict[str, tuple[float, Decimal]]) -> None:
+    """Return gives each component back exactly ``back``, and the run then cancels."""
+    before = {k: await _stock(session, old, k) for k in back}
+    r = await _post(client, old, run, "return")
+    assert r.status_code == 200, r.text
+    for k, (qty, value) in back.items():
+        assert await _stock(session, old, k) == (before[k][0] + qty, (before[k][1] or 0) + value), k
+    assert Decimal((await _state(session, old, run))["wip_issued"]) == 0
+    await _books(session, old)
+    r = await _post(client, old, run, "cancel", {"reason": "unwound"})
+    assert r.status_code == 200, r.text
+    await _books(session, old)
+
+
+async def test_an_issue_beyond_the_stock_on_hand_holds_only_what_left_the_shelf(client, session):
+    old = await pre366.upgraded(session, "shortage")
+    state = await _state(session, old, "short")
+    assert _held(state, old["items"]["D"]) == (2.0, Decimal("8")), state  # asked 5, had 2 at 4 each
+    assert _outstanding(state, old["items"]["D"]) == 3.0 and Decimal(state["wip_issued"]) == Decimal("8"), state
+    assert await _stock(session, old, "D") == (0.0, 0)
+    await _books(session, old)
+    await _unwinds(client, session, old, "short", {"D": (2.0, Decimal("8"))})
+
+
+async def test_an_issue_with_nothing_on_hand_holds_nothing_and_stays_outstanding(client, session):
+    old = await pre366.upgraded(session, "shortage")
+    state = await _state(session, old, "none_on_hand")
+    assert _held(state, old["items"]["E"]) == (0.0, Decimal("0")), state
+    assert _outstanding(state, old["items"]["E"]) == 5.0 and Decimal(state["wip_issued"]) == 0, state
+    await _books(session, old)
+    r = await _post(client, old, "none_on_hand", "cancel", {"reason": "never had it"})
+    assert r.status_code == 200, r.text
+    assert await _stock(session, old, "E") == (0.0, 0)
+    await _books(session, old)
+
+
+async def test_a_component_issued_without_being_listed_is_held_and_returned_exactly(client, session):
+    old = await pre366.upgraded(session, "shortage")
+    A, C = old["items"]["A"], old["items"]["C"]
+    state = await _state(session, old, "undeclared")
+    assert _held(state, A) == (1.0, Decimal("1")) and _held(state, C) == (2.0, Decimal("4")), state
+    assert [i["quantity"] for i in state["inputs"] if i["item_id"] == C] == [2.0], state
+    assert Decimal(state["wip_issued"]) == Decimal("5"), state
+    await _books(session, old)
+    await _unwinds(client, session, old, "undeclared", {"A": (1.0, Decimal("1")), "C": (2.0, Decimal("4"))})
+
+
+async def test_issues_of_one_component_add_up(client, session):
+    old = await pre366.upgraded(session, "shortage")
+    state = await _state(session, old, "twice")
+    assert _held(state, old["items"]["F"]) == (5.0, Decimal("15")), state
+    assert Decimal(state["wip_issued"]) == Decimal("15"), state
+    await _books(session, old)
+    await _unwinds(client, session, old, "twice", {"F": (5.0, Decimal("15"))})
