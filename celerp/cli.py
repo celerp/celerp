@@ -570,7 +570,6 @@ def _apply_migrations(db_url: str) -> None:
     _os.environ["DATABASE_URL"] = db_url
 
     from alembic import command
-    from alembic.runtime.migration import MigrationContext
     from alembic.script import ScriptDirectory
     import sqlalchemy as _sa
     from celerp.alembic_config import build_alembic_config as _build_alembic_config

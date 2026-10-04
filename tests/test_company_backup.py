@@ -942,6 +942,29 @@ async def test_hand_copied_prefix_claiming_a_core_table_owns_nothing(real_engine
             await _bk_drop(real_engine, "alembic_version")
 
 
+async def test_hand_copied_prefix_claiming_a_core_table_is_not_reported_as_its_undeclared_table(
+        real_engine, tmp_path, monkeypatch):
+    """The startup notice of module tables a manifest leaves undeclared names only tables
+    the module owns: a hand-copied module whose prefix reaches Celerp's own schema stamp
+    is not told the stamp is its table."""
+    cb = _bk_cb()
+    _bk_fake_module(tmp_path, monkeypatch)
+    pkg = tmp_path / "bk-modules" / "zz-stamper"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(
+        'PLUGIN_MANIFEST = {"name": "zz-stamper", "version": "1.0.0", "table_prefix": "alembic_"}\n')
+    async with real_engine.connect() as conn:
+        stamped = (await conn.execute(text("SELECT to_regclass('alembic_version')"))).scalar() is not None
+    if not stamped:
+        await _bk_sql(real_engine, "CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)")
+    try:
+        async with maker(real_engine)() as s:
+            assert "zz-stamper" not in await cb.undeclared_module_tables(s)
+    finally:
+        if not stamped:
+            await _bk_drop(real_engine, "alembic_version")
+
+
 @pytest.mark.parametrize("prefix", ["label_", "marketplace_", "bank_"])
 async def test_hand_copied_prefix_claiming_a_turned_off_bundled_module_table_owns_nothing(
         real_engine, tmp_path, monkeypatch, bundled_modules_unloaded, prefix):

@@ -54,7 +54,7 @@ import celerp.db
 from celerp.migrations.compatibility import is_newer_than_running, running_version
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
-from celerp.modules.importer import TABLE_NAME, installed_table_prefixes, valid_table_prefixes
+from celerp.modules.importer import TABLE_NAME, valid_table_prefixes
 from celerp.modules import requirements
 from celerp.modules.loader import module_label, module_search_path, read_manifest, resolve_module_path
 from celerp.modules.registry import get_enabled, set_enabled
@@ -384,9 +384,9 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
 
 async def undeclared_module_tables(session: AsyncSession) -> dict[str, list[str]]:
     """Each installed module's tables in this database that its manifest does not say how
-    to back up, by module."""
+    to back up, by module. Tables are attributed exactly as the backup attributes them."""
     schema = await _schema(session)
-    prefixes = installed_table_prefixes("")
+    prefixes = valid_table_prefixes()
     found: dict[str, list[str]] = {}
     for module in sorted(prefixes):
         declared = _declared(module)
