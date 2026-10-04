@@ -42,12 +42,17 @@ search_provider    Contributes rows to the global search bar. Exactly one descri
                    permission gates the source per company role. See the module loader
                    for the full descriptor contract.
 
-Every slot entry is checked when its module loads (celerp.modules.loader): an
-entry is a dict; a "permission" (or catalog_channel "write_permission"), when
-present, is a key from the permission registry; a "requires_connector", when set,
-is a connector id; nav "href" / "settings_href" and
-bulk_action "form_action" (required) are app-local paths; and every callable an
-entry names resolves to the module's own code, async exactly where core awaits it.
+Every slot entry is checked before any of its module's code runs
+(celerp.modules.loader): an entry is a dict; every key its slot reads has the
+type it is read as (nav "key" text, "group" text or None, "order" a number;
+send_to_targets "doc_type" and catalog_channel "id" non-empty text, catalog_channel
+"can_create" true or false; category_schema "category" non-empty text and
+"fields" a list of field definitions; bulk_action "action_type" "htmx" or
+"navigate"; "label" and "label_key" text); a "permission" (or catalog_channel
+"write_permission"), when present, is a key from the permission registry; a
+"requires_connector", when set, is a connector id; nav "href" / "settings_href"
+and bulk_action "form_action" (required) are app-local paths; and every callable
+an entry names is the module's own code, async exactly where core awaits it.
 
 Whether a company uses a module is one rule, celerp.modules.registry.uses_module.
 item_action, pricing_action, doc_detail_actions, doc_detail_badges, bulk_action,
@@ -71,6 +76,14 @@ Usage in core UI
 from __future__ import annotations
 
 from typing import Callable
+
+# The slots listed above: the closed set a module may fill.
+SLOT_NAMES = frozenset({
+    "nav", "bulk_action", "send_to_targets", "catalog_channel", "item_action",
+    "pricing_action", "doc_detail_actions", "doc_detail_badges", "category_schema",
+    "projection_handler", "on_company_created", "on_modules_ready", "doc_finalize_hook",
+    "on_doc_payment", "search_provider",
+})
 
 _slots: dict[str, list[dict]] = {}
 

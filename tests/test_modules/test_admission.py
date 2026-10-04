@@ -15,6 +15,7 @@ nothing depends on an installed module or on another test's imports.
 """
 from __future__ import annotations
 
+import ast
 import json
 import sys
 import uuid
@@ -76,17 +77,20 @@ def _marker_line(marker: Path) -> str:
     return f"open({str(marker)!r}, 'a').write('ran\\n')\n"
 
 
-def _migrating_module(base: Path, folder: str, marker: Path, **manifest_extra) -> Path:
+def _migrating_module(base: Path, folder: str, marker: Path, code: dict[str, str] | None = None,
+                      **manifest_extra) -> Path:
     """A module whose single migration file writes `marker` the moment it is
-    executed (at import, before upgrade() is even looked up)."""
+    executed (at import, before upgrade() is even looked up). `code` adds files
+    to its inner package; "{inner}" in a manifest string names that package."""
     inner = f"acme_{_uid()}"
     manifest = {"name": folder, "version": "1.0.0",
                 "migrations": f"{inner}.migrations", "table_prefix": f"acme{_uid()}_"}
-    manifest.update(manifest_extra)
+    manifest.update(ast.literal_eval(repr(manifest_extra).replace("{inner}", inner)))
     files = {
         f"{inner}/__init__.py": "",
         f"{inner}/migrations/__init__.py": "",
         f"{inner}/migrations/m_001.py": _marker_line(marker) + "def upgrade():\n    pass\n",
+        **{f"{inner}/{rel}": body for rel, body in (code or {}).items()},
     }
     return _write_module(base, folder, manifest, files)
 
@@ -206,7 +210,77 @@ def _case_unlicensed_premium(base, marker, monkeypatch):
     return pkg, "license"
 
 
+def _case_async_api_setup(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker, api_routes="{inner}.api",
+                             code={"api.py": "async def setup_api_routes(app):\n    pass\n"}), "async"
+
+
+def _case_async_ui_setup_imported(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker, ui_routes="{inner}.ui", code={
+        "ui.py": "from .pages import setup_ui_routes\n",
+        "pages.py": "async def setup_ui_routes(app):\n    pass\n"}), "async"
+
+
+def _case_hook_not_async(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             slots={"on_company_created": [{"handler": "{inner}.hooks:created"}]},
+                             code={"hooks.py": "def created(session, company_id):\n    pass\n"}), "async"
+
+
+def _case_render_async(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             slots={"doc_detail_badges": [{"render": "{inner}.ui:badge"}]},
+                             code={"ui.py": "async def badge(doc):\n    return None\n"}), "async"
+
+
+def _case_callable_missing(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             slots={"on_modules_ready": [{}]}), "module.path:function"
+
+
+def _case_search_result_key(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker, slots={"search_provider": {
+        "handler": "{inner}.search:find", "result_key": "rows", "permission": "view_inventory"}},
+        code={"search.py": "async def find(*a):\n    return {}\n"}), "result_key"
+
+
+def _case_nav_order_text(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker, slots={
+        "nav": [{"key": "acme", "label": "Acme", "href": "/acme", "order": "1"}]}), "order"
+
+
+def _case_category_fields_not_list(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker, slots={
+        "category_schema": [{"category": "Rings", "fields": {"key": "size"}}]}), "fields"
+
+
+def _case_connector_not_text(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker, slots={"bulk_action": [
+        {"label": "Go", "form_action": "/acme/go", "requires_connector": ["shop"]}]}), "requires_connector"
+
+
+def _case_pricing_show_on_entry(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker, slots={"pricing_action": [
+        {"label": "Go", "href_template": "/acme/{entity_id}", "show_on": [{}]}]}), "show_on"
+
+
+def _case_item_action_link_out(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker, slots={
+        "item_action": [{"label": "Go", "href_template": "//example.com/{entity_id}"}]}), "href_template"
+
+
 @pytest.mark.parametrize("case", [
+    _case_async_api_setup,
+    _case_async_ui_setup_imported,
+    _case_hook_not_async,
+    _case_render_async,
+    _case_callable_missing,
+    _case_search_result_key,
+    _case_nav_order_text,
+    _case_category_fields_not_list,
+    _case_connector_not_text,
+    _case_pricing_show_on_entry,
+    _case_item_action_link_out,
     _case_name_mismatch,
     _case_reserved_prefix,
     _case_min_version,

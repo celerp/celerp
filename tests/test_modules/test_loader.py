@@ -54,9 +54,10 @@ def _scan(pkg: Path, dotted: str) -> set[str]:
 
 
 def _load(pkg: Path, name: str, *, trusted: bool = False) -> dict:
-    """Import a module the way load_all does after admission."""
+    """Admit and import a module the way load_all does."""
     from celerp.modules import loader
-    return _load_one(pkg, name, trusted=trusted, declared=loader._declared_manifest(pkg))
+    return _load_one(pkg, name, trusted=trusted,
+                     declared=loader._admission_checks(name, pkg).manifest)
 
 
 def _make_module(base: Path, name: str, manifest: str, extra_code: str = "") -> Path:

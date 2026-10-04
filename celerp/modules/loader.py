@@ -614,8 +614,9 @@ def module_migration_files(pkg_path: Path, migrations_pkg) -> list[Path]:
 def _check_route_source(pkg_path: Path, manifest: dict, kind: str) -> None:
     """Prove, without importing it, that the module's ``{kind}_routes`` names a
     source file inside the module that defines ``setup_{kind}_routes`` or
-    imports it from the module's own code. Registration later proves the
-    resolved callable itself (:func:`_check_owned_callable`)."""
+    imports it from the module's own code, and that the function is not async
+    wherever its source shows it. Registration later proves the resolved
+    callable itself (:func:`_check_owned_callable`)."""
     key = f"{kind}_routes"
     dotted = manifest.get(key)
     if not dotted:
@@ -628,14 +629,17 @@ def _check_route_source(pkg_path: Path, manifest: dict, kind: str) -> None:
     tree = _parse_source(source)
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == setup:
-            return
+            break
         if isinstance(node, ast.ImportFrom) and any(
                 (alias.asname or alias.name) == setup for alias in node.names):
             if _resolve_local_import(pkg_path, source, node.module, node.level) is None:
                 raise ModuleLoadError(
                     f"{key} {dotted!r} takes {setup} from outside the module.")
-            return
-    raise ModuleLoadError(f"{key} {dotted!r} does not define {setup}.")
+            break
+    else:
+        raise ModuleLoadError(f"{key} {dotted!r} does not define {setup}.")
+    _check_call_style(f"{key} setup", f"{dotted}:{setup}",
+                      _source_is_async(pkg_path, source, setup), awaited=False)
 
 
 def _module_entry_files(pkg_path: Path, manifest: dict) -> list[Path]:
@@ -749,6 +753,7 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
     _validate_table_prefix(name, manifest)
     for kind in ("api", "ui"):
         _check_route_source(pkg_path, manifest, kind)
+    _check_slot_contracts(pkg_path, manifest["slots"])
     _check_import_names(name, pkg_path, official=official)
     entry_files = _module_entry_files(pkg_path, manifest)
     first_party = is_first_party(pkg_path)
@@ -1189,7 +1194,7 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
     # instead of first surfacing as a broken page, a link out of Celerp, an entry
     # shown to every role, or a hook bound to code the module does not own.
     try:
-        prepared_search_provider = _validate_slots(
+        prepared_search_provider = _resolve_slot_callables(
             pkg_name, pkg_path, slots_manifest, trusted=trusted)
     except ModuleLoadError:
         log.error("Module %r rejected: invalid slots", pkg_name)
@@ -1757,39 +1762,101 @@ def _runtime_keys(pkg_name: str, trusted: bool) -> dict:
     return {"_module": pkg_name, "_first_party": trusted}
 
 
-def _validate_projection_handler(contribution) -> None:
-    """Raise :class:`ModuleLoadError` unless every projection_handler entry names
-    the event-type prefix it handles."""
+def _validate_bulk_action(contribution) -> None:
+    """Raise :class:`ModuleLoadError` unless every bulk_action names an
+    action_type the inventory toolbar knows, when it names one."""
     for item in contribution if isinstance(contribution, list) else [contribution]:
-        prefix = item.get("prefix")
-        if not isinstance(prefix, str) or not prefix:
+        if item.get("action_type", "htmx") not in _BULK_ACTION_TYPES:
             raise ModuleLoadError(
-                "Slot 'projection_handler' needs a prefix: the event-type prefix it handles."
-            )
+                f"Slot 'bulk_action' action_type must be one of "
+                f"{sorted(_BULK_ACTION_TYPES)}, not {item['action_type']!r}.")
 
 
-# Per-slot checks beyond the generic entry rules.
+def _validate_category_schema(contribution) -> None:
+    """Raise :class:`ModuleLoadError` unless every category_schema entry's fields
+    are field definitions: dicts with a key, and text label and type and a list
+    of options where given."""
+    for item in contribution if isinstance(contribution, list) else [contribution]:
+        for field in item["fields"]:
+            if (not isinstance(field, dict) or not isinstance(field.get("key"), str)
+                    or not field["key"]
+                    or any(not _is_type(field[k], types)
+                           for k, types in _CATEGORY_FIELD_KEYS.items() if k in field)):
+                raise ModuleLoadError(
+                    f"Slot 'category_schema' fields must be field definitions: a dict "
+                    f"with a text key, and text label and type and a list of options "
+                    f"where given, not {field!r}.")
+
+
+# Per-slot checks beyond the entry keys every slot declares (_SLOT_ENTRY_KEYS).
 _SLOT_VALIDATORS = {
     **_LINK_SLOT_VALIDATORS,
-    "projection_handler": _validate_projection_handler,
+    "bulk_action": _validate_bulk_action,
+    "category_schema": _validate_category_schema,
 }
+
+_BULK_ACTION_TYPES = frozenset({"htmx", "navigate"})
+_CATEGORY_FIELD_KEYS = {"label": (str,), "type": (str,), "options": (list,)}
+_TEXT, _NUMBER = (str,), (int, float)
+_LABEL_KEYS = {"label": (_TEXT, False), "label_key": (_TEXT, False)}
+# What the code reading each slot takes from an entry: per key, the types it
+# reads the value as and whether the entry must carry it (a required text value
+# must not be empty). Callable keys are checked as callables (_CALLABLE_SLOTS),
+# destinations as paths (_DESTINATION_KEYS) and permissions as permission keys.
+_SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
+    "nav": {**_LABEL_KEYS, "key": (_TEXT, False), "group": ((str, type(None)), False),
+            "order": (_NUMBER, False)},
+    "bulk_action": {**_LABEL_KEYS, "action_type": (_TEXT, False)},
+    "send_to_targets": {**_LABEL_KEYS, "doc_type": (_TEXT, True)},
+    "catalog_channel": {**_LABEL_KEYS, "id": (_TEXT, True), "marker": (_TEXT, False),
+                        "can_create": ((bool,), False)},
+    "item_action": _LABEL_KEYS,
+    "pricing_action": _LABEL_KEYS,
+    "category_schema": {"category": (_TEXT, True), "fields": ((list,), True)},
+    "projection_handler": {"prefix": (_TEXT, True)},
+    "search_provider": {"result_key": (_TEXT, True)},
+    "doc_detail_actions": {},
+    "doc_detail_badges": {},
+    "on_company_created": {},
+    "on_modules_ready": {},
+    "doc_finalize_hook": {},
+    "on_doc_payment": {},
+}
+_TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true or false",
+               list: "a list", type(None): "None"}
+
+
+def _is_type(value, types: tuple[type, ...]) -> bool:
+    """isinstance, except that True and False are not numbers here."""
+    return isinstance(value, types) and (bool in types or not isinstance(value, bool))
 
 
 def _validate_slot_entry(slot: str, item) -> None:
     """The rules every slot entry follows, whatever its slot.
 
-    Raise :class:`ModuleLoadError` unless ``item`` is a dict; has a
-    "permission" / "write_permission", when present, that is a key from the
-    permission registry (a falsy or malformed value is refused, never read as
-    "ungated"); has a "requires_connector", when set, that is a connector id
-    string (an empty value means no connector is needed); and has every
-    destination its slot reads (_DESTINATION_KEYS) as an app-local path, with
-    the required ones present.
+    Raise :class:`ModuleLoadError` unless ``item`` is a dict; carries every key
+    its slot reads (_SLOT_ENTRY_KEYS) in the type it is read as, with the
+    required ones present; has a "permission" / "write_permission", when
+    present, that is a key from the permission registry (a falsy or malformed
+    value is refused, never read as "ungated"); has a "requires_connector", when
+    set, that is a connector id string (an empty value means no connector is
+    needed); and has every destination its slot reads (_DESTINATION_KEYS) as an
+    app-local path, with the required ones present.
     """
     if not isinstance(item, dict):
         raise ModuleLoadError(
             f"Slot {slot!r} entries must be dicts, not {type(item).__name__}."
         )
+    for key, (types, required) in _SLOT_ENTRY_KEYS.get(slot, {}).items():
+        if key not in item:
+            if required:
+                raise ModuleLoadError(f"Slot {slot!r} needs a {key}.")
+            continue
+        if not _is_type(item[key], types):
+            names = " or ".join(dict.fromkeys(_TYPE_NAMES[t] for t in types))
+            raise ModuleLoadError(f"Slot {slot!r} {key} must be {names}, not {item[key]!r}.")
+        if required and types == _TEXT and not item[key]:
+            raise ModuleLoadError(f"Slot {slot!r} {key} must not be empty.")
     for key in _PERMISSION_ENTRY_KEYS:
         if key in item and not is_permission_key(item[key]):
             raise ModuleLoadError(
@@ -1798,12 +1865,10 @@ def _validate_slot_entry(slot: str, item) -> None:
                 f"closest existing key, or leave {key} out."
             )
     connector = item.get("requires_connector")
-    if connector:
-        if not isinstance(connector, str):
-            raise ModuleLoadError(
-                f"Slot {slot!r} requires_connector must be a connector id, "
-                f"not {connector!r}."
-            )
+    if connector and not isinstance(connector, str):
+        raise ModuleLoadError(
+            f"Slot {slot!r} requires_connector must be a connector id, not {connector!r}."
+        )
     for key, required in _DESTINATION_KEYS.get(slot, {}).items():
         if key not in item:
             if required:
@@ -1816,35 +1881,83 @@ def _validate_slot_entry(slot: str, item) -> None:
             )
 
 
-def _validate_slots(
-    pkg_name: str, pkg_path: Path, slots_manifest: dict, *, trusted: bool
-) -> dict | None:
-    """Check a module's whole ``slots`` manifest before anything is registered.
+def _check_search_provider_descriptor(contribution) -> None:
+    """The search_provider slot takes exactly one dict: one module, one
+    provider, one results bucket, so a module can never overwrite its own search
+    bucket. The descriptor must carry exactly ``{handler, result_key,
+    permission}`` (extra keys are refused, never ignored, so a misspelling fails
+    loudly), and ``result_key`` is one of ``{items, entries}``."""
+    if not isinstance(contribution, dict):
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} takes exactly one descriptor dict, "
+            f"not a {type(contribution).__name__}."
+        )
+    keys = set(contribution)
+    if keys != set(_SEARCH_PROVIDER_KEYS):
+        missing = sorted(_SEARCH_PROVIDER_KEYS - keys)
+        extra = sorted(keys - _SEARCH_PROVIDER_KEYS, key=repr)
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} descriptor keys must be exactly "
+            f"{sorted(_SEARCH_PROVIDER_KEYS)} (missing={missing}, extra={extra})."
+        )
+    result_key = contribution["result_key"]
+    if not isinstance(result_key, str) or result_key not in _SEARCH_RESULT_KEYS:
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} result_key {result_key!r} must be one "
+            f"of {sorted(_SEARCH_RESULT_KEYS)}."
+        )
 
-    Any module may fill any slot. Per slot: search_provider goes through its
-    stricter descriptor contract; every other entry follows the generic entry rules, has
-    its callable proven (_check_owned_callable) when the slot is callable, and
-    passes its slot's own validator. Returns the prepared search_provider
-    descriptor, or None. Raises :class:`ModuleLoadError` on any violation.
+
+def _check_slot_contracts(pkg_path: Path, slots_manifest: dict) -> None:
+    """Every slot rule the manifest and the module's source decide, checked
+    before any of the module's code runs: the search_provider descriptor, the
+    entry rules (_validate_slot_entry), each slot's own validator, and for a
+    callable slot an in-module "module.path:function" whose source shows it
+    async exactly where core awaits it. What only importing can show (what the
+    name resolves to, and its async shape where the source cannot tell) is
+    proven at load (_resolve_slot_callables). Raises :class:`ModuleLoadError`.
     ``slots_manifest`` is already a dict (:func:`_validated_manifest`).
     """
-    prepared = None
     for slot_name, contribution in slots_manifest.items():
         if slot_name == _SEARCH_PROVIDER_SLOT:
-            prepared = _prepare_search_provider(
-                pkg_name, pkg_path, contribution, trusted=trusted)
-            continue
-        items = contribution if isinstance(contribution, list) else [contribution]
-        for item in items:
+            _check_search_provider_descriptor(contribution)
+        for item in contribution if isinstance(contribution, list) else [contribution]:
             _validate_slot_entry(slot_name, item)
             if slot_name in _CALLABLE_SLOTS:
                 key, awaited = _CALLABLE_SLOTS[slot_name]
-                _check_owned_callable(
-                    pkg_name, pkg_path, f"Slot {slot_name!r}", item.get(key),
-                    awaited=awaited, trusted=trusted)
+                subject = f"Slot {slot_name!r}"
+                source = _owned_callable_source(pkg_path, subject, item.get(key))
+                _check_call_style(subject, item[key],
+                                  _source_is_async(pkg_path, source, item[key].split(":")[1]),
+                                  awaited=awaited)
         validate = _SLOT_VALIDATORS.get(slot_name)
         if validate is not None:
             validate(contribution)
+
+
+def _resolve_slot_callables(
+    pkg_name: str, pkg_path: Path, slots_manifest: dict, *, trusted: bool
+) -> dict | None:
+    """Prove every callable a module's slots name (_check_owned_callable) before
+    anything is registered. The rest of each entry passed admission
+    (_check_slot_contracts) and the manifest at import equals the one admitted.
+    Returns the search_provider descriptor to register, or None. Raises
+    :class:`ModuleLoadError` on any violation.
+    """
+    prepared = None
+    for slot_name, contribution in slots_manifest.items():
+        if slot_name not in _CALLABLE_SLOTS:
+            continue
+        key, awaited = _CALLABLE_SLOTS[slot_name]
+        for item in contribution if isinstance(contribution, list) else [contribution]:
+            _check_owned_callable(
+                pkg_name, pkg_path, f"Slot {slot_name!r}", item[key],
+                awaited=awaited, trusted=trusted)
+        if slot_name == _SEARCH_PROVIDER_SLOT:
+            # Runtime-owned trust metadata goes AFTER the manifest contribution,
+            # and the descriptor's closed key set already refuses a manifest that
+            # supplies _module / _first_party itself, so neither can be spoofed.
+            prepared = {**contribution, **_runtime_keys(pkg_name, trusted)}
     return prepared
 
 
@@ -1865,6 +1978,80 @@ def _owned_callable_source(pkg_path: Path, subject: str, dotted) -> Path:
             f"the module."
         )
     return source
+
+
+def _check_call_style(subject: str, dotted: str, is_async: bool | None, *, awaited: bool) -> None:
+    """Refuse a callable that is async where core calls it plainly, or plain
+    where core awaits it. ``is_async`` None means not known yet: no verdict."""
+    if is_async is None or is_async == awaited:
+        return
+    if awaited:
+        raise ModuleLoadError(f"{subject} callable {dotted!r} must be async; core awaits it.")
+    raise ModuleLoadError(
+        f"{subject} callable {dotted!r} must not be async; core calls it without awaiting.")
+
+
+def _top_level_binding(tree: ast.Module, name: str):
+    """The one statement that binds ``name`` in a module, when that is the only
+    place the source binds it at all and it sits at the top level; else None."""
+    bindings = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound = [node.name]
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            bound = [(a.asname or a.name).split(".")[0] for a in node.names]
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bound = [node.id]
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bound = node.names
+        else:
+            continue
+        if name in bound:
+            bindings.append(node)
+    if len(bindings) != 1:
+        return None
+    (binding,) = bindings
+    if binding in tree.body:
+        return binding
+    owner = next((n for n in tree.body if isinstance(n, (ast.Assign, ast.AnnAssign))
+                  and binding in ast.walk(n)), None)
+    return owner
+
+
+def _source_is_async(pkg_path: Path, source: Path, name: str, seen: set | None = None) -> bool | None:
+    """Whether the callable ``name`` in ``source`` is async, read from the
+    module's own source without running it: followed through plain aliases and
+    imports of the module's own files to an undecorated def, async def, class or
+    lambda. None when the source alone cannot tell; loading then decides."""
+    seen = set() if seen is None else seen
+    if (source, name) in seen:
+        return None
+    seen.add((source, name))
+    try:
+        tree = _parse_source(source)
+    except ModuleLoadError:
+        return None
+    binding = _top_level_binding(tree, name)
+    if isinstance(binding, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if binding.decorator_list:
+            return None
+        return isinstance(binding, ast.AsyncFunctionDef)
+    if isinstance(binding, (ast.Assign, ast.AnnAssign)):
+        targets = binding.targets if isinstance(binding, ast.Assign) else [binding.target]
+        if len(targets) != 1 or not isinstance(targets[0], ast.Name):
+            return None
+        if isinstance(binding.value, ast.Lambda):
+            return False
+        if isinstance(binding.value, ast.Name):
+            return _source_is_async(pkg_path, source, binding.value.id, seen)
+        return None
+    if isinstance(binding, ast.ImportFrom):
+        alias = next(a for a in binding.names if (a.asname or a.name) == name)
+        target = _resolve_local_import(pkg_path, source, binding.module, binding.level)
+        if target is None:
+            return None
+        return _source_is_async(pkg_path, target, alias.name, seen)
+    return None
 
 
 def _check_owned_callable(
@@ -1900,15 +2087,7 @@ def _check_owned_callable(
         )
     if not callable(func):
         raise ModuleLoadError(f"{subject} callable {dotted!r} is not callable.")
-    if awaited and not inspect.iscoroutinefunction(func):
-        raise ModuleLoadError(
-            f"{subject} callable {dotted!r} must be async; core awaits it."
-        )
-    if not awaited and inspect.iscoroutinefunction(func):
-        raise ModuleLoadError(
-            f"{subject} callable {dotted!r} must not be async; core calls it "
-            f"without awaiting."
-        )
+    _check_call_style(subject, dotted, inspect.iscoroutinefunction(func), awaited=awaited)
     # Provenance: an on-disk file matching the dotted path is not proof of what
     # importlib actually resolved. A decoy source shipped inside the module's own
     # tree (e.g. a celerp/ai/service.py) satisfies the existence and AST checks
@@ -1938,48 +2117,3 @@ def _check_owned_callable(
                 f"module {pkg_name!r}'s own package tree."
             )
     return func
-
-
-def _prepare_search_provider(
-    pkg_name: str, pkg_path: Path, contribution, *, trusted: bool
-) -> dict:
-    """Validate a ``search_provider`` descriptor and resolve its handler at load
-    time, returning the runtime descriptor to register.
-
-    The slot takes exactly one dict: one module, one provider, one results
-    bucket, so a module can never overwrite its own search bucket. The descriptor
-    must carry exactly ``{handler, result_key, permission}`` (extra keys are
-    rejected, never ignored, so a misspelling fails loudly); ``result_key`` is one
-    of ``{items, entries}``; ``permission`` is a known key. The handler goes
-    through the callable-slot proof every callable slot uses
-    (_check_owned_callable): in-module source, no protected import (third-party
-    only), async, provenance. Raises :class:`ModuleLoadError` on any violation.
-    """
-    if not isinstance(contribution, dict):
-        raise ModuleLoadError(
-            f"Slot {_SEARCH_PROVIDER_SLOT!r} takes exactly one descriptor dict, "
-            f"not a {type(contribution).__name__}."
-        )
-    keys = set(contribution)
-    if keys != set(_SEARCH_PROVIDER_KEYS):
-        missing = sorted(_SEARCH_PROVIDER_KEYS - keys)
-        extra = sorted(keys - _SEARCH_PROVIDER_KEYS, key=repr)
-        raise ModuleLoadError(
-            f"Slot {_SEARCH_PROVIDER_SLOT!r} descriptor keys must be exactly "
-            f"{sorted(_SEARCH_PROVIDER_KEYS)} (missing={missing}, extra={extra})."
-        )
-    result_key = contribution["result_key"]
-    if not isinstance(result_key, str) or result_key not in _SEARCH_RESULT_KEYS:
-        raise ModuleLoadError(
-            f"Slot {_SEARCH_PROVIDER_SLOT!r} result_key {result_key!r} must be one "
-            f"of {sorted(_SEARCH_RESULT_KEYS)}."
-        )
-    _validate_slot_entry(_SEARCH_PROVIDER_SLOT, contribution)
-    key, awaited = _CALLABLE_SLOTS[_SEARCH_PROVIDER_SLOT]
-    _check_owned_callable(
-        pkg_name, pkg_path, f"Slot {_SEARCH_PROVIDER_SLOT!r}", contribution[key],
-        awaited=awaited, trusted=trusted)
-    # Runtime-owned trust metadata is injected AFTER the manifest contribution, and
-    # the closed key set above already rejects a manifest that tries to supply
-    # _module / _first_party itself, so neither can be spoofed.
-    return {**contribution, **_runtime_keys(pkg_name, trusted)}
