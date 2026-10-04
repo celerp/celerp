@@ -16,8 +16,7 @@ comparison. With Accounting off nothing is booked, so no account may carry anyth
 The value production runs hold is checked apart from the lots (assert_wip_carried):
 every account that has served work in progress holds exactly what the open runs kept
 on it still hold, and a completed run holds nothing. assert_settled runs both and then
-proves the balance sheet finds no opening stock to book: opening it leaves the opening
-inventory entry as it was.
+proves the books check (lot_origin.stock_off_books) has nothing to report.
 
 Also shared: the stock an older release left behind, for the tests of what happens to it.
 """
@@ -54,6 +53,14 @@ async def older_release_lot(session, company_id, actor_id, cost: float, *, qty: 
                      idempotency_key=str(uuid.uuid4()), metadata_={})
     await session.commit()
     return lot
+
+
+async def book_older_opening(session, company_id, user_id) -> None:
+    """Commit the opening inventory entry an older release booked for its pre-system stock."""
+    from celerp.services.auto_je import book_opening_inventory
+
+    await book_opening_inventory(session, company_id=company_id, user_id=user_id, in_production=Decimal("0"))
+    await session.commit()
 
 
 _LOT_ROLES = (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
@@ -134,22 +141,12 @@ async def assert_wip_carried(session, company_id) -> dict[str, Decimal]:
     return books
 
 
-async def _opening_entry(session, company_id) -> dict | None:
-    session.expire_all()
-    row = await session.get(Projection, {"company_id": company_id,
-                                         "entity_id": f"je:auto:opening-inventory:{company_id}"})
-    return dict(row.state) if row is not None else None
-
-
 async def assert_settled(client, session, auth) -> None:
-    """The books carry the stock and the work in progress, and opening the balance sheet
-    books no opening stock (nothing hides a gap behind an opening entry)."""
+    """The books carry the stock and the work in progress, and the books check finds
+    nothing to report."""
+    from celerp.services.lot_origin import stock_off_books
+
     cid = auth["company_id"]
     await assert_books_carry_stock(session, cid)
     await assert_wip_carried(session, cid)
-    before = await _opening_entry(session, cid)
-    r = await client.get("/accounting/balance-sheet", headers=auth["headers"])
-    assert r.status_code == 200, r.text
-    assert await _opening_entry(session, cid) == before, "the balance sheet booked opening stock"
-    await assert_books_carry_stock(session, cid)
-    await assert_wip_carried(session, cid)
+    assert (found := await stock_off_books(session, cid)) == [], found

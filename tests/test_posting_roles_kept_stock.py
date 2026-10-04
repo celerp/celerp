@@ -32,7 +32,6 @@ from celerp.services.lot_origin import held_value
 from stock_books import assert_books_carry_stock
 from test_cost_restatement import TZ, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_helpers import sell_item
-from test_posting_roles_lot_origin import _open_books
 from test_posting_roles_merge import _merged
 from test_posting_roles_older_stock import (
     _accounts, _custom_opening_account, _lot, _marked, _net, _older_release, _opening_entry, _reclassification,
@@ -77,7 +76,6 @@ async def _entries(session, auth) -> set[str]:
 async def _books(session, client, auth) -> dict:
     """The balance sheet is viewed (the older-release path that recomputed opening
     inventory), then the books must carry exactly the stock recorded on them."""
-    await _open_books(client, auth)
     return await assert_books_carry_stock(session, auth["company_id"])
 
 
@@ -253,7 +251,6 @@ async def test_goods_whose_receipt_is_undone_stay_off_the_books(session, client,
         assert state["status"] == "archived"
         assert _FLAG not in state
         assert await _held(session, auth, parcel) is None
-    await _open_books(client, auth)
     assert await _net(session, auth, "1130-P", "1130-OB") == books
 
 

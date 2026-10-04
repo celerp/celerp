@@ -18,7 +18,7 @@ from sqlalchemy import select
 from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
 from celerp.services.company_lock import locked_company
-from stock_books import older_release_lot
+from stock_books import book_older_opening, older_release_lot
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_money_stock_and_contact_invariants import _account_net
 
@@ -270,8 +270,8 @@ async def test_manufacturing_relieves_inputs_on_their_account_and_books_output_w
 async def test_an_older_lot_waits_for_its_account_and_only_one_that_holds_it_can_be_chosen(session, client, auth):
     lot = await older_release_lot(session, auth["company_id"], auth["user_id"], 30.0, sku="OLD-2")
     await _remap(session, auth, await _new_inventory_account(client, auth), "inventory_purchased")
-    # Viewing the balance sheet posts the opening inventory entry, which carries it on 1130-OB.
-    assert (await client.get("/accounting/balance-sheet", headers=auth["headers"])).status_code == 200
+    # The older release's opening inventory entry carries it on 1130-OB.
+    await book_older_opening(session, auth["company_id"], auth["user_id"])
     r = await client.post("/docs", headers=auth["headers"], json={
         "doc_type": "invoice", "total": 50.0,
         "line_items": [{"entity_id": lot, "name": "Lot", "quantity": 1, "unit_price": 50.0, "sell_by": "piece"}]})

@@ -58,6 +58,7 @@ ALL_CHECKS = [
     "contact_file_schema",
     "physical_code_conflicts",
     "posting_origins",
+    "stock_on_books",
 ]
 
 
@@ -1037,6 +1038,25 @@ async def _check_posting_origins(
     }
 
 
+async def _check_stock_on_books(
+    session: AsyncSession, company_id, user_id, *, fix: bool,
+) -> dict:
+    """Find stock the books do not carry: a lot on hand that records no inventory
+    account, and an inventory account whose balance differs from the stock recorded on
+    it (lot_origin.stock_off_books). Report-only: closing a gap needs the user to decide
+    where the value belongs."""
+    from celerp.services.lot_origin import stock_off_books
+
+    findings = await stock_off_books(session, company_id)
+    return {
+        "check": "stock_on_books",
+        "found": len(findings),
+        "fixed": 0,
+        "auto_fixable": False,
+        "details": findings[:100],
+    }
+
+
 _CHECK_FNS = {
     "missing_jes": _check_missing_jes,
     "uncaused_recognition_jes": _check_uncaused_recognition_jes,
@@ -1052,6 +1072,7 @@ _CHECK_FNS = {
     "contact_file_schema": _check_contact_file_schema,
     "physical_code_conflicts": _check_physical_code_conflicts,
     "posting_origins": _check_posting_origins,
+    "stock_on_books": _check_stock_on_books,
 }
 
 

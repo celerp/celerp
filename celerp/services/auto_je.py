@@ -30,7 +30,7 @@ from celerp.services.account_roles import (
 from celerp.services.business_time import business_date_of
 from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.line_measures import splitting_allowed
-from celerp.services.lot_origin import held_value, in_production
+from celerp.services.lot_origin import held_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.pick import doc_bound_lots, plan_lot_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line
@@ -2324,21 +2324,3 @@ async def book_opening_inventory(
         metadata_={"trigger": "opening_inventory.auto"},
         ts=today,
     )
-
-
-async def upsert_opening_inventory_je(session, *, company_id, user_id) -> None:
-    """Bring the opening inventory entry up to date for a report (book_opening_inventory).
-    A report can never fail because the books cannot take the entry: an unmapped or
-    unusable posting account, a period lock or an unreadable timezone leaves the books as
-    they are, and the posting accounts panel and the books check report the cause."""
-    from fastapi import HTTPException
-
-    try:
-        async with session.begin_nested():
-            await book_opening_inventory(session, company_id=company_id, user_id=user_id,
-                                         in_production=await in_production(session, company_id))
-    except PostingRoleError:
-        return
-    except HTTPException as exc:
-        if exc.status_code != 422:
-            raise

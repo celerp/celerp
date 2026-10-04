@@ -30,6 +30,7 @@ from mfg_runs import OPENING, WIP, give_back, issue, lines, receive, refusal, ro
 from stock_books import assert_settled, older_release_lot
 from test_cost_restatement import TZ, _item, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_mfg_wip_upgrade import _carried, _events, _facts, _job, _older_issue, _upgrade, in_production_slot  # noqa: F401
+from test_posting_roles_autoje import _unmap
 from test_posting_roles_lots import _lot
 from test_posting_roles_older_stock import _choose, _opening_entry, _restored, _without_accounting
 
@@ -159,8 +160,9 @@ async def test_a_run_on_books_from_elsewhere_is_reconciled_and_carries_on(client
     await _upgrade(session)
     assert (await _facts(session, auth, order))["wip_unresolved"] == "books from elsewhere"
     re = await role(session, auth, RETAINED)
-    # Books restored from a release without work in progress name no account for it yet: the
-    # reconciliation waits for one rather than picking it.
+    # With no account named for work in progress, the reconciliation waits for one rather
+    # than picking it.
+    await _unmap(session, auth, WIP)
     refusal(await reconcile(client, auth, order, [(raw, 40.0)], re, key="early"), 409, "wip_account_missing")
     r = await client.put(f"/accounting/posting-accounts/{WIP}", headers=auth["headers"], json={"code": "1130-WIP"})
     assert r.status_code == 200, r.text

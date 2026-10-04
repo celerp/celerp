@@ -599,12 +599,8 @@ async def test_ledger_debit_normal_account_balance(client):
 
 
 @pytest.mark.asyncio
-async def test_opening_inventory_je_excludes_inactive_items(client):
-    """Regression: upsert_opening_inventory_je() included sold/archived items in catalog_total.
-
-    Strategy: load balance sheet before and after selling an item.
-    The opening inventory balance should decrease by exactly that item's cost (200).
-    """
+async def test_opening_inventory_drops_by_the_cost_of_a_sold_item(client):
+    """Selling opening stock takes exactly its cost (200) off the opening inventory account."""
     tok = await _reg(client)
     auth = _h(tok)
 
@@ -620,8 +616,6 @@ async def test_opening_inventory_je_excludes_inactive_items(client):
     assert r2.status_code == 200
     sold_id = r2.json()["id"]
 
-    # Load balance sheet BEFORE selling - record OB JE amount
-    assert (await client.get("/accounting/balance-sheet", headers=auth)).status_code == 200
     r_led1 = await client.get("/accounting/ledger/1130-OB", headers=auth)
     assert r_led1.status_code == 200
     ob_before = sum(float(ln.get("debit", 0) or 0) - float(ln.get("credit", 0) or 0) for ln in r_led1.json()["lines"])
@@ -629,8 +623,6 @@ async def test_opening_inventory_je_excludes_inactive_items(client):
     # Sell the second item
     await sell_item(client, auth, sold_id)
 
-    # Load balance sheet AFTER selling
-    assert (await client.get("/accounting/balance-sheet", headers=auth)).status_code == 200
     r_led2 = await client.get("/accounting/ledger/1130-OB", headers=auth)
     assert r_led2.status_code == 200
     ob_after = sum(float(ln.get("debit", 0) or 0) - float(ln.get("credit", 0) or 0) for ln in r_led2.json()["lines"])

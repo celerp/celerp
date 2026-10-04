@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from company_backup_support import company, owner, token
 from migration_support import auth, maker
-from stock_books import older_release_lot
+from stock_books import book_older_opening, older_release_lot
 from test_posting_roles_race_pg import _until_blocked
 
 pytestmark = pytest.mark.asyncio
@@ -101,8 +101,7 @@ async def _older_books(engine, client):
             row = await s.get(Projection, {"company_id": cid, "entity_id": lot})
             row.state = {**row.state, _FIELD: "1130-P"}
         await s.commit()
-    r = await client.get("/accounting/balance-sheet", headers=auth(tok))
-    assert r.status_code == 200, r.text
+        await book_older_opening(s, cid, user)
     inv = (await _post(client, tok, "/docs", {"doc_type": "invoice", "total": 150.0, "line_items": [
         {"entity_id": sold, "name": "Lot", "quantity": 1, "unit_price": 150.0, "sell_by": "piece"}]}))["id"]
     await _post(client, tok, f"/docs/{inv}/finalize")

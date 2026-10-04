@@ -172,6 +172,26 @@ def unrecorded(items: list[Projection]) -> list[Projection]:
     return [r for r in items if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and held_value(r) is not None]
 
 
+async def stock_off_books(session: AsyncSession, company_id) -> list[dict]:
+    """What the books check reports about stock: each lot on hand holding value that
+    records no inventory account, and each account lots are carried on whose balance differs from
+    the stock on hand recorded on it. Read only; nothing is booked to close a gap."""
+    settings = await current_settings(session, company_id)
+    if SCHEMA_KEY not in settings:
+        return []
+    currency = settings.get("currency", "USD")
+    entries, items = await _posted_entries(session, company_id), await _items(session, company_id)
+    findings = [{"kind": "unplaced_lot", "entity_id": r.entity_id, "sku": (r.state or {}).get("sku")}
+                for r in sorted(unrecorded(items), key=lambda r: r.entity_id) if held_value(r)]
+    for code in sorted({code for role in _INVENTORY for code in scope_codes(settings, role)}):
+        room = round_money(_room(entries, items, code), currency)
+        if room:
+            books = round_money(_balance(entries, code), currency)
+            findings.append({"kind": "stock_gap", "account": code, "books": float(books),
+                             "stock": float(books - room)})
+    return findings
+
+
 def _draft(state: dict) -> bool:
     return str(state.get("status") or "").lower() == "draft"
 

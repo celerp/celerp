@@ -3521,6 +3521,11 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     doc_type = row.state.get("doc_type")
     if doc_type not in ("purchase_order", "bill", "consignment_in"):
         raise HTTPException(status_code=409, detail="receive is only valid for bills, purchase orders, and consignment_in documents")
+    if doc_type == "bill" and row.state.get("status") == "draft":
+        # A draft bill books nothing, so goods received on it would sit on no entry.
+        raise HTTPException(status_code=409, detail=(
+            "This bill is still a draft, so it has not booked these goods. "
+            "Finalize the bill first, then receive them."))
 
     location_uuid = None
     if payload.location_id:

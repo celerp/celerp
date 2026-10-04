@@ -40,7 +40,7 @@ from celerp.services.company_lock import locked_company
 from stock_books import assert_settled, older_release_lot
 from test_cost_restatement import TZ, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_money_stock_and_contact_invariants import _account_net
-from test_posting_roles_lot_origin import _books_match_lots, _open_books
+from test_posting_roles_lot_origin import _books_match_lots
 from test_posting_roles_lots import _forget_origin, _lot, _sell
 from test_posting_roles_merge import _merge
 from test_posting_roles_rollout import _startup
@@ -138,7 +138,6 @@ async def _net(session, auth, *accounts: str) -> tuple[float, ...]:
 
 async def _books(session, client, auth, purchased: float, opening: float) -> None:
     """1130-P and 1130-OB hold exactly the value of the lots on hand that record them."""
-    await _open_books(client, auth)
     assert await _books_match_lots(session, auth, "1130-P", "1130-OB") == {"1130-P": purchased, "1130-OB": opening}
 
 
@@ -659,23 +658,38 @@ async def _opening_inventory(session, auth) -> dict | None:
     return row.state if row is not None and row.state.get("status") == "posted" else None
 
 
-async def test_the_balance_sheet_leaves_opening_stock_unbooked_on_a_locked_business_day(
-        session, client, auth, monkeypatch):
+async def _book_opening(session, auth) -> None:
+    """Book the opening inventory entry the way the upgrade does for an older release."""
+    from decimal import Decimal
+
+    from celerp.services.auto_je import book_opening_inventory
+
+    await book_opening_inventory(session, company_id=auth["company_id"], user_id=auth["user_id"],
+                                 in_production=Decimal("0"))
+    await session.commit()
+
+
+async def test_opening_stock_is_refused_on_a_locked_business_day_though_the_servers_is_not(
+        session, auth, monkeypatch):
+    from fastapi import HTTPException
+
     tz, instant, host_day = _NEW_YORK
     await older_release_lot(session, auth["company_id"], auth["user_id"], 30.0)
     await _locked_through(session, auth, tz)
     _clock(monkeypatch, instant, host_day)
-    await _open_books(client, auth)
+    with pytest.raises(HTTPException):
+        await _book_opening(session, auth)
+    await session.rollback()
     assert await _opening_inventory(session, auth) is None
     assert await _net(session, auth, "1130-OB") == (0.0,)
 
 
-async def test_the_balance_sheet_books_opening_stock_on_the_business_day(session, client, auth, monkeypatch):
+async def test_opening_stock_is_dated_the_business_day_when_the_servers_day_is_locked(session, auth, monkeypatch):
     tz, instant, host_day = _BANGKOK
     await older_release_lot(session, auth["company_id"], auth["user_id"], 30.0)
     await _locked_through(session, auth, tz)
     _clock(monkeypatch, instant, host_day)
-    await _open_books(client, auth)
+    await _book_opening(session, auth)
     je = await _opening_inventory(session, auth)
     assert je is not None and je["ts"][:10] == "2026-10-02"
     assert await _net(session, auth, "1130-OB") == (30.0,)
@@ -684,7 +698,6 @@ async def test_the_balance_sheet_books_opening_stock_on_the_business_day(session
 async def test_a_company_created_with_lots_recording_their_account_never_enters(session, client, auth):
     assert await _marked(session, auth)
     lot = await _lot(client, auth, 30.0)
-    await _open_books(client, auth)
     row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": lot}, populate_existing=True)
     row.state = {k: v for k, v in row.state.items() if k != _FIELD}  # would be normalized if it entered
     await session.commit()

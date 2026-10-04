@@ -2223,14 +2223,12 @@ async def balance_sheet(
     as_of: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("view_financial_reports"),
-    user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Balance sheet as of a given date (default: all posted entries to date)."""
+    """Balance sheet as of a given date (default: all posted entries to date). Read only:
+    stock the books do not carry is reported by the books check (stock_on_books), never
+    booked here."""
     _require_iso_date(as_of, "as_of")
-    from celerp.services.auto_je import upsert_opening_inventory_je
-    await upsert_opening_inventory_je(session, company_id=company_id, user_id=user.id)
-    await session.commit()
 
     posted = await _je_rows(session, company_id)
     accounts = (

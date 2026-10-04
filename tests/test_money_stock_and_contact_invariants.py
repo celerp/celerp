@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 import types
 import uuid
 from datetime import datetime, timezone
@@ -114,8 +115,8 @@ async def test_kwd_manual_overpayment_uses_fils_not_cent_tolerance(client, sessi
 async def test_kwd_opening_inventory_posts_sub_cent_gap(client, session):
     auth = await _auth_company(session, "KWD")
     await older_release_lot(session, auth["company_id"], auth["user_id"], 0.005)
-    await auto_je.upsert_opening_inventory_je(
-        session, company_id=auth["company_id"], user_id=auth["user_id"])
+    await auto_je.book_opening_inventory(
+        session, company_id=auth["company_id"], user_id=auth["user_id"], in_production=Decimal("0"))
     await session.commit()
     session.expire_all()
     row = await session.get(

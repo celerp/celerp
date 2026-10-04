@@ -37,12 +37,6 @@ async def _remap(session, auth, role: str, code: str) -> None:
     await session.commit()
 
 
-async def _open_books(client, auth) -> None:
-    """Viewing the balance sheet brings the opening inventory entry up to date."""
-    r = await client.get("/accounting/balance-sheet", headers=auth["headers"])
-    assert r.status_code == 200, r.text
-
-
 async def _books_match_lots(session, auth, *accounts: str) -> dict[str, float]:
     """Each account's balance next to the value of the lots on hand that record it."""
     session.expire_all()
@@ -122,7 +116,6 @@ async def test_opening_stock_stays_on_its_own_inventory_account_through_remaps_s
     accounts = ("1130-OB", "1130-P", "1131", "1132")
     sold = await _lot(client, auth, 100.0, sku="OPEN-SOLD")
     kept = await _lot(client, auth, 30.0, sku="OPEN-KEPT")
-    await _open_books(client, auth)
     assert (await _state(session, auth, sold))[_FIELD] == "1130-OB"
     assert await _books_match_lots(session, auth, *accounts) == {
         "1130-OB": 130.0, "1130-P": 0.0, "1131": 0.0, "1132": 0.0}
@@ -130,7 +123,6 @@ async def test_opening_stock_stays_on_its_own_inventory_account_through_remaps_s
     await _remap(session, auth, "inventory_purchased", await _new_inventory_account(client, auth, "1131"))
     await _remap(session, auth, "inventory_opening", await _new_inventory_account(client, auth, "1132"))
     later = await _lot(client, auth, 40.0, sku="OPEN-LATER")
-    await _open_books(client, auth)
     assert (await _state(session, auth, later))[_FIELD] == "1132"
     assert await _books_match_lots(session, auth, *accounts) == {
         "1130-OB": 130.0, "1130-P": 0.0, "1131": 0.0, "1132": 40.0}
@@ -139,13 +131,11 @@ async def test_opening_stock_stays_on_its_own_inventory_account_through_remaps_s
     assert _credits(await _state(session, auth, f"je:auto:{inv}:fin")) == {"1130-OB": 100.0}
     r = await client.post(f"/docs/{inv}/fulfill-lines", headers=auth["headers"], json={"line_entity_ids": [sold]})
     assert r.status_code == 200, r.text
-    await _open_books(client, auth)
     assert await _books_match_lots(session, auth, *accounts) == {
         "1130-OB": 30.0, "1130-P": 0.0, "1131": 0.0, "1132": 40.0}
 
     merged = await _merged(client, auth, [later, kept])
     assert (await _state(session, auth, merged["id"]))[_FIELD] == "1132"
-    await _open_books(client, auth)
     assert await _books_match_lots(session, auth, *accounts) == {
         "1130-OB": 0.0, "1130-P": 0.0, "1131": 0.0, "1132": 70.0}
 
@@ -166,7 +156,6 @@ async def test_received_stock_records_the_account_its_receipt_booked(session, cl
     assert r.status_code == 200, r.text
     [parcel] = (await _state(session, auth, doc))["received_item_ids"]
     assert (await _state(session, auth, parcel))[_FIELD] == "1130-P"
-    await _open_books(client, auth)
     assert await _books_match_lots(session, auth, "1130-OB", "1130-P", "1132") == {
         "1130-OB": 0.0, "1130-P": 40.0, "1132": 0.0}
 
