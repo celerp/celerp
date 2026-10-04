@@ -56,6 +56,7 @@ from celerp.models.projections import Projection
 from celerp.projections.engine import Transition
 from celerp.services.account_roles import (
     PostingRoleError,
+    continue_role,
     current_settings,
     lot_account,
     resolve_many,
@@ -567,9 +568,9 @@ async def draft_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
     """Whether an applied item event moved a lot across the line between draft and stock,
     read from the transition the row lock applied it under (ProjectionEngine.apply_event),
     so two requests racing to move the same lot see each other's move and only one books
-    it. Made available, the lot keeps the account it recorded before or takes the opening
-    inventory account in use now, and its value is booked there against retained
-    earnings; returned to draft, its value comes off the account it recorded. Every
+    it. Made available, the lot keeps the account it recorded before (which must still take
+    postings, account_roles.continue_role) or takes the opening inventory account in use
+    now, and its value is booked there against retained earnings; returned to draft, its value comes off the account it recorded. Every
     account is checked as any new entry's is (account_roles.resolve_many), and the entry
     is dated the business day the operation recorded (``ts``) or today. The period lock is
     the event's own (events.engine). With Accounting off, nothing is booked. Anything
@@ -587,10 +588,12 @@ async def draft_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
     value = held_value(SimpleNamespace(state=state, consignment_flag=state.get("consignment_flag")))
     if value is None:
         return None
+    opening = AccountRole.INVENTORY_OPENING.value
     code = before.get(LOT_ACCOUNT_FIELD) if made_available else lot_account(before)
     if not code:
-        opening = AccountRole.INVENTORY_OPENING.value
         code = (await resolve_many(session, entry.company_id, [opening]))[opening]
+    elif made_available:
+        code = await continue_role(session, entry.company_id, opening, code)
     return DraftBoundary(made_available=made_available, value=value, code=code,
                          record=not before.get(LOT_ACCOUNT_FIELD) and made_available,
                          day=await entry_day(session, entry.company_id, (entry.data or {}).get("ts")))

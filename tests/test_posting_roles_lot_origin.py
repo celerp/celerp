@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD
 from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
 from celerp.services.fulfill import execute_fulfill, execute_unfulfill
@@ -168,3 +169,37 @@ async def test_received_stock_records_the_account_its_receipt_booked(session, cl
     await _open_books(client, auth)
     assert await _books_match_lots(session, auth, "1130-OB", "1130-P", "1132") == {
         "1130-OB": 0.0, "1130-P": 40.0, "1132": 0.0}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unfit", ["inactive", "heading"])
+async def test_a_draft_made_available_again_is_refused_while_its_account_cannot_take_it(
+        session, client, auth, unfit):
+    """A lot returned to draft keeps the opening account it recorded. Made available
+    again it goes back there, so when that account can no longer take postings the move
+    is refused, naming the account, and nothing is booked."""
+    h = auth["headers"]
+    r = await client.post("/items", headers=h, json={"sku": "RDA-1", "name": "Lot", "quantity": 1,
+                                                     "sell_by": "piece", "cost_total": 25.0})
+    lot = r.json()["id"]
+    for path in ("make-available", "revert-to-draft"):
+        r = await client.post(f"/items/bulk/{path}", headers=h, json={"entity_ids": [lot]})
+        assert r.status_code == 200, r.text
+    assert (await _state(session, auth, lot))[LOT_ACCOUNT_FIELD] == "1130-OB"
+    await _remap(session, auth, "inventory_opening", await _new_inventory_account(client, auth, "1131"))
+    if unfit == "inactive":
+        r = await client.patch("/accounting/accounts/1130-OB", headers=h, json={"is_active": False})
+    else:
+        r = await client.post("/accounting/accounts", headers=h, json={
+            "code": "1133", "name": "Under opening", "account_type": "asset", "parent_code": "1130-OB"})
+    assert r.status_code == 200, r.text
+    before = await _account_net(session, auth["company_id"], "1130-OB")
+
+    r = await client.post("/items/bulk/make-available", headers=h, json={"entity_ids": [lot]})
+
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "posting.continued_account_unusable" and "1130-OB" in detail["message"]
+    session.expire_all()
+    assert (await _state(session, auth, lot))["status"] == "draft"
+    assert await _account_net(session, auth["company_id"], "1130-OB") == before
