@@ -575,18 +575,19 @@ async def storing(session: AsyncSession, company_id) -> AsyncIterator[CompanyFil
 
     The company is held from before the first file is stored until the commit, so a company
     reset either waits and then deletes the files with the company, or has already deleted
-    the company and nothing is stored (``CompanyGone``). When the block fails or its commit
-    does, every file stored in it is deleted again, thumbnail included."""
+    the company and nothing is stored (``CompanyGone``). When the block fails, every file
+    stored in it is deleted again, thumbnail included. A failing commit keeps them: it may
+    have landed before the error arrived, leaving records that point at the files."""
     if not await hold_company(session, company_id):
         raise CompanyGone()
     files = CompanyFiles(company_id)
     try:
         yield files
-        await session.commit()
     except BaseException:
         await session.rollback()
         await files.discard_all()
         raise
+    await session.commit()
 
 
 # Entity type -> the event that attaches a stored file to one entity of that type.
