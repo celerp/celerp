@@ -36,6 +36,18 @@ async def _meta(session, key: str) -> str | None:
     return await conn.run_sync(lambda c: get_meta(c, key))
 
 
+async def _forget_backfills(session, *keys: str) -> None:
+    """Record that the install-wide startup backfills have not run yet."""
+    from sqlalchemy import text
+
+    from celerp.migrations._data_reconcile import _META_TABLE
+
+    conn = await session.connection()
+    await conn.run_sync(lambda c: c.execute(text(f"DELETE FROM {_META_TABLE} WHERE key = ANY(:k)"),
+                                            {"k": list(keys)}))
+    await session.commit()
+
+
 async def _state(session, company_id, entity_id: str) -> dict:
     session.expire_all()
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
@@ -235,6 +247,7 @@ async def test_a_held_back_start_refuses_changes_until_a_start_brings_the_record
                             location_id=None, source="api", idempotency_key="gadget-1", metadata_={}))
     await session.commit()
     await pre366.last_started_on_older_release(session)
+    await _forget_backfills(session, STATUS_DOC_BACKFILL_KEY, COGS_BACKFILL_KEY)
     run = old["runs"]["settle"]
 
     await pre366.start()
