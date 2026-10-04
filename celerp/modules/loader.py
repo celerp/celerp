@@ -409,9 +409,54 @@ def read_manifest(pkg_path: Path) -> dict:
 def _read_depends_on(pkg_path: Path) -> list[str]:
     """Extract PLUGIN_MANIFEST['depends_on'] from a module's __init__.py via AST.
 
-    Returns empty list if the manifest or key is absent or unparseable.
+    Returns empty list if the manifest or key is absent or unparseable. Raises
+    :class:`ModuleLoadError` if the key is present but malformed.
     """
-    return list(read_manifest(pkg_path).get("depends_on") or [])
+    return _manifest_depends_on(read_manifest(pkg_path).get("depends_on"))
+
+
+def _manifest_depends_on(value) -> list[str]:
+    """The validated ``depends_on`` list (None means no dependencies)."""
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)) or not all(
+            isinstance(dep, str) and dep.strip() for dep in value):
+        raise ModuleLoadError(
+            f"'depends_on' must be a list of module name strings, not {value!r}.")
+    return list(value)
+
+
+def _validated_manifest(raw) -> dict:
+    """Check a module's PLUGIN_MANIFEST once and return the copy every later
+    read uses, so a malformed value is refused with its reason here instead of
+    raising out of the load pass at some later raw read. ``slots`` is
+    normalized to a dict (None means none) and ``depends_on`` to a list; the
+    contents of ``slots`` are checked by :func:`_validate_slots`.
+    """
+    if not isinstance(raw, dict):
+        raise ModuleLoadError(
+            f"PLUGIN_MANIFEST must be a dict, not {type(raw).__name__}.")
+    missing = [f for f in ("name", "version") if not raw.get(f)]
+    if missing:
+        raise ModuleLoadError(f"Manifest missing required fields: {', '.join(missing)}.")
+    for field in ("name", "version"):
+        if not isinstance(raw[field], str) or not raw[field].strip():
+            raise ModuleLoadError(
+                f"'{field}' must be a non-empty string, not {type(raw[field]).__name__}.")
+    for key in ("api_routes", "ui_routes"):
+        value = raw.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ModuleLoadError(
+                f"'{key}' must be a dotted module path string, not {type(value).__name__}.")
+    slots_manifest = raw.get("slots")
+    if slots_manifest is None:
+        slots_manifest = {}
+    if not isinstance(slots_manifest, dict):
+        raise ModuleLoadError(
+            f"'slots' must be a dict of slot name to entries, "
+            f"not {type(slots_manifest).__name__}.")
+    return {**raw, "slots": slots_manifest,
+            "depends_on": _manifest_depends_on(raw.get("depends_on"))}
 
 
 def _topo_sort(pkg_paths: list[Path], enabled: set[str], errors: dict[str, str] | None = None) -> list[Path]:
@@ -421,13 +466,19 @@ def _topo_sort(pkg_paths: list[Path], enabled: set[str], errors: dict[str, str] 
     """
     path_by_name = {p.name: p for p in pkg_paths}
     deps_by_name: dict[str, list[str]] = {}
+    skipped: set[str] = set()
     for p in pkg_paths:
-        deps_by_name[p.name] = _read_depends_on(p)
+        try:
+            deps_by_name[p.name] = _read_depends_on(p)
+        except ModuleLoadError as exc:
+            log.error("Module %r rejected: %s", p.name, exc)
+            if errors is not None:
+                errors.setdefault(p.name, str(exc))
+            skipped.add(p.name)
 
     result: list[Path] = []
     done: set[str] = set()       # fully resolved and appended to result
     on_stack: set[str] = set()   # currently being visited (for cycle detection)
-    skipped: set[str] = set()
 
     def _visit(name: str) -> None:
         if name in done or name in skipped:
@@ -841,16 +892,17 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
         sys.modules.pop(pkg_name, None)
         raise ModuleLoadError("No PLUGIN_MANIFEST in __init__.py.")
 
-    # Validate required manifest fields
-    missing = [f for f in ("name", "version") if not manifest.get(f)]
-    if missing:
-        log.error("Module %r manifest missing required fields: %s — skipping", pkg_name, missing)
-        sys.modules.pop(pkg_name, None)
-        raise ModuleLoadError(f"Manifest missing required fields: {', '.join(missing)}.")
+    try:
+        manifest = _validated_manifest(manifest)
+    except ModuleLoadError as exc:
+        log.error("Module %r rejected: invalid manifest (%s)", pkg_name, exc)
+        _evict_module(pkg_name)
+        raise
 
     # Validate hard deps are loaded
-    for dep in (manifest.get("depends_on") or []):
+    for dep in manifest["depends_on"]:
         if not any(m["name"] == dep for m in _loaded):
+            _evict_module(pkg_name)
             raise ModuleLoadError(
                 f"Module {pkg_name!r} requires {dep!r} which is not loaded"
             )
@@ -860,7 +912,7 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
         ast_violations: set[str] = set()
         for route_key in ("api_routes", "ui_routes"):
             route_mod = manifest.get(route_key)
-            if route_mod and isinstance(route_mod, str):
+            if route_mod:
                 ast_violations |= _ast_scan_module_file(pkg_path, route_mod)
         if ast_violations:
             violation_list = ", ".join(sorted(ast_violations))
@@ -881,7 +933,7 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
                 f"  {_MODULE_AI_API_URL}"
             )
 
-    slots_manifest = manifest.get("slots") or {}
+    slots_manifest = manifest["slots"]
 
     # Check every slot entry BEFORE any is registered, so a module with one bad
     # entry is refused whole (no half-registered slots) with the reason named,
@@ -956,7 +1008,7 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
         "Module %r loaded (v%s, slots: %s)",
         manifest["name"],
         manifest["version"],
-        ", ".join(manifest.get("slots", {}).keys()) or "none",
+        ", ".join(slots_manifest) or "none",
     )
     return manifest
 
@@ -1415,7 +1467,7 @@ def _validate_slot_entry(slot: str, item) -> None:
 
 
 def _validate_slots(
-    pkg_name: str, pkg_path: Path, slots_manifest, *, trusted: bool
+    pkg_name: str, pkg_path: Path, slots_manifest: dict, *, trusted: bool
 ) -> dict | None:
     """Check a module's whole ``slots`` manifest before anything is registered.
 
@@ -1424,12 +1476,8 @@ def _validate_slots(
     its callable proven (_check_slot_callable) when the slot is callable, and
     passes its slot's own validator. Returns the prepared search_provider
     descriptor, or None. Raises :class:`ModuleLoadError` on any violation.
+    ``slots_manifest`` is already a dict (:func:`_validated_manifest`).
     """
-    if not isinstance(slots_manifest, dict):
-        raise ModuleLoadError(
-            f"'slots' must be a dict of slot name to entries, "
-            f"not {type(slots_manifest).__name__}."
-        )
     prepared = None
     for slot_name, contribution in slots_manifest.items():
         if slot_name == _SEARCH_PROVIDER_SLOT:
