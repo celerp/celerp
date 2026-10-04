@@ -141,10 +141,11 @@ async def test_capture(client, session):
     shortage = await _shortage(client, session)
     shape = await _shape(client, session)
     mixed = await _mixed(client, session)
+    migrated = await _migrated(client, session)
     with open(OUT, "w") as f:
         json.dump({"release": __import__("celerp").__version__,
                    "companies": {"main": main, "generic": generic_co, "shortage": shortage, "shape": shape,
-                                 "mixed": mixed}},
+                                 "mixed": mixed, "migrated": migrated}},
                   f, indent=1, sort_keys=True, default=str)
 
 
@@ -265,3 +266,33 @@ async def _mixed(client, session):
     await _ok(await client.post(f"/manufacturing/{runs['recipe']}/issue", headers=h, json={}))
     return await _dump(session, auth, {"H": hh, "J": j, "K": k, "FG": fg, "BOM_KEPT": boms["boms"]["kept"],
                                        "BOM_DROPPED": boms["boms"]["dropped"]}, runs)
+
+
+async def _migrated(client, session):
+    """An invoice brought over by a data migration with part of its goods delivered before
+    then, recorded as the migration records them: a sold lot per delivery, made from the line's
+    item. Line 0 orders 5 of product FG (recipe 1 x M), 2 delivered; line 1 orders 3 of SPL,
+    units split off M under their own SKU, 1 delivered."""
+    from celerp_docs.routes import record_historical_delivery
+
+    auth = await _company(session)
+    h = auth["headers"]
+    m = await _item(client, auth, 20.0, qty=10, sku="COMP-M")   # 10 at 2
+    fg = await _item(client, auth, 0.0, qty=0, sku="FG-4")
+    await _ok(await client.put(f"/manufacturing/items/{fg}/recipe", headers=h, json={
+        "output_qty": 1, "components": [{"item_id": m, "quantity": 1}], "labor": [], "overhead": []}))
+    spl = (await _ok(await client.post(f"/items/{m}/split", headers=h, json={
+        "children": [{"sku": "SPL-1", "quantity": 4}]})))["children"][0]["id"]
+    await _balance_sheet(client, auth)
+    invoice = (await _ok(await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [
+        {"item_id": fg, "sku": "FG-4", "name": "Made", "quantity": 5, "unit_price": 10, "line_total": 50},
+        {"item_id": spl, "sku": "SPL-1", "name": "Split", "quantity": 3, "unit_price": 10, "line_total": 30}],
+        "total": 80})))["id"]
+    await _ok(await client.post(f"/docs/{invoice}/finalize", headers=h))
+    lots = {"LOT_FG": f"item:{uuid.uuid4()}", "LOT_SPL": f"item:{uuid.uuid4()}"}
+    await record_historical_delivery(session, auth["company_id"], invoice, lines=[
+        {"line": 0, "item_id": fg, "quantity": 2, "cost": 4, "lot_id": lots["LOT_FG"], "date": "2025-02-03"},
+        {"line": 1, "item_id": spl, "quantity": 1, "cost": 2, "lot_id": lots["LOT_SPL"], "date": "2025-02-03"}],
+        actor_id=auth["user_id"], source="migration", idempotency_key=f"migration:{invoice}:delivered")
+    await session.commit()
+    return await _dump(session, auth, {"M": m, "FG": fg, "SPL": spl, "INVOICE": invoice, **lots}, {})

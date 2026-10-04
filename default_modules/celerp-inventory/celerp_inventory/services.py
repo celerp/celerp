@@ -594,6 +594,15 @@ def _is_structural_product_anchor_state(state: dict) -> bool:
     )
 
 
+def product_of_stock(entity_id: str, state: dict) -> str | None:
+    """The product that stock taken from this item is stock of, as the item records it: the
+    item itself when it is a product, else the product it links to; None when it records
+    none (units split off under another SKU, say). Never inferred from a SKU."""
+    if _is_structural_product_anchor_state(state):
+        return entity_id
+    return state.get("catalog_item_id") or state.get("parent_item_id") or None
+
+
 def _is_product_anchor_state(state: dict) -> bool:
     """Infer a product root only when historical state is unambiguous."""
     if not _is_structural_product_anchor_state(state):

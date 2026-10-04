@@ -27,6 +27,7 @@ PLUGIN_MANIFEST = {
         "on_modules_ready": [
             {"handler": "celerp_docs.received_legacy:move_legacy_imports_hook"},
             {"handler": "celerp_docs.legacy_receipts:record_legacy_receipts_hook"},
+            {"handler": "celerp_docs.historical_lots:link_historical_lots_hook"},
         ],
         "projection_handler": [
             {"prefix": "doc.", "handler": "celerp_docs.doc_projections:apply_documents_event"},

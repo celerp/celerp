@@ -1949,6 +1949,1400 @@
    },
    "user_id": "381376f8-661d-48ea-8b6c-85e47c47553a"
   },
+  "migrated": {
+   "accounts": [
+    {
+     "account_type": "asset",
+     "code": "1000",
+     "name": "Assets",
+     "parent_code": null
+    },
+    {
+     "account_type": "asset",
+     "code": "1100",
+     "name": "Current Assets",
+     "parent_code": "1000"
+    },
+    {
+     "account_type": "asset",
+     "code": "1110",
+     "name": "Cash and Cash Equivalents",
+     "parent_code": "1100"
+    },
+    {
+     "account_type": "asset",
+     "code": "1120",
+     "name": "Accounts Receivable",
+     "parent_code": "1100"
+    },
+    {
+     "account_type": "asset",
+     "code": "1130",
+     "name": "Inventory",
+     "parent_code": "1100"
+    },
+    {
+     "account_type": "asset",
+     "code": "1130-P",
+     "name": "Inventory - Purchased",
+     "parent_code": "1130"
+    },
+    {
+     "account_type": "asset",
+     "code": "1130-OB",
+     "name": "Inventory - Opening Balance",
+     "parent_code": "1130"
+    },
+    {
+     "account_type": "asset",
+     "code": "1130-FRT",
+     "name": "Inventory - Freight Clearing",
+     "parent_code": "1130"
+    },
+    {
+     "account_type": "asset",
+     "code": "1130-INS",
+     "name": "Inventory - Insurance Clearing",
+     "parent_code": "1130"
+    },
+    {
+     "account_type": "asset",
+     "code": "1130-DTY",
+     "name": "Inventory - Import Duty Clearing",
+     "parent_code": "1130"
+    },
+    {
+     "account_type": "asset",
+     "code": "1130-IVT",
+     "name": "Inventory - Non-Recoverable Import VAT Clearing",
+     "parent_code": "1130"
+    },
+    {
+     "account_type": "asset",
+     "code": "1140",
+     "name": "Prepaid Expenses",
+     "parent_code": "1100"
+    },
+    {
+     "account_type": "asset",
+     "code": "1150",
+     "name": "VAT Receivable (Input VAT)",
+     "parent_code": "1100"
+    },
+    {
+     "account_type": "asset",
+     "code": "1200",
+     "name": "Non-Current Assets",
+     "parent_code": "1000"
+    },
+    {
+     "account_type": "asset",
+     "code": "1210",
+     "name": "Property, Plant and Equipment",
+     "parent_code": "1200"
+    },
+    {
+     "account_type": "asset",
+     "code": "1220",
+     "name": "Accumulated Depreciation",
+     "parent_code": "1200"
+    },
+    {
+     "account_type": "asset",
+     "code": "1230",
+     "name": "Intangible Assets",
+     "parent_code": "1200"
+    },
+    {
+     "account_type": "liability",
+     "code": "2000",
+     "name": "Liabilities",
+     "parent_code": null
+    },
+    {
+     "account_type": "liability",
+     "code": "2100",
+     "name": "Current Liabilities",
+     "parent_code": "2000"
+    },
+    {
+     "account_type": "liability",
+     "code": "2110",
+     "name": "Accounts Payable",
+     "parent_code": "2100"
+    },
+    {
+     "account_type": "liability",
+     "code": "2120",
+     "name": "VAT Payable (Output VAT)",
+     "parent_code": "2100"
+    },
+    {
+     "account_type": "liability",
+     "code": "2130",
+     "name": "Withholding Tax Payable",
+     "parent_code": "2100"
+    },
+    {
+     "account_type": "liability",
+     "code": "2140",
+     "name": "Accrued Expenses",
+     "parent_code": "2100"
+    },
+    {
+     "account_type": "liability",
+     "code": "2150",
+     "name": "Social Security Payable",
+     "parent_code": "2100"
+    },
+    {
+     "account_type": "liability",
+     "code": "2200",
+     "name": "Non-Current Liabilities",
+     "parent_code": "2000"
+    },
+    {
+     "account_type": "liability",
+     "code": "2210",
+     "name": "Long-term Loans",
+     "parent_code": "2200"
+    },
+    {
+     "account_type": "equity",
+     "code": "3000",
+     "name": "Equity",
+     "parent_code": null
+    },
+    {
+     "account_type": "equity",
+     "code": "3100",
+     "name": "Registered Capital",
+     "parent_code": "3000"
+    },
+    {
+     "account_type": "equity",
+     "code": "3200",
+     "name": "Retained Earnings",
+     "parent_code": "3000"
+    },
+    {
+     "account_type": "equity",
+     "code": "3300",
+     "name": "Current Year Earnings",
+     "parent_code": "3000"
+    },
+    {
+     "account_type": "revenue",
+     "code": "4000",
+     "name": "Revenue",
+     "parent_code": null
+    },
+    {
+     "account_type": "revenue",
+     "code": "4100",
+     "name": "Sales Revenue",
+     "parent_code": "4000"
+    },
+    {
+     "account_type": "revenue",
+     "code": "4200",
+     "name": "Service Revenue",
+     "parent_code": "4000"
+    },
+    {
+     "account_type": "revenue",
+     "code": "4300",
+     "name": "Other Income",
+     "parent_code": "4000"
+    },
+    {
+     "account_type": "revenue",
+     "code": "4400",
+     "name": "Interest Income",
+     "parent_code": "4000"
+    },
+    {
+     "account_type": "cogs",
+     "code": "5000",
+     "name": "Cost of Goods Sold",
+     "parent_code": null
+    },
+    {
+     "account_type": "cogs",
+     "code": "5100",
+     "name": "Cost of Goods Sold",
+     "parent_code": "5000"
+    },
+    {
+     "account_type": "cogs",
+     "code": "5200",
+     "name": "Direct Labor",
+     "parent_code": "5000"
+    },
+    {
+     "account_type": "cogs",
+     "code": "5300",
+     "name": "Manufacturing Overhead",
+     "parent_code": "5000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6000",
+     "name": "Operating Expenses",
+     "parent_code": null
+    },
+    {
+     "account_type": "expense",
+     "code": "6100",
+     "name": "Salaries and Wages",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6200",
+     "name": "Rent",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6300",
+     "name": "Utilities",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6400",
+     "name": "Depreciation",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6500",
+     "name": "Professional Fees",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6600",
+     "name": "Marketing and Advertising",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6700",
+     "name": "Insurance",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6800",
+     "name": "Office Supplies",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6900",
+     "name": "Travel and Transportation",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6950",
+     "name": "Miscellaneous Expenses",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6960",
+     "name": "Foreign Exchange Difference",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6970",
+     "name": "Inventory Shrinkage & Write-offs",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "asset",
+     "code": "1111",
+     "name": "Default Bank Account (Checking)",
+     "parent_code": "1110"
+    }
+   ],
+   "company": {
+    "name": "CostCo",
+    "settings": {
+     "currency": "USD",
+     "sequences": {
+      "invoice": {
+       "day": 4,
+       "month": 10,
+       "next": 2,
+       "pattern": "{PREFIX}-{YY}{MM}-{####}",
+       "prefix": "INV",
+       "year": 2026
+      },
+      "proforma": {
+       "day": 4,
+       "month": 10,
+       "next": 2,
+       "pattern": "{PREFIX}-{YY}{MM}-{####}",
+       "prefix": "PF",
+       "year": 2026
+      }
+     },
+     "timezone": "Pacific/Kiritimati"
+    }
+   },
+   "company_id": "b1ba9e9e-db5b-4570-8a32-0950028ed14d",
+   "items": {
+    "FG": "item:f6523f12-712f-4988-a93b-02f504a2fe00",
+    "INVOICE": "doc:PF-2610-0001",
+    "LOT_FG": "item:58d29e48-e577-446f-a96a-46bf5db1b8bc",
+    "LOT_SPL": "item:0a05f3c4-fcf7-43fb-b2c2-323d0244b66c",
+    "M": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+    "SPL": "item:f6716c79-92c3-4944-9035-c97c27cd978a"
+   },
+   "ledger": [
+    {
+     "actor": true,
+     "data": {
+      "allow_splitting": true,
+      "attributes": {},
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "quantity": 10.0,
+      "sell_by": "piece",
+      "sku": "COMP-M",
+      "status": "available",
+      "tax_codes": []
+     },
+     "entity_id": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+     "entity_type": "item",
+     "event_type": "item.created",
+     "idempotency_key": "1a582f22-9135-49ea-a651-8723f28819a9",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "new_price": 20.0,
+      "price_type": "cost_total"
+     },
+     "entity_id": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+     "entity_type": "item",
+     "event_type": "item.pricing.set",
+     "idempotency_key": "1a582f22-9135-49ea-a651-8723f28819a9:price:cost_total",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "allow_splitting": true,
+      "attributes": {},
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "quantity": 0.0,
+      "sell_by": "piece",
+      "sku": "FG-4",
+      "status": "available",
+      "tax_codes": []
+     },
+     "entity_id": "item:f6523f12-712f-4988-a93b-02f504a2fe00",
+     "entity_type": "item",
+     "event_type": "item.created",
+     "idempotency_key": "ee5cd5a5-6411-4b72-bfba-df5e220bd5eb",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "new_price": 0.0,
+      "price_type": "cost_total"
+     },
+     "entity_id": "item:f6523f12-712f-4988-a93b-02f504a2fe00",
+     "entity_type": "item",
+     "event_type": "item.pricing.set",
+     "idempotency_key": "ee5cd5a5-6411-4b72-bfba-df5e220bd5eb:price:cost_total",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "recipe": {
+       "components": [
+        {
+         "item_id": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+         "line_cost": 2.0,
+         "quantity": 1.0,
+         "sku": "COMP-M",
+         "unit": "piece",
+         "unit_cost": 2.0
+        }
+       ],
+       "labor": [],
+       "labor_cost": 0.0,
+       "materials_cost": 2.0,
+       "output_qty": 1.0,
+       "overhead": [],
+       "overhead_cost": 0.0,
+       "unit_cost": 2.0
+      }
+     },
+     "entity_id": "item:f6523f12-712f-4988-a93b-02f504a2fe00",
+     "entity_type": "item",
+     "event_type": "item.recipe.set",
+     "idempotency_key": "efaa39dc-ef3c-4018-878b-5ca7b443d1e4",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "new_price": 2.0,
+      "price_type": "cost_price"
+     },
+     "entity_id": "item:f6523f12-712f-4988-a93b-02f504a2fe00",
+     "entity_type": "item",
+     "event_type": "item.pricing.set",
+     "idempotency_key": "3fe628e6-0fb2-4949-8581-84402fe8ffc2",
+     "metadata": {},
+     "source": "auto",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "allow_splitting": true,
+      "attributes": {
+       "pieces": 4
+      },
+      "barcode": "000001",
+      "cost_base": 20.0,
+      "cost_landed": 0.0,
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "purchase_conversion_factor": 1,
+      "purchase_unit": "piece",
+      "quantity": 4.0,
+      "sell_by": "piece",
+      "sku": "SPL-1",
+      "status": "available",
+      "tax_codes": []
+     },
+     "entity_id": "item:f6716c79-92c3-4944-9035-c97c27cd978a",
+     "entity_type": "item",
+     "event_type": "item.created",
+     "idempotency_key": "d2b7a2fb-ec48-46fb-876d-85e42a7aecc3",
+     "metadata": {
+      "parent_id": "item:bbb1003b-230e-4601-81de-496a53bf7140"
+     },
+     "source": "api",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "parent_id": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+      "parent_sku": "COMP-M",
+      "pieces": null,
+      "qty": 4.0,
+      "weight": null
+     },
+     "entity_id": "item:f6716c79-92c3-4944-9035-c97c27cd978a",
+     "entity_type": "item",
+     "event_type": "item.split_from",
+     "idempotency_key": "0546ecc9-df2d-42a9-95aa-068b34481ce7",
+     "metadata": {
+      "reason": "from_split"
+     },
+     "source": "api",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "new_price": 8.0,
+      "price_type": "cost_total"
+     },
+     "entity_id": "item:f6716c79-92c3-4944-9035-c97c27cd978a",
+     "entity_type": "item",
+     "event_type": "item.pricing.set",
+     "idempotency_key": "315f10b3-a9f7-4a94-8214-8bcf1bfb768d",
+     "metadata": {
+      "reason": "from_split"
+     },
+     "source": "api",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "new_qty": 6.0
+     },
+     "entity_id": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+     "entity_type": "item",
+     "event_type": "item.quantity.adjusted",
+     "idempotency_key": "80f89b83-1c4f-4994-b6b9-3d29b1a01b32",
+     "metadata": {
+      "reason": "split_parent"
+     },
+     "source": "api",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "new_price": 12.0,
+      "price_type": "cost_total"
+     },
+     "entity_id": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+     "entity_type": "item",
+     "event_type": "item.pricing.set",
+     "idempotency_key": "3c4cb264-ae4c-419a-8d3e-22763f61b489",
+     "metadata": {
+      "reason": "split_parent"
+     },
+     "source": "api",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "child_ids": [
+       "item:f6716c79-92c3-4944-9035-c97c27cd978a"
+      ],
+      "child_skus": [
+       "SPL-1"
+      ],
+      "children_detail": [
+       {
+        "child_id": "item:f6716c79-92c3-4944-9035-c97c27cd978a",
+        "child_sku": "SPL-1",
+        "cost_after": 12.0,
+        "cost_before": 20.0,
+        "origin_event_id": 8,
+        "qty_after": 6.0,
+        "qty_before": 10.0
+       }
+      ],
+      "delta": null,
+      "parent_sku": "COMP-M",
+      "quantities": [
+       4.0
+      ],
+      "weight_unit": "gram"
+     },
+     "entity_id": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+     "entity_type": "item",
+     "event_type": "item.split",
+     "idempotency_key": "60ebcf1d-3e10-48ac-9e1e-0eb02aa4308e",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "entries": [
+       {
+        "account": "1130-OB",
+        "credit": 0.0,
+        "debit": 20.0
+       },
+       {
+        "account": "3200",
+        "credit": 20.0,
+        "debit": 0.0
+       }
+      ],
+      "memo": "Opening inventory balance (pre-system stock)",
+      "ts": "2026-10-04"
+     },
+     "entity_id": "je:auto:opening-inventory:b1ba9e9e-db5b-4570-8a32-0950028ed14d",
+     "entity_type": "journal_entry",
+     "event_type": "acc.journal_entry.created",
+     "idempotency_key": "opening-inv:b1ba9e9e-db5b-4570-8a32-0950028ed14d:c:20.0:2026-10-04",
+     "metadata": {
+      "trigger": "opening_inventory.auto"
+     },
+     "source": "auto_je",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "ts": "2026-10-04"
+     },
+     "entity_id": "je:auto:opening-inventory:b1ba9e9e-db5b-4570-8a32-0950028ed14d",
+     "entity_type": "journal_entry",
+     "event_type": "acc.journal_entry.posted",
+     "idempotency_key": "opening-inv:b1ba9e9e-db5b-4570-8a32-0950028ed14d:p:20.0:2026-10-04",
+     "metadata": {
+      "trigger": "opening_inventory.auto"
+     },
+     "source": "auto_je",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "amount_outstanding": 80.0,
+      "amount_paid": 0.0,
+      "currency": "USD",
+      "discount": 0,
+      "doc_taxes": [],
+      "doc_type": "invoice",
+      "issue_date": "2026-10-04",
+      "line_items": [
+       {
+        "item_id": "item:f6523f12-712f-4988-a93b-02f504a2fe00",
+        "line_total": 50.0,
+        "name": "Made",
+        "quantity": 5.0,
+        "sku": "FG-4",
+        "taxes": [],
+        "unit_price": 10.0
+       },
+       {
+        "item_id": "item:f6716c79-92c3-4944-9035-c97c27cd978a",
+        "line_total": 30.0,
+        "name": "Split",
+        "quantity": 3.0,
+        "sku": "SPL-1",
+        "taxes": [],
+        "unit_price": 10.0
+       }
+      ],
+      "ref_id": "PF-2610-0001",
+      "shipping": 0,
+      "status": "draft",
+      "subtotal": 0,
+      "tax": 0,
+      "terms_template": "Standard Sales Terms",
+      "terms_text": "Goods remain property of the seller until paid in full.",
+      "total": 80.0
+     },
+     "entity_id": "doc:PF-2610-0001",
+     "entity_type": "doc",
+     "event_type": "doc.created",
+     "idempotency_key": "543e4909-33a5-4fe9-8b1b-1d24a08ac7fa",
+     "metadata": {
+      "request": "6780423692e5bda4d94c294e96060287156b0c37f7024b77210805a38f674c45"
+     },
+     "source": "api",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "ref_id": "INV-2610-0001",
+      "source_proforma_ref": "PF-2610-0001"
+     },
+     "entity_id": "doc:PF-2610-0001",
+     "entity_type": "doc",
+     "event_type": "doc.finalized",
+     "idempotency_key": "2b2700bb-60d7-46a4-96a9-37124144e11f",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "entries": [
+       {
+        "account": "1120",
+        "credit": 0.0,
+        "debit": 80.0
+       },
+       {
+        "account": "4100",
+        "credit": 80.0,
+        "debit": 0.0
+       },
+       {
+        "account": "2120",
+        "credit": 0.0,
+        "debit": 0.0
+       },
+       {
+        "account": "5100",
+        "credit": 0.0,
+        "debit": 16.0
+       },
+       {
+        "account": "1130-P",
+        "credit": 16.0,
+        "debit": 0.0
+       }
+      ],
+      "memo": "Auto JE for doc:PF-2610-0001 finalized",
+      "ts": "2026-10-04"
+     },
+     "entity_id": "je:auto:doc:PF-2610-0001:fin",
+     "entity_type": "journal_entry",
+     "event_type": "acc.journal_entry.created",
+     "idempotency_key": "je:doc:PF-2610-0001:invoice.finalized:c",
+     "metadata": {
+      "cogs_allocations": {
+       "0": {
+        "amount": 10.0,
+        "lots": [],
+        "provisional_qty": 5.0
+       },
+       "1": {
+        "amount": 6.0,
+        "lots": [
+         {
+          "lot_entity_id": "item:f6716c79-92c3-4944-9035-c97c27cd978a",
+          "qty": 3.0,
+          "unit_cost": 2.0
+         }
+        ],
+        "provisional_qty": 0.0
+       }
+      },
+      "doc_id": "doc:PF-2610-0001",
+      "trigger": "doc.finalized"
+     },
+     "source": "auto_je",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "ts": "2026-10-04"
+     },
+     "entity_id": "je:auto:doc:PF-2610-0001:fin",
+     "entity_type": "journal_entry",
+     "event_type": "acc.journal_entry.posted",
+     "idempotency_key": "je:doc:PF-2610-0001:invoice.finalized:p",
+     "metadata": {
+      "cogs_allocations": {
+       "0": {
+        "amount": 10.0,
+        "lots": [],
+        "provisional_qty": 5.0
+       },
+       "1": {
+        "amount": 6.0,
+        "lots": [
+         {
+          "lot_entity_id": "item:f6716c79-92c3-4944-9035-c97c27cd978a",
+          "qty": 3.0,
+          "unit_cost": 2.0
+         }
+        ],
+        "provisional_qty": 0.0
+       }
+      },
+      "doc_id": "doc:PF-2610-0001",
+      "trigger": "doc.finalized"
+     },
+     "source": "auto_je",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "allow_splitting": true,
+      "attributes": {},
+      "barcode": "000002",
+      "cost_total": 4.0,
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "purchase_conversion_factor": 1,
+      "purchase_unit": "piece",
+      "quantity": 2.0,
+      "recipe": {
+       "components": [
+        {
+         "item_id": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+         "line_cost": 2.0,
+         "quantity": 1.0,
+         "sku": "COMP-M",
+         "unit": "piece",
+         "unit_cost": 2.0
+        }
+       ],
+       "labor": [],
+       "labor_cost": 0.0,
+       "materials_cost": 2.0,
+       "output_qty": 1.0,
+       "overhead": [],
+       "overhead_cost": 0.0,
+       "unit_cost": 2.0
+      },
+      "sell_by": "piece",
+      "sku": "FG-4",
+      "status": "available",
+      "tax_codes": []
+     },
+     "entity_id": "item:58d29e48-e577-446f-a96a-46bf5db1b8bc",
+     "entity_type": "item",
+     "event_type": "item.created",
+     "idempotency_key": "migration:doc:PF-2610-0001:delivered:lot:item:58d29e48-e577-446f-a96a-46bf5db1b8bc",
+     "metadata": {
+      "parent_id": "item:f6523f12-712f-4988-a93b-02f504a2fe00"
+     },
+     "source": "migration",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "doc_number": "INV-2610-0001",
+      "doc_type": "invoice",
+      "fulfilled_by": "fb8b5911-6b16-4408-afb4-ac2f0214b7d8",
+      "quantity_fulfilled": 2.0,
+      "source_doc_id": "doc:PF-2610-0001",
+      "ts": "2025-02-03"
+     },
+     "entity_id": "item:58d29e48-e577-446f-a96a-46bf5db1b8bc",
+     "entity_type": "item",
+     "event_type": "item.fulfilled",
+     "idempotency_key": "migration:doc:PF-2610-0001:delivered:fulfilled:item:58d29e48-e577-446f-a96a-46bf5db1b8bc",
+     "metadata": {
+      "doc_id": "doc:PF-2610-0001",
+      "line_index": 0
+     },
+     "source": "migration",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "allow_splitting": true,
+      "attributes": {
+       "pieces": 4
+      },
+      "barcode": "000003",
+      "cost_base": 8.0,
+      "cost_landed": 0.0,
+      "cost_total": 2.0,
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "purchase_conversion_factor": 1,
+      "purchase_unit": "piece",
+      "quantity": 1.0,
+      "sell_by": "piece",
+      "sku": "SPL-1",
+      "split_from": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+      "status": "available",
+      "tax_codes": []
+     },
+     "entity_id": "item:0a05f3c4-fcf7-43fb-b2c2-323d0244b66c",
+     "entity_type": "item",
+     "event_type": "item.created",
+     "idempotency_key": "migration:doc:PF-2610-0001:delivered:lot:item:0a05f3c4-fcf7-43fb-b2c2-323d0244b66c",
+     "metadata": {
+      "parent_id": "item:f6716c79-92c3-4944-9035-c97c27cd978a"
+     },
+     "source": "migration",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "doc_number": "INV-2610-0001",
+      "doc_type": "invoice",
+      "fulfilled_by": "fb8b5911-6b16-4408-afb4-ac2f0214b7d8",
+      "quantity_fulfilled": 1.0,
+      "source_doc_id": "doc:PF-2610-0001",
+      "ts": "2025-02-03"
+     },
+     "entity_id": "item:0a05f3c4-fcf7-43fb-b2c2-323d0244b66c",
+     "entity_type": "item",
+     "event_type": "item.fulfilled",
+     "idempotency_key": "migration:doc:PF-2610-0001:delivered:fulfilled:item:0a05f3c4-fcf7-43fb-b2c2-323d0244b66c",
+     "metadata": {
+      "doc_id": "doc:PF-2610-0001",
+      "line_index": 1
+     },
+     "source": "migration",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "fields_changed": {
+       "line_items": {
+        "new": [
+         {
+          "entity_id": "item:58d29e48-e577-446f-a96a-46bf5db1b8bc",
+          "item_id": "item:58d29e48-e577-446f-a96a-46bf5db1b8bc",
+          "line_total": 50.0,
+          "name": "Made",
+          "quantity": 5.0,
+          "sku": "FG-4",
+          "taxes": [],
+          "unit_price": 10.0
+         },
+         {
+          "entity_id": "item:0a05f3c4-fcf7-43fb-b2c2-323d0244b66c",
+          "item_id": "item:0a05f3c4-fcf7-43fb-b2c2-323d0244b66c",
+          "line_total": 30.0,
+          "name": "Split",
+          "quantity": 3.0,
+          "sku": "SPL-1",
+          "taxes": [],
+          "unit_price": 10.0
+         }
+        ],
+        "old": [
+         {
+          "item_id": "item:f6523f12-712f-4988-a93b-02f504a2fe00",
+          "line_total": 50.0,
+          "name": "Made",
+          "quantity": 5.0,
+          "sku": "FG-4",
+          "taxes": [],
+          "unit_price": 10.0
+         },
+         {
+          "item_id": "item:f6716c79-92c3-4944-9035-c97c27cd978a",
+          "line_total": 30.0,
+          "name": "Split",
+          "quantity": 3.0,
+          "sku": "SPL-1",
+          "taxes": [],
+          "unit_price": 10.0
+         }
+        ]
+       }
+      }
+     },
+     "entity_id": "doc:PF-2610-0001",
+     "entity_type": "doc",
+     "event_type": "doc.updated",
+     "idempotency_key": "migration:doc:PF-2610-0001:delivered:lines",
+     "metadata": null,
+     "source": "migration",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "fulfilled_at": "2025-02-03",
+      "fulfilled_by": "fb8b5911-6b16-4408-afb4-ac2f0214b7d8",
+      "fulfilled_items": [
+       {
+        "item_id": "item:58d29e48-e577-446f-a96a-46bf5db1b8bc",
+        "quantity": 5.0,
+        "sku": "FG-4"
+       },
+       {
+        "item_id": "item:0a05f3c4-fcf7-43fb-b2c2-323d0244b66c",
+        "quantity": 3.0,
+        "sku": "SPL-1"
+       }
+      ],
+      "strategy": "per_line",
+      "ts": "2025-02-03",
+      "unfulfilled_items": [
+       {
+        "item_id": "item:58d29e48-e577-446f-a96a-46bf5db1b8bc",
+        "quantity": 5.0,
+        "sku": "FG-4"
+       },
+       {
+        "item_id": "item:0a05f3c4-fcf7-43fb-b2c2-323d0244b66c",
+        "quantity": 3.0,
+        "sku": "SPL-1"
+       }
+      ]
+     },
+     "entity_id": "doc:PF-2610-0001",
+     "entity_type": "doc",
+     "event_type": "doc.partially_fulfilled",
+     "idempotency_key": "migration:doc:PF-2610-0001:delivered",
+     "metadata": null,
+     "source": "migration",
+     "ts": "2026-10-04T10:09:27.879280+00:00"
+    }
+   ],
+   "projections": [
+    {
+     "created_at": "2026-10-04T10:09:28.014335+00:00",
+     "entity_id": "doc:PF-2610-0001",
+     "entity_type": "doc",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "amount_outstanding": 80.0,
+      "amount_paid": 0.0,
+      "currency": "USD",
+      "discount": 0,
+      "doc_number": "INV-2610-0001",
+      "doc_taxes": [],
+      "doc_type": "invoice",
+      "entity_type": "doc",
+      "files": [],
+      "finalized": true,
+      "fulfilled_at": "2025-02-03",
+      "fulfilled_by": "fb8b5911-6b16-4408-afb4-ac2f0214b7d8",
+      "fulfilled_items": [
+       {
+        "item_id": "item:58d29e48-e577-446f-a96a-46bf5db1b8bc",
+        "quantity": 5.0,
+        "sku": "FG-4"
+       },
+       {
+        "item_id": "item:0a05f3c4-fcf7-43fb-b2c2-323d0244b66c",
+        "quantity": 3.0,
+        "sku": "SPL-1"
+       }
+      ],
+      "fulfillment_status": "partial",
+      "issue_date": "2026-10-04",
+      "line_items": [
+       {
+        "entity_id": "item:58d29e48-e577-446f-a96a-46bf5db1b8bc",
+        "item_id": "item:58d29e48-e577-446f-a96a-46bf5db1b8bc",
+        "line_total": 50.0,
+        "name": "Made",
+        "quantity": 5.0,
+        "sku": "FG-4",
+        "taxes": [],
+        "unit_price": 10.0
+       },
+       {
+        "entity_id": "item:0a05f3c4-fcf7-43fb-b2c2-323d0244b66c",
+        "item_id": "item:0a05f3c4-fcf7-43fb-b2c2-323d0244b66c",
+        "line_total": 30.0,
+        "name": "Split",
+        "quantity": 3.0,
+        "sku": "SPL-1",
+        "taxes": [],
+        "unit_price": 10.0
+       }
+      ],
+      "linked": [],
+      "ref_id": "INV-2610-0001",
+      "shipping": 0,
+      "source_proforma_ref": "PF-2610-0001",
+      "status": "final",
+      "subtotal": 0,
+      "tax": 0,
+      "terms_template": "Standard Sales Terms",
+      "terms_text": "Goods remain property of the seller until paid in full.",
+      "total": 80.0
+     },
+     "updated_at": "2026-10-04T10:09:28.049500+00:00",
+     "version": 24
+    },
+    {
+     "created_at": "2026-10-04T10:09:28.042546+00:00",
+     "entity_id": "item:0a05f3c4-fcf7-43fb-b2c2-323d0244b66c",
+     "entity_type": "item",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "allow_splitting": true,
+      "attributes": {
+       "pieces": 4
+      },
+      "barcode": "000003",
+      "cost_base": 8.0,
+      "cost_landed": 0.0,
+      "cost_total": 8.0,
+      "fulfilled_for_docs": [
+       "doc:PF-2610-0001"
+      ],
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "purchase_conversion_factor": 1,
+      "purchase_unit": "piece",
+      "quantity": 1.0,
+      "quantity_fulfilled": 1.0,
+      "sell_by": "piece",
+      "sku": "SPL-1",
+      "split_from": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+      "status": "sold",
+      "status_doc_id": "doc:PF-2610-0001",
+      "status_doc_number": "INV-2610-0001",
+      "tax_codes": []
+     },
+     "updated_at": "2026-10-04T10:09:28.045282+00:00",
+     "version": 22
+    },
+    {
+     "created_at": "2026-10-04T10:09:28.036081+00:00",
+     "entity_id": "item:58d29e48-e577-446f-a96a-46bf5db1b8bc",
+     "entity_type": "item",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "allow_splitting": true,
+      "attributes": {},
+      "barcode": "000002",
+      "cost_base": 4.0,
+      "cost_landed": 0.0,
+      "cost_total": 4.0,
+      "fulfilled_for_docs": [
+       "doc:PF-2610-0001"
+      ],
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "purchase_conversion_factor": 1,
+      "purchase_unit": "piece",
+      "quantity": 2.0,
+      "quantity_fulfilled": 2.0,
+      "recipe": {
+       "components": [
+        {
+         "item_id": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+         "line_cost": 2.0,
+         "quantity": 1.0,
+         "sku": "COMP-M",
+         "unit": "piece",
+         "unit_cost": 2.0
+        }
+       ],
+       "labor": [],
+       "labor_cost": 0.0,
+       "materials_cost": 2.0,
+       "output_qty": 1.0,
+       "overhead": [],
+       "overhead_cost": 0.0,
+       "unit_cost": 2.0
+      },
+      "sell_by": "piece",
+      "sku": "FG-4",
+      "status": "sold",
+      "status_doc_id": "doc:PF-2610-0001",
+      "status_doc_number": "INV-2610-0001",
+      "tax_codes": []
+     },
+     "updated_at": "2026-10-04T10:09:28.038721+00:00",
+     "version": 20
+    },
+    {
+     "created_at": "2026-10-04T10:09:27.929490+00:00",
+     "entity_id": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+     "entity_type": "item",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "allow_splitting": true,
+      "attributes": {},
+      "child_skus": [
+       "SPL-1"
+      ],
+      "children": [
+       "item:f6716c79-92c3-4944-9035-c97c27cd978a"
+      ],
+      "cost_base": 12.0,
+      "cost_landed": 0.0,
+      "cost_total": 12.0,
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "purchase_conversion_factor": 1,
+      "purchase_unit": "piece",
+      "quantity": 6.0,
+      "sell_by": "piece",
+      "sku": "COMP-M",
+      "status": "available",
+      "tax_codes": []
+     },
+     "updated_at": "2026-10-04T10:09:27.990477+00:00",
+     "version": 12
+    },
+    {
+     "created_at": "2026-10-04T10:09:27.944529+00:00",
+     "entity_id": "item:f6523f12-712f-4988-a93b-02f504a2fe00",
+     "entity_type": "item",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "allow_splitting": true,
+      "attributes": {},
+      "cost_price": 2.0,
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "purchase_conversion_factor": 1,
+      "purchase_unit": "piece",
+      "quantity": 0.0,
+      "recipe": {
+       "components": [
+        {
+         "item_id": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+         "line_cost": 2.0,
+         "quantity": 1.0,
+         "sku": "COMP-M",
+         "unit": "piece",
+         "unit_cost": 2.0
+        }
+       ],
+       "labor": [],
+       "labor_cost": 0.0,
+       "materials_cost": 2.0,
+       "output_qty": 1.0,
+       "overhead": [],
+       "overhead_cost": 0.0,
+       "unit_cost": 2.0
+      },
+      "sell_by": "piece",
+      "sku": "FG-4",
+      "status": "available",
+      "tax_codes": []
+     },
+     "updated_at": "2026-10-04T10:09:27.959636+00:00",
+     "version": 6
+    },
+    {
+     "created_at": "2026-10-04T10:09:27.977884+00:00",
+     "entity_id": "item:f6716c79-92c3-4944-9035-c97c27cd978a",
+     "entity_type": "item",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "allow_splitting": true,
+      "attributes": {
+       "pieces": 4
+      },
+      "barcode": "000001",
+      "cost_base": 8.0,
+      "cost_landed": 0.0,
+      "cost_total": 8.0,
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "purchase_conversion_factor": 1,
+      "purchase_unit": "piece",
+      "quantity": 4.0,
+      "sell_by": "piece",
+      "sku": "SPL-1",
+      "split_from": "item:bbb1003b-230e-4601-81de-496a53bf7140",
+      "status": "available",
+      "tax_codes": []
+     },
+     "updated_at": "2026-10-04T10:09:27.982368+00:00",
+     "version": 9
+    },
+    {
+     "created_at": "2026-10-04T10:09:28.026112+00:00",
+     "entity_id": "je:auto:doc:PF-2610-0001:fin",
+     "entity_type": "journal_entry",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "entity_type": "journal_entry",
+      "entries": [
+       {
+        "account": "1120",
+        "credit": 0.0,
+        "debit": 80.0
+       },
+       {
+        "account": "4100",
+        "credit": 80.0,
+        "debit": 0.0
+       },
+       {
+        "account": "2120",
+        "credit": 0.0,
+        "debit": 0.0
+       },
+       {
+        "account": "5100",
+        "credit": 0.0,
+        "debit": 16.0
+       },
+       {
+        "account": "1130-P",
+        "credit": 16.0,
+        "debit": 0.0
+       }
+      ],
+      "memo": "Auto JE for doc:PF-2610-0001 finalized",
+      "status": "posted",
+      "ts": "2026-10-04"
+     },
+     "updated_at": "2026-10-04T10:09:28.027884+00:00",
+     "version": 18
+    },
+    {
+     "created_at": "2026-10-04T10:09:27.999144+00:00",
+     "entity_id": "je:auto:opening-inventory:b1ba9e9e-db5b-4570-8a32-0950028ed14d",
+     "entity_type": "journal_entry",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "entity_type": "journal_entry",
+      "entries": [
+       {
+        "account": "1130-OB",
+        "credit": 0.0,
+        "debit": 20.0
+       },
+       {
+        "account": "3200",
+        "credit": 20.0,
+        "debit": 0.0
+       }
+      ],
+      "memo": "Opening inventory balance (pre-system stock)",
+      "status": "posted",
+      "ts": "2026-10-04"
+     },
+     "updated_at": "2026-10-04T10:09:28.000763+00:00",
+     "version": 14
+    }
+   ],
+   "runs": {},
+   "user_id": "fb8b5911-6b16-4408-afb4-ac2f0214b7d8"
+  },
   "mixed": {
    "accounts": [
     {

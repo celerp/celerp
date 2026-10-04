@@ -3957,7 +3957,9 @@ async def record_historical_delivery(session: AsyncSession, company_id, entity_i
     draws beside the line's own do. The stock that left is carried separately, so the item's
     own quantity is not changed and no journal entry posts. Returns the doc.fulfilled or
     doc.partially_fulfilled entry, or the earlier one when ``idempotency_key`` was already
-    used for these deliveries."""
+    used for these deliveries. Each lot is stock of the product its line's item records
+    (``historical_lots``)."""
+    from celerp_docs.historical_lots import link_historical_lots
     from celerp_inventory.services import allocate_internal_codes, lot_fields
 
     row, replay = await _historical_doc(session, company_id, entity_id, doc_type="invoice",
@@ -4002,6 +4004,7 @@ async def record_historical_delivery(session: AsyncSession, company_id, entity_i
         data={"fields_changed": {"line_items": {"old": state.get("line_items"), "new": new_lines}}},
         actor_id=actor_id, location_id=None, source=source, idempotency_key=f"{idempotency_key}:lines",
     )
+    await link_historical_lots(session, company_id, [moved["lot_id"] for moved in lines])
     stock_lines = [i for i, li in enumerate(new_lines) if li.get("entity_id") or li.get("item_id")]
     data = {"fulfilled_items": _line_item_brief(new_lines, [new_lines[i]["entity_id"] for i in sorted(delivered)]),
             "fulfilled_by": str(actor_id), "fulfilled_at": max(m["date"] for m in lines),

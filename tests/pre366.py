@@ -39,6 +39,11 @@ then deleted), H at 4 x 2, J at 3 x 5, K at 2 x 20 and product FG (recipe 2 x K)
 - ``tangle``: two declared outputs; 5 x H required and issued with 2 on hand, 1 x J issued
   though not an input, and 1 "received", which made no lot.
 - ``recipe``: built from FG's recipe and issued, nothing received.
+
+Company ``migrated`` (component M at 2 x 10, product FG-4 with a recipe 1 x M, and SPL-1,
+4 units split off M under their own SKU): an invoice a data migration brought over, FG-4 x 5
+and SPL-1 x 3, with 2 of FG-4 (``LOT_FG``) and 1 of SPL-1 (``LOT_SPL``) delivered before the
+move, each a sold lot that names no product, and the first line now naming ``LOT_FG``.
 """
 from __future__ import annotations
 

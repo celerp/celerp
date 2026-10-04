@@ -89,6 +89,31 @@ async def create(
     return notif
 
 
+async def notify_once(
+    session: AsyncSession,
+    company_id: uuid.UUID,
+    category: str,
+    title: str,
+    body: str,
+) -> bool:
+    """A high-priority notice told to the company once: never again with the same title and
+    body, read or not. Caller commits. Returns whether it was created."""
+    already = (await session.execute(
+        select(Notification.id)
+        .where(
+            Notification.company_id == company_id,
+            Notification.category == category,
+            Notification.title == title,
+            Notification.body == body,
+        )
+        .limit(1)
+    )).first()
+    if already:
+        return False
+    await create(session, company_id, category, title, body, priority="high")
+    return True
+
+
 async def notify_every_company(
     session: AsyncSession,
     category: str,
