@@ -36,7 +36,7 @@ from celerp.models.projections import Projection
 from celerp.services.auto_je import _emit_auto_posted_je
 from celerp.services.business_time import business_date_at
 from celerp.services.company_lock import locked_company
-from stock_books import older_release_lot
+from stock_books import assert_settled, older_release_lot
 from test_cost_restatement import TZ, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_money_stock_and_contact_invariants import _account_net
 from test_posting_roles_lot_origin import _books_match_lots, _open_books
@@ -219,6 +219,23 @@ async def test_opening_stock_partly_sold_by_an_older_release_is_set_right(sessio
     assert await _accounts(session, auth, lot) == ["1130-P"]
     await _sold(client, auth, (lot, 3))
     await _books(session, client, auth, purchased=0.0, opening=0.0)
+
+
+async def test_opening_stock_never_shown_on_a_balance_sheet_is_booked_then_moved(session, client, auth):
+    """An older release posted the opening inventory entry only when the balance sheet
+    was opened. A company that never opened it still carries its pre-system stock on no
+    account, so the upgrade books that entry first and then moves it as usual."""
+    await _older_release(session, auth)
+    lot = await _lot(client, auth, 100.0, qty=10)
+    other = await _lot(client, auth, 20.0, qty=4)
+    await _sold_by_older_release(session, auth, lot, 2)
+    assert await _net(session, auth, "1130-P", "1130-OB") == (-20.0, 0.0)
+    await _startup(session)
+    assert await _accounts(session, auth, lot, other) == ["1130-P", "1130-P"]
+    assert await _net(session, auth, "1130-P", "1130-OB") == (100.0, 0.0)
+    await _sold(client, auth, (lot, 1))
+    await _books(session, client, auth, purchased=90.0, opening=0.0)
+    await assert_settled(client, session, auth)
 
 
 async def test_purchased_and_opening_stock_together(session, client, auth):
@@ -404,12 +421,24 @@ async def test_a_failure_part_way_leaves_no_entry_and_no_lot_recorded(session, c
 async def test_accounts_that_do_not_add_up_to_the_stock_are_left_for_the_user(session, client, auth):
     await _older_release(session, auth)
     lot = await _lot(client, auth, 30.0)
-    await _opening_entry(session, auth, 20.0)  # the opening entry predates 10 of this stock
+    await _books_over(session, client, auth)
     await _startup(session)
     assert await _reclassification(session, auth) is None
     assert await _accounts(session, auth, lot) == [None]
-    assert await _net(session, auth, "1130-P", "1130-OB") == (0.0, 20.0)
+    assert await _net(session, auth, "1130-P", "1130-OB") == (40.0, 0.0)
     assert await _marked(session, auth)
+
+
+async def test_an_opening_entry_short_of_the_stock_is_brought_current_then_moved(session, client, auth):
+    """An older release restated its opening inventory entry only when the balance sheet
+    was opened, so an entry short of the stock is one not yet brought current."""
+    await _older_release(session, auth)
+    lot = await _lot(client, auth, 30.0)
+    await _opening_entry(session, auth, 20.0)
+    await _startup(session)
+    assert await _accounts(session, auth, lot) == ["1130-P"]
+    assert await _net(session, auth, "1130-P", "1130-OB") == (30.0, 0.0)
+    await assert_settled(client, session, auth)
 
 
 async def _from_migration(session, client, auth) -> None:
@@ -823,8 +852,17 @@ async def test_an_older_draft_records_nothing_on_upgrade_when_the_opening_accoun
     assert (await _status(session, auth, draft), *await _accounts(session, auth, draft)) == ("draft", None)
 
 
-async def _books_short(session, client, auth) -> None:
-    await _opening_entry(session, auth, 20.0)  # the opening entry predates 10 of the stock
+async def _books_over(session, client, auth) -> None:
+    """Purchased inventory carries 40, more than all the stock: a receipt booked goods
+    that never became a lot."""
+    cid, po = auth["company_id"], f"doc:{uuid.uuid4()}"
+    await _emit_auto_posted_je(
+        session, company_id=cid, user_id=auth["user_id"], je_id=f"je:auto:{po}:rcv:1",
+        idem_create=f"{po}:rcv:c", idem_posted=f"{po}:rcv:p", memo=f"Auto JE for {po} received",
+        entries=[{"account": "1130-P", "debit": 40.0, "credit": 0.0},
+                 {"account": "2110", "debit": 0.0, "credit": 40.0}],
+        metadata_={"trigger": "doc.received", "doc_id": po})
+    await session.commit()
 
 
 async def _books_restored(session, client, auth) -> None:
@@ -832,7 +870,7 @@ async def _books_restored(session, client, auth) -> None:
     await _restored(session, client, auth)
 
 
-@pytest.mark.parametrize("books", [_books_short, _books_restored])
+@pytest.mark.parametrize("books", [_books_over, _books_restored])
 async def test_an_older_draft_is_booked_once_made_available_where_the_books_cannot_vouch_for_the_stock(
         session, client, auth, books):
     lot = await _lot(client, auth, 30.0)

@@ -30,7 +30,7 @@ from celerp.services.account_roles import (
 from celerp.services.business_time import business_date_of
 from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.line_measures import splitting_allowed
-from celerp.services.lot_origin import held_value
+from celerp.services.lot_origin import held_value, in_production
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.pick import doc_bound_lots, plan_lot_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line
@@ -2163,11 +2163,13 @@ async def book_opening_inventory(
     *,
     company_id,
     user_id,
+    in_production: _Dec,
 ) -> None:
     """Auto-post (or update) the opening inventory JE for pre-system stock.
 
-    Computes gap = catalog_cost_total (stocked, non-consignment, non-archived)
-    minus the sum of all JE-backed balances on the inventory value accounts
+    Computes gap = catalog_cost_total (stocked, non-consignment, non-archived, plus
+    ``in_production``: what older releases issued to runs still open while the inventory
+    accounts kept carrying it, lot_origin.in_production) minus the sum of all JE-backed balances on the inventory value accounts
     (excluding the OB JE itself). The gap is rounded once to the company currency; a positive representable
     amount emits/updates je:auto:opening-inventory:{company_id}, while zero voids the OB JE.
 
@@ -2202,6 +2204,8 @@ async def book_opening_inventory(
         catalog_total += value
         if row.state.get(LOT_ACCOUNT_FIELD):
             by_lot_account[row.state[LOT_ACCOUNT_FIELD]] = by_lot_account.get(row.state[LOT_ACCOUNT_FIELD], _Dec("0")) + value
+
+    catalog_total += in_production
 
     # --- JE-backed inventory: every posted line that holds the value of goods on hand ---
     je_rows = (
@@ -2331,7 +2335,8 @@ async def upsert_opening_inventory_je(session, *, company_id, user_id) -> None:
 
     try:
         async with session.begin_nested():
-            await book_opening_inventory(session, company_id=company_id, user_id=user_id)
+            await book_opening_inventory(session, company_id=company_id, user_id=user_id,
+                                         in_production=await in_production(session, company_id))
     except PostingRoleError:
         return
     except HTTPException as exc:

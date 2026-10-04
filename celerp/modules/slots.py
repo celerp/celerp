@@ -23,7 +23,7 @@ inventory_in_production
                    `async def handler(*, session, company_id) -> Decimal`, called with
                    exactly those keyword arguments: stock value an older release issued
                    to work still open, which its books still carry on the inventory
-                   accounts (lot_origin._in_production)
+                   accounts (lot_origin.in_production)
 item_lineage_guard {"handler": "module.path:function"} naming
                    `async def handler(*, session, entry, transition) -> None`, called
                    with exactly those keyword arguments on every live item event, after

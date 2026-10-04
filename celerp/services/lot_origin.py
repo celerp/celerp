@@ -55,6 +55,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import Transition
 from celerp.services.account_roles import (
+    PostingRoleError,
     current_settings,
     lot_account,
     resolve_many,
@@ -135,10 +136,19 @@ async def _posted_entries(session: AsyncSession, company_id) -> list[tuple[str, 
             for entry in row.state.get("entries") or []]
 
 
+def _balance(entries: list[tuple[str, dict]], code: str) -> Decimal:
+    return sum((Decimal(str(e.get("debit") or 0)) - Decimal(str(e.get("credit") or 0))
+                for _, e in entries if e.get("account") == code), Decimal("0"))
+
+
+async def _balances(session: AsyncSession, company_id, codes) -> dict[str, Decimal]:
+    entries = await _posted_entries(session, company_id)
+    return {code: _balance(entries, code) for code in codes}
+
+
 def _room(entries: list[tuple[str, dict]], items: list[Projection], code: str) -> Decimal:
     """What ``code`` holds beyond the value of the lots on hand that record it."""
-    balance = sum((Decimal(str(e.get("debit") or 0)) - Decimal(str(e.get("credit") or 0))
-                   for _, e in entries if e.get("account") == code), Decimal("0"))
+    balance = _balance(entries, code)
     recorded = sum((held_value(r) or Decimal("0") for r in items if (r.state or {}).get(LOT_ACCOUNT_FIELD) == code),
                    Decimal("0"))
     return balance - recorded
@@ -334,7 +344,7 @@ async def _older_retired_stock(session: AsyncSession, company_id,
     return found
 
 
-async def _in_production(session: AsyncSession, company_id) -> Decimal:
+async def in_production(session: AsyncSession, company_id) -> Decimal:
     """Stock an older release issued to production runs that are still open: it has left
     the shelf, but those releases booked its value off the inventory accounts only when the
     run completed, so the books still carry it (each module's inventory_in_production slot)."""
@@ -387,10 +397,12 @@ class _Retry(Exception):
 
 async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) -> bool:
     """Give the older stock of a company Celerp built itself the inventory account it sits
-    in (module docstring), all in one savepoint. The purchased (P) and opening (OB)
+    in (module docstring), all in one savepoint. When P and OB together hold less than V
+    (below), the opening inventory entry is first brought current, as an older release did
+    only when the balance sheet was opened. The purchased (P) and opening (OB)
     inventory accounts must both take entries, and together hold exactly the stock on
     hand plus what older releases issued to production runs still open (V,
-    ``_in_production``); then one entry dated the company's business day moves OB, beyond the stock
+    ``in_production``); then one entry dated the company's business day moves OB, beyond the stock
     recording OB, into P, every older lot that has held stock records P, on hand or not,
     and the company is marked upgraded. An older draft holds no stock, so it counts
     toward neither V nor the proof and records nothing. Retained earnings, cost
@@ -403,19 +415,19 @@ async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) 
 
     When the books cannot vouch for the stock, nothing moves and the company is still
     marked, leaving each older lot that has held stock for the user to place. A period
-    lock that forbids a write rolls the whole savepoint back and leaves the company
+    lock, or a posting account the opening entry cannot use, that forbids a write rolls the whole savepoint back and leaves the company
     unmarked, to retry on a later start. Running it again changes nothing. Returns
     whether the company was marked."""
     try:
         async with session.begin_nested():
-            return await _normalize(session, company_id)
+            return await _normalize(session, company_id, None)
     except _Retry:
         return False
 
 
-async def _normalize(session: AsyncSession, company_id) -> bool:
+async def _normalize(session: AsyncSession, company_id, user_id) -> bool:
     from celerp.events.engine import emit_event
-    from celerp.services.auto_je import _emit_auto_posted_je, _line
+    from celerp.services.auto_je import _emit_auto_posted_je, _line, book_opening_inventory
 
     purchased, opening = AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value
     settings, codes = await _locked(session, company_id, [purchased, opening])
@@ -432,11 +444,22 @@ async def _normalize(session: AsyncSession, company_id) -> bool:
     if any((r.state or {}).get(LOT_ACCOUNT_FIELD) not in (None, "", p, ob) for r, _ in held):
         await _mark(session, company_id)
         return True
-    entries = await _posted_entries(session, company_id)
-    balance = {code: sum((Decimal(str(e.get("debit") or 0)) - Decimal(str(e.get("credit") or 0))
-                          for _, e in entries if e.get("account") == code), Decimal("0")) for code in (p, ob)}
+    production = await in_production(session, company_id)
+    value = round_money(sum((v for _, v in held), Decimal("0")) + production, currency)
+    balance = await _balances(session, company_id, (p, ob))
+    if round_money(balance[p] + balance[ob], currency) < value:
+        # an older release brought its opening inventory entry current only when the
+        # balance sheet was opened: book what it would have, then compare
+        try:
+            await book_opening_inventory(session, company_id=company_id, user_id=user_id, in_production=production)
+        except PostingRoleError as exc:
+            raise _Retry from exc
+        except HTTPException as exc:
+            if exc.status_code == 422:
+                raise _Retry from exc
+            raise
+        balance = await _balances(session, company_id, (p, ob))
     books = round_money(balance[p] + balance[ob], currency)
-    value = round_money(sum((v for _, v in held), Decimal("0")) + await _in_production(session, company_id), currency)
     day = business_date_of(None, settings.get("timezone"))
     kept: list[Projection] = []
     if books != value:
@@ -519,12 +542,11 @@ async def _open(session: AsyncSession, company_id, user_id) -> bool:
         raise _Retry
     inventory = {code for role in _INVENTORY for code in scope_codes(settings, role)}
     if any(e.get("account") in inventory for _, e in await _posted_entries(session, company_id)):
-        await book_opening_inventory(session, company_id=company_id, user_id=user_id)
-        await _normalize(session, company_id)
+        await _normalize(session, company_id, user_id)
         return True
     for row in sorted(pending, key=lambda r: r.entity_id):
         await _record(session, company_id, row.entity_id, codes[opening], "accounting turned on", None)
-    await book_opening_inventory(session, company_id=company_id, user_id=user_id)
+    await book_opening_inventory(session, company_id=company_id, user_id=user_id, in_production=Decimal("0"))
     await _mark(session, company_id)
     return True
 
