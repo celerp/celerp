@@ -150,6 +150,15 @@ def snapshot(url: str) -> dict:
                 "indexes": rows(
                     "SELECT tablename, indexname, indexdef FROM pg_indexes "
                     "WHERE schemaname = 'public' ORDER BY 1, 2"),
+                # Who owns what, and every privilege granted on the database, the
+                # schema and its tables: what init's ownership and grant steps change.
+                "owners": rows(
+                    "SELECT c.relname, pg_get_userbyid(c.relowner), coalesce(c.relacl::text, '') "
+                    "FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace ORDER BY 1"),
+                "acl": rows(
+                    "SELECT coalesce((SELECT datacl::text FROM pg_database WHERE datname = current_database()), ''), "
+                    "coalesce((SELECT nspacl::text FROM pg_namespace WHERE nspname = 'public'), ''), "
+                    "(SELECT count(*) FROM pg_default_acl)"),
                 "constraints": rows(
                     "SELECT conrelid::regclass::text, conname, pg_get_constraintdef(oid) FROM pg_constraint "
                     "WHERE connamespace = 'public'::regnamespace ORDER BY 1, 2"),
