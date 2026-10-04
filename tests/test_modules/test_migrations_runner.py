@@ -49,6 +49,14 @@ def _make_module(base: Path, name: str, migrations: dict[str, str], *,
     return pkg
 
 
+async def _phase(engine, enabled: set[str]) -> tuple[set[str], dict[str, str]]:
+    """Admit the enabled modules from MODULE_DIR and run the migration phase,
+    returning (names that survive it, refusal reasons)."""
+    admission = await run_migration_phase(
+        engine, loader.admit_modules(os.environ["MODULE_DIR"], enabled))
+    return {m.name for m in admission.admitted}, admission.refused
+
+
 def _sync_url() -> str:
     return sync_db_url(os.environ["DATABASE_URL"])
 
@@ -124,7 +132,8 @@ def upgrade():
         "acme_rollback_probe",
         sa.Column("id", sa.Integer(), primary_key=True),
     )
-    raise RuntimeError("intentional boom")
+    raise RuntimeError(
+        "intentional boom at postgresql+asyncpg://celerp:s3cret@db.example.com:5432/celerp")
 """
 
 # Reads the effective timeouts and writes them to a file.
@@ -235,7 +244,7 @@ async def test_migration_phase_holds_advisory_lock_for_its_duration(
     pkg = _make_module(base, f"acme-{uuid.uuid4().hex[:8]}", {"m_001.py": body})
     monkeypatch.setenv("MODULE_DIR", str(base))
 
-    surviving, errors = await run_migration_phase(_db_engine, {pkg.name})
+    surviving, errors = await _phase(_db_engine, {pkg.name})
 
     assert pkg.name in surviving
     assert errors == {}
@@ -260,11 +269,14 @@ async def test_third_party_migration_failure_records_load_error_and_rolls_back_w
     monkeypatch.setenv("MODULE_DIR", str(base))
 
     # Not first-party (no lock entry): the phase records and continues, no crash.
-    surviving, errors = await run_migration_phase(_db_engine, {pkg.name})
+    surviving, errors = await _phase(_db_engine, {pkg.name})
 
     assert pkg.name not in surviving
     assert pkg.name in errors
     assert "boom" in errors[pkg.name]
+    # The reason is shown on the Modules page: a connection string is masked.
+    assert "s3cret" not in errors[pkg.name]
+    assert "celerp:***@db.example.com" in errors[pkg.name]
     # The failed migration's DDL rolled back: the probe table does not exist.
     eng = create_engine(_sync_url())
     try:
@@ -293,7 +305,7 @@ async def test_migration_phase_uses_verified_first_party_behind_stale_shadow(
     try:
         assert not loader.is_first_party(stale)
         assert loader.is_first_party(current)
-        surviving, errors = await run_migration_phase(_db_engine, {name})
+        surviving, errors = await _phase(_db_engine, {name})
         assert name in surviving
         assert errors == {}
     finally:
@@ -316,7 +328,7 @@ async def test_first_party_migration_failure_raises(_db_engine, tmp_path, monkey
     try:
         assert loader.is_first_party(pkg)
         with pytest.raises(Exception):
-            await run_migration_phase(_db_engine, {pkg.name})
+            await _phase(_db_engine, {pkg.name})
     finally:
         loader._first_party_lock.cache_clear()
 
