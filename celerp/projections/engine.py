@@ -20,6 +20,7 @@ from celerp.inventory_codes import (
 )
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.projections.retired import RETIRED
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +80,17 @@ class Transition:
 
 class ProjectionEngine:
     @staticmethod
+    def replayable(event_type: str) -> bool:
+        """Whether this build can replay a historical ledger event: one in the (modules-loaded)
+        event catalog, or a retired one replayed as the release that emitted it applied it."""
+        from celerp.events.schemas import EVENT_SCHEMA_MAP
+
+        return event_type in EVENT_SCHEMA_MAP or event_type in RETIRED
+
+    @staticmethod
     def _apply(state: dict, event_type: str, data: dict) -> dict:
+        if event_type in RETIRED:
+            return RETIRED[event_type](state, data)
         for prefix, fn in _get_module_handlers().items():
             if event_type.startswith(prefix):
                 return fn(state, event_type, data)

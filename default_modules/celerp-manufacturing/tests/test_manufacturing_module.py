@@ -209,8 +209,8 @@ class TestManufacturingProjectionHandler:
 
     def test_bom_events_no_longer_routed_to_this_handler(self):
         # The standalone BOM entity was retired and the bom.* prefix is no longer registered to
-        # this handler; historical bom.* events fall through to the engine's default merge on
-        # replay (see test_bom_removed). Calling this handler with one is now an error.
+        # this handler; the kernel replays historical bom.* events as that release applied them
+        # (see test_bom_removed). Calling this handler with one is now an error.
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
         with pytest.raises(ValueError, match="Unsupported mfg event"):
             apply_manufacturing_event({"sku": "X", "quantity": 1}, "bom.created", {"name": "old"})

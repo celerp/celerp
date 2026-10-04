@@ -82,8 +82,7 @@ PLUGIN_MANIFEST = {
                 "handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event",
             },
             # Historical bom.* events (the BOM entity was retired; recipes live on the item) are
-            # not routed here anymore — they fall through to the engine's default merge handler on
-            # replay, so projections still rebuild cleanly without a dead branch to maintain.
+            # not routed here: the kernel replays them (celerp.projections.retired).
         ],
         # Auto-create work orders when an order is finalized (gated by the company setting
         # auto_create_work_orders; off by default, on for make-on-order verticals like restaurants).

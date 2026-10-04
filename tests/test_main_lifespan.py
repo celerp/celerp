@@ -76,7 +76,18 @@ async def test_modules_ready_commit_guarded(monkeypatch):
     monkeypatch.setattr("celerp.modules.loader.register_api_routes", lambda *a, **k: None)
     monkeypatch.setattr("celerp.modules.loader.record_load_error", lambda *a, **k: None)
     monkeypatch.setattr("celerp.modules.loader.demoted_first_party", lambda *a, **k: [])
-    monkeypatch.setattr("celerp.db.LifecycleSessionLocal", lambda: _FakeSession(rollback_spy))
+    made: list[_FakeSession] = []
+
+    def _session():
+        s = _FakeSession(rollback_spy)
+        if not made:  # the upgrade guard's session, ahead of the hooks', commits
+            s.commit = AsyncMock()
+        made.append(s)
+        return s
+
+    monkeypatch.setattr("celerp.db.LifecycleSessionLocal", _session)
+    monkeypatch.setattr("celerp.services.dev_release_guard.run_upgrade_guard",
+                        AsyncMock(return_value={"changed": False, "rebuilt": False, "current": True}))
 
     # Keep the relay tunnel down (no public url, no live share).
     monkeypatch.setattr("celerp.gateway.has_active_share", AsyncMock(return_value=False))
@@ -156,7 +167,7 @@ async def test_projections_are_rebuilt_before_the_modules_settle_data(monkeypatc
 
     async def _guard(session):
         order.append("guard")
-        return {"changed": False, "rebuilt": False}
+        return {"changed": False, "rebuilt": False, "current": True}
 
     async def _fire(slot, **kwargs):
         if slot == "on_modules_ready":

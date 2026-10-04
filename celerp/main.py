@@ -184,12 +184,34 @@ async def _verify_runtime_dependencies() -> None:
     await adopt_legacy_connector_configs()
 
 
+_HELD_BACK_TITLE = "Stored records could not be brought up to date"
+_HELD_BACK_BODY = (
+    "This start could not update the stored records to this release, so the updates that "
+    "depend on them (such as settling manufacturing runs) were held back and nothing was "
+    "changed. Celerp tries again at the next start. If this notice returns after a restart, "
+    "a module may be missing or the database may need attention."
+)
+
+
+async def _tell_projections_held_back() -> None:
+    """Every company is told, in the notification bell, that this start held back."""
+    try:
+        from celerp.db import LifecycleSessionLocal as _NoticeSession
+        from celerp.notifications.service import notify_every_company
+        async with _NoticeSession() as _sess:
+            await notify_every_company(_sess, "system", _HELD_BACK_TITLE, _HELD_BACK_BODY)
+            await _sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception("Could not post the held-back notice")
+
+
 async def _bring_data_current(*, modules_ready: bool) -> None:
     """Startup data steps, in order: projections are rebuilt when the handlers that
     wrote them computed state differently (the upgrade guard), then the loaded
     modules' on_modules_ready hooks settle data, reading those projections. A hook
     that ran on stale projections would settle the wrong state, so the order is
-    fixed here and nowhere else."""
+    fixed here and nowhere else, and the hooks run only once the projections are
+    current."""
     # Register kernel projection handler for sys.* events (not module-owned)
     from celerp.modules.slots import register as register_slot
     register_slot("projection_handler", {
@@ -200,19 +222,23 @@ async def _bring_data_current(*, modules_ready: bool) -> None:
 
     # Upgrade guard: after a develop build, or a change in projection semantics,
     # rebuild projections with this build's handlers (now that all handlers are
-    # registered). Gated by markers so it runs once per change. Non-fatal: a
-    # failure must not block boot; the markers stay unset and a later boot retries.
+    # registered). Gated by markers so it runs once per change. A failure must not
+    # block boot: the markers stay as they were and the next boot retries.
+    current = False
     try:
         from celerp.db import LifecycleSessionLocal as _GuardSession
         from celerp.services.dev_release_guard import run_upgrade_guard
         async with _GuardSession() as _guard_sess:
-            await run_upgrade_guard(_guard_sess)
+            guard = await run_upgrade_guard(_guard_sess)
             await _guard_sess.commit()
+        current = guard["current"]
     except Exception:
-        logging.getLogger(__name__).exception(
-            "Develop→release upgrade guard failed (non-fatal); projections may be "
-            "stale until rebuilt via doctor or /ledger/rebuild"
-        )
+        logging.getLogger(__name__).exception("Projection upgrade failed; the next start retries")
+    if not current:
+        # The hooks below change data by reading the projections; on stale ones they would
+        # settle the wrong state, so none runs until a start brings the projections current.
+        await _tell_projections_held_back()
+        return
 
     if not modules_ready:
         return
@@ -221,7 +247,7 @@ async def _bring_data_current(*, modules_ready: bool) -> None:
     # instance that already has companies).
     from celerp.modules.slots import fire_lifecycle as _fire
     from celerp.db import LifecycleSessionLocal as _LifecycleSession
-    # Best-effort, like the guard above: a hook that fails
+    # Best-effort: a hook that fails
     # during flush poisons the shared session, so the commit raises.
     # Roll back and log at ERROR rather than let that crash boot - the
     # manufacturing seed hook, for one, must never be able to take the

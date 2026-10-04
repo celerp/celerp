@@ -107,7 +107,7 @@ async def test_guard_rebuilds_on_version_change(session):
 
     result = await run_upgrade_guard(session)
 
-    assert result == {"changed": True, "rebuilt": True}
+    assert result == {"changed": True, "rebuilt": True, "current": True}
     assert await _projection_count(session) == 1     # rebuilt from the ledger
     assert await _marker(session) == __version__
 
@@ -123,7 +123,7 @@ async def test_guard_gated_when_version_matches(session):
     await session.execute(delete(Projection))   # corrupt: drop read-models
     result = await run_upgrade_guard(session)    # same version → must skip
 
-    assert result == {"changed": False, "rebuilt": False}
+    assert result == {"changed": False, "rebuilt": False, "current": True}
     assert await _projection_count(session) == 0  # NOT rebuilt (gate held)
 
 
@@ -139,7 +139,7 @@ async def test_guard_skips_rebuild_for_release_origin(session):
 
     result = await run_upgrade_guard(session)
 
-    assert result == {"changed": True, "rebuilt": False}
+    assert result == {"changed": True, "rebuilt": False, "current": True}
     assert await _projection_count(session) == 0  # NOT rebuilt — release origin
     assert await _marker(session) == __version__  # but the boot version is recorded
 
@@ -157,7 +157,7 @@ async def test_guard_rebuilds_for_release_origin_with_other_semantics(session, s
 
     result = await run_upgrade_guard(session)
 
-    assert result == {"changed": True, "rebuilt": True}
+    assert result == {"changed": True, "rebuilt": True, "current": True}
     assert await _projection_count(session) == 1
     assert await _marker(session) == __version__
     assert await _semantics(session) == str(PROJECTION_SEMANTICS)
@@ -175,7 +175,7 @@ async def test_guard_rebuilds_for_dev_origin(session, dev_marker):
 
     result = await run_upgrade_guard(session)
 
-    assert result == {"changed": True, "rebuilt": True}
+    assert result == {"changed": True, "rebuilt": True, "current": True}
     assert await _projection_count(session) == 1  # rebuilt from the ledger
     assert await _marker(session) == __version__
 
@@ -198,7 +198,7 @@ async def test_guard_skips_rebuild_on_unknown_event_type(session):
 
     result = await run_upgrade_guard(session)
 
-    assert result["changed"] is True and result["rebuilt"] is False
+    assert result["changed"] is True and result["rebuilt"] is False and result["current"] is False
     assert "zzz.unknown.event" in result["unknown_event_types"]
     assert await _projection_count(session) == before   # untouched
     assert await _marker(session) is None               # not stamped → retries later

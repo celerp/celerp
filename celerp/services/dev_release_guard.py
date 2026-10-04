@@ -12,9 +12,11 @@ it runs before the modules' start hooks, which read the projections.
 
 Gated by the `projection_version` and `projection_semantics` markers so it runs
 once per change. Before
-rebuilding it pre-checks that every `event_type` in the ledger is a known event
-(with modules loaded); an unknown type means a downgrade or a missing module, so
-we skip the rebuild rather than silently fold those events into wrong state.
+rebuilding it pre-checks that this build can replay every `event_type` in the
+ledger (`ProjectionEngine.replayable`); one it cannot means a downgrade or a
+missing module, so we skip the rebuild rather than silently fold those events
+into wrong state. The result says whether the projections are current, and the
+caller runs nothing that reads them when they are not.
 
 The data-backfill half of the reconcile runs earlier, at `celerp migrate` time
 (`cli._reconcile_after_migrate`), where no handlers are needed.
@@ -38,13 +40,13 @@ PROJECTION_SEMANTICS_KEY = "projection_semantics"
 
 
 async def unknown_event_types(session: "AsyncSession") -> set[str]:
-    """Ledger event types that are not in the (modules-loaded) event catalog."""
+    """Ledger event types this build cannot replay."""
     from sqlalchemy import text
 
-    from celerp.events.schemas import EVENT_SCHEMA_MAP
+    from celerp.projections.engine import ProjectionEngine
 
     rows = await session.execute(text("SELECT DISTINCT event_type FROM ledger"))
-    return {r[0] for r in rows} - set(EVENT_SCHEMA_MAP.keys())
+    return {r[0] for r in rows if not ProjectionEngine.replayable(r[0])}
 
 
 def _is_dev_version(v: str) -> bool:
@@ -74,7 +76,8 @@ async def run_upgrade_guard(session: "AsyncSession") -> dict:
     """Rebuild projections when they may be stale (`_should_rebuild`). Caller owns the txn.
 
     Returns a summary dict; never raises for an expected condition (unknown
-    events → skip). `changed` is False when both markers already match.
+    events → skip). `changed` is False when both markers already match; `current`
+    is False only when the projections may be stale and were not rebuilt.
     """
     from celerp import __version__
     from celerp.migrations._data_reconcile import (
@@ -88,7 +91,7 @@ async def run_upgrade_guard(session: "AsyncSession") -> dict:
     marker = await conn.run_sync(lambda c: get_meta(c, PROJECTION_VERSION_KEY))
     semantics = await conn.run_sync(lambda c: get_meta(c, PROJECTION_SEMANTICS_KEY))
     if marker == __version__ and semantics == str(PROJECTION_SEMANTICS):
-        return {"changed": False, "rebuilt": False}
+        return {"changed": False, "rebuilt": False, "current": True}
 
     rebuilt = False
     if _should_rebuild(marker, semantics):
@@ -102,7 +105,7 @@ async def run_upgrade_guard(session: "AsyncSession") -> dict:
                 "rebuild to avoid corruption. Missing handler/module for: %s",
                 len(unknown), sorted(unknown),
             )
-            return {"changed": True, "rebuilt": False, "unknown_event_types": sorted(unknown)}
+            return {"changed": True, "rebuilt": False, "current": False, "unknown_event_types": sorted(unknown)}
         await ProjectionEngine.rebuild(session)
         rebuilt = True
         log.info("Upgrade guard: rebuilt projections (from %s, semantics %s) for version %s, semantics %s",
@@ -112,4 +115,4 @@ async def run_upgrade_guard(session: "AsyncSession") -> dict:
     # neither handlers nor build kind can skip.
     await conn.run_sync(lambda c: set_meta(c, PROJECTION_VERSION_KEY, __version__))
     await conn.run_sync(lambda c: set_meta(c, PROJECTION_SEMANTICS_KEY, str(PROJECTION_SEMANTICS)))
-    return {"changed": True, "rebuilt": rebuilt}
+    return {"changed": True, "rebuilt": rebuilt, "current": True}

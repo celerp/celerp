@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
@@ -43,33 +42,10 @@ async def notify_demoted_modules(session: AsyncSession, demoted_names: list[str]
     was dismissed (persistent-until-fixed, exactly like the banner it replaces),
     and a reboot while it is already unread creates nothing new. Caller commits.
     Returns the number of notifications created."""
-    if not demoted_names:
-        return 0
-
-    from celerp.models.company import Company
-    from celerp.models.notification import Notification
     from celerp.notifications import service as notif_service
 
-    company_ids = list((await session.execute(select(Company.id))).scalars().all())
     created = 0
     for name in demoted_names:
-        title = _title(name)
-        for cid in company_ids:
-            already = (await session.execute(
-                select(Notification.id)
-                .where(
-                    Notification.company_id == cid,
-                    Notification.category == _CATEGORY,
-                    Notification.title == title,
-                    Notification.read == False,  # noqa: E712
-                )
-                .limit(1)
-            )).first()
-            if already:
-                continue
-            await notif_service.create(
-                session, cid, _CATEGORY, title, _body(name),
-                action_url="/modules", priority="high",
-            )
-            created += 1
+        created += await notif_service.notify_every_company(
+            session, _CATEGORY, _title(name), _body(name), action_url="/modules")
     return created
