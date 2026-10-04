@@ -148,6 +148,62 @@ class TestLoadAll:
         assert result == []
 
 
+# ── Malformed manifests ───────────────────────────────────────────────────────
+# One third-party module with a malformed manifest is refused with its reason;
+# the load pass never raises and every other module still loads.
+
+def _load_bad_beside_good(tmp_path, manifest: str) -> list[dict]:
+    _make_module(tmp_path, "test_mod_good", '{"name": "test_mod_good", "version": "1.0"}')
+    _make_module(tmp_path, "test_mod_bad", manifest)
+    return load_all(tmp_path, {"test_mod_good", "test_mod_bad"})
+
+
+class TestMalformedManifest:
+    @pytest.mark.parametrize("value", ["[]", "0", '""', "False"])
+    def test_falsy_non_dict_slots_refused_others_load(self, tmp_path, value):
+        result = _load_bad_beside_good(
+            tmp_path, f'{{"name": "test_mod_bad", "version": "1.0", "slots": {value}}}')
+        assert [m["name"] for m in result] == ["test_mod_good"]
+        assert "'slots' must be a dict" in load_errors()["test_mod_bad"]
+
+    def test_none_slots_means_no_slots(self, tmp_path):
+        result = _load_bad_beside_good(
+            tmp_path, '{"name": "test_mod_bad", "version": "1.0", "slots": None}')
+        assert sorted(m["name"] for m in result) == ["test_mod_bad", "test_mod_good"]
+        assert "test_mod_bad" not in load_errors()
+
+    @pytest.mark.parametrize("value", ["5", "True", '"test_mod_good"', "[1]", "[[1]]", '[""]'])
+    def test_malformed_depends_on_refused_others_load(self, tmp_path, value):
+        result = _load_bad_beside_good(
+            tmp_path, f'{{"name": "test_mod_bad", "version": "1.0", "depends_on": {value}}}')
+        assert [m["name"] for m in result] == ["test_mod_good"]
+        assert "'depends_on' must be a list" in load_errors()["test_mod_bad"]
+
+    @pytest.mark.parametrize("value", ["[1]", '"x"', "(1, 2)"])
+    def test_non_dict_manifest_refused_others_load(self, tmp_path, value):
+        result = _load_bad_beside_good(tmp_path, value)
+        assert [m["name"] for m in result] == ["test_mod_good"]
+        assert "PLUGIN_MANIFEST must be a dict" in load_errors()["test_mod_bad"]
+
+    @pytest.mark.parametrize("field,value", [
+        ("name", "1"), ("name", "['a']"), ("version", "1.0"), ("version", "{'v': 1}"),
+    ])
+    def test_non_string_name_or_version_refused(self, tmp_path, field, value):
+        fields = {"name": '"test_mod_bad"', "version": '"1.0"', field: value}
+        result = _load_bad_beside_good(
+            tmp_path, "{" + ", ".join(f'"{k}": {v}' for k, v in fields.items()) + "}")
+        assert [m["name"] for m in result] == ["test_mod_good"]
+        assert f"'{field}' must be a non-empty string" in load_errors()["test_mod_bad"]
+
+    @pytest.mark.parametrize("key", ["api_routes", "ui_routes"])
+    @pytest.mark.parametrize("value", ["1", "['x']", "True"])
+    def test_non_string_route_module_refused(self, tmp_path, key, value):
+        result = _load_bad_beside_good(
+            tmp_path, f'{{"name": "test_mod_bad", "version": "1.0", "{key}": {value}}}')
+        assert [m["name"] for m in result] == ["test_mod_good"]
+        assert f"'{key}' must be a dotted module path string" in load_errors()["test_mod_bad"]
+
+
 # ── Premium license gate ──────────────────────────────────────────────────────
 # is_premium_path() (celerp.modules.license) treats a directory carrying the
 # marketplace installer's PREMIUM_MARKER as license-gated. load_all resolves a

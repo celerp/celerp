@@ -232,7 +232,8 @@
   },
   "pnpm": {
     "patchedDependencies": {
-      "@electron/universal@2.0.1": "patches/@electron__universal@2.0.1.patch"
+      "@electron/universal@2.0.1": "patches/@electron__universal@2.0.1.patch",
+      "app-builder-lib@25.1.8": "patches/app-builder-lib@25.1.8.patch"
     }
   }
 }
