@@ -289,3 +289,53 @@ async def test_posting_service_and_freight_lines_makes_work_only_for_the_goods(c
     doc = await _invoice(client, auth, (service, 2), (fg, 3), (freight, 1))
 
     assert [(r["output_item_id"], r["expected_outputs"][0]["quantity"]) for r in await _runs_for_doc(session, auth, doc)] == [(fg, 3.0)]
+
+
+async def _credit(client, auth, invoice: str, *returns: tuple[str, float, str | None]) -> str:
+    """A posted credit note on ``invoice`` taking back (sku, quantity, lot) of what it sold."""
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "credit_note", "original_doc_id": invoice, "total": 0, "line_items": [
+            {"name": "Made", "sku": sku, "quantity": q, "unit_price": 0, "sell_by": "piece"}
+            for sku, q, _ in returns]})
+    assert r.status_code == 200, r.text
+    note = r.json()["id"]
+    assert (await client.post(f"/docs/{note}/finalize", headers=auth["headers"])).status_code == 200
+    r = await client.post(f"/docs/{note}/receive-return", headers=auth["headers"], json={"items": [
+        {"sku": sku, "quantity": q, **({"item_id": lot} if lot else {})} for sku, q, lot in returns]})
+    assert r.status_code == 200, r.text
+    return note
+
+
+async def test_goods_back_on_a_credit_note_are_asked_for_again(client, session, auth):
+    """Five shipped, two of them back on a credit note on the invoice: the order asks for the
+    two again, and the two back on the shelf cover them. Undoing the return closes it again."""
+    fg, (lot,) = await _stocked(client, auth, 0, 5)
+    doc = await _invoice(client, auth, (lot, 5))
+    await _ship(client, auth, doc, lot)
+    assert await _outstanding(session, auth, doc) == [(0, 5, 5, 0)]
+    sku = (await client.get(f"/items/{lot}", headers=auth["headers"])).json()["sku"]
+
+    note = await _credit(client, auth, doc, (sku, 2, lot))
+
+    assert await _outstanding(session, auth, doc) == [(0, 5, 3, 2)]
+    assert _figures(await _row(client, auth, fg)) == (2, 2, 0, 0)
+
+    r = await client.delete(f"/docs/{note}/receive-return", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    assert await _outstanding(session, auth, doc) == [(0, 5, 5, 0)]
+    assert _figures(await _row(client, auth, fg)) == (0, 0, 0, 0)
+
+
+async def test_goods_back_by_sku_go_to_the_line_that_sold_them(client, session, auth):
+    """A return naming only the SKU is the most recently sold lot of it; it reopens that lot's
+    line and no other."""
+    fg, (a, b) = await _stocked(client, auth, 0, 3, 4)
+    doc = await _invoice(client, auth, (a, 3), (b, 4))
+    await _ship(client, auth, doc, a, b)
+    sku = (await client.get(f"/items/{b}", headers=auth["headers"])).json()["sku"]
+
+    await _credit(client, auth, doc, (sku, 1, None))
+
+    lines = await _outstanding(session, auth, doc)
+    assert sorted(ln[3] for ln in lines) == [0, 1] and sum(ln[2] for ln in lines) == 6, lines
+    assert _figures(await _row(client, auth, fg)) == (1, 1, 0, 0)

@@ -17,7 +17,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, VALUED_FROM_KEY
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.models.projections import Projection
@@ -385,6 +385,34 @@ async def execute_unfulfill(
     return {"success": True, "reversed_items": reversed_items}
 
 
+async def _returned_lots(session: AsyncSession, cid, doc_ids: list[str]) -> dict[str, list[tuple[str | None, str, float]]]:
+    """Per document, the goods still received back on credit notes raised on it: for each
+    returned lot, the sold lot it was valued from (None when it names none), its SKU and
+    its quantity."""
+    from sqlalchemy import select
+
+    from celerp.models.ledger import LedgerEntry
+
+    notes = (await session.execute(select(Projection).where(
+        Projection.company_id == cid, Projection.entity_type == "doc",
+        Projection.state["doc_type"].as_string() == "credit_note",
+        Projection.state["original_doc_id"].as_string().in_(doc_ids),
+    ))).scalars().all()
+    back = {r["item_id"]: (n.state["original_doc_id"], str(r.get("sku") or "").strip(), float(r.get("quantity") or 0))
+            for n in notes for r in n.state.get("return_received_items") or [] if r.get("item_id")}
+    if not back:
+        return {}
+    made = (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.company_id == cid, LedgerEntry.event_type == "item.created",
+        LedgerEntry.entity_id.in_(list(back)),
+    ))).scalars().all()
+    sold_from = {e.entity_id: (e.metadata_ or {}).get(VALUED_FROM_KEY) for e in made}
+    out: dict[str, list[tuple[str | None, str, float]]] = {}
+    for lot, (doc_id, sku, qty) in back.items():
+        out.setdefault(doc_id, []).append((sold_from.get(lot), sku, qty))
+    return out
+
+
 @dataclass(frozen=True)
 class OutstandingLine:
     """A physical stock line of a document: what it ordered and what it has received."""
@@ -408,7 +436,11 @@ async def outstanding_physical_lines(session: AsyncSession, company_id, docs: li
     quantity, on the line it belongs to (auto_je.line_of_lot), so a reversal asks for the
     goods again. Goods an invoice bills from a memo were sent under the memo, so the memo's
     record counts for the invoice. A lot no line can claim is put on the document's lines
-    of its SKU in order, each taking at most what it ordered."""
+    of its SKU in order, each taking at most what it ordered.
+
+    Goods a customer sent back on a credit note raised on the document were taken back too:
+    each returned lot still received comes off the line of the sold lot it was valued from,
+    or, when it names none, off the document's lines of its SKU from the last."""
     from sqlalchemy import select
 
     from celerp.models.ledger import LedgerEntry
@@ -442,8 +474,9 @@ async def outstanding_physical_lines(session: AsyncSession, company_id, docs: li
             # A memo's line numbers are the memo's, not the invoice's.
             recorded[key] = auto_je.recorded_line_index(e) if source == owner[source] else None
     out_lots = {key: e for key, e in latest.items() if e.event_type == "item.fulfilled"}
+    returned = await _returned_lots(session, cid, [d.entity_id for d in docs])
 
-    wanted = {lot for _doc, lot in out_lots}
+    wanted = {lot for _doc, lot in out_lots} | {sold for back in returned.values() for sold, _, _ in back if sold}
     for d in docs:
         for li in (d.state or {}).get("line_items") or []:
             if li.get("entity_id") or li.get("item_id"):
@@ -464,12 +497,14 @@ async def outstanding_physical_lines(session: AsyncSession, company_id, docs: li
         ordered = {idx: float(line_items[idx].get("quantity") or 0) for idx in physical}
         sent = dict.fromkeys(physical, 0.0)
         unclaimed: list[tuple[str, float]] = []
+        line_of: dict[str, int | None] = {}  # lot sent -> the line it went on
         for (doc_id, lot), e in out_lots.items():
             if doc_id != d.entity_id:
                 continue
             lot_state = items.get(lot)
             qty = float((lot_state or {}).get("quantity") or (e.data or {}).get("quantity_fulfilled") or 0)
             idx = auto_je.line_of_lot(line_items, lot, lot_state or {}, recorded.get((doc_id, lot)))
+            line_of[lot] = idx
             if idx in sent:
                 sent[idx] += qty
             else:
@@ -482,6 +517,13 @@ async def outstanding_physical_lines(session: AsyncSession, company_id, docs: li
                     continue
                 take = min(qty, max(0.0, ordered[idx] - sent[idx]))
                 sent[idx] += take
+                qty -= take
+        for sold, sku, qty in returned.get(d.entity_id, []):
+            lines = [line_of[sold]] if line_of.get(sold) in sent else [
+                idx for idx in reversed(physical) if str(line_items[idx].get("sku") or "").strip() == sku]
+            for idx in lines:
+                take = min(qty, sent[idx])
+                sent[idx] -= take
                 qty -= take
         result[d.entity_id] = [
             OutstandingLine(index=idx, item_id=item_id, ordered=ordered[idx], fulfilled=min(sent[idx], ordered[idx]))
