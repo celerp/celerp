@@ -558,11 +558,13 @@ def _mock_get_modules_default():
 def _reset_loaded_modules(request):
     """Clear the loader's in-process registry around each unit test. A test (or
     a test module's import) that calls load_all() populates
-    celerp.modules.loader._loaded AND registers every module's lifecycle hooks
-    into celerp.modules.slots._slots; without resetting both they leak into
+    celerp.modules.loader._loaded and _module_routes AND registers every
+    module's lifecycle hooks into celerp.modules.slots._slots; without
+    resetting them they leak into
     later tests in the same worker (e.g. a module shows running=True, or the
     manufacturing on_company_created hook seeds a default work center for a test
-    that expects none), which surfaces under xdist's test distribution.
+    that expects none, or a later UI request is answered by the per-company
+    module gate), which surfaces under xdist's test distribution.
 
     The slot registry is snapshotted and restored around the test rather than
     cleared, so the canonical unit-harness contributions (_ensure_slots) survive
@@ -575,12 +577,14 @@ def _reset_loaded_modules(request):
     if request.node.get_closest_marker("browser"):
         yield
         return
-    from celerp.modules.loader import _loaded
+    from celerp.modules.loader import _loaded, _module_routes
     from celerp.modules import slots as _slots_mod
     _loaded.clear()
+    _module_routes.clear()
     _slot_snapshot = {k: list(v) for k, v in _slots_mod._slots.items()}
     yield
     _loaded.clear()
+    _module_routes.clear()
     _slots_mod._slots.clear()
     _slots_mod._slots.update({k: list(v) for k, v in _slot_snapshot.items()})
 

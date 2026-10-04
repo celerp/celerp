@@ -119,8 +119,7 @@ class TestCallableSlots:
     @pytest.mark.parametrize("slot", list(CALLABLE))
     def test_decoy_resolving_to_core_refused(self, slot, tmp_path, monkeypatch):
         # The module ships a file at a dotted path an already-loaded core module
-        # owns. The file exists in the module's tree, but importlib returns the
-        # real core module, so the callable is not the module's own.
+        # owns. Shipping a package named after Celerp's own is refused outright.
         import importlib
         if CALLABLE[slot][1]:
             core_mod, fn, code = "celerp.ai.service", "run_query", _ASYNC_FN.replace("fn", "run_query")
@@ -134,7 +133,7 @@ class TestCallableSlots:
         name = f"slotmod_decoy_{slot}"
         _write(tmp_path, name, {slot: [_entry(slot, f"{core_mod}:{fn}")]}, files)
         msg = _refused(tmp_path, name, monkeypatch)
-        assert "outside module" in msg
+        assert "'celerp' is already used" in msg
 
     @pytest.mark.parametrize("slot", list(CALLABLE))
     def test_protected_import_refused(self, slot, tmp_path, monkeypatch):

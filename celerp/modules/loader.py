@@ -48,6 +48,7 @@ import fnmatch
 import functools
 import hashlib
 import importlib
+import importlib.machinery
 import importlib.util
 import inspect
 import json
@@ -657,6 +658,70 @@ def _module_entry_files(pkg_path: Path, manifest: dict) -> list[Path]:
     return files
 
 
+# Top-level package names Celerp itself ships, and the prefix of the packages
+# inside official modules (celerp_inventory, ...): no other module answers to them.
+_RESERVED_IMPORT_NAMES = frozenset({"celerp", "ui", "default_modules", "premium_modules"})
+_RESERVED_IMPORT_PREFIX = "celerp_"
+
+
+def _import_roots(name: str, pkg_path: Path) -> list[str]:
+    """Every top-level name the module answers to once its folder and the
+    folder's parent are on sys.path: its own name and each package or source
+    file directly inside it."""
+    shipped = {entry.stem for entry in pkg_path.iterdir()
+               if (entry.is_dir() and (entry / "__init__.py").is_file())
+               or (entry.suffix == ".py" and entry.name != "__init__.py")}
+    return sorted({name} | shipped)
+
+
+def _module_location(mod) -> str | None:
+    """Where an imported module's code lives, or None (built in)."""
+    return getattr(mod, "__file__", None) or next(iter(getattr(mod, "__path__", None) or []), None)
+
+
+def _declares_manifest(folder: Path) -> bool:
+    try:
+        _read_literal_manifest((folder / "__init__.py").read_text(encoding="utf-8"))
+    except (OSError, ModuleImportError):
+        return False
+    return True
+
+
+def _module_homes(pkg_path: Path) -> list[Path]:
+    return [pkg_path.parent, *(Path(e) for e in module_search_path().split(",") if e)]
+
+
+def _is_module_code(location: str | None, homes: list[Path]) -> bool:
+    """True when *location* is a Celerp module's own code: inside a module
+    directory, a module folder, or a package directly inside one."""
+    if not location:
+        return False
+    path = Path(location)
+    folder = path.parent if path.suffix else path
+    return (any(_inside(path, home) for home in homes)
+            or _declares_manifest(folder) or _declares_manifest(folder.parent))
+
+
+def _check_import_names(name: str, pkg_path: Path, *, official: bool) -> None:
+    """Refuse a module that would answer to a package name the standard library,
+    Celerp or an installed package already uses: loading it would replace that
+    package for everything else in the process. Only another Celerp module may
+    already hold the name. Raises :class:`ModuleLoadError`."""
+    homes = _module_homes(pkg_path)
+    elsewhere = [p for p in sys.path if not any(_inside(Path(p or "."), h) for h in homes)]
+    for root in _import_roots(name, pkg_path):
+        if root in sys.modules:
+            taken = not _is_module_code(_module_location(sys.modules[root]), homes)
+        else:
+            spec = importlib.machinery.PathFinder.find_spec(root, elsewhere)
+            taken = bool(spec and spec.origin) and not _is_module_code(spec.origin, homes)
+        if (taken or root in _RESERVED_IMPORT_NAMES or root in sys.stdlib_module_names
+                or (root.startswith(_RESERVED_IMPORT_PREFIX) and not official)):
+            raise ModuleLoadError(
+                f"The package name {root!r} is already used by Celerp, Python or an "
+                f"installed package; the module must use its own.")
+
+
 def _declared_manifest(pkg_path: Path) -> dict:
     """The validated PLUGIN_MANIFEST literal in a module's __init__.py, read
     without importing anything. Raises :class:`ModuleLoadError`."""
@@ -678,11 +743,13 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
     if manifest["name"] != name:
         raise ModuleLoadError(
             f"Manifest name {manifest['name']!r} does not match its folder {name!r}.")
-    _validate_name(name, official=_is_official_name(name, pkg_path))
+    official = _is_official_name(name, pkg_path)
+    _validate_name(name, official=official)
     _check_min_version(manifest)
     _validate_table_prefix(name, manifest)
     for kind in ("api", "ui"):
         _check_route_source(pkg_path, manifest, kind)
+    _check_import_names(name, pkg_path, official=official)
     entry_files = _module_entry_files(pkg_path, manifest)
     first_party = is_first_party(pkg_path)
     if not first_party:
@@ -758,8 +825,8 @@ def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
     resolve_runtime_module_path picks and checks: the manifest is a literal
     that validates; its name matches the folder; the importer's name rules
     (reserved prefix); the Celerp version it needs; the table prefix contract;
-    that every route source lies inside the module and provides its setup
-    function; that the migrations package resolves inside the module; for a
+    that no package name it answers to is already taken; that every route
+    source lies inside the module and provides its setup function; that the migrations package resolves inside the module; for a
     module that is not first-party, that nothing it would execute imports a
     protected internal; and for a premium module, a valid license. Survivors are
     then put in dependency order, a module whose dependency is missing or
@@ -1056,6 +1123,9 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
     Returns the manifest dict. Raises :class:`ModuleLoadError` on failure.
     """
     before = set(sys.modules.keys())
+    existing = sys.modules.get(pkg_name)
+    if existing is not None and not _is_module_code(_module_location(existing), _module_homes(pkg_path)):
+        raise ModuleLoadError(f"The package name {pkg_name!r} is already in use.")
 
     try:
         spec = importlib.util.spec_from_file_location(
