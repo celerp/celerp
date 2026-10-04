@@ -83,14 +83,22 @@ def _existing_db_compatibility(dbname: str):
     return decide(meta, stamped)
 
 
-def _provision_db(db_url: str, drop_existing: bool = False) -> None:
-    """Create Postgres user + database by shelling out to psql as the postgres OS user.
+class ExistingDatabaseUnreachable(RuntimeError):
+    """The database exists and this copy may open it, but the app credentials fail.
+    Init repairs nothing on an existing database: the operator does, as told."""
 
-    Uses `sudo -u postgres psql` — works on any standard Postgres install regardless
-    of pg_hba.conf configuration, since the postgres OS user always has superuser access.
-    If drop_existing=True, drops and recreates the database (used by init --force).
-    Otherwise an existing database must be one this copy may open before the role,
-    ownership or grants change: IncompatibleDatabase is raised, having changed nothing.
+
+def _provision_db(db_url: str, drop_existing: bool = False) -> None:
+    """Create the Postgres role and database by shelling out to psql as the postgres OS user.
+
+    Uses `sudo -u postgres psql`, which works on any standard Postgres install
+    regardless of pg_hba.conf, since the postgres OS user always has superuser access.
+    If drop_existing=True (init --force), resets the role's password and drops and
+    recreates the database. Otherwise only a database that does not exist is
+    provisioned; an existing one is never changed here, because it may be in use by
+    another copy: IncompatibleDatabase when this copy may not open it, else
+    ExistingDatabaseUnreachable with the repair for the operator to run. Ownership
+    and grants are _fix_ownership's, run by _init_database under the version fence.
     Raises RuntimeError on failure.
     """
     from celerp.migrations.compatibility import IncompatibleDatabase
@@ -102,69 +110,42 @@ def _provision_db(db_url: str, drop_existing: bool = False) -> None:
     user = parts["user"]
     password = parts["password"]
     dbname = parts["dbname"]
-
-    if not drop_existing:
-        existing = _existing_db_compatibility(dbname)
-        if existing is not None and not existing.ok:
-            raise IncompatibleDatabase(existing)
-
-    # Create user if not exists, or reset password if it does
-    r = _psql(f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{user}') THEN CREATE USER {user} WITH PASSWORD '{password}'; ELSE ALTER USER {user} WITH PASSWORD '{password}'; END IF; END $$;")
-    if r.returncode != 0:
-        raise RuntimeError(r.stderr.strip())
-    click.echo(f"  ✓ Postgres user '{user}' ready")
+    role_exists = _psql_value(f"SELECT 1 FROM pg_roles WHERE rolname = '{user}';") == "1"
 
     if drop_existing:
+        verb = "ALTER" if role_exists else "CREATE"
+        r = _psql(f"{verb} USER {user} WITH PASSWORD '{password}';")
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.strip())
+        click.echo(f"  ✓ Postgres user '{user}' ready")
         # Terminate any active connections before dropping
         _psql(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{dbname}' AND pid <> pg_backend_pid();")
         r = _psql(f"DROP DATABASE IF EXISTS {dbname};")
         if r.returncode != 0:
             raise RuntimeError(r.stderr.strip())
         click.echo(f"  · Dropped database '{dbname}'")
-
-    # Create database if not exists
-    if _psql_value(f"SELECT 1 FROM pg_database WHERE datname = '{dbname}';") != "1":
-        r = _psql(f"CREATE DATABASE {dbname} OWNER {user};")
-        if r.returncode != 0:
-            raise RuntimeError(r.stderr.strip())
-        click.echo(f"  ✓ Created database '{dbname}'")
     else:
-        click.echo(f"  · Database '{dbname}' already exists")
+        existing = _existing_db_compatibility(dbname)
+        if existing is not None and not existing.ok:
+            raise IncompatibleDatabase(existing)
+        if existing is not None:
+            verb = "ALTER" if role_exists else "CREATE"
+            raise ExistingDatabaseUnreachable(
+                f"Database '{dbname}' already exists, but user '{user}' cannot sign in to it. "
+                f"Init does not change an existing database's users or permissions. "
+                f"Set the password to the one in your database URL, then re-run init:\n"
+                f"  sudo -u postgres psql -c \"{verb} USER {user} WITH PASSWORD '<password>';\"")
+        if not role_exists:
+            r = _psql(f"CREATE USER {user} WITH PASSWORD '{password}';")
+            if r.returncode != 0:
+                raise RuntimeError(r.stderr.strip())
+            click.echo(f"  ✓ Postgres user '{user}' created")
 
-    # Fix ownership for existing DBs (not freshly created). On a fresh DB with
-    # OWNER=user, all new objects inherit the correct owner automatically.
-    if not drop_existing:
-        # Reassign user-created objects. Can't reassign postgres system objects,
-        # so instead change ownership per-table.
-        for fix_sql in _ownership_sql(user):
-            _psql(fix_sql, dbname)
-    # Ensure schema-level privileges are correct regardless of ownership history
-    for grant_sql in _schema_grant_sql(dbname, user):
-        _psql(grant_sql, dbname)
-
-
-def _ownership_sql(user: str) -> list[str]:
-    """Hand every public table and sequence the postgres role owns to *user*."""
-    return [
-        f"DO $$ DECLARE r record; BEGIN "
-        f"FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public' AND tableowner='postgres' LOOP "
-        f"EXECUTE 'ALTER TABLE public.' || quote_ident(r.tablename) || ' OWNER TO {user}'; "
-        f"END LOOP; END $$;",
-        f"DO $$ DECLARE r record; BEGIN "
-        f"FOR r IN SELECT sequencename FROM pg_sequences WHERE schemaname='public' AND sequenceowner='postgres' LOOP "
-        f"EXECUTE 'ALTER SEQUENCE public.' || quote_ident(r.sequencename) || ' OWNER TO {user}'; "
-        f"END LOOP; END $$;",
-    ]
-
-
-def _schema_grant_sql(dbname: str, user: str) -> list[str]:
-    """Database and schema privileges, and the defaults for objects created later."""
-    return [
-        f"GRANT ALL PRIVILEGES ON DATABASE {dbname} TO {user};",
-        f"GRANT ALL PRIVILEGES ON SCHEMA public TO {user};",
-        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {user};",
-        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO {user};",
-    ]
+    # A database created in the meantime makes this fail, leaving it untouched.
+    r = _psql(f"CREATE DATABASE {dbname} OWNER {user};")
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip())
+    click.echo(f"  ✓ Created database '{dbname}'")
 
 
 def _stop_servers() -> None:
@@ -194,13 +175,25 @@ def _fix_ownership(db_url: str) -> str | None:
     user = parts["user"]
     dbname = parts["dbname"]
     # Change ownership per-table/sequence (avoids REASSIGN system object error)
-    for fix_sql in _ownership_sql(user):
+    for fix_sql in [
+        f"DO $$ DECLARE r record; BEGIN "
+        f"FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public' AND tableowner='postgres' LOOP "
+        f"EXECUTE 'ALTER TABLE public.' || quote_ident(r.tablename) || ' OWNER TO {user}'; "
+        f"END LOOP; END $$;",
+        f"DO $$ DECLARE r record; BEGIN "
+        f"FOR r IN SELECT sequencename FROM pg_sequences WHERE schemaname='public' AND sequenceowner='postgres' LOOP "
+        f"EXECUTE 'ALTER SEQUENCE public.' || quote_ident(r.sequencename) || ' OWNER TO {user}'; "
+        f"END LOOP; END $$;",
+    ]:
         r = _psql(fix_sql, dbname)
         if r.returncode != 0:
             return r.stderr.strip()
     # Grant schema-level privileges + defaults for future objects
     for sql in [
-        *_schema_grant_sql(dbname, user),
+        f"GRANT ALL PRIVILEGES ON DATABASE {dbname} TO {user};",
+        f"GRANT ALL PRIVILEGES ON SCHEMA public TO {user};",
+        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {user};",
+        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO {user};",
         f"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {user};",
         f"GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {user};",
     ]:
@@ -232,7 +225,7 @@ def _post_migration_grants(db_url: str) -> None:
     """Grant privileges on all tables and sequences to the app user.
 
     Must run AFTER migrations since sequences/tables created by migrations
-    won't be covered by ALTER DEFAULT PRIVILEGES set during provisioning.
+    won't be covered by ALTER DEFAULT PRIVILEGES set by _fix_ownership.
 
     Runs in-process over the existing connection rather than shelling out to
     `sudo -u postgres psql` (which does not exist on Windows and crashed the
@@ -880,7 +873,7 @@ def _init_database(db_url_val: str) -> None:
 
         # Run migrations. The grants are part of that path, not a step here:
         # sequences and tables created by migrations are not covered by the ALTER
-        # DEFAULT PRIVILEGES set during provisioning, so they are re-granted after.
+        # DEFAULT PRIVILEGES set by _fix_ownership, so they are re-granted after.
         click.echo("Running migrations...")
         if _migrate_to_head(db_url_val):
             click.echo("  ✓ Database ready")
@@ -918,7 +911,7 @@ def _init_external(cfg: dict, *, force: bool, db_url: str | None, purge_dirs: li
         from celerp.migrations.compatibility import IncompatibleDatabase
         try:
             _provision_db(cfg["database"]["url"])
-        except IncompatibleDatabase as e:
+        except (IncompatibleDatabase, ExistingDatabaseUnreachable) as e:
             click.echo(f"  ✗ {e}", err=True)
             sys.exit(1)
         except RuntimeError as e:

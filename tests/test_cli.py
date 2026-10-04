@@ -192,7 +192,7 @@ def test_init_migrates_through_the_shared_path(tmp_config):
     and holds this version's fence from before the ownership fix until it is done.
 
     Sequences and tables created by a migration are not covered by the ALTER
-    DEFAULT PRIVILEGES set during provisioning, so the order is what makes them
+    DEFAULT PRIVILEGES set by the ownership fix, so the order is what makes them
     accessible. Ordering within that path is asserted where it lives, in
     test_migrate_to_head_runs_every_step_inside_the_lock.
     """
