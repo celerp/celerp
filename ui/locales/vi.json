@@ -1553,6 +1553,7 @@
   "bak.restore_type_confirm": "Thao tác này sẽ thay thế cơ sở dữ liệu hiện tại của bạn. Nhập RESTORE để xác nhận.",
   "error.back_to_dashboard": "← Quay lại Bảng điều khiển",
   "error.go_to_settings": "← Đi đến Cài đặt",
+  "error.installation_owner_only": "Chỉ chủ sở hữu bản cài đặt mới có thể thực hiện thao tác này.",
   "error.not_found_title": "404 - Không tìm thấy",
   "error.page_not_found": "Trang không tìm thấy",
   "error.page_not_found_body": "Trang bạn yêu cầu không tồn tại.",

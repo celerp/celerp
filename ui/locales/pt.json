@@ -1553,6 +1553,7 @@
   "bak.restore_type_confirm": "Isso substituirá seu banco de dados atual. Digite RESTORE para confirmar.",
   "error.back_to_dashboard": "← Voltar ao painel",
   "error.go_to_settings": "← Ir para Configurações",
+  "error.installation_owner_only": "Somente o proprietário da instalação pode fazer isso.",
   "error.not_found_title": "404 - Não encontrado",
   "error.page_not_found": "Página não encontrada",
   "error.page_not_found_body": "A página solicitada não existe.",

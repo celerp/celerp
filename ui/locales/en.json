@@ -623,6 +623,7 @@
   "error.days_negative": "Days cannot be negative.",
   "error.email_password_required": "Email and password required.",
   "error.go_to_settings": "← Go to Settings",
+  "error.installation_owner_only": "Only the installation owner can do this.",
   "error.invalid_currency": "Invalid currency: {value}",
   "error.invalid_fiscal_year": "Invalid fiscal year start: {value}",
   "error.invalid_location_type": "Invalid location type: {value}",

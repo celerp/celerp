@@ -1553,6 +1553,7 @@
   "bak.restore_type_confirm": "これにより、現在のデータベースが上書きされます。確認するには「RESTORE」と入力してください。",
   "error.back_to_dashboard": "← ダッシュボードに戻る",
   "error.go_to_settings": "← 設定へ",
+  "error.installation_owner_only": "この操作はインストールの所有者のみが実行できます。",
   "error.not_found_title": "404 - 見つかりません",
   "error.page_not_found": "ページが見つかりません",
   "error.page_not_found_body": "要求されたページは存在しません。",

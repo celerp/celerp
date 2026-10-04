@@ -1554,6 +1554,7 @@
   "bak.restore_type_confirm": "Dadurch wird Ihre aktuelle Datenbank ersetzt. Geben Sie „RESTORE“ ein, um zu bestätigen.",
   "error.back_to_dashboard": "← Zurück zum Dashboard",
   "error.go_to_settings": "← Zu den Einstellungen",
+  "error.installation_owner_only": "Nur der Eigentümer der Installation kann dies tun.",
   "error.not_found_title": "404 – Nicht gefunden",
   "error.page_not_found": "Seite nicht gefunden",
   "error.page_not_found_body": "Die von Ihnen angeforderte Seite existiert nicht.",

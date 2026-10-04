@@ -17,6 +17,7 @@ from celerp.config_store import merge_packaged_config
 from ui.components.shell import base_shell, flash, page_header, page_title
 from ui.i18n import t, get_lang
 from ui.config import get_role as _get_role
+from ui.security import owner_refusal
 
 from ui.routes.settings import (
     _check_permission,
@@ -32,16 +33,6 @@ from ui.routes.settings_general import _section_breadcrumb
 # config.toml, since both files are trusted verbatim by the reader that
 # selects the storage implementation at startup.
 _VALID_STORAGE_BACKENDS = {"local", "s3"}
-
-
-async def _infra_refused(request: Request) -> bool:
-    """The database and file storage serve the whole installation, and changing
-    them restarts it: the installation owner only, on top of the page's own
-    permission. Its fragments are gated the same way."""
-    if await _check_permission(request, "manage_integrations"):
-        return True
-    import ui.api_client as _api
-    return not await _api.installation_owner(_token(request) or "")
 
 
 def _relay_has_paid_access(status: dict) -> bool:
@@ -1073,6 +1064,8 @@ def setup_routes(app):
         """HTMX: proxy to the API to accept a partner claim. Owner/admin only. On
         success the relay pushes the new commercial context, so the page reloads
         to reflect it."""
+        if refused := await owner_refusal(request):
+            return refused
         lang = get_lang(request)
         if _get_role(request) not in ("owner", "admin"):
             return _partner_claim_card(lang=lang)
@@ -1100,7 +1093,9 @@ def setup_routes(app):
         configured password when the field is left blank so testing does not
         force retyping a password that is already saved."""
         token = _token(request)
-        if await _infra_refused(request):
+        if refused := await owner_refusal(request):
+            return refused
+        if await _check_permission(request, "manage_integrations"):
             return Div()
         # RBAC alone is not enough: probing an external target establishes/
         # re-probes external infra, which requires a live Team entitlement.
@@ -1160,7 +1155,9 @@ def setup_routes(app):
         currently configured secret key when the field is left blank so
         testing does not force retyping a secret that is already saved."""
         token = _token(request)
-        if await _infra_refused(request):
+        if refused := await owner_refusal(request):
+            return refused
+        if await _check_permission(request, "manage_integrations"):
             return Div()
         # As with test-db, probing external storage requires a live Team
         # entitlement, not RBAC alone; a lapsed install gets the neutral gate.
@@ -1219,7 +1216,9 @@ def setup_routes(app):
         reload via SIGHUP.
         """
         token = _token(request)
-        if await _infra_refused(request):
+        if refused := await owner_refusal(request):
+            return refused
+        if await _check_permission(request, "manage_integrations"):
             return Div()
         # Saving external infra ESTABLISHES it, so it requires a live Team
         # entitlement, not RBAC alone. A lapsed-but-configured caller is
@@ -1244,7 +1243,9 @@ def setup_routes(app):
         and relaunches Electron; self-hosted swaps config.toml and reloads.
         """
         token = _token(request)
-        if await _infra_refused(request):
+        if refused := await owner_refusal(request):
+            return refused
+        if await _check_permission(request, "manage_integrations"):
             return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")

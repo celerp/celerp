@@ -1553,6 +1553,7 @@
   "bak.restore_type_confirm": "سيؤدي هذا إلى استبدال قاعدة البيانات الحالية. اكتب RESTORE للتأكيد.",
   "error.back_to_dashboard": "← العودة إلى لوحة التحكم",
   "error.go_to_settings": "← الانتقال إلى الإعدادات",
+  "error.installation_owner_only": "يمكن لمالك التثبيت فقط القيام بذلك.",
   "error.not_found_title": "404 - غير موجود",
   "error.page_not_found": "الصفحة غير موجودة",
   "error.page_not_found_body": "الصفحة التي طلبتها غير موجودة.",

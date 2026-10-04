@@ -21,6 +21,7 @@ from ui.components.currency import currency_combobox_td
 from ui.components.phone import phone_input_td as _phone_input_td, phone_head_items as _phone_head_items
 from ui.config import PRIVACY_POLICY_URL
 from ui.config import get_token as _token
+from ui.security import owner_refusal
 from ui.config import get_role as _get_role
 from celerp.services.auth import MIN_PASSWORD_LENGTH
 from celerp.services.pricing import ROUNDING_CHOICES
@@ -1731,9 +1732,9 @@ def setup_routes(app):
     async def billing_portal_redirect(request: Request):
         """Open the Stripe Billing Portal for the Celerp subscription (cancel,
         change card, invoices). Linked from the Web Access connected-status card."""
+        if refused := await owner_refusal(request):
+            return refused
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         redir = await _check_permission(request, "manage_integrations")
         if redir:
             return redir
@@ -1770,6 +1771,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-activate")
     async def cloud_activate(request: Request):
         """HTMX: proxy to API process to call relay /auth/activate + start gateway."""
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
         import ui.api_client as _api
@@ -2036,6 +2039,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-send-otp")
     async def cloud_send_otp(request: Request):
         """HTMX: send OTP via API process (uses canonical instance_id)."""
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
         import ui.api_client as _api
@@ -2070,6 +2075,8 @@ def setup_routes(app):
         Using the API process ensures the same instance_id is used for both
         the /billing/claim relay call and the subsequent /auth/activate call.
         """
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
         import ui.api_client as _api
@@ -2145,6 +2152,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-disconnect")
     async def cloud_disconnect(request: Request):
         """HTMX: disconnect only after the API durably records the user's intent."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from celerp.config import ensure_instance_id
         token = _token(request)
@@ -2168,6 +2177,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-accept-tos")
     async def cloud_accept_tos(request: Request):
         """HTMX: record TOS acceptance via API, reconnect gateway, re-render tab."""
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
         import ui.api_client as _api
@@ -2458,11 +2469,11 @@ def setup_routes(app):
     @app.get("/backup/list")
     async def backup_list(request: Request):
         """HTMX fragment: list cloud snapshots (database + files)."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from fasthtml.common import Div, to_xml
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
         try:
             data = await _api.list_backups(token)
@@ -2515,11 +2526,11 @@ def setup_routes(app):
     @app.post("/backup/trigger")
     async def backup_trigger(request: Request):
         """Trigger an immediate cloud snapshot (database + files)."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from fasthtml.common import Div, to_xml
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
         try:
             await _api.trigger_backup(token)
@@ -2545,11 +2556,11 @@ def setup_routes(app):
         Streamed (not buffered) so a multi-GB backup never sits in UI memory and isn't
         bound by the short default timeout; forwarding Content-Length gives the browser a
         native download progress bar."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from starlette.responses import StreamingResponse
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         try:
             stream, headers = await _api.export_backup(token)
         except _api.APIError as exc:
@@ -2570,11 +2581,11 @@ def setup_routes(app):
 
         Streamed (not buffered) so a multi-GB snapshot never sits in UI memory; the
         browser's native download manager shows progress via the forwarded Content-Length."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from starlette.responses import StreamingResponse
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         try:
             stream, headers = await _api.export_backup(token, backup_id)
         except _api.APIError as exc:
@@ -2624,10 +2635,10 @@ def setup_routes(app):
     @app.post("/backup/restore/{backup_id}")
     async def backup_restore(request: Request, backup_id: str):
         """Restore a cloud recovery point: replaces the whole installation."""
+        if refused := await owner_refusal(request):
+            return refused
         import httpx
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         try:
             async with api._local_client(token, timeout=900.0, follow_redirects=False, bulk=True) as c:
                 r = await c.post(f"/backup/restore/{backup_id}")
@@ -2638,11 +2649,11 @@ def setup_routes(app):
     @app.post("/backup/import")
     async def backup_import(request: Request):
         """Import a .celerp-backup archive. Multipart upload forwarded to API."""
+        if refused := await owner_refusal(request):
+            return refused
 
         import httpx
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
         form = await request.form()
         file_field = form.get("file")
@@ -2671,10 +2682,10 @@ def setup_routes(app):
     @app.post("/backup/import/continue")
     async def backup_import_continue(request: Request):
         """Continue a staged System Recovery without a safety copy: replaces the whole installation."""
+        if refused := await owner_refusal(request):
+            return refused
         import httpx
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         form = await request.form()
         data = {k: str(form.get(k) or "") for k in ("confirmation_id", "digest")}
         try:

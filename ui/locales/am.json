@@ -1657,6 +1657,7 @@
   "bak.restore_type_confirm": "ይህ የአሁኑን የውሂብ ጎታዎን ይተካዋል። ለማረጋገጥ RESTORE ብለው ይተይቡ።",
   "error.back_to_dashboard": "← ወደ ዳሽቦርድ ተመለስ",
   "error.go_to_settings": "← ወደ ቅንብሮች ይሂዱ",
+  "error.installation_owner_only": "ይህንን ማድረግ የሚችለው የመጫኛው ባለቤት ብቻ ነው።",
   "error.not_found_title": "404 - አልተገኘም",
   "error.page_not_found": "ገጽ አልተገኘም",
   "error.page_not_found_body": "የጠየቁት ገጽ የለም።",

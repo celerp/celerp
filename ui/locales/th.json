@@ -1553,6 +1553,7 @@
   "bak.restore_type_confirm": "การดำเนินการนี้จะแทนที่ฐานข้อมูลปัจจุบันของคุณ พิมพ์ RESTORE เพื่อยืนยัน",
   "error.back_to_dashboard": "← กลับสู่แดชบอร์ด",
   "error.go_to_settings": "← ไปที่การตั้งค่า",
+  "error.installation_owner_only": "เฉพาะเจ้าของการติดตั้งเท่านั้นที่ทำสิ่งนี้ได้",
   "error.not_found_title": "404 - ไม่พบหน้าที่ต้องการ",
   "error.page_not_found": "ไม่พบหน้าที่ต้องการ",
   "error.page_not_found_body": "ไม่พบหน้าที่คุณร้องขอ.",

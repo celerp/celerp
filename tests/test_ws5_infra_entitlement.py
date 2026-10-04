@@ -51,7 +51,7 @@ async def client(monkeypatch):
     sc.setup_routes(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://t",
-                           follow_redirects=False) as c:
+                           cookies={"celerp_token": "tok"}, follow_redirects=False) as c:
         yield c
 
 

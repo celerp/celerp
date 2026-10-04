@@ -45,6 +45,7 @@ from ui.routes.account import (
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
+from ui.security import owner_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -1222,6 +1223,8 @@ def setup_routes(app):
 
     @app.get("/modules/{module_name}/delete-options")
     async def module_delete_options(request: Request, module_name: str):
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1248,6 +1251,8 @@ def setup_routes(app):
 
     @app.post("/modules/{module_name}/delete")
     async def module_delete(request: Request, module_name: str):
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1284,6 +1289,8 @@ def setup_routes(app):
 
     @app.post("/modules/import")
     async def module_import(request: Request):
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1316,6 +1323,8 @@ def setup_routes(app):
 
     @app.post("/modules/import-path")
     async def module_import_path(request: Request):
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1347,6 +1356,8 @@ def setup_routes(app):
 
     @app.post("/modules/community-download")
     async def community_download(request: Request):
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1380,6 +1391,8 @@ def setup_routes(app):
 
     @app.post("/modules/community-import")
     async def community_import(request: Request):
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1410,6 +1423,8 @@ def setup_routes(app):
 
     @app.post("/modules/restart")
     async def module_restart(request: Request):
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1486,6 +1501,8 @@ def setup_routes(app):
     async def modules_buy(request: Request):
         """Start a module purchase: get the Stripe Checkout URL from the relay and
         return the waiting panel (opens Checkout in the browser, polls the license)."""
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1535,6 +1552,8 @@ def setup_routes(app):
         """Step one of installing a marketplace module: the local API fetches it
         from the relay and stages it. On success the row offers Install; a failure
         returns the row with a corner toast, so retrying is always possible."""
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1556,6 +1575,8 @@ def setup_routes(app):
         same as a community import - enabling and restarting are the deliberate
         steps in the Installed tab. A failure surfaces as a corner toast with the
         row intact."""
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect

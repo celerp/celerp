@@ -9133,8 +9133,8 @@ _MODULES_LIST = [
 
 @pytest.fixture
 def as_installation_owner():
-    """The module install, remove and restart controls are the installation
-    owner's; these flows run as that owner."""
+    """Installation-wide controls (modules, backups, the Celerp account) are the
+    installation owner's; these flows run as that owner."""
     with patch("ui.api_client.installation_owner", new=AsyncMock(return_value=True)):
         yield
 
@@ -14175,6 +14175,7 @@ class TestDocumentsOverhaul:
         assert "celerpToast" in trigger
         assert "administrator" in trigger
 
+    @pytest.mark.usefixtures("as_installation_owner")
     @pytest.mark.asyncio
     async def test_send_offer_resume_opens_dialog_prefilled_after_verify(self, ui_client):
         """After signup completes the poll reloads the page with a one-shot
@@ -16531,6 +16532,7 @@ def test_split_weight_has_onblur_clamp():
 
 # ── Backup proxy routes ────────────────────────────────────────────────────────
 
+@pytest.mark.usefixtures("as_installation_owner")
 class TestBackupRoutes:
     """Regression tests for /backup/* UI route handlers.
 
@@ -17559,6 +17561,7 @@ async def test_bulk_attach_result_has_status_filters(ui_client):
     assert 'data-filter="error"' not in html  # no errors in this batch → no Errors pill
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_backup_export_streams_with_progress_headers(ui_client):
     """#158: the backup download streams through (not buffered) and forwards Content-Length
@@ -17829,6 +17832,7 @@ def test_split_table_form_pieces_variant():
     assert "Karat" in html
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 class TestCelerpAccountSurface:
     """The one account surface (ui/routes/account.py): email-first signup,
     Google only when the relay reports it, claim-led variant for the Settings
@@ -19582,6 +19586,7 @@ async def test_free_send_offer_shows_on_unknown_hides_on_known_zero(monkeypatch)
 
 # ── Account panel tier naming (ui/routes/account.py) ──────────────────────────
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_account_panel_names_connect_tier(ui_client):
     """The signed-in account panel shows the tier's display name (Connect),
@@ -19598,6 +19603,7 @@ async def test_account_panel_names_connect_tier(ui_client):
 
 # ── Module restart refreshes the session cookie (ui/routes/modules_page.py) ────
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_restart_refreshes_session_cookie(ui_client):
     """POST /modules/restart re-mints the UI session cookie from live settings
@@ -19622,6 +19628,7 @@ async def test_module_restart_refreshes_session_cookie(ui_client):
     assert new_refresh in set_cookie
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_restart_refresh_failure_still_restarts(ui_client):
     """If the cookie refresh exchange fails, the restart still proceeds fail-open:
@@ -19661,6 +19668,7 @@ def _module_row(name: str, *, enabled: bool = False, running: bool = False,
     }
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_delete_options_returns_dialog_with_both_paths(ui_client):
     """The X's GET returns the delete dialog. A module that owns tables (declares
@@ -19681,6 +19689,7 @@ async def test_module_delete_options_returns_dialog_with_both_paths(ui_client):
     assert "account-gate-modal" in html
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_delete_options_without_prefix_omits_purge_path(ui_client):
     """A module that owns no tables (no table_prefix) offers only the keep-data
@@ -19697,6 +19706,7 @@ async def test_module_delete_options_without_prefix_omits_purge_path(ui_client):
     assert "account-gate-modal" in html
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_delete_with_purge_drops_data_before_removing_module(ui_client):
     """delete?purge=1 purges the module's data and then removes the module, in

@@ -1554,6 +1554,7 @@
   "bak.restore_type_confirm": "Cette opération remplacera votre base de données actuelle. Tapez RESTORE pour confirmer.",
   "error.back_to_dashboard": "← Retour au tableau de bord",
   "error.go_to_settings": "← Aller dans les paramètres",
+  "error.installation_owner_only": "Seul le propriétaire de l'installation peut effectuer cette action.",
   "error.not_found_title": "404 - Page introuvable",
   "error.page_not_found": "Page introuvable",
   "error.page_not_found_body": "La page que vous avez demandée n'existe pas.",

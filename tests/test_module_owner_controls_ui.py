@@ -118,7 +118,8 @@ async def cloud_client(monkeypatch):
         return_value={"feature_flags": {"external_db": True, "external_storage": True}}))
     app = FastHTML()
     sc.setup_routes(app)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t",
+                           cookies={"celerp_token": "tok"}) as c:
         yield c, sc
 
 
@@ -132,7 +133,7 @@ async def test_company_admin_cannot_change_database_or_storage(cloud_client, mon
         monkeypatch.setattr(sc, fn, saved)
     with _owner(False):
         r = await client.post(path, data={"db_host": "h", "db_name": "n", "db_user": "u"})
-    assert r.status_code == 200
+    assert r.status_code == 403
     saved.assert_not_called()
 
 
