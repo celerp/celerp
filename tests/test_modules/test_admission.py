@@ -457,6 +457,36 @@ def test_owned_route_module_registers(_modules):
     assert f"/{inner}/ping" in _paths(app)
 
 
+def test_protected_internal_imported_as_a_submodule_name_is_refused(_modules, tmp_path):
+    """`from celerp.ai import quota` imports the protected celerp.ai.quota as
+    surely as `import celerp.ai.quota` does."""
+    marker = tmp_path / "setup_ran.txt"
+    folder = f"acme-{_uid()}"
+    _route_module(_modules, folder, body=(
+        "from celerp.ai import quota  # noqa: F401\n\n"
+        "def setup_api_routes(app):\n    " + _marker_line(marker)))
+
+    loader.register_api_routes(_App(), loader.load_all(str(_modules), {folder}))
+
+    assert not marker.exists()
+    assert not loader.is_running(folder)
+    assert "celerp.ai.quota" in loader.load_errors()[folder]
+
+
+def test_locale_file_outside_the_module_is_not_registered(_modules):
+    from ui.i18n import t
+
+    folder = f"acme-{_uid()}"
+    (_modules / "outside.json").write_text(json.dumps({"acme.outside.label": "Leaked"}))
+    _write_module(_modules, folder, {"name": folder, "version": "1.0.0",
+                                     "locales": {"zx": {"file": "../outside.json"}}})
+
+    loader.load_all(str(_modules), {folder})
+
+    assert loader.is_running(folder)
+    assert t("acme.outside.label", "zx") == "acme.outside.label"
+
+
 # ── A3: a route failure takes the module, and its dependents, out whole ─────
 
 
