@@ -340,9 +340,9 @@ async def test_waste_to_cogs_and_reconcile(client):
 
 
 @pytest.mark.asyncio
-async def test_waste_over_input_clamped(client):
-    """Negative waste is rejected outright, and waste exceeding the input is capped at the value
-    issued, so the run's entries can never go unbalanced or drive output cost below zero."""
+async def test_waste_over_input_refused(client):
+    """Negative waste is rejected outright, and so is waste beyond what the run issued: it is
+    refused, never cut down to fit, so nothing is recorded that was not asked for."""
     token = await _register(client)
     gold = await _item(client, token, "GOLD8", quantity=1000, cost_total=80000)  # unit 80
     ring = await _item(client, token, "RING8", quantity=0)
@@ -354,13 +354,17 @@ async def test_waste_over_input_clamped(client):
                               json={"waste_quantity": -1})).status_code == 422
 
     over = await _build(client, token, ring, 2)
-    assert (await _issue(client, token, over)).status_code == 200  # input 800
+    assert (await _issue(client, token, over)).status_code == 200  # 10 issued, input 800
+    r = await client.post(f"/manufacturing/{over}/complete", headers=_h(token), json={"waste_quantity": 1000})
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "mfg.over_waste", r.text
+    assert (await client.get(f"/manufacturing/{over}", headers=_h(token))).json()["status"] != "completed"
+
     assert (await client.post(f"/manufacturing/{over}/complete", headers=_h(token),
-                              json={"waste_quantity": 1000})).status_code == 200
+                              json={"waste_quantity": 10})).status_code == 200
     entries = await _run_entries(client, token, over)
     _all_balanced(entries)
     assert _output_cap(entries) == pytest.approx(0)
-    assert _waste_leg(entries) == pytest.approx(800)  # capped at the value issued
+    assert _waste_leg(entries) == pytest.approx(800)  # everything issued
     assert [float(lot["cost_total"]) for lot in await _lots(client, token, over)] == [0.0]
 
 

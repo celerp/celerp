@@ -541,15 +541,21 @@ async def complete(session: AsyncSession, company_id, user_id, order_id: str, pa
                    key: str | None, *, at: str, quantity: float | None = None) -> dict:
     """Finish a run: issue what is outstanding, receive the output still to come (``quantity``
     of it when given, else all of it) and close. ``payload`` holds the closing details
-    (waste_quantity, waste_unit, waste_reason, labor_hours). What it made is what it received."""
+    (waste_items, or the waste_quantity shorthand with waste_unit; waste_reason, labor_hours).
+    What it made is what it received."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
-    request = _fingerprint({"payload": payload, "quantity": quantity})
+    request = _fingerprint({"payload": _closing_request(payload), "quantity": quantity})
     if await _replayed(op, f"mfg:{order_id}:complete:{rk}", request) is not None:
         return {"status": "completed"}
     run = await _run(op)
     _require_open(run.state, "completed")
     _require_settled(op, run.state)
+    wasted, names = await _waste_request(op, run.state, payload)
+    # Completing issues what is outstanding, so the waste is checked against that before anything moves.
+    check_waste({**run.state, "inputs": [{**i, "issued_qty": max(float(i.get("issued_qty") or 0),
+                                                                  float(i.get("quantity") or 0))}
+                                         for i in run.state.get("inputs", [])]}, wasted, names)
     outstanding = outstanding_inputs(run.state)
     if outstanding:
         if (await mfg_settings(session, company_id)).get("require_issued_before_complete"):
@@ -561,27 +567,115 @@ async def complete(session: AsyncSession, company_id, user_id, order_id: str, pa
     if qty > _EPS and run.state.get("output_item_id"):
         await _receive(op, run, qty, f"{rk}:receive", request)
         run = await _run(op)
-    await _close(op, run, payload, request, rk)
+    await _close(op, run, payload, request, rk, wasted, names)
     return {"status": "completed"}
 
 
-async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str) -> None:
+def merge_waste(items: list[dict] | None) -> list[dict]:
+    """Each wasted component once, its quantities summed, in component order."""
+    merged: dict[str, Decimal] = {}
+    for line in items or []:
+        merged[line["item_id"]] = merged.get(line["item_id"], _ZERO) + _money(line["quantity"])
+    return [{"item_id": i, "quantity": float(q)} for i, q in sorted(merged.items())]
+
+
+def _closing_request(payload: dict) -> dict:
+    """The closing details as one request: the same waste listed in another order, or split over
+    repeated lines, is the same request."""
+    out = {k: v for k, v in payload.items() if k != "waste_items"}
+    if payload.get("waste_items"):
+        out["waste_items"] = merge_waste(payload["waste_items"])
+    return out
+
+
+async def _waste_request(op: _Op, state: dict, payload: dict) -> tuple[list[dict], dict[str, str]]:
+    """The components a completion wastes, and every component's name for refusals. The
+    waste_quantity shorthand names no component, so it is only taken on a run with one, and its
+    unit must be that component's unit."""
+    names: dict[str, str] = {}
+    units: dict[str, str | None] = {}
+    for inp in state.get("inputs", []):
+        row = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": inp.get("item_id")})
+        s = (row.state or {}) if row is not None else {}
+        names[inp.get("item_id")] = s.get("sku") or inp.get("item_id")
+        units[inp.get("item_id")] = s.get("sell_by") or s.get("unit")
+    items, qty = payload.get("waste_items"), payload.get("waste_quantity")
+    if items and qty is not None:
+        raise refuse(422, "waste_twice", "Give the waste either per component or as one quantity, not both.")
+    if items:
+        return merge_waste(items), names
+    if not qty:
+        return [], names
+    if len(names) != 1:
+        components = sorted(names.values())
+        raise refuse(422, "waste_ambiguous",
+                     f"This run uses {len(components)} components ({', '.join(components)}), so the waste "
+                     "must say how much of each was wasted.", components=components)
+    (item_id, unit), = units.items()
+    given = payload.get("waste_unit")
+    if given and unit and given.strip().lower() != unit.strip().lower():
+        raise refuse(422, "waste_unit", f"{names[item_id]} is counted in {unit}, not {given}.",
+                     sku=names[item_id], unit=unit, given=given)
+    return [{"item_id": item_id, "quantity": float(qty)}], names
+
+
+def check_waste(run_state: dict, waste_items: list[dict], names: dict[str, str] | None = None) -> list[dict]:
+    """The waste, each component once in component order, after checking every component is one
+    of the run's and none is wasted beyond what was issued to it."""
+    inputs = {i.get("item_id"): i for i in run_state.get("inputs", [])}
+    names = names or {}
+    wasted = merge_waste(waste_items)
+    for line in wasted:
+        item_id = line["item_id"]
+        if item_id not in inputs:
+            raise refuse(422, "not_an_input", f"{item_id} is not a component of this run.", item=item_id)
+        have, sku = float(inputs[item_id].get("issued_qty") or 0), names.get(item_id) or item_id
+        if line["quantity"] > have + _EPS:
+            raise refuse(422, "over_waste", f"Only {have:g} of {sku} was issued to this run, so no more "
+                         "can be wasted.", sku=sku, issued=have)
+    return wasted
+
+
+def value_waste(run_state: dict, waste_items: list[dict], currency: str,
+                names: dict[str, str] | None = None) -> tuple[list[dict], Decimal]:
+    """What the waste cost: each component wasted at its share of the value it carried into the
+    run when it was issued, all of it when everything issued was wasted. Returns one line per
+    component (in component order, with its value) and the total. A component whose issued
+    value is not known needs the run reconciled first."""
+    inputs = {i.get("item_id"): i for i in run_state.get("inputs", [])}
+    lines, total = [], _ZERO
+    for line in check_waste(run_state, waste_items, names):
+        item_id, qty = line["item_id"], line["quantity"]
+        inp = inputs[item_id]
+        if inp.get("issued_value") is None:
+            raise _reconcile()
+        have, recorded = float(inp.get("issued_qty") or 0), _money(inp["issued_value"])
+        value = recorded if qty >= have - _EPS else round_money(recorded * _money(qty) / _money(have), currency)
+        lines.append({"item_id": item_id, "quantity": qty, "value": str(value)})
+        total += value
+    return lines, total
+
+
+async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str,
+                 wasted: list[dict] | None = None, names: dict[str, str] | None = None) -> None:
     """Close a run, leaving it holding nothing: waste to cost of goods sold, and the rest
     shared over its lots by quantity, each lot restated by the difference from what it took
     when it was received. ``ck`` keys this completion, so a reopened run completes afresh.
     The completion records what it moved, so reopening reverses exactly that."""
     state = run.state
     issued, held = _money(state.get("wip_issued")), _wip(state)
-    waste_qty = float(payload.get("waste_quantity") or 0)
-    total_in = sum(float(i.get("quantity") or 0) for i in state.get("inputs", []))
-    # Waste is its share of everything issued, whether or not the output was already received: the
-    # lots then give back what they took for it.
+    # Waste is what the components wasted carried in, whether or not the output was already
+    # received: the lots then give back what they took for it.
+    waste_lines, waste = value_waste(state, wasted or [], op.currency, names)
     receipts = [r for r in state.get("receipts") or [] if float(r.get("quantity") or 0) > 0]
     # Output an older release took off along a path no re-cost can follow keeps what it was
     # given (reconcile); the finished value it does not carry is shared over the rest.
     kept = sum((_money(r.get("value")) for r in receipts if r.get("fixed")), _ZERO)
     live = [r for r in receipts if not r.get("fixed")]
-    waste = min(op.round(issued * _money(waste_qty) / _money(total_in)), issued - kept) if waste_qty > 0 and total_in > 0 else _ZERO
+    if waste > issued - kept:
+        raise refuse(422, "waste_kept", "Output an older release received from this run keeps its cost, "
+                     "so the rest of what was issued is all that can be recorded as waste.",
+                     wastable=str(issued - kept))
     if receipts and not live:
         # Every lot keeps its cost: what the run holds beyond it has no output left to go to.
         waste = issued - kept
@@ -613,8 +707,8 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str)
     actual_outputs = [{**expected, "quantity": float(state.get("received_qty") or 0)}] if expected else []
     await op.emit_run("mfg.order.completed", {
         "completed_by": str(op.user_id), "actual_outputs": actual_outputs,
-        "waste": ({"quantity": payload.get("waste_quantity"), "unit": payload.get("waste_unit"),
-                   "reason": payload.get("waste_reason")} if payload.get("waste_quantity") is not None else None),
+        "waste": ({"items": waste_lines, "unit": payload.get("waste_unit"),
+                   "reason": payload.get("waste_reason")} if waste_lines else None),
         "labor_hours": payload.get("labor_hours"),
         "transferred": str(finished), "wasted": str(waste), "request": request,
         "closing": {"held": str(held), "wasted": str(waste), "lots": restated, "booked": op.books},

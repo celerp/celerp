@@ -118,10 +118,20 @@ class ReceiveBody(BaseModel):
     idempotency_key: str | None = None
 
 
-class CompleteBody(BaseModel):
-    # What a run made is what was received from it; a declared yield is refused, not ignored.
+class WasteItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    item_id: str
+    quantity: FiniteFloat = Field(gt=0)
+
+
+class CompleteBody(BaseModel):
+    # What a run made is what was received from it; a declared yield is refused, not ignored.
+    # Waste names each component and how much of it was wasted; waste_quantity (in waste_unit)
+    # is the shorthand for a run with one component.
+    model_config = ConfigDict(extra="forbid")
+
+    waste_items: list[WasteItem] | None = None
     waste_quantity: FiniteFloat | None = Field(default=None, ge=0)
     waste_unit: str | None = None
     waste_reason: str | None = None
