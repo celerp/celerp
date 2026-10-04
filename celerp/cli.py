@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import signal
@@ -44,14 +45,64 @@ def _parse_db_url(db_url: str) -> dict:
     }
 
 
-def _provision_db(db_url: str, drop_existing: bool = False) -> None:
-    """Create Postgres user + database by shelling out to psql as the postgres OS user.
+def _psql(sql: str, db: str = "postgres", *flags: str) -> subprocess.CompletedProcess:
+    """Run one statement through psql as the postgres OS user."""
+    return subprocess.run(
+        ["sudo", "-u", "postgres", "psql", "-d", db, "-v", "ON_ERROR_STOP=1", *flags, "-c", sql],
+        capture_output=True,
+        text=True,
+    )
 
-    Uses `sudo -u postgres psql` — works on any standard Postgres install regardless
-    of pg_hba.conf configuration, since the postgres OS user always has superuser access.
-    If drop_existing=True, drops and recreates the database (used by init --force).
+
+def _psql_value(sql: str, db: str = "postgres") -> str:
+    """The unaligned single value *sql* returns. Raises RuntimeError on failure."""
+    r = _psql(sql, db, "-At")
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip())
+    return r.stdout.strip()
+
+
+def _existing_db_compatibility(dbname: str):
+    """Classify an existing database for this copy, reading it as the superuser
+    (the app role may not reach it yet). None when the database does not exist."""
+    from celerp.migrations._data_reconcile import _META_TABLE
+    from celerp.migrations.compatibility import decide
+
+    if _psql_value(f"SELECT 1 FROM pg_database WHERE datname = '{dbname}';") != "1":
+        return None
+    tables = _psql_value(
+        f"SELECT to_regclass('public.{_META_TABLE}') IS NOT NULL, "
+        f"to_regclass('public.alembic_version') IS NOT NULL;", dbname)
+    has_meta, has_stamp = (flag == "t" for flag in tables.split("|"))
+    meta = json.loads(_psql_value(
+        f"SELECT coalesce(json_object_agg(key, value), '{{}}') FROM public.{_META_TABLE};",
+        dbname)) if has_meta else {}
+    stamped = json.loads(_psql_value(
+        "SELECT coalesce(json_agg(version_num), '[]') FROM public.alembic_version;",
+        dbname)) if has_stamp else []
+    return decide(meta, stamped)
+
+
+class ExistingDatabaseUnreachable(RuntimeError):
+    """The database exists and this copy may open it, but the app credentials fail.
+    Init repairs nothing on an existing database: the operator does, as told."""
+
+
+def _provision_db(db_url: str, drop_existing: bool = False) -> None:
+    """Create the Postgres role and database by shelling out to psql as the postgres OS user.
+
+    Uses `sudo -u postgres psql`, which works on any standard Postgres install
+    regardless of pg_hba.conf, since the postgres OS user always has superuser access.
+    If drop_existing=True (init --force), resets the role's password and drops and
+    recreates the database. Otherwise only a database that does not exist is
+    provisioned; an existing one is never changed here, because it may be in use by
+    another copy: IncompatibleDatabase when this copy may not open it, else
+    ExistingDatabaseUnreachable with the repair for the operator to run. Ownership
+    and grants are _fix_ownership's, run by _init_database under the version fence.
     Raises RuntimeError on failure.
     """
+    from celerp.migrations.compatibility import IncompatibleDatabase
+
     parts = _parse_db_url(db_url)
     if not parts:
         raise RuntimeError(f"Could not parse DB URL: {db_url}")
@@ -59,70 +110,42 @@ def _provision_db(db_url: str, drop_existing: bool = False) -> None:
     user = parts["user"]
     password = parts["password"]
     dbname = parts["dbname"]
-
-    def _psql(sql: str, db: str = "postgres") -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["sudo", "-u", "postgres", "psql", "-d", db, "-v", "ON_ERROR_STOP=1", "-c", sql],
-            capture_output=True,
-            text=True,
-        )
-
-    # Create user if not exists, or reset password if it does
-    r = _psql(f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{user}') THEN CREATE USER {user} WITH PASSWORD '{password}'; ELSE ALTER USER {user} WITH PASSWORD '{password}'; END IF; END $$;")
-    if r.returncode != 0:
-        raise RuntimeError(r.stderr.strip())
-    click.echo(f"  ✓ Postgres user '{user}' ready")
+    role_exists = _psql_value(f"SELECT 1 FROM pg_roles WHERE rolname = '{user}';") == "1"
 
     if drop_existing:
+        verb = "ALTER" if role_exists else "CREATE"
+        r = _psql(f"{verb} USER {user} WITH PASSWORD '{password}';")
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.strip())
+        click.echo(f"  ✓ Postgres user '{user}' ready")
         # Terminate any active connections before dropping
         _psql(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{dbname}' AND pid <> pg_backend_pid();")
         r = _psql(f"DROP DATABASE IF EXISTS {dbname};")
         if r.returncode != 0:
             raise RuntimeError(r.stderr.strip())
         click.echo(f"  · Dropped database '{dbname}'")
+    else:
+        existing = _existing_db_compatibility(dbname)
+        if existing is not None and not existing.ok:
+            raise IncompatibleDatabase(existing)
+        if existing is not None:
+            verb = "ALTER" if role_exists else "CREATE"
+            raise ExistingDatabaseUnreachable(
+                f"Database '{dbname}' already exists, but user '{user}' cannot sign in to it. "
+                f"Init does not change an existing database's users or permissions. "
+                f"Set the password to the one in your database URL, then re-run init:\n"
+                f"  sudo -u postgres psql -c \"{verb} USER {user} WITH PASSWORD '<password>';\"")
+        if not role_exists:
+            r = _psql(f"CREATE USER {user} WITH PASSWORD '{password}';")
+            if r.returncode != 0:
+                raise RuntimeError(r.stderr.strip())
+            click.echo(f"  ✓ Postgres user '{user}' created")
 
-    # Create database if not exists
-    r = _psql(f"SELECT 1 FROM pg_database WHERE datname = '{dbname}';")
+    # A database created in the meantime makes this fail, leaving it untouched.
+    r = _psql(f"CREATE DATABASE {dbname} OWNER {user};")
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip())
-    if "1 row" not in r.stdout:
-        r = _psql(f"CREATE DATABASE {dbname} OWNER {user};")
-        if r.returncode != 0:
-            raise RuntimeError(r.stderr.strip())
-        click.echo(f"  ✓ Created database '{dbname}'")
-    else:
-        click.echo(f"  · Database '{dbname}' already exists")
-
-    # Fix ownership for existing DBs (not freshly created). On a fresh DB with
-    # OWNER=user, all new objects inherit the correct owner automatically.
-    if not drop_existing:
-        # Reassign user-created objects. Can't reassign postgres system objects,
-        # so instead change ownership per-table.
-        for fix_sql in [
-            f"DO $$ DECLARE r record; BEGIN "
-            f"FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public' AND tableowner='postgres' LOOP "
-            f"EXECUTE 'ALTER TABLE public.' || quote_ident(r.tablename) || ' OWNER TO {user}'; "
-            f"END LOOP; END $$;",
-            f"DO $$ DECLARE r record; BEGIN "
-            f"FOR r IN SELECT sequencename FROM pg_sequences WHERE schemaname='public' AND sequenceowner='postgres' LOOP "
-            f"EXECUTE 'ALTER SEQUENCE public.' || quote_ident(r.sequencename) || ' OWNER TO {user}'; "
-            f"END LOOP; END $$;",
-        ]:
-            subprocess.run(
-                ["sudo", "-u", "postgres", "psql", "-d", dbname, "-c", fix_sql],
-                capture_output=True, text=True,
-            )
-    # Ensure schema-level privileges are correct regardless of ownership history
-    for grant_sql in [
-        f"GRANT ALL PRIVILEGES ON DATABASE {dbname} TO {user};",
-        f"GRANT ALL PRIVILEGES ON SCHEMA public TO {user};",
-        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {user};",
-        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO {user};",
-    ]:
-        subprocess.run(
-            ["sudo", "-u", "postgres", "psql", "-d", dbname, "-c", grant_sql],
-            capture_output=True, text=True,
-        )
+    click.echo(f"  ✓ Created database '{dbname}'")
 
 
 def _stop_servers() -> None:
@@ -139,6 +162,16 @@ def _stop_servers() -> None:
         pass  # pkill not available; ignore
 
 
+@contextmanager
+def _db_engine(db_url: str, **kwargs):
+    """An engine for a step that may change the database, inside its mutating
+    scope (celerp.migrations.compatibility.mutating_scope)."""
+    from celerp.migrations.compatibility import mutating_scope
+
+    with mutating_scope(_sync_url(db_url)) as held, held.engine(**kwargs) as engine:
+        yield engine
+
+
 def _fix_ownership(db_url: str) -> str | None:
     """Reassign ownership of user-created objects to the app user and grant privileges.
 
@@ -149,8 +182,15 @@ def _fix_ownership(db_url: str) -> str | None:
     parts = _parse_db_url(db_url)
     if not parts:
         return None
+    from celerp.migrations.compatibility import mutating_scope
+
     user = parts["user"]
     dbname = parts["dbname"]
+    with mutating_scope(_sync_url(db_url)) as held, held.write_window():
+        return _fix_ownership_statements(user, dbname)
+
+
+def _fix_ownership_statements(user: str, dbname: str) -> str | None:
     # Change ownership per-table/sequence (avoids REASSIGN system object error)
     for fix_sql in [
         f"DO $$ DECLARE r record; BEGIN "
@@ -162,10 +202,7 @@ def _fix_ownership(db_url: str) -> str | None:
         f"EXECUTE 'ALTER SEQUENCE public.' || quote_ident(r.sequencename) || ' OWNER TO {user}'; "
         f"END LOOP; END $$;",
     ]:
-        r = subprocess.run(
-            ["sudo", "-u", "postgres", "psql", "-d", dbname, "-v", "ON_ERROR_STOP=1", "-c", fix_sql],
-            capture_output=True, text=True,
-        )
+        r = _psql(fix_sql, dbname)
         if r.returncode != 0:
             return r.stderr.strip()
     # Grant schema-level privileges + defaults for future objects
@@ -177,10 +214,7 @@ def _fix_ownership(db_url: str) -> str | None:
         f"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {user};",
         f"GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {user};",
     ]:
-        subprocess.run(
-            ["sudo", "-u", "postgres", "psql", "-d", dbname, "-c", sql],
-            capture_output=True, text=True,
-        )
+        _psql(sql, dbname)
     return None
 
 
@@ -190,25 +224,24 @@ def _needs_ownership_fix(db_url: str) -> bool:
     if not parts:
         return False
     user = parts["user"]
-    sync_url = _sync_url(db_url)
-    try:
-        from sqlalchemy import create_engine, text
-        engine = create_engine(sync_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
-        with engine.connect() as conn:
-            result = conn.execute(text(
-                "SELECT count(*) FROM pg_tables "
-                "WHERE schemaname = 'public' AND tableowner != :user"
-            ), {"user": user})
-            return result.scalar() > 0
-    except Exception:
-        return False
+    from sqlalchemy import text
+    with _db_engine(db_url, pool_pre_ping=True, connect_args={"connect_timeout": 5}) as engine:
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text(
+                    "SELECT count(*) FROM pg_tables "
+                    "WHERE schemaname = 'public' AND tableowner != :user"
+                ), {"user": user})
+                return result.scalar() > 0
+        except Exception:
+            return False
 
 
 def _post_migration_grants(db_url: str) -> None:
     """Grant privileges on all tables and sequences to the app user.
 
     Must run AFTER migrations since sequences/tables created by migrations
-    won't be covered by ALTER DEFAULT PRIVILEGES set during provisioning.
+    won't be covered by ALTER DEFAULT PRIVILEGES set by _fix_ownership.
 
     Runs in-process over the existing connection rather than shelling out to
     `sudo -u postgres psql` (which does not exist on Windows and crashed the
@@ -220,19 +253,15 @@ def _post_migration_grants(db_url: str) -> None:
     if not parts:
         return
     user = parts["user"]
-    sync_url = _sync_url(db_url)
-    try:
-        from sqlalchemy import create_engine, text
-        engine = create_engine(sync_url)
+    from sqlalchemy import text
+    with _db_engine(db_url) as engine:
         try:
             with engine.begin() as conn:
                 conn.execute(text(f'GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "{user}";'))
                 conn.execute(text(f'GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO "{user}";'))
-        finally:
-            engine.dispose()
-    except Exception:
-        # Best-effort: on the bundled cluster the app user already owns its objects.
-        pass
+        except Exception:
+            # Best-effort: on the bundled cluster the app user already owns its objects.
+            pass
 
 
 
@@ -506,13 +535,9 @@ def _run_upgrade_with_auto_stamp(alembic_cfg, engine_url: str) -> None:
 
     _ALREADY_EXISTS = ("DuplicateTable", "DuplicateObject", "DuplicateColumn", "already exists")
 
-    engine2 = _sa2.create_engine(engine_url, pool_pre_ping=True)
-    try:
-        with engine2.connect() as conn:
-            has_stamp = _sa2.inspect(conn).has_table("alembic_version")
-            current = conn.execute(_sa2.text("SELECT version_num FROM alembic_version")).scalar() if has_stamp else None
-    finally:
-        engine2.dispose()
+    with _db_engine(engine_url, pool_pre_ping=True) as engine2, engine2.connect() as conn:
+        has_stamp = _sa2.inspect(conn).has_table("alembic_version")
+        current = conn.execute(_sa2.text("SELECT version_num FROM alembic_version")).scalar() if has_stamp else None
 
     script = ScriptDirectory.from_config(alembic_cfg)
     oldest_first = list(reversed(list(script.walk_revisions())))
@@ -564,52 +589,51 @@ def _apply_migrations(db_url: str) -> None:
     # there — forward or back — and let alembic upgrade apply the rest.
     # False negatives are safe: the re-applied revision fails with
     # DuplicateColumn, which _run_upgrade_with_auto_stamp catches.
+    #
+    # All of it runs in the database's mutating scope: a database a newer Celerp
+    # already opened is refused before anything below can restamp it back to
+    # this copy's head; otherwise this copy is recorded as having opened it
+    # before anything below changes it.
+    from celerp.migrations.compatibility import mutating_scope
     sync_url = _sync_url(db_url)
-    # A database a newer Celerp already opened is refused before anything below
-    # can restamp it back to this copy's head; otherwise this copy is recorded as
-    # having opened it before anything below changes it.
-    from celerp.migrations.compatibility import admit_url
-    admit_url(sync_url)
-    engine = _sa.create_engine(sync_url, pool_pre_ping=True)
-    try:
-        inspector = _sa.inspect(engine)
-        existing_tables = set(inspector.get_table_names())
-        if "alembic_version" in existing_tables:
-            with engine.connect() as conn:
-                stamped = conn.execute(_sa.text("SELECT version_num FROM alembic_version")).scalar()
-        else:
-            stamped = None
+    with mutating_scope(sync_url) as held:
+        with held.engine(pool_pre_ping=True) as engine:
+            inspector = _sa.inspect(engine)
+            existing_tables = set(inspector.get_table_names())
+            if "alembic_version" in existing_tables:
+                with engine.connect() as conn:
+                    stamped = conn.execute(_sa.text("SELECT version_num FROM alembic_version")).scalar()
+            else:
+                stamped = None
 
-        if "companies" in existing_tables:
-            from celerp.migrations._auto_stamp import (
-                extract_signatures, find_safe_stamp, load_kernel_metadata,
-            )
-            from pathlib import Path as _Path
-            script = ScriptDirectory.from_config(alembic_cfg)
-            versions_dir = _Path(alembic_cfg.get_main_option("script_location")) / "versions"
-            sigs_by_rev: dict = {}
-            for mig in versions_dir.glob("*.py"):
-                if mig.name == "__init__.py":
-                    continue
-                sigs = extract_signatures(mig)
-                if sigs:
-                    sigs_by_rev[sigs[0].rev] = sigs
-            # walk_revisions() yields head→base, the order the walker
-            # requires.
-            revs_newest_first = list(script.walk_revisions())
-            safe = find_safe_stamp(
-                revs_newest_first, sigs_by_rev, inspector,
-                expected_metadata=load_kernel_metadata(),
-            )
-            if safe != "base" and safe != stamped:
-                click.echo(
-                    f"  · Live schema matches revision {safe} — "
-                    f"restamping (was {stamped or 'unstamped'})..."
+            if "companies" in existing_tables:
+                from celerp.migrations._auto_stamp import (
+                    extract_signatures, find_safe_stamp, load_kernel_metadata,
                 )
-                command.stamp(alembic_cfg, safe, purge=True)
-    finally:
-        engine.dispose()
-    _run_upgrade_with_auto_stamp(alembic_cfg, engine_url=sync_url)
+                from pathlib import Path as _Path
+                script = ScriptDirectory.from_config(alembic_cfg)
+                versions_dir = _Path(alembic_cfg.get_main_option("script_location")) / "versions"
+                sigs_by_rev: dict = {}
+                for mig in versions_dir.glob("*.py"):
+                    if mig.name == "__init__.py":
+                        continue
+                    sigs = extract_signatures(mig)
+                    if sigs:
+                        sigs_by_rev[sigs[0].rev] = sigs
+                # walk_revisions() yields head→base, the order the walker
+                # requires.
+                revs_newest_first = list(script.walk_revisions())
+                safe = find_safe_stamp(
+                    revs_newest_first, sigs_by_rev, inspector,
+                    expected_metadata=load_kernel_metadata(),
+                )
+                if safe != "base" and safe != stamped:
+                    click.echo(
+                        f"  · Live schema matches revision {safe} — "
+                        f"restamping (was {stamped or 'unstamped'})..."
+                    )
+                    command.stamp(alembic_cfg, safe, purge=True)
+        _run_upgrade_with_auto_stamp(alembic_cfg, engine_url=sync_url)
 
 
 def _run_migrations(db_url: str) -> None:
@@ -631,7 +655,8 @@ def _stamped_revision(db_url: str) -> str | None:
     The stamp records what alembic believes; on a develop database built by
     create_all it can sit behind or ahead of the real schema, which is what
     `_apply_migrations` repairs. So this is for reporting what changed, never for
-    deciding whether the schema is sound.
+    deciding whether the schema is sound. It only reads, so `celerp status` can
+    report on any database, a newer version's included, without opening it.
     """
     from alembic.runtime.migration import MigrationContext
     from sqlalchemy import create_engine
@@ -646,7 +671,8 @@ def _stamped_revision(db_url: str) -> str | None:
 
 @contextmanager
 def _migration_lock(db_url: str):
-    """Hold the shared Postgres migration advisory lock for the wrapped block.
+    """Hold this version's fence and the shared Postgres migration advisory
+    lock for the wrapped block.
 
     Single source of the lock protocol (acquire, guaranteed release, engine
     disposal), so every path that migrates a database serializes the same way
@@ -658,24 +684,23 @@ def _migration_lock(db_url: str):
     duplicate-object handler, which reaches the right answer for the wrong
     reason. The second holder waits here and then finds nothing pending.
     """
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import text
 
     from celerp.db import _MIGRATION_LOCK_KEY
 
-    engine = create_engine(_sync_url(db_url), pool_pre_ping=True).execution_options(
-        isolation_level="AUTOCOMMIT"
-    )
-    try:
-        with engine.connect() as lock_conn:
-            lock_conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY})
-            try:
-                yield
-            finally:
-                lock_conn.execute(
-                    text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
-                )
-    finally:
-        engine.dispose()
+    # The mutating scope is entered before the migration lock, so a process still
+    # waiting for the fence never holds the migration lock a fence holder (the
+    # restore reconcile inside a running server) may be waiting for. Inside a
+    # fence this process holds already, that fence is reused.
+    with _db_engine(db_url, pool_pre_ping=True, isolation_level="AUTOCOMMIT") as engine, \
+            engine.connect() as lock_conn:
+        lock_conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY})
+        try:
+            yield
+        finally:
+            lock_conn.execute(
+                text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
+            )
 
 
 def _migrate_to_head(db_url: str) -> bool:
@@ -697,16 +722,21 @@ def _migrate_to_head(db_url: str) -> bool:
         # the half-replaced one.
         click.echo("  System Recovery unfinished; the database is migrated when it completes.")
         return False
+    from celerp.migrations.compatibility import IncompatibleDatabase
     before = after = None
-    with _migration_lock(db_url):
-        before = _stamped_revision(db_url)
-        _run_migrations(db_url)
-        _post_migration_grants(db_url)
-        _reconcile_after_migrate(db_url)
-        # Read inside the lock: outside it, a process queued behind this one
-        # could move the stamp further and this would report a transition that
-        # never happened here.
-        after = _stamped_revision(db_url)
+    try:
+        with _migration_lock(db_url):
+            before = _stamped_revision(db_url)
+            _run_migrations(db_url)
+            _post_migration_grants(db_url)
+            _reconcile_after_migrate(db_url)
+            # Read inside the lock: outside it, a process queued behind this one
+            # could move the stamp further and this would report a transition that
+            # never happened here.
+            after = _stamped_revision(db_url)
+    except IncompatibleDatabase as e:
+        click.echo(f"  ✗ {e}", err=True)
+        sys.exit(1)
     if after != before:
         click.echo(f"  ✓ Database migrated: {before or 'base'} -> {after}")
     return True
@@ -728,8 +758,6 @@ def _reconcile_after_migrate(db_url: str) -> None:
     transaction with the replay, so its own failure cannot roll back committed
     backfills.
     """
-    import sqlalchemy as _sa
-
     from celerp import __version__
     from celerp.migrations._data_reconcile import (
         BACKFILL_VERSION_KEY,
@@ -738,9 +766,7 @@ def _reconcile_after_migrate(db_url: str) -> None:
         set_meta,
     )
 
-    sync_url = _sync_url(db_url)
-    engine = _sa.create_engine(sync_url, pool_pre_ping=True)
-    try:
+    with _db_engine(db_url, pool_pre_ping=True) as engine:
         with engine.begin() as conn:
             if get_meta(conn, BACKFILL_VERSION_KEY) == __version__:
                 return  # already reconciled for this version
@@ -756,8 +782,6 @@ def _reconcile_after_migrate(db_url: str) -> None:
                 set_meta(conn, BACKFILL_VERSION_KEY, __version__)
         if replayed:
             click.echo(f"  · Reconciled {len(replayed)} data-backfill migration(s) for {__version__}")
-    finally:
-        engine.dispose()
 
 
 def _wipe_attachment_dirs(purge_dirs: list) -> None:
@@ -793,6 +817,47 @@ def _init_embedded(cfg: dict, config_dir: "Path", *, force: bool, purge_dirs: li
     click.echo(f"  ✓ Using embedded PostgreSQL at {embedded_pg.pgdata_dir(config_dir)}")
 
 
+def _init_database(db_url_val: str) -> None:
+    """Bring the database init points at up to date: table ownership, then
+    migrations, inside the database's mutating scope: an existing database is admitted
+    before either changes it, and before init writes the config; an incompatible
+    one exits having changed nothing."""
+    from celerp.migrations.compatibility import IncompatibleDatabase, mutating_scope
+    try:
+        with mutating_scope(_sync_url(db_url_val)):
+            _init_admitted_database(db_url_val)
+    except IncompatibleDatabase as e:
+        click.echo(f"  ✗ {e}", err=True)
+        sys.exit(1)
+
+
+def _init_admitted_database(db_url_val: str) -> None:
+    # Fix table ownership before migrations (covers tables created by postgres superuser)
+    if _needs_ownership_fix(db_url_val):
+        click.echo("Fixing table ownership...")
+        err = _fix_ownership(db_url_val)
+        if err:
+            parts = _parse_db_url(db_url_val)
+            user = parts["user"] if parts else "celerp"
+            dbname = parts["dbname"] if parts else "celerp"
+            click.echo(f"  ✗ Could not fix ownership: {err}", err=True)
+            click.echo(
+                f"\nFix manually:\n"
+                f"  sudo -u postgres psql -d {dbname} -c "
+                f"\"REASSIGN OWNED BY postgres TO {user};\"",
+                err=True,
+            )
+            sys.exit(1)
+        click.echo("  ✓ Table ownership fixed")
+
+    # Run migrations. The grants are part of that path, not a step here:
+    # sequences and tables created by migrations are not covered by the ALTER
+    # DEFAULT PRIVILEGES set by _fix_ownership, so they are re-granted after.
+    click.echo("Running migrations...")
+    if _migrate_to_head(db_url_val):
+        click.echo("  ✓ Database ready")
+
+
 def _init_external(cfg: dict, *, force: bool, db_url: str | None, purge_dirs: list) -> None:
     """Connect to (and, as root, provision) an external PostgreSQL server.
 
@@ -820,8 +885,12 @@ def _init_external(cfg: dict, *, force: bool, db_url: str | None, purge_dirs: li
         return
     if _is_root():
         click.echo("  · Could not connect — attempting to provision database...")
+        from celerp.migrations.compatibility import IncompatibleDatabase
         try:
             _provision_db(cfg["database"]["url"])
+        except (IncompatibleDatabase, ExistingDatabaseUnreachable) as e:
+            click.echo(f"  ✗ {e}", err=True)
+            sys.exit(1)
         except RuntimeError as e:
             click.echo(f"  ✗ Provisioning failed: {e}", err=True)
             click.echo("\nEnsure PostgreSQL is installed and running, then retry with sudo.", err=True)
@@ -1006,31 +1075,8 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, wa
     else:
         _init_external(cfg, force=force, db_url=db_url, purge_dirs=_purge_dirs if force else [])
 
-    # Fix table ownership before migrations (covers tables created by postgres superuser)
     db_url_val = cfg["database"]["url"]
-    if _needs_ownership_fix(db_url_val):
-        click.echo("Fixing table ownership...")
-        err = _fix_ownership(db_url_val)
-        if err:
-            parts = _parse_db_url(db_url_val)
-            user = parts["user"] if parts else "celerp"
-            dbname = parts["dbname"] if parts else "celerp"
-            click.echo(f"  ✗ Could not fix ownership: {err}", err=True)
-            click.echo(
-                f"\nFix manually:\n"
-                f"  sudo -u postgres psql -d {dbname} -c "
-                f"\"REASSIGN OWNED BY postgres TO {user};\"",
-                err=True,
-            )
-            sys.exit(1)
-        click.echo("  ✓ Table ownership fixed")
-
-    # Run migrations. The grants are part of that path, not a step here:
-    # sequences and tables created by migrations are not covered by the ALTER
-    # DEFAULT PRIVILEGES set during provisioning, so they are re-granted after.
-    click.echo("Running migrations...")
-    if _migrate_to_head(db_url_val):
-        click.echo("  ✓ Database ready")
+    _init_database(db_url_val)
 
     # Headless installs (a process manager runs `start`) are network-exposed, so the
     # first-admin page shouldn't be claimable by whoever reaches it first. Mint a
@@ -1345,14 +1391,10 @@ def reset_password(email: str, password: str) -> None:
         sys.exit(1)
     ensure_database(cfg)
     db_url = cfg["database"]["url"]
-    sync_url = _sync_url(db_url)
     try:
-        from sqlalchemy import create_engine, text
-        from celerp.migrations.compatibility import admit_url
+        from sqlalchemy import text
         from celerp.services.auth import hash_password
-        admit_url(sync_url)
-        engine = create_engine(sync_url)
-        with engine.begin() as conn:
+        with _db_engine(db_url) as engine, engine.begin() as conn:
             row = conn.execute(text("SELECT id, name FROM users WHERE email = :e"), {"e": email}).fetchone()
             if not row:
                 click.echo(f"No user found with email: {email}", err=True)

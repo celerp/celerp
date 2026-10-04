@@ -410,6 +410,8 @@ def _stub_recovery(monkeypatch, tmp_path, *, restart: bool = False) -> dict:
     return captured
 
 
+# run_recovery reads the restored companies, so the schema must exist.
+@pytest.mark.usefixtures("_db_engine")
 class TestRecoveryMissingModuleWarnings:
     """run_recovery must populate BackupResult.warnings with missing module names.
 
@@ -469,6 +471,8 @@ class TestRecoveryMissingModuleWarnings:
             path.unlink(missing_ok=True)
 
 
+# run_recovery reads the restored companies, so the schema must exist.
+@pytest.mark.usefixtures("_db_engine")
 class TestRecoveryAppliesModules:
     """run_recovery makes the enabled modules the ones listed in meta.json."""
 
@@ -731,6 +735,8 @@ class TestRestoreFlashContinuation:
         assert "celerp-labels" in body and "/data/pre.celerp-backup" in body
 
 
+# run_recovery reads the restored companies, so the schema must exist.
+@pytest.mark.usefixtures("_db_engine")
 class TestRecoveryPropagation:
     """run_recovery must carry the restart decision and safety archive through to the
     result AND persist the one-shot notice, or the journey guarantees fall apart."""

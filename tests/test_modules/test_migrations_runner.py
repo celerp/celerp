@@ -356,6 +356,50 @@ async def test_runner_fails_closed_on_malformed_table_prefix(_db_engine, tmp_pat
         await conn.close()
 
 
+_MIG_DROP_META = """
+from alembic import op
+
+
+def upgrade():
+    op.drop_table("instance_meta")
+"""
+
+
+async def test_runner_refuses_a_hand_copied_prefix_claiming_a_core_table(_db_engine, tmp_path):
+    """instance_meta has no model, yet it is Celerp's: a module copied in by hand
+    whose prefix reaches it never gets to run its migrations."""
+    pkg = _make_module(tmp_path / "modules", f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": _MIG_DROP_META}, table_prefix="instance_")
+    conn = await _db_engine.connect()
+    trans = await conn.begin()
+    try:
+        def _do(sc):
+            sc.execute(sa.text("CREATE TABLE IF NOT EXISTS instance_meta "
+                               "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"))
+            sc.execute(sa.text("INSERT INTO instance_meta VALUES ('zz_marker', 'kept') "
+                               "ON CONFLICT (key) DO NOTHING"))
+            with pytest.raises(ValueError, match="instance_meta"):
+                run_module_migrations(sc, pkg.name, pkg, "inner.migrations", "instance_")
+            return sc.execute(sa.text(
+                "SELECT value FROM instance_meta WHERE key = 'zz_marker'")).scalar()
+        assert await conn.run_sync(_do) == "kept"
+    finally:
+        await trans.rollback()
+        await conn.close()
+
+
+@pytest.mark.parametrize("prefix", ["label_", "marketplace_", "bank_"])
+async def test_runner_refuses_a_hand_copied_prefix_claiming_a_turned_off_bundled_module_table(
+        _db_engine, tmp_path, bundled_modules_unloaded, prefix):
+    pkg = _make_module(tmp_path / "modules", f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": "def upgrade():\n    pass\n"}, table_prefix=prefix)
+    async with _db_engine.connect() as conn:
+        def _do(sc):
+            with pytest.raises(ValueError, match=bundled_modules_unloaded[prefix]):
+                run_module_migrations(sc, pkg.name, pkg, "inner.migrations", prefix)
+        await conn.run_sync(_do)
+
+
 async def test_runner_sets_statement_and_lock_timeouts(_db_engine, tmp_path):
     result = tmp_path / "timeouts.txt"
     body = _MIG_TIMEOUT.replace("__RESULT__", str(result))

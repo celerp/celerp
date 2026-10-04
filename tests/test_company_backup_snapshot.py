@@ -145,7 +145,8 @@ async def test_export_snapshot_never_mixes_concurrent_write(real_engine, real_cl
 @pytest.mark.parametrize("caller", _CALLERS)
 async def test_export_snapshot_transaction_is_repeatable_read_read_only_utc(real_engine, real_client, tmp_path,
                                                                            monkeypatch, caller):
-    """The backup's transaction starts as REPEATABLE READ READ ONLY before any query, then sets UTC."""
+    """The backup's connection is REPEATABLE READ READ ONLY before its transaction begins, so no
+    SET TRANSACTION statement runs inside it; its first statement sets UTC."""
     cb = _bk_cb()
     _bk_local(monkeypatch, tmp_path)
     user, cid, tok = await _bk_setup(real_engine)
@@ -176,8 +177,8 @@ async def test_export_snapshot_transaction_is_repeatable_read_read_only_utc(real
     assert r.status_code == 200, r.text
     assert (seen["transaction_isolation"], seen["transaction_read_only"], seen["TimeZone"]) == (
         "repeatable read", "on", "UTC")
-    assert seen["own"][:2] == ["SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
-                               "SET LOCAL TimeZone = 'UTC'"], seen["own"][:3]
+    assert seen["own"][0] == "SET LOCAL TimeZone = 'UTC'", seen["own"][:3]
+    assert not any(s.lstrip().upper().startswith("SET TRANSACTION") for s in seen["own"]), seen["own"]
 
 
 @pytest.mark.parametrize("caller", _CALLERS)
@@ -387,7 +388,7 @@ async def test_export_snapshot_sqlite_dialect_uses_one_plain_transaction(tmp_pat
         assert await cb.export_company_snapshot(cid, out, provenance=_PROVENANCE) == {"written": True}
     finally:
         await engine.dispose()
-    assert seen["bind"] is engine.sync_engine and seen["in_transaction"]
+    assert seen["bind"].engine is engine.sync_engine and seen["in_transaction"]
     assert seen["args"][0] == cid and seen["args"][2] == _PROVENANCE
     assert statements[0] == "SELECT 1" and len(statements) == 2
     assert not any(s.lstrip().upper().startswith("SET") for s in statements)

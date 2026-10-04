@@ -577,9 +577,70 @@ def test_table_prefix_colliding_with_core_table_refused(module_dir):
         install_from_zip(data)
 
 
+@pytest.mark.parametrize("prefix, table", [("alembic_", "alembic_version"),
+                                           ("instance_", "instance_meta")])
+def test_table_prefix_claiming_a_core_table_without_a_model_refused(module_dir, tmp_path, prefix, table):
+    """Celerp owns its schema stamp and upgrade markers though no model declares them."""
+    data = _zip_bytes({"__init__.py": _migrations_manifest("mig-mod", prefix=prefix)})
+    with pytest.raises(ModuleImportError, match=table):
+        install_from_zip(data)
+    src = tmp_path / "src" / "mig-mod"
+    src.mkdir(parents=True)
+    (src / "__init__.py").write_text(_migrations_manifest("mig-mod", prefix=prefix))
+    with pytest.raises(ModuleImportError, match=table):
+        install_from_folder(src)
+
+
+@pytest.mark.parametrize("prefix", ["label_", "marketplace_", "bank_"])
+def test_table_prefix_claiming_a_turned_off_bundled_module_table_refused(
+        module_dir, tmp_path, bundled_modules_unloaded, prefix):
+    """A bundled module's tables stay Celerp's while the module is turned off and its
+    models are not loaded."""
+    table = bundled_modules_unloaded[prefix]
+    data = _zip_bytes({"__init__.py": _migrations_manifest("mig-mod", prefix=prefix)})
+    with pytest.raises(ModuleImportError, match=table):
+        install_from_zip(data)
+    src = tmp_path / "src" / "mig-mod"
+    src.mkdir(parents=True)
+    (src / "__init__.py").write_text(_migrations_manifest("mig-mod", prefix=prefix))
+    with pytest.raises(ModuleImportError, match=table):
+        install_from_folder(src)
+
+
 def test_table_prefix_overlapping_installed_module_refused(module_dir):
     install_from_zip(_zip_bytes(
         {"__init__.py": _migrations_manifest("first-mod", prefix="acme_")}))
     data = _zip_bytes({"__init__.py": _migrations_manifest("second-mod", prefix="acme_sub_")})
     with pytest.raises(ModuleImportError, match="acme_"):
         install_from_zip(data)
+
+
+# A module with models but no migrations still owns its tables by prefix: the
+# purge drops and the backup attributes by it, so the same checks apply.
+
+@pytest.mark.parametrize("prefix, reason", [
+    ("ab", "3 characters"),
+    ("acme", "underscore"),
+    ("connector_", "connector_configs"),
+])
+def test_model_only_table_prefix_is_validated(module_dir, prefix, reason):
+    import celerp.models  # noqa: F401  ensure core tables are registered
+    data = _zip_bytes({"__init__.py": _migrations_manifest("model-mod", prefix=prefix, migrations=False)})
+    with pytest.raises(ModuleImportError, match=reason):
+        install_from_zip(data)
+    assert not (module_dir / "model-mod").exists()
+
+
+def test_model_only_table_prefix_overlapping_installed_module_refused(module_dir):
+    install_from_zip(_zip_bytes(
+        {"__init__.py": _migrations_manifest("first-mod", prefix="acme_", migrations=False)}))
+    data = _zip_bytes({"__init__.py": _migrations_manifest("second-mod", prefix="acme_sub_", migrations=False)})
+    with pytest.raises(ModuleImportError, match="acme_"):
+        install_from_zip(data)
+    assert not (module_dir / "second-mod").exists()
+
+
+def test_model_only_module_without_table_prefix_installs(module_dir):
+    install_from_zip(_zip_bytes(
+        {"__init__.py": _migrations_manifest("plain-mod", prefix=None, migrations=False)}))
+    assert (module_dir / "plain-mod" / "__init__.py").exists()

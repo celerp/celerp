@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import errno
+import functools
 import os
 import re
 import shutil
@@ -195,46 +196,151 @@ def installed_table_prefixes(exclude: str) -> dict[str, str]:
     return out
 
 
-def _validate_table_prefix(name: str, manifest: dict) -> None:
-    """When a module declares migrations it must carry a well-formed,
-    collision-free ``table_prefix``: the runtime migration runner scopes and (on
-    purge) drops tables by this prefix, so a prefix that captures a core table or
-    overlaps another module's would put foreign data on the drop list. Refuse the
-    install with a clear reason rather than defaulting a prefix, since a wrong
-    default silently mis-scopes purge.
-    """
-    if not manifest.get("migrations"):
-        return
-    prefix = manifest.get("table_prefix")
-    if not prefix or not isinstance(prefix, str):
-        raise ModuleImportError(
-            "This module declares migrations, so its PLUGIN_MANIFEST must set a "
-            '"table_prefix" naming the tables it owns (for example "acme_").'
-        )
-    if len(prefix) < 3:
-        raise ModuleImportError(
-            f'table_prefix "{prefix}" is too short; it must be at least 3 characters.'
-        )
-    if not prefix.endswith("_"):
-        raise ModuleImportError(
-            f'table_prefix "{prefix}" must end with an underscore (for example "acme_").'
-        )
-    from celerp.models.base import Base
+# A prefix is at least this long and ends in an underscore, so "acme_" scopes
+# cleanly and can never be a bare word that swallows unrelated tables.
+MIN_TABLE_PREFIX_LEN = 3
 
-    for table_name in Base.metadata.tables:
+
+def reserved_tables(name: str) -> frozenset[str]:
+    """Every table module *name*'s prefix may not claim, whichever modules this process
+    has loaded: every table Celerp's migration history has created or changed (obsolete
+    ones included), every table a bundled module declares or migrates, the tables the
+    loaded models declare other than *name*'s own, and the two Celerp manages without a
+    model, alembic's schema stamp and the instance's upgrade markers. The one source
+    for install, migrations, purge and backup attribution, through table_prefix_problem."""
+    from celerp.migrations._data_reconcile import _META_TABLE
+    from celerp.models.base import Base
+    import celerp.models  # noqa: F401  (registers every core table)
+
+    loaded = frozenset(Base.metadata.tables) - _loaded_tables_of(name)
+    return _historical_tables() | loaded | {"alembic_version", _META_TABLE}
+
+
+@functools.lru_cache(maxsize=1)
+def _historical_tables() -> frozenset[str]:
+    """Tables named in Celerp's migration history and in the bundled modules (their
+    migrations and model declarations), read from the source files, never imported.
+    A turned-off module's models are never loaded, so its tables are known only here."""
+    from celerp.migrations import _auto_stamp
+    from celerp.modules.loader import BUNDLED_SOURCE_DIR, read_manifest
+
+    migration_files = list((Path(_auto_stamp.__file__).parent / "versions").glob("*.py"))
+    declared: set[str] = set()
+    for module in sorted(BUNDLED_SOURCE_DIR.iterdir()) if BUNDLED_SOURCE_DIR.is_dir() else ():
+        if not (module / "__init__.py").is_file():
+            continue
+        package = read_manifest(module).get("migrations")
+        if isinstance(package, str) and package:
+            migration_files += module.joinpath(*package.split(".")).glob("*.py")
+        for source in module.rglob("*.py"):
+            if "tests" not in source.relative_to(module).parts:
+                declared |= _declared_table_names(source)
+    history = {sig.table for path in migration_files for sig in _auto_stamp.extract_signatures(path)}
+    return frozenset(history | declared)
+
+
+def _declared_table_names(source: Path) -> set[str]:
+    """The literal ``__tablename__`` values a source file assigns."""
+    try:
+        tree = ast.parse(source.read_text())
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return set()
+    return {node.value.value for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "__tablename__" for t in node.targets)
+            and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)}
+
+
+def _loaded_tables_of(name: str) -> frozenset[str]:
+    """The loaded tables whose model class is defined in a file inside an installed
+    copy of module *name* (its inner package name need not match the folder, e.g.
+    acme-widgets/acme_widgets)."""
+    import inspect
+    import sys
+
+    from celerp.models.base import Base
+    from celerp.modules.loader import module_search_path
+
+    roots = [os.path.realpath(Path(entry) / name) + os.sep
+             for entry in module_search_path().split(",") if entry]
+
+    def _owned(cls) -> bool:
+        try:
+            source = inspect.getsourcefile(sys.modules[cls.__module__]) or ""
+        except (KeyError, TypeError):
+            return False
+        return os.path.realpath(source).startswith(tuple(roots))
+
+    return frozenset(mapper.local_table.name for mapper in Base.registry.mappers
+                     if _owned(mapper.class_))
+
+
+def table_prefix_problem(name: str, prefix: object,
+                         installed: dict[str, str] | None = None) -> str | None:
+    """Why *prefix* cannot scope module *name*'s tables, or None when it can.
+
+    The migration runner scopes DDL by the prefix and the purge drops every table
+    carrying it, so a prefix that captures a core table or overlaps another
+    module's would put foreign data in reach. Checked wherever the prefix is
+    trusted (install, migrations, purge, backup attribution), because a module
+    copied in by hand never passed the install check. *installed* is the other
+    modules' prefixes, read from MODULE_DIR when not given.
+    """
+    if not isinstance(prefix, str) or not prefix:
+        return ('"table_prefix" must name the tables the module owns '
+                '(for example "acme_").')
+    if len(prefix) < MIN_TABLE_PREFIX_LEN:
+        return (f'table_prefix "{prefix}" is too short; it must be at least '
+                f'{MIN_TABLE_PREFIX_LEN} characters.')
+    if not prefix.endswith("_"):
+        return f'table_prefix "{prefix}" must end with an underscore (for example "acme_").'
+    for table_name in sorted(reserved_tables(name)):
         if table_name.startswith(prefix):
+            return (f'table_prefix "{prefix}" collides with the existing table '
+                    f'"{table_name}". Choose a prefix that no core or installed '
+                    "table begins with.")
+    if installed is None:
+        installed = _wellformed_prefixes(exclude=name)
+    for other_name, other_prefix in installed.items():
+        if other_name != name and (prefix.startswith(other_prefix) or other_prefix.startswith(prefix)):
+            return (f'table_prefix "{prefix}" overlaps the prefix "{other_prefix}" '
+                    f'already claimed by installed module "{other_name}". Prefixes '
+                    "must not be prefixes of one another.")
+    return None
+
+
+def _wellformed_prefixes(exclude: str) -> dict[str, str]:
+    """The installed prefixes that pass every check except overlap. Only these can
+    overlap another module's: a malformed or colliding prefix owns nothing, so it
+    never disqualifies a sound one."""
+    return {name: prefix for name, prefix in installed_table_prefixes(exclude=exclude).items()
+            if table_prefix_problem(name, prefix, {}) is None}
+
+
+def valid_table_prefixes() -> dict[str, str]:
+    """{module_name: table_prefix} for the installed modules whose prefix passes
+    table_prefix_problem. Modules whose sound prefixes overlap are both left out."""
+    wellformed = _wellformed_prefixes(exclude="")
+    return {name: prefix for name, prefix in wellformed.items()
+            if table_prefix_problem(name, prefix, wellformed) is None}
+
+
+def _validate_table_prefix(name: str, manifest: dict) -> None:
+    """A declared ``table_prefix`` must pass table_prefix_problem, and a module
+    that declares migrations must declare one. Refuse the install with a clear
+    reason rather than defaulting a prefix, since a wrong default silently
+    mis-scopes purge.
+    """
+    if "table_prefix" not in manifest:
+        if manifest.get("migrations"):
             raise ModuleImportError(
-                f'table_prefix "{prefix}" collides with the existing table '
-                f'"{table_name}". Choose a prefix that no core or installed '
-                "table begins with."
+                "This module declares migrations, so its PLUGIN_MANIFEST must set a "
+                '"table_prefix" naming the tables it owns (for example "acme_").'
             )
-    for other_name, other_prefix in installed_table_prefixes(exclude=name).items():
-        if prefix.startswith(other_prefix) or other_prefix.startswith(prefix):
-            raise ModuleImportError(
-                f'table_prefix "{prefix}" overlaps the prefix "{other_prefix}" '
-                f'already claimed by installed module "{other_name}". Prefixes '
-                "must not be prefixes of one another."
-            )
+        return
+    problem = table_prefix_problem(name, manifest["table_prefix"])
+    if problem:
+        raise ModuleImportError(problem)
 
 
 # A Postgres table name as Celerp creates them: lower case, at most 63 characters.

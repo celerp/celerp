@@ -182,23 +182,25 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
 
 
 def restore_database_file(dump_path: Path, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
-    """Restore a database from a pg_dump custom-format file."""
-    if clean_schema:
-        from sqlalchemy import create_engine, text
+    """Restore a database from a pg_dump custom-format file, in the database's
+    mutating scope (celerp.migrations.compatibility): pg_restore writes from a
+    process of its own, so it runs inside the fence's write window."""
+    from sqlalchemy import pool, text
 
-        from celerp.db_url import sync_url
+    from celerp.db_url import sync_url
+    from celerp.migrations.compatibility import mutating_scope
 
-        engine = create_engine(sync_url(database_url))
-        try:
-            with engine.begin() as conn:
+    with mutating_scope(sync_url(database_url)) as held:
+        if clean_schema:
+            with held.engine(poolclass=pool.NullPool) as engine, engine.begin() as conn:
                 conn.execute(text("DROP SCHEMA public CASCADE"))
                 conn.execute(text("CREATE SCHEMA public"))
-        finally:
-            engine.dispose()
-        mode = ["--single-transaction", "--exit-on-error"]
-    else:
-        mode = ["--clean", "--if-exists"]
+        with held.write_window():
+            _run_pg_restore(dump_path, database_url, clean_schema, runner)
 
+
+def _run_pg_restore(dump_path: Path, database_url: str, clean_schema: bool, runner) -> None:
+    mode = ["--single-transaction", "--exit-on-error"] if clean_schema else ["--clean", "--if-exists"]
     runner = runner or subprocess.run
     try:
         command = _restore_command(database_url, mode)

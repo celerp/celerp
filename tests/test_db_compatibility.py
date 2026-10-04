@@ -28,9 +28,12 @@ RUNNING = "2.5.4"
 # instance_meta key: the newest Celerp version that has begun opening the database.
 OPENED_KEY = "newest_celerp_version"
 
-pytestmark = pytest.mark.skipif(
-    not DATABASE_URL.startswith("postgresql"), reason="needs a live Postgres database"
-)
+pytestmark = [
+    pytest.mark.process,
+    pytest.mark.skipif(
+        not DATABASE_URL.startswith("postgresql"), reason="needs a live Postgres database"
+    ),
+]
 
 
 def _head() -> str:
@@ -150,6 +153,22 @@ def snapshot(url: str) -> dict:
                 "indexes": rows(
                     "SELECT tablename, indexname, indexdef FROM pg_indexes "
                     "WHERE schemaname = 'public' ORDER BY 1, 2"),
+                # Who owns what, and the privileges in effect on the database, the
+                # schema and its tables: what init's ownership and grant steps change.
+                # Effective, so granting an owner what it already holds is no change.
+                "owners": rows(
+                    "SELECT c.relname, pg_get_userbyid(c.relowner), "
+                    "(SELECT array_agg(a::text ORDER BY a::text) FROM aclexplode("
+                    "coalesce(c.relacl, acldefault(CASE c.relkind WHEN 'S' THEN 's' ELSE 'r' END::\"char\", c.relowner))) a) "
+                    "FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace ORDER BY 1"),
+                "acl": rows(
+                    "SELECT (SELECT array_agg(a::text ORDER BY a::text) FROM pg_database d, "
+                    "aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) a "
+                    "WHERE d.datname = current_database()), "
+                    "(SELECT array_agg(a::text ORDER BY a::text) FROM pg_namespace n, "
+                    "aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) a "
+                    "WHERE n.nspname = 'public'), "
+                    "(SELECT count(*) FROM pg_default_acl)"),
                 "constraints": rows(
                     "SELECT conrelid::regclass::text, conname, pg_get_constraintdef(oid) FROM pg_constraint "
                     "WHERE connamespace = 'public'::regnamespace ORDER BY 1, 2"),
@@ -216,6 +235,17 @@ def test_check_never_creates_instance_meta(scratch):
     url = scratch("head", None)
     check_url(sync_url(url))
     assert snapshot(url)["instance_meta"] is None
+
+
+@pytest.mark.parametrize("case", ["current", "newer_marker"])
+def test_status_reads_the_revision_without_opening_the_database(scratch, case):
+    """celerp status only reports: it records nothing, and it still reads a database
+    a newer version has claimed."""
+    from celerp import cli
+    url = scratch("head", None) if case == "current" else scratch.refused(case)
+    before = snapshot(url)
+    assert cli._stamped_revision(url) == _head()
+    assert snapshot(url) == before
 
 
 def test_check_runs_read_only(scratch):

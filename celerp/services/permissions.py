@@ -97,11 +97,11 @@ PERMISSIONS: list[Permission] = [
 _PERMISSIONS_BY_KEY: dict[str, Permission] = {p.key: p for p in PERMISSIONS}
 
 
-def is_permission_key(key: str) -> bool:
-    """True when *key* is in the closed permission registry. Gating surfaces
+def is_permission_key(key) -> bool:
+    """True when *key* is a string in the closed permission registry. Gating surfaces
     index the registry directly, so anything naming a key from outside core
     (a module manifest) must be checked here before it reaches them."""
-    return key in _PERMISSIONS_BY_KEY
+    return isinstance(key, str) and key in _PERMISSIONS_BY_KEY
 
 
 def resolved_grant_roles(settings: dict | None, key: str) -> set[str]:

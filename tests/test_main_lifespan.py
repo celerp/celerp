@@ -12,6 +12,7 @@ and asserts boot survives and the session is rolled back.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -44,8 +45,10 @@ class _FakeSession:
         return False
 
 
+@contextmanager
 def _mock_db():
-    """Make celerp.main.lifecycle_engine.begin() a no-op (no real DDL at boot).
+    """Make celerp.main.lifecycle_engine.begin() a no-op (no real DDL at boot), and
+    the version fence, which joins through that engine's URL, a held no-op.
 
     Boot's create_all runs on the lifecycle engine, so that is the one to stub."""
     mock_conn = AsyncMock()
@@ -55,7 +58,10 @@ def _mock_db():
     mock_begin.__aexit__ = AsyncMock(return_value=False)
     mock_engine = MagicMock()
     mock_engine.begin = MagicMock(return_value=mock_begin)
-    return patch("celerp.main.lifecycle_engine", mock_engine)
+    mock_engine.url.render_as_string.return_value = "postgresql+asyncpg://celerp@localhost/mocked"
+    with patch("celerp.main.lifecycle_engine", mock_engine), \
+         patch("celerp.migrations.compatibility.Fence.join", return_value=MagicMock()):
+        yield
 
 
 @pytest.mark.asyncio
@@ -279,13 +285,20 @@ async def test_shutdown_returns_with_every_boot_task_finished(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_shutdown_does_not_wait_forever_for_a_task_that_will_not_stop(monkeypatch, caplog):
+async def test_shutdown_ends_the_process_when_a_task_will_not_stop(monkeypatch, caplog):
     """Waiting for background tasks at shutdown is bounded: a task that ignores being
-    cancelled is reported and left once the grace period is over."""
+    cancelled ends the process once the grace period is over, before shutdown goes on
+    to give up the database, and the task is named in the log."""
     import asyncio
     import logging
 
     import celerp.main as main_mod
+
+    class _Ended(BaseException):
+        pass
+
+    def _exit(code):
+        raise _Ended(code)
 
     release = asyncio.Event()
 
@@ -297,14 +310,15 @@ async def test_shutdown_does_not_wait_forever_for_a_task_that_will_not_stop(monk
                 continue
 
     monkeypatch.setattr(main_mod, "_SHUTDOWN_GRACE_S", 0.2)
+    monkeypatch.setattr(main_mod._os, "_exit", _exit)
     stubborn = asyncio.create_task(_stubborn(), name="stubborn")
     quick = asyncio.create_task(asyncio.sleep(3600), name="quick")
     await asyncio.sleep(0)  # both are running
     try:
-        with caplog.at_level(logging.WARNING, logger="celerp.main"):
+        with caplog.at_level(logging.CRITICAL, logger="celerp.main"), pytest.raises(_Ended) as ended:
             await asyncio.wait_for(main_mod._stop_background_tasks([stubborn, quick, None]), 5)
+        assert ended.value.args == (1,)
         assert quick.cancelled()
-        assert not stubborn.done()
         assert "stubborn" in caplog.text
     finally:
         release.set()
@@ -356,3 +370,38 @@ async def test_a_failed_restore_clean_up_does_not_stop_boot(monkeypatch):
     assert await _boot_with(monkeypatch, sweep=lambda: swept.append(True), reconcile=reconcile)
     assert swept == [True]
     reconcile.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_stops_migration_runs(monkeypatch):
+    """A migration run still going when the app stops is stopped with the boot tasks."""
+    import asyncio
+    import uuid
+
+    import celerp.main as main_mod
+    from celerp.config import settings
+    from celerp.services import migrations
+
+    stopped = []
+
+    async def _run(run_id):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            stopped.append(run_id)
+            raise
+
+    monkeypatch.setattr(migrations, "run_migration", _run)
+    monkeypatch.setattr(main_mod, "_try_auto_activate", AsyncMock())
+    saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
+    settings.gateway_token = ""
+    settings.celerp_public_url = None
+    run_id = uuid.uuid4()
+    try:
+        async with main_mod.lifespan(MagicMock()):
+            migrations.schedule_run(run_id)
+            await asyncio.sleep(0)
+    finally:
+        settings.gateway_token = saved_token
+        settings.celerp_public_url = saved_public
+    assert stopped == [run_id]

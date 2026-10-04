@@ -681,3 +681,101 @@ class TestModuleDataPurge:
             names = await session.run_sync(
                 lambda s: sa_inspect(s.connection()).get_table_names())
         assert "acme_widget" not in names and "acme_meta" not in names
+
+
+class TestPurgeRechecksTablePrefix:
+    """A module copied straight into MODULE_DIR never passed the install check, so
+    the purge re-checks its prefix before dropping anything."""
+
+    @pytest.mark.asyncio
+    async def test_hand_copied_module_claiming_a_core_table_cannot_purge_it(
+            self, client, session, tmp_path):
+        from sqlalchemy import text
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg_prefix(module_dir, "acme-grabber", "connector_")
+        before = (await session.execute(text('SELECT count(*) FROM "connector_configs"'))).scalar_one()
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.post(
+                "/companies/me/modules/acme-grabber/purge-data", headers=_h(token))
+        assert r.status_code == 409, r.text
+        assert "connector_configs" in r.json()["detail"]
+        assert "Nothing was deleted" in r.json()["detail"]
+        assert (await session.execute(
+            text('SELECT count(*) FROM "connector_configs"'))).scalar_one() == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("prefix", ["label_", "marketplace_", "bank_"])
+    async def test_hand_copied_module_claiming_a_turned_off_bundled_module_table_cannot_purge_it(
+            self, client, session, tmp_path, bundled_modules_unloaded, prefix):
+        from sqlalchemy import text
+        table = bundled_modules_unloaded[prefix]
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg_prefix(module_dir, "acme-grabber", prefix)
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.post(
+                "/companies/me/modules/acme-grabber/purge-data", headers=_h(token))
+        assert r.status_code == 409, r.text
+        assert table in r.json()["detail"]
+        assert "Nothing was deleted" in r.json()["detail"]
+        assert (await session.execute(text(f"SELECT to_regclass('{table}')"))).scalar() is not None
+
+    @pytest.mark.asyncio
+    async def test_hand_copied_module_claiming_a_core_table_without_a_model_cannot_purge_it(
+            self, client, session, tmp_path):
+        from sqlalchemy import text
+        token = await _register(client)
+        await session.execute(text(
+            "CREATE TABLE IF NOT EXISTS instance_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"))
+        await session.execute(text(
+            "INSERT INTO instance_meta VALUES ('zz_marker', 'kept') ON CONFLICT (key) DO NOTHING"))
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg_prefix(module_dir, "acme-grabber", "instance_")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.post(
+                "/companies/me/modules/acme-grabber/purge-data", headers=_h(token))
+        assert r.status_code == 409, r.text
+        assert "instance_meta" in r.json()["detail"]
+        assert "Nothing was deleted" in r.json()["detail"]
+        assert (await session.execute(text(
+            "SELECT value FROM instance_meta WHERE key = 'zz_marker'"))).scalar_one() == "kept"
+
+    @pytest.mark.asyncio
+    async def test_hand_copied_module_overlapping_another_cannot_purge_its_tables(
+            self, client, session, tmp_path):
+        from sqlalchemy import text
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg_prefix(module_dir, "acme-widgets", "acme_")
+        _write_pkg_prefix(module_dir, "acme-sub", "acme_sub_")
+        await _create_tables(session, [("acme_widget", 1), ("acme_sub_thing", 2)])
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.post(
+                "/companies/me/modules/acme-widgets/purge-data", headers=_h(token))
+        assert r.status_code == 409, r.text
+        assert "overlaps" in r.json()["detail"]
+        assert (await session.execute(
+            text('SELECT count(*) FROM "acme_sub_thing"'))).scalar_one() == 2
+        assert (await session.execute(
+            text('SELECT count(*) FROM "acme_widget"'))).scalar_one() == 1
+
+    @pytest.mark.asyncio
+    async def test_hand_copied_module_with_a_too_short_prefix_cannot_purge(
+            self, client, session, tmp_path):
+        from sqlalchemy import text
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg_prefix(module_dir, "acme-widgets", "a")
+        await _create_tables(session, [("acme_widget", 1)])
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.post(
+                "/companies/me/modules/acme-widgets/purge-data", headers=_h(token))
+        assert r.status_code == 409, r.text
+        assert (await session.execute(
+            text('SELECT count(*) FROM "acme_widget"'))).scalar_one() == 1

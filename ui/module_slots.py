@@ -10,7 +10,20 @@ presentation only: the module's own route must still check the permission.
 """
 from __future__ import annotations
 
-from celerp.services.permissions import role_has_permission
+from celerp.services.permissions import is_permission_key, role_has_permission
+
+
+def slot_permission_allows(contribution: dict, settings: dict, role: str) -> bool:
+    """The permission gate on one slot entry, failing closed.
+
+    The loader's rule: an entry without "permission" is not gated; one with it is
+    shown only when the value is a registry key the role holds. A malformed value
+    ("", 0, False, an unknown key) hides the entry rather than showing it to all.
+    """
+    if "permission" not in contribution:
+        return True
+    permission = contribution["permission"]
+    return is_permission_key(permission) and role_has_permission(settings, role, permission)
 
 
 def module_contribution_visible(
@@ -24,11 +37,10 @@ def module_contribution_visible(
     if module and module not in CORE_FOLDED and "enabled_modules" in settings:
         if module not in get_enabled(settings):
             return False
-    permission = contribution.get("permission")
-    if permission and not role_has_permission(settings, role, permission):
+    if not slot_permission_allows(contribution, settings, role):
         return False
     required = contribution.get("requires_connector")
-    if required and required not in (connected_connectors or set()):
+    if required and not (isinstance(required, str) and required in (connected_connectors or set())):
         return False
     return True
 

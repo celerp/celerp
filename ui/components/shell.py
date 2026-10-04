@@ -2240,13 +2240,13 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
     from ui.config import get_enabled_modules
     from celerp.modules.loader import CORE_FOLDED
     from celerp.services.permissions import role_has_permission
+    from ui.module_slots import slot_permission_allows
 
     settings = settings or {}
     enabled_modules = get_enabled_modules(request) if request else set()
 
     def _allowed(item: dict) -> bool:
-        perm = item.get("permission")
-        return role_has_permission(settings, role, perm) if perm else True
+        return slot_permission_allows(item, settings, role)
 
     def _module_enabled(item: dict) -> bool:
         """Kernel entries (no _module key) always show, as do core-folded

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import subprocess
@@ -40,7 +41,7 @@ def valid_cfg():
 # Patch targets shared across init tests
 _INIT_PATCHES = dict(
     test_db="celerp.cli._test_db",
-    migrate="celerp.cli._migrate_to_head",
+    migrate="celerp.cli._init_database",
     start="celerp.cli._start",
 )
 
@@ -110,8 +111,7 @@ def test_init_force_no_start_skips_launch(tmp_config, valid_cfg):
     with patch(_INIT_PATCHES["migrate"]), \
          patch(_INIT_PATCHES["start"]) as mock_start, \
          patch("celerp.cli._stop_servers") as mock_stop, \
-         patch("celerp.cli._provision_db") as mock_prov, \
-         patch("celerp.cli._needs_ownership_fix", return_value=False):
+         patch("celerp.cli._provision_db") as mock_prov:
         result = runner.invoke(main, ["init", "--force", "--yes", "--no-start"])
     assert result.exit_code == 0, result.output
     mock_stop.assert_called_once()        # force still stopped servers
@@ -177,8 +177,7 @@ def test_init_force_stops_servers_and_regenerates_secret(tmp_config, valid_cfg):
     with patch(_INIT_PATCHES["migrate"]), \
          patch(_INIT_PATCHES["start"]), \
          patch("celerp.cli._stop_servers") as mock_stop, \
-         patch("celerp.cli._provision_db"), \
-         patch("celerp.cli._needs_ownership_fix", return_value=False):
+         patch("celerp.cli._provision_db"):
         result = runner.invoke(main, ["init", "--force", "--yes"])
     assert result.exit_code == 0, result.output
     assert "✓ Celerp initialized" in result.output
@@ -190,21 +189,32 @@ def test_init_force_stops_servers_and_regenerates_secret(tmp_config, valid_cfg):
 
 
 def test_init_migrates_through_the_shared_path(tmp_config):
-    """init takes the same migrate path as start, so grants land after migrations.
+    """init takes the same migrate path as start, so grants land after migrations,
+    and is admitted, in its mutating scope, before the ownership fix and until it is done.
 
     Sequences and tables created by a migration are not covered by the ALTER
-    DEFAULT PRIVILEGES set during provisioning, so the order is what makes them
+    DEFAULT PRIVILEGES set by the ownership fix, so the order is what makes them
     accessible. Ordering within that path is asserted where it lives, in
     test_migrate_to_head_runs_every_step_inside_the_lock.
     """
+    order: list[str] = []
+
+    @contextlib.contextmanager
+    def _scope(url, accept=None):
+        order.append("admit")
+        yield None
+        order.append("release")
+
     runner = CliRunner()
     with patch(_INIT_PATCHES["test_db"], return_value=None), \
-         patch(_INIT_PATCHES["migrate"]) as mock_migrate, \
+         patch("celerp.migrations.compatibility.mutating_scope", side_effect=_scope), \
+         patch("celerp.cli._needs_ownership_fix", side_effect=lambda url: order.append("ownership") or False), \
+         patch("celerp.cli._migrate_to_head", side_effect=lambda url: order.append(url)), \
          patch(_INIT_PATCHES["start"]):
         result = runner.invoke(main, ["init"])
     assert result.exit_code == 0, result.output
-    mock_migrate.assert_called_once()
-    assert mock_migrate.call_args.args[0].startswith("postgresql")
+    assert order[:2] == ["admit", "ownership"] and order[-1] == "release", order
+    assert len(order) == 4 and order[2].startswith("postgresql"), order
 
 
 # The external-server tests pass --db-url, which is how the real external

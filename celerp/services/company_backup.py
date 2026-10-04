@@ -54,7 +54,7 @@ import celerp.db
 from celerp.migrations.compatibility import is_newer_than_running, running_version
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
-from celerp.modules.importer import TABLE_NAME, installed_table_prefixes
+from celerp.modules.importer import TABLE_NAME, installed_table_prefixes, valid_table_prefixes
 from celerp.modules import requirements
 from celerp.modules.loader import module_label, module_search_path, read_manifest, resolve_module_path
 from celerp.modules.registry import get_enabled, set_enabled
@@ -332,7 +332,9 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
     module table its module includes in a shape the backup cannot carry, or that cannot
     be scoped to a company, stops every export."""
     schema = await _schema(session)
-    prefixes = installed_table_prefixes("")
+    # Only prefixes that pass the install check attribute tables: a hand-copied
+    # module claiming a core or another module's table must not take it over.
+    prefixes = valid_table_prefixes()
     declarations = {module: _declared(module) for module in prefixes}
     owners: dict[str, str] = {}
     carried: list[str] = []
@@ -671,11 +673,16 @@ async def export_company_snapshot(company_id, out: Path, *, provenance: dict | N
     deleted before its backup is finished."""
     partial = out.with_name(out.name + ".partial")
     try:
-        async with AsyncSession(bind=celerp.db.engine, expire_on_commit=False) as session, session.begin():
-            if session.get_bind().dialect.name != "sqlite":
-                await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
-                await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
-            manifest = await _export_company(session, company_id, partial, provenance=provenance)
+        async with celerp.db.engine.connect() as conn:
+            if conn.dialect.name != "sqlite":
+                # Set on the connection, not with SET TRANSACTION: the version fence's
+                # check is the first statement of every transaction.
+                conn = await conn.execution_options(
+                    isolation_level="REPEATABLE READ", postgresql_readonly=True)
+            async with AsyncSession(bind=conn, expire_on_commit=False) as session, session.begin():
+                if conn.dialect.name != "sqlite":
+                    await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
+                manifest = await _export_company(session, company_id, partial, provenance=provenance)
         # The snapshot does not hold the company, so it can be reset meanwhile. The file is
         # published only while the company is held: a reset that already committed leaves
         # nothing behind, and a later one deletes the published file with the company.

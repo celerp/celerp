@@ -105,10 +105,17 @@ def run(cmd: list, timeout: float = 900, **kw) -> subprocess.CompletedProcess:
     return result
 
 
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def free_ports(n: int) -> list[int]:
+    """*n* distinct free ports: every socket stays bound until all are chosen, so
+    the OS cannot hand the same port out twice."""
+    socks = [socket.socket() for _ in range(n)]
+    try:
+        for s in socks:
+            s.bind(("127.0.0.1", 0))
+        return [s.getsockname()[1] for s in socks]
+    finally:
+        for s in socks:
+            s.close()
 
 
 def http(method: str, url: str, token: str | None = None, body: dict | None = None,
@@ -340,7 +347,7 @@ class Install:
         self.root.mkdir(parents=True)
         self.venv = self.root / "venv"
         self.config = self.root / "config" / "celerp"
-        self.api_port, self.ui_port = free_port(), free_port()
+        self.api_port, self.ui_port = free_ports(2)
         self.api = f"http://127.0.0.1:{self.api_port}"
         self.proc: subprocess.Popen | None = None
         self.log = self.root / "celerp.log"
