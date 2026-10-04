@@ -3,7 +3,7 @@
 
 """Give the seeded chart's section headers their cash flow sections.
 
-Revision ID: p3e4f5a6b7c8
+Revision ID: c7f1a2b3d4e5
 Revises: o2d3e4f5a6b7
 Create Date: 2026-10-01
 
@@ -22,7 +22,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "p3e4f5a6b7c8"
+revision = "c7f1a2b3d4e5"
 down_revision = "o2d3e4f5a6b7"
 branch_labels = None
 depends_on = None

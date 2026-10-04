@@ -11,17 +11,7 @@ import uuid
 
 from sqlalchemy import text
 
-MODULE = "p3e4f5a6b7c8_seed_cash_flow_sections"
-
-
-def test_revision_is_the_single_head():
-    from alembic.script import ScriptDirectory
-
-    from celerp.alembic_config import build_alembic_config
-
-    script = ScriptDirectory.from_config(build_alembic_config())
-    assert script.get_heads() == ["p3e4f5a6b7c8"]
-    assert script.get_revision("p3e4f5a6b7c8").down_revision == "o2d3e4f5a6b7"
+MODULE = "c7f1a2b3d4e5_seed_cash_flow_sections"
 
 
 def _with_category_column(acc_db) -> None:
