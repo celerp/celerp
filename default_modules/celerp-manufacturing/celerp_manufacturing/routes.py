@@ -633,13 +633,19 @@ def _skip_as_demand(doc_state: dict) -> bool:
     return False
 
 
+def _peg_order(doc: dict) -> tuple:
+    """The order supply is pegged to a row's documents in: soonest due first, undated last, then
+    the oldest document, then by document id - never the order the database returned them in."""
+    return doc.get("due") is None, doc.get("due") or "", doc.get("created_at") or "", doc.get("doc_id") or ""
+
+
 def _peg(row: dict) -> None:
     """Settle a Demand Planning row: each document's own reserved stock (``reserved``) covers it
     first, then free stock (on hand less what is reserved) plus what open runs still have to give
-    is FIFO-assigned to what is left - soonest due first, undated last. Annotates each doc in place
-    with covered / shortfall / coverage (covered|partial|short) and sets the row's to_make."""
+    is FIFO-assigned to what is left, in _peg_order. Annotates each doc in place with covered /
+    shortfall / coverage (covered|partial|short) and sets the row's to_make."""
     remaining = max(0.0, row["on_hand"] - sum(d["reserved"] for d in row["docs"]) + row["in_progress"])
-    for d in sorted(row["docs"], key=lambda x: (x.get("due") is None, x.get("due") or "")):
+    for d in sorted(row["docs"], key=_peg_order):
         q = float(d.get("quantity") or 0)
         free = min(remaining, q - d["reserved"])
         remaining -= free
@@ -707,6 +713,7 @@ async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
             "doc_id": doc.entity_id, "doc_number": ref,
             "doc_type": st.get("doc_type") or doc.entity_type,
             "contact_name": st.get("contact_name") or "", "due": due, "quantity": 0.0,
+            "created_at": doc.created_at.isoformat() if doc.created_at else "",
         })
         d["quantity"] += qty
         d["reserved"] = min(d["quantity"], held.get((item_id, doc.entity_id), 0.0))
@@ -724,7 +731,7 @@ async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
     items: list[dict] = []
     for item_id, row in agg.items():
         ist = states.get(item_id) or {}
-        docs_list = list(row["docs"].values())
+        docs_list = sorted(row["docs"].values(), key=_peg_order)
         plan = {"demand": row["demand"], "docs": docs_list, "in_progress": in_progress.get(item_id, 0.0),
                 "on_hand": free.get(item_id, 0.0) + sum(d["reserved"] for d in docs_list)}
         _peg(plan)
@@ -866,14 +873,14 @@ async def make_selected(session: AsyncSession, company_id, user_id, lines: list[
     states = await _all_item_states(session, company_id)
     created: list[dict] = []
     skipped: list[dict] = []
-    # Each product's orders are made in the order supply is pegged to them, soonest due
-    # first, and stock last, so each run covers the order it is made for.
+    # Each product's orders are made in the order supply is pegged to them (_peg_order), and
+    # stock last, so each run covers the order it is made for.
     first = {item_id: n for n, (item_id, _) in reversed(list(enumerate(selected)))}
-    due = {(r["item_id"], d["doc_id"]): d.get("due") for r in rows.values() for d in r["docs"]}
+    docs = {(r["item_id"], d["doc_id"]): d for r in rows.values() for d in r["docs"]}
 
     def pegged(line):
         item_id, doc_id = line
-        return first[item_id], not doc_id, due.get(line) is None, due.get(line) or ""
+        return first[item_id], not doc_id, _peg_order(docs.get(line) or {"doc_id": doc_id})
     for item_id, doc_id in sorted(selected, key=pegged):
         key = mfg_idem_key(doc_id, item_id, operation)
         request = {"make": item_id, "doc": doc_id, "complete": complete}
