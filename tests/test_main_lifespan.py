@@ -88,6 +88,7 @@ async def test_modules_ready_commit_guarded(monkeypatch):
     monkeypatch.setattr("celerp.db.LifecycleSessionLocal", _session)
     monkeypatch.setattr("celerp.services.dev_release_guard.run_upgrade_guard",
                         AsyncMock(return_value={"changed": False, "rebuilt": False, "current": True}))
+    monkeypatch.setattr("celerp.connectors.outbound_queue.adopt_legacy_connector_configs", AsyncMock())
 
     # Keep the relay tunnel down (no public url, no live share).
     monkeypatch.setattr("celerp.gateway.has_active_share", AsyncMock(return_value=False))
@@ -155,10 +156,9 @@ async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
     adopt.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_projections_are_rebuilt_before_the_modules_settle_data(monkeypatch):
-    """The upgrade guard (which rebuilds stale projections) runs before the
-    on_modules_ready hooks, which settle data by reading those projections."""
+async def _boot_in_order(monkeypatch, guard) -> tuple[list[str], AsyncMock]:
+    """Boot with the module block forced, recording the order in which the upgrade guard
+    and the on_modules_ready hooks run, and the notices told to every company."""
     import celerp.main as main_mod
     from celerp.config import settings
     from celerp.modules import slots
@@ -167,7 +167,7 @@ async def test_projections_are_rebuilt_before_the_modules_settle_data(monkeypatc
 
     async def _guard(session):
         order.append("guard")
-        return {"changed": False, "rebuilt": False, "current": True}
+        return await guard()
 
     async def _fire(slot, **kwargs):
         if slot == "on_modules_ready":
@@ -178,6 +178,7 @@ async def test_projections_are_rebuilt_before_the_modules_settle_data(monkeypatc
             super().__init__(AsyncMock())
             self.commit = AsyncMock()
 
+    notify = AsyncMock()
     monkeypatch.setattr(main_mod, "_MODULE_DIR", "/tmp/modules-forced")
     monkeypatch.setenv("ENABLED_MODULES", "test-mod")
     monkeypatch.setattr(
@@ -191,6 +192,8 @@ async def test_projections_are_rebuilt_before_the_modules_settle_data(monkeypatc
     monkeypatch.setattr("celerp.db.LifecycleSessionLocal", _Session)
     monkeypatch.setattr("celerp.services.dev_release_guard.run_upgrade_guard", _guard)
     monkeypatch.setattr("celerp.modules.slots.fire_lifecycle", _fire)
+    monkeypatch.setattr("celerp.notifications.service.notify_every_company", notify, raising=False)
+    monkeypatch.setattr("celerp.connectors.outbound_queue.adopt_legacy_connector_configs", AsyncMock())
     monkeypatch.setattr("celerp.gateway.has_active_share", AsyncMock(return_value=False))
     saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
     settings.gateway_token = "test-token"
@@ -204,5 +207,30 @@ async def test_projections_are_rebuilt_before_the_modules_settle_data(monkeypatc
         slots.clear()
         settings.gateway_token = saved_token
         settings.celerp_public_url = saved_public
+    return order, notify
+
+
+@pytest.mark.asyncio
+async def test_projections_are_rebuilt_before_the_modules_settle_data(monkeypatch):
+    """The upgrade guard (which rebuilds stale projections) runs before the
+    on_modules_ready hooks, which settle data by reading those projections."""
+    order, notify = await _boot_in_order(
+        monkeypatch, AsyncMock(return_value={"changed": False, "rebuilt": False, "current": True}))
 
     assert order == ["guard", "on_modules_ready"]
+    notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("guard", [
+    AsyncMock(return_value={"changed": True, "rebuilt": False, "current": False}),
+    AsyncMock(side_effect=RuntimeError("rebuild failed")),
+], ids=["not_current", "guard_failed"])
+async def test_the_modules_settle_nothing_while_the_projections_are_not_current(monkeypatch, guard):
+    """A start that could not bring the projections current runs no on_modules_ready hook
+    (they would settle data from stale projections), boots anyway, and tells every company."""
+    order, notify = await _boot_in_order(monkeypatch, guard)
+
+    assert order == ["guard"]
+    notify.assert_awaited_once()
+    assert notify.await_args.args[1:3] == ("system", "Stored records could not be brought up to date")
