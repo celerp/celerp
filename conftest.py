@@ -547,6 +547,19 @@ def _ensure_slot_registration():
 
 
 @pytest.fixture(autouse=True)
+def _restore_import_path():
+    """Restore sys.path after each test.
+
+    Loading a module puts its folder on sys.path. Tests that load modules from
+    temporary folders left hundreds of dead entries behind on a worker, and every
+    later import then searched them all.
+    """
+    before = list(_sys.path)
+    yield
+    _sys.path[:] = before
+
+
+@pytest.fixture(autouse=True)
 def _mock_get_modules_default():
     """Default get_modules mock — returns empty list so settings page always has a valid response."""
     from unittest.mock import patch, AsyncMock
