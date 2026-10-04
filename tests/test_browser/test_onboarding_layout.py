@@ -86,3 +86,15 @@ def test_product_import_upload_mapping_and_review(sized, ui_server):
     # The review grid scrolls inside its own box, so every price cell can be reached.
     assert _right_edge(page, ".table-scroll") <= width
     assert _right_edge(page, ".csv-fix-actions > *") <= width, "an import action is off screen"
+
+
+def test_phone_topbar_fits_with_the_company_switcher(page, ui_server, api):
+    """A user in several companies gets a company switcher in the topbar; on a
+    phone it shrinks with the other controls instead of pushing the page sideways."""
+    r = api.post("/companies", json={"name": "Second Branch Trading Company"})
+    assert r.status_code in (200, 201), r.text
+    page.set_viewport_size({"width": 390, "height": 844})
+    problems = _watch(page)
+    page.goto(f"{ui_server}/inventory/import", wait_until="load")
+    page.wait_for_selector(".topbar .company-switcher-select")
+    _check(page, 390, problems)

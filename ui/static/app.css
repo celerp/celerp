@@ -238,7 +238,8 @@ a:hover { text-decoration: underline; }
   .topbar .lang-switcher-wrap { flex-shrink: 1; }
   .topbar .lang-switcher-wrap .combobox-input { min-width: 0; max-width: 4.5rem; }
   .topbar .global-search-wrap { flex: 1 1 4rem; min-width: 4rem; margin: 0; }
-  .topbar .user-menu__trigger { max-width: 4.5rem; }
+  .topbar .user-menu__trigger, .topbar .company-switcher-select { max-width: 4.5rem; }
+  .topbar .notif-wrap, .topbar .user-menu { flex-shrink: 0; }
 }
 
 /* ─── Main content ────────────────────────────────────────────────────── */
