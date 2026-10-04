@@ -26,12 +26,17 @@ from celerp.migrations._data_reconcile import (
 )
 from celerp.models.company import Company
 from celerp.models.projections import Projection
-from celerp.services.dev_release_guard import run_upgrade_guard, unknown_event_types
+from celerp.services.dev_release_guard import (
+    PROJECTION_SEMANTICS,
+    PROJECTION_SEMANTICS_KEY,
+    run_upgrade_guard,
+    unknown_event_types,
+)
 
 
 @pytest.fixture(autouse=True)
 async def _isolate_version_marker(session):
-    """The projection-version marker lives in the global `instance_meta` table,
+    """The projection markers live in the global `instance_meta` table,
     which is outside the per-test transaction's company scope: a committed write
     from another test (e.g. the app-lifespan guard) can leak in and make the
     "marker is unset" assertions flaky. Clear the key inside this test's own
@@ -41,7 +46,8 @@ async def _isolate_version_marker(session):
 
     def _clear(c):
         _ensure_meta_table(c)
-        c.execute(text(f"DELETE FROM {_META_TABLE} WHERE key = :k"), {"k": PROJECTION_VERSION_KEY})
+        c.execute(text(f"DELETE FROM {_META_TABLE} WHERE key IN (:k, :s)"),
+                  {"k": PROJECTION_VERSION_KEY, "s": PROJECTION_SEMANTICS_KEY})
 
     await conn.run_sync(_clear)
     yield
@@ -68,6 +74,16 @@ async def _marker(session) -> str | None:
 async def _set_marker(session, value: str) -> None:
     conn = await session.connection()
     await conn.run_sync(lambda c: set_meta(c, PROJECTION_VERSION_KEY, value))
+
+
+async def _semantics(session) -> str | None:
+    conn = await session.connection()
+    return await conn.run_sync(lambda c: get_meta(c, PROJECTION_SEMANTICS_KEY))
+
+
+async def _set_semantics(session, value: str) -> None:
+    conn = await session.connection()
+    await conn.run_sync(lambda c: set_meta(c, PROJECTION_SEMANTICS_KEY, value))
 
 
 async def _projection_count(session) -> int:
@@ -113,10 +129,12 @@ async def test_guard_gated_when_version_matches(session):
 
 @pytest.mark.asyncio
 async def test_guard_skips_rebuild_for_release_origin(session):
-    """A DB last booted by a RELEASE build (marker has no .dev) is assumed
-    projection-correct: a release→release upgrade skips the rebuild entirely."""
+    """A DB last booted by a RELEASE build (marker has no .dev) under the same
+    projection semantics is assumed projection-correct: a release→release upgrade
+    skips the rebuild entirely."""
     await _seed_item(session)
     await _set_marker(session, "1.0.0")          # previous boot was a release build
+    await _set_semantics(session, str(PROJECTION_SEMANTICS))
     await session.execute(delete(Projection))    # corrupt: drop read-models
 
     result = await run_upgrade_guard(session)
@@ -124,6 +142,25 @@ async def test_guard_skips_rebuild_for_release_origin(session):
     assert result == {"changed": True, "rebuilt": False}
     assert await _projection_count(session) == 0  # NOT rebuilt — release origin
     assert await _marker(session) == __version__  # but the boot version is recorded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("semantics", [None, str(PROJECTION_SEMANTICS - 1)], ids=["unrecorded", "older"])
+async def test_guard_rebuilds_for_release_origin_with_other_semantics(session, semantics):
+    """A release→release upgrade across a change in projection semantics rebuilds,
+    and records both the version and the semantics it rebuilt under."""
+    await _seed_item(session)
+    await _set_marker(session, "1.0.0")
+    if semantics is not None:
+        await _set_semantics(session, semantics)
+    await session.execute(delete(Projection))
+
+    result = await run_upgrade_guard(session)
+
+    assert result == {"changed": True, "rebuilt": True}
+    assert await _projection_count(session) == 1
+    assert await _marker(session) == __version__
+    assert await _semantics(session) == str(PROJECTION_SEMANTICS)
 
 
 @pytest.mark.asyncio
@@ -165,6 +202,7 @@ async def test_guard_skips_rebuild_on_unknown_event_type(session):
     assert "zzz.unknown.event" in result["unknown_event_types"]
     assert await _projection_count(session) == before   # untouched
     assert await _marker(session) is None               # not stamped → retries later
+    assert await _semantics(session) is None
 
 
 @pytest.mark.asyncio

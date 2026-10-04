@@ -142,3 +142,56 @@ async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
     fire.assert_not_awaited()
     associate.assert_not_awaited()
     adopt.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_projections_are_rebuilt_before_the_modules_settle_data(monkeypatch):
+    """The upgrade guard (which rebuilds stale projections) runs before the
+    on_modules_ready hooks, which settle data by reading those projections."""
+    import celerp.main as main_mod
+    from celerp.config import settings
+    from celerp.modules import slots
+
+    order: list[str] = []
+
+    async def _guard(session):
+        order.append("guard")
+        return {"changed": False, "rebuilt": False}
+
+    async def _fire(slot, **kwargs):
+        if slot == "on_modules_ready":
+            order.append("on_modules_ready")
+
+    class _Session(_FakeSession):
+        def __init__(self):
+            super().__init__(AsyncMock())
+            self.commit = AsyncMock()
+
+    monkeypatch.setattr(main_mod, "_MODULE_DIR", "/tmp/modules-forced")
+    monkeypatch.setenv("ENABLED_MODULES", "test-mod")
+    monkeypatch.setattr(
+        "celerp.modules.migrations_runner.run_migration_phase",
+        AsyncMock(return_value=({"test-mod"}, {})),
+    )
+    monkeypatch.setattr("celerp.modules.loader.load_all", lambda *a, **k: [])
+    monkeypatch.setattr("celerp.modules.loader.register_api_routes", lambda *a, **k: None)
+    monkeypatch.setattr("celerp.modules.loader.record_load_error", lambda *a, **k: None)
+    monkeypatch.setattr("celerp.modules.loader.demoted_first_party", lambda *a, **k: [])
+    monkeypatch.setattr("celerp.db.LifecycleSessionLocal", _Session)
+    monkeypatch.setattr("celerp.services.dev_release_guard.run_upgrade_guard", _guard)
+    monkeypatch.setattr("celerp.modules.slots.fire_lifecycle", _fire)
+    monkeypatch.setattr("celerp.gateway.has_active_share", AsyncMock(return_value=False))
+    saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
+    settings.gateway_token = "test-token"
+    settings.celerp_public_url = None
+    slots.clear()
+    try:
+        with _mock_db():
+            async with main_mod.lifespan(MagicMock()):
+                pass
+    finally:
+        slots.clear()
+        settings.gateway_token = saved_token
+        settings.celerp_public_url = saved_public
+
+    assert order == ["guard", "on_modules_ready"]
