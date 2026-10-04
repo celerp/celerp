@@ -296,6 +296,33 @@ async def _run_settled(s, company_id) -> bool:
     return bool(rows) and not any(state.get("wip_untracked") for state in rows)
 
 
+async def _delivered_lot_without_its_product(s, company_id) -> None:
+    """Goods a migration recorded an invoice delivering, as an earlier release left them: a sold
+    lot of a product that names no product."""
+    from celerp.events.engine import emit_event
+
+    product, lot = f"item:{uuid.uuid4()}", f"item:{uuid.uuid4()}"
+    for entity_id, event_type, data, metadata, source in (
+            (product, "item.created", {"sku": "P", "name": "P", "quantity": 0}, {}, "test"),
+            (lot, "item.created", {"sku": "P", "name": "P", "quantity": 1}, {"parent_id": product}, "migration"),
+            (lot, "item.fulfilled", {"source_doc_id": f"doc:{uuid.uuid4()}", "quantity_fulfilled": 1,
+                                     "fulfilled_by": "migration"}, {}, "migration")):
+        await emit_event(s, company_id=company_id, entity_id=entity_id, entity_type="item", event_type=event_type,
+                         data=data, actor_id=None, location_id=None, source=source,
+                         idempotency_key=f"test:{event_type}:{entity_id}", metadata_=metadata)
+
+
+async def _delivered_lot_linked(s, company_id) -> bool:
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    lots = (await s.execute(select(LedgerEntry.entity_id).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == "item.fulfilled"))).scalars().all()
+    rows = (await s.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(lots)))).scalars().all()
+    return bool(rows) and all(state.get("catalog_item_id") for state in rows)
+
+
 # Each backfill, with what makes a company need it and whether the backfill reached it.
 LIFECYCLE_BACKFILLS = {
     "celerp_accounting.routes:backfill_chart_of_accounts_hook": (_drop_chart, _has_chart),
@@ -304,6 +331,7 @@ LIFECYCLE_BACKFILLS = {
     "celerp_docs.received_legacy:move_legacy_imports_hook": (_legacy_import, _legacy_import_moved),
     "celerp_docs.legacy_receipts:record_legacy_receipts_hook": (_receipt_without_its_record, _receipt_recorded),
     "celerp_manufacturing.routes:settle_open_runs_hook": (_run_issued_by_older_release, _run_settled),
+    "celerp_docs.historical_lots:link_historical_lots_hook": (_delivered_lot_without_its_product, _delivered_lot_linked),
 }
 # Needs a staged company cannot have: only the migration writes to it, and it never
 # emits doc.shared_import, which nothing but imports from before Received wrote.
