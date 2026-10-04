@@ -287,6 +287,14 @@ def _join_version_fence() -> None:
     _version_fence.guard(engine, lifecycle_engine)
 
 
+def _report_module_stops() -> None:
+    """A module that failed here stops in the API process too. Written at
+    startup, through the fence this process has just joined."""
+    if _admission is not None:
+        from celerp.modules.outcome import report_stopped
+        report_stopped(_version_fence, _api_record)
+
+
 def _release_version_fence() -> None:
     if _version_fence is not None:
         _version_fence.release()
@@ -305,7 +313,7 @@ def _cleanup_import_stages() -> None:
 app = FastHTML(
     before=Beforeware(_auth_guard, skip=[r"/login", r"/login-force", r"/setup.*", r"/logout", r"/static/.*", r"/health"]),
     secret_key=os.environ.get("JWT_SECRET", "dev-secret"),
-    on_startup=[_join_version_fence, _cleanup_import_stages],
+    on_startup=[_join_version_fence, _report_module_stops, _cleanup_import_stages],
     on_shutdown=[_close_ui_api_client, _release_version_fence],
 )
 
@@ -583,9 +591,6 @@ if _admission is not None:
     from celerp.modules.loader import load_all, register_ui_routes
     _ui_loaded = load_all(_MODULE_DIR, _ENABLED_MODULES, admission=_admission)
     register_ui_routes(app, _ui_loaded)
-    # A module that failed here stops in the API process too.
-    from celerp.modules.outcome import report_stopped
-    report_stopped(_settings.database_url, _api_record)
 
 if __name__ == "__main__":
     import uvicorn

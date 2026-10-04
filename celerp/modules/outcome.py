@@ -74,13 +74,13 @@ def read(conn, *, lock: bool = False) -> dict | None:
     return json.loads(raw) if raw else None
 
 
-def report_stopped(database_url: str, record: dict | None) -> dict[str, str]:
-    """UI side, after its modules' routes are registered: move every module the
-    API's ``record`` lists as running but this process is not running to failed,
-    with this process's reason. Returns the modules moved."""
+def report_stopped(fence, record: dict | None) -> dict[str, str]:
+    """UI side, once it holds its version *fence* and its modules' routes are
+    registered: move every module the API's ``record`` lists as running but this
+    process is not running to failed, with this process's reason, writing through
+    the fence. Returns the modules moved."""
     import sqlalchemy as sa
 
-    from celerp.db_url import sync_url
     from celerp.migrations._data_reconcile import set_meta
     from celerp.modules.loader import is_running, load_errors
 
@@ -91,17 +91,13 @@ def report_stopped(database_url: str, record: dict | None) -> dict[str, str]:
                for n in record["running"] if not is_running(n)}
     if not stopped:
         return {}
-    engine = sa.create_engine(sync_url(database_url))
-    try:
-        with engine.begin() as conn:
-            current = read(conn, lock=True)
-            if not current or current.get("boot") != record["boot"]:
-                return {}  # that API process is gone; the next one records afresh
-            current["running"] = [n for n in current["running"] if n not in stopped]
-            current["failed"] = {**current.get("failed", {}), **stopped}
-            set_meta(conn, _KEY, json.dumps(current))
-    finally:
-        engine.dispose()
+    with fence.engine(poolclass=sa.pool.NullPool) as engine, engine.begin() as conn:
+        current = read(conn, lock=True)
+        if not current or current.get("boot") != record["boot"]:
+            return {}  # that API process is gone; the next one records afresh
+        current["running"] = [n for n in current["running"] if n not in stopped]
+        current["failed"] = {**current.get("failed", {}), **stopped}
+        set_meta(conn, _KEY, json.dumps(current))
     for name, reason in stopped.items():
         log.error("Module %r failed in the UI process and is stopped: %s", name, reason)
     return stopped

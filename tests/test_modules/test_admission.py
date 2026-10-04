@@ -888,10 +888,10 @@ def test_stopped_module_keeps_its_table_prefix_reserved(_modules):
 
 
 def _ui_process(token: str, database_url: str, module_dir: Path, enabled: str,
-                data_dir: Path) -> dict:
-    """Import ui.app in a separate process, as the UI process does at startup,
-    against an API whose /health serves ``token``. Returns the routes it offers
-    and its load errors."""
+                data_dir: Path, *, start: bool = True) -> dict:
+    """Import ui.app in a separate process and, with *start*, run its startup, as
+    the UI process does, against an API whose /health serves ``token``. Returns
+    the routes it offers and its load errors."""
     import os
     import subprocess
     import threading
@@ -920,6 +920,9 @@ def _ui_process(token: str, database_url: str, module_dir: Path, enabled: str,
             [sys.executable, "-c",
              "import json, ui.app as a\n"
              "from celerp.modules.loader import load_errors\n"
+             + ("from starlette.testclient import TestClient\n"
+                "with TestClient(a.app):\n    pass\n" if start else "")
+             +
              "print(json.dumps({'paths': [getattr(r, 'path', '') for r in a.app.routes],"
              " 'errors': load_errors()}))"],
             cwd=repo, env=env, capture_output=True, text=True, timeout=120)
@@ -1031,6 +1034,67 @@ async def test_ui_route_failure_stops_the_module_in_the_api_process(
     assert f"/{healthy_inner}/home" in ui["paths"]
 
 
+async def test_importing_the_ui_writes_no_module_outcome(committed_engine, _modules, tmp_path):
+    """The UI records a module it could not start only once it runs, never while
+    its code is being imported."""
+    from celerp.modules import outcome
+
+    failing, _inner = _two_sided_module(_modules, f"acme-{_uid()}", fail_ui=True)
+    api = _App()
+    loader.register_api_routes(api, loader.load_all(str(_modules), {failing.name}))
+    async with committed_engine.begin() as conn:
+        await conn.run_sync(outcome.publish)
+
+    ui = _ui_process(outcome.BOOT_TOKEN, _engine_url(committed_engine), _modules,
+                     failing.name, tmp_path, start=False)
+    assert "ui setup exploded" in ui["errors"][failing.name]
+    async with committed_engine.connect() as conn:
+        record = await conn.run_sync(outcome.read)
+    assert record["running"] == [failing.name]
+    assert failing.name not in record["failed"]
+
+
+async def test_ui_outcome_is_not_written_once_a_newer_version_opened_the_database(
+        committed_engine, _modules, monkeypatch):
+    """The UI lost its hold on the database and a newer Celerp opened it since:
+    the UI's report is not written."""
+    import sqlalchemy as sa
+
+    from celerp.db_url import sync_url
+    from celerp.migrations import compatibility
+    from celerp.migrations._data_reconcile import set_meta
+    from celerp.modules import outcome
+
+    healthy, _inner = _two_sided_module(_modules, f"acme-{_uid()}")
+    api = _App()
+    loader.register_api_routes(api, loader.load_all(str(_modules), {healthy.name}))
+    async with committed_engine.begin() as conn:
+        await conn.run_sync(outcome.publish)
+        record = await conn.run_sync(outcome.read)
+    loader._loaded.clear()  # this "UI" could not start it
+
+    url = sync_url(_engine_url(committed_engine))
+    fence = compatibility.Fence.join(url)
+    other = sa.create_engine(url, poolclass=sa.pool.NullPool)
+    try:
+        with other.begin() as conn:
+            conn.execute(sa.text("SELECT pg_terminate_backend(:p)"), {"p": fence._session[0]})
+            set_meta(conn, compatibility.NEWEST_CELERP_KEY, "9999.0.0")
+
+        def _ended(exc):
+            raise SystemExit(str(exc))
+        monkeypatch.setattr(compatibility, "_end_process", _ended)
+        with pytest.raises(SystemExit):
+            outcome.report_stopped(fence, record)
+    finally:
+        fence.release()
+        other.dispose()
+    async with committed_engine.connect() as conn:
+        after = await conn.run_sync(outcome.read)
+    assert after["running"] == [healthy.name]
+    assert healthy.name not in after["failed"]
+
+
 async def test_report_from_an_earlier_api_process_stops_nothing(committed_engine, _modules):
     """A UI that read another API process's record cannot stop this one's modules."""
     from celerp.modules import outcome
@@ -1043,6 +1107,12 @@ async def test_report_from_an_earlier_api_process_stops_nothing(committed_engine
     stale = {"boot": "an-earlier-api-process", "running": [healthy.name], "failed": {}}
     loader._loaded.clear()  # this "UI" is not running it
 
-    assert outcome.report_stopped(_engine_url(committed_engine), stale) == {}
+    from celerp.db_url import sync_url
+    from celerp.migrations.compatibility import Fence
+    fence = Fence.join(sync_url(_engine_url(committed_engine)))
+    try:
+        assert outcome.report_stopped(fence, stale) == {}
+    finally:
+        fence.release()
     async with committed_engine.connect() as conn:
         assert (await conn.run_sync(outcome.read))["running"] == [healthy.name]
