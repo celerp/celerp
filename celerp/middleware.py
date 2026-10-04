@@ -253,16 +253,38 @@ def log_unhandled_exception(request: Request, exc: Exception) -> None:
 
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _DRAIN_BYPASS_PREFIXES = ("/__celerp/", "/health")
+# What still changes while the stored records are not current: signing in and out,
+# reading notices, enabling or installing the module that holds them back, and the
+# repairs that bring them current. Nothing here changes a business record.
+_HELD_BACK_ALLOWED_PREFIXES = ("/auth/", "/notifications", "/companies/me/modules/", "/system/restart",
+                               "/ledger/rebuild", "/admin/doctor")
+_HELD_BACK_REFUSED_SUFFIXES = ("/purge-data",)
+_HELD_BACK_REFUSAL = (
+    "Stored records could not be brought up to date at the last start, so changes are refused "
+    "until they are. The notice in the notification bell says how to fix it, usually by "
+    "enabling a module in Modules and restarting Celerp."
+)
+
+
+def _refused_while_held_back(scope: Scope, path: str) -> bool:
+    """A change to records, while the last start could not bring them current."""
+    app = scope.get("app")
+    if app is None or getattr(app.state, "data_current", True):
+        return False
+    return (not path.startswith(_HELD_BACK_ALLOWED_PREFIXES)
+            or path.endswith(_HELD_BACK_REFUSED_SUFFIXES))
 
 
 class DrainMiddleware:
-    """Return 503 on write requests while the cluster is draining.
+    """Return 503 on write requests while the cluster is draining, or while the last
+    start could not bring the stored records current (``app.state.data_current``).
 
     Reads the drain flag from ``SystemRuntimeState`` on every write request.
     Fails open (passes the request through) if the DB is unreachable so that
     a DB hiccup doesn't hard-block all mutations.
 
-    Safe paths (bypass): /__celerp/*, /health.
+    Safe paths (bypass): /__celerp/*, /health. While the records are not current,
+    only the sign-in, notice, module and repair paths above still accept writes.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -277,6 +299,10 @@ class DrainMiddleware:
         path = scope.get("path", "")
         if method not in _WRITE_METHODS or any(path.startswith(p) for p in _DRAIN_BYPASS_PREFIXES):
             await self.app(scope, receive, send)
+            return
+
+        if _refused_while_held_back(scope, path):
+            await JSONResponse(status_code=503, content={"detail": _HELD_BACK_REFUSAL})(scope, receive, send)
             return
 
         try:

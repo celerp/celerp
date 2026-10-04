@@ -192,3 +192,74 @@ async def test_a_failed_rebuild_settles_nothing_and_the_next_start_rebuilds_then
     assert await _meta(session, PROJECTION_SEMANTICS_KEY) == str(PROJECTION_SEMANTICS)
     assert _issued(await _run(session, old, "dup_issued"), old["items"]["A"]) == 3
     assert Decimal(str((await _run(session, old, "settle"))["wip_issued"])) == Decimal("13")
+
+
+def assemble_gadget(state: dict, event_type: str, data: dict) -> dict:
+    """The projection handler of the gadget module, once it is enabled."""
+    return {**state, **data, "assembled": True}
+
+
+async def _stored(session, company_id) -> tuple[list, list, dict]:
+    """The company's ledger and projection rows and the startup backfill markers, as stored."""
+    from sqlalchemy import select
+
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services.cogs_backfill import COGS_BACKFILL_KEY
+    from celerp.services.status_doc_backfill import STATUS_DOC_BACKFILL_KEY
+
+    session.expire_all()
+    ledger = (await session.execute(select(
+        LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data,
+    ).where(LedgerEntry.company_id == company_id).order_by(LedgerEntry.id))).all()
+    rows = (await session.execute(select(
+        Projection.entity_id, Projection.state, Projection.version, Projection.updated_at,
+    ).where(Projection.company_id == company_id).order_by(Projection.entity_id))).all()
+    markers = {k: await _meta(session, k) for k in (STATUS_DOC_BACKFILL_KEY, COGS_BACKFILL_KEY)}
+    return [tuple(r) for r in ledger], [tuple(r) for r in rows], markers
+
+
+async def test_a_held_back_start_refuses_changes_until_a_start_brings_the_records_current(
+        client, session, monkeypatch):
+    """While a start could not bring the stored records current, Celerp keeps running but
+    refuses changes to them (a run is not received against stale records) and runs none of
+    the startup backfills; reading and enabling modules still work. Once the missing module
+    is enabled, the next start brings the records current and changes are accepted again."""
+    from celerp.models.ledger import LedgerEntry
+    from celerp.modules import slots
+    from celerp.services.cogs_backfill import COGS_BACKFILL_KEY
+    from celerp.services.status_doc_backfill import STATUS_DOC_BACKFILL_KEY
+
+    old = await pre366.load(session)
+    session.add(LedgerEntry(company_id=old["company_id"], entity_id="gadget:1", entity_type="gadget",
+                            event_type="gadget.assembled", data={"serial": "G-1"}, actor_id=None,
+                            location_id=None, source="api", idempotency_key="gadget-1", metadata_={}))
+    await session.commit()
+    await pre366.last_started_on_older_release(session)
+    run = old["runs"]["settle"]
+
+    await pre366.start()
+    before = await _stored(session, old["company_id"])
+
+    r = await client.post(f"/manufacturing/{run}/receive", json={}, headers=old["headers"])
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert "could not be brought up to date" in detail and "Modules" in detail, detail
+    assert await _stored(session, old["company_id"]) == before
+    assert before[2] == {STATUS_DOC_BACKFILL_KEY: None, COGS_BACKFILL_KEY: None}
+    assert (await client.get(f"/manufacturing/{run}", headers=old["headers"])).status_code == 200
+    enabled = await client.post("/companies/me/modules/celerp-manufacturing/enable", headers=old["headers"])
+    assert enabled.status_code != 503, enabled.text
+    purged = await client.post("/companies/me/modules/celerp-manufacturing/purge-data", headers=old["headers"])
+    assert purged.status_code == 503, purged.text  # removing a module's records is a change to them
+    assert await _stored(session, old["company_id"]) == before
+
+    monkeypatch.setitem(slots._slots, "projection_handler", [*slots.get("projection_handler"), {
+        "prefix": "gadget.", "handler": f"{__name__}:assemble_gadget", "_module": "gadget"}])
+    await pre366.start()
+
+    assert (await _state(session, old["company_id"], "gadget:1"))["assembled"] is True
+    assert _settled(await _run(session, old, "settle"))
+    _, _, markers = await _stored(session, old["company_id"])
+    assert markers == {STATUS_DOC_BACKFILL_KEY: "done", COGS_BACKFILL_KEY: "done"}, markers
+    r = await client.post(f"/manufacturing/{run}/receive", json={}, headers=old["headers"])
+    assert r.status_code == 200, r.text

@@ -811,5 +811,6 @@ async def client(session: AsyncSession):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
     app.dependency_overrides.clear()
+    app.state.data_current = True  # a test that started on held-back records leaves none behind
     await _clear_tracker(session)
     _set_session_token(_saved_token or "")

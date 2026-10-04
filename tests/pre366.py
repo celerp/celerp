@@ -149,10 +149,10 @@ def startup_hooks():
 async def start() -> None:
     """The normal start of this release on what the older release left (needs the ``client``
     fixture, which routes the start's own sessions to the test's)."""
-    from celerp.main import _bring_data_current
+    from celerp.main import _bring_data_current, app
 
     with startup_hooks():
-        await _bring_data_current(modules_ready=True)
+        await _bring_data_current(app, modules_ready=True)
 
 
 async def upgraded(session, company: str = "main") -> dict:
