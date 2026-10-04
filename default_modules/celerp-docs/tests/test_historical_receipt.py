@@ -276,7 +276,6 @@ async def test_a_sold_lot_is_stock_of_the_product_its_line_names_and_never_of_a_
     product of its own. A line whose item names no product (units split off under their own
     SKU) leaves its lot unlinked and the company is told once."""
     from celerp.models.notification import Notification
-    from celerp_docs.historical_lots import NO_PRODUCT_TITLE
     from celerp_docs.routes import record_historical_delivery
 
     token, company_id = await _register(client)
@@ -304,7 +303,7 @@ async def test_a_sold_lot_is_stock_of_the_product_its_line_names_and_never_of_a_
     assert not unlinked.get("catalog_item_id") and not unlinked.get("parent_item_id"), unlinked
     assert await _events(session, company_id, "item.updated", lines[0]["lot_id"]) == 1
     notices = (await session.execute(select(Notification).where(
-        Notification.company_id == company_id, Notification.title == NO_PRODUCT_TITLE))).scalars().all()
+        Notification.company_id == company_id, Notification.title == "Delivered goods with no product"))).scalars().all()
     assert len(notices) == 1 and "PART-1" in notices[0].body and "WID" not in notices[0].body, notices
 
 

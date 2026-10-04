@@ -29,11 +29,10 @@ async def _board(client, old) -> dict[str, float]:
 
 
 async def _notices(session, old) -> list[Notification]:
-    from celerp_docs.historical_lots import NO_PRODUCT_TITLE
 
     session.expire_all()
     return list((await session.execute(select(Notification).where(
-        Notification.company_id == old["company_id"], Notification.title == NO_PRODUCT_TITLE,
+        Notification.company_id == old["company_id"], Notification.title == "Delivered goods with no product",
         Notification.priority == "high"))).scalars())
 
 

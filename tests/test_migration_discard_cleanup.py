@@ -98,11 +98,11 @@ async def test_discard_removes_the_notices_the_staged_company_was_told(real_clie
     """RED before the change: a notice told to every company (a start that held its updates
     back, say) reached the staged company too, and discard refused it as data it could not
     remove."""
-    from celerp.notifications.service import notify_every_company
+    from celerp.notifications.service import create
 
     token, run_id, company_id = await _staged(real_client, real_engine, migration_env)
     async with maker(real_engine)() as s:
-        assert await notify_every_company(s, "system", "Held back", "Updates were held back.") >= 1
+        await create(s, uuid.UUID(company_id), "system", "Held back", "Updates were held back.")
         await s.commit()
     assert await count(real_engine, "notifications", "company_id = :c", c=company_id) == 1
 
