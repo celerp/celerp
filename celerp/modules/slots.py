@@ -42,13 +42,10 @@ search_provider    Contributes rows to the global search bar. Exactly one descri
                    permission gates the source per company role. See the module loader
                    for the full descriptor contract.
 
-SLOT_ACCESS below says which of these third-party modules may fill (public) and
-which are filled only by Celerp's own first-party modules (internal). The loader
-enforces it, and the module template's linter mirrors it.
-
 Every slot entry is checked when its module loads (celerp.modules.loader): an
 entry is a dict; a "permission" (or catalog_channel "write_permission"), when
-present, is a key from the permission registry; nav "href" / "settings_href" and
+present, is a key from the permission registry; a "requires_connector", when set,
+is a connector id; nav "href" / "settings_href" and
 bulk_action "form_action" (required) are app-local paths; and every callable an
 entry names resolves to the module's own code, async exactly where core awaits it.
 
@@ -70,29 +67,6 @@ Usage in core UI
 from __future__ import annotations
 
 from typing import Callable
-
-# Who may fill each slot. "public": any module, the third-party extension surface.
-# "internal": first-party modules only - these run inside core's own transactions
-# (finalize, payment), rebuild core projections, or feed core-only flows (send-to
-# document types, connector catalog channels). The module template's SLOT_NAMES
-# mirrors this table.
-SLOT_ACCESS: dict[str, str] = {
-    "nav": "public",
-    "bulk_action": "public",
-    "item_action": "public",
-    "pricing_action": "public",
-    "doc_detail_actions": "public",
-    "doc_detail_badges": "public",
-    "search_provider": "public",
-    "category_schema": "public",
-    "on_company_created": "public",
-    "on_modules_ready": "public",
-    "projection_handler": "internal",
-    "doc_finalize_hook": "internal",
-    "on_doc_payment": "internal",
-    "send_to_targets": "internal",
-    "catalog_channel": "internal",
-}
 
 _slots: dict[str, list[dict]] = {}
 

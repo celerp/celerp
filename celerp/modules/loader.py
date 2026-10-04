@@ -47,7 +47,7 @@ from pathlib import Path
 from celerp.modules.importer import PREMIUM_MARKER
 from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
 from celerp.modules.meta import META_FILENAME
-from celerp.modules.slots import SLOT_ACCESS, register as register_slot, resolve_handler
+from celerp.modules.slots import register as register_slot, resolve_handler
 from celerp.services.app_paths import is_app_local_path
 from celerp.services.permissions import is_permission_key
 
@@ -900,11 +900,8 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
     for slot_name, contribution in slots_manifest.items():
         if slot_name == _SEARCH_PROVIDER_SLOT:
             continue
-        if isinstance(contribution, dict):
-            register_slot(slot_name, {**contribution, "_module": pkg_name})
-        elif isinstance(contribution, list):
-            for item in contribution:
-                register_slot(slot_name, {**item, "_module": pkg_name})
+        for item in contribution if isinstance(contribution, list) else [contribution]:
+            register_slot(slot_name, {**item, **_runtime_keys(pkg_name, trusted)})
 
     if prepared_search_provider is not None:
         register_slot(_SEARCH_PROVIDER_SLOT, prepared_search_provider)
@@ -1352,6 +1349,12 @@ _DESTINATION_KEYS = {
 }
 
 
+def _runtime_keys(pkg_name: str, trusted: bool) -> dict:
+    """The keys the loader sets on every registered slot entry, applied last so a
+    manifest's own _module or _first_party never survives registration."""
+    return {"_module": pkg_name, "_first_party": trusted}
+
+
 def _validate_projection_handler(contribution) -> None:
     """Raise :class:`ModuleLoadError` unless every projection_handler entry names
     the event-type prefix it handles."""
@@ -1373,23 +1376,17 @@ _SLOT_VALIDATORS = {
 def _validate_slot_entry(slot: str, item) -> None:
     """The rules every slot entry follows, whatever its slot.
 
-    Raise :class:`ModuleLoadError` unless ``item`` is a dict; carries no key
-    starting with "_" (those are set by the loader, e.g. _module); has a
+    Raise :class:`ModuleLoadError` unless ``item`` is a dict; has a
     "permission" / "write_permission", when present, that is a key from the
     permission registry (a falsy or malformed value is refused, never read as
-    "ungated"); has a "requires_connector", when present, that is a non-empty
-    string; and has every destination its slot reads (_DESTINATION_KEYS) as an
-    app-local path, with the required ones present.
+    "ungated"); has a "requires_connector", when set, that is a connector id
+    string (an empty value means no connector is needed); and has every
+    destination its slot reads (_DESTINATION_KEYS) as an app-local path, with
+    the required ones present.
     """
     if not isinstance(item, dict):
         raise ModuleLoadError(
             f"Slot {slot!r} entries must be dicts, not {type(item).__name__}."
-        )
-    reserved = sorted(k for k in item if isinstance(k, str) and k.startswith("_"))
-    if reserved:
-        raise ModuleLoadError(
-            f"Slot {slot!r} entry key {reserved[0]!r} is reserved: keys starting "
-            f"with _ are set by Celerp's loader."
         )
     for key in _PERMISSION_ENTRY_KEYS:
         if key in item and not is_permission_key(item[key]):
@@ -1398,9 +1395,9 @@ def _validate_slot_entry(slot: str, item) -> None:
                 f"Permission keys come from Celerp's own registry; pick the "
                 f"closest existing key, or leave {key} out."
             )
-    if "requires_connector" in item:
-        connector = item["requires_connector"]
-        if not isinstance(connector, str) or not connector:
+    connector = item.get("requires_connector")
+    if connector:
+        if not isinstance(connector, str):
             raise ModuleLoadError(
                 f"Slot {slot!r} requires_connector must be a connector id, "
                 f"not {connector!r}."
@@ -1422,9 +1419,8 @@ def _validate_slots(
 ) -> dict | None:
     """Check a module's whole ``slots`` manifest before anything is registered.
 
-    Per slot: an internal slot (celerp.modules.slots.SLOT_ACCESS) is refused to a
-    module that is not first-party; search_provider goes through its stricter
-    descriptor contract; every other entry follows the generic entry rules, has
+    Any module may fill any slot. Per slot: search_provider goes through its
+    stricter descriptor contract; every other entry follows the generic entry rules, has
     its callable proven (_check_slot_callable) when the slot is callable, and
     passes its slot's own validator. Returns the prepared search_provider
     descriptor, or None. Raises :class:`ModuleLoadError` on any violation.
@@ -1436,13 +1432,6 @@ def _validate_slots(
         )
     prepared = None
     for slot_name, contribution in slots_manifest.items():
-        if SLOT_ACCESS.get(slot_name) == "internal" and not trusted:
-            public = sorted(s for s, access in SLOT_ACCESS.items() if access == "public")
-            raise ModuleLoadError(
-                f"Slot {slot_name!r} is internal to Celerp's own modules; a "
-                f"third-party module cannot fill it. The public slots are "
-                f"{', '.join(public)}."
-            )
         if slot_name == _SEARCH_PROVIDER_SLOT:
             prepared = _prepare_search_provider(
                 pkg_name, pkg_path, contribution, trusted=trusted)
@@ -1585,4 +1574,4 @@ def _prepare_search_provider(
     # Runtime-owned trust metadata is injected AFTER the manifest contribution, and
     # the closed key set above already rejects a manifest that tries to supply
     # _module / _first_party itself, so neither can be spoofed.
-    return {**contribution, "_module": pkg_name, "_first_party": trusted}
+    return {**contribution, **_runtime_keys(pkg_name, trusted)}

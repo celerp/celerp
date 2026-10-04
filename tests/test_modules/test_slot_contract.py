@@ -18,20 +18,6 @@ import pytest
 from celerp.modules import loader, slots
 from celerp.modules.loader import ModuleLoadError, load_all, load_errors
 
-# Who may fill each slot core reads. Public slots are the third-party extension
-# surface; internal slots are filled only by Celerp's own (first-party) modules.
-SLOT_ACCESS = {
-    "nav": "public", "bulk_action": "public", "item_action": "public",
-    "pricing_action": "public", "doc_detail_actions": "public",
-    "doc_detail_badges": "public", "search_provider": "public",
-    "category_schema": "public", "on_company_created": "public",
-    "on_modules_ready": "public",
-    "projection_handler": "internal", "doc_finalize_hook": "internal",
-    "on_doc_payment": "internal", "send_to_targets": "internal",
-    "catalog_channel": "internal",
-}
-
-
 @pytest.fixture(autouse=True)
 def clean_state():
     slots.clear()
@@ -59,54 +45,26 @@ def _write(base: Path, name: str, slot_map: dict, files: dict[str, str] | None =
     return pkg
 
 
-def _load(tmp_path: Path, name: str, *, first_party: bool, monkeypatch) -> None:
-    """Load the module through load_all. A first-party module that fails raises
-    ModuleLoadError (boot stops); a third-party failure is recorded and skipped."""
-    pkg = tmp_path / name
-    if first_party:
-        digest = loader.module_content_digest(pkg)
-        monkeypatch.setattr(loader, "_first_party_lock", lambda: {name: digest})
-        assert loader.is_first_party(pkg)
-    else:
-        monkeypatch.setattr(loader, "_first_party_lock", lambda: {})
+def _load(tmp_path: Path, name: str, monkeypatch) -> None:
+    """Load the third-party module through load_all; a refusal is recorded and the
+    module skipped."""
+    monkeypatch.setattr(loader, "_first_party_lock", lambda: {})
     load_all(tmp_path, {name})
 
 
-def _refused(tmp_path, name, monkeypatch, *, first_party=False) -> str:
+def _refused(tmp_path, name, monkeypatch) -> str:
     """Load and return the refusal message; assert nothing was registered."""
-    if first_party:
-        with pytest.raises(ModuleLoadError) as exc:
-            _load(tmp_path, name, first_party=True, monkeypatch=monkeypatch)
-        msg = str(exc.value)
-    else:
-        _load(tmp_path, name, first_party=False, monkeypatch=monkeypatch)
-        assert name in load_errors(), f"{name} loaded but should have been refused"
-        msg = load_errors()[name]
+    _load(tmp_path, name, monkeypatch)
+    assert name in load_errors(), f"{name} loaded but should have been refused"
     assert slots.all_slots() == {}, "a refused module registered slot entries"
     assert name not in sys.modules
-    return msg
+    return load_errors()[name]
 
 
-def _accepted(tmp_path, name, monkeypatch, *, first_party=False) -> None:
-    _load(tmp_path, name, first_party=first_party, monkeypatch=monkeypatch)
+def _accepted(tmp_path, name, monkeypatch) -> None:
+    _load(tmp_path, name, monkeypatch)
     assert name not in load_errors(), load_errors().get(name)
     assert [m["name"] for m in loader.loaded_modules()] == [name]
-
-
-# ── Public vs internal slots ──────────────────────────────────────────────────
-
-class TestSlotAccessList:
-    def test_core_publishes_the_classification(self):
-        assert slots.SLOT_ACCESS == SLOT_ACCESS
-
-    def test_every_first_party_module_uses_only_known_slots(self):
-        root = Path(__file__).resolve().parents[2] / "default_modules"
-        for init in root.glob("*/__init__.py"):
-            text = init.read_text()
-            ns: dict = {}
-            exec(compile(text, str(init), "exec"), ns)  # manifests are literal dicts
-            for slot in (ns["PLUGIN_MANIFEST"].get("slots") or {}):
-                assert slot in SLOT_ACCESS, f"{init.parent.name} uses unclassified slot {slot!r}"
 
 
 # ── S1: callable slots ────────────────────────────────────────────────────────
@@ -121,8 +79,6 @@ CALLABLE = {
     "on_doc_payment": ("handler", True, {}),
     "projection_handler": ("handler", False, {"prefix": "slotx."}),
 }
-PUBLIC_CALLABLE = [s for s in CALLABLE if SLOT_ACCESS[s] == "public"]
-INTERNAL_CALLABLE = [s for s in CALLABLE if SLOT_ACCESS[s] == "internal"]
 
 _SYNC_FN = "def fn(*args, **kwargs):\n    return None\n"
 _ASYNC_FN = "async def fn(*args, **kwargs):\n    return None\n"
@@ -141,19 +97,13 @@ def _entry(slot: str, dotted: str) -> dict:
     return {key: dotted, **extra}
 
 
-def _trusted_for(slot: str) -> bool:
-    """Internal slots only load from first-party modules, so the ownership checks
-    on them are exercised with a first-party module."""
-    return SLOT_ACCESS[slot] == "internal"
-
-
 class TestCallableSlots:
     @pytest.mark.parametrize("slot", list(CALLABLE))
     def test_owned_callable_of_the_right_kind_is_accepted(self, slot, tmp_path, monkeypatch):
         name = f"slotmod_ok_{slot}"
         _write(tmp_path, name, {slot: [_entry(slot, f"{name}.hooks:fn")]},
                {"hooks.py": _right_fn(slot)})
-        _accepted(tmp_path, name, monkeypatch, first_party=_trusted_for(slot))
+        _accepted(tmp_path, name, monkeypatch)
         [registered] = slots.get(slot)
         assert registered["_module"] == name
 
@@ -163,7 +113,7 @@ class TestCallableSlots:
         target = ("celerp.ai.service:run_query" if CALLABLE[slot][1]
                   else "celerp.services.app_paths:is_app_local_path")
         _write(tmp_path, name, {slot: [_entry(slot, target)]})
-        msg = _refused(tmp_path, name, monkeypatch, first_party=_trusted_for(slot))
+        msg = _refused(tmp_path, name, monkeypatch)
         assert "does not resolve to source inside" in msg
 
     @pytest.mark.parametrize("slot", list(CALLABLE))
@@ -183,10 +133,10 @@ class TestCallableSlots:
         files["/".join(parts) + ".py"] = code
         name = f"slotmod_decoy_{slot}"
         _write(tmp_path, name, {slot: [_entry(slot, f"{core_mod}:{fn}")]}, files)
-        msg = _refused(tmp_path, name, monkeypatch, first_party=_trusted_for(slot))
+        msg = _refused(tmp_path, name, monkeypatch)
         assert "outside module" in msg
 
-    @pytest.mark.parametrize("slot", PUBLIC_CALLABLE)
+    @pytest.mark.parametrize("slot", list(CALLABLE))
     def test_protected_import_refused(self, slot, tmp_path, monkeypatch):
         name = f"slotmod_bsl_{slot}"
         _write(tmp_path, name, {slot: [_entry(slot, f"{name}.hooks:fn")]},
@@ -200,7 +150,7 @@ class TestCallableSlots:
         name = f"slotmod_kind_{slot}"
         _write(tmp_path, name, {slot: [_entry(slot, f"{name}.hooks:fn")]},
                {"hooks.py": _wrong_fn(slot)})
-        msg = _refused(tmp_path, name, monkeypatch, first_party=_trusted_for(slot))
+        msg = _refused(tmp_path, name, monkeypatch)
         assert ("must be async" in msg) if CALLABLE[slot][1] else ("must not be async" in msg)
 
     @pytest.mark.parametrize("slot", list(CALLABLE))
@@ -210,7 +160,7 @@ class TestCallableSlots:
         key, _, extra = CALLABLE[slot]
         entry = {**extra} if dotted is None else {key: dotted, **extra}
         _write(tmp_path, name, {slot: [entry]})
-        msg = _refused(tmp_path, name, monkeypatch, first_party=_trusted_for(slot))
+        msg = _refused(tmp_path, name, monkeypatch)
         assert "module.path:function" in msg
 
     @pytest.mark.parametrize("slot", list(CALLABLE))
@@ -218,22 +168,28 @@ class TestCallableSlots:
         name = f"slotmod_nc_{slot}"
         _write(tmp_path, name, {slot: [_entry(slot, f"{name}.hooks:fn")]},
                {"hooks.py": "fn = 'not a function'\n"})
-        msg = _refused(tmp_path, name, monkeypatch, first_party=_trusted_for(slot))
+        msg = _refused(tmp_path, name, monkeypatch)
         assert "not callable" in msg
 
-    @pytest.mark.parametrize("slot", INTERNAL_CALLABLE)
-    def test_third_party_module_cannot_use_internal_slot(self, slot, tmp_path, monkeypatch):
-        name = f"slotmod_internal_{slot}"
+    @pytest.mark.parametrize("slot", ["projection_handler", "doc_finalize_hook", "on_doc_payment"])
+    def test_third_party_module_can_fill_core_event_slot(self, slot, tmp_path, monkeypatch):
+        name = f"slotmod_tp_{slot}"
         _write(tmp_path, name, {slot: [_entry(slot, f"{name}.hooks:fn")]},
                {"hooks.py": _right_fn(slot)})
-        msg = _refused(tmp_path, name, monkeypatch)
-        assert "internal" in msg
+        _accepted(tmp_path, name, monkeypatch)
+        [registered] = slots.get(slot)
+        assert registered["_module"] == name
 
-    @pytest.mark.parametrize("slot", ["send_to_targets", "catalog_channel"])
-    def test_third_party_module_cannot_use_internal_data_slot(self, slot, tmp_path, monkeypatch):
-        name = f"slotmod_internal_{slot}"
-        _write(tmp_path, name, {slot: [{"label": "X", "doc_type": "invoice", "id": "x"}]})
-        assert "internal" in _refused(tmp_path, name, monkeypatch)
+    @pytest.mark.parametrize("slot, entry", [
+        ("send_to_targets", {"label": "Packing list", "doc_type": "packing_list"}),
+        ("catalog_channel", {"id": "shop", "label": "Shop", "write_permission": "adjust_inventory"}),
+    ])
+    def test_third_party_module_can_fill_inventory_data_slot(self, slot, entry, tmp_path, monkeypatch):
+        name = f"slotmod_tp_{slot}"
+        _write(tmp_path, name, {slot: [entry]})
+        _accepted(tmp_path, name, monkeypatch)
+        [registered] = slots.get(slot)
+        assert registered["_module"] == name
 
     @pytest.mark.parametrize("prefix", [None, "", 5])
     def test_projection_handler_needs_a_prefix(self, prefix, tmp_path, monkeypatch):
@@ -242,7 +198,7 @@ class TestCallableSlots:
         if prefix is not None:
             entry["prefix"] = prefix
         _write(tmp_path, name, {"projection_handler": [entry]}, {"hooks.py": _SYNC_FN})
-        assert "prefix" in _refused(tmp_path, name, monkeypatch, first_party=True)
+        assert "prefix" in _refused(tmp_path, name, monkeypatch)
 
 
 # ── S2: slot permission fails closed ──────────────────────────────────────────
@@ -250,8 +206,8 @@ class TestCallableSlots:
 _MALFORMED_PERMISSIONS = ["", 0, False, [], {}, None, "not_a_real_permission", 1.5]
 
 
-def _slot_with_permission(slot: str, name: str, perm) -> tuple[dict, dict, bool]:
-    """(slot map, files, first_party) for a valid entry of *slot* carrying perm."""
+def _slot_with_permission(slot: str, name: str, perm) -> tuple[dict, dict]:
+    """(slot map, files) for a valid entry of *slot* carrying perm."""
     entries = {
         "nav": {"key": "k", "label": "L", "href": "/x"},
         "item_action": {"label": "L", "href_template": "/x/{entity_id}"},
@@ -267,7 +223,7 @@ def _slot_with_permission(slot: str, name: str, perm) -> tuple[dict, dict, bool]
     entry = {**entries[slot], "permission": perm}
     value = entry if slot == "search_provider" else [entry]
     files = {"hooks.py": _SYNC_FN + "async def prov(*a, **k):\n    return {'items': []}\n"}
-    return {slot: value}, files, SLOT_ACCESS[slot] == "internal"
+    return {slot: value}, files
 
 
 _PERMISSION_SLOTS = ["nav", "item_action", "pricing_action", "bulk_action",
@@ -280,30 +236,40 @@ class TestSlotPermission:
     @pytest.mark.parametrize("perm", _MALFORMED_PERMISSIONS, ids=repr)
     def test_malformed_permission_refused_at_load(self, slot, perm, tmp_path, monkeypatch):
         name = f"slotmod_perm_{slot}"
-        slot_map, files, fp = _slot_with_permission(slot, name, perm)
+        slot_map, files = _slot_with_permission(slot, name, perm)
         _write(tmp_path, name, slot_map, files)
-        msg = _refused(tmp_path, name, monkeypatch, first_party=fp)
+        msg = _refused(tmp_path, name, monkeypatch)
         assert "permission" in msg
 
     @pytest.mark.parametrize("slot", _PERMISSION_SLOTS)
     def test_valid_permission_accepted(self, slot, tmp_path, monkeypatch):
         name = f"slotmod_permok_{slot}"
-        slot_map, files, fp = _slot_with_permission(slot, name, "view_inventory")
+        slot_map, files = _slot_with_permission(slot, name, "view_inventory")
         _write(tmp_path, name, slot_map, files)
-        _accepted(tmp_path, name, monkeypatch, first_party=fp)
+        _accepted(tmp_path, name, monkeypatch)
 
     @pytest.mark.parametrize("perm", _MALFORMED_PERMISSIONS, ids=repr)
     def test_malformed_write_permission_refused(self, perm, tmp_path, monkeypatch):
         name = "slotmod_wperm"
         _write(tmp_path, name, {"catalog_channel": [{"id": "c", "label": "C", "write_permission": perm}]})
-        assert "permission" in _refused(tmp_path, name, monkeypatch, first_party=True)
+        assert "permission" in _refused(tmp_path, name, monkeypatch)
 
-    @pytest.mark.parametrize("value", ["", 0, None, ["woocommerce"]], ids=repr)
+    @pytest.mark.parametrize("value", [["woocommerce"], {"id": "x"}, 5, True], ids=repr)
     def test_malformed_requires_connector_refused(self, value, tmp_path, monkeypatch):
         name = "slotmod_conn"
         _write(tmp_path, name, {"bulk_action": [
             {"label": "L", "form_action": "/x", "requires_connector": value}]})
         assert "requires_connector" in _refused(tmp_path, name, monkeypatch)
+
+    @pytest.mark.parametrize("value", ["", 0, None, False], ids=repr)
+    def test_empty_requires_connector_means_no_connector_needed(self, value, tmp_path, monkeypatch):
+        from ui.module_slots import module_contribution_visible
+        name = "slotmod_noconn"
+        _write(tmp_path, name, {"bulk_action": [
+            {"label": "L", "form_action": "/x", "requires_connector": value}]})
+        _accepted(tmp_path, name, monkeypatch)
+        [registered] = slots.get("bulk_action")
+        assert module_contribution_visible(registered, {}, "owner", set()) is True
 
     @pytest.mark.parametrize("slot", ["nav", "bulk_action", "item_action"])
     def test_list_item_that_is_not_a_dict_refused(self, slot, tmp_path, monkeypatch):
@@ -312,10 +278,15 @@ class TestSlotPermission:
         assert "dict" in _refused(tmp_path, name, monkeypatch)
 
     @pytest.mark.parametrize("key", ["_module", "_first_party"])
-    def test_runtime_owned_key_refused(self, key, tmp_path, monkeypatch):
+    def test_runtime_owned_key_cannot_be_spoofed(self, key, tmp_path, monkeypatch):
         name = "slotmod_underscore"
-        _write(tmp_path, name, {"nav": [{"key": "k", "label": "L", "href": "/x", key: "celerp-docs"}]})
-        assert key in _refused(tmp_path, name, monkeypatch)
+        _write(tmp_path, name, {"nav": [
+            {"key": "k", "label": "L", "href": "/x", key: "celerp-docs", "_note": "kept"}]})
+        _accepted(tmp_path, name, monkeypatch)
+        [registered] = slots.get("nav")
+        assert registered["_module"] == name
+        assert registered["_first_party"] is False
+        assert registered["_note"] == "kept"
 
 
 class TestSlotVisibilityFailsClosed:
@@ -333,7 +304,7 @@ class TestSlotVisibilityFailsClosed:
         assert module_contribution_visible({"permission": "view_inventory"}, {}, "owner") is True
         assert module_contribution_visible({}, {}, "viewer") is True
 
-    @pytest.mark.parametrize("value", ["", 0, None], ids=repr)
+    @pytest.mark.parametrize("value", [["x"], {"x": 1}, 5, True], ids=repr)
     def test_malformed_requires_connector_hidden(self, value):
         from ui.module_slots import module_contribution_visible
         assert module_contribution_visible({"requires_connector": value}, {}, "owner", {"x"}) is False

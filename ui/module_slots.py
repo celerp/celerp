@@ -39,10 +39,9 @@ def module_contribution_visible(
             return False
     if not slot_permission_allows(contribution, settings, role):
         return False
-    if "requires_connector" in contribution:
-        required = contribution["requires_connector"]
-        if not (isinstance(required, str) and required in (connected_connectors or set())):
-            return False
+    required = contribution.get("requires_connector")
+    if required and not (isinstance(required, str) and required in (connected_connectors or set())):
+        return False
     return True
 
 
