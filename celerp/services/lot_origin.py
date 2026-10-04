@@ -110,6 +110,13 @@ def held_value(row: Projection) -> Decimal | None:
     s = row.state or {}
     if not in_stock(s) or not _owned_stock(row):
         return None
+    return recorded_value(s)
+
+
+def recorded_value(state: dict) -> Decimal:
+    """The value a lot's state records: its cost total, else its unit cost times its
+    quantity, else nothing (0)."""
+    s = state or {}
     if float(s.get("cost_total") or 0):
         return Decimal(str(s["cost_total"]))
     cost = s.get("cost_price") or s.get("cost price")

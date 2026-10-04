@@ -117,13 +117,14 @@ async def test_merge_sums_cost_total_when_all_set(client):
 # ── At least one source unset → merged TOTAL is None (unevaluated), never 0 / target-only ────────
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["retail", "wholesale", "cost"])
+@pytest.mark.parametrize("kind", ["retail", "wholesale"])
 async def test_merge_total_none_when_any_source_unset(client, kind):
     """Target HAS the value, the other source does NOT → merged must be None, not the target's value
-    (Scenario A: a missing source price/cost must not be treated as 0)."""
+    (Scenario A: a missing source price must not be treated as 0). Cost is different: the merged lot
+    keeps the value the books carry for its sources (test_posting_roles_merge)."""
     h = {"Authorization": f"Bearer {await _token(client)}"}
-    seed_kw = {"retail": {"retail_total": 100}, "wholesale": {"wholesale_total": 100}, "cost": {"cost_total": 50}}[kind]
-    read_field = {"retail": "retail_price", "wholesale": "wholesale_price", "cost": "cost_total"}[kind]
+    seed_kw = {"retail": {"retail_total": 100}, "wholesale": {"wholesale_total": 100}}[kind]
+    read_field = {"retail": "retail_price", "wholesale": "wholesale_price"}[kind]
     a = await _seed(client, h, "BOOK-A", qty=2, **seed_kw)   # target, priced
     b = await _seed(client, h, "BOOK-B", qty=2)              # other source, unpriced
     merged = await _get(client, h, await _merge(client, h, [a, b], a))

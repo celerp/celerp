@@ -309,3 +309,28 @@ async def test_a_role_that_cannot_see_cost_is_told_the_accounts_but_not_the_amou
     assert r.status_code == 200, r.text
     assert r.json()["inventory_reclassification"] == hidden
     assert _lines(await _reclass(session, auth, r.json()["id"])) == {"1130-OB": (400.0, 0), "1131": (0, 400.0)}
+
+
+async def _costless_lot(client, auth) -> str:
+    r = await client.post("/items", headers=auth["headers"], json={
+        "sku": f"FREE-{uuid.uuid4().hex[:6]}", "name": "Lot", "quantity": 1, "sell_by": "piece",
+        "status": "available"})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cross_account", [False, True])
+async def test_merging_a_costless_lot_with_a_costed_one_keeps_the_booked_value(session, client, auth, cross_account):
+    """Red before: a source with no cost made the merged lot costless, so the books kept
+    600 against a lot holding nothing."""
+    from stock_books import assert_settled
+    a = await _lot(client, auth, 600.0)
+    if cross_account:
+        await _remap(session, client, auth, "1131")
+    b = await _costless_lot(client, auth)
+    c = await _lot(client, auth, 400.0)
+    out = await _merged(client, auth, [a, b, c])
+    merged = await _state(session, auth, out["id"])
+    assert (merged[_FIELD], merged["cost_total"]) == ("1130-OB", 1000.0)
+    await assert_settled(client, session, auth)

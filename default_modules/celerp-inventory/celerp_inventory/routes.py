@@ -52,7 +52,9 @@ from .services import (
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
 from celerp.services.company_lock import lock_projections
 from celerp.services.item_erasure import depended_on, erase_items
-from celerp.services.lot_origin import RECORDED, RETIRED, ever_became_stock, in_stock, is_authoring_event, is_stock_type
+from celerp.services.lot_origin import (
+    RECORDED, RETIRED, ever_became_stock, in_stock, is_authoring_event, is_stock_type, recorded_value,
+)
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.business_time import business_date_at
@@ -4112,19 +4114,9 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     total_qty = sum(float(p.state.get("quantity") or 0) for p in source_projections)
     weights = [_read_float(p.state, "weight") for p in source_projections if p.state.get("weight") not in (None, "")]
     total_weight = sum(weights) if weights else None
-    # Merged cost_total (issue #199): reconcile on the source TOTALS — if every source has a cost,
-    # the merged cost is their sum; if ANY source has no cost, the true total is unknowable, so the
-    # merged item carries NO cost (None) rather than silently counting the missing one as 0.
-    def _src_cost_total(p: Projection):
-        ct = p.state.get("cost_total")
-        if ct not in (None, ""):
-            return float(ct)
-        cp = p.state.get("cost_price")
-        if cp not in (None, ""):
-            return float(cp) * float(p.state.get("quantity") or 0)
-        return None  # unset
-    _src_costs = [_src_cost_total(p) for p in source_projections]
-    merged_cost_total = sum(_src_costs) if _src_costs and all(c is not None for c in _src_costs) else None
+    # The merged lot keeps the value its sources record, which is what the books carry
+    # for them (lot_origin.recorded_value): a source with no cost adds nothing.
+    merged_cost_total = float(sum(recorded_value(p.state) for p in source_projections))
 
     expiry_dates = sorted(e for p in source_projections if (e := _get_expiry(p)))
     earliest_expiry = expiry_dates[0] if expiry_dates else None
@@ -4233,8 +4225,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     # about the cost.
     currency = await company_currency(session, company_id)
     if payload.resulting_cost_total is not None and (
-        merged_cost_total is None
-        or round_money(to_decimal(payload.resulting_cost_total), currency) != round_money(to_decimal(merged_cost_total), currency)
+        round_money(to_decimal(payload.resulting_cost_total), currency) != round_money(to_decimal(merged_cost_total), currency)
     ):
         reject_price_change({"cost_total"}, role, settings)
         raise HTTPException(
@@ -4296,9 +4287,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     # the merged total is their sum (stored back as a unit = total / merged_qty); if ANY source lacks
     # the price, the merged item carries NO value for it (omit) rather than copying the target's price
     # or treating the missing one as 0. cost_total is already a total (computed above).
-    price_fields: dict = {}
-    if merged_cost_total is not None:
-        price_fields["cost_total"] = merged_cost_total
+    price_fields: dict = {"cost_total": merged_cost_total}
     _price_keys = {
         k for p in source_projections for k in p.state
         if k.endswith("_price") and k != "cost_price"
