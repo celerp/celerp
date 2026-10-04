@@ -155,11 +155,9 @@ def _enabled(cfg: Path) -> set[str]:
     return set(tomllib.loads(cfg.read_text()).get("modules", {}).get("enabled") or [])
 
 
-async def _company_modules(session, company_id) -> set[str]:
-    from celerp.modules.registry import get_enabled
-
+async def _company_settings(session, company_id) -> dict:
     session.expire_all()
-    return get_enabled((await session.get(Company, company_id)).settings)
+    return (await session.get(Company, company_id)).settings or {}
 
 
 async def test_an_install_that_registered_and_never_enabled_a_module_starts_current(
@@ -180,7 +178,8 @@ async def test_an_install_that_registered_and_never_enabled_a_module_starts_curr
 
     assert app.state.data_current is True
     assert _STARTERS <= _enabled(cfg)
-    assert _STARTERS <= await _company_modules(session, old["company_id"])
+    # The company keeps using every enabled module; it is never narrowed to these two.
+    assert "enabled_modules" not in await _company_settings(session, old["company_id"])
     item = await client.post("/items", json={"sku": "NEW-1", "name": "New", "sell_by": "piece"}, headers=old["headers"])
     assert item.status_code == 200, item.text
     contact = await client.post("/crm/contacts", json={"name": "Buyer"}, headers=old["headers"])
@@ -231,9 +230,9 @@ async def test_registration_writes_no_record_a_loaded_module_cannot_apply(sessio
     assert not {t for t in types if t.startswith(("item.", "crm.contact."))}, types
 
 
-async def test_registration_records_the_modules_its_starter_records_belong_to(session):
-    """Registration with Inventory and Contacts loaded seeds the starter records and records
-    those two modules as enabled for the new company."""
+async def test_registration_seeds_the_starter_records_without_narrowing_the_company(session):
+    """Registration with Inventory and Contacts loaded seeds the starter records, and the new
+    company lists no modules of its own, so it uses every module the install enables."""
     from celerp.services import provisioning
 
     company, _user = await provisioning.provision_registered_company(
@@ -243,4 +242,4 @@ async def test_registration_records_the_modules_its_starter_records_belong_to(se
     types = set((await session.execute(select(LedgerEntry.event_type).where(
         LedgerEntry.company_id == company.id))).scalars())
     assert {"item.created", "crm.contact.created"} <= types
-    assert _STARTERS <= await _company_modules(session, company.id)
+    assert "enabled_modules" not in await _company_settings(session, company.id)

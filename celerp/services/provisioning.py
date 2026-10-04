@@ -87,15 +87,13 @@ async def create_install_owner(session: AsyncSession, *, name: str, email: str, 
 async def provision_registered_company(
     session: AsyncSession, *, company_name: str, owner_name: str, email: str, password: str,
 ) -> tuple[Company, User]:
-    """Create the install owner, their first company, the default location and the demo data.
-    The company records the modules that keep its starter records as enabled."""
+    """Create the install owner, their first company, the default location and the demo data."""
     from celerp.services import demo
-    from celerp.services.starter_modules import with_starter_modules
 
     user = await create_install_owner(session, name=owner_name, email=email, password=password)
     company = await _create_company(
         session, owner=user, company_name=company_name,
-        settings=with_starter_modules({"fiscal_year_start": DEFAULT_FISCAL_YEAR_START}),
+        settings={"fiscal_year_start": DEFAULT_FISCAL_YEAR_START},
     )
     await _fire_company_created(session, company.id)
     head_office = _default_location(company.id)
