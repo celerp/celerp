@@ -28,9 +28,12 @@ RUNNING = "2.5.4"
 # instance_meta key: the newest Celerp version that has begun opening the database.
 OPENED_KEY = "newest_celerp_version"
 
-pytestmark = pytest.mark.skipif(
-    not DATABASE_URL.startswith("postgresql"), reason="needs a live Postgres database"
-)
+pytestmark = [
+    pytest.mark.process,
+    pytest.mark.skipif(
+        not DATABASE_URL.startswith("postgresql"), reason="needs a live Postgres database"
+    ),
+]
 
 
 def _head() -> str:

@@ -58,14 +58,58 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
         # ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
         # pytest-split fans the suite across 6 parallel runners; each still uses -n auto
-        # within its 2 cores. Shards are balanced by the recorded per-test times in
-        # .test_durations (refresh with `--store-durations` after adding slow tests);
-        # without them the split is by count and the slow process tests pile into one
-        # shard. The 600s cap is a backstop.
+        # within its 2 cores.
+        # Process tests run in their own job so the count split stays even.
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
           --timeout=30
+          -m "not browser and not embedded_pg and not process"
           --splits 6 --group ${{ matrix.group }}
+          --ignore=tests/test_visual.py
+          --ignore=tests/test_browser
+
+  process:
+    name: Process tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
+
+      - name: Install deps
+        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
+
+      - name: Run process tests
+        env:
+          ALLOW_INSECURE_JWT: "true"
+          # Run on the Postgres service (each xdist worker gets its own database).
+          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+        run: >
+          timeout 600 pytest tests/ default_modules/*/tests/ -m process -n auto -q --tb=short --no-cov
+          --timeout=30
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
 

@@ -25,9 +25,12 @@ from celerp.db_url import sync_url
 
 from test_db_compatibility import DATABASE_URL, NEWER, RUNNING, _meta, scratch, snapshot  # noqa: F401  (scratch is a fixture)
 
-pytestmark = pytest.mark.skipif(
-    not DATABASE_URL.startswith("postgresql"), reason="needs a live Postgres database"
-)
+pytestmark = [
+    pytest.mark.process,
+    pytest.mark.skipif(
+        not DATABASE_URL.startswith("postgresql"), reason="needs a live Postgres database"
+    ),
+]
 
 OLDER = RUNNING
 
