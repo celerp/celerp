@@ -168,6 +168,18 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         if data.get("wip_account_code"):
             current["wip_account_code"] = data["wip_account_code"]
         current.pop("wip_untracked", None)
+        current.pop("wip_unresolved", None)
+    elif event_type == "mfg.order.output_repaired":
+        # What an older release recorded as received without making a lot is discarded, and
+        # the product the run makes is named when the user chose one.
+        current["received_qty"] = max(0.0, round(float(current.get("received_qty") or 0)
+                                               - float(data.get("discarded") or 0), 9))
+        if data.get("output_item_id"):
+            current["output_item_id"] = data["output_item_id"]
+            current["expected_outputs"] = list(data.get("expected_outputs") or [])
+        if (current.get("wip_unresolved") == "received before tracking" and not current["received_qty"]
+                and not current.get("received_lots")):
+            current.pop("wip_unresolved", None)
     elif event_type == "mfg.order.wip_reconciled":
         # The run was issued what the user stated, and output received before it took the
         # share the reconciliation recorded for each lot.

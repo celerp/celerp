@@ -158,6 +158,15 @@ class ReconcileBody(BaseModel):
     idempotency_key: str | None = None
 
 
+class RepairOutputBody(BaseModel):
+    # The product an older run makes, when it names none. Omit it to only discard what an
+    # older release recorded as received without making a lot.
+    model_config = ConfigDict(extra="forbid")
+
+    output_item_id: str | None = None
+    idempotency_key: str | None = None
+
+
 class CancelBody(BaseModel):
     reason: str | None = None
     idempotency_key: str | None = None
@@ -1860,6 +1869,23 @@ async def reconcile_order(
     result = await movements.reconcile(session, company_id, user.id, order_id,
                                        [c.model_dump() for c in payload.components], payload.account,
                                        payload.idempotency_key, at=datetime.now(timezone.utc).isoformat())
+    await session.commit()
+    return result
+
+
+@router.post("/{order_id}/repair-output")
+async def repair_order_output(
+    order_id: str,
+    payload: RepairOutputBody,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Put right what an older release recorded about a run's output, so it can be unwound
+    or carry on."""
+    result = await movements.repair_output(session, company_id, user.id, order_id, payload.output_item_id,
+                                           payload.idempotency_key, at=datetime.now(timezone.utc).isoformat())
     await session.commit()
     return result
 

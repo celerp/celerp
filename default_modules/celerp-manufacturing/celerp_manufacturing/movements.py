@@ -69,7 +69,7 @@ from celerp.services.lot_origin import (
 from celerp.services.money import allocate_pro_rata, round_money
 
 from . import run_events  # noqa: F401  (registers the run's own event types)
-from .expansion import merge_inputs
+from .expansion import merge_inputs, output_line
 
 # Namespace for produced-lot ids: a receipt retried with its key resolves to the same lot id.
 MFG_LOT_NS = uuid.UUID("6f1d0c2a-7b3e-4a9c-8d5f-2e0a1b4c6d8e")
@@ -79,6 +79,8 @@ _ZERO = Decimal(0)
 # Every stock event a run writes carries the run's id (older releases marked consumed components
 # the same way), so a lot's history shows what the run did to it.
 _ORDER_MARK = "manufacturing_order_id"
+# Why an older run waits for reconciling when the books hold its value mixed with something else.
+_DISAGREE = "books disagree"
 
 
 def refuse(http_status: int, key: str, message: str, /, **params) -> HTTPException:
@@ -1113,7 +1115,9 @@ async def _settle(session: AsyncSession, company_id) -> None:
     if books and INVENTORY_ORIGIN_KEY not in settings:
         return
     runs = await _open_runs(session, company_id)
-    older = [r for r in runs if r.state.get("wip_untracked") and not r.state.get("wip_unresolved")]
+    # A run the books disagreed on is weighed again: another run's value they held may since
+    # have been settled, reconciled or repaired.
+    older = [r for r in runs if r.state.get("wip_untracked") and r.state.get("wip_unresolved") in (None, _DISAGREE)]
     unbooked = [r for r in runs if books and not r.state.get("wip_untracked") and not r.state.get("wip_unresolved")
                 and _wip(r.state) and not r.state.get("wip_account_code")]
     if not older and not unbooked:
@@ -1154,7 +1158,7 @@ async def _settle(session: AsyncSession, company_id) -> None:
         if any(room[code] != need[code] for code in need):
             source = "equity" if native and not any(room.values()) else ""
         if not source:
-            unresolved.update(dict.fromkeys(plans, "books disagree"))
+            unresolved.update(dict.fromkeys(plans, _DISAGREE))
             plans = {}
     if not native:
         unresolved.update(dict.fromkeys((r.entity_id for r in unbooked), "books from elsewhere"))
@@ -1193,8 +1197,10 @@ async def _settle(session: AsyncSession, company_id) -> None:
             "issued": str(_money(state.get("wip_issued"))), "transferred": str(_money(state.get("wip_transferred"))),
             "receipts": list(state.get("receipts") or []), "wip_account_code": wip_code}, f"mfg:{run.entity_id}:wip-booked")
     for order, reason in sorted(unresolved.items()):
+        if rows[order].state.get("wip_unresolved") == reason:
+            continue  # already waiting for this, and the user already told
         await dataclasses.replace(base, order_id=order).emit_run(
-            "mfg.order.wip_unresolved", {"reason": reason}, f"mfg:{order}:wip-unresolved")
+            "mfg.order.wip_unresolved", {"reason": reason}, f"mfg:{order}:wip-unresolved:{reason}")
         await notification_service.create(
             session, company_id, category="manufacturing", title="Production run needs reconciling",
             body=(f"The value of the materials in production run {order} cannot be worked out from its history "
@@ -1220,15 +1226,18 @@ async def still_held(session: AsyncSession, company_id, order_id: str, state: di
     return issued | set((await consumed_values(session, company_id, _ORDER_MARK, {order_id}))[order_id])
 
 
-async def legacy_output(session: AsyncSession, company_id, order_id: str, state: dict) -> list[dict] | None:
-    """The output an older release received from a run before value was tracked: each lot,
-    with the quantity it was produced with and the cost it was given then, read from the
-    lot's own events marked with the run. None when that history does not account for
-    everything the run received."""
+def _untracked_qty(state: dict) -> float:
+    """What a run received before value was tracked: everything received but its valued receipts."""
+    return float(state.get("received_qty") or 0) - sum(float(r.get("quantity") or 0)
+                                                       for r in state.get("receipts") or [])
+
+
+async def _untracked_lots(session: AsyncSession, company_id, order_id: str, state: dict) -> list[dict] | None:
+    """Each lot an older release received from a run before value was tracked, with the
+    quantity it was produced with and the cost it was given then, read from the lot's own
+    events marked with the run. None when a lot's history does not show both."""
     tracked = {r.get("lot_item_id") for r in state.get("receipts") or []}
     lots = [lot for lot in state.get("received_lots") or [] if lot not in tracked]
-    untracked_qty = float(state.get("received_qty") or 0) - sum(float(r.get("quantity") or 0)
-                                                                for r in state.get("receipts") or [])
     found = []
     for lot in lots:
         events = (await session.execute(select(LedgerEntry).where(
@@ -1240,9 +1249,62 @@ async def legacy_output(session: AsyncSession, company_id, order_id: str, state:
         if len(created) != 1 or quantity <= _EPS:
             return None
         found.append({"lot_item_id": lot, "quantity": quantity, "value": _money(created[0].data.get("cost_total"))})
-    if abs(sum(r["quantity"] for r in found) - untracked_qty) > _EPS:
+    return found
+
+
+async def legacy_output(session: AsyncSession, company_id, order_id: str, state: dict) -> list[dict] | None:
+    """The output an older release received from a run before value was tracked
+    (_untracked_lots). None when that history does not account for everything the run received."""
+    found = await _untracked_lots(session, company_id, order_id, state)
+    if found is None or abs(sum(r["quantity"] for r in found) - _untracked_qty(state)) > _EPS:
         return None
     return found
+
+
+# ---------------------------------------------------------------------------
+# Repair an older run's output
+# ---------------------------------------------------------------------------
+
+async def repair_output(session: AsyncSession, company_id, user_id, order_id: str, output_item_id: str | None,
+                        key: str | None, *, at: str) -> dict:
+    """Put right what an older release recorded about a run's output: the quantity it marked
+    received without making a lot for it is discarded (no lot is ever made from that record),
+    and the product it makes is set when the run names none and the user chooses one. The
+    run's value is then worked out again from its corrected history (settle_open_runs)."""
+    rk = key or uuid.uuid4().hex
+    op = await _begin(session, company_id, user_id, order_id, at)
+    request = _fingerprint({"output_item_id": output_item_id})
+    stored = await _replayed(op, f"mfg:{order_id}:repair:{rk}", request)
+    if stored is not None:
+        return {k: stored.data.get(k) for k in ("discarded", "output_item_id")}
+    run = await _run(op)
+    _require_open(run.state, "repaired")
+    state = run.state
+    lots = await _untracked_lots(session, company_id, order_id, state)
+    discarded = round(_untracked_qty(state) - sum(r["quantity"] for r in lots or []), 9)
+    if lots is None or discarded < -_EPS:
+        raise refuse(409, "output_unknown", "Output was received from this run, but its history does not show "
+                     "which lots it went into, so what it received cannot be put right.")
+    data: dict = {"discarded": max(discarded, 0.0), "repaired_by": str(op.user_id), "request": request}
+    if output_item_id:
+        if state.get("output_item_id"):
+            raise refuse(409, "output_named", "This run already names the product it makes.")
+        product = (await lock_projections(session, company_id, [output_item_id])).get(output_item_id)
+        if product is None or product.entity_type != "item":
+            raise refuse(422, "no_product", f"{output_item_id} is not an item of this company.", item=output_item_id)
+        p = product.state or {}
+        require_stock(p, output_item_id)
+        if str(p.get("status") or "").lower() == "draft":
+            raise refuse(422, "output_draft", f"{p.get('sku') or output_item_id} is a draft. Make it available first.",
+                         sku=p.get("sku") or output_item_id)
+        expected = float((state.get("expected_outputs") or [{}])[0].get("quantity") or 0)
+        data |= {"output_item_id": output_item_id, "expected_outputs": [output_line(p, expected)]}
+    elif not data["discarded"]:
+        raise refuse(409, "nothing_to_repair", "Everything this run received is in its lots. Choose the product "
+                     "it makes to put anything else right.")
+    await op.emit_run("mfg.order.output_repaired", data, f"mfg:{order_id}:repair:{rk}")
+    await settle_open_runs(session, company_id)
+    return {"discarded": data["discarded"], "output_item_id": data.get("output_item_id")}
 
 
 def _inventory_codes(settings: dict) -> set[str]:

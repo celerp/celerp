@@ -131,3 +131,153 @@ async def test_a_settled_run_returns_each_component_at_the_value_it_left_with(cl
     r = await _post(client, old, "settle", "cancel", {"reason": "not needed"})
     assert r.status_code == 200, r.text
     await _books(session, old)
+
+
+# Runs an older release made without naming a product (company ``generic``): nothing tells
+# which item their output is, so they go ahead only once the user names it, and a receipt
+# that made no lot is discarded, never turned into stock.
+
+async def _items(session, old) -> dict[str, dict]:
+    session.expire_all()
+    from sqlalchemy import select
+
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == old["company_id"], Projection.entity_type == "item"))).scalars()
+    return {r.entity_id: dict(r.state) for r in rows}
+
+
+async def _ledger(session, old) -> int:
+    from sqlalchemy import func, select
+
+    from celerp.models.ledger import LedgerEntry
+
+    return (await session.execute(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.company_id == old["company_id"]))).scalar_one()
+
+
+async def _new_item(client, old, sku: str, **extra) -> str:
+    r = await client.post("/items", headers=old["headers"], json={
+        "sku": sku, "name": sku, "quantity": 0, "sell_by": "piece", "status": "available", "cost_total": 0.0,
+        **extra})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+async def test_a_run_naming_no_product_cannot_go_ahead(client, session):
+    old = await pre366.upgraded(session, "generic")
+    for run in ("generic_open", "generic_received"):
+        state, count = await _state(session, old, run), await _ledger(session, old)
+        for action, body in _FORWARD:
+            r = await _post(client, old, run, action, body)
+            assert r.status_code == 409 and r.json()["detail"]["message_key"] == "mfg.no_output", (run, action, r.text)
+        assert await _state(session, old, run) == state and await _ledger(session, old) == count
+
+
+async def test_a_receipt_that_made_no_lot_is_discarded_and_the_run_unwinds(client, session):
+    old = await pre366.upgraded(session, "generic")
+    assert (await _state(session, old, "generic_received"))["wip_unresolved"] == "received before tracking"
+    r = await _post(client, old, "generic_received", "return")
+    assert r.json()["detail"]["message_key"] == "mfg.reconciliation_required", r.text
+    items = await _items(session, old)
+    c = await _stock(session, old, "C")
+
+    r = await _post(client, old, "generic_received", "repair-output", {})
+    assert r.status_code == 200 and r.json()["discarded"] == 1.0, r.text
+    state = await _state(session, old, "generic_received")
+    assert state["received_qty"] == 0 and not state.get("received_lots"), state
+    assert Decimal(state["wip_issued"]) == Decimal("4") and not state.get("wip_untracked") \
+        and not state.get("wip_unresolved"), state
+    assert {i["item_id"]: Decimal(i["issued_value"]) for i in state["inputs"]} == {old["items"]["C"]: Decimal("4")}
+    assert await _items(session, old) == items  # no lot made from what the older release recorded
+    await _books(session, old)
+
+    r = await _post(client, old, "generic_received", "return")
+    assert r.status_code == 200, r.text
+    assert await _stock(session, old, "C") == (c[0] + 2, c[1] + Decimal("4"))
+    r = await _post(client, old, "generic_received", "cancel", {"reason": "made nothing"})
+    assert r.status_code == 200, r.text
+    assert Decimal((await _state(session, old, "generic_received"))["wip_issued"]) == 0
+    await _books(session, old)
+
+
+async def test_a_run_held_back_by_another_runs_books_settles_once_that_run_is_repaired(client, session):
+    old = await pre366.upgraded(session, "generic")
+    # The other run's value is still on the inventory account, so the books cannot say which is which.
+    assert (await _state(session, old, "generic_open"))["wip_unresolved"] == "books disagree"
+
+    r = await _post(client, old, "generic_received", "repair-output", {})
+    assert r.status_code == 200, r.text
+
+    state = await _state(session, old, "generic_open")
+    assert Decimal(state["wip_issued"]) == Decimal("4") and not state.get("wip_untracked") \
+        and not state.get("wip_unresolved"), state
+    await _books(session, old)
+
+
+async def test_a_run_still_held_back_is_not_flagged_again_on_the_next_start(client, session):
+    from sqlalchemy import func, select
+
+    from celerp.models.notification import Notification
+
+    async def told() -> int:
+        return await session.scalar(select(func.count()).select_from(Notification).where(
+            Notification.company_id == old["company_id"]))
+
+    old = await pre366.upgraded(session, "generic")
+    before = await _ledger(session, old), await told()
+
+    await pre366.start()
+
+    assert (await _ledger(session, old), await told()) == before
+    assert (await _state(session, old, "generic_open"))["wip_unresolved"] == "books disagree"
+
+
+async def test_a_run_given_its_product_goes_on_to_make_it(client, session):
+    old = await pre366.upgraded(session, "generic")
+    product = await _new_item(client, old, "GEN-1")
+
+    r = await _post(client, old, "generic_received", "repair-output", {"output_item_id": product})
+    assert r.status_code == 200, r.text
+    state = await _state(session, old, "generic_received")
+    assert state["output_item_id"] == product and state["expected_outputs"][0]["quantity"] == 2.0, state
+
+    r = await _post(client, old, "generic_received", "receive")
+    assert r.status_code == 200, r.text
+    lot = (await _row(session, old, r.json()["lot_item_id"])).state
+    assert (lot["parent_item_id"], lot["quantity"], Decimal(str(lot["cost_total"]))) == (product, 2.0, Decimal("4"))
+    assert (await _state(session, old, "generic_received"))["status"] == "completed"
+    await _books(session, old)
+
+
+async def test_a_product_that_cannot_be_made_is_refused_with_nothing_changed(client, session):
+    old = await pre366.upgraded(session, "generic")
+    elsewhere = await pre366.load(session, "main")
+    service = await _new_item(client, old, "SVC", inventory_type="service")
+    state, count = await _state(session, old, "generic_received"), await _ledger(session, old)
+
+    for output, key in ((elsewhere["items"]["FG"], "mfg.no_product"), (service, "mfg.not_stock"),
+                        ("item:missing", "mfg.no_product")):
+        r = await _post(client, old, "generic_received", "repair-output", {"output_item_id": output})
+        assert r.status_code == 422 and r.json()["detail"]["message_key"] == key, (output, r.text)
+        assert await _state(session, old, "generic_received") == state and await _ledger(session, old) == count
+
+
+async def test_repairing_needs_manufacturing_permission(client, session):
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import User
+    from test_helpers import make_authed_token
+
+    import uuid
+
+    old = await pre366.upgraded(session, "generic")
+    uid = uuid.uuid4()
+    session.add(User(id=uid, email=f"v-{uid.hex[:8]}@test.co", name="Viewer", auth_hash="x", is_active=True))
+    await session.flush()
+    session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=old["company_id"], role="viewer", is_active=True))
+    await session.commit()
+    viewer = {"Authorization": f"Bearer {await make_authed_token(session, str(uid), str(old['company_id']), 'viewer')}"}
+    state, count = await _state(session, old, "generic_received"), await _ledger(session, old)
+
+    r = await client.post(f"/manufacturing/{old['runs']['generic_received']}/repair-output", json={}, headers=viewer)
+    assert r.status_code == 403, r.text
+    assert await _state(session, old, "generic_received") == state and await _ledger(session, old) == count

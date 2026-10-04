@@ -46,3 +46,15 @@ class MfgOrderWipReconciled(BaseModel):
 
 
 register_event_type("mfg.order.wip_reconciled", MfgOrderWipReconciled)
+
+
+class MfgOrderOutputRepaired(BaseModel):
+    # What an older release recorded about a run's output, put right: the quantity it marked
+    # received without making a lot, and the product the run makes when the user chose one.
+    discarded: float = 0
+    output_item_id: str | None = None
+    expected_outputs: list[dict[str, Any]] | None = None
+    repaired_by: str | None = None
+
+
+register_event_type("mfg.order.output_repaired", MfgOrderOutputRepaired)
