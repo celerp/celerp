@@ -178,8 +178,8 @@ _RECIPE = {"components": [{"item_id": "item:raw"}]}
 
 
 async def test_stock_is_split_as_fulfillment_draws_it():
-    """Reserved stock is keyed by the document holding it; stock reserved to no document is held
-    by none and covers nothing; a quantity put aside with item.reserved does not stop
+    """Reserved stock is keyed by the document holding it; stock reserved to no document can be
+    drawn by none and counts nowhere; a quantity put aside with item.reserved does not stop
     fulfillment drawing the lot, so it stays free."""
     from celerp_manufacturing.routes import _stock_by_product
 
@@ -192,5 +192,5 @@ async def test_stock_is_split_as_fulfillment_draws_it():
     }
     free, held = _stock_by_product(states)
     assert free == {"item:prod": 5.0}
-    assert held == {("item:prod", "doc:A"): 2.0, ("item:prod", None): 5.0}
+    assert held == {("item:prod", "doc:A"): 2.0}
 

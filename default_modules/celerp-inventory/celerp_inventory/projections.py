@@ -21,6 +21,8 @@ _IMAGE_MIME_PREFIXES = ("image/",)
 # Allowlist by design: unknown/new statuses are unavailable until explicitly added here.
 # is_item_available() is the single source of truth — derive at read time, never store.
 _ACTIVE_STATUSES: frozenset[str] = frozenset({"available", "active"})
+# The status an item holds until something sets one; state without a status reads as this.
+DEFAULT_ITEM_STATUS = "available"
 
 # ── Core vs attribute partition (single source of truth for the WRITE side) ──────────────────────
 # Keys that live at the TOP LEVEL of item state: identity, quantities, cost bases, lifecycle markers,
@@ -100,7 +102,25 @@ def _normalize_attributes(current: dict) -> None:
 
 def is_item_available(state: dict) -> bool:
     """Derive availability from status. Single authoritative check — no stored flag."""
-    return str(state.get("status") or "").lower() in _ACTIVE_STATUSES
+    return str(state.get("status") or DEFAULT_ITEM_STATUS).lower() in _ACTIVE_STATUSES
+
+
+# What demand_claim says a document may do with an item.
+FREE_STOCK = "free"          # any document may draw it
+OWN_RESERVED = "reserved"    # reserved to this document: only it may draw it
+
+
+def demand_claim(state: dict, doc_id: str | None) -> str | None:
+    """Can demand document ``doc_id`` consume this item? FREE_STOCK while the item is available
+    (see is_item_available), OWN_RESERVED while it is reserved to ``doc_id``, and None in every
+    other status: reserved to another document or to none, or not stock at all. The one rule
+    fulfillment draws by and Demand Planning counts supply by."""
+    if is_item_available(state):
+        return FREE_STOCK
+    if (str(state.get("status") or "").lower() == "reserved" and doc_id
+            and state.get("status_doc_id") == doc_id):
+        return OWN_RESERVED
+    return None
 
 # Old attachment type → new document_tag mapping (for lazy migration)
 _ATTACHMENT_TYPE_TO_TAG: dict[str, str] = {
@@ -337,7 +357,7 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # relocate every non-core top-level field into `attributes`. This makes storage uniform across
         # producers and lets a snapshot self-heal any item stored top-level historically.
         _normalize_attributes(current)
-        current.setdefault("status", "available")
+        current.setdefault("status", DEFAULT_ITEM_STATUS)
         current.setdefault("inventory_type", "stocked")
         # Default purchase unit = sell unit, conversion = 1 (most items bought in same unit as sold)
         if not current.get("purchase_unit") and current.get("sell_by"):

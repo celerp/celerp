@@ -6503,6 +6503,7 @@ async def _plan_span_draws(
     """
     from celerp.services.pick import plan_lot_draws, resolve_pick_method
     from celerp.models.company import Company
+    from celerp_inventory.projections import demand_claim
     sku = str(primary_proj.state.get("sku") or "").strip()
     company = await session.get(Company, company_id)
     company_settings = (company.settings or {}) if company else {}
@@ -6512,8 +6513,7 @@ async def _plan_span_draws(
     )).values())
     lots = [r for r in rows
             if str(r.state.get("sku") or "").strip() == sku
-            and ((r.state.get("status") or "available") == "available"
-                 or (r.state.get("status") == "reserved" and r.state.get("status_doc_id") == owner_entity_id))
+            and demand_claim(r.state, owner_entity_id) is not None
             and float(r.state.get("quantity") or 0) > 1e-9
             and r.entity_id not in exclude]
     by_id = {l.entity_id: l for l in lots}
@@ -6621,6 +6621,7 @@ async def _fulfill_lines_impl(
 
     Inbound doc types (bill, consignment_in) must use POST /receive instead.
     """
+    from celerp_inventory.projections import demand_claim
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     doc_type = state.get("doc_type", "")
@@ -6674,16 +6675,15 @@ async def _fulfill_lines_impl(
         if is_non_stock_line(item_proj.state.get("inventory_type"), item_proj.state.get("sell_by")):
             service_eids.add(item_eid)
             continue
-        item_status = item_proj.state.get("status", "")
-        if item_status != "available":
-            # A line reserved BY THIS document may be set as shipped directly - the reservation was
-            # this doc's own hold, now converted to a real stock draw. A line reserved by ANOTHER
-            # document is the exclusivity point and cannot be sent from here.
-            if not (item_status == "reserved" and item_proj.state.get("status_doc_id") == entity_id):
-                errors.append(
-                    f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'available', is '{item_status}'"
-                )
-                continue
+        # Free stock ships, and so does a line reserved BY THIS document - the reservation was
+        # this doc's own hold, now converted to a real stock draw. A line reserved by ANOTHER
+        # document is the exclusivity point and cannot be sent from here.
+        if demand_claim(item_proj.state, entity_id) is None:
+            errors.append(
+                f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'available', "
+                f"is '{item_proj.state.get('status', '')}'"
+            )
+            continue
         # Stock guard: the invoiced quantity must not exceed the parcel's stock,
         # and a partial draw is only allowed when the item permits splitting.
         sku = item_proj.state.get("sku", "")
@@ -7196,6 +7196,7 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
     line resolution is uniform across surfaces. A list can never own a sold line (only docs
     fulfil), so the reverse-then-reserve branch is unreachable from the lists wrapper.
     """
+    from celerp_inventory.projections import is_item_available
     state = row.state
     _validate_line_entity_ids_subset(line_entity_ids, state)
     if not line_entity_ids:
@@ -7234,7 +7235,7 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
             elif item_status == "memo_out":
                 errors.append(f"{eid} ({sku}): out on memo - use 'Set as available' to take it back first")
                 continue
-            elif item_status != "available":
+            elif not is_item_available(proj.state):
                 _owner = proj.state.get("status_doc_number")
                 _where = f" by {_owner}" if _owner and proj.state.get("status_doc_id") != entity_id else ""
                 errors.append(f"{eid} ({sku}): must be 'available' to reserve, is '{item_status}'{_where}")

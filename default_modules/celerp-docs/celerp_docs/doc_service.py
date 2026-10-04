@@ -538,7 +538,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     from celerp.services.money import to_decimal
     from celerp.services.pick import consolidate_sales_lots, plan_lot_draws, resolve_pick_method
     from celerp.services.units import is_non_stock_line
-    from celerp_inventory.projections import is_item_available
+    from celerp_inventory.projections import FREE_STOCK, OWN_RESERVED, demand_claim, is_item_available
     from celerp_inventory.services import (
         external_identity_key,
         external_link_for_state,
@@ -1040,10 +1040,11 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                 continue
             item_status = str(st.get("status") or "")
             owner_doc = st.get("status_doc_id")
+            claim = demand_claim(st, entity_id)
             if wc_status in {"on-hold", "processing"}:
-                if item_status == "available":
+                if claim == FREE_STOCK:
                     stock_ids.append(item_id)
-                elif item_status == "reserved" and owner_doc == entity_id:
+                elif claim == OWN_RESERVED:
                     pass
                 elif item_status == "sold" and owner_doc == entity_id:
                     pass
@@ -1053,9 +1054,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                         f"inventory is {item_status!r}"
                     )
             elif wc_status == "completed":
-                if item_status in {"available", "reserved"} and (
-                    item_status == "available" or owner_doc == entity_id
-                ):
+                if claim is not None:
                     fulfill_ids.append(item_id)
                 elif item_status == "sold" and owner_doc == entity_id:
                     pass

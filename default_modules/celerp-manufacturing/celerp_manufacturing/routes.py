@@ -1534,27 +1534,24 @@ async def delete_work_center(
 # Produced lots
 # ---------------------------------------------------------------------------
 
-# Item statuses whose stock does not count toward a product's on-hand:
-# sold/consumed/etc., plus draft (created but not yet committed to stock).
-_INACTIVE_ITEM_STATUSES = frozenset({"sold", "memo_out", "archived", "merged", "expired", "draft", "disposed"})
+def _stock_by_product(states: dict[str, dict]) -> tuple[dict[str, float], dict[tuple[str, str], float]]:
+    """Stock on hand per product - the product's own quantity and its lots' (see _product_of) -
+    split by demand_claim, the rule fulfillment draws by: (free stock by product, reserved stock
+    by (product, the document it is reserved to)). Only that document can ship reserved stock;
+    stock no document can draw counts nowhere. A quantity held with item.reserved
+    (``reserved_quantity``) does not stop fulfillment drawing the lot, so it is free."""
+    from celerp_inventory.projections import OWN_RESERVED, demand_claim
 
-
-def _stock_by_product(states: dict[str, dict]) -> tuple[dict[str, float], dict[tuple[str, str | None], float]]:
-    """Stock on hand per product - the product's own quantity and its lots' (see _product_of), each
-    counted only while it is in stock (not sold, out on memo, gone, or a draft) - split as
-    fulfillment draws it: (free stock by product, reserved stock by (product, the document it is
-    reserved to)). Only that document can ship reserved stock. A quantity held with
-    item.reserved (``reserved_quantity``) does not stop fulfillment drawing the lot, so it is free."""
     free: dict[str, float] = {}
-    held: dict[tuple[str, str | None], float] = {}
+    held: dict[tuple[str, str], float] = {}
     for item_id, st in states.items():
-        status = str(st.get("status") or "available")
-        if status in _INACTIVE_ITEM_STATUSES:
+        holder = st.get("status_doc_id")
+        claim = demand_claim(st, holder)
+        if claim is None:
             continue
         product, qty = _product_of(item_id, states), float(st.get("quantity") or 0)
-        if status == "reserved":
-            key = (product, st.get("status_doc_id"))
-            held[key] = held.get(key, 0.0) + qty
+        if claim == OWN_RESERVED:
+            held[(product, holder)] = held.get((product, holder), 0.0) + qty
         else:
             free[product] = free.get(product, 0.0) + qty
     return free, held
