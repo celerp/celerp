@@ -7322,7 +7322,10 @@ function _celerpDocTypeParam() {{
         return (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
             : String(Date.now()) + '-' + Math.random().toString(16).slice(2);
     }}
-    function _clearStatusSoon() {{ setTimeout(() => {{ scanStatus.textContent = ''; }}, 3000); }}
+    // One clear timer for the status line: a new scan cancels it, so an earlier notice's timer
+    // never wipes a newer message before its own time is up.
+    let _statusTimer = null;
+    function _clearStatusSoon() {{ clearTimeout(_statusTimer); _statusTimer = setTimeout(() => {{ scanStatus.textContent = ''; }}, 3000); }}
     // Install a fresh #line-body tbody in place and, ONLY on a successful install, advance the tracked
     // optimistic-lock version. An empty `html` pulls the tbody from a background page fetch. Returns
     // true iff the rows were installed - callers keep Add locked when it returns false rather than let
@@ -7364,6 +7367,7 @@ function _celerpDocTypeParam() {{
         scanInput.disabled = true;
         if (addBtn) addBtn.disabled = true;
         if (plSelect) plSelect.disabled = true;
+        clearTimeout(_statusTimer);
         scanStatus.textContent = _L.scanning;
         scanStatus.className = 'scan-bar-status';
         // Draft scans rewrite line_items from the persisted projection. Freeze only
@@ -7501,6 +7505,7 @@ function _celerpDocTypeParam() {{
             return;
         }}
         // Documents (invoices, POs, ...): client-side catalog lookup + append, per scan.
+        clearTimeout(_statusTimer);
         scanStatus.textContent = _L.scanning;
         scanStatus.className = 'scan-bar-status';
         try {{
@@ -7540,7 +7545,7 @@ function _celerpDocTypeParam() {{
         }}
         scanInput.value = '';
         scanInput.focus();
-        setTimeout(() => {{ scanStatus.textContent = ''; }}, 3000);
+        _clearStatusSoon();
     }});
 }})();
 function celerpFindPhysicalDuplicate(row, data) {{
