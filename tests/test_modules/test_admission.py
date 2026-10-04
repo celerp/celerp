@@ -931,6 +931,9 @@ async def test_table_referencing_a_stopped_module_is_not_created(committed_engin
             "    id = Column(Integer, primary_key=True)\n"
             f"    thing_id = Column(Integer, ForeignKey('{failing_inner}_things.id'))\n")})
     (other / other_inner / "__init__.py").write_text("from . import models\n")
+    manifest = loader.read_manifest(other)
+    manifest["table_prefix"] = f"{other_inner}_"
+    (other / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
 
     loaded = loader.load_all(str(_modules), {failing_folder, other_folder})
     loader.register_api_routes(_App(), loaded)

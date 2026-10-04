@@ -1416,8 +1416,37 @@ def route_module(scope) -> str | None:
 
 
 def register_api_routes(app, loaded: list[dict]) -> None:
-    """Register API routes from all loaded modules into the FastAPI app."""
+    """Register API routes from all loaded modules into the FastAPI app, then
+    take out any module whose code defined a table outside its table_prefix
+    (:func:`_stray_table_problem`). This is the last step before the API process
+    creates tables, so no such table is ever created. A first-party module's
+    tables are part of Celerp's own schema (importer.reserved_tables) and keep
+    their names."""
     _register_module_routes(app, loaded, "api")
+    for manifest in list(_loaded):
+        if manifest.get("first_party") or not is_running(manifest["name"]):
+            continue
+        problem = _stray_table_problem(manifest)
+        if problem is not None:
+            _route_failure(manifest, "tables", ModuleLoadError(problem))
+    _remove_routes(app, set(_module_routes) - {m["name"] for m in _loaded})
+
+
+def _stray_table_problem(manifest: dict) -> str | None:
+    """Why the tables a module's code defined (its import and route setup) do
+    not all carry its table_prefix, or None."""
+    from celerp.models.base import Base
+
+    prefix = manifest.get("table_prefix")
+    for key in sorted(_module_tables.get(manifest["name"], set())):
+        table = Base.metadata.tables.get(key)
+        if table is None:
+            continue
+        if not prefix:
+            return f"Defines table {key!r} but declares no table_prefix."
+        if table.schema is not None or not table.name.startswith(prefix):
+            return f"Defines table {key!r} outside its table_prefix {prefix!r}."
+    return None
 
 
 def register_ui_routes(app, loaded: list[dict]) -> None:
