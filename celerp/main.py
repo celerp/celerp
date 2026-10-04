@@ -292,10 +292,15 @@ async def _serve(_app: FastAPI, held):
                 engine, admit_modules(_MODULE_DIR, _enabled))
             _loaded_modules = load_all(_MODULE_DIR, _enabled, admission=_admission)
             register_api_routes(_app, _loaded_modules)
-            # Module models register on Base.metadata at import time.
-            # Run create_all again so module tables are created (idempotent).
+            # Module models register on Base.metadata at import time (a module
+            # that is not running has its tables taken off again). Run
+            # create_all again so module tables are created (idempotent).
             async with lifecycle_engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+            # The UI process offers only the modules recorded here as running.
+            from celerp.modules.outcome import publish as _publish_outcome
+            async with lifecycle_engine.begin() as conn:
+                await conn.run_sync(_publish_outcome)
             if update_verify:
                 # Verification proves DB/module/runtime startup without external work.
                 await _verify_runtime_dependencies()

@@ -29,13 +29,17 @@ Called from celerp/main.py lifespan:
     admission = await run_migration_phase(engine, admission)
     loaded = load_all(module_dir, enabled_modules, admission=admission)
     register_api_routes(app, loaded)
+    then records what it runs (celerp.modules.outcome.publish).
 
-Called from ui/app.py after core route setup (load_all admits by itself):
-    loaded = load_all(module_dir, enabled_modules)
+Called from ui/app.py after core route setup, admitting only what the API runs:
+    admission = admission_as_reported(module_dir, enabled_modules,
+                                      reported_by_api(api_url, database_url))
+    loaded = load_all(module_dir, enabled_modules, admission=admission)
     register_ui_routes(ui_app, loaded)
 
 A module whose routes fail to register is taken out of that process, with every
-module depending on it.
+module depending on it. A module that is not running has none of its tables on
+the shared metadata, so table creation never builds them.
 """
 from __future__ import annotations
 
@@ -52,6 +56,7 @@ import os
 import re
 import shutil
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -390,6 +395,12 @@ def _purge_pycache(pkg_path: Path) -> None:
 _loaded: list[dict] = []
 # The admission record of each loaded module, by name - populated by load_all()
 _admitted: dict[str, "AdmittedModule"] = {}
+# The tables each module's code added to the shared metadata, by name. Kept
+# across load_all passes: a module imported once is not imported (and its tables
+# not added) again.
+_module_tables: dict[str, set[str]] = {}
+# Tables taken off the shared metadata because the module behind them is not running
+_removed_tables: set[str] = set()
 
 # Proprietary cloud components folded into core: wired directly at app construction (celerp/main.py,
 # ui/app.py), never loaded as pluggable/replaceable modules.
@@ -913,6 +924,9 @@ def load_all(
     _loaded.clear()
     _load_errors.clear()
     _admitted.clear()
+    # Every core table is on the metadata before any module code runs, so a table
+    # a module adds is told apart from one it merely caused to be imported.
+    import celerp.models  # noqa: F401
     # Module-contributed i18n catalogs are rebuilt from scratch on every pass,
     # exactly like _loaded above, so a re-scan (a module toggled off, or a
     # catalog changed) never leaves a stale or orphaned catalog behind. Lazy
@@ -946,8 +960,9 @@ def load_all(
         # matching cache header would execute in preference (the digest omits *.pyc).
         _purge_pycache(pkg_path)
         try:
-            manifest = _load_one(pkg_path, pkg_name, trusted=module.first_party,
-                                 declared=module.manifest)
+            with _recording_tables(pkg_name):
+                manifest = _load_one(pkg_path, pkg_name, trusted=module.first_party,
+                                     declared=module.manifest)
         except ModuleLoadError as exc:
             # A default module IS the product (a boot without documents is not
             # a working app): fail startup naming the module and error.
@@ -957,6 +972,7 @@ def load_all(
                 raise ModuleLoadError(
                     f"Default module {pkg_name!r} failed to load: {exc}") from exc
             _load_errors[pkg_name] = str(exc)
+            _drop_tables({pkg_name})
             continue
         # Carry the trust decision on the manifest so route registration reads
         # it rather than recomputing (and re-hashing) per module.
@@ -970,6 +986,52 @@ def load_all(
         len(enabled) - len(_loaded),
     )
     return list(_loaded)
+
+
+@contextmanager
+def _recording_tables(pkg_name: str):
+    """Attribute to *pkg_name* every table added to the shared metadata while the
+    block runs (its import, its route setup), whether or not the block fails."""
+    from celerp.models.base import Base
+
+    before = set(Base.metadata.tables)
+    try:
+        yield
+    finally:
+        _module_tables.setdefault(pkg_name, set()).update(set(Base.metadata.tables) - before)
+        if _removed_tables:
+            _sweep_removed_tables()
+
+
+def _drop_tables(names: set[str]) -> None:
+    """Take the tables these modules' code added off the shared metadata, so table
+    creation (create_all) covers only modules that are running."""
+    for name in names:
+        _removed_tables.update(_module_tables.get(name, set()))
+    _sweep_removed_tables()
+
+
+def _sweep_removed_tables() -> None:
+    """Keep every removed table off the shared metadata, together with any table
+    holding a foreign key into one (it cannot be created without it), whenever
+    that table was added."""
+    from celerp.models.base import Base
+
+    while True:
+        referencing = {
+            key for key, table in Base.metadata.tables.items()
+            if key not in _removed_tables and any(
+                fk.target_fullname.rsplit(".", 1)[0] in _removed_tables
+                for fk in table.foreign_keys)}
+        if not referencing:
+            break
+        log.warning("Tables %s reference tables of a module that is not running; not created",
+                    ", ".join(sorted(referencing)))
+        _removed_tables.update(referencing)
+    for key in _removed_tables:
+        table = Base.metadata.tables.get(key)
+        if table is not None:
+            Base.metadata.remove(table)
 
 
 def _evict_module(pkg_name: str) -> None:
@@ -1155,8 +1217,9 @@ def _route_failure(manifest: dict, kind: str, exc: Exception) -> None:
 def _deactivate(name: str, reason: str) -> set[str]:
     """Take a loaded module, and every loaded module depending on it directly or
     not, out of this process: off the loaded list (so is_running is false), their
-    slot contributions (nav, actions, lifecycle hooks, handlers) unregistered and
-    the module locale catalogs rebuilt from the modules still loaded. Each gets a
+    slot contributions (nav, actions, lifecycle hooks, handlers) unregistered, their
+    tables off the shared metadata, and the module locale catalogs rebuilt from the
+    modules still loaded. Each gets a
     load error; a dependent's names the module it needed. Returns the names
     taken out, so route registration can remove routes they already added."""
     from ui.i18n import clear_registry
@@ -1171,6 +1234,7 @@ def _deactivate(name: str, reason: str) -> set[str]:
         _load_errors[gone] = why
         _admitted.pop(gone, None)
         unregister_module_slots(gone)
+    _drop_tables(set(out))
     clear_registry()
     for manifest in _loaded:
         module = _admitted.get(manifest["name"])
@@ -1223,11 +1287,12 @@ def _register_module_routes(app, loaded: list[dict], kind: str) -> None:
             module = _admitted.get(name)
             if module is None:
                 raise ModuleLoadError("module was not admitted in this process.")
-            setup = _check_owned_callable(
-                name, module.path, f"{manifest_key} setup",
-                f"{route_mod_path}:{setup_attr}",
-                awaited=False, trusted=module.first_party)
-            setup(app)
+            with _recording_tables(name):
+                setup = _check_owned_callable(
+                    name, module.path, f"{manifest_key} setup",
+                    f"{route_mod_path}:{setup_attr}",
+                    awaited=False, trusted=module.first_party)
+                setup(app)
         except Exception as exc:
             failure: Exception = exc
         else:

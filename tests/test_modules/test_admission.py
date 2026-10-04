@@ -30,15 +30,23 @@ from celerp.modules.meta import write_meta
 
 @pytest.fixture(autouse=True)
 def _clean_loader_state():
+    from celerp.models.base import Base
+
     slots.clear()
     loader._loaded.clear()
     loader._load_errors.clear()
     before_path = list(sys.path)
     before_mods = set(sys.modules)
+    before_tables = set(Base.metadata.tables)
     yield
     slots.clear()
     loader._loaded.clear()
     loader._load_errors.clear()
+    # A fixture module's models must not reach another test's create_all.
+    for key in set(Base.metadata.tables) - before_tables:
+        Base.metadata.remove(Base.metadata.tables[key])
+    loader._module_tables.clear()
+    loader._removed_tables.clear()
     sys.path[:] = before_path
     for key in set(sys.modules) - before_mods:
         if key.startswith(("acme", "_celerp_module_migration_")):
@@ -601,3 +609,333 @@ async def test_modules_listing_reports_this_process_load_failures(monkeypatch):
     assert rows["acme-ok"]["running"] is True
     assert rows["acme-ui-broke"]["running"] is False
     assert rows["acme-ui-broke"]["load_error"] == "ui_routes failed (RuntimeError: nope)"
+
+
+# ── A4: the UI process offers only what the API process is running ──────────
+
+
+def _offered_module(base: Path, folder: str, *, fail_migration: bool = False,
+                    depends_on=None) -> tuple[Path, str]:
+    """A module with a migration, UI routes, a nav entry and a bulk action."""
+    inner = f"acme_{_uid()}"
+    manifest = {
+        "name": folder, "version": "1.0.0", "table_prefix": f"acme{_uid()}_",
+        "migrations": f"{inner}.migrations", "ui_routes": f"{inner}.routes",
+        "slots": {"nav": {"label": folder, "href": f"/{inner}/home"},
+                  "bulk_action": {"label": "Act", "form_action": f"/{inner}/act"}},
+    }
+    if depends_on:
+        manifest["depends_on"] = depends_on
+    upgrade = "    raise RuntimeError('migration boom')\n" if fail_migration else "    pass\n"
+    files = {
+        f"{inner}/__init__.py": "",
+        f"{inner}/migrations/__init__.py": "",
+        f"{inner}/migrations/m_001.py": "def upgrade():\n" + upgrade,
+        f"{inner}/routes.py": (
+            "from starlette.responses import PlainTextResponse\n\n"
+            "def setup_ui_routes(app):\n"
+            f"    app.router.add_route('/{inner}/home', lambda r: PlainTextResponse('ok'))\n"),
+    }
+    return _write_module(base, folder, manifest, files), inner
+
+
+def _engine_url(engine) -> str:
+    return engine.url.render_as_string(hide_password=False)
+
+
+async def _api_boot(engine, base: Path, enabled: set[str]) -> None:
+    """What the API process does at startup: admit, migrate, load, record."""
+    from celerp.modules import outcome
+
+    await _admit_and_migrate(engine, base, enabled)
+    async with engine.begin() as conn:
+        await conn.run_sync(outcome.publish)
+
+
+def _ui_boot(base: Path, enabled: set[str], database_url: str, monkeypatch,
+             api_token: str | None = None):
+    """What the UI process does at import, in a fresh loader state: read the API's
+    record and load only what it reports as running."""
+    from celerp.modules import outcome
+
+    slots.clear()
+    loader._loaded.clear()
+    loader._load_errors.clear()
+    monkeypatch.setattr(outcome, "_health_token",
+                        lambda url: api_token or outcome.BOOT_TOKEN)
+    admission = outcome.admission_as_reported(
+        str(base), enabled, outcome.reported_by_api("http://api.invalid", database_url))
+    app = _App()
+    loader.register_ui_routes(app, loader.load_all(str(base), enabled, admission=admission))
+    return app
+
+
+def _contributes_nothing(name: str, inner: str, app) -> bool:
+    return (not loader.is_running(name)
+            and f"/{inner}/home" not in _paths(app)
+            and all(e["_module"] != name for entries in slots.all_slots().values()
+                    for e in entries))
+
+
+async def test_api_migration_failure_keeps_the_module_out_of_the_ui(
+        committed_engine, _modules, monkeypatch):
+    failing, failing_inner = _offered_module(_modules, f"acme-{_uid()}", fail_migration=True)
+    dependent, dependent_inner = _offered_module(
+        _modules, f"acme-{_uid()}", depends_on=[failing.name])
+    healthy, healthy_inner = _offered_module(_modules, f"acme-{_uid()}")
+    enabled = {failing.name, dependent.name, healthy.name}
+    await _api_boot(committed_engine, _modules, enabled)
+
+    app = _ui_boot(_modules, enabled, _engine_url(committed_engine), monkeypatch)
+
+    assert _contributes_nothing(failing.name, failing_inner, app)
+    assert _contributes_nothing(dependent.name, dependent_inner, app)
+    assert "migration boom" in loader.load_errors()[failing.name]
+    assert loader.load_errors()[dependent.name] == (
+        f"Requires {failing.name!r}, which failed to load.")
+    # Control: the module the API is running is offered.
+    assert loader.is_running(healthy.name)
+    assert f"/{healthy_inner}/home" in _paths(app)
+    assert any(e["_module"] == healthy.name for e in slots.get("bulk_action"))
+
+
+async def test_modules_page_shows_the_api_reason(
+        committed_engine, _modules, monkeypatch):
+    from ui import api_client
+
+    failing, _ = _offered_module(_modules, f"acme-{_uid()}", fail_migration=True)
+    await _api_boot(committed_engine, _modules, {failing.name})
+    _ui_boot(_modules, {failing.name}, _engine_url(committed_engine), monkeypatch)
+    # A listing that has the module as running: the reason this process holds wins.
+    api_rows = [{"name": failing.name, "enabled": True, "running": True, "load_error": None}]
+
+    @asynccontextmanager
+    async def _fake_client(token, timeout=10.0):
+        class _C:
+            async def get(self, url):
+                return httpx.Response(200, json=api_rows,
+                                      request=httpx.Request("GET", "http://api" + url))
+        yield _C()
+
+    monkeypatch.setattr(api_client, "_api_client", _fake_client)
+    row = (await api_client.get_modules("tok"))[0]
+
+    assert row["running"] is False
+    assert "migration boom" in row["load_error"]
+
+
+@pytest.mark.parametrize("record", ["missing", "other_process"])
+async def test_ui_offers_nothing_without_this_apis_record(
+        record, committed_engine, _modules, monkeypatch):
+    """Fail closed: a record from another API process (or none) offers nothing."""
+    from celerp.modules import outcome
+
+    healthy, inner = _offered_module(_modules, f"acme-{_uid()}")
+    if record == "other_process":
+        await _api_boot(committed_engine, _modules, {healthy.name})
+
+    app = _ui_boot(_modules, {healthy.name}, _engine_url(committed_engine), monkeypatch,
+                   api_token="a-different-api-process")
+
+    assert _contributes_nothing(healthy.name, inner, app)
+    assert loader.load_errors()[healthy.name] == outcome.NOT_REPORTED
+
+
+def test_ui_waits_for_the_api_to_finish_starting(monkeypatch):
+    from celerp.modules import outcome
+
+    answers = iter([None, None, "token-1"])
+    monkeypatch.setattr(outcome, "_health_token", lambda url: next(answers))
+    monkeypatch.setattr(outcome, "_POLL_SECONDS", 0)
+
+    assert outcome.wait_for_api_token("http://api.invalid") == "token-1"
+
+
+def test_api_health_serves_its_boot_token():
+    from fastapi.testclient import TestClient
+
+    from celerp.main import app
+    from celerp.modules import outcome
+
+    assert TestClient(app).get("/health").json()["boot"] == outcome.BOOT_TOKEN
+
+
+# ── A5: a module that is not running creates no tables ──────────────────────
+
+
+_MODELS = (
+    "from sqlalchemy import Column, ForeignKey, Integer\n"
+    "from celerp.models.base import Base\n\n"
+    "class Thing(Base):\n"
+    "    __tablename__ = '{inner}_things'\n"
+    "    id = Column(Integer, primary_key=True)\n")
+
+
+async def _created_tables(engine) -> set[str]:
+    import sqlalchemy as sa
+
+    from celerp.models.base import Base
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        return set(await conn.run_sync(lambda c: sa.inspect(c).get_table_names()))
+
+
+async def test_route_failure_creates_none_of_the_module_tables(committed_engine, _modules):
+    failing_folder, dependent_folder = f"acme-{_uid()}", f"acme-{_uid()}"
+    failing, failing_inner = _route_module(
+        _modules, failing_folder,
+        body="from {inner} import models\n" + _FAILING_SETUP.replace("{kind}", "api"),
+        extra_files={"{inner}/models.py": _MODELS})
+    routes = failing / failing_inner / "routes.py"
+    routes.write_text(routes.read_text().replace("{inner}", failing_inner))
+    dependent, dependent_inner = _route_module(
+        _modules, dependent_folder, depends_on=[failing_folder],
+        extra_files={"{inner}/models.py": _MODELS})
+    (dependent / dependent_inner / "__init__.py").write_text("from . import models\n")
+
+    loaded = loader.load_all(str(_modules), {failing_folder, dependent_folder})
+    loader.register_api_routes(_App(), loaded)
+    tables = await _created_tables(committed_engine)
+
+    assert not loader.is_running(failing_folder)
+    assert f"{failing_inner}_things" not in tables
+    assert f"{dependent_inner}_things" not in tables
+    assert "companies" in tables  # core tables are still created
+
+
+async def test_refused_module_creates_none_of_its_tables(committed_engine, _modules):
+    """Refused at load, after its code ran (the manifest differs at runtime)."""
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    pkg = _write_module(_modules, folder, {"name": folder, "version": "1.0.0"},
+                        {f"{inner}/__init__.py": "",
+                         f"{inner}/models.py": _MODELS.replace("{inner}", inner)},
+                        init_prelude=f"import {inner}.models")
+    init = pkg / "__init__.py"
+    init.write_text(init.read_text() + "PLUGIN_MANIFEST['api_routes'] = 'celerp.routers.health'\n")
+
+    loader.load_all(str(_modules), {folder})
+    tables = await _created_tables(committed_engine)
+
+    assert "differs" in loader.load_errors()[folder]
+    assert f"{inner}_things" not in tables
+
+
+async def test_admission_refused_module_creates_none_of_its_tables(committed_engine, _modules):
+    """Control: refused before any of its code runs, so its models never load."""
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    _write_module(_modules, folder, {"name": f"acme-other-{_uid()}", "version": "1.0.0"},
+                  {f"{inner}/__init__.py": "",
+                   f"{inner}/models.py": _MODELS.replace("{inner}", inner)},
+                  init_prelude=f"import {inner}.models")
+
+    loader.load_all(str(_modules), {folder})
+    tables = await _created_tables(committed_engine)
+
+    assert folder in loader.load_errors()
+    assert f"{inner}_things" not in tables
+
+
+async def test_table_referencing_a_stopped_module_is_not_created(committed_engine, _modules):
+    """A running module's table with a foreign key into a stopped module's table
+    cannot be created, and must not stop the others being created."""
+    failing_folder, other_folder = f"acme-{_uid()}", f"acme-{_uid()}"
+    failing, failing_inner = _route_module(
+        _modules, failing_folder,
+        body="from {inner} import models\n" + _FAILING_SETUP.replace("{kind}", "api"),
+        extra_files={"{inner}/models.py": _MODELS})
+    routes = failing / failing_inner / "routes.py"
+    routes.write_text(routes.read_text().replace("{inner}", failing_inner))
+    other, other_inner = _route_module(
+        _modules, other_folder,
+        extra_files={"{inner}/models.py": _MODELS + (
+            "\nclass Link(Base):\n"
+            "    __tablename__ = '{inner}_links'\n"
+            "    id = Column(Integer, primary_key=True)\n"
+            f"    thing_id = Column(Integer, ForeignKey('{failing_inner}_things.id'))\n")})
+    (other / other_inner / "__init__.py").write_text("from . import models\n")
+
+    loaded = loader.load_all(str(_modules), {failing_folder, other_folder})
+    loader.register_api_routes(_App(), loaded)
+    tables = await _created_tables(committed_engine)
+
+    assert loader.is_running(other_folder)
+    assert f"{failing_inner}_things" not in tables
+    assert f"{other_inner}_links" not in tables
+    assert f"{other_inner}_things" in tables
+
+
+def test_stopped_module_keeps_its_table_prefix_reserved(_modules):
+    """Table creation skips a module that is not running; prefix reservation does not."""
+    from celerp.modules.importer import installed_table_prefixes
+
+    folder = f"acme-{_uid()}"
+    prefix = f"acme{_uid()}_"
+    _route_module(_modules, folder, body=_FAILING_SETUP.replace("{kind}", "api").replace(
+        "{inner}", "x"))
+    pkg = _modules / folder
+    manifest = loader.read_manifest(pkg)
+    manifest["table_prefix"] = prefix
+    (pkg / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
+
+    loader.register_api_routes(_App(), loader.load_all(str(_modules), {folder}))
+
+    assert not loader.is_running(folder)
+    assert installed_table_prefixes(exclude="")[folder] == prefix
+
+
+@pytest.mark.parametrize("dashboard_running", [True, False])
+async def test_ui_process_offers_core_pages_only_for_running_modules(
+        dashboard_running, committed_engine, tmp_path):
+    """The UI process at import: a core page gated on a bundled module is offered
+    only when the API process reports that module running."""
+    import os
+    import subprocess
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from celerp.migrations._data_reconcile import set_meta
+
+    token = uuid.uuid4().hex
+    record = {"boot": token, "running": ["celerp-dashboard"] if dashboard_running else [],
+              "failed": {} if dashboard_running else {"celerp-dashboard": "dashboard boom"}}
+    async with committed_engine.begin() as conn:
+        await conn.run_sync(lambda c: set_meta(c, "module_outcome", json.dumps(record)))
+
+    class _Health(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps({"status": "ok", "boot": token}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Health)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    repo = Path(__file__).resolve().parents[2]
+    env = {**os.environ,
+           "MODULE_DIR": str(repo / "default_modules"), "ENABLED_MODULES": "celerp-dashboard",
+           "API_URL": f"http://127.0.0.1:{server.server_port}",
+           "DATABASE_URL": _engine_url(committed_engine), "CELERP_DATA_DIR": str(tmp_path)}
+    env.pop("CELERP_API_URL", None)
+    try:
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "import json, ui.app as a\n"
+             "from celerp.modules.loader import load_errors\n"
+             "print(json.dumps({'paths': [getattr(r, 'path', '') for r in a.app.routes],"
+             " 'errors': load_errors()}))"],
+            cwd=repo, env=env, capture_output=True, text=True, timeout=120)
+    finally:
+        server.shutdown()
+    assert out.returncode == 0, out.stderr[-2000:]
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+
+    assert ("/dashboard" in result["paths"]) is dashboard_running
+    if not dashboard_running:
+        assert result["errors"]["celerp-dashboard"] == "dashboard boom"
