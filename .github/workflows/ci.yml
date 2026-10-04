@@ -56,11 +56,11 @@ jobs:
           ALLOW_INSECURE_JWT: "true"
           # Run on the Postgres service (each xdist worker gets its own database).
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
-        # The suite is ~3.5k small tests (no slow outliers), so wall time is bound by
-        # core count. ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
-        # pytest-split fans the suite across 6 parallel runners; each still uses -n auto
-        # within its 2 cores. 4 shards left one shard ~340s (it hit the old 300s cap); 6
-        # shards drop each to ~1/6 of the suite and the 600s cap is a generous backstop.
+        # ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up. pytest-split
+        # fans the suite across 6 parallel runners; each still uses -n auto within its 2
+        # cores. Shards are balanced by time from .test_durations (regenerate with
+        # --store-durations when the suite's shape changes): split by test count, the
+        # slow concurrency files piled into one shard until it hit the 600s cap.
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
           --timeout=30
