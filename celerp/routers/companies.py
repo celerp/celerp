@@ -1789,13 +1789,13 @@ async def disable_module(
     return {"ok": True, "name": module_name, "enabled": False, "restart_required": True, "enabled_modules": enabled_list}
 
 
-@router.post("/me/modules/{module_name}/delete", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/{module_name}/delete", dependencies=[Depends(require_install_owner)])
 async def delete_module(
     module_name: str,
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Delete a disabled, non-default module, freeing its name for re-import. Admin only.
+    """Delete a disabled, non-default module, freeing its name for re-import. Installation owner only.
 
     Refused for default modules (bundled, undeletable) and for any module that is
     still enabled or running - a running module is disabled first, from the same
@@ -1892,13 +1892,13 @@ def _is_fk_dependency_error(exc: Exception) -> bool:
     return "depend" in str(exc).lower()
 
 
-@router.post("/me/modules/{module_name}/purge-data", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/{module_name}/purge-data", dependencies=[Depends(require_install_owner)])
 async def purge_module_data(
     module_name: str,
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Drop every table carrying the module's declared prefix, in one transaction. Admin only.
+    """Drop every table carrying the module's declared prefix, in one transaction. Installation owner only.
 
     Refused while the module is still enabled or running: its data must be quiet
     before it is dropped, so the admin disables and restarts first, from the same
@@ -1954,13 +1954,13 @@ class _ImportPathBody(BaseModel):
     path: str
 
 
-@router.post("/me/modules/import", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/import", dependencies=[Depends(require_install_owner)])
 async def import_module_upload(
     request: Request,
     file: UploadFile = File(...),
     source: str = Form("sideloaded"),
 ) -> dict:
-    """Install a module package from an uploaded .zip archive. Admin only.
+    """Install a module package from an uploaded .zip archive. Installation owner only.
 
     Validation and installation share one code path with every other way a
     module package arrives (celerp.modules.importer), so the security posture
@@ -1993,9 +1993,9 @@ async def import_module_upload(
     return {"ok": True, **info}
 
 
-@router.post("/me/modules/import-path", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/import-path", dependencies=[Depends(require_install_owner)])
 async def import_module_from_path(body: _ImportPathBody) -> dict:
-    """Install a module from a local folder path (desktop folder picker). Admin only.
+    """Install a module from a local folder path (desktop folder picker). Installation owner only.
 
     The API runs on the user's own machine in desktop mode, so a path is the
     natural handoff from the native folder picker. Same importer core as the
@@ -2056,10 +2056,10 @@ class _BuyBody(BaseModel):
     custom_text: str | None = None   # buyer-language purchase disclosures for the Checkout page
 
 
-@router.post("/me/modules/buy", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/buy", dependencies=[Depends(require_install_owner)])
 async def buy_module(body: _BuyBody) -> dict:
     """Start a purchase: ask the relay for a Stripe Checkout URL for this module.
-    The UI opens it in the browser, then polls the license. Admin only."""
+    The UI opens it in the browser, then polls the license. Installation owner only."""
     import httpx
     url, jwt = await _relay_creds()
     payload: dict = {"slug": body.slug, "kind": body.kind}
@@ -2145,10 +2145,10 @@ def _read_staged_marketplace(path: str) -> tuple[bytes, bool, bool]:
     return p.read_bytes(), bool(flags.get("is_official")), bool(flags.get("is_paid"))
 
 
-@router.post("/me/modules/marketplace-download", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/marketplace-download", dependencies=[Depends(require_install_owner)])
 async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     """Stage a marketplace module for install: fetch it from the relay and hold
-    the archive on disk, ready for a following Install. Admin only.
+    the archive on disk, ready for a following Install. Installation owner only.
 
     The relay enforces the gates at token issuance: a paid module needs an active
     license, third-party code needs a passed security scan. Never-stuck by design:
@@ -2225,9 +2225,9 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     return {"ok": True, "path": str(dest)}
 
 
-@router.post("/me/modules/marketplace-install", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/marketplace-install", dependencies=[Depends(require_install_owner)])
 async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
-    """Install a staged marketplace module through the shared importer. Admin only.
+    """Install a staged marketplace module through the shared importer. Installation owner only.
 
     Reads the archive Download staged (and the trust flags the server recorded
     beside it) and installs it exactly like every other module package. The
