@@ -394,10 +394,10 @@ jobs:
           if-no-files-found: ignore
 
   # Aggregator: the single required status check. Branch protection should require "Test"
-  # (this job), which passes only when every unit, browser, electron, AND lockfile job passed.
+  # (this job), which passes only when every unit, process, browser, electron, AND lockfile job passed.
   test:
     name: Test
-    needs: [shard, browser, embedded, electron, lockfile, constraints, mac-intel-deps, update-changes, update-e2e]
+    needs: [shard, process, browser, embedded, electron, lockfile, constraints, mac-intel-deps, update-changes, update-e2e]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -405,6 +405,10 @@ jobs:
         run: |
           if [ "${{ needs.shard.result }}" != "success" ]; then
             echo "One or more unit-test shards failed (result: ${{ needs.shard.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.process.result }}" != "success" ]; then
+            echo "Process tests failed (result: ${{ needs.process.result }})"
             exit 1
           fi
           if [ "${{ needs.browser.result }}" != "success" ]; then
@@ -439,4 +443,4 @@ jobs:
             echo "Self-update end to end failed (result: ${{ needs.update-e2e.result }})"
             exit 1
           fi
-          echo "All unit, browser, embedded, electron, lockfile, constraints, and self-update checks passed."
+          echo "All unit, process, browser, embedded, electron, lockfile, constraints, and self-update checks passed."
