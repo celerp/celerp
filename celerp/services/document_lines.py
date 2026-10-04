@@ -66,7 +66,8 @@ def line_id_counts(line_items) -> Counter:
 async def linked_items(session, company_id, line_items, *, known: Counter | None = None) -> dict[str, Projection]:
     """Resolve every linked line to its item, refusing a line whose item does not exist.
 
-    The one rule for every document and List line writer: each supplied item_id /
+    The one rule for every document and List line writer: a line carrying both keys
+    names one item under both, else 422 ``conflicting_reference``; each supplied item_id /
     entity_id must resolve to an item projection of ``company_id``, else 422
     ``invalid_reference`` naming the line (1-based) and the id. ``known`` counts the
     lines per id already on the stored record (``line_id_counts``): a save may carry
@@ -82,6 +83,15 @@ async def linked_items(session, company_id, line_items, *, known: Counter | None
     sees it.
     """
     known = known or Counter()
+    for n, line in enumerate(line_items or [], 1):
+        if isinstance(line, dict) and line.get("item_id") and line.get("entity_id") \
+                and line["item_id"] != line["entity_id"]:
+            raise HTTPException(status_code=422, detail={
+                "code": "conflicting_reference",
+                "message": f"Line {n} names two different items ({line['item_id']} and {line['entity_id']}). "
+                           "Keep one item per line.",
+                "line": n,
+            })
     linked = [(n, line, line_item_id(line)) for n, line in enumerate(line_items or [], 1)
               if isinstance(line, dict) and line_item_id(line)]
     counts = Counter(ident for _, _, ident in linked)

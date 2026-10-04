@@ -108,7 +108,12 @@ class LineItem(BaseModel):
 
     @model_validator(mode="after")
     def _resolve_entity_id(self) -> "LineItem":
-        """Frontend sends entity_id; normalise to item_id so the stored state is consistent."""
+        """Frontend sends entity_id; normalise to item_id so the stored state is consistent.
+        A line naming two different items under the two keys is refused, as every line
+        writer refuses it (document_lines.linked_items)."""
+        if self.entity_id and self.item_id and self.entity_id != self.item_id:
+            raise ValueError(f"This line names two different items ({self.item_id} and {self.entity_id}). "
+                             "Keep one item per line.")
         if self.entity_id and not self.item_id:
             self.item_id = self.entity_id
         self.entity_id = None  # never persist entity_id; always use item_id
