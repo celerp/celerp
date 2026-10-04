@@ -481,6 +481,11 @@ def schedule_run(run_id: uuid.UUID) -> None:
     task.add_done_callback(_TASKS.discard)
 
 
+def running_tasks() -> list[asyncio.Task]:
+    """The runners still going in this process; shutdown stops them like any background job."""
+    return list(_TASKS)
+
+
 def _source(run: MigrationRun) -> tuple[SourceAdapter, list[Artifact], MigrationDecisions]:
     """Blocking, since it hashes the source: callers run it in a worker thread."""
     directory = store.run_dir(run.id)

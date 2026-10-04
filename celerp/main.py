@@ -190,7 +190,8 @@ _SHUTDOWN_GRACE_S = 10
 async def _stop_background_tasks(tasks: list[asyncio.Task | None]) -> None:
     """Cancel the background tasks boot started and wait for each to finish, so none
     is left with a connection open in a transaction (holding its table locks) after
-    shutdown. A task still running after _SHUTDOWN_GRACE_S is logged and left."""
+    shutdown. A task still running after _SHUTDOWN_GRACE_S ends the process there and
+    then: shutdown never returns with work of this process still able to write."""
     tasks = [t for t in tasks if t is not None]
     for task in tasks:
         task.cancel()
@@ -198,8 +199,9 @@ async def _stop_background_tasks(tasks: list[asyncio.Task | None]) -> None:
         return
     _done, pending = await asyncio.wait(tasks, timeout=_SHUTDOWN_GRACE_S)
     if pending:
-        log.warning("%d background task(s) did not stop within %ss of shutdown: %s",
-                    len(pending), _SHUTDOWN_GRACE_S, ", ".join(t.get_name() for t in pending))
+        log.critical("%d background task(s) did not stop within %ss of shutdown: %s; stopping now",
+                     len(pending), _SHUTDOWN_GRACE_S, ", ".join(t.get_name() for t in pending))
+        _os._exit(1)
 
 
 def _refuse_start(exc: BaseException) -> None:
@@ -507,10 +509,11 @@ async def _serve(_app: FastAPI, held):
     from celerp.notifications.sse import shutdown_all as _sse_shutdown
     _sse_shutdown()
 
-    # Stop background tasks, the backup scheduler's included, and wait for them
+    # Stop background tasks, the backup scheduler and migration runs included, and wait for them
     from celerp.services import backup_scheduler
+    from celerp.services import migrations as _migration_runs
     background.append(backup_scheduler.stop())
-    await _stop_background_tasks(background)
+    await _stop_background_tasks(background + _migration_runs.running_tasks())
 
     # Close the tunnel and its run task, whoever started it (boot gate, auto-activate,
     # or a runtime share-create) - the gateway package owns that lifecycle now.

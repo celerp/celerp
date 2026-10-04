@@ -87,6 +87,37 @@ elif path == "ui":
         async with app.router.lifespan_context(app):
             await asyncio.to_thread(hold, asyncio.get_running_loop())
     asyncio.run(run())
+elif path.startswith("shutdown-"):
+    # The real API startup with a job that ignores being stopped: a background job
+    # boot started (shutdown-boot) or a migration run (shutdown-run). Once told to
+    # stop it waits for the file <data_dir>.go and then writes the sentinel.
+    import os, uuid
+    import celerp.main as app_main
+    from celerp.services import migrations, reorder
+    app_main._SHUTDOWN_GRACE_S = 1
+    async def stubborn(*args, **kwargs):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            pass
+        print("STOPPING", flush=True)
+        while not os.path.exists(f"{data_dir}.go"):
+            try:
+                await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                pass
+        await write([])
+        print("LATE WRITE", flush=True)
+    if path == "shutdown-boot":
+        reorder.reorder_alert_loop = stubborn
+    else:
+        migrations.run_migration = stubborn
+    async def run():
+        async with app_main.lifespan(app_main.app):
+            if path == "shutdown-run":
+                migrations.schedule_run(uuid.uuid4())
+            await asyncio.to_thread(hold)
+    asyncio.run(run())
 elif path == "migrate":
     from click.testing import CliRunner
     from celerp.cli import main
@@ -586,3 +617,39 @@ def test_init_records_its_version_before_changing_ownership(scratch, monkeypatch
     monkeypatch.setattr(cli, "_migrate_to_head", lambda db_url: True)
     cli._init_database(url)
     assert seen and set(seen) == {OLDER}, seen
+
+
+# --- Shutdown never leaves a writer behind the fence ------------------------------
+
+
+@pytest.mark.parametrize("job", ["boot", "run"])
+def test_a_job_that_will_not_stop_ends_the_process_before_a_newer_version_can_open(
+        scratch, tmp_path, job):
+    """The API stops a job that ignores being told to stop by ending the process while
+    it still holds the fence: the job never writes, and no newer version is admitted
+    while it is alive."""
+    url = scratch()
+    old = _hold(OLDER, f"shutdown-{job}", url, tmp_path / "old")
+    try:
+        before = snapshot(url)["sentinel"]
+        old.stdin.close()
+        try:
+            old.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            pass
+        alive_after_shutdown = old.poll() is None
+        code, out = _run(NEWER, "migrate", url, tmp_path / "new", wait=5)
+        newer_admitted = code == 0
+        (tmp_path / "old.go").touch()
+        deadline = time.monotonic() + 15
+        while old.poll() is None and "LATE WRITE" not in _output(old) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert "STOPPING" in _output(old), _output(old)
+        assert not (alive_after_shutdown and newer_admitted), (
+            "a newer version opened the database while the older process still ran a job", out)
+        assert snapshot(url)["sentinel"] == before, _output(old)
+        assert old.returncode not in (None, 0), _output(old)
+        assert "did not stop" in _output(old), _output(old)
+    finally:
+        old.kill()
+        old.wait()
