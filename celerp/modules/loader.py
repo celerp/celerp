@@ -636,14 +636,9 @@ def _module_entry_files(pkg_path: Path, manifest: dict) -> list[Path]:
             continue
         key, _awaited = _CALLABLE_SLOTS[slot_name]
         for item in contribution if isinstance(contribution, list) else [contribution]:
-            dotted = item.get(key) if isinstance(item, dict) else None
-            if isinstance(dotted, str) and ":" in dotted:
-                source = _module_source_file(pkg_path, dotted.split(":")[0])
-                if source is None:
-                    raise ModuleLoadError(
-                        f"Slot {slot_name!r} callable {dotted!r} does not resolve to "
-                        f"source inside the module.")
-                files.append(source)
+            if isinstance(item, dict) and key in item:
+                files.append(_owned_callable_source(
+                    pkg_path, f"Slot {slot_name!r}", item[key]))
     if manifest.get("migrations"):
         files.extend(module_migration_files(pkg_path, manifest["migrations"]))
     return files
@@ -1691,6 +1686,25 @@ def _validate_slots(
     return prepared
 
 
+def _owned_callable_source(pkg_path: Path, subject: str, dotted) -> Path:
+    """The source file of a "module.path:function" entry, which must sit inside
+    this module's own tree, so a manifest can never point core at
+    'celerp.some_internal:fn' and have it imported around the protected-import
+    gate. Raises :class:`ModuleLoadError`."""
+    if (not isinstance(dotted, str) or dotted.count(":") != 1
+            or not all(dotted.split(":"))):
+        raise ModuleLoadError(
+            f"{subject} callable {dotted!r} must be 'module.path:function'."
+        )
+    source = _module_source_file(pkg_path, dotted.split(":")[0])
+    if source is None:
+        raise ModuleLoadError(
+            f"{subject} callable {dotted!r} does not resolve to source inside "
+            f"the module."
+        )
+    return source
+
+
 def _check_owned_callable(
     pkg_name: str, pkg_path: Path, subject: str, dotted, *, awaited: bool, trusted: bool
 ):
@@ -1706,25 +1720,11 @@ def _check_owned_callable(
     fails its module rather than first surfacing when core calls it. Raises
     :class:`ModuleLoadError` on any violation.
     """
-    if (not isinstance(dotted, str) or dotted.count(":") != 1
-            or not all(dotted.split(":"))):
-        raise ModuleLoadError(
-            f"{subject} callable {dotted!r} must be 'module.path:function'."
-        )
-    module_path = dotted.split(":")[0]
-    # Local ownership: the callable must resolve to source inside this module's own
-    # tree, so a manifest can never point core at 'celerp.some_internal:fn' and
-    # have it imported on demand around the protected-import gate.
-    if _module_source_file(pkg_path, module_path) is None:
-        raise ModuleLoadError(
-            f"{subject} callable {dotted!r} does not resolve to source inside "
-            f"module {pkg_name!r}."
-        )
+    source = _owned_callable_source(pkg_path, subject, dotted)
     # The callable is a lazily-imported entry point, so it goes through the same
     # transitive protected-BSL scan as the route entry modules (third-party only).
     if not trusted:
-        violations = _scan_protected_imports(
-            pkg_path, _module_source_file(pkg_path, module_path))
+        violations = _scan_protected_imports(pkg_path, source)
         if violations:
             raise ModuleLoadError(
                 f"{subject} callable {dotted!r} imports protected BSL "
@@ -1761,7 +1761,8 @@ def _check_owned_callable(
     # different module, is rejected exactly as an untrusted decoy is.
     pkg_root = os.path.realpath(pkg_path)
     try:
-        module_file = getattr(importlib.import_module(module_path), "__file__", None)
+        module_file = getattr(
+            importlib.import_module(dotted.split(":")[0]), "__file__", None)
         func_file = inspect.getsourcefile(inspect.unwrap(func))
     except Exception as exc:
         raise ModuleLoadError(
