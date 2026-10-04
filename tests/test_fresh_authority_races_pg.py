@@ -35,7 +35,7 @@ from celerp.models.projections import Projection
 from celerp.routers import companies
 from test_helpers import make_authed_token
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.process]
 
 _ITEM = "item:race"
 _DRAFT = "item:draft"

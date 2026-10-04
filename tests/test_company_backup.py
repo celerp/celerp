@@ -434,7 +434,7 @@ async def test_company_copy_names_removed(real_engine, real_client):
     args = ["git", "grep", "-n", "-I", "-F"]
     for p in patterns:
         args += ["-e", p]
-    args += ["--", ".", ":(exclude)tests", ":(exclude).test_durations", ":(exclude,glob)**/migrations/**"]
+    args += ["--", ".", ":(exclude)tests", ":(exclude,glob)**/migrations/**"]
     found = subprocess.run(args, cwd=REPO_ROOT, capture_output=True, text=True)
     assert found.returncode == 1, found.stdout or found.stderr
 

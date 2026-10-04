@@ -14,11 +14,14 @@ import threading
 import time
 
 import httpx
+import pytest
 import respx
 
 # Shared config-reload helper; importing the autouse fixture registers it for
 # this module too, restoring celerp.config after each test.
 from test_config import _reload_config, _restore_config_module  # noqa: F401
+
+pytestmark = pytest.mark.process
 
 
 # ---------------------------------------------------------------------------

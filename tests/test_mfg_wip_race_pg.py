@@ -29,7 +29,7 @@ from test_posting_roles_race_pg import _until_blocked
 from test_posting_roles_race_pg_draft import race  # noqa: F401  (a fixture)
 from test_posting_roles_race_pg_origin import _net, _post, own_client  # noqa: F401  (own_client is a fixture)
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.process]
 
 AT = "2026-03-02T10:00:00+00:00"
 
