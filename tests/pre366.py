@@ -5,7 +5,7 @@
 ``fixtures/pre366/mfg_runs.json`` was captured by driving the older release's own API
 (``fixtures/pre366/capture.py``, run from a checkout of that release): its ledger events,
 the projection rows its handlers wrote from them, its chart of accounts and its company
-settings, exactly as stored, for two companies. Both booked their stock on hand the way that
+settings, exactly as stored, for each company below. Both booked their stock on hand the way that
 release did, by viewing the balance sheet before any run was issued. Nothing here passes through this release's handlers, so a test
 that loads it starts from what an upgrading installation really holds.
 
@@ -18,6 +18,27 @@ Company ``main`` (components A at 5 and B at 3, product FG with a recipe), runs 
 Company ``generic`` (component C at 2), runs by name:
 - ``generic_received`` / ``generic_open``: created with an output named by text only (no
   output item); 2 x C issued to each, and 1 of 2 "received" by the first, which made no lot.
+
+Company ``shortage`` (A at 1 x 10, C at 2 x 6, D at 4 x 2, E none on hand, F at 3 x 10), runs
+created through the generic API and issued, each recorded as issued in full:
+- ``short``: 5 x D required and issued with 2 on hand.
+- ``none_on_hand``: 5 x E required and issued with none on hand.
+- ``undeclared``: 1 x A required; 1 x A and 2 x C issued (C is not an input of the run).
+- ``twice``: 5 x F required, issued as 2 and then 3.
+
+Company ``shape`` (G at 1 x 100, product FG), 2 x G issued to every run:
+- ``out_empty`` / ``out_zero`` / ``out_negative`` / ``out_multi``: generic runs declaring no
+  output, an output of 0, of -1, and two outputs; ``out_multi_received`` declares two outputs
+  and "received" 1, which made no lot.
+- ``imp_multi`` / ``imp_empty`` / ``imp_zero``: imported with FG as output item and two
+  outputs, none, or an output of 0.
+
+Company ``mixed``: BOM history written by the release before recipes (``bom_history.json``,
+captured by ``capture_bom.py`` from that release: one BOM created then updated, one created
+then deleted), H at 4 x 2, J at 3 x 5, K at 2 x 20 and product FG (recipe 2 x K):
+- ``tangle``: two declared outputs; 5 x H required and issued with 2 on hand, 1 x J issued
+  though not an input, and 1 "received", which made no lot.
+- ``recipe``: built from FG's recipe and issued, nothing received.
 """
 from __future__ import annotations
 
