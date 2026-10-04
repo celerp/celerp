@@ -320,7 +320,7 @@ def setup_routes(app) -> None:
 
     @app.get("/subscriptions/{entity_id}")
     async def subscription_detail(request: Request, entity_id: str):
-        from ui.routes.documents import _doc_detail, _merge_company_letterhead
+        from ui.routes.documents import _doc_detail, _merge_company_letterhead, doc_detail_connectors
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -363,10 +363,14 @@ def setup_routes(app) -> None:
 
         tz = "UTC"
         company_currency = "USD"
+        co_settings: dict = {}
+        co_connectors: set[str] = set()
         try:
             co = await api.get_company(token)
             tz = co.get("timezone") or "UTC"
             company_currency = co.get("currency") or "USD"
+            co_settings = co.get("settings") or {}
+            co_connectors = await doc_detail_connectors(co)
         except Exception:
             pass
 
@@ -399,6 +403,8 @@ def setup_routes(app) -> None:
                 tz=tz,
                 company_currency=company_currency,
                 role=_get_role(request),
+                settings=co_settings,
+                connected_connectors=co_connectors,
                 notes=doc_notes,
                 suppress_doc_actions=True,
                 extra_left_actions=_sub_left_actions,

@@ -4,8 +4,9 @@
 
 Every page that renders module contributions (inventory item actions, Pricing-tab
 row actions, document detail actions and badges, catalog channels, bulk actions)
-filters them here, so a module the company has switched off contributes nothing
-and a role without a contribution's permission never sees it. Hiding is
+filters them here, so a module the company has switched off contributes nothing,
+a role without a contribution's permission never sees it, and an entry that
+requires a connector shows only while the company is connected to it. Hiding is
 presentation only: the module's own route must still check the permission.
 """
 from __future__ import annotations
@@ -45,7 +46,33 @@ def module_contribution_visible(
     return True
 
 
-def visible_slot_contributions(slot: str, settings: dict, role: str) -> list[dict]:
+def required_connectors(*slots: str) -> set[str]:
+    """The connector ids the entries of these slots name in "requires_connector"."""
+    from celerp.modules.slots import get as get_slot
+    return {c["requires_connector"] for slot in slots for c in get_slot(slot) if c.get("requires_connector")}
+
+
+async def connected_connector_ids(company_id: str, connectors: set[str]) -> set[str]:
+    """Which of these connectors the company is connected to, read once per render.
+
+    Nothing is read when no connector is asked for. A failed read returns none, so
+    connector-gated entries are hidden rather than shown.
+    """
+    if not connectors:
+        return set()
+    try:
+        from celerp.connectors.ownership import connected_connector_platforms
+        from celerp.db import get_session_ctx
+        async with get_session_ctx() as session:
+            return await connected_connector_platforms(session, company_id, tuple(sorted(connectors)))
+    except Exception:
+        return set()
+
+
+def visible_slot_contributions(
+    slot: str, settings: dict, role: str, connected_connectors: set[str] | None,
+) -> list[dict]:
     """The contributions to a slot this role sees, in registration order."""
     from celerp.modules.slots import get as get_slot
-    return [c for c in get_slot(slot) if module_contribution_visible(c, settings, role)]
+    return [c for c in get_slot(slot)
+            if module_contribution_visible(c, settings, role, connected_connectors)]
