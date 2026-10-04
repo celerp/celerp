@@ -2227,30 +2227,19 @@ def _resolve_active_nav_key(active: str, all_items: list[dict], request=None) ->
 def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, settings: dict | None = None) -> FT:
     """Build sidebar entirely from module nav slots + kernel entries."""
     from collections import defaultdict
-    from ui.config import get_enabled_modules
-    from celerp.modules.loader import CORE_FOLDED
+    from celerp.modules.registry import uses_module
     from celerp.services.permissions import role_has_permission
     from ui.module_slots import slot_permission_allows
 
     settings = settings or {}
-    enabled_modules = get_enabled_modules(request) if request else set()
 
     def _allowed(item: dict) -> bool:
         return slot_permission_allows(item, settings, role)
 
     def _module_enabled(item: dict) -> bool:
-        """Kernel entries (no _module key) always show, as do core-folded
-        components (wired at app construction, never subject to per-company
-        enablement - their pages do their own plan gating). Other module
-        entries only show if their module is in the company's enabled set, or
-        if enabled set is empty (old JWT without modules claim - show
-        everything as safe fallback)."""
-        mod = item.get("_module")
-        if mod is None or mod in CORE_FOLDED:
-            return True
-        if not enabled_modules:
-            return True
-        return mod in enabled_modules
+        """Kernel entries (no _module key) always show; a module's entries show
+        when the company uses the module (read from current settings)."""
+        return uses_module(settings, item.get("_module"))
 
     # Collect all nav items from loaded modules
     try:

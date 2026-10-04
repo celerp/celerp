@@ -16,7 +16,7 @@ from pathlib import Path
 
 import click
 
-from celerp.config import config_path as _config_path, read_config as _read_config, write_config as _write_config, resolve_install_order as _resolve_install_order, set_enabled_modules as _set_enabled_modules
+from celerp.config import config_path as _config_path, read_config as _read_config, write_config as _write_config
 from celerp.db_url import sync_url as _sync_url
 from celerp.services.auth import MIN_PASSWORD_LENGTH, validate_password
 
@@ -1608,40 +1608,62 @@ def module() -> None:
 
 
 
+async def _enable_for_every_company(db_url: str, names: list[str]) -> int:
+    """Turn *names* on for every company and recompute the load set; the number of companies."""
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from celerp.models.company import Company
+    from celerp.modules.registry import enable_for_company, sync_load_set
+    from celerp.services.company_lock import locked_company
+
+    engine = create_async_engine(db_url)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            company_ids = (await session.scalars(select(Company.id).order_by(Company.id))).all()
+            for company_id in company_ids:
+                company = await locked_company(session, company_id)
+                for name in names:
+                    company.settings, _deps = enable_for_company(company.settings, name)
+            await sync_load_set(session)
+            await session.commit()
+            return len(company_ids)
+    finally:
+        await engine.dispose()
+
+
 @module.command("install")
 @click.argument("names", nargs=-1, required=True)
 def module_install(names: tuple[str, ...]) -> None:
-    """Install one or more modules (auto-installs dependencies).
+    """Turn one or more bundled modules on for every company (with the modules they need).
 
     Example: celerp module install celerp-crm
     """
+    import asyncio
+
     cfg = _read_config()
     if not cfg:
         click.echo("Not initialized. Run `celerp init` first.", err=True)
         sys.exit(1)
 
-    _pkg_root = Path(__file__).parent.parent
-    module_dir = _pkg_root / "default_modules"
-
-    # Validate all requested modules exist
+    module_dir = Path(__file__).parent.parent / "default_modules"
     for name in names:
         if not (module_dir / name / "__init__.py").exists():
             click.echo(f"Module '{name}' not found in {module_dir}", err=True)
             sys.exit(1)
 
-    currently_enabled: list[str] = cfg.get("modules", {}).get("enabled", [])
-    to_install = [n for n in names if n not in currently_enabled]
-
-    if not to_install:
-        click.echo("All requested modules are already enabled.")
-        return
-
-    install_order = _resolve_install_order(list(to_install), module_dir)
-    new_modules = [n for n in install_order if n not in currently_enabled]
-
-    click.echo(f"Installing: {', '.join(new_modules)}")
-    _set_enabled_modules(list(names))
-    click.echo(f"✓ {len(new_modules)} module(s) installed.")
+    ensure_database(cfg)
+    from celerp.migrations.compatibility import mutating_scope
+    db_url = cfg["database"]["url"]
+    try:
+        with mutating_scope(_sync_url(db_url)) as held, held.write_window():
+            companies = asyncio.run(_enable_for_every_company(db_url, list(names)))
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    if not companies:
+        click.echo("No company yet. Finish setup, then turn modules on in Settings > Modules.", err=True)
+        sys.exit(1)
+    click.echo(f"\u2713 Turned on for {companies} company(ies): {', '.join(names)}.")
     click.echo("Restart Celerp for changes to take effect: celerp start")
 
 

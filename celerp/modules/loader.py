@@ -1323,12 +1323,21 @@ def _register_module_routes(app, loaded: list[dict], kind: str) -> None:
             failure = RouteConflictError(
                 "route path(s) already registered: " + ", ".join(clashes)) if clashes else None
         if failure is None:
-            _module_routes[name] = list(routes[start:])
+            _module_routes.setdefault(name, []).extend(routes[start:])
             log.info("Module %r: %s routes registered", name, kind.upper())
             continue
         del routes[start:]
         _route_failure(manifest, manifest_key, failure)
         _remove_routes(app, set(_module_routes) - {m["name"] for m in _loaded})
+
+
+def route_module(scope) -> str | None:
+    """The running module whose route serves this request, or None."""
+    from starlette.routing import Match
+    for name, routes in _module_routes.items():
+        if any(r.matches(scope)[0] is Match.FULL for r in routes):
+            return name
+    return None
 
 
 def register_api_routes(app, loaded: list[dict]) -> None:

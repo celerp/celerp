@@ -49,11 +49,14 @@ is a connector id; nav "href" / "settings_href" and
 bulk_action "form_action" (required) are app-local paths; and every callable an
 entry names resolves to the module's own code, async exactly where core awaits it.
 
+Whether a company uses a module is one rule, celerp.modules.registry.uses_module.
 item_action, pricing_action, doc_detail_actions, doc_detail_badges, bulk_action,
-send_to_targets and catalog_channel are shown only when the company has the
-contributing module switched on, the role holds the entry's "permission", and
-the company is connected to the entry's "requires_connector", if any
-(ui.module_slots); the sidebar applies the same permission rule to nav. Hiding is
+send_to_targets and catalog_channel are shown only when the company uses the
+contributing module, the role holds the entry's "permission", and the company is
+connected to the entry's "requires_connector", if any (ui.module_slots); the
+sidebar applies the same module and permission rules to nav. A lifecycle hook
+fired for one company runs only for modules that company uses, and a module's
+API routes and pages refuse a company that does not use it. Hiding is
 presentation: the route an entry leads to must still check the permission itself.
 
 Usage in core UI
@@ -116,6 +119,21 @@ def all_slots() -> dict[str, list[dict]]:
     return {k: list(v) for k, v in _slots.items()}
 
 
+async def _company_hooks(slot: str, kwargs: dict) -> list[dict]:
+    """The slot's handlers that apply to this call: for a hook fired for one
+    company (session and company_id given), only those of modules it uses."""
+    contributions = [c for c in get(slot) if c.get("handler")]
+    session, company_id = kwargs.get("session"), kwargs.get("company_id")
+    if session is None or company_id is None or not contributions:
+        return contributions
+    import uuid
+    from celerp.models.company import Company
+    from celerp.modules.registry import uses_module
+    company = await session.get(Company, uuid.UUID(str(company_id)))
+    settings = company.settings if company is not None else None
+    return [c for c in contributions if uses_module(settings, c.get("_module"))]
+
+
 async def fire_lifecycle(slot: str, **kwargs) -> None:
     """Invoke all async callbacks registered under a lifecycle slot.
 
@@ -129,10 +147,8 @@ async def fire_lifecycle(slot: str, **kwargs) -> None:
 
     _log = logging.getLogger(__name__)
 
-    for contrib in get(slot):
-        handler_path = contrib.get("handler")
-        if not handler_path:
-            continue
+    for contrib in await _company_hooks(slot, kwargs):
+        handler_path = contrib["handler"]
         try:
             func = resolve_handler(handler_path)
             await func(**kwargs)
@@ -153,10 +169,8 @@ async def fire_lifecycle_strict(slot_name: str, **kwargs) -> None:
 
     _log = logging.getLogger(__name__)
 
-    for contrib in get(slot_name):
-        handler_path = contrib.get("handler")
-        if not handler_path:
-            continue
+    for contrib in await _company_hooks(slot_name, kwargs):
+        handler_path = contrib["handler"]
         try:
             func = resolve_handler(handler_path)
             await func(**kwargs)

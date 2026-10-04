@@ -78,9 +78,7 @@ class TestModulesAPIEndpoints:
         token = await _register(client)
         r = await client.post("/companies/me/modules/gemstones/enable", headers=_h(token))
         assert r.status_code == 200
-        data = r.json()
-        assert data.get("restart_required") is True
-        assert "gemstones" in data.get("enabled_modules", [])
+        assert "gemstones" in r.json().get("enabled_modules", [])
 
     @pytest.mark.asyncio
     async def test_disable_module_removes_from_settings(self, client):
@@ -115,20 +113,22 @@ class TestModulesAPIEndpoints:
         assert "nonexistent-module" not in data.get("enabled_modules", [])
 
     @pytest.mark.asyncio
-    async def test_enable_returns_restart_required(self, client):
-        """Enable response always includes restart_required: true."""
+    @pytest.mark.parametrize("running,expected", [(True, False), (False, True)])
+    async def test_enable_asks_for_restart_only_when_the_module_is_not_running(
+            self, client, running, expected):
         token = await _register(client)
-        r = await client.post("/companies/me/modules/celerp-labels/enable", headers=_h(token))
+        with patch("celerp.modules.loader.is_running", return_value=running), \
+                patch("celerp.modules.loader.restart_would_load", return_value=True):
+            r = await client.post("/companies/me/modules/celerp-labels/enable", headers=_h(token))
         assert r.status_code == 200
-        assert r.json().get("restart_required") is True
+        assert r.json()["restart_required"] is expected
 
     @pytest.mark.asyncio
-    async def test_disable_returns_restart_required(self, client):
-        """Disable response always includes restart_required: true."""
+    async def test_disable_never_asks_for_restart(self, client):
         token = await _register(client)
         r = await client.post("/companies/me/modules/celerp-labels/disable", headers=_h(token))
         assert r.status_code == 200
-        assert r.json().get("restart_required") is True
+        assert r.json()["restart_required"] is False
 
     @pytest.mark.asyncio
     async def test_company_isolation_module_settings(self, client):

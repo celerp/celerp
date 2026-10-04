@@ -54,7 +54,7 @@ from celerp.modules.importer import valid_table_prefixes
 from celerp.modules.loader import (
     is_core_folded, is_running, module_search_path, read_manifest, resolve_module_path, running_version,
 )
-from celerp.modules.registry import get_enabled, set_enabled
+from celerp.modules.registry import company_modules, get_enabled, set_enabled, sync_load_set
 from celerp.services import attachments, bootstrap, company_lifecycle
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, verify_password
 from celerp.services.company_lock import hold_company, lock_company, locked_company
@@ -597,7 +597,7 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
     _collect_urls(settings, company_id, found, types)
     # A module enabled in settings but not installed here is not something this company's
     # data depends on, so it is not a requirement of the backup.
-    enabled = {name for name in get_enabled(settings) if _installed(name) is not None}
+    enabled = {name for name in company_modules(settings) if _installed(name) is not None}
     manifest: dict = {
         "format": FORMAT, "format_version": FORMAT_VERSION, "backup_id": str(uuid.uuid4()),
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -1377,6 +1377,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
             await _turn_off_shop_sync(session, new_id, user.id)
             team = await _add_team(session, new_id, plan.team_to_add) if plan.team_to_add else 0
+            await sync_load_set(session)
             await session.commit()
         except BaseException:
             await session.rollback()

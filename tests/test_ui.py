@@ -3502,10 +3502,10 @@ class TestPhase2DeepPolish:
 # ── T0: Module-aware sidebar filtering ───────────────────────────────────────
 
 class TestModuleAwareSidebar:
-    """Sidebar shows only modules listed in the JWT 'modules' claim."""
+    """The sidebar shows a module's entries only when the company uses the
+    module, read from current company settings."""
 
-    def _make_request(self, modules: list[str] | None):
-        """Build a minimal mock request with a JWT cookie embedding given modules."""
+    def _request(self, modules: list[str] | None = None):
         token = make_test_token(role="owner", modules=modules)
 
         class _FakeUrl:
@@ -3518,115 +3518,53 @@ class TestModuleAwareSidebar:
 
         return _FakeRequest()
 
-    def test_get_enabled_modules_returns_set(self):
-        """get_enabled_modules decodes the modules claim into a set."""
-        from ui.config import get_enabled_modules
-        req = self._make_request(["celerp-docs", "celerp-inventory"])
-        result = get_enabled_modules(req)
-        assert result == {"celerp-docs", "celerp-inventory"}
-
-    def test_get_enabled_modules_empty_list(self):
-        """Empty modules list returns empty set (triggers show-all fallback)."""
-        from ui.config import get_enabled_modules
-        req = self._make_request([])
-        assert get_enabled_modules(req) == set()
-
-    def test_get_enabled_modules_missing_claim(self):
-        """JWT without modules claim returns empty set (show-all fallback for old tokens)."""
-        from ui.config import get_enabled_modules
-        req = self._make_request(None)
-        assert get_enabled_modules(req) == set()
-
-    def test_jwt_modules_claim_embedded_by_create_access_token(self):
-        """create_access_token embeds modules list in the JWT payload."""
-        import base64, json
-        from celerp.services.auth import create_access_token
-        token, _ = create_access_token(
-            "user-1", "company-1", "owner", snonce="n", modules=["celerp-docs", "celerp-inventory"]
-        )
-        payload_b64 = token.split(".")[1]
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=="))
-        assert set(payload["modules"]) == {"celerp-docs", "celerp-inventory"}
-
-    def test_jwt_no_modules_defaults_to_empty_list(self):
-        """create_access_token with no modules arg embeds empty list."""
-        import base64, json
-        from celerp.services.auth import create_access_token
-        token, _ = create_access_token("user-1", "company-1", "owner", snonce="n")
-        payload_b64 = token.split(".")[1]
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=="))
-        assert payload["modules"] == []
-
-    def test_sidebar_hides_module_items_not_in_jwt(self):
-        """Nav items from modules not in the JWT modules claim are excluded from sidebar."""
-        from ui.components.shell import _sidebar
+    @pytest.fixture
+    def nav(self):
         from celerp.modules import slots
-
         slots.clear()
         slots.register("nav", {"key": "docs-nav", "label": "Documents", "href": "/documents",
                                 "order": 10, "_module": "celerp-docs"})
         slots.register("nav", {"key": "inv-nav", "label": "Inventory", "href": "/inventory",
                                 "order": 20, "_module": "celerp-inventory"})
-        try:
-            req = self._make_request(["celerp-docs"])  # only docs enabled
-            html = str(_sidebar("", request=req))
-            assert "Documents" in html
-            assert "Inventory" not in html
-        finally:
-            slots.clear()
-
-    def test_sidebar_shows_all_when_modules_empty(self):
-        """Empty modules set (no claim) shows all module nav items as safe fallback."""
-        from ui.components.shell import _sidebar
-        from celerp.modules import slots
-
-        slots.clear()
-        slots.register("nav", {"key": "docs-nav", "label": "Documents", "href": "/documents",
-                                "order": 10, "_module": "celerp-docs"})
-        slots.register("nav", {"key": "inv-nav", "label": "Inventory", "href": "/inventory",
-                                "order": 20, "_module": "celerp-inventory"})
-        try:
-            req = self._make_request(None)  # no modules claim → show all
-            html = str(_sidebar("", request=req))
-            assert "Documents" in html
-            assert "Inventory" in html
-        finally:
-            slots.clear()
-
-    def test_sidebar_core_folded_nav_ignores_modules_claim(self):
-        """Core-folded components (AI) stay in the sidebar even when the JWT
-        modules claim lists other modules only: they are wired at app
-        construction, never per-company enabled, and their pages do their own
-        plan gating (the AI page shows the showcase ad until a paid plan)."""
-        from ui.components.shell import _sidebar
-        from celerp.modules import slots
-
-        slots.clear()
         slots.register("nav", {"key": "ai", "label": "AI Assistant", "href": "/ai",
                                 "order": 90, "_module": "celerp-ai"})
-        slots.register("nav", {"key": "inv-nav", "label": "Inventory", "href": "/inventory",
-                                "order": 20, "_module": "celerp-inventory"})
-        try:
-            req = self._make_request(["celerp-docs"])  # claim excludes both
-            html = str(_sidebar("", request=req))
-            assert "AI Assistant" in html   # core-folded: always present
-            assert "Inventory" not in html  # regular module: still filtered
-        finally:
-            slots.clear()
-
-    def test_kernel_nav_always_visible(self):
-        """Kernel nav entries (no _module) always show regardless of modules claim."""
-        from ui.components.shell import _sidebar
-        from celerp.modules import slots
-
+        yield
         slots.clear()
-        try:
-            req = self._make_request(["celerp-docs"])  # only docs enabled
-            html = str(_sidebar("", request=req))
-            # Dashboard is a kernel entry - must always be present
-            assert "Dashboard" in html or "dashboard" in html.lower()
-        finally:
-            slots.clear()
+
+    def _html(self, settings, modules=None) -> str:
+        from ui.components.shell import _sidebar
+        return str(_sidebar("", request=self._request(modules), settings=settings))
+
+    def test_sidebar_hides_modules_the_company_does_not_use(self, nav):
+        html = self._html({"enabled_modules": ["celerp-docs"]})
+        assert "Documents" in html
+        assert "Inventory" not in html
+
+    def test_sidebar_ignores_a_stale_token_modules_claim(self, nav):
+        """A token minted before the company turned a module off still lists it;
+        the sidebar follows the company's current settings instead."""
+        html = self._html({"enabled_modules": ["celerp-docs"]},
+                          modules=["celerp-docs", "celerp-inventory"])
+        assert "Inventory" not in html
+        html = self._html({"enabled_modules": ["celerp-docs", "celerp-inventory"]},
+                          modules=["celerp-docs"])
+        assert "Inventory" in html
+
+    def test_sidebar_shows_every_loaded_module_before_a_first_choice(self, nav):
+        html = self._html({})
+        assert "Documents" in html
+        assert "Inventory" in html
+
+    def test_sidebar_core_folded_nav_always_shows(self, nav):
+        """Core-folded components (AI) are wired at app construction, never per
+        company, and their pages do their own plan gating."""
+        html = self._html({"enabled_modules": ["celerp-docs"]})
+        assert "AI Assistant" in html
+        assert "Inventory" not in html
+
+    def test_kernel_nav_always_visible(self, nav):
+        html = self._html({"enabled_modules": []})
+        assert "dashboard" in html.lower()
 
 
 # ── T1: Collapsible sidebar ──────────────────────────────────────────────────

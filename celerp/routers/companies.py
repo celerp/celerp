@@ -905,16 +905,8 @@ async def get_category_schema(category: str, company_id=Depends(get_current_comp
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
-    cat_schemas: dict = company.settings.get("category_schemas") or {}
-    saved = cat_schemas.get(category)
-    if saved is not None:
-        return saved
-    # Fall back to module-contributed defaults (category_schema slot)
-    from celerp.modules.slots import get as get_slot
-    for contrib in get_slot("category_schema"):
-        if contrib.get("category") == category:
-            return contrib.get("fields") or []
-    return []
+    from celerp.services.field_schema import all_category_schemas
+    return all_category_schemas(company.settings or {}).get(category, [])
 
 
 @router.patch("/me/category-schema/{category}")
@@ -1660,11 +1652,11 @@ async def list_modules(
         loaded_modules, read_manifest_metadata,
     )
     from celerp.modules.meta import read_meta
-    from celerp.modules.registry import get_enabled
+    from celerp.modules.registry import company_modules
 
     company = await session.get(Company, company_id)
     settings_dict: dict = company.settings or {} if company else {}
-    enabled_names = get_enabled(settings_dict)
+    enabled_names = company_modules(settings_dict)
     loaded_by_name: dict[str, dict] = {m["name"]: m for m in loaded_modules()}
     load_errs = load_errors()
     module_dir_raw = os.environ.get("MODULE_DIR", "")
@@ -1753,18 +1745,21 @@ async def enable_module(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Enable a module. Requires admin. A restart is required for changes to take effect."""
-    from celerp.modules.registry import enable, get_enabled
-    from celerp.config import set_enabled_modules
+    """Turn a module on for this company, with the modules it needs."""
+    from celerp.modules.registry import enable_for_company, get_enabled, restart_needed, sync_load_set
 
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
-    company.settings = enable(company.settings or {}, module_name)
+    company.settings, also_enabled = enable_for_company(company.settings, module_name)
+    await sync_load_set(session)
     await session.commit()
-    await asyncio.to_thread(set_enabled_modules, [module_name])
-    enabled_list = sorted(get_enabled(company.settings))
-    return {"ok": True, "name": module_name, "enabled": True, "restart_required": True, "enabled_modules": enabled_list}
+    return {
+        "ok": True, "name": module_name, "enabled": True,
+        "also_enabled": also_enabled,
+        "restart_required": restart_needed([module_name, *also_enabled]),
+        "enabled_modules": sorted(get_enabled(company.settings)),
+    }
 
 
 @router.post("/me/modules/{module_name}/disable", dependencies=[require_permission("manage_company_settings")])
@@ -1773,44 +1768,53 @@ async def disable_module(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Disable a module. Requires admin. A restart is required for changes to take effect."""
-    from celerp.modules.registry import disable, get_enabled
-    from celerp.config import remove_enabled_module
+    """Turn a module off for this company. Other companies keep using it."""
+    from celerp.modules.registry import ModuleStillNeeded, disable_for_company, get_enabled, sync_load_set
 
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
-    company.settings = disable(company.settings or {}, module_name)
+    try:
+        company.settings = disable_for_company(company.settings, module_name)
+    except ModuleStillNeeded as exc:
+        from celerp.modules.loader import module_label
+        raise HTTPException(status_code=409, detail=(
+            f"{', '.join(module_label(n) for n in exc.needed_by)} needs this module. "
+            "Turn that off first."))
+    await sync_load_set(session)
     await session.commit()
-    # Remove from config file so the next restart honours the disable, keeping
-    # DB and file in sync.
-    await asyncio.to_thread(remove_enabled_module, module_name)
-    enabled_list = sorted(get_enabled(company.settings))
-    return {"ok": True, "name": module_name, "enabled": False, "restart_required": True, "enabled_modules": enabled_list}
+    return {
+        "ok": True, "name": module_name, "enabled": False, "restart_required": False,
+        "enabled_modules": sorted(get_enabled(company.settings)),
+    }
+
+
+async def _refuse_while_in_use(session: AsyncSession, module_name: str, action: str) -> None:
+    """409 while any company uses the module or it is still running."""
+    from celerp.modules.loader import is_running
+    from celerp.modules.registry import load_set
+    if module_name in await load_set(session) or is_running(module_name):
+        raise HTTPException(
+            status_code=409,
+            detail=f"A company still uses this module, or it is still running. "
+                   f"Turn it off in every company and restart before {action}.")
 
 
 @router.post("/me/modules/{module_name}/delete", dependencies=[Depends(require_install_owner)])
 async def delete_module(
     module_name: str,
-    company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Delete a disabled, non-default module, freeing its name for re-import. Installation owner only.
+    """Delete a non-default module no company uses, freeing its name for re-import.
+    Installation owner only.
 
-    Refused for default modules (bundled, undeletable) and for any module that is
-    still enabled or running - a running module is disabled first, from the same
-    row. Removing the folder frees the name so the same package can be imported
+    Refused for default modules (bundled, undeletable) and for any module a
+    company still uses or that is still running. Removing the folder frees the name so the same package can be imported
     again later.
     """
     import asyncio
     from celerp.modules.importer import ModuleImportError, remove_module_dir
-    from celerp.modules.loader import is_first_party, is_running, resolve_module_path
-    from celerp.modules.registry import disable, get_enabled
-    from celerp.config import remove_enabled_module
-
-    company = await locked_company(session, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
+    from celerp.modules.loader import is_first_party, resolve_module_path
 
     pkg_path = resolve_module_path(module_name)
     if pkg_path is None:
@@ -1820,21 +1824,13 @@ async def delete_module(
     # after a default is shielded from deletion.
     if is_first_party(pkg_path):
         raise HTTPException(status_code=409, detail="Default modules cannot be deleted.")
-    if module_name in get_enabled(company.settings or {}) or is_running(module_name):
-        raise HTTPException(
-            status_code=409,
-            detail="Disable this module and restart before deleting it.")
+    await _refuse_while_in_use(session, module_name, "deleting it")
 
     try:
         await asyncio.to_thread(remove_module_dir, module_name)
     except ModuleImportError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
-    # Prune the freed name from both enabled stores so a later re-import starts
-    # clean (mirrors disable's dual-store write: settings + config file).
-    company.settings = disable(company.settings or {}, module_name)
-    await session.commit()
-    await asyncio.to_thread(remove_enabled_module, module_name)
     return {"ok": True, "name": module_name}
 
 
@@ -1895,33 +1891,23 @@ def _is_fk_dependency_error(exc: Exception) -> bool:
 @router.post("/me/modules/{module_name}/purge-data", dependencies=[Depends(require_install_owner)])
 async def purge_module_data(
     module_name: str,
-    company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Drop every table carrying the module's declared prefix, in one transaction. Installation owner only.
 
-    Refused while the module is still enabled or running: its data must be quiet
-    before it is dropped, so the admin disables and restarts first, from the same
-    row. The drop list is re-derived from the manifest prefix server-side; no
+    Refused while any company uses the module or it is still running: its data
+    must be quiet before it is dropped. The drop list is re-derived from the manifest prefix server-side; no
     client-sent preview is trusted. A module with no matching tables is a clean
     no-op success. A table outside the module still depending on one of these
     tables blocks the whole drop, which rolls back with a plain explanation.
     Deleting the module folder is a separate action and does not touch these tables.
     """
-    from celerp.modules.loader import is_running, read_manifest, resolve_module_path
-    from celerp.modules.registry import get_enabled
-
-    company = await session.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
+    from celerp.modules.loader import read_manifest, resolve_module_path
 
     pkg_path = resolve_module_path(module_name)
     if pkg_path is None:
         raise HTTPException(status_code=404, detail="Module not found.")
-    if module_name in get_enabled(company.settings or {}) or is_running(module_name):
-        raise HTTPException(
-            status_code=409,
-            detail="Disable this module and restart before purging its data.")
+    await _refuse_while_in_use(session, module_name, "purging its data")
 
     prefix = (read_manifest(pkg_path) or {}).get("table_prefix") or ""
     if prefix:

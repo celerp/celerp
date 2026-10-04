@@ -230,7 +230,8 @@ async def _fake_ui(api: _CompanyApi, method: str, path: str, *, role: str = "own
          patch("ui.api_client.get_company", new=api.get_company), \
          patch("ui.api_client.patch_company", new=api.patch_company), \
          patch("ui.api_client.set_business_type", new=api.set_business_type), \
-         patch("ui.api_client.restart_system", new=api.restart_system):
+         patch("ui.api_client.restart_system", new=api.restart_system), \
+         patch("ui.api_client.installation_owner", new=AsyncMock(return_value=True)):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
             return await c.request(method, path,
                                    cookies={"celerp_token": make_test_token(role=role), **(cookies or {})},
@@ -297,7 +298,8 @@ async def _post_setup(vertical: str, *, set_type, patch_company, restart=None):
     from ui.app import app as ui_app
     with patch("ui.api_client.patch_company", new=patch_company), \
          patch("ui.api_client.set_business_type", new=set_type), \
-         patch("ui.api_client.restart_system", new=restart or AsyncMock(return_value={})):
+         patch("ui.api_client.restart_system", new=restart or AsyncMock(return_value={})), \
+         patch("ui.api_client.installation_owner", new=AsyncMock(return_value=True)):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
             return await c.post(
                 "/setup/company",

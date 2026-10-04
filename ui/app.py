@@ -309,6 +309,53 @@ app = FastHTML(
     on_shutdown=[_close_ui_api_client, _release_version_fence],
 )
 
+
+
+class ModuleGateMiddleware:
+    """Pure ASGI middleware: a module's pages answer only for a company that
+    uses the module. Inside TokenRefreshMiddleware, so it reads the refreshed
+    token."""
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        from celerp.modules.loader import route_module
+        module = route_module(scope) if scope["type"] == "http" else None
+        if module is None:
+            await self._app(scope, receive, send)
+            return
+        request = Request(scope, receive)
+        refusal = await _module_refusal(request, module)
+        await (refusal or self._app)(scope, receive, send)
+
+
+async def _module_refusal(request: Request, module: str) -> Response | None:
+    from celerp.modules.registry import uses_module
+    import ui.api_client as api
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        return _auth_guard(request)
+    try:
+        if uses_module((await api.get_company(token)).get("settings"), module):
+            return None
+    except _APIError as exc:
+        if exc.status == 401:
+            return _401_redirect(str(exc.detail or ""), request)
+    from fasthtml.common import to_xml
+    from ui.components.shell import base_shell, page_header
+    from ui.i18n import t
+    page = await base_shell(
+        page_header(t("modules.off_for_company_title")),
+        Div(P(t("modules.off_for_company"), cls="flash flash--error"),
+            A(t("error.back_to_dashboard"), href="/dashboard", cls="btn btn--primary"),
+            cls="content-area"),
+        title=t("modules.off_for_company_title"),
+    )
+    return HTMLResponse(to_xml(page), status_code=403)
+
+
+app.add_middleware(ModuleGateMiddleware)
 app.add_middleware(TokenRefreshMiddleware)
 
 

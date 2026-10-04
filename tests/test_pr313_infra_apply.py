@@ -99,6 +99,7 @@ async def client(monkeypatch):
     """A minimal FastHTML app carrying the settings-cloud routes, with the
     permission gate opened and a token present so handlers run their bodies."""
     monkeypatch.setattr(sc, "_check_permission", AsyncMock(return_value=None), raising=False)
+    monkeypatch.setattr("ui.api_client.installation_owner", AsyncMock(return_value=True))
     monkeypatch.setattr(sc, "_token", lambda req: "tok", raising=False)
     # These infra flows exercise the authenticated, ACTIVE-entitled admin path;
     # grant a live Team entitlement so the server-side entitlement guard passes

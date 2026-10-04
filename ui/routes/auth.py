@@ -450,7 +450,8 @@ def setup_routes(app):
             await api_get_company(token)
         except APIError:
             return RedirectResponse("/login", status_code=302)
-        return _onboarding_page(request)
+        pending = request.query_params.get("modules") == "pending"
+        return _onboarding_page(request, notice=t("onboarding.modules_pending") if pending else None)
 
     @app.post("/onboarding/complete")
     async def onboarding_complete(request: Request):
@@ -848,15 +849,15 @@ _ONBOARDING_ACTIONS: tuple[tuple[str, str, str, bool], ...] = (
 )
 
 
-def _onboarding_page(request: Request, error: str | None = None) -> FT:
+def _onboarding_page(request: Request, error: str | None = None, notice: str | None = None) -> FT:
     registered = {getattr(r, "path", None) for r in request.app.routes}
     return auth_shell(
-        _onboarding_view(registered, error=error),
+        _onboarding_view(registered, error=error, notice=notice),
         title=page_title("page.get_started"),
     )
 
 
-def _onboarding_view(registered: set[str], error: str | None = None) -> FT:
+def _onboarding_view(registered: set[str], error: str | None = None, notice: str | None = None) -> FT:
     """The getting-started hub. Only actions whose page is registered in this
     installation are offered."""
     cards = [
@@ -871,6 +872,7 @@ def _onboarding_view(registered: set[str], error: str | None = None) -> FT:
     ]
     return Div(
         auth_header(t("onboarding.title"), t("onboarding.subtitle")),
+        flash(notice, kind="info") if notice else "",
         H2(t("onboarding.bring_in_data"), cls="section-title"),
         Div(*cards, cls="quick-links-grid"),
         Div(

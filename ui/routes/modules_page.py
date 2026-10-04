@@ -1187,13 +1187,17 @@ def setup_routes(app):
             return redirect
         lang = get_lang(request)
         try:
-            await api.enable_module(token, module_name)
+            result = await api.enable_module(token, module_name)
             modules = await api.get_modules(token)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             return _unavailable_panel(lang)
-        return _local_panel(modules, lang=lang, owner=await api.installation_owner(token))
+        labels = {m.get("name"): m.get("label") or m.get("name") for m in modules}
+        also = [labels.get(n, n) for n in result.get("also_enabled") or []]
+        notice = t("modules.also_enabled", lang, names=", ".join(also)) if also else None
+        return _toast(_local_panel(modules, lang=lang, owner=await api.installation_owner(token)),
+                      notice, error=False)
 
     @app.post("/modules/{module_name}/disable")
     async def module_disable(request: Request, module_name: str):
@@ -1201,14 +1205,20 @@ def setup_routes(app):
         if redirect:
             return redirect
         lang = get_lang(request)
+        refused = None
         try:
-            await api.disable_module(token, module_name)
+            try:
+                await api.disable_module(token, module_name)
+            except APIError as e:
+                if e.status != 409:
+                    raise
+                refused = e.detail
             modules = await api.get_modules(token)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             return _unavailable_panel(lang)
-        return _local_panel(modules, lang=lang, owner=await api.installation_owner(token))
+        return _toast(_local_panel(modules, lang=lang, owner=await api.installation_owner(token)), refused)
 
     @app.get("/modules/{module_name}/delete-options")
     async def module_delete_options(request: Request, module_name: str):

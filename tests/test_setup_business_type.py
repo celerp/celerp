@@ -87,6 +87,7 @@ class TestSetupSubmit:
             "patch_company": patch_company or AsyncMock(return_value={}),
             "set_business_type": set_type or AsyncMock(return_value={"restart_required": False}),
             "restart_system": AsyncMock(return_value={"ok": True}),
+            "installation_owner": AsyncMock(return_value=True),
         }
         for name, mock in mocks.items():
             stack.enter_context(patch(f"ui.api_client.{name}", new=mock))
@@ -249,9 +250,25 @@ class TestSetupRestart:
                                       new=AsyncMock(return_value={"restart_required": True})))
             stack.enter_context(patch("ui.api_client.restart_system",
                                       new=AsyncMock(side_effect=httpx.RemoteProtocolError("server closed"))))
+            stack.enter_context(patch("ui.api_client.installation_owner", new=AsyncMock(return_value=True)))
             r = await ui_client.post("/setup/company", data=_FULL_FORM, cookies=_authed())
         assert r.status_code == 302
         assert r.headers["location"].endswith("/setup/activating")
+
+    @pytest.mark.asyncio
+    async def test_setup_by_someone_else_than_the_installation_owner_leaves_the_restart_to_them(
+            self, ui_client):
+        restart = AsyncMock(return_value={"ok": True})
+        with ExitStack() as stack:
+            stack.enter_context(patch("ui.api_client.patch_company", new=AsyncMock(return_value={})))
+            stack.enter_context(patch("ui.api_client.set_business_type",
+                                      new=AsyncMock(return_value={"restart_required": True})))
+            stack.enter_context(patch("ui.api_client.restart_system", new=restart))
+            stack.enter_context(patch("ui.api_client.installation_owner", new=AsyncMock(return_value=False)))
+            r = await ui_client.post("/setup/company", data=_FULL_FORM, cookies=_authed())
+        assert r.status_code == 302
+        assert r.headers["location"] == "/onboarding?modules=pending"
+        restart.assert_not_awaited()
 
 
 _CHANGES = {"categories_added": ["Diamond", "Ruby"], "modules_enabled": ["Manufacturing"],
