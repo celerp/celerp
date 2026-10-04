@@ -199,6 +199,22 @@ def _require_open(state: dict, action: str) -> None:
                      status=state.get("status"), action=action)
 
 
+async def _require_executable_shape(op: _Op, state: dict) -> None:
+    """A run goes ahead (Issue, Receive, Complete) only as a run can be made today: every
+    component at a quantity above zero, making a named product. Only an older release stored
+    one otherwise; it can still be unwound (Return, Undo Receipt, Cancel)."""
+    bad = [i.get("item_id") for i in state.get("inputs", []) if not float(i.get("quantity") or 0) > 0]
+    if bad:
+        rows = [await op.session.get(Projection, {"company_id": op.company_id, "entity_id": i}) for i in bad]
+        names = ", ".join(((r.state or {}).get("sku") if r is not None else None) or i for r, i in zip(rows, bad))
+        raise refuse(409, "run_shape", f"This run lists {names} at a quantity of zero or below, so it cannot go "
+                     "ahead. Return what was issued to it and cancel it, then make it again with the quantities "
+                     "it needs.", items=names)
+    if not state.get("output_item_id"):
+        raise refuse(409, "no_output", "This run does not name the product it makes, so it cannot go ahead. "
+                     "Choose its product, or return what was issued to it and cancel it.")
+
+
 def _wip(state: dict) -> Decimal:
     """What the run holds: issued value not yet moved to its lots or waste."""
     return _money(state.get("wip_issued")) - _money(state.get("wip_transferred")) - _money(state.get("wip_wasted"))
@@ -254,6 +270,7 @@ async def issue(session: AsyncSession, company_id, user_id, order_id: str, items
         return {"issued": stored.data.get("items") or [], "value": stored.data.get("value")}
     run = await _run(op)
     _require_open(run.state, "issued to")
+    await _require_executable_shape(op, run.state)
     _require_settled(op, run.state)
     return await _issue(op, run, _requested(run.state, items), rk, request)
 
@@ -466,6 +483,7 @@ async def receive(session: AsyncSession, company_id, user_id, order_id: str, qua
         return {"received": stored.data.get("quantity"), "lot_item_id": stored.data.get("lot_item_id")}
     run = await _run(op)
     _require_open(run.state, "received into")
+    await _require_executable_shape(op, run.state)
     _require_settled(op, run.state)
     qty = outstanding_output(run.state) if quantity is None else float(quantity)
     lot_id = await _receive(op, run, qty, rk, request)
@@ -550,6 +568,7 @@ async def complete(session: AsyncSession, company_id, user_id, order_id: str, pa
         return {"status": "completed"}
     run = await _run(op)
     _require_open(run.state, "completed")
+    await _require_executable_shape(op, run.state)
     _require_settled(op, run.state)
     wasted, names = await _waste_request(op, run.state, payload)
     # Completing issues what is outstanding, so the waste is checked against that before anything moves.
@@ -564,7 +583,7 @@ async def complete(session: AsyncSession, company_id, user_id, order_id: str, pa
         await _issue(op, run, outstanding, f"{rk}:issue", request)
         run = await _run(op)
     qty = outstanding_output(run.state) if quantity is None else float(quantity)
-    if qty > _EPS and run.state.get("output_item_id"):
+    if qty > _EPS:
         await _receive(op, run, qty, f"{rk}:receive", request)
         run = await _run(op)
     await _close(op, run, payload, request, rk, wasted, names)
@@ -1162,6 +1181,7 @@ async def _settle(session: AsyncSession, company_id) -> None:
                           wip_code, total, {}, equity=-total)
         await op.emit_run("mfg.order.wip_opened", {
             "issued": str(total), "transferred": "0", "receipts": [],
+            "components": [{"item_id": lot, "value": str(v)} for lot, v in sorted(values[order].items())],
             "wip_account_code": wip_code if books and total else None}, f"mfg:{order}:wip-opened")
     for run in unbooked:
         state = rows[run.entity_id].state

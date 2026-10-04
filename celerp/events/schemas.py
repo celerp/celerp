@@ -933,8 +933,10 @@ class MfgOrderReceived(BaseModel):
 
 
 class MfgOrderWipOpened(BaseModel):
-    # An older run's work in progress, reconstructed from its own history.
+    # An older run's work in progress, reconstructed from its own history: in all, and each
+    # component's value ({item_id, value}).
     issued: str
+    components: list[dict[str, Any]] = Field(default_factory=list)
     transferred: str
     receipts: list[dict[str, Any]] = Field(default_factory=list)
     wip_account_code: str | None = None

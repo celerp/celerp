@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -92,14 +93,45 @@ async def last_started_on_older_release(session) -> None:
     await session.commit()
 
 
-def register_startup_hooks(slots) -> None:
-    """Register the bundled modules' start hooks in the order the module loader loads them."""
+_START_SLOTS = ("on_modules_ready", "inventory_in_production")
+
+
+@contextmanager
+def startup_hooks():
+    """The bundled modules' start hooks registered, in the order the module loader loads
+    them, for as long as the block runs."""
+    from celerp.modules import slots
     from celerp.modules.loader import _topo_sort, read_manifest
 
+    saved = {s: slots.get(s) for s in _START_SLOTS}
+    for s in _START_SLOTS:
+        slots._slots[s] = []
     pkgs = sorted(p for p in (_ROOT / "default_modules").iterdir() if (p / "__init__.py").exists())
     for pkg in _topo_sort(pkgs, {p.name for p in pkgs}):
         manifest_slots = read_manifest(pkg).get("slots") or {}
-        for slot in ("on_modules_ready", "inventory_in_production"):
+        for slot in _START_SLOTS:
             contribs = manifest_slots.get(slot) or []
             for c in contribs if isinstance(contribs, list) else [contribs]:
                 slots.register(slot, {**c, "_module": pkg.name})
+    try:
+        yield
+    finally:
+        for s, v in saved.items():
+            slots._slots[s] = v
+
+
+async def start() -> None:
+    """The normal start of this release on what the older release left (needs the ``client``
+    fixture, which routes the start's own sessions to the test's)."""
+    from celerp.main import _bring_data_current
+
+    with startup_hooks():
+        await _bring_data_current(modules_ready=True)
+
+
+async def upgraded(session, company: str = "main") -> dict:
+    """``company`` as the older release left it, after this release's first start on it."""
+    old = await load(session, company)
+    await last_started_on_older_release(session)
+    await start()
+    return old

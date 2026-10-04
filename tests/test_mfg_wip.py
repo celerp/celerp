@@ -308,8 +308,9 @@ async def test_complete_sends_waste_to_cost_of_goods_sold_and_leaves_the_run_emp
 
 
 @pytest.mark.asyncio
-async def test_an_older_run_with_no_output_completes_only_with_everything_recorded_as_waste(client, session, auth):
-    """A run an older release created without naming a product has nothing to receive."""
+async def test_an_older_run_with_no_output_does_not_go_ahead(client, session, auth):
+    """A run an older release created without naming a product has nothing to receive into,
+    so it issues, receives and completes nothing until its product is chosen."""
     raw = await _item(client, auth, 100.0, qty=10)
     order = f"mfg:{uuid.uuid4()}"
     await emit_event(session, company_id=auth["company_id"], entity_id=order, entity_type="mfg_order",
@@ -318,19 +319,12 @@ async def test_an_older_run_with_no_output_completes_only_with_everything_record
                      actor_id=auth["user_id"], location_id=None, source="api", idempotency_key=str(uuid.uuid4()),
                      metadata_={})
     await session.commit()
-    cogs, wip = await role(session, auth, COGS), await role(session, auth, WIP)
-    assert (await issue(client, auth, order, key="i")).status_code == 200
 
     before = await snapshot(session, auth, raw, order)
-    refusal(await complete(client, auth, order, key="c"), 409, "unaccounted_value")
+    refusal(await issue(client, auth, order, key="i"), 409, "no_output")
+    refusal(await receive(client, auth, order, 1, key="r"), 409, "no_output")
+    refusal(await complete(client, auth, order, key="c", waste_quantity=10, waste_reason="trial"), 409, "no_output")
     assert await snapshot(session, auth, raw, order) == before
-    await assert_settled(client, session, auth)
-
-    r = await complete(client, auth, order, key="c", waste_quantity=10, waste_reason="trial")
-    assert r.status_code == 200, r.text
-    assert await lines(session, auth, f"je:auto:{order}:complete:c") == sorted([
-        (wip, (WIP,), 0.0, 100.0), (cogs, (COGS,), 100.0, 0.0)])
-    assert (await snapshot(session, auth))["items"] == before["items"]
     await assert_settled(client, session, auth)
 
 

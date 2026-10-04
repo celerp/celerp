@@ -6,6 +6,8 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal
 
+from .expansion import merge_inputs
+
 # The run's own accounting facts. Only movement events write them, so a created event (from an
 # import or any other caller) can never carry them in. Older runs replay with the defaults: a run
 # with movement but no recorded value is marked untracked until the upgrade settles it.
@@ -21,6 +23,18 @@ def _money(value) -> str:
 
 def _add(current: dict, key: str, value) -> None:
     current[key] = _money(Decimal(current.get(key) or "0") + Decimal(str(value or 0)))
+
+
+def _issued_values(current: dict, data: dict) -> None:
+    """Each component's value as ``data["components"]`` records it, for the components it names."""
+    values = {c.get("item_id"): c.get("value") for c in data.get("components") or []}
+    for inp in current.get("inputs", []):
+        if inp.get("item_id") in values:
+            inp["issued_value"] = _money(values[inp["item_id"]])
+
+
+def _positive(line: dict) -> bool:
+    return float(line.get("quantity") or 0) > 0
 
 
 def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
@@ -39,9 +53,15 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         # The lots this run has produced, in receipt order - the run's own record of its output,
         # used to re-cost them at completion without scanning every item.
         current.setdefault("received_lots", [])
-        # What was issued, and the value it took, are written only by movements.
-        current["inputs"] = [{**{k: v for k, v in i.items() if k != "issued_value"},
-                              "issued_qty": float(i.get("issued_qty") or 0)} for i in current.get("inputs", [])]
+        # One line per component: a component listed on two lines needs both amounts. A line at
+        # zero or below (only an older release stored one) is kept as written, after them, and
+        # holds the run back from going ahead (movements.run_shape_problem). What was issued,
+        # and the value it took, are written only by movements.
+        lines = [{k: v for k, v in i.items() if k not in ("issued_qty", "issued_value")}
+                 for i in current.get("inputs", [])]
+        valid = [i for i in lines if _positive(i)]
+        current["inputs"] = [{**i, "issued_qty": 0.0}
+                             for i in [*merge_inputs(valid), *(i for i in lines if not _positive(i))]]
     elif event_type == "mfg.order.started":
         current["status"] = "in_progress"
         current["is_in_production"] = True
@@ -139,7 +159,9 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
             current["wip_transferred"] = _money(data["transferred"])
             current["wip_wasted"] = _money(data.get("wasted"))
     elif event_type == "mfg.order.wip_opened":
-        # An older run's value, reconstructed from its own history when it was settled.
+        # An older run's value, reconstructed from its own history when it was settled: in all,
+        # and for each component, so a return gives back exactly what each took.
+        _issued_values(current, data)
         current["wip_issued"] = _money(data.get("issued"))
         current["wip_transferred"] = _money(data.get("transferred"))
         current["receipts"] = list(data.get("receipts") or [])
@@ -149,10 +171,7 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "mfg.order.wip_reconciled":
         # The run was issued what the user stated, and output received before it took the
         # share the reconciliation recorded for each lot.
-        values = {c.get("item_id"): c.get("value") for c in data.get("components") or []}
-        for inp in current.get("inputs", []):
-            if inp.get("item_id") in values:
-                inp["issued_value"] = _money(values[inp["item_id"]])
+        _issued_values(current, data)
         current["wip_issued"] = _money(data.get("issued"))
         current["wip_transferred"] = _money(data.get("transferred"))
         current.pop("wip_wasted", None)

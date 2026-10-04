@@ -18,21 +18,9 @@ import pytest
 
 import pre366
 from celerp.models.projections import Projection
-from celerp.modules import slots
 from stock_books import assert_wip_carried
 
 pytestmark = pytest.mark.asyncio
-
-
-@pytest.fixture
-def startup_hooks():
-    saved = {s: slots.get(s) for s in ("on_modules_ready", "inventory_in_production")}
-    for s in saved:
-        slots._slots[s] = []
-    pre366.register_startup_hooks(slots)
-    yield
-    for s, v in saved.items():
-        slots._slots[s] = v
 
 
 async def _meta(session, key: str) -> str | None:
@@ -52,9 +40,8 @@ def _issued(state: dict, item: str) -> float:
     return sum(float(i.get("issued_qty") or 0) for i in state["inputs"] if i["item_id"] == item)
 
 
-async def test_release_upgrade_rebuilds_projections_and_settles_runs_in_the_same_start(client, session, startup_hooks):
+async def test_release_upgrade_rebuilds_projections_and_settles_runs_in_the_same_start(client, session):
     from celerp import __version__
-    from celerp.main import _bring_data_current
     from celerp.services.dev_release_guard import PROJECTION_SEMANTICS, PROJECTION_SEMANTICS_KEY
 
     old = await pre366.load(session)
@@ -63,7 +50,7 @@ async def test_release_upgrade_rebuilds_projections_and_settles_runs_in_the_same
     # though 3 were issued.
     assert _issued(await _run(session, old, "dup_issued"), old["items"]["A"]) == 4
 
-    await _bring_data_current(modules_ready=True)
+    await pre366.start()
 
     assert _issued(await _run(session, old, "dup_issued"), old["items"]["A"]) == 3
     settled = await _run(session, old, "settle")
@@ -75,8 +62,7 @@ async def test_release_upgrade_rebuilds_projections_and_settles_runs_in_the_same
     assert await _meta(session, "projection_version") == __version__
 
 
-async def test_a_start_with_current_projection_semantics_rebuilds_nothing(client, session, startup_hooks):
-    from celerp.main import _bring_data_current
+async def test_a_start_with_current_projection_semantics_rebuilds_nothing(client, session):
     from celerp.migrations._data_reconcile import set_meta
     from celerp.services.dev_release_guard import PROJECTION_SEMANTICS, PROJECTION_SEMANTICS_KEY
 
@@ -86,7 +72,7 @@ async def test_a_start_with_current_projection_semantics_rebuilds_nothing(client
     await conn.run_sync(lambda c: set_meta(c, PROJECTION_SEMANTICS_KEY, str(PROJECTION_SEMANTICS)))
     await session.commit()
 
-    await _bring_data_current(modules_ready=True)
+    await pre366.start()
 
     # The stored projection is untouched: no rebuild replayed the ledger over it.
     assert _issued(await _run(session, old, "dup_issued"), old["items"]["A"]) == 4
