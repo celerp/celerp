@@ -64,7 +64,7 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("received_lots", [])
         # One line per component: a component listed on two lines needs both amounts. A line at
         # zero or below (only an older release stored one) is kept as written, after them, and
-        # holds the run back from going ahead (movements.run_shape_problem). What was issued,
+        # holds the run back from going ahead (movements._require_executable_shape). What was issued,
         # and the value it took, are written only by movements.
         lines = [{k: v for k, v in i.items() if k not in ("issued_qty", "issued_value")}
                  for i in current.get("inputs", [])]

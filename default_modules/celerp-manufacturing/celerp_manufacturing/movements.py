@@ -201,10 +201,22 @@ def _require_open(state: dict, action: str) -> None:
                      status=state.get("status"), action=action)
 
 
+def _require_one_output(state: dict) -> None:
+    """A run expects exactly one product at a quantity above zero. Only an older release
+    stored one otherwise (none, at zero or below, or several), and nothing says what it makes
+    or how much: it can only be unwound."""
+    outputs = state.get("expected_outputs") or []
+    if len(outputs) != 1 or not float(outputs[0].get("quantity") or 0) > 0:
+        raise refuse(409, "output_shape", "This run does not expect exactly one product at a quantity above "
+                     "zero, so it cannot go ahead. Return what was issued to it and cancel it, then make it "
+                     "again with the product and quantity it makes.")
+
+
 async def _require_executable_shape(op: _Op, state: dict) -> None:
     """A run goes ahead (Issue, Receive, Complete) only as a run can be made today: every
-    component at a quantity above zero, making a named product. Only an older release stored
-    one otherwise; it can still be unwound (Return, Undo Receipt, Cancel)."""
+    component at a quantity above zero, making one named product at a quantity above zero.
+    Only an older release stored one otherwise; it can still be unwound (Return, Undo
+    Receipt, Cancel)."""
     bad = [i.get("item_id") for i in state.get("inputs", []) if not float(i.get("quantity") or 0) > 0]
     if bad:
         rows = [await op.session.get(Projection, {"company_id": op.company_id, "entity_id": i}) for i in bad]
@@ -212,6 +224,7 @@ async def _require_executable_shape(op: _Op, state: dict) -> None:
         raise refuse(409, "run_shape", f"This run lists {names} at a quantity of zero or below, so it cannot go "
                      "ahead. Return what was issued to it and cancel it, then make it again with the quantities "
                      "it needs.", items=names)
+    _require_one_output(state)
     if not state.get("output_item_id"):
         raise refuse(409, "no_output", "This run does not name the product it makes, so it cannot go ahead. "
                      "Choose its product, or return what was issued to it and cancel it.")
@@ -1291,8 +1304,9 @@ async def repair_output(session: AsyncSession, company_id, user_id, order_id: st
                         key: str | None, *, at: str) -> dict:
     """Put right what an older release recorded about a run's output: the quantity it marked
     received without making a lot for it is discarded (no lot is ever made from that record),
-    and the product it makes is set when the run names none and the user chooses one. The
-    run's value is then worked out again from its corrected history (settle_open_runs)."""
+    and the product it makes is set when the run names none and the user chooses one, for
+    the one quantity it expects (_require_one_output). The run's value is then worked out
+    again from its corrected history (settle_open_runs)."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
     request = _fingerprint({"output_item_id": output_item_id})
@@ -1310,6 +1324,7 @@ async def repair_output(session: AsyncSession, company_id, user_id, order_id: st
     if output_item_id:
         if state.get("output_item_id"):
             raise refuse(409, "output_named", "This run already names the product it makes.")
+        _require_one_output(state)
         product = (await lock_projections(session, company_id, [output_item_id])).get(output_item_id)
         if product is None or product.entity_type != "item":
             raise refuse(422, "no_product", f"{output_item_id} is not an item of this company.", item=output_item_id)
@@ -1318,8 +1333,8 @@ async def repair_output(session: AsyncSession, company_id, user_id, order_id: st
         if str(p.get("status") or "").lower() == "draft":
             raise refuse(422, "output_draft", f"{p.get('sku') or output_item_id} is a draft. Make it available first.",
                          sku=p.get("sku") or output_item_id)
-        expected = float((state.get("expected_outputs") or [{}])[0].get("quantity") or 0)
-        data |= {"output_item_id": output_item_id, "expected_outputs": [output_line(p, expected)]}
+        data |= {"output_item_id": output_item_id,
+                 "expected_outputs": [output_line(p, float(state["expected_outputs"][0]["quantity"]))]}
     elif not data["discarded"]:
         raise refuse(409, "nothing_to_repair", "Everything this run received is in its lots. Choose the product "
                      "it makes to put anything else right.")

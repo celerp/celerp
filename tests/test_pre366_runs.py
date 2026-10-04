@@ -359,3 +359,56 @@ async def test_issues_of_one_component_add_up(client, session):
     assert Decimal(state["wip_issued"]) == Decimal("15"), state
     await _books(session, old)
     await _unwinds(client, session, old, "twice", {"F": (5.0, Decimal("15"))})
+
+
+# Runs an older release stored without exactly one product expected at a quantity above zero
+# (company ``shape``): no expected output, one at zero or below, or several. Nothing says what
+# such a run makes or how much, so it cannot go ahead or be given a product; it unwinds, a
+# receipt that made no lot discarded first, and nothing it held is lost.
+
+_SHAPES = ("out_empty", "out_zero", "out_negative", "out_multi", "out_multi_received",
+           "imp_empty", "imp_zero", "imp_multi")
+
+
+@pytest.mark.parametrize("run", _SHAPES)
+async def test_a_run_without_one_expected_product_cannot_go_ahead(client, session, run):
+    old = await pre366.upgraded(session, "shape")
+    state, count, items = await _state(session, old, run), await _ledger(session, old), await _items(session, old)
+
+    for action, body in _FORWARD:
+        r = await _post(client, old, run, action, body)
+        assert r.status_code == 409, (action, r.text)
+        detail = r.json()["detail"]
+        assert detail["message_key"] == "mfg.output_shape", (action, detail)
+        assert "Return" in detail["message"] and "cancel" in detail["message"], detail
+    assert await _state(session, old, run) == state and await _ledger(session, old) == count
+    assert await _items(session, old) == items
+
+
+@pytest.mark.parametrize("run", ["out_empty", "out_zero", "out_negative", "out_multi", "out_multi_received"])
+async def test_a_run_without_one_expected_product_cannot_be_given_one(client, session, run):
+    old = await pre366.upgraded(session, "shape")
+    product = await _new_item(client, old, "GEN-1")
+    state, count = await _state(session, old, run), await _ledger(session, old)
+
+    r = await _post(client, old, run, "repair-output", {"output_item_id": product})
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == "mfg.output_shape", r.text
+    assert await _state(session, old, run) == state and await _ledger(session, old) == count
+
+
+@pytest.mark.parametrize("run", _SHAPES)
+async def test_a_run_without_one_expected_product_unwinds_losing_nothing(client, session, run):
+    old = await pre366.upgraded(session, "shape")
+    items = await _items(session, old)
+    # The run that recorded a receipt holds its value in the same inventory account as the
+    # others, so the books disagree on all of them until that receipt is discarded.
+    assert (await _state(session, old, run))["wip_unresolved"] == (
+        "received before tracking" if run == "out_multi_received" else "books disagree")
+    r = await _post(client, old, "out_multi_received", "repair-output", {})
+    assert r.status_code == 200 and r.json()["discarded"] == 1.0, r.text
+    assert await _items(session, old) == items  # no lot made from what the older release recorded
+    state = await _state(session, old, run)
+    assert _held(state, old["items"]["G"]) == (2.0, Decimal("2")), state
+    await _books(session, old)
+    await _unwinds(client, session, old, run, {"G": (2.0, Decimal("2"))})
+    assert (await _state(session, old, run))["status"] == "cancelled"

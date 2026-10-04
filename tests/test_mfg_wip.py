@@ -315,7 +315,8 @@ async def test_an_older_run_with_no_output_does_not_go_ahead(client, session, au
     order = f"mfg:{uuid.uuid4()}"
     await emit_event(session, company_id=auth["company_id"], entity_id=order, entity_type="mfg_order",
                      event_type="mfg.order.created",
-                     data={"description": "Trial batch", "inputs": [{"item_id": raw, "quantity": 10}]},
+                     data={"description": "Trial batch", "inputs": [{"item_id": raw, "quantity": 10}],
+                           "expected_outputs": [{"sku": "TRIAL", "name": "Trial", "quantity": 1.0}]},
                      actor_id=auth["user_id"], location_id=None, source="api", idempotency_key=str(uuid.uuid4()),
                      metadata_={})
     await session.commit()
