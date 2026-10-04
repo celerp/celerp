@@ -104,7 +104,7 @@ def test_rtl_from_manifest():
     is_rtl resolves it. Driven end to end through the loader push path."""
     from celerp.modules.loader import load_all
 
-    load_all(_FIXTURES_MODULES_DIR, {"celerp-testlang"})
+    load_all(_FIXTURES_MODULES_DIR, {"acme-testlang"})
     assert i18n.is_rtl("xr") is True
     assert i18n.is_rtl("xx") is False
 
@@ -133,9 +133,9 @@ def test_malformed_catalog_skipped(tmp_path):
 
     _write_module(
         tmp_path,
-        "celerp-badlang",
+        "acme-badlang",
         {
-            "name": "celerp-badlang",
+            "name": "acme-badlang",
             "version": "1.0.0",
             "locales": {
                 "xg": {"file": "locales/xg.json", "rtl": False},
@@ -147,9 +147,9 @@ def test_malformed_catalog_skipped(tmp_path):
             "locales/xb.json": "{ this is not valid json ",
         },
     )
-    loaded = load_all(tmp_path, {"celerp-badlang"})
+    loaded = load_all(tmp_path, {"acme-badlang"})
 
-    assert any(m["name"] == "celerp-badlang" for m in loaded)
+    assert any(m["name"] == "acme-badlang" for m in loaded)
     assert "xg" in i18n.available_langs()
     assert "xb" not in i18n.available_langs()
     assert i18n.t("testlang.greeting", "xg") == "Good"
@@ -230,12 +230,12 @@ def test_malformed_locales_container_skipped(tmp_path):
 
     _write_module(
         tmp_path,
-        "celerp-badcontainer",
-        {"name": "celerp-badcontainer", "version": "1.0.0", "locales": ["xx"]},
+        "acme-badcontainer",
+        {"name": "acme-badcontainer", "version": "1.0.0", "locales": ["xx"]},
         {},
     )
-    loaded = load_all(tmp_path, {"celerp-badcontainer"})
-    assert any(m["name"] == "celerp-badcontainer" for m in loaded)
+    loaded = load_all(tmp_path, {"acme-badcontainer"})
+    assert any(m["name"] == "acme-badcontainer" for m in loaded)
     assert "xx" not in i18n.available_langs()
 
 
@@ -246,9 +246,9 @@ def test_non_string_file_value_skipped(tmp_path):
 
     _write_module(
         tmp_path,
-        "celerp-badfile",
+        "acme-badfile",
         {
-            "name": "celerp-badfile",
+            "name": "acme-badfile",
             "version": "1.0.0",
             "locales": {
                 "xg": {"file": "locales/xg.json"},
@@ -257,8 +257,8 @@ def test_non_string_file_value_skipped(tmp_path):
         },
         {"locales/xg.json": json.dumps({"testlang.greeting": "Good"})},
     )
-    loaded = load_all(tmp_path, {"celerp-badfile"})
-    assert any(m["name"] == "celerp-badfile" for m in loaded)
+    loaded = load_all(tmp_path, {"acme-badfile"})
+    assert any(m["name"] == "acme-badfile" for m in loaded)
     assert "xg" in i18n.available_langs()
     assert "xb" not in i18n.available_langs()
 
@@ -271,9 +271,9 @@ def test_non_string_language_code_skipped(tmp_path):
 
     _write_module(
         tmp_path,
-        "celerp-badcode",
+        "acme-badcode",
         {
-            "name": "celerp-badcode",
+            "name": "acme-badcode",
             "version": "1.0.0",
             "locales": {
                 123: {"file": "locales/n.json"},
@@ -285,8 +285,8 @@ def test_non_string_language_code_skipped(tmp_path):
             "locales/xg.json": json.dumps({"testlang.greeting": "Good"}),
         },
     )
-    loaded = load_all(tmp_path, {"celerp-badcode"})
-    assert any(m["name"] == "celerp-badcode" for m in loaded)
+    loaded = load_all(tmp_path, {"acme-badcode"})
+    assert any(m["name"] == "acme-badcode" for m in loaded)
     langs = i18n.available_langs()  # must not raise on a mixed-type sort
     assert "xg" in langs
     assert 123 not in i18n._registry
@@ -306,15 +306,15 @@ def test_non_bool_rtl_treated_false(tmp_path):
 
     _write_module(
         tmp_path,
-        "celerp-truthyrtl",
+        "acme-truthyrtl",
         {
-            "name": "celerp-truthyrtl",
+            "name": "acme-truthyrtl",
             "version": "1.0.0",
             "locales": {"xy": {"file": "locales/xy.json", "rtl": "yes"}},
         },
         {"locales/xy.json": json.dumps({"testlang.greeting": "Hi"})},
     )
-    load_all(tmp_path, {"celerp-truthyrtl"})
+    load_all(tmp_path, {"acme-truthyrtl"})
     assert "xy" in i18n.available_langs()
     assert i18n.is_rtl("xy") is False
 
@@ -345,14 +345,14 @@ def test_reload_reflects_changed_catalog(tmp_path):
     first-registered one (the registry is rebuilt, not accreted)."""
     from celerp.modules.loader import load_all
 
-    _write_langmod(tmp_path, "celerp-reload", "xx", "first")
-    load_all(tmp_path, {"celerp-reload"})
+    _write_langmod(tmp_path, "acme-reload", "xx", "first")
+    load_all(tmp_path, {"acme-reload"})
     assert i18n.t("testlang.greeting", "xx") == "first"
 
-    (tmp_path / "celerp-reload" / "locales" / "xx.json").write_text(
+    (tmp_path / "acme-reload" / "locales" / "xx.json").write_text(
         json.dumps({"testlang.greeting": "second"})
     )
-    load_all(tmp_path, {"celerp-reload"})
+    load_all(tmp_path, {"acme-reload"})
     assert i18n.t("testlang.greeting", "xx") == "second"
 
 
@@ -361,8 +361,8 @@ def test_disabled_module_language_removed(tmp_path):
     no longer enables the contributing module."""
     from celerp.modules.loader import load_all
 
-    _write_langmod(tmp_path, "celerp-gone", "xx", "here")
-    load_all(tmp_path, {"celerp-gone"})
+    _write_langmod(tmp_path, "acme-gone", "xx", "here")
+    load_all(tmp_path, {"acme-gone"})
     assert "xx" in i18n.available_langs()
 
     load_all(tmp_path, set())  # nothing enabled this pass
@@ -375,12 +375,12 @@ def test_two_module_collision_deterministic(tmp_path):
     first-registered wins - stable across runs regardless of filesystem order."""
     from celerp.modules.loader import load_all
 
-    _write_langmod(tmp_path, "celerp-la", "xx", "from-la")
-    _write_langmod(tmp_path, "celerp-lb", "xx", "from-lb")
+    _write_langmod(tmp_path, "acme-la", "xx", "from-la")
+    _write_langmod(tmp_path, "acme-lb", "xx", "from-lb")
 
-    load_all(tmp_path, {"celerp-la", "celerp-lb"})
+    load_all(tmp_path, {"acme-la", "acme-lb"})
     first = i18n.t("testlang.greeting", "xx")
-    load_all(tmp_path, {"celerp-la", "celerp-lb"})
+    load_all(tmp_path, {"acme-la", "acme-lb"})
     second = i18n.t("testlang.greeting", "xx")
 
     assert first == second == "from-la"
@@ -457,18 +457,18 @@ def test_module_catalog_read_as_utf8(tmp_path, monkeypatch):
     skips the whole language - the portability bug this guards against."""
     from celerp.modules.loader import load_all
 
-    (tmp_path / "celerp-amharic").mkdir()
-    (tmp_path / "celerp-amharic" / "__init__.py").write_text(
-        "PLUGIN_MANIFEST = {'name': 'celerp-amharic', 'version': '1.0.0', "
+    (tmp_path / "acme-amharic").mkdir()
+    (tmp_path / "acme-amharic" / "__init__.py").write_text(
+        "PLUGIN_MANIFEST = {'name': 'acme-amharic', 'version': '1.0.0', "
         "'locales': {'am': {'file': 'locales/am.json'}}}\n"
     )
-    (tmp_path / "celerp-amharic" / "locales").mkdir()
-    (tmp_path / "celerp-amharic" / "locales" / "am.json").write_text(
+    (tmp_path / "acme-amharic" / "locales").mkdir()
+    (tmp_path / "acme-amharic" / "locales" / "am.json").write_text(
         json.dumps(_UNICODE_SAMPLE, ensure_ascii=False), encoding="utf-8"
     )
 
     _patch_ascii_default_read_text(monkeypatch)
-    load_all(tmp_path, {"celerp-amharic"})
+    load_all(tmp_path, {"acme-amharic"})
     assert "am" in i18n.available_langs()
     assert i18n.t("testlang.greeting", "am") == "ሰላም"
     assert i18n.t("testlang.city", "am") == "东京"

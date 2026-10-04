@@ -39,6 +39,7 @@ import base64
 import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import signal
@@ -105,14 +106,28 @@ def run(cmd: list, timeout: float = 900, **kw) -> subprocess.CompletedProcess:
     return result
 
 
+# Below every OS's ephemeral range (Linux from 32768, macOS and Windows from
+# 49152): an outbound connection can take an ephemeral port between choosing it
+# here and the server binding it.
+_PORT_RANGE = range(20000, 32768)
+
+
 def free_ports(n: int) -> list[int]:
-    """*n* distinct free ports: every socket stays bound until all are chosen, so
-    the OS cannot hand the same port out twice."""
-    socks = [socket.socket() for _ in range(n)]
+    """*n* distinct free ports outside the ephemeral range: every socket stays
+    bound until all are chosen, so no port is handed out twice."""
+    socks: list[socket.socket] = []
     try:
-        for s in socks:
-            s.bind(("127.0.0.1", 0))
-        return [s.getsockname()[1] for s in socks]
+        for port in random.sample(_PORT_RANGE, len(_PORT_RANGE)):
+            s = socket.socket()
+            try:
+                s.bind(("0.0.0.0", port))
+            except OSError:
+                s.close()
+                continue
+            socks.append(s)
+            if len(socks) == n:
+                return [s.getsockname()[1] for s in socks]
+        raise RuntimeError(f"no {n} free ports in {_PORT_RANGE}")
     finally:
         for s in socks:
             s.close()

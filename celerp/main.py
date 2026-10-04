@@ -280,22 +280,27 @@ async def _serve(_app: FastAPI, held):
             _cfg = _read_config()
             _enabled = set(_cfg.get("modules", {}).get("enabled") or [])
         if _enabled:
-            # Apply each enabled module's runtime migrations before importing it,
-            # under the shared migration advisory lock. A third-party module whose
-            # migration fails is dropped from this boot and its error held to
-            # surface after load_all (which clears the load-error map on entry);
-            # a first-party failure re-raises. No-op on non-Postgres.
+            # Admit every enabled module before any of its code runs, apply the
+            # admitted modules' runtime migrations under the shared migration
+            # advisory lock, then load the survivors. A refused module, or a
+            # third-party module whose migration fails, runs nothing further and
+            # shows its reason as a load error; a first-party failure re-raises.
+            # The migration phase is a no-op on non-Postgres.
+            from celerp.modules.loader import admit_modules
             from celerp.modules.migrations_runner import run_migration_phase
-            from celerp.modules.loader import record_load_error
-            _enabled, _migration_errors = await run_migration_phase(engine, _enabled)
-            _loaded_modules = load_all(_MODULE_DIR, _enabled)
-            for _mname, _merr in _migration_errors.items():
-                record_load_error(_mname, _merr)
+            _admission = await run_migration_phase(
+                engine, admit_modules(_MODULE_DIR, _enabled))
+            _loaded_modules = load_all(_MODULE_DIR, _enabled, admission=_admission)
             register_api_routes(_app, _loaded_modules)
-            # Module models register on Base.metadata at import time.
-            # Run create_all again so module tables are created (idempotent).
+            # Module models register on Base.metadata at import time (a module
+            # that is not running has its tables taken off again). Run
+            # create_all again so module tables are created (idempotent).
             async with lifecycle_engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+            # The UI process offers only the modules recorded here as running.
+            from celerp.modules.outcome import publish as _publish_outcome
+            async with lifecycle_engine.begin() as conn:
+                await conn.run_sync(_publish_outcome)
             if update_verify:
                 # Verification proves DB/module/runtime startup without external work.
                 await _verify_runtime_dependencies()
@@ -399,6 +404,10 @@ async def _serve(_app: FastAPI, held):
     # payments close for good, a kept one's reopen). Until then they stay closed.
     from celerp.services.payments import reconcile_payments_loop
     background = [asyncio.create_task(reconcile_payments_loop())]
+    if _loaded_modules:
+        # A module that fails in the UI process stops here too.
+        from celerp.modules.outcome import watch_reported_stops
+        background.append(asyncio.create_task(watch_reported_stops(_app, lifecycle_engine)))
 
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links

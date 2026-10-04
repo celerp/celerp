@@ -1130,10 +1130,8 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, wa
 def _wait_ready(api: tuple, ui: tuple, timeout: float = 180.0) -> bool:
     """Announce readiness in dependency order: the API when its port accepts
     connections, then one 'Celerp ready' line with the UI URL once BOTH ports
-    do. The UI port opens before the API has finished registering modules, so
-    a UI URL printed on its own would send users to a page of errors; and the
-    UI URL is the only one printed at all, because it is the only address a
-    user should visit. Returns False early when either process dies (the
+    do. The UI URL is the only one printed at all, because it is the only
+    address a user should visit. Returns False early when either process dies (the
     supervisor loop reports the crash); after `timeout` prints a still-starting
     note and returns False rather than blocking forever on a very slow machine.
     True when both are accepting connections."""

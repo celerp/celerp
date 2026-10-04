@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from celerp.modules.loader import Admission
+
 # Boot reads and maintains the real database; it needs the schema to exist whichever
 # test runs first.
 pytestmark = pytest.mark.usefixtures("_db_engine")
@@ -64,6 +66,9 @@ def _mock_db():
         yield
 
 
+_NO_MODULES = Admission(admitted=[], refused={})
+
+
 @pytest.mark.asyncio
 async def test_modules_ready_commit_guarded(monkeypatch):
     """A failing on_modules_ready hook does not crash boot: the raise is caught,
@@ -78,13 +83,13 @@ async def test_modules_ready_commit_guarded(monkeypatch):
     # heavy module machinery stubbed out.
     monkeypatch.setattr(main_mod, "_MODULE_DIR", "/tmp/modules-forced")
     monkeypatch.setenv("ENABLED_MODULES", "test-mod")
+    monkeypatch.setattr("celerp.modules.loader.admit_modules", lambda *a, **k: _NO_MODULES)
     monkeypatch.setattr(
         "celerp.modules.migrations_runner.run_migration_phase",
-        AsyncMock(return_value=({"test-mod"}, {})),
+        AsyncMock(return_value=_NO_MODULES),
     )
     monkeypatch.setattr("celerp.modules.loader.load_all", lambda *a, **k: [])
     monkeypatch.setattr("celerp.modules.loader.register_api_routes", lambda *a, **k: None)
-    monkeypatch.setattr("celerp.modules.loader.record_load_error", lambda *a, **k: None)
     monkeypatch.setattr("celerp.modules.loader.demoted_first_party", lambda *a, **k: [])
     monkeypatch.setattr("celerp.db.LifecycleSessionLocal", lambda: _FakeSession(rollback_spy))
 
@@ -121,13 +126,13 @@ async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
     monkeypatch.setenv(runtime.UPDATE_VERIFY_ENV, "1")
     monkeypatch.setattr(main_mod, "_MODULE_DIR", "/tmp/modules-forced")
     monkeypatch.setenv("ENABLED_MODULES", "test-mod")
+    monkeypatch.setattr("celerp.modules.loader.admit_modules", lambda *a, **k: _NO_MODULES)
     monkeypatch.setattr(
         "celerp.modules.migrations_runner.run_migration_phase",
-        AsyncMock(return_value=({"test-mod"}, {})),
+        AsyncMock(return_value=_NO_MODULES),
     )
     monkeypatch.setattr("celerp.modules.loader.load_all", lambda *a, **k: [])
     monkeypatch.setattr("celerp.modules.loader.register_api_routes", lambda *a, **k: None)
-    monkeypatch.setattr("celerp.modules.loader.record_load_error", lambda *a, **k: None)
 
     fire = AsyncMock()
     associate = AsyncMock()

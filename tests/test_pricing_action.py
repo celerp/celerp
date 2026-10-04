@@ -19,7 +19,7 @@ import pytest
 from fasthtml.common import to_xml
 
 from celerp.modules import slots
-from celerp.modules.loader import ModuleLoadError, _load_one
+from celerp.modules.loader import ModuleLoadError, _declared_manifest, _load_one
 
 # Retail and Wholesale are manual sell lists, Trade is derived from Retail, Cost is a cost list.
 _LISTS = [
@@ -162,7 +162,7 @@ def _load(tmp_path, contribution, slot="pricing_action"):
     pkg.mkdir()
     manifest = {"name": name, "version": "1.0", "slots": {slot: contribution}}
     (pkg / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
-    return _load_one(pkg, name)
+    return _load_one(pkg, name, trusted=False, declared=_declared_manifest(pkg))
 
 
 def test_loader_accepts_a_page_action(tmp_path):
