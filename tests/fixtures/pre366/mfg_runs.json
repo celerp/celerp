@@ -4471,6 +4471,842 @@
    },
    "user_id": "1553245e-c48c-4b26-bfa9-6e16f4cc228d"
   },
+  "service": {
+   "accounts": [
+    {
+     "account_type": "asset",
+     "code": "1000",
+     "name": "Assets",
+     "parent_code": null
+    },
+    {
+     "account_type": "asset",
+     "code": "1100",
+     "name": "Current Assets",
+     "parent_code": "1000"
+    },
+    {
+     "account_type": "asset",
+     "code": "1110",
+     "name": "Cash and Cash Equivalents",
+     "parent_code": "1100"
+    },
+    {
+     "account_type": "asset",
+     "code": "1120",
+     "name": "Accounts Receivable",
+     "parent_code": "1100"
+    },
+    {
+     "account_type": "asset",
+     "code": "1130",
+     "name": "Inventory",
+     "parent_code": "1100"
+    },
+    {
+     "account_type": "asset",
+     "code": "1130-P",
+     "name": "Inventory - Purchased",
+     "parent_code": "1130"
+    },
+    {
+     "account_type": "asset",
+     "code": "1130-OB",
+     "name": "Inventory - Opening Balance",
+     "parent_code": "1130"
+    },
+    {
+     "account_type": "asset",
+     "code": "1130-FRT",
+     "name": "Inventory - Freight Clearing",
+     "parent_code": "1130"
+    },
+    {
+     "account_type": "asset",
+     "code": "1130-INS",
+     "name": "Inventory - Insurance Clearing",
+     "parent_code": "1130"
+    },
+    {
+     "account_type": "asset",
+     "code": "1130-DTY",
+     "name": "Inventory - Import Duty Clearing",
+     "parent_code": "1130"
+    },
+    {
+     "account_type": "asset",
+     "code": "1130-IVT",
+     "name": "Inventory - Non-Recoverable Import VAT Clearing",
+     "parent_code": "1130"
+    },
+    {
+     "account_type": "asset",
+     "code": "1140",
+     "name": "Prepaid Expenses",
+     "parent_code": "1100"
+    },
+    {
+     "account_type": "asset",
+     "code": "1150",
+     "name": "VAT Receivable (Input VAT)",
+     "parent_code": "1100"
+    },
+    {
+     "account_type": "asset",
+     "code": "1200",
+     "name": "Non-Current Assets",
+     "parent_code": "1000"
+    },
+    {
+     "account_type": "asset",
+     "code": "1210",
+     "name": "Property, Plant and Equipment",
+     "parent_code": "1200"
+    },
+    {
+     "account_type": "asset",
+     "code": "1220",
+     "name": "Accumulated Depreciation",
+     "parent_code": "1200"
+    },
+    {
+     "account_type": "asset",
+     "code": "1230",
+     "name": "Intangible Assets",
+     "parent_code": "1200"
+    },
+    {
+     "account_type": "liability",
+     "code": "2000",
+     "name": "Liabilities",
+     "parent_code": null
+    },
+    {
+     "account_type": "liability",
+     "code": "2100",
+     "name": "Current Liabilities",
+     "parent_code": "2000"
+    },
+    {
+     "account_type": "liability",
+     "code": "2110",
+     "name": "Accounts Payable",
+     "parent_code": "2100"
+    },
+    {
+     "account_type": "liability",
+     "code": "2120",
+     "name": "VAT Payable (Output VAT)",
+     "parent_code": "2100"
+    },
+    {
+     "account_type": "liability",
+     "code": "2130",
+     "name": "Withholding Tax Payable",
+     "parent_code": "2100"
+    },
+    {
+     "account_type": "liability",
+     "code": "2140",
+     "name": "Accrued Expenses",
+     "parent_code": "2100"
+    },
+    {
+     "account_type": "liability",
+     "code": "2150",
+     "name": "Social Security Payable",
+     "parent_code": "2100"
+    },
+    {
+     "account_type": "liability",
+     "code": "2200",
+     "name": "Non-Current Liabilities",
+     "parent_code": "2000"
+    },
+    {
+     "account_type": "liability",
+     "code": "2210",
+     "name": "Long-term Loans",
+     "parent_code": "2200"
+    },
+    {
+     "account_type": "equity",
+     "code": "3000",
+     "name": "Equity",
+     "parent_code": null
+    },
+    {
+     "account_type": "equity",
+     "code": "3100",
+     "name": "Registered Capital",
+     "parent_code": "3000"
+    },
+    {
+     "account_type": "equity",
+     "code": "3200",
+     "name": "Retained Earnings",
+     "parent_code": "3000"
+    },
+    {
+     "account_type": "equity",
+     "code": "3300",
+     "name": "Current Year Earnings",
+     "parent_code": "3000"
+    },
+    {
+     "account_type": "revenue",
+     "code": "4000",
+     "name": "Revenue",
+     "parent_code": null
+    },
+    {
+     "account_type": "revenue",
+     "code": "4100",
+     "name": "Sales Revenue",
+     "parent_code": "4000"
+    },
+    {
+     "account_type": "revenue",
+     "code": "4200",
+     "name": "Service Revenue",
+     "parent_code": "4000"
+    },
+    {
+     "account_type": "revenue",
+     "code": "4300",
+     "name": "Other Income",
+     "parent_code": "4000"
+    },
+    {
+     "account_type": "revenue",
+     "code": "4400",
+     "name": "Interest Income",
+     "parent_code": "4000"
+    },
+    {
+     "account_type": "cogs",
+     "code": "5000",
+     "name": "Cost of Goods Sold",
+     "parent_code": null
+    },
+    {
+     "account_type": "cogs",
+     "code": "5100",
+     "name": "Cost of Goods Sold",
+     "parent_code": "5000"
+    },
+    {
+     "account_type": "cogs",
+     "code": "5200",
+     "name": "Direct Labor",
+     "parent_code": "5000"
+    },
+    {
+     "account_type": "cogs",
+     "code": "5300",
+     "name": "Manufacturing Overhead",
+     "parent_code": "5000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6000",
+     "name": "Operating Expenses",
+     "parent_code": null
+    },
+    {
+     "account_type": "expense",
+     "code": "6100",
+     "name": "Salaries and Wages",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6200",
+     "name": "Rent",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6300",
+     "name": "Utilities",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6400",
+     "name": "Depreciation",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6500",
+     "name": "Professional Fees",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6600",
+     "name": "Marketing and Advertising",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6700",
+     "name": "Insurance",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6800",
+     "name": "Office Supplies",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6900",
+     "name": "Travel and Transportation",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6950",
+     "name": "Miscellaneous Expenses",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6960",
+     "name": "Foreign Exchange Difference",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "expense",
+     "code": "6970",
+     "name": "Inventory Shrinkage & Write-offs",
+     "parent_code": "6000"
+    },
+    {
+     "account_type": "asset",
+     "code": "1111",
+     "name": "Default Bank Account (Checking)",
+     "parent_code": "1110"
+    }
+   ],
+   "company": {
+    "name": "CostCo",
+    "settings": {
+     "currency": "USD",
+     "timezone": "Pacific/Kiritimati"
+    }
+   },
+   "company_id": "bbcda62e-487d-4341-9eb3-bcec66d6db5b",
+   "items": {
+    "FG": "item:d506a189-765c-454d-9690-021cab4fea26",
+    "N": "item:247416b2-9a4f-4260-a456-33fe9ebec490",
+    "S": "item:25fe9a84-b666-45dd-a229-bce26475fce5",
+    "X": "item:72023e3c-0772-4807-ad6a-f30c966d8bd8"
+   },
+   "ledger": [
+    {
+     "actor": true,
+     "data": {
+      "allow_splitting": true,
+      "attributes": {},
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "quantity": 10.0,
+      "sell_by": "piece",
+      "sku": "COMP-N",
+      "status": "available",
+      "tax_codes": []
+     },
+     "entity_id": "item:247416b2-9a4f-4260-a456-33fe9ebec490",
+     "entity_type": "item",
+     "event_type": "item.created",
+     "idempotency_key": "5a9cdbe3-5194-4f31-a893-521445a06ae6",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "new_price": 20.0,
+      "price_type": "cost_total"
+     },
+     "entity_id": "item:247416b2-9a4f-4260-a456-33fe9ebec490",
+     "entity_type": "item",
+     "event_type": "item.pricing.set",
+     "idempotency_key": "5a9cdbe3-5194-4f31-a893-521445a06ae6:price:cost_total",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "allow_splitting": true,
+      "attributes": {},
+      "inventory_type": "service",
+      "name": "service",
+      "quantity": 5.0,
+      "sell_by": "piece",
+      "sku": "SVC-S",
+      "status": "available",
+      "tax_codes": []
+     },
+     "entity_id": "item:25fe9a84-b666-45dd-a229-bce26475fce5",
+     "entity_type": "item",
+     "event_type": "item.created",
+     "idempotency_key": "567a3670-f2fe-4de7-9182-a2a27241e468",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "new_price": 15.0,
+      "price_type": "cost_total"
+     },
+     "entity_id": "item:25fe9a84-b666-45dd-a229-bce26475fce5",
+     "entity_type": "item",
+     "event_type": "item.pricing.set",
+     "idempotency_key": "567a3670-f2fe-4de7-9182-a2a27241e468:price:cost_total",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "allow_splitting": true,
+      "attributes": {},
+      "inventory_type": "non_stocked",
+      "name": "non_stocked",
+      "quantity": 5.0,
+      "sell_by": "piece",
+      "sku": "NS-X",
+      "status": "available",
+      "tax_codes": []
+     },
+     "entity_id": "item:72023e3c-0772-4807-ad6a-f30c966d8bd8",
+     "entity_type": "item",
+     "event_type": "item.created",
+     "idempotency_key": "8fe1548a-a036-44b3-bfa2-824283844a9a",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "new_price": 15.0,
+      "price_type": "cost_total"
+     },
+     "entity_id": "item:72023e3c-0772-4807-ad6a-f30c966d8bd8",
+     "entity_type": "item",
+     "event_type": "item.pricing.set",
+     "idempotency_key": "8fe1548a-a036-44b3-bfa2-824283844a9a:price:cost_total",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "allow_splitting": true,
+      "attributes": {},
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "quantity": 0.0,
+      "sell_by": "piece",
+      "sku": "FG-5",
+      "status": "available",
+      "tax_codes": []
+     },
+     "entity_id": "item:d506a189-765c-454d-9690-021cab4fea26",
+     "entity_type": "item",
+     "event_type": "item.created",
+     "idempotency_key": "b4fd9bf7-b850-49e3-93ad-a69f8200790b",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "new_price": 0.0,
+      "price_type": "cost_total"
+     },
+     "entity_id": "item:d506a189-765c-454d-9690-021cab4fea26",
+     "entity_type": "item",
+     "event_type": "item.pricing.set",
+     "idempotency_key": "b4fd9bf7-b850-49e3-93ad-a69f8200790b:price:cost_total",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "entries": [
+       {
+        "account": "1130-OB",
+        "credit": 0.0,
+        "debit": 20.0
+       },
+       {
+        "account": "3200",
+        "credit": 20.0,
+        "debit": 0.0
+       }
+      ],
+      "memo": "Opening inventory balance (pre-system stock)",
+      "ts": "2026-10-04"
+     },
+     "entity_id": "je:auto:opening-inventory:bbcda62e-487d-4341-9eb3-bcec66d6db5b",
+     "entity_type": "journal_entry",
+     "event_type": "acc.journal_entry.created",
+     "idempotency_key": "opening-inv:bbcda62e-487d-4341-9eb3-bcec66d6db5b:c:20.0:2026-10-04",
+     "metadata": {
+      "trigger": "opening_inventory.auto"
+     },
+     "source": "auto_je",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "ts": "2026-10-04"
+     },
+     "entity_id": "je:auto:opening-inventory:bbcda62e-487d-4341-9eb3-bcec66d6db5b",
+     "entity_type": "journal_entry",
+     "event_type": "acc.journal_entry.posted",
+     "idempotency_key": "opening-inv:bbcda62e-487d-4341-9eb3-bcec66d6db5b:p:20.0:2026-10-04",
+     "metadata": {
+      "trigger": "opening_inventory.auto"
+     },
+     "source": "auto_je",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "description": "service",
+      "expected_outputs": [
+       {
+        "name": "Generic",
+        "quantity": 1,
+        "sku": "FG-5"
+       }
+      ],
+      "inputs": [
+       {
+        "item_id": "item:247416b2-9a4f-4260-a456-33fe9ebec490",
+        "quantity": 2
+       },
+       {
+        "item_id": "item:25fe9a84-b666-45dd-a229-bce26475fce5",
+        "quantity": 1
+       },
+       {
+        "item_id": "item:72023e3c-0772-4807-ad6a-f30c966d8bd8",
+        "quantity": 1
+       }
+      ],
+      "order_type": "assembly",
+      "output_item_id": "item:d506a189-765c-454d-9690-021cab4fea26"
+     },
+     "entity_id": "mfg:1e1b1276-5f36-471d-8604-a25af692bd66",
+     "entity_type": "mfg_order",
+     "event_type": "mfg.order.created",
+     "idempotency_key": "imp-mfg:1e1b1276-5f36-471d-8604-a25af692bd66",
+     "metadata": {},
+     "source": "import",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "quantity_consumed": 2.0
+     },
+     "entity_id": "item:247416b2-9a4f-4260-a456-33fe9ebec490",
+     "entity_type": "item",
+     "event_type": "item.consumed",
+     "idempotency_key": "14cf394b-fa4a-4df3-923c-82f2de86cad3",
+     "metadata": {
+      "manufacturing_order_id": "mfg:1e1b1276-5f36-471d-8604-a25af692bd66"
+     },
+     "source": "api",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "quantity_consumed": 1.0
+     },
+     "entity_id": "item:25fe9a84-b666-45dd-a229-bce26475fce5",
+     "entity_type": "item",
+     "event_type": "item.consumed",
+     "idempotency_key": "2499d39c-7370-4285-b06a-d3665ace42c8",
+     "metadata": {
+      "manufacturing_order_id": "mfg:1e1b1276-5f36-471d-8604-a25af692bd66"
+     },
+     "source": "api",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "quantity_consumed": 1.0
+     },
+     "entity_id": "item:72023e3c-0772-4807-ad6a-f30c966d8bd8",
+     "entity_type": "item",
+     "event_type": "item.consumed",
+     "idempotency_key": "90012d5b-5a7c-4f58-a490-b53a14e05795",
+     "metadata": {
+      "manufacturing_order_id": "mfg:1e1b1276-5f36-471d-8604-a25af692bd66"
+     },
+     "source": "api",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    },
+    {
+     "actor": true,
+     "data": {
+      "issued_by": "63ed34b8-ea5d-4708-8247-ea0d02d36e99",
+      "items": [
+       {
+        "item_id": "item:247416b2-9a4f-4260-a456-33fe9ebec490",
+        "quantity": 2.0
+       },
+       {
+        "item_id": "item:25fe9a84-b666-45dd-a229-bce26475fce5",
+        "quantity": 1.0
+       },
+       {
+        "item_id": "item:72023e3c-0772-4807-ad6a-f30c966d8bd8",
+        "quantity": 1.0
+       }
+      ]
+     },
+     "entity_id": "mfg:1e1b1276-5f36-471d-8604-a25af692bd66",
+     "entity_type": "mfg_order",
+     "event_type": "mfg.order.issued",
+     "idempotency_key": "5fa49d22-040b-4a73-88dd-162f24efdbc9",
+     "metadata": {},
+     "source": "api",
+     "ts": "2026-10-04T14:34:34.496013+00:00"
+    }
+   ],
+   "projections": [
+    {
+     "created_at": "2026-10-04T14:34:35.521230+00:00",
+     "entity_id": "item:247416b2-9a4f-4260-a456-33fe9ebec490",
+     "entity_type": "item",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "allow_splitting": true,
+      "attributes": {},
+      "cost_base": 16.0,
+      "cost_landed": 0.0,
+      "cost_total": 16.0,
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "purchase_conversion_factor": 1,
+      "purchase_unit": "piece",
+      "quantity": 8.0,
+      "sell_by": "piece",
+      "sku": "COMP-N",
+      "status": "available",
+      "tax_codes": []
+     },
+     "updated_at": "2026-10-04T14:34:35.583885+00:00",
+     "version": 155
+    },
+    {
+     "created_at": "2026-10-04T14:34:35.531924+00:00",
+     "entity_id": "item:25fe9a84-b666-45dd-a229-bce26475fce5",
+     "entity_type": "item",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "allow_splitting": true,
+      "attributes": {},
+      "cost_base": 12.0,
+      "cost_landed": 0.0,
+      "cost_total": 12.0,
+      "inventory_type": "service",
+      "name": "service",
+      "purchase_conversion_factor": 1,
+      "purchase_unit": "piece",
+      "quantity": 4.0,
+      "sell_by": "piece",
+      "sku": "SVC-S",
+      "status": "available",
+      "tax_codes": []
+     },
+     "updated_at": "2026-10-04T14:34:35.586252+00:00",
+     "version": 156
+    },
+    {
+     "created_at": "2026-10-04T14:34:35.542352+00:00",
+     "entity_id": "item:72023e3c-0772-4807-ad6a-f30c966d8bd8",
+     "entity_type": "item",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "allow_splitting": true,
+      "attributes": {},
+      "cost_base": 12.0,
+      "cost_landed": 0.0,
+      "cost_total": 12.0,
+      "inventory_type": "non_stocked",
+      "name": "non_stocked",
+      "purchase_conversion_factor": 1,
+      "purchase_unit": "piece",
+      "quantity": 4.0,
+      "sell_by": "piece",
+      "sku": "NS-X",
+      "status": "available",
+      "tax_codes": []
+     },
+     "updated_at": "2026-10-04T14:34:35.588585+00:00",
+     "version": 157
+    },
+    {
+     "created_at": "2026-10-04T14:34:35.553513+00:00",
+     "entity_id": "item:d506a189-765c-454d-9690-021cab4fea26",
+     "entity_type": "item",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "allow_splitting": true,
+      "attributes": {},
+      "cost_base": 0.0,
+      "cost_landed": 0.0,
+      "cost_total": 0.0,
+      "inventory_type": "stocked",
+      "name": "Lot",
+      "purchase_conversion_factor": 1,
+      "purchase_unit": "piece",
+      "quantity": 0.0,
+      "sell_by": "piece",
+      "sku": "FG-5",
+      "status": "available",
+      "tax_codes": []
+     },
+     "updated_at": "2026-10-04T14:34:35.555813+00:00",
+     "version": 151
+    },
+    {
+     "created_at": "2026-10-04T14:34:35.564752+00:00",
+     "entity_id": "je:auto:opening-inventory:bbcda62e-487d-4341-9eb3-bcec66d6db5b",
+     "entity_type": "journal_entry",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": null,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "entity_type": "journal_entry",
+      "entries": [
+       {
+        "account": "1130-OB",
+        "credit": 0.0,
+        "debit": 20.0
+       },
+       {
+        "account": "3200",
+        "credit": 20.0,
+        "debit": 0.0
+       }
+      ],
+      "memo": "Opening inventory balance (pre-system stock)",
+      "status": "posted",
+      "ts": "2026-10-04"
+     },
+     "updated_at": "2026-10-04T14:34:35.566407+00:00",
+     "version": 153
+    },
+    {
+     "created_at": "2026-10-04T14:34:35.575603+00:00",
+     "entity_id": "mfg:1e1b1276-5f36-471d-8604-a25af692bd66",
+     "entity_type": "mfg_order",
+     "expires_at": null,
+     "is_available": null,
+     "is_expired": null,
+     "is_in_production": true,
+     "is_on_marketplace": null,
+     "is_on_memo": null,
+     "is_sync_to_shopify": null,
+     "state": {
+      "actual_outputs": [],
+      "description": "service",
+      "entity_type": "mfg_order",
+      "expected_outputs": [
+       {
+        "name": "Generic",
+        "quantity": 1,
+        "sku": "FG-5"
+       }
+      ],
+      "inputs": [
+       {
+        "issued_qty": 2.0,
+        "item_id": "item:247416b2-9a4f-4260-a456-33fe9ebec490",
+        "quantity": 2
+       },
+       {
+        "issued_qty": 1.0,
+        "item_id": "item:25fe9a84-b666-45dd-a229-bce26475fce5",
+        "quantity": 1
+       },
+       {
+        "issued_qty": 1.0,
+        "item_id": "item:72023e3c-0772-4807-ad6a-f30c966d8bd8",
+        "quantity": 1
+       }
+      ],
+      "is_in_production": true,
+      "order_type": "assembly",
+      "output_item_id": "item:d506a189-765c-454d-9690-021cab4fea26",
+      "received_lots": [],
+      "received_qty": 0.0,
+      "status": "in_progress"
+     },
+     "updated_at": "2026-10-04T14:34:35.590339+00:00",
+     "version": 158
+    }
+   ],
+   "runs": {
+    "service": "mfg:1e1b1276-5f36-471d-8604-a25af692bd66"
+   },
+   "user_id": "63ed34b8-ea5d-4708-8247-ea0d02d36e99"
+  },
   "shape": {
    "accounts": [
     {

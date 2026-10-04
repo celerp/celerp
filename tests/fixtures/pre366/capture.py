@@ -142,10 +142,11 @@ async def test_capture(client, session):
     shape = await _shape(client, session)
     mixed = await _mixed(client, session)
     migrated = await _migrated(client, session)
+    service = await _service(client, session)
     with open(OUT, "w") as f:
         json.dump({"release": __import__("celerp").__version__,
                    "companies": {"main": main, "generic": generic_co, "shortage": shortage, "shape": shape,
-                                 "mixed": mixed, "migrated": migrated}},
+                                 "mixed": mixed, "migrated": migrated, "service": service}},
                   f, indent=1, sort_keys=True, default=str)
 
 
@@ -297,3 +298,23 @@ async def _migrated(client, session):
         actor_id=auth["user_id"], source="migration", idempotency_key=f"migration:{invoice}:delivered")
     await session.commit()
     return await _dump(session, auth, {"M": m, "FG": fg, "SPL": spl, "INVOICE": invoice, **lots}, {})
+
+
+async def _service(client, session):
+    """A run this release let use a service and a non-stocked item as materials: N at 2 x 10,
+    service S and non-stocked item X (each 5 at a cost of 3 apiece, kept off the stock books),
+    making product FG-5, with N x 2, S x 1 and X x 1 issued and nothing received."""
+    auth = await _company(session)
+    h = auth["headers"]
+    n = await _item(client, auth, 20.0, qty=10, sku="COMP-N")
+    kinds = {}
+    for key, sku, kind in (("S", "SVC-S", "service"), ("X", "NS-X", "non_stocked")):
+        kinds[key] = (await _ok(await client.post("/items", headers=h, json={
+            "sku": sku, "name": kind, "quantity": 5, "cost_total": 15.0, "sell_by": "piece",
+            "status": "available", "inventory_type": kind})))["id"]
+    fg = await _item(client, auth, 0.0, qty=0, sku="FG-5")
+    await _balance_sheet(client, auth)
+    oid = await _import(client, h, "service", [{"item_id": n, "quantity": 2}, {"item_id": kinds["S"], "quantity": 1},
+                                               {"item_id": kinds["X"], "quantity": 1}], [_line(1, "FG-5")], fg)
+    await _ok(await client.post(f"/manufacturing/{oid}/issue", headers=h, json={}))
+    return await _dump(session, auth, {"N": n, **kinds, "FG": fg}, {"service": oid})

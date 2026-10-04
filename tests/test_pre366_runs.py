@@ -414,3 +414,79 @@ async def test_a_run_without_one_expected_product_unwinds_losing_nothing(client,
     await _books(session, old)
     await _unwinds(client, session, old, run, {"G": (2.0, Decimal("2"))})
     assert (await _state(session, old, run))["status"] == "cancelled"
+
+
+# A run an older release let use a service and a non-stocked item as materials (company
+# ``service``): N at 2 x 10, service S and non-stocked X at 3 apiece off the stock books, with
+# 2 x N, 1 x S and 1 x X issued to make FG-5. A run turns stock into stock, so it cannot go
+# ahead; it unwinds, each component taking back exactly what the old issue took from it, and
+# nothing the books never held gains a value.
+
+async def _journal_total(session, old) -> Decimal:
+    from sqlalchemy import select
+
+    session.expire_all()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == old["company_id"], Projection.entity_type == "journal_entry"))).scalars()
+    return sum((Decimal(str(e.get("debit") or 0)) for r in rows if (r.state or {}).get("status") == "posted"
+                for e in r.state.get("entries") or []), Decimal("0"))
+
+
+async def test_a_run_using_a_service_or_non_stocked_item_cannot_go_ahead(client, session):
+    old = await pre366.upgraded(session, "service")
+    state, count, items = await _state(session, old, "service"), await _ledger(session, old), await _items(session, old)
+
+    for action, body in _FORWARD:
+        r = await _post(client, old, "service", action, body)
+        assert r.status_code == 409, (action, r.text)
+        detail = r.json()["detail"]
+        assert detail["message_key"] == "mfg.not_stock", (action, detail)
+        assert "SVC-S" in detail["message"] and "NS-X" in detail["message"], detail
+        assert "Return" in detail["message"] and "cancel" in detail["message"], detail
+    assert await _state(session, old, "service") == state and await _ledger(session, old) == count
+    assert await _items(session, old) == items
+
+
+async def test_a_run_using_a_service_or_non_stocked_item_unwinds_exactly(client, session):
+    old = await pre366.upgraded(session, "service")
+    state = await _state(session, old, "service")
+    assert _held(state, old["items"]["N"]) == (2.0, Decimal("4")), state
+    for k in ("S", "X"):
+        assert _held(state, old["items"][k]) == (1.0, Decimal("0")), state  # never on the books
+    assert Decimal(state["wip_issued"]) == Decimal("4"), state
+    await _books(session, old)
+    journals = await _journal_total(session, old)
+
+    await _unwinds(client, session, old, "service", {"N": (2.0, Decimal("4"))})
+    items = await _items(session, old)
+    for k in ("S", "X"):
+        s = items[old["items"][k]]
+        # Exactly what the old issue took: the unit back, at the cost it carried off the books.
+        assert (s["quantity"], s["cost_total"], s["inventory_type"]) == (
+            5.0, 15.0, "service" if k == "S" else "non_stocked"), s
+        assert held_value(await _row(session, old, old["items"][k])) is None
+    assert await _stock(session, old, "N") == (10.0, Decimal("20"))
+    assert await _journal_total(session, old) - journals == Decimal("4")  # only N's value moved back
+    assert (await _state(session, old, "service"))["status"] == "cancelled"
+
+
+async def test_a_run_whose_product_is_no_longer_stock_cannot_go_ahead(client, session):
+    old = await pre366.upgraded(session, "generic")
+    product = await _new_item(client, old, "GEN-1")
+    r = await _post(client, old, "generic_received", "repair-output", {"output_item_id": product})
+    assert r.status_code == 200, r.text
+    # Made a service after the run was given it: nothing it makes could be stock.
+    r = await client.post("/items/bulk/revert-to-draft", headers=old["headers"], json={"entity_ids": [product]})
+    assert r.status_code == 200, r.text
+    r = await client.patch(f"/items/{product}", headers=old["headers"], json={"fields_changed": {
+        "inventory_type": {"old": "stocked", "new": "service"}}})
+    assert r.status_code == 200, r.text
+    state, count = await _state(session, old, "generic_received"), await _ledger(session, old)
+
+    for action, body in _FORWARD:
+        r = await _post(client, old, "generic_received", action, body)
+        assert r.status_code == 409, (action, r.text)
+        detail = r.json()["detail"]
+        assert detail["message_key"] == "mfg.not_stock" and "GEN-1" in detail["message"], (action, detail)
+        assert "Return" in detail["message"] and "cancel" in detail["message"], detail
+    assert await _state(session, old, "generic_received") == state and await _ledger(session, old) == count

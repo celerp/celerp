@@ -44,6 +44,11 @@ Company ``migrated`` (component M at 2 x 10, product FG-4 with a recipe 1 x M, a
 4 units split off M under their own SKU): an invoice a data migration brought over, FG-4 x 5
 and SPL-1 x 3, with 2 of FG-4 (``LOT_FG``) and 1 of SPL-1 (``LOT_SPL``) delivered before the
 move, each a sold lot that names no product, and the first line now naming ``LOT_FG``.
+
+Company ``service`` (N at 2 x 10, service S and non-stocked X, each 5 at a cost of 3 apiece
+kept off the stock books, product FG-5):
+- ``service``: imported making FG-5 x 1 from N x 2, S x 1 and X x 1, all issued, nothing
+  received.
 """
 from __future__ import annotations
 

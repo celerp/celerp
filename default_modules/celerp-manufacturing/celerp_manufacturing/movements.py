@@ -214,9 +214,9 @@ def _require_one_output(state: dict) -> None:
 
 async def _require_executable_shape(op: _Op, state: dict) -> None:
     """A run goes ahead (Issue, Receive, Complete) only as a run can be made today: every
-    component at a quantity above zero, making one named product at a quantity above zero.
-    Only an older release stored one otherwise; it can still be unwound (Return, Undo
-    Receipt, Cancel)."""
+    component a stocked item or component at a quantity above zero, making one named stocked
+    product at a quantity above zero. Only an older release stored one otherwise (or an item
+    has since stopped being stock); it can still be unwound (Return, Undo Receipt, Cancel)."""
     bad = [i.get("item_id") for i in state.get("inputs", []) if not float(i.get("quantity") or 0) > 0]
     if bad:
         rows = [await op.session.get(Projection, {"company_id": op.company_id, "entity_id": i}) for i in bad]
@@ -225,9 +225,23 @@ async def _require_executable_shape(op: _Op, state: dict) -> None:
                      "ahead. Return what was issued to it and cancel it, then make it again with the quantities "
                      "it needs.", items=names)
     _require_one_output(state)
-    if not state.get("output_item_id"):
+    out_id = state.get("output_item_id")
+    if not out_id:
         raise refuse(409, "no_output", "This run does not name the product it makes, so it cannot go ahead. "
                      "Choose its product, or return what was issued to it and cancel it.")
+    ids = [i.get("item_id") for i in state.get("inputs", [])]
+    rows = await lock_projections(op.session, op.company_id, [*ids, out_id])
+    product = rows.get(out_id)
+    if product is None or product.entity_type != "item":
+        raise refuse(409, "no_output", "This run has no product to receive its output into.")
+    not_stock = [((r.state or {}).get("sku") or i) for i in dict.fromkeys([*ids, out_id])
+                 if (r := rows.get(i)) is not None and r.entity_type == "item" and not is_stock_type(r.state)]
+    if not_stock:
+        names = ", ".join(not_stock)
+        raise refuse(409, "not_stock", f"{names} {'is' if len(not_stock) == 1 else 'are'} not a stocked item or "
+                     "component, so this run cannot go ahead: production turns stock into stock. Return what was "
+                     "issued to it and cancel it, then make it again, recording services and other costs as labor "
+                     "or overhead.", items=names)
 
 
 def _wip(state: dict) -> Decimal:
@@ -320,8 +334,7 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
         sku = s.get("sku") or item_id
         if str(s.get("status") or "").lower() == "draft":
             raise refuse(422, "item_draft", f"{sku} is a draft. Make it available before issuing it.", sku=sku)
-        require_stock(s, item_id, 409)
-        held = held_value(row)
+        held = held_value(row)  # a stocked item or component (_require_executable_shape)
         if not is_item_available(s) or s.get("status_doc_id") or held is None:
             raise refuse(409, "item_unavailable",
                          f"{sku} is not stock the company holds and can use (it is {s.get('status') or 'unknown'}).",
@@ -433,18 +446,22 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
     from celerp_inventory.projections import is_item_available
 
     rows = await lock_projections(op.session, op.company_id, list(values))
-    befores: dict[str, Decimal] = {}
+    # Value each lot holds on the books before the return; None for one an older release let
+    # a run use though it was never stock (a service or non-stocked item), which takes back
+    # only the units it gave and gains no value.
+    befores: dict[str, Decimal | None] = {}
     for line in wanted:
         item_id = line["item_id"]
         row = rows.get(item_id)
         s = (row.state or {}) if row is not None and row.entity_type == "item" else {}
         held = held_value(row) if s else None
-        if not is_item_available(s) or s.get("status_doc_id") or held is None:
+        off_books = bool(s) and not is_stock_type(s) and not values[item_id]
+        if not is_item_available(s) or s.get("status_doc_id") or (held is None and not off_books):
             raise refuse(409, "return_lot_unavailable",
                          f"{s.get('sku') or item_id} is no longer stock the company holds (it is "
                          f"{s.get('status') or 'gone'}), so nothing can be returned to it.",
                          sku=s.get("sku") or item_id, status=s.get("status"))
-        befores[item_id] = op.round(held)
+        befores[item_id] = None if off_books else op.round(held)
         if op.books and values[item_id]:
             lot_account(s)
 
@@ -459,12 +476,16 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
         item_id, value = line["item_id"], values[line["item_id"]]
         s = rows[item_id].state or {}
         qty = float(s.get("quantity") or 0) + line["quantity"]
+        adjusted = {"new_qty": qty, "reason": "production_return", "quantity_returned": line["quantity"]}
+        if befores[item_id] is None:
+            await op.emit(item_id, "item", "item.quantity.adjusted", adjusted,
+                          f"mfg:{op.order_id}:return:{rk}:{item_id}", metadata={_ORDER_MARK: op.order_id})
+            returned.append({**line, "value": str(value)})
+            continue
         landed = sum(float(v or 0) for v in (s.get("landed_contributions") or {}).values())
         target = befores[item_id] + value
-        await op.emit(item_id, "item", "item.quantity.adjusted", {
-            "new_qty": qty, "cost_base": float(target) - landed * qty, "reason": "production_return",
-            "quantity_returned": line["quantity"]},
-            f"mfg:{op.order_id}:return:{rk}:{item_id}", metadata={_ORDER_MARK: op.order_id})
+        await op.emit(item_id, "item", "item.quantity.adjusted", {**adjusted, "cost_base": float(target) - landed * qty},
+                      f"mfg:{op.order_id}:return:{rk}:{item_id}", metadata={_ORDER_MARK: op.order_id})
         after = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": item_id},
                                      populate_existing=True)
         if op.round(held_value(after) or 0) != target:
@@ -522,15 +543,11 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
                      remaining=outstanding, quantity=qty)
     if outstanding_inputs(state):
         raise refuse(409, "issue_first", "Issue every component to this run before receiving its output.")
-    out_id = state.get("output_item_id")
-    product = (await lock_projections(op.session, op.company_id, [out_id])).get(out_id) if out_id else None
-    if product is None or product.entity_type != "item":
-        raise refuse(409, "no_output", "This run has no product to receive its output into.")
-    p = product.state or {}
+    out_id = state["output_item_id"]  # a stocked item (_require_executable_shape)
+    p = (await lock_projections(op.session, op.company_id, [out_id]))[out_id].state or {}
     if str(p.get("status") or "").lower() == "draft":
         raise refuse(422, "output_draft", f"{p.get('sku') or out_id} is a draft. Make it available first.",
                      sku=p.get("sku") or out_id)
-    require_stock(p, out_id, 409)
 
     wip = _wip(state)
     amount = wip if qty >= outstanding - _EPS else op.round(wip * _money(qty) / _money(outstanding))

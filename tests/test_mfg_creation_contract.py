@@ -136,7 +136,8 @@ async def test_a_historical_run_cannot_receive_into_or_issue_what_is_not_stock(c
     raw = await _item(client, auth, 100.0, qty=10)
     service = await _typed(client, auth, "service", cost=50.0, qty=5)
     order = await _historical_run(session, auth, [(raw, 2)], service)
-    assert (await issue(client, auth, order, key="i")).status_code == 200
+    refusal(await issue(client, auth, order, key="i"), 409, "not_stock")
+    assert (await _state(session, auth, raw))["quantity"] == 10
     refusal(await receive(client, auth, order, 1, key="r"), 409, "not_stock")
     refusal(await complete(client, auth, order, key="c"), 409, "not_stock")
     await assert_settled(client, session, auth)
