@@ -48,7 +48,12 @@ from . import movements
 from .labor import apply_labor_providers
 from .search import _INCOMPLETE_STATUSES, search_orders
 
-router = APIRouter(prefix="/manufacturing", dependencies=[Depends(get_current_user)], tags=["manufacturing"])
+# Every endpoint, reads included, requires manage_manufacturing: work orders carry costs.
+router = APIRouter(
+    prefix="/manufacturing",
+    dependencies=[Depends(get_current_user), require_permission("manage_manufacturing")],
+    tags=["manufacturing"],
+)
 
 log = logging.getLogger(__name__)
 
