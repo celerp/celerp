@@ -229,11 +229,10 @@ async def test_exchange_gain_and_loss_share_one_account_or_split_by_type(client,
 
 @pytest.mark.asyncio
 async def test_without_the_accounting_module_only_roles_are_snapshotted(client, session, monkeypatch):
-    from celerp.modules import slots
+    from celerp.services import journal_accounts
 
     cid = await _reg(client)
     await _roles(session, cid, {"receivable": "1120"})
-    real_get = slots.get
-    monkeypatch.setattr(slots, "get", lambda name: [] if name == "journal_accounts" else real_get(name))
+    monkeypatch.setattr(journal_accounts, "_chart", None)
     entry = await _post(session, cid, [{"account": "ZZZ", "debit": 5}, {"account": "1120", "credit": 5}])
     assert entry.data["entries"][1]["account_roles"] == ["receivable"]

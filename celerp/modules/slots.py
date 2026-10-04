@@ -19,12 +19,16 @@ category_schema    Default field definitions for a named category
 projection_handler Maps event-type prefixes to a handler function
 on_company_created Async callback(session, company_id) fired after a new company is persisted
 inventory_in_production
-                   Async callback(session, company_id) -> Decimal: stock value an older
-                   release issued to work still open, which its books still carry on the
-                   inventory accounts (lot_origin._in_production)
-item_lineage_guard Async callback(session, entry, transition) run on every live item event,
-                   after it is applied and before its effects are booked; raising refuses
-                   the event (celerp.events.engine._item_applied)
+                   {"handler": "module.path:function"} naming
+                   `async def handler(*, session, company_id) -> Decimal`, called with
+                   exactly those keyword arguments: stock value an older release issued
+                   to work still open, which its books still carry on the inventory
+                   accounts (lot_origin._in_production)
+item_lineage_guard {"handler": "module.path:function"} naming
+                   `async def handler(*, session, entry, transition) -> None`, called
+                   with exactly those keyword arguments on every live item event, after
+                   it is applied and before its effects are booked; raising refuses the
+                   event (celerp.events.engine._item_applied)
 search_provider    Contributes rows to the global search bar. Exactly one descriptor
                    dict per module: {"handler", "result_key", "permission"}. handler
                    names an in-module "module.path:function" resolved and validated

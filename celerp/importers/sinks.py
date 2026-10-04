@@ -178,13 +178,12 @@ class UntrustedSinkError(ValueError):
 def _defining_module(sink: MigrationSink) -> str | None:
     """The Celerp module whose code defines `sink`: `celerp` for the core, else the bundled
     module folder holding its code, or None when that folder is not first-party by content."""
-    from celerp.modules.loader import is_first_party
+    from celerp.modules.loader import first_party_owner
 
     origin = Path(type(sink).import_batch.__code__.co_filename).resolve()
     if origin.is_relative_to(_CORE_DIR):
         return "celerp"
-    folder = origin.parent.parent
-    return folder.name if is_first_party(folder) else None
+    return first_party_owner(origin)
 
 
 def register_sink(sink: MigrationSink) -> None:

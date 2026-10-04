@@ -44,7 +44,7 @@ PARENT_TYPES: dict[str, frozenset[str]] = {
 async def lock_accounts(session: AsyncSession, company_id: uuid.UUID, codes: set[str]) -> dict[str, dict]:
     """The company's accounts among ``codes``, share-locked in code order.
 
-    The core journal boundary's view of the chart (slot ``journal_accounts``)."""
+    The core journal boundary's view of the chart (``ChartAccess.lock_accounts``)."""
     if not codes:
         return {}
     rows = (await session.execute(
@@ -70,7 +70,7 @@ async def lock_accounts(session: AsyncSession, company_id: uuid.UUID, codes: set
 
 async def chart_accounts(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:
     """Every account in the company's chart, in code order, as the posting-accounts
-    choices see it (slot ``chart_accounts``)."""
+    choices see it (``ChartAccess.list_accounts``)."""
     rows = (await session.execute(
         select(Account).where(Account.company_id == company_id).order_by(Account.code)
     )).scalars().all()

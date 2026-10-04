@@ -272,6 +272,14 @@ def is_first_party(pkg_path: Path) -> bool:
     return True
 
 
+def first_party_owner(code_file: str | Path) -> str | None:
+    """The bundled module whose package holds ``code_file`` (a function's
+    ``__code__.co_filename``), or None when that module folder is not first-party
+    by content. Module code lives at ``<module folder>/<package>/<file>.py``."""
+    folder = Path(code_file).resolve().parent.parent
+    return folder.name if is_first_party(folder) else None
+
+
 def first_party_names() -> frozenset[str]:
     """The module names the committed lock claims as first-party.
 

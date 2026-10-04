@@ -362,27 +362,6 @@ _SLOT_CONTRIBUTIONS = _nav_slot_contributions() + [
         },
     },
     {
-        "slot": "journal_accounts",
-        "contrib": {
-            "handler": "celerp_accounting.chart_rules:lock_accounts",
-            "_module": "celerp-accounting",
-        },
-    },
-    {
-        "slot": "chart_accounts",
-        "contrib": {
-            "handler": "celerp_accounting.chart_rules:chart_accounts",
-            "_module": "celerp-accounting",
-        },
-    },
-    {
-        "slot": "add_chart_account",
-        "contrib": {
-            "handler": "celerp_accounting.import_service:add_posting_account",
-            "_module": "celerp-accounting",
-        },
-    },
-    {
         "slot": "projection_handler",
         "contrib": {
             "prefix": "mfg.",

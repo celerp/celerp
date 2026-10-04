@@ -165,7 +165,7 @@ async def create_chart_account(
 async def add_posting_account(
     session: AsyncSession, company_id: uuid.UUID, *, code: str, name: str, account_type: str,
 ) -> None:
-    """A top-level account added for a posting role (slot ``add_chart_account``)."""
+    """A top-level account added for a posting role (``ChartAccess.add_account``)."""
     await create_chart_account(session, company_id, code=code, name=name, account_type=account_type,
                                parent_code=None)
     await session.flush()

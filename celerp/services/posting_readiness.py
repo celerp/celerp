@@ -13,8 +13,8 @@ its first use asks for it.
 A migrated company arrives with its source's chart and no posting accounts. Finishing
 the migration sets them (``apply_choices``): the source's own control account where it
 names exactly one, otherwise the user's choice of an existing account or an added one.
-The chart belongs to the accounting module, which lists it through the
-``chart_accounts`` slot and adds accounts through ``add_chart_account``.
+The chart belongs to the accounting module, which lists it and adds accounts through
+the chart it registers (``celerp.services.journal_accounts.chart_access``).
 """
 
 from __future__ import annotations
@@ -52,9 +52,6 @@ from celerp.services.account_roles import (
 
 NOTICE_CATEGORY = "accounting"
 NOTICE_TITLE = "Posting accounts need attention"
-
-CHART_SLOT = "chart_accounts"
-ADD_ACCOUNT_SLOT = "add_chart_account"
 
 _GROUP_OF: dict[str, str] = {role.value: group for group, roles in ROLE_GROUPS.items() for role in roles}
 
@@ -132,12 +129,12 @@ async def notify_unmapped(session: AsyncSession, company_id) -> bool:
 
 
 async def _chart(session: AsyncSession, company_id) -> dict[str, dict] | None:
-    from celerp.modules.slots import get, resolve_handler
+    from celerp.services.journal_accounts import chart_access
 
-    contributions = get(CHART_SLOT)
-    if not contributions:
+    access = chart_access()
+    if access is None:
         return None
-    rows = await resolve_handler(contributions[0]["handler"])(session, company_id)
+    rows = await access.list_accounts(session, company_id)
     return {row["code"]: row for row in rows}
 
 
@@ -266,9 +263,8 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
     so a retry cannot overwrite a choice made in between. Raises ReadinessError when a
     needed role is left without an account or a choice cannot take it; the caller owns
     the transaction and rolls it back."""
-    from celerp.modules.slots import get, resolve_handler
     from celerp.services.company_lock import lock_chart, locked_company
-    from celerp.services.journal_accounts import lock_accounts
+    from celerp.services.journal_accounts import chart_access, lock_accounts
 
     choices = choices or {}
     if not isinstance(choices, dict):
@@ -310,7 +306,7 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
         problems.append(f"Choose the posting account for: {', '.join(unchosen)}.")
     if problems:
         raise ReadinessError(" ".join(problems))
-    add = resolve_handler(get(ADD_ACCOUNT_SLOT)[0]["handler"])
+    add = chart_access().add_account
     for account in added:
         if account["code"] not in chart and final.get(account["role"]) == account["code"]:
             try:

@@ -8,13 +8,19 @@ whoever produced it: automatic postings, manual journals, imports, bank
 reconciliation, repairs. Replay applies stored events directly and never comes
 back through here, so history is never revalidated or rewritten.
 
-The chart of accounts belongs to the accounting module. It contributes one
-``journal_accounts`` slot handler that reads and share-locks account rows; core
-never touches its table. With no handler registered the accounting module is not
-running, and only the role snapshot is written.
+The chart of accounts belongs to the accounting module. When its API starts it
+registers a ``ChartAccess`` here (``register_chart``): reading and share-locking
+account rows, listing the chart, and adding an account. Core never touches its
+table. Only the bundled accounting module can register; with nothing registered,
+or the module stopped, accounting is not running and only the role snapshot is
+written.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Awaitable, Callable
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,7 +35,51 @@ from celerp.services.account_roles import (
     target_problems,
 )
 
-SLOT = "journal_accounts"
+CHART_MODULE = "celerp-accounting"
+
+
+@dataclass(frozen=True)
+class ChartAccess:
+    """The accounting module's chart, as core reads and extends it.
+
+    lock_accounts(session, company_id, codes) -> {code: {"code", "account_type",
+    "is_active", "has_children"}}, share-locked; list_accounts(session, company_id) ->
+    the chart's rows; add_account(session, company_id, *, code, name, account_type).
+    """
+
+    lock_accounts: Callable[..., Awaitable[dict[str, dict]]]
+    list_accounts: Callable[..., Awaitable[list[dict]]]
+    add_account: Callable[..., Awaitable[None]]
+
+
+class UntrustedChartError(ValueError):
+    """A chart offered by code that is not the bundled accounting module."""
+
+
+_chart: ChartAccess | None = None
+
+
+def register_chart(access: ChartAccess) -> None:
+    """Accept ``access`` only when every one of its functions is code of the bundled,
+    content-verified accounting module."""
+    from celerp.modules.loader import first_party_owner
+
+    global _chart
+    for fn in (access.lock_accounts, access.list_accounts, access.add_account):
+        code = getattr(fn, "__code__", None)
+        if code is None or first_party_owner(Path(code.co_filename)) != CHART_MODULE:
+            raise UntrustedChartError(
+                "Only the bundled accounting module can provide the chart of accounts.")
+    _chart = access
+
+
+def chart_access() -> ChartAccess | None:
+    """The registered chart, or None when the accounting module is not running."""
+    from celerp.modules.loader import load_errors
+
+    if _chart is None or CHART_MODULE in load_errors():
+        return None
+    return _chart
 
 
 async def lock_accounts(session: AsyncSession, company_id, codes) -> dict[str, dict] | None:
@@ -38,12 +88,10 @@ async def lock_accounts(session: AsyncSession, company_id, codes) -> dict[str, d
     Each value is {"code", "account_type", "is_active", "has_children"}; a code the
     chart does not hold is absent. None when the accounting module is not running.
     """
-    from celerp.modules.slots import get, resolve_handler
-
-    contributions = get(SLOT)
-    if not contributions:
+    chart = chart_access()
+    if chart is None:
         return None
-    return await resolve_handler(contributions[0]["handler"])(session, company_id, set(codes))
+    return await chart.lock_accounts(session, company_id, set(codes))
 
 
 async def prepare_journal_entry(session: AsyncSession, company_id, data: dict) -> None:
