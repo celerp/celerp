@@ -284,13 +284,23 @@ _ID_FIELD_COMPANIONS: dict[str, str] = {
 }
 
 
-def detail_from_entry(data: dict, event_type: str, currency: str | None = None) -> str:
-    """Extract a short human-readable detail string from a ledger entry's data dict."""
+def _category(key: str, category_names: dict | None) -> str:
+    """A category as the page shows it: from the caller's ``category_labels`` map, else
+    ``category_label`` (a library category in the user's language, else the key)."""
+    return (category_names or {}).get(key) or category_label(key)
+
+
+def detail_from_entry(data: dict, event_type: str, currency: str | None = None,
+                      category_names: dict | None = None) -> str:
+    """Extract a short human-readable detail string from a ledger entry's data dict.
+
+    category_names: ``category_labels`` of the company's category names, so a renamed or
+    company-made category reads as named rather than as its key."""
     if not data or not isinstance(data, dict):
         return ""
     fields_changed = data.get("fields_changed", {})
     if fields_changed and isinstance(fields_changed, dict):
-        summary = _fields_changed_summary(fields_changed, currency)
+        summary = _fields_changed_summary(fields_changed, currency, category_names)
         if summary:
             return summary
         # fields_changed was present but all entries were noise (empty→empty etc.)
@@ -331,7 +341,7 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         if child_sku:
             parts.append(f"→ {child_sku}")
         if child_category:
-            parts.append(f"({category_label(child_category)})")
+            parts.append(f"({_category(child_category, category_names)})")
         return " ".join(parts) if parts else ""
     if event_type == "item.merged":
         sources = data.get("source_entity_ids", [])
@@ -453,7 +463,7 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         target_ref = data.get("target_ref") or data.get("target_doc_number") or ""
         return f"→ {target_ref}" if target_ref else (doc_ref or "")
     if event_type == "doc.updated":
-        return _fields_changed_summary(fields_changed, currency)
+        return _fields_changed_summary(fields_changed, currency, category_names)
     if event_type == "doc.shared":
         return doc_ref or ""
     if event_type == "doc.received":
@@ -483,7 +493,7 @@ def is_money_field(key: str) -> bool:
     return key in _MONEY_FIELD_KEYS or key.endswith("_price") or key.endswith("_total")
 
 
-def _fmt_field_value(key: str, value, currency: str | None) -> str:
+def _fmt_field_value(key: str, value, currency: str | None, category_names: dict | None = None) -> str:
     """Format a single changed-field value by its field type: integer/clean pieces & qty,
     currency money, ISO dates as dates; anything else falls back to capped text."""
     if value is None:
@@ -495,7 +505,7 @@ def _fmt_field_value(key: str, value, currency: str | None) -> str:
     if key in _DATE_FIELD_KEYS or key.endswith("_date"):
         return str(value)[:10]
     if key == "category":
-        return category_label(str(value))
+        return _category(str(value), category_names)
     s = str(value)
     return s[:40] + "…" if len(s) > 40 else s
 
@@ -610,7 +620,8 @@ def _line_tax_change_summary(fields_changed: dict, currency: str | None):
     return parts, (frozenset({"tax"}) if parts else frozenset())
 
 
-def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -> str:
+def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
+                            category_names: dict | None = None) -> str:
     """Compact summary of field changes from a ledger data dict.
 
     Scalar changes: "field: old → new", each value formatted by its field type.
@@ -745,8 +756,8 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
         if old == new:
             continue
 
-        old_str = _fmt_field_value(k, old, currency) if not _empty(old) else t("activity.none")
-        new_str = _fmt_field_value(k, new, currency) if not _empty(new) else t("activity.none")
+        old_str = _fmt_field_value(k, old, currency, category_names) if not _empty(old) else t("activity.none")
+        new_str = _fmt_field_value(k, new, currency, category_names) if not _empty(new) else t("activity.none")
         label = _field_name(k)
         if not _empty(new):
             scalar_parts.append(f"{label}: {old_str} → {new_str}")
@@ -868,7 +879,7 @@ def _delta_detail(data: dict) -> FT | None:
     return Span(text, **attrs)
 
 
-def _origin_detail(data: dict, with_category: bool = False) -> str:
+def _origin_detail(data: dict, with_category: bool = False, category_names: dict | None = None) -> str:
     """Child origin detail: '0 → received' for each measure the child actually got."""
     parts = [f"{t('activity.m_qty')}: 0 → {fmt_qty(data.get('qty'))}"]
     if data.get("pieces") is not None:
@@ -876,7 +887,7 @@ def _origin_detail(data: dict, with_category: bool = False) -> str:
     if data.get("weight") is not None:
         parts.append(f"{t('activity.m_wt')}: 0 → {fmt_qty(data.get('weight'))}")
     if with_category and data.get("category"):
-        parts.append(f"{t('activity.m_cat')}: {category_label(data['category'])}")
+        parts.append(f"{t('activity.m_cat')}: {_category(data['category'], category_names)}")
     return ", ".join(parts)
 
 
@@ -897,7 +908,8 @@ def _fulfil_verb(doc_type: str, reversed_: bool) -> str:
     return t("activity.consigned") if memo else t("event.item.fulfilled")
 
 
-def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT, str, str]] | None:
+def _lifecycle_rows_spec(e: dict, currency: str | None = None,
+                         category_names: dict | None = None) -> list[tuple[FT, str, str]] | None:
     """For split/transform/merge events and doc-tied item events, return
     [(event_content, detail, anchor_suffix), ...] with linked SKUs/doc-numbers in the
     requested style. Returns None for non-lifecycle events (or legacy rows lacking the
@@ -964,7 +976,7 @@ def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT,
 
     if etype == "item.transformed_from":
         content = Span(f"{t('event.item.transformed_from')} ", _item_link(data.get("parent_id"), str(data.get("parent_sku") or "")))
-        return [(content, _origin_detail(data, with_category=True), "")]
+        return [(content, _origin_detail(data, with_category=True, category_names=category_names), "")]
 
     if etype == "item.merged":
         srcs = data.get("source_entity_ids") or []
@@ -997,6 +1009,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
                    history_url: str | None = None,
                    subject_entity_id: str | None = None,
                    currency: str | None = None,
+                   category_names: dict | None = None,
                    resizable: bool = False) -> FT:
     """Unified DRY activity table used by all detail pages and dashboard.
 
@@ -1005,6 +1018,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
     subject_entity_id: when set (an entity's own detail page), that entity's split/transform
     origin row is shown; when None (dashboard), origin rows de-dup against the mother summary.
     currency: ISO code used to format money amounts in the Details column.
+    category_names: ``category_labels`` of the company's category names (see detail_from_entry).
 
     title/empty_msg default to None so their text resolves in the request language
     at render time; a caller may still pass an explicit string to override.
@@ -1059,7 +1073,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
                 return []
 
         # Rich lifecycle rendering (split/transform/merge): linked SKUs + qty/pcs/wt deltas.
-        spec = _lifecycle_rows_spec(e, currency)
+        spec = _lifecycle_rows_spec(e, currency, category_names)
         if spec is not None:
             return [_assemble(e, content, detail, suffix) for content, detail, suffix in spec]
 
@@ -1071,7 +1085,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
         # File events (any entity): filename linked to the file (name only once deleted).
         if _is_file_event(raw_type) and isinstance(data, dict):
             return [_assemble(e, content, _file_event_detail(e, data, raw_type), "")]
-        detail = detail_from_entry(data, raw_type, currency) if isinstance(data, dict) else ""
+        detail = detail_from_entry(data, raw_type, currency, category_names) if isinstance(data, dict) else ""
 
         # Drop rows that carried only noise (empty→empty field changes with no other detail)
         if not detail and isinstance(data, dict) and data.get("fields_changed"):

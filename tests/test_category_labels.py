@@ -198,3 +198,29 @@ def test_english_category_field_labels_match_the_library():
     field label, so none is left over once a library field is renamed or removed."""
     en = i18n._cached_load("en")
     assert {v for k, v in en.items() if k.startswith("attr.")} <= _library_field_labels()
+
+
+@pytest.mark.parametrize("lang", ["en", "de"])
+@pytest.mark.asyncio
+async def test_activity_shows_renamed_and_custom_categories_as_named(owner_ui, lang):
+    """The activity feed names a category the way the rest of the app does: a renamed
+    library category and a company's own category as typed, never their keys. Red
+    statement: the feed showed "Category: books_we_like → gear_box"."""
+    api = owner_ui.api
+    for key in ("beer", "book"):
+        assert (await api.post("/companies/me/apply-category", params={"name": key})).status_code == 200
+    assert (await api.patch("/companies/me/categories/book", json={"name": "Books we like"})).status_code == 200
+    assert (await api.post("/companies/me/categories", json={"name": "Gear Box"})).status_code == 200
+    r = await api.post("/items", json={"sku": "ACT-1", "name": "Feed item", "sell_by": "piece",
+                                       "quantity": 1, "category": "beer"})
+    assert r.status_code in (200, 201), r.text
+    item_id = r.json()["id"]
+    for old, new in (("beer", "books_we_like"), ("books_we_like", "gear_box")):
+        r = await api.patch(f"/items/{item_id}", json={"fields_changed": {"category": {"old": old, "new": new}}})
+        assert r.status_code == 200, r.text
+    headers = {"Accept-Language": lang}
+    for url in (f"/inventory/{item_id}/history", f"/inventory/{item_id}?tab=activity", "/history", "/dashboard"):
+        text = (await owner_ui.get(url, headers=headers)).text
+        assert "books_we_like →" not in text and "→ gear_box" not in text, url
+        assert re.search(r"Books we like → Gear Box", text), url
+        assert re.search(rf"{'Bier' if lang == 'de' else 'Beer'} → Books we like", text), url

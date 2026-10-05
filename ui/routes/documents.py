@@ -3877,6 +3877,7 @@ celerpUpdateBulkAlloc();
             total = int(resp.get("total", len(entries))) if isinstance(resp, dict) else len(entries)
         except Exception:
             entries, total = [], 0
+        category_names = await api.get_category_labels(token)
         from ui.components.activity import format_timestamp, detail_from_entry, _event_display, actor_label
         EMPTY = "--"
         def _row(e: dict):
@@ -3885,7 +3886,7 @@ celerpUpdateBulkAlloc();
             ts_display = format_timestamp(str(e.get("ts") or "")) or EMPTY
             data = e.get("data") or {}
             raw_type = str(e.get("event_type") or "")
-            detail = detail_from_entry(data, raw_type) if isinstance(data, dict) else ""
+            detail = detail_from_entry(data, raw_type, category_names=category_names) if isinstance(data, dict) else ""
             return Tr(event_cell, Td(ts_display), Td(actor_label(e)), Td(detail or EMPTY))
         rows = [_row(e) for e in entries]
         footer = server_pager(

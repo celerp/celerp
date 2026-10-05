@@ -863,6 +863,17 @@ async def get_category_display_names(token: str) -> dict:
         return _raise(await c.get("/companies/me/category-display-names")).json()
 
 
+async def get_category_labels(token: str) -> dict:
+    """The company's category names as the user reads them, keyed by category
+    (``ui.i18n.category_labels``); empty when they cannot be fetched, so a category
+    falls back to its library name or key."""
+    from ui.i18n import category_labels
+    try:
+        return category_labels(await get_category_display_names(token))
+    except Exception:
+        return {}
+
+
 async def get_category_schema(token: str, category: str) -> list[dict]:
     async with _api_client(token) as c:
         return _raise(await c.get(f"/companies/me/category-schema/{category}")).json()
