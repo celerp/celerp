@@ -1738,7 +1738,8 @@ def _scan_protected_imports(pkg_path: Path, entry: Path | None) -> set[str]:
 
 # Names whose use writes a module's namespace in a way its source cannot show:
 # the namespace mappings (also reached through a function's __globals__, a
-# frame, or the garbage collector), code built from strings, and attribute
+# frame, the garbage collector, or locals() called anywhere but directly in a
+# function's own frame, _function_frame_nodes), code built from strings, and attribute
 # writers reached through an attribute (builtins.setattr, object.__setattr__) or
 # by name (getattr(builtins, 'exec')). Writes to sys.modules, which replace a
 # whole module, are refused alongside them.
@@ -1746,7 +1747,7 @@ _NAMESPACE_WRITERS = frozenset({"globals", "vars", "exec", "eval", "__builtins__
 _MAPPING_WRITERS = frozenset({
     "update", "setdefault", "pop", "popitem", "clear", "__setitem__", "__delitem__"})
 _NAMESPACE_WRITER_ATTRS = _NAMESPACE_WRITERS | {
-    "__dict__", "setattr", "delattr", "__setattr__", "__delattr__", "__getattribute__",
+    "locals", "__dict__", "setattr", "delattr", "__setattr__", "__delattr__", "__getattribute__",
     "__globals__", "f_globals", "f_locals", "get_referrers", "get_referents", "get_objects"}
 # Attribute access by a name held in a value: the call, and where its name
 # sits among the call's arguments (None: every argument is a name).
@@ -1788,6 +1789,33 @@ def _is_module_value(node, names: set[str]) -> bool:
     return False
 
 
+def _function_frame_nodes(tree: ast.Module) -> set[int]:
+    """The ids of the nodes in ``tree`` that run in a function's own frame, where
+    locals() reads that function's names and nothing else. Only a def's or
+    lambda's body does. Its decorators, defaults, annotations and type
+    parameters run in the enclosing scope when the def runs, as do a class's
+    decorators, bases and keywords; a class body is a namespace, not a frame;
+    and a comprehension or generator runs in (or is evaluated from) the scope
+    around it, which at module level is the module itself."""
+    inside: set[int] = set()
+    stack = [(tree, False)]
+    while stack:
+        node, in_frame = stack.pop()
+        if in_frame:
+            inside.add(id(node))
+        frame: set[int] = set()
+        namespace: set[int] = set()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            frame = {id(n) for n in node.body}
+        elif isinstance(node, ast.Lambda):
+            frame = {id(node.body)}
+        elif isinstance(node, ast.ClassDef):
+            namespace = {id(n) for n in node.body}
+        stack.extend((n, id(n) in frame or (id(n) not in namespace and in_frame))
+                     for n in ast.iter_child_nodes(node))
+    return inside
+
+
 def _dynamic_write(tree: ast.Module, handlers: set[str]) -> str | None:
     """The first construct in ``tree`` that may write one of ``handlers`` into a
     module's namespace where the source cannot show it, or None. ``handlers``
@@ -1796,13 +1824,15 @@ def _dynamic_write(tree: ast.Module, handlers: set[str]) -> str | None:
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
     called = {id(n.func) for n in calls}
     guarded = handlers | _FUNCTION_INTERNALS
-    in_function = {id(n) for f in ast.walk(tree) if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
-                   for n in ast.walk(f) if n is not f}
+    in_function = _function_frame_nodes(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id in _NAMESPACE_WRITERS:
             return node.id
-        if isinstance(node, ast.Name) and node.id == "locals" and id(node) not in in_function:
-            return "locals outside a function"
+        if isinstance(node, ast.Name) and node.id == "locals":
+            if id(node) not in in_function:
+                return "locals outside a function"
+            if id(node) not in called:
+                return "locals used as a value"
         if (isinstance(node, ast.Name) and node.id in _ATTR_BY_NAME
                 and id(node) not in called):
             return f"{node.id} used as a value"

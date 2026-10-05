@@ -469,6 +469,82 @@ _case_handler_rebound_through_gc_referrers = _rebound_ready(
     {"hooks.py": "import gc\n" + _READY + _SYNC
                  + "[d for d in gc.get_referrers(ready) if isinstance(d, dict)][0]['ready'] = _sync\n"})
 
+# locals() in code Python evaluates at definition time, in the enclosing scope:
+# a def's decorators, defaults and annotations, a lambda's defaults, a class's
+# decorators, bases and keywords, a comprehension inlined into module scope.
+# Only a def's or lambda's body is the function's own frame.
+_REBIND = "locals().__setitem__('ready', _sync)"
+
+
+def _rebound_at_definition(name: str, code: str):
+    return _rebound_ready(name, "dynamically", {"hooks.py": _READY + _SYNC + code})
+
+
+_case_handler_rebound_through_def_default = _rebound_at_definition(
+    "handler_rebound_through_def_default", f"def helper(x={_REBIND}):\n    pass\n")
+_case_handler_rebound_through_kwonly_default = _rebound_at_definition(
+    "handler_rebound_through_kwonly_default", f"def helper(*, x={_REBIND}):\n    pass\n")
+_case_handler_rebound_through_def_decorator = _rebound_at_definition(
+    "handler_rebound_through_def_decorator",
+    f"@({_REBIND} or (lambda f: f))\ndef helper():\n    pass\n")
+_case_handler_rebound_through_annotation = _rebound_at_definition(
+    "handler_rebound_through_annotation", f"def helper(x: {_REBIND}):\n    pass\n")
+_case_handler_rebound_through_return_annotation = _rebound_at_definition(
+    "handler_rebound_through_return_annotation", f"def helper() -> {_REBIND}:\n    pass\n")
+_case_handler_rebound_through_lambda_default = _rebound_at_definition(
+    "handler_rebound_through_lambda_default", f"helper = lambda x={_REBIND}: x\n")
+_case_handler_rebound_through_class_decorator = _rebound_at_definition(
+    "handler_rebound_through_class_decorator",
+    f"@({_REBIND} or (lambda c: c))\nclass Helper:\n    pass\n")
+_case_handler_rebound_through_class_base = _rebound_at_definition(
+    "handler_rebound_through_class_base", f"class Helper({_REBIND} or object):\n    pass\n")
+_case_handler_rebound_through_class_keyword = _rebound_at_definition(
+    "handler_rebound_through_class_keyword",
+    f"class Helper(metaclass={_REBIND} or type):\n    pass\n")
+_case_handler_rebound_through_method_default = _rebound_at_definition(
+    "handler_rebound_through_method_default",
+    f"class Helper:\n    def m(self, x={_REBIND}):\n        pass\n")
+_case_handler_rebound_through_module_comprehension = _rebound_at_definition(
+    "handler_rebound_through_module_comprehension", f"[{_REBIND} for _ in [0]]\n")
+_case_handler_rebound_through_module_generator = _rebound_at_definition(
+    "handler_rebound_through_module_generator",
+    f"list(_ for _ in ({_REBIND} or [0]))\n")
+_case_handler_rebound_through_bare_vars = _rebound_at_definition(
+    "handler_rebound_through_bare_vars", "vars().__setitem__('ready', _sync)\n")
+# The same builtin reached by another name, or handed out of a function body as
+# a value: called from module code, it reads the module namespace.
+_case_handler_rebound_through_builtins_locals = _rebound_at_definition(
+    "handler_rebound_through_builtins_locals",
+    "import builtins\nbuiltins.locals().__setitem__('ready', _sync)\n")
+_case_handler_rebound_through_imported_locals_alias = _rebound_at_definition(
+    "handler_rebound_through_imported_locals_alias",
+    "from builtins import locals as here\nhere().__setitem__('ready', _sync)\n")
+_case_handler_rebound_through_getattr_locals = _rebound_at_definition(
+    "handler_rebound_through_getattr_locals",
+    "import builtins\ngetattr(builtins, 'locals')().__setitem__('ready', _sync)\n")
+_case_handler_rebound_through_locals_returned = _rebound_at_definition(
+    "handler_rebound_through_locals_returned",
+    "def grab():\n    return locals\ngrab()().__setitem__('ready', _sync)\n")
+_DEFINITION_TIME_CASES = [
+    _case_handler_rebound_through_def_default,
+    _case_handler_rebound_through_kwonly_default,
+    _case_handler_rebound_through_def_decorator,
+    _case_handler_rebound_through_annotation,
+    _case_handler_rebound_through_return_annotation,
+    _case_handler_rebound_through_lambda_default,
+    _case_handler_rebound_through_class_decorator,
+    _case_handler_rebound_through_class_base,
+    _case_handler_rebound_through_class_keyword,
+    _case_handler_rebound_through_method_default,
+    _case_handler_rebound_through_module_comprehension,
+    _case_handler_rebound_through_module_generator,
+    _case_handler_rebound_through_bare_vars,
+    _case_handler_rebound_through_builtins_locals,
+    _case_handler_rebound_through_imported_locals_alias,
+    _case_handler_rebound_through_getattr_locals,
+    _case_handler_rebound_through_locals_returned,
+]
+
 
 def _case_route_setup_rebound_by_match_capture(base, marker, monkeypatch):
     return _migrating_module(base, f"acme-{_uid()}", marker, api_routes="{inner}.api",
@@ -542,6 +618,25 @@ _case_manifest_deleted_by_except_as = _manifest_changed(
     "try:\n    raise ValueError\nexcept ValueError as PLUGIN_MANIFEST:\n    pass\n")
 
 
+async def test_locals_in_a_function_body_is_admitted(_db_engine, _modules, tmp_path):
+    """Control: locals() where a def or lambda body runs it, including in a nested def's
+    default and a comprehension inside a function, reads only that function's
+    own frame."""
+    marker = tmp_path / "ran.txt"
+    pkg = _migrating_module(_modules, f"acme-{_uid()}", marker, slots=_READY_SLOT, code={
+        "hooks.py": _READY
+                    + "def context(a, b=1):\n    return dict(locals())\n"
+                    + "def outer():\n    def inner(x=locals()):\n        return x\n"
+                    + "    return [locals() for _ in [0]], inner()\n"
+                    + "pick = lambda key: locals()[key]\n"})
+
+    admission, loaded = await _admit_and_migrate(_db_engine, _modules, {pkg.name})
+
+    assert admission.refused == {}
+    assert marker.exists()
+    assert [m["name"] for m in loaded] == [pkg.name]
+
+
 async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
         _db_engine, _modules, tmp_path):
     """Control: setattr on data objects, attribute writes of other names and a
@@ -594,6 +689,7 @@ async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
     _case_handler_rebound_through_frame_globals,
     _case_handler_shadowed_by_module_class,
     _case_handler_rebound_through_gc_referrers,
+    *_DEFINITION_TIME_CASES,
     _case_route_setup_rebound_by_match_capture,
     _case_manifest_changed_by_submodule_import,
     _case_manifest_changed_by_submodule_attribute,
