@@ -154,3 +154,47 @@ async def test_a_library_category_with_no_stored_name_still_reads_translated(own
     assert r.status_code == 200, r.text
     settings = await owner_ui.get("/settings/inventory?tab=categories", headers=_DE)
     assert re.search(r'class="cat-name-display"[^>]*>Wein<', settings.text), "the Your Categories row"
+
+
+_DETAIL_LABEL = re.compile(r'<td class="detail-label">\s*([^<]+?)\s*<')
+
+
+def _library_field_labels() -> set[str]:
+    return {f["label"] for p in _LIBRARY.glob("*.json") for f in json.loads(p.read_text())["fields"]}
+
+
+@pytest.mark.asyncio
+async def test_library_category_fields_show_in_the_users_language(owner_ui):
+    """The attribute fields a library category brings read in the user's language on
+    the item page, like the built-in fields beside them."""
+    await _gem_company(owner_ui)
+    item_id = await _colored_stone_item(owner_ui)
+    labels = _DETAIL_LABEL.findall((await owner_ui.get(f"/inventory/{item_id}", headers=_DE)).text)
+    assert {"Steinart", "Herkunft", "Behandlung", "Maße (mm)", "Zertifikatsnr."} <= set(labels), labels
+    assert not _library_field_labels() & set(labels) - {"Pieces"}, labels
+
+
+@pytest.mark.asyncio
+async def test_a_renamed_category_field_shows_as_typed(owner_ui):
+    await _gem_company(owner_ui)
+    fields = (await owner_ui.api.get("/companies/me/category-schema/colored_stone")).json()
+    renamed = [{**f, "label": "Steinsorte"} if f["key"] == "stone_type" else f for f in fields]
+    r = await owner_ui.api.patch("/companies/me/category-schema/colored_stone", json={"fields": renamed})
+    assert r.status_code == 200, r.text
+    item_id = await _colored_stone_item(owner_ui)
+    labels = _DETAIL_LABEL.findall((await owner_ui.get(f"/inventory/{item_id}", headers=_DE)).text)
+    assert "Steinsorte" in labels and "Steinart" not in labels and "Herkunft" in labels, labels
+
+
+@pytest.mark.parametrize("lang", sorted(i18n._DISK_LANGS))
+def test_every_library_category_field_has_a_label_in_every_locale(lang):
+    cat = i18n._cached_load(lang)
+    assert sorted(label for label in _library_field_labels()
+                  if not cat.get(i18n.field_label_key(label) or "")) == []
+
+
+def test_english_category_field_labels_match_the_library():
+    """The library files are authoritative: every English attribute label is a library
+    field label, so none is left over once a library field is renamed or removed."""
+    en = i18n._cached_load("en")
+    assert {v for k, v in en.items() if k.startswith("attr.")} <= _library_field_labels()
