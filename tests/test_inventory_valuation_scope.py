@@ -77,3 +77,47 @@ async def test_inventory_valuation_count_honors_memo_scope(client):
     assert scoped_total < unscoped_total, (
         "Scoped count should be less than unscoped when filtering by on_memo_to"
     )
+
+
+@pytest.mark.asyncio
+async def test_valuation_counts_honor_the_search_like_the_rows(client):
+    """A search that matches a subset: the category tabs, the All tab and the status
+    cards count exactly the rows the list returns for the same search.
+
+    Red statement: get_valuation reads no q, so with q=[DEMO] the All tab counts
+    every active item (4) while the list returns 2."""
+    headers = {"Authorization": f"Bearer {await _token(client)}"}
+    for sku, name, cat in [("D-1", "[DEMO] Rice", "Grain"), ("D-2", "[DEMO] Feed", "Feed"),
+                           ("R-1", "House rice", "Grain"), ("R-2", "Teak chair", "Furniture")]:
+        r = await client.post("/items", headers=headers, json={
+            "sku": sku, "name": name, "category": cat, "sell_by": "piece", "quantity": 1})
+        assert r.status_code == 200, r.text
+
+    params = {"q": "name:[DEMO]"}
+    every = (await client.get("/items", headers=headers)).json()["items"]
+    rows = (await client.get("/items", params=params, headers=headers)).json()["items"]
+    assert {"D-1", "D-2"} <= {i["sku"] for i in rows}
+    assert not {"R-1", "R-2"} & {i["sku"] for i in rows}
+    assert len(rows) < len(every)
+
+    def _by_category(items):
+        out: dict[str, int] = {}
+        for i in items:
+            if i.get("category"):
+                out[i["category"]] = out.get(i["category"], 0) + 1
+        return out
+
+    val = await client.get("/items/valuation", params=params, headers=headers)
+    assert val.status_code == 200, val.text
+    v = val.json()
+    assert v["total_scoped_count"] == len(rows), v
+    assert v["category_counts"] == _by_category(rows), v
+    assert sum(v["count_by_status"].values()) == len(rows), v
+
+    # A category tab under the search counts the searched rows in that category only.
+    grain = (await client.get("/items/valuation", params={**params, "category": "Grain"}, headers=headers)).json()
+    assert sum(grain["count_by_status"].values()) == _by_category(rows)["Grain"], grain
+    assert grain["category_counts"] == _by_category(rows), grain
+
+    # No search: unchanged, every active item counted.
+    assert (await client.get("/items/valuation", headers=headers)).json()["total_scoped_count"] == len(every)

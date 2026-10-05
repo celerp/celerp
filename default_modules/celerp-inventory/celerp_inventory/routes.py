@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -1216,10 +1216,8 @@ async def list_items(
 
 @router.get("/valuation", openapi_extra={"x-celerp-agent": True})
 async def get_valuation(
-    category: str | None = None,
-    status: str | None = None,
-    on_memo_to: str | None = None,
-    consigned_from: str | None = None,
+    filters: ItemListFilters = Depends(),
+    attr_filters: list[tuple[str, set[str]]] = Depends(_attr_filters),
     company_id=Depends(get_current_company_id),
     _: None = require_permission("view_inventory"),
     role: str = Depends(get_current_role),
@@ -1228,17 +1226,28 @@ async def get_valuation(
 ) -> dict:
     """Aggregate inventory valuation from projections.
 
-    Optional ?category= and ?status= filters scope totals + count_by_status to that slice.
+    Takes the item list's filters. ?category= and ?status= scope totals + count_by_status
+    to that slice; category_counts (the category tab bar) follows the status filter only.
     on_memo_to: customer contact_id. Scope counts to items currently out on memo to that customer.
     consigned_from: supplier contact_id. Scope counts to items currently held on consignment.
-    category_counts is always global (all active items) - used by the category tab bar.
-    count_by_status is scoped to the current category/status/holdings filter - used by status cards.
+    Every other list filter (the search q, SKUs, location, attribute columns, ...) narrows
+    the counted items to exactly the rows the list returns for it, via query_items.
     """
+    category, status = filters.category, filters.status
+    on_memo_to, consigned_from = filters.on_memo_to, filters.consigned_from
     rows = (
         await session.execute(
             select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
         )
     ).scalars().all()
+    # The row filters the tabs and cards do not split by: matched by the list's own
+    # query builder, so a count never disagrees with the rows the list shows.
+    row_filters = replace(filters, status="all", category=None, on_memo_to=None, consigned_from=None,
+                          sort=None, dir="desc")
+    if row_filters != ItemListFilters(status="all") or attr_filters:
+        matched = await query_items(session, company_id, role, row_filters, attr_filters)
+        matched_ids = {r.get("id") for r in matched["items"]}
+        rows = [r for r in rows if r.entity_id in matched_ids]
 
     currency = settings.get("currency") or "USD"
     holding_scope: set[str] | None = None
