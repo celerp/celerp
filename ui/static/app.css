@@ -1470,6 +1470,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .brand-footer { text-align: center; padding: 10px 0 8px; border-top: 1px solid var(--c-border); margin-top: auto; }
 .brand-footer-link { font-size: 11px; color: var(--c-text2); text-decoration: none; opacity: 0.7; }
 .brand-footer-link:hover { opacity: 1; color: var(--c-accent); }
+/* The star stays with its words when the footer wraps. */
+#star-cta { white-space: nowrap; }
 
 /* ─── Document-level branding (visible in doc detail + survives print) ── */
 .doc-brand-footer { text-align: center; margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--c-border); }
