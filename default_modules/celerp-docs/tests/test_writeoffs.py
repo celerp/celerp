@@ -707,7 +707,7 @@ async def test_audit_shrinkage_missing_account_rejects(client, session):
     assert (await client.patch(f"/lists/{audit}/line/{a}", headers=_h(t), json={"counted_qty": 8})).status_code == 200
     r = await client.post(f"/lists/{audit}/adjust", headers=_h(t))
     assert r.status_code == 409, r.text
-    assert "not in the chart of accounts" in r.json()["detail"]
+    assert "not in the chart of accounts" in r.json()["detail"]["message"]
     # No shrinkage JE posted to a missing account.
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(t))).json()["items"]
     assert not [e for e in ledger if audit in (e["data"].get("memo") or "")]
