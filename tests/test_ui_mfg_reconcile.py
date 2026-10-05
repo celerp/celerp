@@ -9,6 +9,8 @@ product's Manufacturing tab links to the same page.
 """
 from __future__ import annotations
 
+import re
+
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -185,3 +187,38 @@ async def test_the_page_shows_what_each_inventory_account_holds_beyond_its_stock
     assert r.status_code == 200, r.text
     assert "1120 holds 60.00 beyond its stock on hand." in r.text
     assert "1121 holds" not in r.text  # an account matching its stock is not worth a line
+
+
+REUSED = {"message": "This request key was already used for a different action. "
+                     "Send the action again without reusing the key.", "message_key": "mfg.key_reused", "params": {}}
+
+
+def _form_keys(html: str) -> list[str]:
+    return [a or b for a, b in re.findall(
+        r'name="idempotency_key"[^>]*value="([^"]*)"|value="([^"]*)"[^>]*name="idempotency_key"', html)]
+
+
+async def test_a_key_already_spent_is_replaced_so_sending_again_can_succeed(ui_client):
+    r = await _send(ui_client, [("item:flour", "5")], "3200",
+                    AsyncMock(side_effect=APIError(409, REUSED["message"], REUSED)))
+
+    assert "flash--error" in r.text
+    keys = _form_keys(r.text)
+    assert keys and "k1" not in keys and all(keys), keys
+
+
+async def test_any_other_refusal_keeps_the_key_so_sending_again_is_the_same_action(ui_client):
+    r = await _send(ui_client, [("item:flour", "5")], "3200", AsyncMock(side_effect=APIError(409, LOCKED["message"], LOCKED)))
+
+    assert _form_keys(r.text) == ["k1"]
+
+
+async def test_a_discard_refused_for_a_spent_key_brings_a_new_one(ui_client):
+    a, b, c = _reading(needs=UNLOTTED)
+    with a, b, c, patch("ui.api_client.repair_mfg_output",
+                        new=AsyncMock(side_effect=APIError(409, REUSED["message"], REUSED))):
+        r = await ui_client.post(f"/manufacturing/runs/{RUN['id']}/repair-output", content=b"idempotency_key=k2",
+                                 headers={"content-type": "application/x-www-form-urlencoded"}, cookies=_authed())
+
+    keys = _form_keys(r.text)
+    assert keys and "k2" not in keys and all(keys), keys

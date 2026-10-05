@@ -861,7 +861,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
-            refusal = refusal_text(e.data or e.detail)
+            refusal, key = refusal_text(e.data or e.detail), kept_operation_key(form, e) or uuid.uuid4().hex
         try:
             needs, accounts = await _reconcile_context(token, run_id)
         except APIError:
@@ -884,6 +884,7 @@ def setup_routes(app):
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
             refusal, kind = refusal_text(e.data or e.detail), "error"
+            key = kept_operation_key(form, e) or uuid.uuid4().hex
         try:
             needs, accounts = await _reconcile_context(token, run_id)
         except APIError:
