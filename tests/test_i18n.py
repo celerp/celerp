@@ -825,3 +825,28 @@ def test_the_stripe_payment_states_are_worded_in_every_locale():
             assert loc.get(key), (code, key)
             if code != "en":
                 assert loc[key] != en[key], (code, key)
+
+
+# The first-run dashboard card, the business-type banner and the Import arrow (INV-20):
+# every key is in en and translated in every release-complete locale.
+_GETTING_STARTED_KEYS = (
+    "dashboard.getting_started_title", "dashboard.getting_started_products",
+    "dashboard.getting_started_contacts", "dashboard.getting_started_documents",
+    "dashboard.getting_started_where", "dashboard.getting_started_demo",
+    "dashboard.finish_setup", "shell.import_hint",
+)
+
+
+def test_getting_started_keys_translated_in_every_complete_locale():
+    en = _load_locale("en")
+    missing = [k for k in _GETTING_STARTED_KEYS if k not in en]
+    assert not missing, f"en.json lacks {missing}"
+    allow = _load_source_identical_allowlist()
+    gaps = {}
+    for code in sorted(_COMPLETE_LOCALES - {"en"}):
+        loc = _load_locale(code)
+        bad = [k for k in _GETTING_STARTED_KEYS
+               if k not in loc or (loc[k] == en[k] and k not in allow.get(code, set()))]
+        if bad:
+            gaps[code] = bad
+    assert not gaps, f"untranslated getting-started keys: {gaps}"

@@ -433,3 +433,45 @@ def test_dropdown_reopens_on_click_after_esc(playwright, fresh):
         expect(wrap.locator(".combobox-list.open")).to_be_visible()
     finally:
         browser.close()
+
+
+_LOCALE_DIR = Path(__file__).resolve().parents[2] / "ui" / "locales"
+_SETUP_SCREEN_KEYS = (
+    "page.set_up_your_workspace", "btn.create_workspace", "setup.choose_business_type",
+    "setup.options_heading", "setup.option_restore_title", "setup.option_restore_desc",
+    "setup.option_move_title", "setup.option_move_desc", "setup.more_coming_soon",
+    "setup.not_sure_yet", "setup.later_from_dashboard", "setup.currency_hint",
+    "setup.business_type_hint", "setup.password_hint",
+)
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_setup_screen_in_german(playwright, fresh, width):
+    """INV-20 German gate: a de-DE browser gets the whole setup screen in German, with
+    no English copy left, nothing scrolling sideways, and the explainers still one line
+    at desktop width."""
+    import json
+
+    en = json.loads((_LOCALE_DIR / "en.json").read_text())
+    de = json.loads((_LOCALE_DIR / "de.json").read_text())
+    browser, ctx = _context(playwright, width=width, locale="de-DE", timezone_id="Europe/Berlin")
+    try:
+        page = ctx.new_page()
+        page.goto(f"{fresh.ui}/setup", wait_until="networkidle")
+        text = page.locator("body").inner_text()
+        for key in _SETUP_SCREEN_KEYS:
+            de_value = de[key].split("{")[0].strip()
+            en_value = en[key].split("{")[0].strip()
+            assert de_value != en_value, f"{key} is not translated"
+            assert de_value in text, f"{key}: {de_value!r} missing"
+            assert en_value not in text, f"{key}: English {en_value!r} on the German page"
+        _no_sideways_scroll(page, f"setup de {width}")
+        if width == 1280:
+            wrapped = page.evaluate("""() => Array.from(document.querySelectorAll(
+                  '.setup-card .start-option-desc, .setup-card .setup-options-note, .setup-card .form-hint'))
+              .filter(el => Math.round(el.getBoundingClientRect().height
+                                       / parseFloat(getComputedStyle(el).lineHeight)) !== 1)
+              .map(el => el.textContent)""")
+            assert not wrapped, wrapped
+    finally:
+        browser.close()
