@@ -5243,7 +5243,7 @@ def _valuation_bar(aggregates: dict, currency: str | None = None, lang: str = "e
     from ui.components.table import fmt_money
 
     def _amount(value, unit: str) -> str:
-        return f"{fmt_qty(value)} {unit}".strip()
+        return f"{fmt_qty(value)} {display_unit(unit)}".strip()
 
     chips = [Span(f"{t('th.items', lang)}: {int(aggregates.get('item_count') or 0):,}", cls="val-chip")]
     for unit, value in (aggregates.get("quantity_by_unit") or {}).items():
@@ -5452,7 +5452,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                 decimals = _umap.get(sell_by, {}).get("decimals", "")
                 return Td(
                     Span(
-                        f"{fmt} {sell_by}" if fmt not in ("", None) else EMPTY,
+                        f"{fmt} {display_unit(sell_by)}" if fmt not in ("", None) else EMPTY,
                         title=t("inventory.derived_from_qty"),
                         cls="cell-derived",
                     ),
@@ -5590,7 +5590,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
             # A read-only cell suppresses the unit annotation next to "--": there is
             # no value the unit could belong to and no edit affordance to hint at.
             annotate = sell_by and (editable or formatted != "--")
-            annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if annotate else ""
+            annotation = Span(f"/ {display_unit(sell_by)}", cls="cell-price-unit") if annotate else ""
             inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
             _safe_eid = entity_id.replace(":", "-")
             attrs: dict = {
