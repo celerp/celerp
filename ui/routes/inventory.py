@@ -793,6 +793,19 @@ def _holdings_scope_banner(p: dict, holdings_total: float | None, currency: str 
     if total_text and holdings_missing:
         total_text += " (" + t("inventory.sold_without_price", n=holdings_missing) + ")"
     total_el = Span(total_text, cls="holdings-scope-total") if total_text else ""
+    return _scope_banner(label, basis, total_el)
+
+
+def _demo_scope_banner(p: dict) -> FT | str:
+    """Banner for the demo items list, so the filter stays visible after the hint is
+    closed and the list can be left for all inventory."""
+    if p.get("filter") != DEMO_ITEMS_FILTER:
+        return ""
+    return _scope_banner(t("inventory.demo_scope_label"), t("inventory.demo_scope_basis"))
+
+
+def _scope_banner(label: str, basis: str, total_el: FT | str = "") -> FT:
+    """A scoped inventory list's banner: what the list holds and a Clear filter link."""
     return Div(
         Div(Span(label, cls="holdings-scope-label"), total_el, cls="holdings-scope-heading"),
         Div(basis, cls="holdings-scope-basis"),
@@ -1146,6 +1159,7 @@ async def _inventory_content(
 
     return Div(
         _holdings_scope_banner(p, holdings_total, currency, holdings_missing),
+        _demo_scope_banner(p),
         _category_tabs(category_counts, p, total_scoped=total_scoped, label_map=category_label_map),
         _inventory_type_tabs(p),
         _valuation_bar(aggregates, currency, lang),
@@ -5300,6 +5314,8 @@ def _inventory_empty_state(p: dict) -> FT:
     """Context-aware empty state: only show import CTA on unfiltered views."""
     active_status = p.get("status", "")
     active_q = p.get("q", "")
+    if p.get("filter") == DEMO_ITEMS_FILTER:
+        return Div(P(t("inventory.no_demo_items"), cls="empty-state-msg"), cls="empty-state", id="data-table")
     if active_status:
         label = display_enum(active_status, domain="item_status")
         return Div(P(t("inventory.no_status_items", status=label.lower()), cls="empty-state-msg"), cls="empty-state", id="data-table")
