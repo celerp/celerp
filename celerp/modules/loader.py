@@ -1135,17 +1135,33 @@ def _recording_tables(pkg_name: str):
                 f"Changes table(s) it does not own: {', '.join(altered)}.")
 
 
+# What a query reads from each column, beyond the column object itself.
+_COLUMN_STATE = ("name", "key", "type", "nullable", "server_default", "primary_key")
+
+
 def _table_shape(table) -> tuple:
-    return table, list(table.columns), set(table.constraints), set(table.indexes)
+    return (table, (table.name, table.schema, table.fullname), list(table.columns),
+            [tuple(getattr(c, a) for a in _COLUMN_STATE) for c in table.columns],
+            set(table.constraints), set(table.indexes))
 
 
 def _restore_table(metadata, shape: tuple) -> bool:
     """Put a table back on *metadata* exactly as :func:`_table_shape` saw it.
     True when anything had changed."""
-    table, columns, constraints, indexes = shape
-    changed = metadata.tables.get(table.key) is not table
-    if changed:
+    table, identity, columns, states, constraints, indexes = shape
+    changed = (table.name, table.schema, table.fullname) != identity
+    table.name, table.schema, table.fullname = identity
+    for key in [k for k, t in metadata.tables.items() if t is table and k != table.key]:
+        changed = True
+        dict.pop(metadata.tables, key)
+    if metadata.tables.get(table.key) is not table:
+        changed = True
         metadata._add_table(table.name, table.schema, table)
+    for column, state in zip(columns, states):
+        if tuple(getattr(column, a) for a in _COLUMN_STATE) != state:
+            changed = True
+            for attr, value in zip(_COLUMN_STATE, state):
+                setattr(column, attr, value)
     by_key = {c.key: c for c in columns}
     kept = set(map(id, columns))
     for column in [c for c in table.columns if id(c) not in kept]:

@@ -146,7 +146,23 @@ _RESHAPES = {
                        "extend_existing=True)\n",
     "added_index": "sa.Index('ix_acme_users', Base.metadata.tables['users'].c.email)\n",
     "removed_table": "Base.metadata.remove(Base.metadata.tables['users'])\n",
+    "renamed_table": "Base.metadata.tables['users'].name = 'zz_users'\n",
+    "moved_to_schema": "Base.metadata.tables['users'].schema = 'zz'\n",
+    "renamed_column": "Base.metadata.tables['users'].c.email.name = 'zz_email'\n",
+    "column_type": "Base.metadata.tables['users'].c.email.type = sa.LargeBinary()\n",
+    "column_nullable": "c = Base.metadata.tables['users'].c.email\nc.nullable = not c.nullable\n",
+    "column_default": "Base.metadata.tables['users'].c.email.server_default = sa.text(\"'x'\")\n",
+    "column_primary_key": "Base.metadata.tables['users'].c.email.primary_key = True\n",
 }
+
+
+def _users_state(users) -> tuple:
+    """Everything a query against users reads: the table's identity, its columns
+    and each column's name, type, nullability, default and key role."""
+    return (users.name, users.schema, users.fullname, list(users.columns),
+            [(c.name, c.key, c.type, c.nullable, c.server_default, c.primary_key)
+             for c in users.columns],
+            set(users.constraints), set(users.indexes))
 
 
 @pytest.mark.parametrize("where", ["import", "route_setup"])
@@ -158,7 +174,7 @@ def test_module_reshaping_a_core_table_is_taken_out_and_the_table_restored(
     import celerp.models.company  # noqa: F401  (core tables on the metadata)
 
     users = Base.metadata.tables["users"]
-    shape = (list(users.columns), set(users.constraints), set(users.indexes))
+    shape = _users_state(users)
     name, inner = _module(module_dir, prefix=f"acme{_tag()}_")
     pkg = module_dir / name
     code = "import sqlalchemy as sa\nfrom celerp.models.base import Base\n" + _RESHAPES[reshape]
@@ -179,7 +195,8 @@ def test_module_reshaping_a_core_table_is_taken_out_and_the_table_restored(
     assert "does not own: users" in loader.load_errors()[name]
     assert f"/{inner}/ping" not in _paths(app)
     assert Base.metadata.tables["users"] is users
-    assert (list(users.columns), set(users.constraints), set(users.indexes)) == shape
+    assert [k for k, t in Base.metadata.tables.items() if t is users] == ["users"]
+    assert _users_state(users) == shape
 
 
 def test_a_table_renamed_after_it_is_defined_is_still_taken_out(module_dir):
