@@ -1035,7 +1035,7 @@ def _posting_accounts(roles: list[dict], chosen: dict[str, str]) -> FT:
                        proposal=row["proposal"], aria_label=role_label(row["role"], row["label"]))))
                 for row in rows
             ]),
-            cls="data-table",
+            cls="data-table posting-choices",
         ),
         cls="mt-md",
     )

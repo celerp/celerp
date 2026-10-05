@@ -387,6 +387,10 @@ a:hover { text-decoration: underline; }
 
 /* Posting accounts: a status's explanation wraps inside its column. */
 .posting-accounts td p { white-space: normal; max-width: 360px; margin: 4px 0 0; }
+/* Choosing posting accounts on the migration verify page: the two columns share the card and
+   each picker fills its column, so a long account label never pushes the table past the card. */
+.posting-choices { table-layout: fixed; width: 100%; }
+.posting-choices select, .posting-choices .combobox-wrap { width: 100%; }
 
 /* Pencil icon affordance on hover — pure CSS, no extra HTML */
 .cell--clickable:hover::after {

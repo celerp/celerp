@@ -257,19 +257,25 @@ def test_migration_wizard_browser_existing_owner(page, fresh_company):
     assert after == before
 
 
-def test_finishing_with_posting_accounts_unchosen_is_refused_in_german(page, ui_server, fresh_company):
-    """The refusal names each posting account still unchosen by its German label."""
-    from ui import i18n
-
+def _new_company_run(page, company_name: str) -> str:
+    """Move the example file into a new company; returns the run id once it is ready to verify."""
     page.goto("/setup/new-company")
     page.click('a:has-text("Move from another system")')
     page.wait_for_url(re.compile(r"/setup/new-company/migrate$"))
     _upload(page, "Example Bookkeeping")
-    _through_review(page, "Unchosen Goods Ltd")
+    _through_review(page, company_name)
     page.click('button:has-text("Create company and migrate")')
     page.wait_for_url(re.compile(r"/migrations/[0-9a-f-]{36}$"))
     run_id = _run_id(page)
     _wait_ready(page, run_id)
+    return run_id
+
+
+def test_finishing_with_posting_accounts_unchosen_is_refused_in_german(page, ui_server, fresh_company):
+    """The refusal names each posting account still unchosen by its German label."""
+    from ui import i18n
+
+    run_id = _new_company_run(page, "Unchosen Goods Ltd")
     host = ui_server.split("//", 1)[1].split(":", 1)[0]
     page.context.add_cookies([{"name": "celerp_lang", "value": "de", "domain": host, "path": "/"}])
     try:
@@ -287,6 +293,24 @@ def test_finishing_with_posting_accounts_unchosen_is_refused_in_german(page, ui_
     assert "Choose the posting account" not in body
     for role in unchosen:
         assert i18n.t(f"posting.role.{role}", lang="de") in body, (role, body[:1500])
+
+
+def test_the_posting_accounts_fit_the_verify_page_in_german(page, ui_server, fresh_company):
+    """On a desktop screen each posting account's picker stays inside the page's card, however
+    long the German label of an account it offers to add."""
+    run_id = _new_company_run(page, "Wide Goods Ltd")
+    host = ui_server.split("//", 1)[1].split(":", 1)[0]
+    page.context.add_cookies([{"name": "celerp_lang", "value": "de", "domain": host, "path": "/"}])
+    try:
+        page.set_viewport_size({"width": 1280, "height": 900})
+        page.goto(f"/migrations/{run_id}/verify")
+        page.wait_for_selector('[name^="role."]', state="attached")
+        card, table = page.evaluate("""[document.querySelector('.auth-card'),
+          document.querySelector('[name^="role."]').closest('table')].map(e => e.getBoundingClientRect().right)""")
+        padding = page.evaluate("parseFloat(getComputedStyle(document.querySelector('.auth-card')).paddingRight)")
+    finally:
+        page.context.clear_cookies(name="celerp_lang")
+    assert table <= card - padding + 0.5, f"the posting accounts reach {table:.0f}px, past the card at {card - padding:.0f}px"
 
 
 def test_an_added_posting_account_the_chart_refuses_is_refused_in_german(page, ui_server, fresh_company, monkeypatch):
