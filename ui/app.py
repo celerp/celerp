@@ -561,17 +561,16 @@ for mod in (auth, setup, search, settings, settings_import,
 migrations.migrations_routes(app)
 company_backup.company_backup_routes(app)
 
-# Module-conditional UI routes
-# Import order matters: import/* routes must precede their parent /{entity_id} routes
+# Module-conditional UI routes that no module registers itself. A module's own pages
+# (documents and lists, labels, ...) come from its ui_routes, registered by the loader
+# below; listing them here too would register every one of those pages twice.
+# Import order matters: import/* routes must precede their parent /{entity_id} routes,
+# which the loader registers after this list.
 _CONDITIONAL_UI: list[tuple[str, str]] = [
     # (backend_module_name, ui_route_module_dotted_path)
     ("celerp-docs",        "ui.routes.docs_import"),
     ("celerp-docs",        "ui.routes.lists_import"),
     ("celerp-accounting",  "ui.routes.accounting_import"),
-    ("celerp-docs",        "ui.routes.documents"),
-    # ui.routes.lists / ui.routes.audits omitted: an audit is a list (list_type="audit")
-    # rendered by ui.routes.documents at /lists/{id}; there is no separate /audits page tree.
-    ("celerp-labels",      "celerp_labels.ui_routes"),
     ("celerp-accounting",  "ui.routes.reconciliation"),
     ("celerp-dashboard",   "ui.routes.dashboard"),
 ]

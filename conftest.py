@@ -206,10 +206,6 @@ from celerp_accounting.ui_routes import setup_ui_routes as _setup_accounting_ui
 _setup_accounting(app)
 _setup_accounting_ui(_ui_app)
 
-# Register reconciliation UI routes onto the test app.
-from ui.routes.reconciliation import setup_routes as _setup_recon_ui
-_setup_recon_ui(_ui_app)
-
 # Register subscriptions module routes onto the test app.
 _subs_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-subscriptions")
 if _os.path.abspath(_subs_src) not in [_os.path.abspath(p) for p in _sys.path]:
