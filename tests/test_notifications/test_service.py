@@ -13,7 +13,7 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
-from unittest.mock import AsyncMock, patch
+from unittest.mock import MagicMock, patch
 
 from celerp.models.company import Company, User
 from celerp.models.notification import Notification
@@ -71,7 +71,7 @@ async def user_b_co(session, company_b) -> User:
 
 @pytest.mark.asyncio
 async def test_create_notification(session, company, user):
-    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+    with patch("celerp.notifications.service.deliver"):
         n = await svc.create(
             session, company.id, "ai", "Batch done", "5 files processed",
             user_id=user.id, action_url="/ai", priority="high",
@@ -91,7 +91,7 @@ async def test_create_notification(session, company, user):
 
 @pytest.mark.asyncio
 async def test_create_notification_company_wide(session, company):
-    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+    with patch("celerp.notifications.service.deliver"):
         n = await svc.create(
             session, company.id, "system", "New version", "v2.1 available",
         )
@@ -103,8 +103,8 @@ async def test_create_notification_company_wide(session, company):
 
 @pytest.mark.asyncio
 async def test_create_notification_publishes_sse(session, company, user):
-    mock_pub = AsyncMock()
-    with patch("celerp.notifications.service.publish", mock_pub):
+    mock_pub = MagicMock()
+    with patch("celerp.notifications.service.deliver", mock_pub):
         await svc.create(session, company.id, "ai", "Done", "Body", user_id=user.id)
         await session.commit()
 
@@ -118,7 +118,7 @@ async def test_create_notification_publishes_sse(session, company, user):
 
 @pytest.mark.asyncio
 async def test_unread_count(session, company, user):
-    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+    with patch("celerp.notifications.service.deliver"):
         await svc.create(session, company.id, "ai", "N1", "B1", user_id=user.id)
         await svc.create(session, company.id, "ai", "N2", "B2", user_id=user.id)
         await session.commit()
@@ -129,7 +129,7 @@ async def test_unread_count(session, company, user):
 
 @pytest.mark.asyncio
 async def test_unread_count_includes_company_wide(session, company, user):
-    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+    with patch("celerp.notifications.service.deliver"):
         await svc.create(session, company.id, "system", "Update", "v2", user_id=None)
         await svc.create(session, company.id, "ai", "Personal", "B", user_id=user.id)
         await session.commit()
@@ -140,7 +140,7 @@ async def test_unread_count_includes_company_wide(session, company, user):
 
 @pytest.mark.asyncio
 async def test_unread_count_excludes_other_users(session, company, user, user_b):
-    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+    with patch("celerp.notifications.service.deliver"):
         await svc.create(session, company.id, "ai", "ForB", "B", user_id=user_b.id)
         await session.commit()
 
@@ -152,7 +152,7 @@ async def test_unread_count_excludes_other_users(session, company, user, user_b)
 
 @pytest.mark.asyncio
 async def test_list_notifications_newest_first(session, company, user):
-    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+    with patch("celerp.notifications.service.deliver"):
         await svc.create(session, company.id, "ai", "First", "B1", user_id=user.id)
         await svc.create(session, company.id, "ai", "Second", "B2", user_id=user.id)
         await session.commit()
@@ -165,7 +165,7 @@ async def test_list_notifications_newest_first(session, company, user):
 
 @pytest.mark.asyncio
 async def test_list_notifications_pagination(session, company, user):
-    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+    with patch("celerp.notifications.service.deliver"):
         for i in range(5):
             await svc.create(session, company.id, "ai", f"N{i}", "B", user_id=user.id)
         await session.commit()
@@ -181,7 +181,7 @@ async def test_list_notifications_pagination(session, company, user):
 
 @pytest.mark.asyncio
 async def test_mark_read(session, company, user):
-    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+    with patch("celerp.notifications.service.deliver"):
         n = await svc.create(session, company.id, "ai", "Test", "B", user_id=user.id)
         await session.commit()
 
@@ -195,7 +195,7 @@ async def test_mark_read(session, company, user):
 
 @pytest.mark.asyncio
 async def test_mark_read_wrong_company(session, company, company_b, user):
-    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+    with patch("celerp.notifications.service.deliver"):
         n = await svc.create(session, company.id, "ai", "Test", "B", user_id=user.id)
         await session.commit()
 
@@ -213,7 +213,7 @@ async def test_mark_read_nonexistent(session, company):
 
 @pytest.mark.asyncio
 async def test_mark_all_read(session, company, user):
-    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+    with patch("celerp.notifications.service.deliver"):
         await svc.create(session, company.id, "ai", "N1", "B1", user_id=user.id)
         await svc.create(session, company.id, "ai", "N2", "B2", user_id=user.id)
         await svc.create(session, company.id, "system", "N3", "B3", user_id=None)
@@ -231,7 +231,7 @@ async def test_mark_all_read(session, company, user):
 
 @pytest.mark.asyncio
 async def test_retention_100_per_company(session, company, user):
-    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+    with patch("celerp.notifications.service.deliver"):
         for i in range(105):
             await svc.create(session, company.id, "ai", f"N{i}", "B", user_id=user.id)
         await session.commit()
@@ -244,7 +244,7 @@ async def test_retention_100_per_company(session, company, user):
 
 @pytest.mark.asyncio
 async def test_isolation_between_companies(session, company, company_b, user, user_b_co):
-    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+    with patch("celerp.notifications.service.deliver"):
         await svc.create(session, company.id, "ai", "CoA", "B", user_id=user.id)
         await svc.create(session, company_b.id, "ai", "CoB", "B", user_id=user_b_co.id)
         await session.commit()
@@ -265,7 +265,7 @@ async def test_list_notifications_stable_order_when_created_at_ties(session, com
     from sqlalchemy import update
 
     ids = []
-    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+    with patch("celerp.notifications.service.deliver"):
         for i in range(6):
             n = await svc.create(session, company.id, "ai", f"N{i}", "B", user_id=user.id)
             ids.append(n.id)
