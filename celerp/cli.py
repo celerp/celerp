@@ -1620,16 +1620,22 @@ def module() -> None:
 
 
 async def _enable_for_every_company(db_url: str, names: list[str]) -> int:
-    """Turn *names* on for every company and recompute the load set; the number of companies."""
+    """Turn *names* on for every company and recompute the load set; the number of companies.
+
+    Refused, with nothing changed, for a name that is not an installed module."""
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
     from celerp.models.company import Company
-    from celerp.modules.registry import enable_for_company, commit_with_load_set
+    from celerp.modules.registry import commit_with_load_set, enable_for_company, hold_module_state, is_installed
     from celerp.services.company_lock import locked_company
 
     engine = create_async_engine(db_url)
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
+            await hold_module_state(session)
+            missing = [n for n in names if not is_installed(n)]
+            if missing:
+                raise ValueError(f"Module '{missing[0]}' is not installed.")
             company_ids = (await session.scalars(select(Company.id).order_by(Company.id))).all()
             for company_id in company_ids:
                 company = await locked_company(session, company_id)
@@ -1644,7 +1650,7 @@ async def _enable_for_every_company(db_url: str, names: list[str]) -> int:
 @module.command("install")
 @click.argument("names", nargs=-1, required=True)
 def module_install(names: tuple[str, ...]) -> None:
-    """Turn one or more bundled modules on for every company (with the modules they need).
+    """Turn one or more installed modules on for every company (with the modules they need).
 
     Example: celerp module install celerp-crm
     """
@@ -1654,12 +1660,6 @@ def module_install(names: tuple[str, ...]) -> None:
     if not cfg:
         click.echo("Not initialized. Run `celerp init` first.", err=True)
         sys.exit(1)
-
-    module_dir = Path(__file__).parent.parent / "default_modules"
-    for name in names:
-        if not (module_dir / name / "__init__.py").exists():
-            click.echo(f"Module '{name}' not found in {module_dir}", err=True)
-            sys.exit(1)
 
     ensure_database(cfg)
     from celerp.migrations.compatibility import mutating_scope

@@ -1767,13 +1767,13 @@ async def enable_module(
 ) -> dict:
     """Turn a module on for this company, with the modules it needs. Refused
     for a name that is not an installed module."""
-    from celerp.modules.loader import is_running, module_search_path, read_manifest, resolve_module_path
-    from celerp.modules.registry import enable_for_company, get_enabled, restart_needed, commit_with_load_set
+    from celerp.modules.registry import (
+        commit_with_load_set, enable_for_company, get_enabled, hold_module_state, is_installed, restart_needed,
+    )
 
-    if not is_running(module_name):
-        path = resolve_module_path(module_name, module_search_path())
-        if path is None or read_manifest(path).get("name") != module_name:
-            raise HTTPException(status_code=404, detail="Module not found.")
+    await hold_module_state(session)
+    if not is_installed(module_name):
+        raise HTTPException(status_code=404, detail="Module not found.")
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -1796,12 +1796,15 @@ async def disable_module(
     """Turn a module off for this company. Other companies keep using it. Refused for a
     module built into Celerp, which is always on."""
     from celerp.modules.loader import is_core_folded, module_label
-    from celerp.modules.registry import ModuleStillNeeded, disable_for_company, get_enabled, commit_with_load_set
+    from celerp.modules.registry import (
+        ModuleStillNeeded, commit_with_load_set, disable_for_company, get_enabled, hold_module_state,
+    )
 
     if is_core_folded(module_name):
         raise HTTPException(status_code=409, detail=(
             f"{module_label(module_name)} is part of Celerp and is always on."))
 
+    await hold_module_state(session)
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -1844,7 +1847,9 @@ async def delete_module(
     import asyncio
     from celerp.modules.importer import ModuleImportError, remove_module_dir
     from celerp.modules.loader import is_first_party, resolve_module_path
+    from celerp.modules.registry import hold_module_state
 
+    await hold_module_state(session)
     pkg_path = resolve_module_path(module_name)
     if pkg_path is None:
         raise HTTPException(status_code=404, detail="Module not found.")
@@ -1859,6 +1864,7 @@ async def delete_module(
         await asyncio.to_thread(remove_module_dir, module_name)
     except ModuleImportError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    await session.commit()
 
     return {"ok": True, "name": module_name}
 
@@ -1932,7 +1938,9 @@ async def purge_module_data(
     Deleting the module folder is a separate action and does not touch these tables.
     """
     from celerp.modules.loader import read_manifest, resolve_module_path
+    from celerp.modules.registry import hold_module_state
 
+    await hold_module_state(session)
     pkg_path = resolve_module_path(module_name)
     if pkg_path is None:
         raise HTTPException(status_code=404, detail="Module not found.")
@@ -2241,7 +2249,10 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
 
 
 @router.post("/me/modules/marketplace-install", dependencies=[Depends(require_install_owner)])
-async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
+async def marketplace_install(
+    body: _MarketplaceInstallBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     """Install a staged marketplace module through the shared importer. Installation owner only.
 
     Reads the archive Download staged (and the trust flags the server recorded
@@ -2257,8 +2268,11 @@ async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     from celerp.modules.importer import (
         ModuleImportError, install_from_zip, remove_module_dir,
     )
+    from celerp.modules.registry import hold_module_state
 
     data, is_official, is_paid = _read_staged_marketplace(body.path)
+    # Held until a mismatched package is gone, so no company can turn it on meanwhile.
+    await hold_module_state(session)
     try:
         info = await asyncio.to_thread(
             install_from_zip, data, official=is_official, premium=is_paid,

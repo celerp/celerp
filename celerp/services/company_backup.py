@@ -54,7 +54,7 @@ from celerp.modules.importer import valid_table_prefixes
 from celerp.modules.loader import (
     is_core_folded, is_running, module_search_path, read_manifest, resolve_module_path, running_version,
 )
-from celerp.modules.registry import company_modules, set_enabled, commit_with_load_set
+from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, verify_password
 from celerp.services.company_lock import hold_company, lock_company, locked_company
@@ -1303,6 +1303,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
     async with AsyncSession(bind=celerp.db.engine, expire_on_commit=False) as session:
         try:
             await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
+            await hold_module_state(session)
             checked = await check_backup(session, backup)
             await _lock(session, backup_id, bootstrapping=mode == "bootstrap")
             if mode == "bootstrap":

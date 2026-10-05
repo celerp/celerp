@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.company import Company
-from celerp.modules.registry import enable_for_company, commit_with_load_set
+from celerp.modules.registry import commit_with_load_set, enable_for_company, hold_module_state
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
@@ -85,6 +85,7 @@ def _build_router() -> APIRouter:
         preset = load_preset(vertical)
         if preset is None:
             raise HTTPException(status_code=404, detail=f"Preset '{vertical}' not found")
+        await hold_module_state(session)
         modules = installed_preset_modules(preset)
 
         company = await _company(session, company_id)

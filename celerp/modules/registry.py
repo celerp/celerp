@@ -60,8 +60,8 @@ def set_enabled(company_settings: dict[str, Any], enabled: set[str]) -> dict[str
 #     record half-built or rebuilt into a different shape. Turning it back on
 #     shows the records exactly as they were.
 
-# Advisory-lock key serializing load-set recomputation across processes.
-_LOAD_SET_LOCK_KEY = 0x43454C4552500002
+# Advisory-lock key of the one module-state boundary (hold_module_state).
+_MODULE_STATE_LOCK_KEY = 0x43454C4552500002
 
 
 class ModuleStillNeeded(ValueError):
@@ -85,6 +85,38 @@ def uses_module(company_settings: dict[str, Any] | None, module_name: str | None
     if not company_settings or _SETTINGS_KEY not in company_settings:
         return True
     return module_name in get_enabled(company_settings)
+
+
+async def hold_module_state(session) -> None:
+    """Hold the module-state boundary until *session*'s transaction ends.
+
+    Every change to which modules a company uses takes it before it checks the
+    modules it names and holds it through its commit; deleting a module or purging
+    its data takes it before its in-use check and holds it until the folder is gone
+    or the tables are dropped. So a check never goes stale before the change it
+    allows: a module is never removed while a company comes to use it. A holder can
+    run as long as a company restore, so the wait has no time limit.
+
+    Celerp runs on Postgres, embedded or external. Another dialect (SQLite in unit
+    tests) has no advisory locks and serves one request at a time there, so this is
+    a no-op on it."""
+    from sqlalchemy import text
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    await session.execute(text("SET LOCAL lock_timeout = 0"))
+    await session.execute(text("SET LOCAL statement_timeout = 0"))
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _MODULE_STATE_LOCK_KEY})
+    await session.execute(text("SET LOCAL lock_timeout TO DEFAULT"))
+    await session.execute(text("SET LOCAL statement_timeout TO DEFAULT"))
+
+
+def is_installed(module_name: str) -> bool:
+    """Whether *module_name* is a module this installation runs or has on disk."""
+    from celerp.modules.loader import is_running, module_search_path, read_manifest, resolve_module_path
+    if is_running(module_name):
+        return True
+    path = resolve_module_path(module_name, module_search_path())
+    return path is not None and read_manifest(path).get("name") == module_name
 
 
 def _configured_load_set() -> list[str]:
@@ -144,19 +176,19 @@ def restart_needed(names) -> bool:
 async def commit_with_load_set(session) -> None:
     """Commit the caller's change to a company's set, then rewrite the load set's mirror.
 
-    The mirror is written only after the change committed, so a commit that
-    fails never leaves config.toml disagreeing with the database. It is
-    recomputed in its own transaction under the lock, from committed state
-    alone: whichever writer recomputes last sees every committed change. A
-    module no company uses any more is already refused to every company and
-    leaves the process at the next restart, so turning one off never needs a
-    restart."""
+    The caller holds the module-state boundary (hold_module_state) from before its
+    checks, so the change commits inside it. The mirror is written only after the
+    change committed, so a commit that fails never leaves config.toml disagreeing
+    with the database. It is recomputed in its own transaction under the boundary,
+    from committed state alone: whichever writer recomputes last sees every
+    committed change. A module no company uses any more is already refused to every
+    company and leaves the process at the next restart, so turning one off never
+    needs a restart."""
     import asyncio
-    from sqlalchemy import text
     from celerp.config import replace_enabled_modules
 
     await session.commit()
-    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _LOAD_SET_LOCK_KEY})
+    await hold_module_state(session)
     names = await load_set(session)
     await asyncio.to_thread(replace_enabled_modules, names)
     await session.commit()
