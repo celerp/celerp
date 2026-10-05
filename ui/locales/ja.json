@@ -1201,7 +1201,7 @@
   "pay.settings_revoked": "すでに進行中の支払いの確認を完了するには、この Stripe アカウントを再接続してください。",
   "pay.reconnect_stripe": "Stripe を再接続",
   "pay.unmatched_head": "請求書と照合できない支払い",
-  "pay.unmatched_hint": "これらのオンライン支払いは、すでに存在しない会社や請求書、または支払いを受け付けられなかった請求書に対して届きました。それぞれを正しい場所に記録するか、Stripe ダッシュボードから返金してください。",
+  "pay.unmatched_hint": "これらのオンライン支払いは、すでに存在しない会社や請求書、または支払いを受け付けられなかった請求書に対して届きました。請求書に記録するには、その「書類」セルをダブルクリックして請求書を選んでください。Stripe ダッシュボードから返金することもできます。",
   "pay.unmatched_deleted": "(削除済み)",
   "pay.unmatched_paid_on": "支払日",
   "pay.unmatched_received": "記録日",

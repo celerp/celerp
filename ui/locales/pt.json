@@ -1201,7 +1201,7 @@
   "pay.settings_revoked": "Reconecte esta conta Stripe para concluir a verificação dos pagamentos já em andamento.",
   "pay.reconnect_stripe": "Reconectar Stripe",
   "pay.unmatched_head": "Pagamentos sem fatura correspondente",
-  "pay.unmatched_hint": "Estes pagamentos online chegaram para uma empresa ou fatura que já não existe, ou que não pôde aceitar o pagamento. Registre cada um onde pertence ou reembolse-o pelo painel do Stripe.",
+  "pay.unmatched_hint": "Estes pagamentos online chegaram para uma empresa ou fatura que já não existe, ou que não pôde aceitar o pagamento. Para registrar um em uma fatura, clique duas vezes na sua célula Documento e escolha a fatura. Você também pode reembolsá-lo pelo painel do Stripe.",
   "pay.unmatched_deleted": "(excluído)",
   "pay.unmatched_paid_on": "Pago em",
   "pay.unmatched_received": "Registrado em",

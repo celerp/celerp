@@ -1201,7 +1201,7 @@
   "pay.settings_revoked": "Hubungkan kembali akun Stripe ini untuk menyelesaikan pemeriksaan pembayaran yang sedang berlangsung.",
   "pay.reconnect_stripe": "Hubungkan kembali Stripe",
   "pay.unmatched_head": "Pembayaran yang tidak cocok dengan faktur",
-  "pay.unmatched_hint": "Pembayaran online ini masuk untuk perusahaan atau faktur yang sudah tidak ada, atau yang tidak dapat menerima pembayaran. Catat masing-masing di tempat yang tepat, atau kembalikan dananya dari dasbor Stripe Anda.",
+  "pay.unmatched_hint": "Pembayaran online ini masuk untuk perusahaan atau faktur yang sudah tidak ada, atau yang tidak dapat menerima pembayaran. Untuk mencatat salah satunya pada faktur, klik dua kali sel Dokumen miliknya lalu pilih fakturnya. Anda juga dapat mengembalikan dananya dari dasbor Stripe Anda.",
   "pay.unmatched_deleted": "(dihapus)",
   "pay.unmatched_paid_on": "Dibayar pada",
   "pay.unmatched_received": "Dicatat pada",

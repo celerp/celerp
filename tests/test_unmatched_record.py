@@ -217,6 +217,19 @@ def test_the_refusal_is_shown_in_the_users_language():
     assert _refusal(error) == REFUSED["too_small"]
 
 
+
+def test_the_list_hint_says_how_to_record_one_here():
+    from fasthtml.common import to_xml
+    from ui.i18n import set_lang
+    from ui.routes.settings_payments import _unmatched_payments
+    row = [{"reference": "pi_1", "received_at": "2026-10-01T00:00:00", "amount": 10, "currency": "USD"}]
+    set_lang("de")
+    try:
+        assert "doppelklicken Sie auf die Zelle Dokument" in to_xml(_unmatched_payments(row))
+    finally:
+        set_lang("en")
+    assert "double-click its Document cell" in to_xml(_unmatched_payments(row))
+
 # ── Settings > Payments: the invoice cell ────────────────────────────────────
 
 INVOICES = {"items": [{"id": "doc:inv-1", "ref": "INV-0001", "contact_name": "Buyer",

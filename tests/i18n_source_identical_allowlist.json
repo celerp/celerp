@@ -257,6 +257,7 @@
     "status.final",
     "th.actions",
     "th.date",
+    "th.document",
     "th.module",
     "th.parent",
     "th.position",

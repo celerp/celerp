@@ -1201,7 +1201,7 @@
   "pay.settings_revoked": "Verbinden Sie dieses Stripe-Konto erneut, um die Prüfung bereits laufender Zahlungen abzuschließen.",
   "pay.reconnect_stripe": "Stripe erneut verbinden",
   "pay.unmatched_head": "Zahlungen ohne zugeordnete Rechnung",
-  "pay.unmatched_hint": "Diese Online-Zahlungen sind für ein Unternehmen oder eine Rechnung eingegangen, die nicht mehr existiert oder die Zahlung nicht annehmen konnte. Erfassen Sie jede dort, wo sie hingehört, oder erstatten Sie sie über Ihr Stripe-Dashboard.",
+  "pay.unmatched_hint": "Diese Online-Zahlungen sind für ein Unternehmen oder eine Rechnung eingegangen, die nicht mehr existiert oder die Zahlung nicht annehmen konnte. Um eine davon auf einer Rechnung zu erfassen, doppelklicken Sie auf die Zelle Dokument und wählen Sie die Rechnung. Sie können sie auch über Ihr Stripe-Dashboard erstatten.",
   "pay.unmatched_deleted": "(gelöscht)",
   "pay.unmatched_paid_on": "Bezahlt am",
   "pay.unmatched_received": "Erfasst am",

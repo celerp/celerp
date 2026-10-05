@@ -1363,7 +1363,7 @@
   "pay.settings_revoked": "Reconnect this Stripe account to finish checking payments already in progress.",
   "pay.reconnect_stripe": "Reconnect Stripe",
   "pay.unmatched_head": "Payments not matched to an invoice",
-  "pay.unmatched_hint": "These online payments arrived for a company or invoice that no longer exists, or one that could not take the payment. Record each where it belongs, or refund it from your Stripe dashboard.",
+  "pay.unmatched_hint": "These online payments arrived for a company or invoice that no longer exists, or one that could not take the payment. To record one on an invoice, double-click its Document cell and choose the invoice. You can also refund it from your Stripe dashboard.",
   "pay.unmatched_deleted": "(deleted)",
   "pay.unmatched_paid_on": "Paid on",
   "pay.unmatched_received": "Recorded on",
