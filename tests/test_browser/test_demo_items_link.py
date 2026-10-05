@@ -289,3 +289,20 @@ def test_a_sample_edited_on_the_demo_list_survives_its_delete(page: Page, fresh_
     expect(page.locator("#bulk-action-result")).to_contain_text(
         en["settings.business_type_changes.demo_kept"].format(count=1))
     assert sorted(i["name"] for i in _items(fresh_company)) == sorted([*_KEPT, "Kept: edited on the demo list"])
+
+
+def test_forward_after_the_demo_list_shows_no_tick_the_selection_lost(page: Page, fresh_company):
+    """Back to the demo list empties the selection; Forward to the list it was made on
+    shows every row as the selection stands. Red statement: the browser restored the
+    row's tick while the stored selection was empty."""
+    _seed(fresh_company)
+    page.goto("/inventory?filter=demo")
+    page.goto("/inventory?q=Real")
+    page.locator("#data-table tbody tr", has_text=_REAL).locator("input.row-select").check()
+    page.go_back()
+    page.wait_for_url("**/inventory?filter=demo")
+    page.go_forward()
+    page.wait_for_url("**/inventory?q=Real")
+    page.wait_for_load_state("load")
+    assert page.evaluate("sessionStorage.getItem('celerp_inv_selection')") == "{}"
+    assert _ticked(page) == 0
