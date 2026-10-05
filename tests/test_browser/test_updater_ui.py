@@ -492,7 +492,7 @@ def test_recheck_after_downloaded_keeps_the_card(page, ui_server):
     log as they were, live and after a reload."""
     _fake_electron(page, [("checking-for-update", None), _FOUND, _DOWNLOADED])
     ready = _open(page, f"{ui_server}/")
-    assert ready["log"].split("\n")[-1] == "v2.0.1 ready. Click 'Restart to Install'"
+    assert ready["log"].split("\n")[-1] == "v2.0.1 ready. Restart to install."
     for name, payload in [("checking-for-update", None), _FOUND, _DOWNLOADED]:
         page.evaluate(f"() => window.__updaterEmit({json.dumps(name)}, {json.dumps(payload)})")
     assert page.evaluate(_VISIBLE_STATE_JS) == ready
@@ -616,7 +616,7 @@ def test_update_log_lines_survive_reload(page, ui_server):
     assert live["log"].split("\n") == [
         "Checking for update...",
         "Found v2.0.1, downloading...",
-        "v2.0.1 ready. Click 'Restart to Install'",
+        "v2.0.1 ready. Restart to install.",
         "Update error: net::ERR_INTERNET_DISCONNECTED",
     ]
     assert live["restart"] is True
