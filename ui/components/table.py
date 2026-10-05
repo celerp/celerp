@@ -1383,10 +1383,12 @@ def data_table(
                     Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
                     Div(
                         A(t("btn.edit"), href=f"/{entity_type}/{entity_id}", cls="row-menu-item"),
-                        Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
-                               onclick=f"if(!confirm({_confirm_delete_row}))return;"
-                                       f"htmx.ajax('DELETE','{_delete_url}',"
-                                       f"{{target:'#row-{safe_id}',swap:'outerHTML'}})"),
+                        # Only a draft can be deleted (the bulk bar's rule); stock is written off.
+                        *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
+                                  onclick=f"if(!confirm({_confirm_delete_row}))return;"
+                                          f"htmx.ajax('DELETE','{_delete_url}',"
+                                          f"{{target:'#row-{safe_id}',swap:'outerHTML'}})")]
+                          if str(row.get("status", "") or "").lower() == "draft" else []),
                         cls="row-menu-dropdown", id=f"menu-{safe_id}",
                     ),
                     cls="row-menu",

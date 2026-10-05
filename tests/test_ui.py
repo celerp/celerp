@@ -5448,13 +5448,26 @@ class TestItemActionRouteCompleteness:
         assert "/login" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
-    async def test_row_menu_delete_api_error_returns_inline_error_row(self, ui_client):
-        """On API error, DELETE returns a Tr with an error cell so the row shows the error."""
+    async def test_row_menu_delete_api_error_keeps_the_row_and_raises_a_toast(self, ui_client):
+        """On API error, DELETE leaves the row in place and says why in an error toast."""
         from ui.api_client import APIError
         with patch("ui.api_client.bulk_delete", new=AsyncMock(side_effect=APIError(403, "permission denied"))):
             r = await ui_client.delete("/api/items/gc:abc", cookies=_authed())
         assert r.status_code == 200
-        assert b"permission denied" in r.content
+        assert r.headers["HX-Reswap"] == "none"
+        assert "permission denied" in r.headers["HX-Trigger"]
+        assert r.content == b""
+
+    def test_row_menu_offers_delete_only_for_a_draft(self):
+        """Only a draft can be deleted, so stock rows carry no Delete (the bulk bar's rule)."""
+        from ui.components.table import data_table
+        from fasthtml.common import to_xml
+        schema = [{"key": "sku", "label": "SKU"}]
+        rows = [{"entity_id": "item:d", "sku": "D", "status": "draft"},
+                {"entity_id": "item:a", "sku": "A", "status": "available"}]
+        html = to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True))
+        assert "htmx.ajax('DELETE','/api/items/item:d'" in html
+        assert "/api/items/item:a'" not in html
 
     @pytest.mark.asyncio
     async def test_row_menu_delete_calls_bulk_delete_with_correct_id(self, ui_client):
@@ -5472,7 +5485,7 @@ class TestItemActionRouteCompleteness:
         from ui.components.table import data_table
         from fasthtml.common import to_xml
         schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
-        rows = [{"entity_id": "gc:ROW-001", "sku": "TEST", "name": "Widget"}]
+        rows = [{"entity_id": "gc:ROW-001", "sku": "TEST", "name": "Widget", "status": "draft"}]
         html = to_xml(data_table(schema=schema, rows=rows, entity_type="item", show_row_menu=True))
         assert "htmx.ajax('DELETE','/api/items/gc:ROW-001'" in html, \
             "row-menu delete must use htmx.ajax DELETE to /api/items/{id} (same as bulk pattern)"
@@ -5486,7 +5499,7 @@ class TestItemActionRouteCompleteness:
         from ui.components.table import data_table
         from fasthtml.common import to_xml
         schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
-        rows = [{"entity_id": "item:demo-abc123", "sku": "TEST", "name": "Widget"}]
+        rows = [{"entity_id": "item:demo-abc123", "sku": "TEST", "name": "Widget", "status": "draft"}]
         html = to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True))
         assert "htmx.ajax('DELETE','/api/items/item:demo-abc123'" in html, \
             "row-menu delete with entity_type='inventory' must target /api/items/{id}, not /api/inventorys/{id}"

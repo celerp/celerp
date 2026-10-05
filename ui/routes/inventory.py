@@ -4762,7 +4762,8 @@ function celerpPrintLabel(entityId, templateId) {
             hx_swap="outerHTML"
 
         Returning an empty 200 causes htmx to replace the row element with
-        nothing, removing it from the DOM immediately without a page reload.
+        nothing, removing it from the DOM immediately without a page reload. A refusal
+        leaves the row in place and says why in a toast.
         """
         token = _token(request)
         if not token:
@@ -4770,10 +4771,7 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             await api.bulk_delete(token, [entity_id])
         except APIError as e:
-            return Tr(
-                Td(Span(str(e.detail), cls="flash flash--error"), colspan="100"),
-                id=f"row-{entity_id.replace(':', '-')}",
-            )
+            return _bulk_toast_error(e.detail)
         return Response("", status_code=200)
 
     @app.delete("/api/items/{entity_id}/attachments/{att_id}")
