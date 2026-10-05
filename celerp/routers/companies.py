@@ -2303,7 +2303,7 @@ async def reset_company(
         raise HTTPException(status_code=404, detail="Company not found")
     await locked_authority(session, ctx.company_id, ctx.user.id, ("manage_company_lifecycle",))
     company = await session.get(Company, ctx.company_id)
-    closure = None
+    closure = task_id = None
     try:
         try:
             done = await company_reset.reset(session, company, payload.company_name)
@@ -2312,7 +2312,7 @@ async def reset_company(
             if exc.__cause__ is not None:
                 logger.error("Company reset failed: %s", type(exc.__cause__).__name__)
             raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
-        closure = done.closure
+        closure, task_id = done.closure, done.task_id
         link = await first_usable_company_link(session, ctx.user.id)
         if link is None:
             await session.commit()
@@ -2328,10 +2328,15 @@ async def reset_company(
         # Reopens the company's online payments, or closes them for good if the
         # deletion committed after all.
         await payments.settle_company_closure(closure)
+        # A commit that landed but reported failure leaves the cleanup task behind;
+        # one that did not land leaves none, and this finds nothing to do.
+        if task_id is not None:
+            session.expunge_all()
+            await run_cleanup_task(session, task_id)
         raise
     await payments.settle_company_closure(closure)
     session.expunge_all()
-    await run_cleanup_task(session, done.task_id)
+    await run_cleanup_task(session, task_id)
     return result
 
 
