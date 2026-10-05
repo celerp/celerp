@@ -392,6 +392,35 @@ def _case_route_setup_rebound_through_globals(base, marker, monkeypatch):
                              ), "dynamically"
 
 
+def _manifest_changed(name: str, appended: str, reason: str = "bound once"):
+    """A module whose __init__.py holds a valid PLUGIN_MANIFEST literal and then
+    changes it: Python runs the change, so admission must not read the literal
+    alone."""
+    def case(base, marker, monkeypatch):
+        pkg = _migrating_module(base, f"acme-{_uid()}", marker)
+        init = pkg / "__init__.py"
+        init.write_text(init.read_text() + appended)
+        return pkg, reason
+    case.__name__ = f"_case_{name}"
+    return case
+
+
+_case_manifest_bound_twice = _manifest_changed(
+    "manifest_bound_twice", "PLUGIN_MANIFEST = {'name': 'other', 'version': '1.0.0'}\n")
+_case_manifest_item_set = _manifest_changed(
+    "manifest_item_set", "PLUGIN_MANIFEST['depends_on'] = ['missing-module']\n")
+_case_manifest_updated = _manifest_changed(
+    "manifest_updated", "PLUGIN_MANIFEST.update(version='9.9.9')\n")
+_case_manifest_augmented = _manifest_changed(
+    "manifest_augmented", "PLUGIN_MANIFEST |= {'version': '9.9.9'}\n")
+_case_manifest_annotated_rebind = _manifest_changed(
+    "manifest_annotated_rebind", "PLUGIN_MANIFEST: dict = {}\n")
+_case_manifest_deleted = _manifest_changed("manifest_deleted", "del PLUGIN_MANIFEST\n")
+_case_manifest_set_through_module = _manifest_changed(
+    "manifest_set_through_module",
+    "import sys\nsetattr(sys.modules[__name__], 'PLUGIN_MANIFEST', {})\n", "dynamically")
+
+
 async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
         _db_engine, _modules, tmp_path):
     """Control: setattr on data objects, attribute writes of other names and a
@@ -423,6 +452,13 @@ async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
     _case_handler_module_replaced,
     _case_handler_module_replaced_by_update,
     _case_route_setup_rebound_through_globals,
+    _case_manifest_bound_twice,
+    _case_manifest_item_set,
+    _case_manifest_updated,
+    _case_manifest_augmented,
+    _case_manifest_annotated_rebind,
+    _case_manifest_deleted,
+    _case_manifest_set_through_module,
     _case_async_ui_setup_imported,
     _case_hook_not_async,
     _case_render_async,
@@ -547,17 +583,19 @@ def test_load_all_refuses_before_import(variant, _modules, tmp_path):
 
 
 def test_runtime_manifest_must_match_the_admitted_one(_modules):
-    """Admission reads the literal; code that rewrites PLUGIN_MANIFEST at import
-    cannot widen what was admitted."""
+    """Admission reads the literal (and refuses one the source changes); a
+    manifest changed after admission cannot widen what was admitted."""
     inner = f"acme_{_uid()}"
     folder = f"acme-{_uid()}"
     pkg = _write_module(
         _modules, folder, {"name": folder, "version": "1.0.0"},
         {f"{inner}/__init__.py": ""})
+    admission = loader.admit_modules(str(_modules), {folder})
+    assert admission.refused == {}
     init = pkg / "__init__.py"
     init.write_text(init.read_text() + "PLUGIN_MANIFEST['api_routes'] = 'celerp.routers.health'\n")
 
-    loaded = loader.load_all(str(_modules), {folder})
+    loaded = loader.load_all(str(_modules), {folder}, admission=admission)
 
     assert loaded == []
     assert "differs" in loader.load_errors()[folder]
@@ -1038,17 +1076,19 @@ async def test_route_failure_creates_none_of_the_module_tables(committed_engine,
 
 
 async def test_refused_module_creates_none_of_its_tables(committed_engine, _modules):
-    """Refused at load, after its code ran (the manifest differs at runtime)."""
+    """Refused at load, after its code ran (the manifest changed after
+    admission, so it differs at runtime)."""
     folder = f"acme-{_uid()}"
     inner = f"acme_{_uid()}"
     pkg = _write_module(_modules, folder, {"name": folder, "version": "1.0.0"},
                         {f"{inner}/__init__.py": "",
                          f"{inner}/models.py": _MODELS.replace("{inner}", inner)},
                         init_prelude=f"import {inner}.models")
+    admission = loader.admit_modules(str(_modules), {folder})
     init = pkg / "__init__.py"
     init.write_text(init.read_text() + "PLUGIN_MANIFEST['api_routes'] = 'celerp.routers.health'\n")
 
-    loader.load_all(str(_modules), {folder})
+    loader.load_all(str(_modules), {folder}, admission=admission)
     tables = await _created_tables(committed_engine)
 
     assert "differs" in loader.load_errors()[folder]

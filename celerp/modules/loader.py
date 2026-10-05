@@ -769,7 +769,7 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
     _check_slot_contracts(pkg_path, manifest["slots"])
     _check_import_names(name, pkg_path, official=official)
     entry_files = _module_entry_files(pkg_path, manifest)
-    _check_dynamic_writes(pkg_path, entry_files, _handler_names(manifest))
+    _check_dynamic_writes(pkg_path, entry_files, _handler_names(manifest) | {"PLUGIN_MANIFEST"})
     first_party = is_first_party(pkg_path)
     if not first_party:
         violations: set[str] = set()
@@ -1722,8 +1722,8 @@ def _dynamic_write(tree: ast.Module, handlers: set[str]) -> str | None:
 
 
 def _check_dynamic_writes(pkg_path: Path, entries: list[Path], handlers: set[str]) -> None:
-    """Refuse a module whose own code may rebind a callable core will call
-    (``handlers``) at import, through globals(), vars(), __dict__, setattr,
+    """Refuse a module whose own code may rebind a callable core will call, or
+    its manifest (``handlers``), at import, through globals(), vars(), __dict__, setattr,
     exec or an attribute write: admission proves the call style from the source
     (_check_source_call_style), so a name the source does not bind for good
     would only be refused at load, after the module's migrations ran.

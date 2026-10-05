@@ -84,15 +84,31 @@ def _validate_name(name: str, *, official: bool = False) -> None:
         )
 
 
-def _manifest_node(tree: ast.AST):
-    """The `PLUGIN_MANIFEST = {...}` assignment node in a parsed module, or None."""
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == "PLUGIN_MANIFEST":
-                return node
-    return None
+def _manifest_node(tree: ast.Module):
+    """The `PLUGIN_MANIFEST = {...}` assignment node in a parsed module, or None.
+
+    Raises :class:`ModuleImportError` when the source binds, changes or reads
+    the name anywhere else: Python binds the last assignment and runs every
+    change, so the one literal must be the only mention for it to be what the
+    module declares."""
+    uses = [n for n in ast.walk(tree)
+            if isinstance(n, ast.Name) and n.id == "PLUGIN_MANIFEST"
+            or isinstance(n, (ast.Global, ast.Nonlocal)) and "PLUGIN_MANIFEST" in n.names
+            or isinstance(n, (ast.Import, ast.ImportFrom))
+            and any((a.asname or a.name) == "PLUGIN_MANIFEST" for a in n.names)]
+    node = next((n for n in tree.body if isinstance(n, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == "PLUGIN_MANIFEST"
+                         for t in n.targets)), None)
+    if node is not None:  # a later star import may rebind it
+        uses += [n for n in tree.body if isinstance(n, ast.ImportFrom)
+                 and any(a.name == "*" for a in n.names) and n.lineno > node.lineno]
+    if node is None and not uses:
+        return None
+    if node is None or len(node.targets) != 1 or uses != [node.targets[0]]:
+        raise ModuleImportError(
+            "PLUGIN_MANIFEST must be bound once, as one top-level literal, "
+            "and never changed or used elsewhere in __init__.py.")
+    return node
 
 
 def _read_manifest(init_py_text: str) -> dict:
@@ -117,9 +133,11 @@ def _has_manifest(init_py: Path) -> bool:
     """True if an __init__.py declares a PLUGIN_MANIFEST, without executing it."""
     try:
         tree = ast.parse(init_py.read_text(encoding="utf-8", errors="replace"))
+        return _manifest_node(tree) is not None
+    except ModuleImportError:
+        return True  # it declares one; reading it refuses the module
     except Exception:
         return False
-    return _manifest_node(tree) is not None
 
 
 def _locate_module(tree: Path) -> tuple[Path, dict]:
