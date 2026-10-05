@@ -418,19 +418,18 @@ class TestSetupCloud:
 
 
 # ===========================================================================
-# E. Legacy redirect routes
+# E. Legacy setup step URLs
 # ===========================================================================
 
-class TestSetupLegacyRedirects:
-    """Old /setup/users, /setup/vertical, /setup/modules routes go to the dashboard."""
+class TestSetupLegacyStepsGone:
+    """The old per-step setup URLs are not served: setup is one form at /setup."""
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("method", ["GET", "POST"])
     @pytest.mark.parametrize("path", ["/setup/users", "/setup/users/done", "/setup/vertical", "/setup/modules"])
-    async def test_legacy_setup_route_redirects_to_dashboard(self, ui_client, method, path):
+    async def test_legacy_setup_route_is_not_found(self, ui_client, method, path):
         r = await ui_client.request(method, path, cookies=_authed())
-        assert r.status_code in (302, 303)
-        assert r.headers.get("location", "") == "/dashboard"
+        assert r.status_code == 404
 
 
 # ===========================================================================

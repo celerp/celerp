@@ -163,9 +163,6 @@ def company_choice_script() -> FT:
 
 def setup_routes(app):
 
-    async def _to_dashboard(request: Request):
-        return RedirectResponse("/dashboard", status_code=302)
-
     def _company_page(request: Request, values: dict, error: str | None = None):
         return auth_shell(
             *client_scripts(get_lang(request)),
@@ -274,12 +271,6 @@ def setup_routes(app):
                 for m in relevant
             ],
         })
-
-    # Old setup step URLs from earlier releases: setup is one form now, so a
-    # bookmark or a stale tab opens the dashboard (or the retry page when the
-    # business type is still missing, which /dashboard links to).
-    for _old in ("/setup/users", "/setup/users/done", "/setup/vertical", "/setup/modules"):
-        app.route(_old, methods=["GET", "POST"])(_to_dashboard)
 
     @app.get("/setup/new-company")
     async def new_company_page(request: Request):
