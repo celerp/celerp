@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from celerp.models.ledger import LedgerEntry
 from test_cost_restatement import _state
 from test_payment_refund_accounting import _books, _invoice, _pay, _refund
+from test_helpers import in_language
 
 pytestmark = pytest.mark.asyncio
 
@@ -63,6 +64,8 @@ async def _missing(client, auth) -> str:
 
 UNFIT = {"inactive": _inactive, "header": _header, "liability": _liability, "revenue": _revenue,
          "missing": _missing}
+REFUSED_AS = {"inactive": "inactive", "header": "header", "liability": "not_money", "revenue": "not_money",
+              "missing": "not_in_chart"}
 
 
 async def _payment(client, session, auth, bank):
@@ -93,7 +96,10 @@ async def test_money_cannot_move_through_an_account_that_cannot_hold_it(client, 
 
     r = await client.post(path, headers=auth["headers"], json=body)
     assert r.status_code == 422, r.text
-    assert f"Account {bank}" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert detail["message_key"] == f"posting.destination.{REFUSED_AS[kind]}", detail
+    assert detail["params"]["code"] == bank
+    assert in_language("de", detail) != detail["message"]
     assert await _entries(session, auth) == before
 
 

@@ -633,8 +633,9 @@ async def test_writeoff_to_cost_of_sales_is_refused(client):
     wo = (await _writeoff(client, t, [a]))["id"]
     r = await _set_line(client, t, wo, line_id=await _line_id(client, t, wo, a), qty_out=4, account="5100")
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == ("Account '5100' is a cogs account; a write-off destination must be "
-                                  "an expense or equity account")
+    assert r.json()["detail"] == {
+        "message": "Account 5100 is of type cogs. A write-off goes to an expense or equity account.",
+        "message_key": "posting.destination.not_write_off", "params": {"code": "5100", "type": "cogs"}}
     assert (await _terminal(client, t, wo)).status_code == 422
     assert await _je_for(client, t, wo) is None
 

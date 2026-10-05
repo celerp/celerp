@@ -35,7 +35,7 @@ from celerp.services.field_schema import reject_system_item_fields
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
 from celerp.services.account_roles import current_settings, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
-from celerp.services.journal_accounts import require_settlement_account
+from celerp.services.journal_accounts import require_destinations, require_settlement_account
 from celerp.services.lot_origin import is_stock_type
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.pick import doc_bound_lots
@@ -48,7 +48,7 @@ from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
-from celerp_docs.sequences import next_doc_ref, require_doc_type, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
+from celerp_docs.sequences import next_doc_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
@@ -8681,20 +8681,17 @@ async def _get_writeoff(session: AsyncSession, company_id, entity_id: str, *, fo
 
 
 async def _validate_writeoff_account(session, company_id, code: str) -> None:
-    """A write-off destination must be a real chart account of a WRITEOFF_ACCOUNT_TYPES class. Validated
-    at the function level, never only in the picker: a direct API call cannot post to an asset,
-    revenue or cost of sales account."""
-    from celerp_accounting.models import Account
-    acc = (await session.execute(select(Account).where(
-        Account.company_id == company_id, Account.code == code))).scalar_one_or_none()
-    if acc is None:
-        raise HTTPException(status_code=422, detail=f"Account '{code}' is not in the chart of accounts")
-    if acc.account_type not in WRITEOFF_ACCOUNT_TYPES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Account '{code}' is a {acc.account_type} account; a write-off destination must be "
-                   "an expense or equity account",
-        )
+    """A write-off destination must be a destination ``require_destinations`` accepts, of a
+    WRITEOFF_ACCOUNT_TYPES class. Validated at the function level, never only in the picker:
+    a direct API call cannot post to a header, an inactive account, or an asset, revenue or
+    cost of sales account."""
+    accounts = await require_destinations(session, company_id, {code})
+    account_type = (accounts or {}).get(code, {}).get("account_type")
+    if accounts is not None and account_type not in WRITEOFF_ACCOUNT_TYPES:
+        raise HTTPException(status_code=422, detail=refusal(
+            "posting.destination.not_write_off",
+            f"Account {code} is of type {account_type}. A write-off goes to an expense or equity account.",
+            code=code, type=account_type))
 
 
 def _writeoff_seed_line(item: Projection, settings: dict) -> dict:

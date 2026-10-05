@@ -122,7 +122,7 @@ async def test_posting_checks_the_real_chart_not_a_third_party_one(client, sessi
     from celerp.services.journal_accounts import require_settlement_account
     with pytest.raises(HTTPException) as exc:
         await require_settlement_account(session, cid, "1111")
-    assert "inactive" in exc.value.detail
+    assert exc.value.detail["message_key"] == "posting.destination.inactive"
     assert await _ledger_rows(session, cid) == before
     assert calls == []
 

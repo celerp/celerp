@@ -198,7 +198,7 @@ async def check_new_account(
     await lock_chart(session, company_id)
     if parent_code is None:
         return
-    parent = await _account(session, company_id, parent_code)
+    parent = await _account(session, company_id, parent_code, lock=True)
     targets = posting_targets(await current_settings(session, company_id))
     problem = parent_problem(account_type, parent, parent_code, targets)
     if problem:
@@ -313,7 +313,7 @@ async def change_account(
         if parent_code is not None:
             if parent_code == code:
                 raise HTTPException(status_code=422, detail="An account cannot be its own parent.")
-            parent = await _account(session, company_id, parent_code)
+            parent = await _account(session, company_id, parent_code, lock=True)
             problem = parent_problem(acc.account_type, parent, parent_code, posting_targets(settings))
             if problem:
                 raise HTTPException(status_code=422, detail=problem)

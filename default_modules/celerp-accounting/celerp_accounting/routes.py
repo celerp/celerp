@@ -46,6 +46,7 @@ from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import lock_chart, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
+from celerp.services.journal_accounts import require_destinations
 from celerp.services.line_measures import line_label
 from celerp.services.money import (
     checked_exchange_rate, currency_dp, round_money, to_base, to_decimal, to_stored_float,
@@ -1542,16 +1543,7 @@ async def create_manual_journal_entry(
     await import_service.check_line_contacts(
         session, company_id, [{"contact": line.contact} for line in payload.entries])
 
-    accounts = (
-        await session.execute(
-            select(Account).where(Account.company_id == company_id)
-        )
-    ).scalars().all()
-    account_map = {a.code: a for a in accounts}
-    children_of: dict[str, list[str]] = {}
-    for a in accounts:
-        if a.parent_code:
-            children_of.setdefault(a.parent_code, []).append(a.code)
+    await require_destinations(session, company_id, {line.account for line in payload.entries})
 
     base = await _base_currency(session, company_id)
     # Every posting is stored in base currency, so the entry is balanced there,
@@ -1562,19 +1554,6 @@ async def create_manual_journal_entry(
     total_credit = Decimal(0)
     entries: list[dict] = []
     for index, line in enumerate(payload.entries):
-        acc = account_map.get(line.account)
-        if not acc:
-            raise HTTPException(status_code=422, detail=f"Unknown account {line.account}.")
-        if not acc.is_active:
-            raise HTTPException(status_code=422, detail=f"Account {line.account} is inactive.")
-        children = children_of.get(line.account)
-        if children:
-            # Parent accounts are grouping rollups (the balance sheet sums their
-            # children); postings belong on leaf accounts.
-            raise HTTPException(
-                status_code=422,
-                detail=f"Account {line.account} is a parent account. Post to one of its sub-accounts: {', '.join(sorted(children))}.",
-            )
         if line.debit < 0 or line.credit < 0:
             raise HTTPException(status_code=422, detail="Debit and credit amounts cannot be negative.")
         line_fx = _validated_line_fx(base, line, index)
@@ -2964,15 +2943,6 @@ def _capped(rows: list, cap: int = AGENT_WORKBENCH_CAP) -> tuple[list, bool]:
     return rows[:cap], len(rows) > cap
 
 
-async def _require_account(db: AsyncSession, company_id: uuid.UUID, code: str) -> Account:
-    account = (await db.execute(
-        select(Account).where(Account.company_id == company_id, Account.code == code)
-    )).scalar_one_or_none()
-    if not account:
-        raise HTTPException(status_code=422, detail=f"Account {code} is not in the chart of accounts.")
-    return account
-
-
 @router.get(
     "/reconciliation/{session_id}/workbench",
     summary="Statement lines still to resolve, unreconciled book entries, and the remaining difference",
@@ -3497,7 +3467,7 @@ async def create_je_from_line(
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:
         raise HTTPException(status_code=404, detail="Bank account not found")
-    await _require_account(db, company_id, payload.account_code)
+    await require_destinations(db, company_id, {payload.account_code})
 
     line_amount = abs(float(sl.amount))
     if payload.amount is not None and abs(float(payload.amount) - line_amount) >= 0.005:
@@ -3582,6 +3552,7 @@ async def split_stmt_line(
 
     if not payload.splits:
         raise HTTPException(status_code=422, detail="At least one split entry required")
+    await require_destinations(db, company_id, {s["account_code"] for s in payload.splits})
 
     je_id = await _next_reconciliation_je_id(db, company_id, f"je:recon:split:{sl.id}")
     idem_c = je_idempotency_key(je_id, "recon_split", "c")
@@ -3668,7 +3639,7 @@ async def attach_to_line(
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     """Attach a document to a statement line (stores file, returns attachment id)."""
-    import hashlib, os
+    import hashlib
     from pathlib import Path
 
     _, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
@@ -3788,7 +3759,7 @@ async def write_off_difference(
         raise HTTPException(status_code=422, detail="No difference to write off.")
     if payload.account_code:
         account_code = payload.account_code
-        await _require_account(db, company_id, account_code)
+        await require_destinations(db, company_id, {account_code})
     else:
         account_code = await resolve(db, company_id, AccountRole.GENERAL_EXPENSE)
 

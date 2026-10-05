@@ -162,27 +162,50 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict) -
                 )
 
 
+async def require_destinations(session: AsyncSession, company_id, codes) -> dict[str, dict] | None:
+    """Refuse a new posting a user directed to any of ``codes`` unless each is an account
+    in the chart, active, with nothing under it (a header only sums the accounts below it).
+
+    The accounts stay share-locked until the transaction ends, so switching one off or
+    putting an account under it waits for the posting, and a posting that waited for such
+    a change sees it and is refused. Returns the locked accounts, for the caller's own
+    rule on their type; None when the accounting module is not running, so there is no
+    chart to check against. Only a destination the user picks for a new posting is
+    checked: reversing or settling what the books hold posts through the accounts it was
+    recorded on, even if they are now inactive.
+    """
+    accounts = await lock_accounts(session, company_id, codes)
+    if accounts is None:
+        return None
+    for code in sorted(set(codes)):
+        account = accounts.get(code)
+        if account is None:
+            detail = refusal("posting.destination.not_in_chart",
+                             f"Account {code} is not in the chart of accounts.", code=code)
+        elif not account["is_active"]:
+            detail = refusal("posting.destination.inactive",
+                             f"Account {code} is inactive. Choose an active account.", code=code)
+        elif account["has_children"]:
+            detail = refusal("posting.destination.header",
+                             f"Account {code} is a header account. Choose one of the accounts under it.", code=code)
+        else:
+            continue
+        raise HTTPException(status_code=422, detail=detail)
+    return accounts
+
+
 async def require_settlement_account(session: AsyncSession, company_id, code: str) -> None:
-    """Refuse a new payment or refund through ``code`` unless it can hold money: an
-    active asset account with nothing under it, such as a bank or a clearing account.
+    """Refuse a new payment or refund through ``code`` unless it can hold money: a
+    destination ``require_destinations`` accepts that is an asset account, such as a bank
+    or a clearing account.
 
     Only a new settlement is checked. Giving back money already recorded posts
     through the account it came in through, even if that account is now inactive.
-    With the accounting module not running there is no chart to check against.
     """
-    accounts = await lock_accounts(session, company_id, {code})
-    if accounts is None:
-        return
-    account = accounts.get(code)
-    if account is None:
-        problem = f"Account {code} is not in the chart of accounts."
-    elif not account["is_active"]:
-        problem = f"Account {code} is inactive."
-    elif account["has_children"]:
-        problem = f"Account {code} is a header account. Choose one of the accounts under it."
-    elif account["account_type"] != "asset":
-        problem = (f"Account {code} is a {account['account_type']} account. Money is paid or refunded "
-                   "through an asset account, such as a bank or a clearing account.")
-    else:
-        return
-    raise HTTPException(status_code=422, detail=problem)
+    accounts = await require_destinations(session, company_id, {code})
+    account_type = (accounts or {}).get(code, {}).get("account_type")
+    if accounts is not None and account_type != "asset":
+        raise HTTPException(status_code=422, detail=refusal(
+            "posting.destination.not_money",
+            f"Account {code} is of type {account_type}. Money is paid or refunded through an asset "
+            "account, such as a bank or a clearing account.", code=code, type=account_type))

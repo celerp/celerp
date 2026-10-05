@@ -199,15 +199,15 @@ async def test_manual_je_line_validation(client):
 @pytest.mark.asyncio
 async def test_manual_je_parent_account_rejected(client):
     """1130 has child accounts (1130-P etc.); parents are grouping rollups,
-    so postings belong on leaf accounts and the parent is rejected naming
-    its children."""
+    so postings belong on leaf accounts and the parent is refused."""
     tok = await _reg(client)
     r = await _post_manual_je(client, tok, [
         {"account": "1130", "debit": 10.0, "credit": 0},
         {"account": "4100", "debit": 0, "credit": 10.0},
     ])
     assert r.status_code == 422
-    assert "1130-P" in r.json()["detail"]
+    assert r.json()["detail"]["message_key"] == "posting.destination.header"
+    assert r.json()["detail"]["params"] == {"code": "1130"}
 
 
 @pytest.mark.asyncio
