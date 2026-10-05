@@ -499,7 +499,8 @@ def setup_routes(app):
                 {"value": "requirements", "label": t("manufacturing.action_print_requirements"),
                  "method": "open", "url": "/manufacturing/requirements"},
             ]),
-            _demand_table(lines),
+            # The queue swaps in place by #mfg-table; the wrap stays and scrolls it on a narrow screen.
+            Div(_demand_table(lines), cls="table-scroll-wrap"),
             Script(COLUMN_FILTER_JS),
         )
         return await base_shell(
@@ -563,7 +564,8 @@ def setup_routes(app):
                  "url": f"/manufacturing/runs/bulk/cancel?status={active}",
                  "confirm": t("manufacturing.confirm_cancel_runs")},
             ]),
-            _order_table(shown, today=date.today().isoformat()),
+            # The queue swaps in place by #mfg-table; the wrap stays and scrolls it on a narrow screen.
+            Div(_order_table(shown, today=date.today().isoformat()), cls="table-scroll-wrap"),
             Script(COLUMN_FILTER_JS),
         )
         return await base_shell(

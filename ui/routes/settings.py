@@ -3364,10 +3364,13 @@ def _terms_conditions_tab(templates: list[dict], prefix: str = "terms-conditions
                    hx_on__after_request="window.location.reload()"),
             cls="page-actions mb-md",
         ),
-        Table(
-            Thead(Tr(Th(t("th.name")), Th(t("th.text")), Th(t("th.document_types")), Th(t("th.default_for")), Th(""))),
-            Tbody(*[_row(gi, tpl) for gi, tpl in filtered]),
-            cls="data-table sticky-head",
+        Div(
+            Table(
+                Thead(Tr(Th(t("th.name")), Th(t("th.text")), Th(t("th.document_types")), Th(t("th.default_for")), Th(""))),
+                Tbody(*[_row(gi, tpl) for gi, tpl in filtered]),
+                cls="data-table sticky-head",
+            ),
+            cls="table-scroll-wrap",
         ),
         cls="settings-card",
     )

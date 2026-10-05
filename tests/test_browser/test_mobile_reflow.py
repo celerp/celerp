@@ -171,16 +171,26 @@ def test_the_dashboard_fits_a_phone_screen(page, ui_server, fresh_company, width
 # Every main page, with each of its tabs. A tab list is read from the page itself, so a tab
 # added later is swept too.
 _MAIN_PAGES = ("/dashboard", "/inventory", "{item}", "/crm", "/contacts/{contact}", "/docs", "/docs/{doc}",
-               "/lists", "/lists/{list}", "/manufacturing", "/manufacturing/{order}", "/accounting",
+               "/lists", "/lists/{list}", "/manufacturing", "/manufacturing/production", "/manufacturing/{order}",
+               "/accounting",
                "/settings/general", "/settings/inventory", "/settings/accounting", "/settings/contacts",
                "/settings/sales", "/settings/purchasing", "/settings/manufacturing", "/settings/payments",
                "/doctor")
 _TABS = "a.category-tab[href*='tab='], .settings-tabs a[href]"
 
 
+# Every table whose rows stop short of its own box: [width of the table, of its first row].
+_SHORT_ROWS_JS = """() => [...document.querySelectorAll('.main-content .data-table')]
+  .filter(t => t.offsetParent && t.querySelector('tr'))
+  .map(t => [Math.round(t.getBoundingClientRect().width), Math.round(t.querySelector('tr').getBoundingClientRect().width)])
+  .filter(([table, row]) => row < table - 2)"""
+
+
 @pytest.mark.timeout(300)
-@pytest.mark.parametrize("width", [320, 390])
-def test_every_main_page_fits_a_phone_screen(page, ui_server, fresh_company, width):
+@pytest.mark.parametrize("width", [320, 390, 820, 1280])
+def test_every_main_page_fits_a_narrow_screen(page, ui_server, fresh_company, width):
+    """No main page or tab is wider than a phone, tablet or laptop screen, and every table's rows
+    span the table, as they do on a desktop."""
     api = fresh_company
     tag = uuid.uuid4().hex[:6].upper()
 
@@ -216,11 +226,14 @@ def test_every_main_page_fits_a_phone_screen(page, ui_server, fresh_company, wid
             "[document.documentElement.scrollWidth, document.documentElement.clientWidth]")
         if doc_w != client_w:
             wide.append(f"{url}: {doc_w} > {client_w}")
+        short = page.evaluate(_SHORT_ROWS_JS)
+        if short:
+            wide.append(f"{url}: table rows short of the table {short}")
         if url.startswith(("/inventory/", "/settings/")):
             for href in page.eval_on_selector_all(_TABS, "els => els.map(e => e.getAttribute('href'))"):
                 if href and href.startswith("/") and href not in seen:
                     urls.append(href)
-    assert not wide, f"pages wider than a {width}px screen: {wide}"
+    assert not wide, f"at {width}px: {wide}"
     assert len(seen) > len(_MAIN_PAGES), "no tab was swept"
 
 
