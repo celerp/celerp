@@ -33,11 +33,11 @@ def test_the_company_name_to_type_is_set_apart_from_the_words_around_it(lang):
     assert prompt, html
     before, after = prompt.groups()
     assert before.endswith(" "), (lang, before)
-    assert after[:1] in (" ", "।", "።"), (lang, after)  # a space, or the language's own full stop
+    assert after[:1] in (" ", "\u0964", "\u1362"), (lang, after)  # a space, or the language's own full stop
 
 
 @pytest.mark.parametrize("lang", _LANGS, indirect=True)
 def test_the_reset_modal_has_no_en_or_em_dash(lang):
     html = to_xml(_factory_reset_card(_NAME))
 
-    assert not re.findall(r"[^<>]*[–—][^<>]*", html), lang
+    assert not re.findall(r"[^<>]*[\u2013\u2014][^<>]*", html), lang
