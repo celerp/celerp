@@ -16,7 +16,7 @@ import pytest
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from mfg_runs import COGS, complete, issue, lines, product, receive, refusal, reopen, role, run, snapshot
+from mfg_runs import COGS, OPENING, PURCHASED, WIP, complete, issue, lines, product, receive, refusal, reopen, role, run, snapshot
 from sqlalchemy import select
 from stock_books import assert_settled
 from test_cost_restatement import _item, _merge, _sell, _state, auth, ids  # noqa: F401  (fixtures)
@@ -47,6 +47,30 @@ async def _recost(session, auth, item: str, cost_total: float) -> None:
     row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": item})
     row.state = {**row.state, "cost_total": cost_total, "cost_base": cost_total}
     await session.commit()
+
+
+def _ob(debit: float, credit: float) -> tuple:
+    return ("1130-OB", (OPENING,), debit, credit)
+
+
+def _wip(debit: float, credit: float) -> tuple:
+    return ("1130-WIP", (WIP,), debit, credit)
+
+
+def _made(debit: float, credit: float) -> tuple:
+    return ("1130-P", (PURCHASED,), debit, credit)
+
+
+def _cogs(debit: float, credit: float) -> tuple:
+    return ("5100", (COGS,), debit, credit)
+
+
+async def _run_entries(session, auth, order: str, issue: str = "c:issue") -> dict[str, list[tuple]]:
+    """The lines of the entries completing a run under key ``c`` posts: what it issued (by
+    ``issue``'s key, or by completing), what it received, and what it wasted."""
+    return {"issue": await lines(session, auth, f"je:auto:{order}:issue:{issue}"),
+            "receive": await lines(session, auth, f"je:auto:{order}:receive:c:receive"),
+            "complete": await lines(session, auth, f"je:auto:{order}:complete:c")}
 
 
 def _waste(*pairs) -> list[dict]:
@@ -150,6 +174,10 @@ async def test_a_cost_change_after_issue_does_not_change_the_waste(client, sessi
     r = await complete(client, auth, order, key="c", waste_items=_waste((g, 2)))
     assert r.status_code == 200, r.text
     assert (await _identity(session, auth, order))["wasted"] == 200.0
+    assert await _run_entries(session, auth, order, issue="i") == {
+        "issue": [_ob(0.0, 1010.0), _wip(1010.0, 0.0)],
+        "receive": [_made(1010.0, 0.0), _wip(0.0, 1010.0)],
+        "complete": [_made(0.0, 200.0), _cogs(200.0, 0.0)]}
 
 
 @pytest.mark.parametrize("grams,value", [(4, 220.0), (10, 550.0)])
@@ -164,6 +192,11 @@ async def test_waste_after_two_issues_uses_everything_issued(client, session, au
     gold = next(i for i in (await _state(session, auth, order))["inputs"] if i["item_id"] == g)
     assert (gold["issued_qty"], gold["issued_value"]) == (10.0, "550.00")
     assert (await _identity(session, auth, order))["wasted"] == value
+    assert await lines(session, auth, f"je:auto:{order}:issue:i1") == [_ob(0.0, 500.0), _wip(500.0, 0.0)]
+    assert await _run_entries(session, auth, order) == {  # the other 5 g at 10.00 and the beads
+        "issue": [_ob(0.0, 60.0), _wip(60.0, 0.0)],
+        "receive": [_made(560.0, 0.0), _wip(0.0, 560.0)],
+        "complete": [_made(0.0, value), _cogs(value, 0.0)]}
 
 
 async def test_repeated_lines_are_one_line_in_component_order(client, session, auth):
@@ -174,6 +207,11 @@ async def test_repeated_lines_are_one_line_in_component_order(client, session, a
                        {"item_id": b, "quantity": 1.0, "value": "1.00"}], key=lambda x: x["item_id"])
     assert (await _state(session, auth, order))["waste"]["items"] == expected
     assert (await _identity(session, auth, order))["wasted"] == 201.0
+    assert await _run_entries(session, auth, order) == {
+        "issue": [_ob(0.0, 1010.0), _wip(1010.0, 0.0)],
+        "receive": [_made(1010.0, 0.0), _wip(0.0, 1010.0)],
+        "complete": [_made(0.0, 201.0), _cogs(201.0, 0.0)]}
+    await assert_settled(client, session, auth)
 
 
 async def test_the_same_waste_in_another_order_is_the_same_request(client, session, auth):
@@ -189,6 +227,11 @@ async def test_the_same_waste_in_another_order_is_the_same_request(client, sessi
     done = (await session.execute(select(LedgerEntry).where(
         LedgerEntry.entity_id == order, LedgerEntry.event_type == "mfg.order.completed"))).scalars().all()
     assert len(done) == 1
+    assert await _run_entries(session, auth, order) == {  # booked once, as the first request
+        "issue": [_ob(0.0, 1010.0), _wip(1010.0, 0.0)],
+        "receive": [_made(1010.0, 0.0), _wip(0.0, 1010.0)],
+        "complete": [_made(0.0, 201.0), _cogs(201.0, 0.0)]}
+    await assert_settled(client, session, auth)
 
 
 async def test_issued_value_is_finished_value_plus_waste_through_the_run_life(client, session, auth):

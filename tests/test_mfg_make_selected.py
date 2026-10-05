@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import pytest
 
+from mfg_runs import OPENING, PURCHASED, WIP, lines, product
+from stock_books import assert_settled
 from test_cost_restatement import _item, auth, ids  # noqa: F401  (fixtures)
 from test_mfg_creation_contract import _count
-from mfg_runs import product
 
 pytestmark = pytest.mark.asyncio
 
@@ -117,3 +118,33 @@ async def test_make_and_complete_sent_again_completes_once(client, session, auth
     assert again == first and events == 1
     assert await _count(session, auth, event_type="mfg.order.completed") == 1
     assert await _count(session, auth, entity_type="mfg_order") == 1
+    assert await _run_entries(session, auth, first["created"][0], "op") == _MADE_FIVE  # booked once
+
+
+_MADE_FIVE = {"issue": [("1130-OB", (OPENING,), 0.0, 5.0), ("1130-WIP", (WIP,), 5.0, 0.0)],
+              "receive": [("1130-P", (PURCHASED,), 5.0, 0.0), ("1130-WIP", (WIP,), 0.0, 5.0)]}
+"""Five made at 1.00 each: the components leave opening inventory through work in progress
+onto the account for made goods."""
+
+
+async def _run_entries(session, auth, made: dict, key: str) -> dict[str, list[tuple]]:
+    """The lines of the entries a run Make selected made and completed under ``key`` posted."""
+    ref = f"je:auto:{made['run_id']}:{{}}:mfg-from-doc:{made['doc_id']}:{made['item_id']}:{key}:{{}}"
+    return {step: await lines(session, auth, ref.format(step, step)) for step in ("issue", "receive")}
+
+
+async def test_orders_made_and_shipped_leave_every_account_carrying_its_stock(client, session, auth):
+    """Both orders were costed when posted, before anything was made. Making them puts the
+    rings on the account for made goods, and shipping each moves its cost of sale there."""
+    made, early, late = await _setup(client, auth)
+    out = await _make(client, auth, [(made, early), (made, late)], "op", complete=True)
+    assert [c["doc_id"] for c in out["created"]] == [early, late]
+
+    for run, doc in zip(out["created"], (early, late)):
+        assert await _run_entries(session, auth, run, "op") == _MADE_FIVE
+        r = await client.post(f"/docs/{doc}/fulfill-lines", headers=auth["headers"], json={"line_entity_ids": [made]})
+        assert r.status_code == 200, r.text
+        assert r.json()["fulfillment_status"] == "fulfilled"
+        assert await lines(session, auth, f"je:auto:{doc}:cogs-adj:fulfill-0:l0") == [
+            ("1130-OB", (OPENING,), 5.0, 0.0), ("1130-P", (PURCHASED,), 0.0, 5.0)]
+    await assert_settled(client, session, auth)
