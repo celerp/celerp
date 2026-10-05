@@ -15,7 +15,7 @@ from decimal import Decimal, InvalidOperation
 
 from fasthtml.common import *
 from ui.i18n import t, get_lang
-from ui.components.table import fmt_money, fmt_rate
+from ui.components.table import EMPTY, fmt_money, fmt_rate
 
 # Known ledger event types. The label for each is resolved at render time via
 # ``t("event.<event_type>")`` (see event_label); values here are those i18n keys,
@@ -999,7 +999,6 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
         title = t("activity.recent_activity")
     if empty_msg is None:
         empty_msg = t("activity.empty")
-    EMPTY = "--"
 
     if not ledger:
         header_parts: list = []
@@ -1109,7 +1108,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
 
     return Div(
         Div(*header_parts, cls="section-header") if icon else H3(title, cls="section-title"),
-        table,
+        Div(table, cls="table-scroll-wrap"),
         footer,
         resizer,
         cls=section_cls,
