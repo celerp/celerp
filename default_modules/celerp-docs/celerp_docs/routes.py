@@ -11,6 +11,7 @@ import uuid
 from dataclasses import dataclass, replace as _dc_replace
 from datetime import datetime, timezone, date as _date
 from decimal import Decimal
+from collections.abc import Awaitable, Callable
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
@@ -6995,10 +6996,12 @@ async def _reverse_whole_lines(
     to_revert: list[str],
     fetched: dict[str, Projection],
     returned_brief: list[dict] | None = None,
-) -> str:
+) -> tuple[str, Callable[[], Awaitable[None]]]:
     """Reverse whole-line fulfillment: restore each lot to stock, recompute the doc's
-    fulfillment status, log the doc-level revert, and void the COGS JE when an invoice
-    lands fully unfulfilled. Emits events only - the caller owns the commit.
+    fulfillment status and log the doc-level revert. Emits events only - the caller owns
+    the commit. Returns the doc's fulfillment status and the invoice's COGS true-up, which
+    the caller awaits once the lots are where they will stay: a lot set available takes
+    its line's cost of sales back, a lot reserved to the doc again keeps it.
 
     Shared by revert-lines (Set as available on sold/memo lines) and reserve-lines
     (Set as reserved on a line this doc already shipped: reverse, then reserve).
@@ -7040,8 +7043,9 @@ async def _reverse_whole_lines(
             idempotency_key=str(uuid.uuid4()),
             metadata_={"doc_id": entity_id},
         )
-    if reversed_line_indices:
-        # The lines are back to their finalize allocation (plus any cost corrections since).
+    async def reconcile() -> None:
+        if not reversed_line_indices:
+            return
         _lines = "-".join(str(i) for i in sorted(reversed_line_indices))
         try:
             await auto_je.reconcile_doc_cogs(
@@ -7101,7 +7105,7 @@ async def _reverse_whole_lines(
         metadata_={},
     )
 
-    return doc_fulfillment_status
+    return doc_fulfillment_status, reconcile
 
 
 @router.post("/{entity_id}/revert-lines")
@@ -7217,10 +7221,11 @@ async def revert_lines(
                 )
             returned_brief.append({"item_id": child_eid, "sku": _sku, "quantity": qty_back})
 
-    doc_fulfillment_status = await _reverse_whole_lines(
+    doc_fulfillment_status, reconcile = await _reverse_whole_lines(
         session, company_id=company_id, cid=cid, uid=uid, entity_id=entity_id, state=state,
         doc_type=doc_type, to_revert=to_revert, fetched=fetched, returned_brief=returned_brief,
     )
+    await reconcile()
 
     await session.commit()
     return {
@@ -7237,9 +7242,9 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
     All-or-nothing: every selected line is pre-validated first; if any line fails its guard the
     request commits nothing and returns 422 with the full per-line error list (GDR 2e). A
     ``reserved`` target requires the line ``available`` - or ``sold`` by THIS document, in which
-    case the sale is reversed first (stock restored, COGS voided when the invoice lands fully
-    unfulfilled - the same path Set as available uses) and the line is then reserved, atomically
-    in one request. An ``available`` target requires the line ``reserved`` and owned by this
+    case the sale is reversed first (stock restored - the same path Set as available uses) and
+    the line is then reserved, atomically in one request; held for the invoice again, it keeps
+    its cost of sales. An ``available`` target requires the line ``reserved`` and owned by this
     document. Reserve stamps this document as owner; release clears the ownership stamp (emit
     without source_doc_id).
 
@@ -7324,11 +7329,12 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
         await _expand_invoice_line_allocations(
             session, row.company_id, entity_id, state, reserve_eids, projs
         )
+    reconcile = None
     if to_unship:
         # Take the shipped goods back into stock before reserving them - the reversal and the
         # reserve share this transaction, so a failure commits neither.
         to_unship_ids = list(to_unship)
-        await _reverse_whole_lines(
+        _status, reconcile = await _reverse_whole_lines(
             session, company_id=row.company_id, cid=cid, uid=user.id, entity_id=entity_id,
             state=state, doc_type=state.get("doc_type", ""), to_revert=to_unship_ids,
             fetched=to_unship,
@@ -7360,6 +7366,8 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
             actor_id=user.id, location_id=None, source="reservation",
             idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
         )
+    if reconcile is not None:
+        await reconcile()
 
     if commit:
         await session.commit()
