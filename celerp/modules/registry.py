@@ -12,7 +12,6 @@ process startup). The settings UI shows a restart-required banner after any togg
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -52,23 +51,25 @@ def set_enabled(company_settings: dict[str, Any], enabled: set[str]) -> dict[str
     return updated
 
 
-def _current(company_settings: dict[str, Any], running: Iterable[str]) -> set[str]:
-    """The modules the company runs now: ``running`` (the modules this process loaded)
-    when its settings predate per-module enablement (see is_enabled)."""
+def _current(company_settings: dict[str, Any]) -> set[str]:
+    """The modules the company runs now: every module this process loaded when its
+    settings predate per-module enablement (see is_enabled)."""
     if _SETTINGS_KEY not in company_settings:
-        return set(running)
+        from celerp.modules.loader import loaded_modules
+
+        return {m["name"] for m in loaded_modules()}
     return get_enabled(company_settings)
 
 
-def enable(company_settings: dict[str, Any], module_name: str, running: Iterable[str] = ()) -> dict[str, Any]:
+def enable(company_settings: dict[str, Any], module_name: str) -> dict[str, Any]:
     """Return updated settings with module_name added to the modules the company runs."""
-    enabled = _current(company_settings, running)
+    enabled = _current(company_settings)
     enabled.add(module_name)
     return set_enabled(company_settings, enabled)
 
 
-def disable(company_settings: dict[str, Any], module_name: str, running: Iterable[str] = ()) -> dict[str, Any]:
+def disable(company_settings: dict[str, Any], module_name: str) -> dict[str, Any]:
     """Return updated settings with module_name removed from the modules the company runs."""
-    enabled = _current(company_settings, running)
+    enabled = _current(company_settings)
     enabled.discard(module_name)
     return set_enabled(company_settings, enabled)
