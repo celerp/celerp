@@ -54,7 +54,7 @@ from celerp.modules.importer import valid_table_prefixes
 from celerp.modules.loader import (
     is_core_folded, is_running, module_search_path, read_manifest, resolve_module_path, running_version,
 )
-from celerp.modules.registry import company_modules, get_enabled, set_enabled, commit_with_load_set
+from celerp.modules.registry import company_modules, set_enabled, commit_with_load_set
 from celerp.services import attachments, bootstrap, company_lifecycle
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, verify_password
 from celerp.services.company_lock import hold_company, lock_company, locked_company
@@ -1356,7 +1356,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                         raise BackupError(422, ATTACHMENT_FAILED) from None
                 id_map = {source: str(new_id), **{old: str(uuid.uuid4()) for old in checked.ids}, **url_map}
                 settings = remap(_kept_settings(m["company"]["settings"]), id_map)
-                settings = set_enabled(settings, get_enabled(settings) | set(m["modules"]["enabled"]))
+                settings = set_enabled(settings, set(m["modules"]["enabled"]))  # the checked list, never the copied key
                 settings["restored_backup"] = {
                     "backup_id": backup_id, "created_at": m["created_at"],
                     "source_company_name": m["company"]["name"],

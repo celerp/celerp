@@ -338,6 +338,13 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
                 status_code=422,
                 detail="The restored backup record is set only by restoring a company backup, not company settings",
             )
+        # The company's module choice changes only through the enable/disable endpoints,
+        # which check installation and dependencies and keep the load list in step.
+        if "enabled_modules" in payload.settings:
+            raise HTTPException(
+                status_code=422,
+                detail="Modules are turned on and off on the Modules page, not company settings",
+            )
         merged = {**(company.settings or {}), **payload.settings}
         if "timezone" in payload.settings:
             try:
@@ -1748,11 +1755,13 @@ async def enable_module(
 ) -> dict:
     """Turn a module on for this company, with the modules it needs. Refused
     for a name that is not an installed module."""
-    from celerp.modules.loader import is_running, module_search_path, resolve_module_path
+    from celerp.modules.loader import is_running, module_search_path, read_manifest, resolve_module_path
     from celerp.modules.registry import enable_for_company, get_enabled, restart_needed, commit_with_load_set
 
-    if not is_running(module_name) and resolve_module_path(module_name, module_search_path()) is None:
-        raise HTTPException(status_code=404, detail="Module not found.")
+    if not is_running(module_name):
+        path = resolve_module_path(module_name, module_search_path())
+        if path is None or read_manifest(path).get("name") != module_name:
+            raise HTTPException(status_code=404, detail="Module not found.")
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")

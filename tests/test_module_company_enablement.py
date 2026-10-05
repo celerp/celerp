@@ -317,3 +317,45 @@ async def test_a_turn_off_that_fails_to_save_leaves_the_load_set_as_it_was(clien
     me = (await client.get("/companies/me", headers=h)).json()["settings"]["enabled_modules"]
     assert name in me
     assert name in _configured(), "config.toml dropped a module the database still turns on"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [["acme-not-installed"], ["celerp-labels"], "celerp-labels", []])
+async def test_company_settings_cannot_change_the_module_choice(client, value):
+    """Modules are turned on and off only through enable/disable, which check what is
+    installed and needed and keep the load list in step; a settings save naming them is refused."""
+    h = {"Authorization": f"Bearer {await register_admin(client)}"}
+    before = (await client.get("/companies/me", headers=h)).json()["settings"].get("enabled_modules")
+    config_before = _configured()
+    r = await client.patch("/companies/me", headers=h, json={"settings": {"enabled_modules": value}})
+    assert r.status_code == 422, r.text
+    assert "Modules page" in r.json()["detail"]
+    assert (await client.get("/companies/me", headers=h)).json()["settings"].get("enabled_modules") == before
+    assert _configured() == config_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["%2E", "%2E%2E", "..%2Fmodules", "nomanifest", "wrongname"])
+async def test_enable_refuses_a_name_that_is_not_an_installed_module(client, module_dir, name):
+    """Enable accepts only a folder named as one module that declares a manifest of that name:
+    never the module folder itself, a parent, a path, a folder without a manifest, or one whose
+    manifest names another module."""
+    (module_dir / "__init__.py").write_text("")  # the folder itself must never count as a module
+    (module_dir / "nomanifest").mkdir()
+    (module_dir / "nomanifest" / "__init__.py").write_text("")
+    (module_dir / "wrongname").mkdir()
+    (module_dir / "wrongname" / "__init__.py").write_text(
+        "PLUGIN_MANIFEST = {'name': 'acme-other', 'version': '1.0.0'}\n")
+    h = {"Authorization": f"Bearer {await register_admin(client)}"}
+    config_before = _configured()
+    r = await client.post(f"/companies/me/modules/{name}/enable", headers=h)
+    assert r.status_code == 404, r.text
+    assert (await client.get("/companies/me", headers=h)).json()["settings"].get("enabled_modules") is None
+    assert _configured() == config_before
+
+
+@pytest.mark.parametrize("name", [".", "..", "a/b", "a\\b", ""])
+def test_a_path_is_never_an_installed_module(module_dir, name):
+    """Resolving a module name never yields the module folder, its parent, or a nested path."""
+    (module_dir / "__init__.py").write_text("PLUGIN_MANIFEST = {'name': '.', 'version': '1.0.0'}\n")
+    assert loader.resolve_module_path(name, str(module_dir)) is None

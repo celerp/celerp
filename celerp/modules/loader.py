@@ -63,7 +63,8 @@ from pathlib import Path
 
 from celerp.modules.importer import (
     _RESERVED_PREFIX, PREMIUM_MARKER, ModuleImportError, _check_min_version,
-    _read_manifest as _read_literal_manifest, _validate_name, _validate_table_prefix,
+    _read_manifest as _read_literal_manifest, _validate_name, _validate_name_chars,
+    _validate_table_prefix,
 )
 from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
 from celerp.modules.meta import META_FILENAME, read_meta
@@ -328,7 +329,12 @@ def demoted_first_party(enabled: set[str]) -> list[str]:
 def _module_candidates(
     name: str, module_dir: str | Path | None = None,
 ) -> list[Path]:
-    """Installed copies of *name* in MODULE_DIR order."""
+    """Installed copies of *name* in MODULE_DIR order. A name that is not a plain module
+    name (a path, '.', '..') has none, so it can never resolve to a folder outside it."""
+    try:
+        _validate_name_chars(name)
+    except ModuleImportError:
+        return []
     raw = os.environ.get("MODULE_DIR", "") if module_dir is None else str(module_dir)
     out: list[Path] = []
     for entry in raw.split(","):
