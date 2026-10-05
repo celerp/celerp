@@ -120,7 +120,7 @@ jobs:
   browser:
     name: Browser shard ${{ matrix.group }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 22
     strategy:
       fail-fast: false
       matrix:
@@ -169,7 +169,7 @@ jobs:
         # is CPU-heavy (Chromium + an API + a UI server), so intra-runner parallelism on a 2-vCPU
         # box causes contention timeouts. The thread-based timeout is required for Playwright tests.
         run: >
-          timeout 600 pytest tests/test_browser -m browser -o addopts=""
+          timeout 900 pytest tests/test_browser -m browser -o addopts=""
           --timeout=120 --timeout-method=thread --no-cov --tb=short -p no:cacheprovider
           --splits 3 --group ${{ matrix.group }}
 
