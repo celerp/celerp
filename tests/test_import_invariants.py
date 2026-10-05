@@ -1143,6 +1143,46 @@ class TestCategoryInvariant:
         assert "Ruby" not in schemas
         assert [f["key"] for f in schemas["ruby"]] == ["hue"]
 
+    @pytest.mark.asyncio
+    async def test_category_only_items_carry_matches_without_a_second_category(self, client, session, perm):
+        """A category that lives only on items (never in the category settings) is a
+        category too: an import naming it in another case lands in it. Red statement:
+        /items/categories listed both "Gem" and "gem"."""
+        h = perm["admin_h"]
+        r = await client.post("/items", headers=h, json={"sku": "GEM-1", "name": "Gem one", "quantity": 1,
+                                                         "sell_by": "piece", "category": "Gem"})
+        assert r.status_code in (200, 201), r.text
+        await _import_clean(client, h, [{"name": "Gem two", "category": "gem", "sell_by": "piece", "quantity": "1"}], "cat-item-only")
+        cats = (await client.get("/items/categories", headers=h)).json()
+        assert "gem" not in cats and "Gem" in cats, cats
+        states = await _item_states(session, perm["company_id"])
+        assert sorted(s.get("category") for s in states if s.get("name", "").startswith("Gem ")) == ["Gem", "Gem"]
+
+    @staticmethod
+    def _batch(category: str, key: str) -> dict:
+        return {"records": [{"entity_id": f"item:{key}", "event_type": "item.created", "source": "csv",
+                             "idempotency_key": key,
+                             "data": {"sku": key.upper(), "name": "Batch", "quantity": 1, "sell_by": "piece",
+                                      "category": category}}]}
+
+    @pytest.mark.asyncio
+    async def test_batch_import_resolves_a_translated_category_name(self, client, session, perm):
+        """/items/import/batch resolves a category the way the rows import does. Red
+        statement: a batch row naming "Bier" was stored as the category "Bier"."""
+        await _set_company_settings(session, perm["company_id"], category_schemas={"beer": []},
+                                    category_display_names={"beer": "Beer"})
+        r = await client.post("/items/import/batch", headers=perm["admin_h"], json=self._batch("Bier", "batch-bier"))
+        assert r.status_code == 200 and r.json()["created"] == 1, r.text
+        assert [s.get("category") for s in await _item_states(session, perm["company_id"]) if s.get("name") == "Batch"] == ["beer"]
+
+    @pytest.mark.asyncio
+    async def test_batch_import_refuses_an_ambiguous_category(self, client, session, perm):
+        r = await client.post("/items/import/batch", headers=perm["admin_h"], json=self._batch("Red", "batch-red"))
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["created"] == 0 and any("red_a" in e and "red_b" in e for e in body["errors"]), body
+        assert not [s for s in await _item_states(session, perm["company_id"]) if s.get("name") == "Batch"]
+
 
 class TestUnitAndPriceInvariant:
     """INV-UNIT-01/02 and INV-PRICE-01: no silent weight or currency conversion."""
