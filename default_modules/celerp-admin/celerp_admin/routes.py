@@ -27,11 +27,12 @@ import os
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_lifecycle_session_ctx
+from celerp.middleware import HELD_BACK_REFUSAL
 from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -1078,6 +1079,7 @@ _CHECK_FNS = {
 
 @router.post("/doctor")
 async def run_doctor(
+    request: Request,
     fix: bool = Query(False, description="Apply repairs (default: dry-run report only)"),
     checks: str | None = Query(None, description="Comma-separated check names (default: all)"),
     rebuild: bool = Query(False, description="Rebuild all projections after fixes"),
@@ -1086,6 +1088,9 @@ async def run_doctor(
     user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
 ) -> dict:
+    if fix and not getattr(request.app.state, "data_current", True):
+        # Repairs read projections the last start did not bring current.
+        raise HTTPException(status_code=503, detail=HELD_BACK_REFUSAL)
     check_names = [c.strip() for c in checks.split(",")] if checks else ALL_CHECKS
     invalid = [c for c in check_names if c not in _CHECK_FNS]
     if invalid:

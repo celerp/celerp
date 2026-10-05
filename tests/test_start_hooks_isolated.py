@@ -9,14 +9,16 @@ records are not current and changes to them are refused, and the next start trie
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 import pre366
 from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, LOT_ACCOUNT_FIELD
 from celerp.models.company import Company
+from celerp.models.ledger import LedgerEntry
 from celerp.models.notification import Notification
 from celerp.models.projections import Projection
 from stock_books import assert_books_carry_stock, assert_wip_carried
+from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 
 pytestmark = pytest.mark.asyncio
 
@@ -64,3 +66,23 @@ async def test_a_failing_start_hook_keeps_the_other_hooks_work_and_holds_the_rec
     for old in (a, b):
         await assert_books_carry_stock(session, old["company_id"])
         await assert_wip_carried(session, old["company_id"])
+
+
+async def test_the_doctor_reports_but_does_not_repair_while_the_records_are_held_back(
+        client, session, auth, monkeypatch):
+    from celerp.main import app
+
+    async def events() -> int:
+        return await session.scalar(select(func.count()).select_from(LedgerEntry).where(
+            LedgerEntry.company_id == auth["company_id"]))
+
+    monkeypatch.setattr(app.state, "data_current", False)
+    before = await events()
+    r = await client.post("/admin/doctor?fix=true", headers=auth["headers"])
+    assert r.status_code == 503, r.text
+    assert "notification bell" in r.json()["detail"]
+    session.expire_all()
+    assert await events() == before
+    r = await client.post("/admin/doctor", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    assert r.json()["mode"] == "dry-run"
