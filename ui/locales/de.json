@@ -4030,5 +4030,17 @@
   "attr.year_edition": "Jahr / Ausgabe",
   "attr.year_period": "Jahr / Epoche",
   "attr.year_created": "Entstehungsjahr",
-  "attr.year_published": "Erscheinungsjahr"
+  "attr.year_published": "Erscheinungsjahr",
+  "enum.item_status.available": "Verfügbar",
+  "enum.item_status.draft": "Entwurf",
+  "enum.item_status.reserved": "Reserviert",
+  "enum.item_status.merged": "Zusammengeführt",
+  "unit.piece": "Stück",
+  "unit.carat": "Karat",
+  "unit.gram": "Gramm",
+  "unit.kg": "kg",
+  "unit.oz": "oz",
+  "unit.lb": "lb",
+  "unit.liter": "Liter",
+  "unit.meter": "Meter"
 }

@@ -177,6 +177,14 @@ def category_labels(names: dict) -> dict:
     return {k: category_label(k, names.get(k)) for k in {*library, *names}}
 
 
+def unit_label(name: str) -> str:
+    """Display name for a unit of measure: a system unit (piece, gram, ...) in the user's
+    language, a unit the company added exactly as named. Display only: the stored value
+    stays the unit name."""
+    tkey = f"unit.{name}"
+    return t(tkey) if tkey in _cached_load("en") else name
+
+
 @lru_cache(maxsize=1)
 def _field_label_keys() -> dict[str, str]:
     """English text -> translation key of every item field label in the catalog: the

@@ -146,7 +146,10 @@
     "th.sku",
     "th.status",
     "th.text",
-    "th.version"
+    "th.version",
+    "unit.kg",
+    "unit.lb",
+    "unit.oz"
   ],
   "es": [
     "account.plan",
@@ -214,7 +217,10 @@
     "th.factor",
     "th.position",
     "th.sku",
-    "th.total"
+    "th.total",
+    "unit.kg",
+    "unit.lb",
+    "unit.oz"
   ],
   "fr": [
     "acct.tab_journal",
@@ -300,7 +306,11 @@
     "th.sku",
     "th.source",
     "th.total",
-    "th.version"
+    "th.version",
+    "unit.carat",
+    "unit.kg",
+    "unit.lb",
+    "unit.oz"
   ],
   "id": [
     "acct.source_manual",
@@ -382,7 +392,11 @@
     "th.ref",
     "th.sku",
     "th.status",
-    "th.total"
+    "th.total",
+    "unit.gram",
+    "unit.kg",
+    "unit.liter",
+    "unit.meter"
   ],
   "it": [
     "attr.volume_l",
@@ -441,7 +455,10 @@
     "th.memo",
     "th.output",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "unit.kg",
+    "unit.lb",
+    "unit.oz"
   ],
   "ja": [
     "account.email_placeholder",
@@ -474,7 +491,8 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "unit.kg"
   ],
   "pt": [
     "acct.source_manual",
@@ -547,7 +565,10 @@
     "th.sku",
     "th.skuitem",
     "th.status",
-    "th.total"
+    "th.total",
+    "unit.kg",
+    "unit.lb",
+    "unit.oz"
   ],
   "th": [
     "account.email_placeholder",
@@ -608,6 +629,10 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "unit.carat",
+    "unit.kg",
+    "unit.lb",
+    "unit.oz"
   ]
 }

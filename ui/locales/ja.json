@@ -4030,5 +4030,17 @@
   "attr.year_edition": "年 / 版",
   "attr.year_period": "年 / 時代",
   "attr.year_created": "制作年",
-  "attr.year_published": "出版年"
+  "attr.year_published": "出版年",
+  "enum.item_status.available": "在庫あり",
+  "enum.item_status.draft": "下書き",
+  "enum.item_status.reserved": "予約済み",
+  "enum.item_status.merged": "統合済み",
+  "unit.piece": "個",
+  "unit.carat": "カラット",
+  "unit.gram": "グラム",
+  "unit.kg": "kg",
+  "unit.oz": "オンス",
+  "unit.lb": "ポンド",
+  "unit.liter": "リットル",
+  "unit.meter": "メートル"
 }

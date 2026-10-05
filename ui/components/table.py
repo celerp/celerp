@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 
 from fasthtml.common import *
-from ui.i18n import t, field_label
+from ui.i18n import t, field_label, unit_label
 from celerp.services.field_schema import MIXED_VALUE
 # Canonical definitions live with the shared document renderer; re-exported
 # here for the UI's many call sites. EMPTY is the canonical empty-value
@@ -816,7 +816,8 @@ def paired_display_cell(
 ) -> FT:
     """Combined cell showing two separately dbl-click-editable values in one TD.
 
-    Used for quantity+sell_by and weight+weight_unit so they share a column.
+    Used for quantity+sell_by and weight+weight_unit so they share a column; the
+    secondary value is the unit, shown through ``unit_label``.
     Each span is independently double-click-to-edit via the paired-edit endpoint,
     which returns an editable_cell whose restore_url points back to paired-display.
 
@@ -834,7 +835,7 @@ def paired_display_cell(
         pri_disp = format_fn(primary_value) if format_fn is not None else str(primary_value)
     else:
         pri_disp = EMPTY
-    sec_disp = str(secondary_value) if secondary_value not in (None, "") else EMPTY
+    sec_disp = unit_label(str(secondary_value)) if secondary_value not in (None, "") else EMPTY
     both_empty = pri_disp == EMPTY and sec_disp == EMPTY
     pri_span = (
         Span(
@@ -884,9 +885,9 @@ def purchase_display_cell(
     """
     pu_edit = f"/api/items/{entity_id}/field/purchase_unit/paired-edit"
     cf_edit = f"/api/items/{entity_id}/field/purchase_conversion_factor/paired-edit"
-    pu_disp = str(pu_val) if pu_val not in (None, "") else EMPTY
+    pu_disp = unit_label(str(pu_val)) if pu_val not in (None, "") else EMPTY
     cf_disp = str(cf_val) if cf_val not in (None, "") else EMPTY
-    sb_disp = str(sb_val) if sb_val not in (None, "") else EMPTY
+    sb_disp = unit_label(str(sb_val)) if sb_val not in (None, "") else EMPTY
     return Td(
         Span(
             pu_disp,
