@@ -1115,6 +1115,31 @@ def setup_routes(app):
         user = next((u for u in users if u.get("id") == user_id), {})
         return _user_display_cell(user_id, field, user.get(field))
 
+    @app.post("/settings/users/{user_id}/installation-owner")
+    async def user_install_owner_post(request: Request, user_id: str):
+        """Hand installation ownership to another active user of this company and
+        redraw the users card in place. Undo: the new owner can hand it back the
+        same way; the previous owner cannot take it back alone, because the
+        installation has exactly one owner and the handover would mean nothing if
+        they could. The confirm step says so before anything changes."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        lang = get_lang(request)
+        try:
+            users = (await api.get_users(token)).get("items", [])
+            settings = (await api.get_company(token)).get("settings")
+        except APIError as e:
+            return flash(str(e.detail))
+        target = next((u for u in users if u.get("id") == user_id), {})
+        try:
+            await api.transfer_install_owner(token, user_id)
+            notice = flash(t("settings.install_owner_moved", lang,
+                             name=target.get("name") or target.get("email") or ""), "success")
+        except APIError as e:
+            notice = flash(str(e.detail))
+        return await users_tab_for(request, token, users, settings, lang, notice)
+
     # ── Role permission matrix ───────────────────────────────────────
     @app.patch("/settings/roles/{perm_key}/{role_key}")
     async def role_permission_patch(request: Request, perm_key: str, role_key: str):
@@ -3133,7 +3158,24 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
     )
 
 
-def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en", is_owner: bool = False) -> FT:
+def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en", is_owner: bool = False,
+               install_owner_id: str = "", notice: FT | str = "") -> FT:
+    """The users table and role matrix. ``install_owner_id`` is the viewer's own
+    user id when the viewer owns the installation: only then does each other
+    active user carry the control that hands installation ownership to them."""
+    def _handover_cell(u: dict) -> FT:
+        uid = u.get("id", "")
+        if uid == install_owner_id or not u.get("is_active", True):
+            return Td(cls="cell")
+        name = u.get("name") or u.get("email") or ""
+        return Td(
+            Button(t("settings.make_install_owner", lang), cls="btn btn--secondary btn--xs",
+                   hx_post=f"/settings/users/{uid}/installation-owner",
+                   hx_confirm=t("settings.confirm_make_install_owner", lang, name=name),
+                   hx_target="#users-card", hx_swap="outerHTML"),
+            cls="cell",
+        )
+
     def _row(u: dict) -> FT:
         uid = u.get("id", "")
         return Tr(
@@ -3141,21 +3183,35 @@ def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en"
             _user_display_cell(uid, "email", u.get("email")),
             _user_display_cell(uid, "role", u.get("role")),
             _user_display_cell(uid, "is_active", u.get("is_active", True)),
+            _handover_cell(u) if install_owner_id else "",
             cls="data-row",
         )
 
     role_matrix = _role_permissions_matrix(settings, is_owner, lang)
 
     return Div(
+        notice,
         Table(
-            Thead(Tr(Th(t("th.name", lang)), Th(t("th.email", lang)), Th(t("th.role", lang)), Th(t("th.active", lang)))),
+            Thead(Tr(Th(t("th.name", lang)), Th(t("th.email", lang)), Th(t("th.role", lang)), Th(t("th.active", lang)),
+                     Th(t("th.actions", lang)) if install_owner_id else "")),
             Tbody(*[_row(u) for u in users]),
             cls="data-table",
         ),
         A(t("btn.create_user", lang), href="/settings/users/new", cls="btn btn--primary mt-md"),
         role_matrix,
         cls="settings-card",
+        id="users-card",
     )
+
+
+async def users_tab_for(request: Request, token: str, users: list[dict], settings: dict | None,
+                        lang: str, notice: FT | str = "") -> FT:
+    """_users_tab for the user who asked: the role matrix is editable for an
+    owner, and the handover control shows only to the installation owner."""
+    from ui.config import get_claims
+    install_owner_id = str(get_claims(request).get("sub", "")) if await api.installation_owner(token) else ""
+    return _users_tab(users, settings, lang=lang, is_owner=_get_role(request) == "owner",
+                      install_owner_id=install_owner_id, notice=notice)
 
 
 # The fixed permissions carry no checkboxes; each states in one line why it cannot move.

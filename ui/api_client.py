@@ -902,6 +902,11 @@ async def patch_user(token: str, user_id: str, data: dict) -> dict:
         return _raise(await c.patch(f"/companies/me/users/{user_id}", json=data)).json()
 
 
+async def transfer_install_owner(token: str, user_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/companies/me/users/{user_id}/installation-owner")).json()
+
+
 async def get_taxes(token: str) -> list[dict]:
     async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/taxes")).json()

@@ -34,7 +34,7 @@ from ui.routes.settings import (
     _company_backup_section,
     _system_recovery_content,
     _company_tab,
-    _users_tab,
+    users_tab_for,
     _password_form,
 )
 
@@ -152,7 +152,7 @@ def setup_routes(app):
             if tab == "company":
                 content = _company_tab(company, lang=lang, is_owner=is_owner)
             elif tab == "users":
-                content = _users_tab(users, company.get("settings"), lang=lang, is_owner=is_owner)
+                content = await users_tab_for(request, token, users, company.get("settings"), lang)
             elif tab == "backup":
                 content = _backup_tab(
                     is_install_owner=await api.installation_owner(token),
