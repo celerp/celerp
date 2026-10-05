@@ -575,14 +575,8 @@ def _factory_reset_card(company_name: str) -> FT:
         f"document.getElementById('{input_id}').focus();"
     )
     validate_js = f"document.getElementById('{btn_id}').disabled=this.value!==this.dataset.expected;"
-    success_js = (
-        f"document.getElementById('{modal_id}').addEventListener('htmx:afterRequest',function(e){{"
-        f"if(e.detail.xhr.status===200){{window.location.href='/setup';}}"
-        f"}},{{once:true}});"
-    )
 
     return Div(
-        Div(id="reset-flash"),
         P(t("settings.factory_reset_desc"),
           cls="settings-help-text"),
         Button(t("settings.reset_all_data"),
@@ -634,6 +628,7 @@ def _factory_reset_card(company_name: str) -> FT:
                     Input(type="text", id=input_id, name="confirm_name", data_expected=company_name,
                           autocomplete="off", cls="form-input",
                           oninput=validate_js),
+                    Div(id="reset-flash"),
                     Div(
                         Button(t("settings.delete_everything"),
                                type="submit",
@@ -643,8 +638,7 @@ def _factory_reset_card(company_name: str) -> FT:
                                hx_post="/settings/factory-reset",
                                hx_include=f"#{input_id}",
                                hx_target="#reset-flash",
-                               hx_swap="innerHTML",
-                               onclick=success_js),
+                               hx_swap="innerHTML"),
                         Button(t("btn.cancel"),
                                type="button",
                                cls="btn btn--ghost",
