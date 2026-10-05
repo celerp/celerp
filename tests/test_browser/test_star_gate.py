@@ -78,6 +78,8 @@ def test_star_waits_for_import_card_to_go(page: Page, fresh_company):
     page.wait_for_timeout(300)
     expect(page.locator("#star-supporter-card")).to_have_count(0)
     assert asked == []
+    # Closed for good ("Don't show this again"), the slot passes to the star card.
+    page.locator("#getting-started-forever").check()
     page.locator("#getting-started-dismiss").click()
     expect(page.locator("#getting-started-card")).to_have_count(0)
     expect(page.locator("#star-supporter-card")).to_be_visible()

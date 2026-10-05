@@ -26,13 +26,15 @@ async def supported_sources() -> list[str]:
 
 
 def _option_row(icon: str, title: str, desc: str, href: str, *extra) -> FT:
+    # The icon sits on the title's line, so the text below starts at the box's edge.
     return Div(
-        Span(icon, cls="start-option-icon", aria_hidden="true"),
         Div(
+            Span(icon, cls="start-option-icon", aria_hidden="true"),
             A(title, href=href, cls="auth-link start-option-title"),
-            P(desc, cls="start-option-desc"),
-            *extra,
+            cls="start-option-head",
         ),
+        P(desc, cls="start-option-desc"),
+        *extra,
         cls="start-option",
     )
 

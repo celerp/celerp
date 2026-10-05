@@ -128,7 +128,8 @@ async def test_demo_records_do_not_count_as_data(ui):
 
 async def test_card_dismiss_persists_per_company(ui):
     with _Dash() as dash:
-        r = await ui.post("/dashboard/getting-started/dismiss", cookies=authed_cookies(role="owner"))
+        r = await ui.post("/dashboard/getting-started/dismiss", data={"forever": "1"},
+                          cookies=authed_cookies(role="owner"))
     assert r.status_code == 200
     dash.patch_company.assert_awaited_once()
     assert dash.patch_company.await_args.args[1] == {"getting_started_dismissed": True}
@@ -212,3 +213,20 @@ async def test_upgraded_company_sees_nothing_new(ui):
     assert r.status_code == 200
     assert _card(r.text) == ""
     assert "Finish setup" not in r.text
+
+
+async def test_close_without_the_tick_saves_nothing(ui):
+    """Closing the card without "Don't show this again" hides it for this view only:
+    nothing is saved, so the next dashboard load shows it again."""
+    with _Dash() as dash:
+        r = await ui.post("/dashboard/getting-started/dismiss", cookies=authed_cookies(role="owner"))
+    assert r.status_code == 200
+    dash.patch_company.assert_not_awaited()
+    assert 'id="getting-started-card"' not in r.text
+
+
+async def test_card_offers_the_dont_show_again_checkbox(ui):
+    from ui.i18n import t
+    card = _card(await _dashboard(ui))
+    assert 'type="checkbox"' in card and 'name="forever"' in card
+    assert t("dashboard.getting_started_forever") in card

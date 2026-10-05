@@ -3617,5 +3617,6 @@
   "dashboard.getting_started_where": "ปุ่มนำเข้าอยู่ด้านบนของหน้าเสมอ",
   "dashboard.getting_started_demo": "รายการที่มีเครื่องหมาย [DEMO] เป็นตัวอย่าง การนำเข้าสินค้าครั้งแรกจะลบรายการเหล่านี้ เว้นแต่คุณได้แก้ไขแล้ว",
   "dashboard.finish_setup": "ตั้งค่าให้เสร็จ: เลือกประเภทธุรกิจ",
+  "dashboard.getting_started_forever": "ไม่ต้องแสดงอีก",
   "shell.import_hint": "คลิกนำเข้าเพื่ออัปโหลดไฟล์ของคุณ"
 }

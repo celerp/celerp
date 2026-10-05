@@ -334,19 +334,20 @@ def test_activating_page_shows_failure_and_retry_after_bounded_wait(page, ui_ser
 
 
 def test_setup_copy_fits_one_line(playwright, fresh):
-    """INV-13: at desktop width each option description and each hint is one line."""
+    """INV-13: at desktop width each hint and note is one line. The option boxes'
+    descriptions are left out: the boxes sit side by side, and at half the card's
+    width they wrap."""
     browser, ctx = _context(playwright, width=1280)
     try:
         page = ctx.new_page()
         page.goto(f"{fresh.ui}/setup", wait_until="networkidle")
         lines = page.evaluate("""() => Array.from(document.querySelectorAll(
-              '.setup-card .start-option-desc, .setup-card .start-option-note,'
-            + ' .setup-card .setup-options-note, .setup-card .form-hint'))
+              '.setup-card .setup-options-note, .setup-card .form-hint'))
           .map(el => {
             const lh = parseFloat(getComputedStyle(el).lineHeight);
             return {text: el.textContent, lines: Math.round(el.getBoundingClientRect().height / lh)};
           })""")
-        assert len(lines) >= 6, lines
+        assert len(lines) >= 4, lines
         wrapped = [l for l in lines if l["lines"] != 1]
         assert not wrapped, wrapped
     finally:
@@ -470,10 +471,42 @@ def test_setup_screen_in_german(playwright, fresh, width):
         _no_sideways_scroll(page, f"setup de {width}")
         if width == 1280:
             wrapped = page.evaluate("""() => Array.from(document.querySelectorAll(
-                  '.setup-card .start-option-desc, .setup-card .setup-options-note, .setup-card .form-hint'))
+                  '.setup-card .setup-options-note, .setup-card .form-hint'))
               .filter(el => Math.round(el.getBoundingClientRect().height
                                        / parseFloat(getComputedStyle(el).lineHeight)) !== 1)
               .map(el => el.textContent)""")
             assert not wrapped, wrapped
+    finally:
+        browser.close()
+
+
+@pytest.mark.parametrize("width,locale", [(1280, "en-US"), (390, "en-US"), (1280, "de-DE")])
+def test_setup_options_side_by_side_small_and_flush_left(playwright, fresh, width, locale):
+    """Owner request: the Additional options section is much smaller than the form, and
+    its two boxes sit side by side (Restore left, Move your books right), text flush
+    left, the same as on the dashboard card."""
+    import json
+
+    from .start_options_checks import assert_start_options_layout
+
+    cat = json.loads((_LOCALE_DIR / f"{locale[:2]}.json").read_text())
+    browser, ctx = _context(playwright, width=width, locale=locale)
+    try:
+        page = ctx.new_page()
+        page.goto(f"{fresh.ui}/setup", wait_until="networkidle")
+        assert_start_options_layout(page, ".setup-options", cat["setup.option_restore_title"],
+                                    cat["setup.option_move_title"])
+        sizes = page.evaluate("""() => {
+          const px = sel => Array.from(document.querySelectorAll(sel))
+            .map(el => parseFloat(getComputedStyle(el).fontSize));
+          return {heading: px('.setup-options-heading'), title: px('.setup-options .start-option-title'),
+                  text: px('.setup-options .start-option-desc, .setup-options .start-option-note,'
+                           + ' .setup-options .setup-options-note'),
+                  label: px('#setup-form .form-label')};
+        }""")
+        assert sizes["heading"] and max(sizes["heading"]) <= 13, sizes
+        assert sizes["title"] and max(sizes["title"]) <= 12, sizes
+        assert sizes["text"] and max(sizes["text"]) <= 11, sizes
+        assert max(sizes["text"]) < min(sizes["label"]), sizes
     finally:
         browser.close()

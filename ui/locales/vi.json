@@ -3617,5 +3617,6 @@
   "dashboard.getting_started_where": "Nút Nhập luôn ở phía trên cùng của trang.",
   "dashboard.getting_started_demo": "Các mục có đánh dấu [DEMO] là mẫu. Lần nhập sản phẩm đầu tiên sẽ xóa chúng, trừ khi bạn đã thay đổi chúng.",
   "dashboard.finish_setup": "Hoàn tất thiết lập: chọn loại hình kinh doanh",
+  "dashboard.getting_started_forever": "Không hiển thị lại",
   "shell.import_hint": "Bấm Nhập để tải tệp của bạn lên"
 }

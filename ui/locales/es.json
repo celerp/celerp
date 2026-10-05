@@ -3617,5 +3617,6 @@
   "dashboard.getting_started_where": "Importar está siempre en la parte superior de la página.",
   "dashboard.getting_started_demo": "Los artículos marcados [DEMO] son ejemplos. Su primera importación de productos los elimina, salvo que los haya modificado.",
   "dashboard.finish_setup": "Termine la configuración: elija su tipo de negocio",
+  "dashboard.getting_started_forever": "No volver a mostrar",
   "shell.import_hint": "Haga clic en Importar para subir su archivo"
 }

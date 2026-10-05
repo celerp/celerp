@@ -3617,5 +3617,6 @@
   "dashboard.getting_started_where": "Importieren finden Sie immer oben auf der Seite.",
   "dashboard.getting_started_demo": "Mit [DEMO] markierte Artikel sind Beispiele. Ihr erster Produktimport entfernt sie, sofern Sie sie nicht geändert haben.",
   "dashboard.finish_setup": "Einrichtung abschließen: Unternehmenstyp auswählen",
+  "dashboard.getting_started_forever": "Nicht mehr anzeigen",
   "shell.import_hint": "Klicken Sie auf Importieren, um Ihre Datei hochzuladen"
 }

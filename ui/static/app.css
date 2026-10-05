@@ -139,14 +139,17 @@ a:hover { text-decoration: underline; }
 .auth-container:has(.migration-wizard) { max-width: 760px; }
 .auth-container:has(.setup-card) { max-width: 600px; }
 .setup-options { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--c-border); }
-.setup-options-heading { font-size: 15px; font-weight: 600; color: var(--c-text); margin: 0 0 12px; }
-.setup-options-note { font-size: 12px; color: var(--c-text2); margin: 8px 0 0; }
-.start-options { display: flex; flex-direction: column; gap: 12px; }
-.start-option { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; background: var(--c-bg3); border: 1px solid var(--c-border); border-radius: var(--radius); }
-.start-option-icon { font-size: 18px; line-height: 1.2; color: var(--c-accent); flex-shrink: 0; width: 20px; text-align: center; }
-.start-option-title { font-size: 14px; font-weight: 600; }
-.start-option-desc { font-size: 13px; color: var(--c-text2); line-height: 1.5; margin: 4px 0 0; }
-.start-option-note { font-size: 12px; color: var(--c-text2); font-style: italic; margin: 4px 0 0; }
+.setup-options-heading { font-size: 13px; font-weight: 600; color: var(--c-text2); margin: 0 0 10px; }
+.setup-options-note { font-size: 11px; color: var(--c-text2); margin: 8px 0 0; }
+/* Restore and Move your books sit side by side, and stack only when a column would
+   be narrower than 240px (phones: the setup card and the dashboard card alike). */
+.start-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.start-option { padding: 10px 12px; background: var(--c-bg3); border: 1px solid var(--c-border); border-radius: var(--radius); }
+.start-option-head { display: flex; align-items: baseline; gap: 6px; }
+.start-option-icon { font-size: 13px; color: var(--c-accent); flex-shrink: 0; }
+.start-option-title { font-size: 12px; font-weight: 600; }
+.start-option-desc { font-size: 11px; color: var(--c-text2); line-height: 1.5; margin: 4px 0 0; }
+.start-option-note { font-size: 11px; color: var(--c-text2); font-style: italic; margin: 4px 0 0; }
 .quick-link-card:has(.quick-link-action) { position: relative; margin: 0; }
 .quick-link-action { color: inherit; text-decoration: none; background: none; border: 0; padding: 0; font: inherit; cursor: pointer; }
 .quick-link-action::after { content: ""; position: absolute; inset: 0; }
@@ -3413,8 +3416,11 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 /* --- Dashboard "Bring in your data" card and the Import arrow it leads to --- */
 .getting-started-card { background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius);
   padding: 16px 20px; margin-bottom: 20px; }
-.getting-started-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.getting-started-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .getting-started-head .section-title { margin: 0 0 12px; }
+.getting-started-close { display: flex; align-items: center; gap: 12px; }
+.getting-started-forever { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--c-text2); }
+.getting-started-link-icon { margin-right: 6px; }
 .getting-started-dismiss { background: none; border: none; font-size: 22px; line-height: 1; cursor: pointer;
   color: var(--c-text2); padding: 0; }
 .getting-started-links { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }

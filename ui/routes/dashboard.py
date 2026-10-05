@@ -11,6 +11,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 import asyncio
 
+from ui.components.icons import CONTACT_ICON, DOC_ICON, ITEM_ICON
 from ui.components.import_access import can_import_documents
 from ui.components.shell import base_shell, page_header, star_supporter_card, page_title
 from ui.components.start_options import start_options, supported_sources
@@ -789,12 +790,15 @@ def setup_routes(app):
 
     @app.post("/dashboard/getting-started/dismiss")
     async def dismiss_getting_started(request: Request):
-        """Hide the card for this company. Undo is not offered: everything on it stays
-        one click away (each list page's Import button, Settings > Backup to restore,
-        Add company to move books in)."""
+        """Close the card. Without "Don't show this again" ticked nothing is saved and
+        the next dashboard load shows it again; ticked, it is hidden for this company.
+        Undo is not offered: everything on it stays one click away (each list page's
+        Import button, Settings > Backup to restore, Add company to move books in)."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        if not (await request.form()).get("forever"):
+            return ""
         try:
             company = await api.get_company(token)
             await api.patch_company(token, {"getting_started_dismissed": True})
@@ -894,13 +898,13 @@ def _real_docs(page: dict) -> bool:
 
 
 _IMPORT_TARGETS = (
-    ("dashboard.getting_started_products", "/inventory",
+    ("dashboard.getting_started_products", ITEM_ICON, "/inventory",
      lambda s, r: _role_has_permission(s, r, "import_export_data"),
      lambda tok: api.list_items(tok, {"status": "all", "limit": 50}), _real_items),
-    ("dashboard.getting_started_contacts", "/contacts/customers",
+    ("dashboard.getting_started_contacts", CONTACT_ICON, "/contacts/customers",
      lambda s, r: _role_has_permission(s, r, "import_export_data"),
      lambda tok: api.list_contacts(tok, {"limit": 5}), _real_contacts),
-    ("dashboard.getting_started_documents", "/docs",
+    ("dashboard.getting_started_documents", DOC_ICON, "/docs",
      can_import_documents,
      lambda tok: api.list_docs(tok, {"limit": 1}), _real_docs),
 )
@@ -915,10 +919,10 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
         return None
     if not _role_has_permission(settings, role, "manage_company_settings"):
         return None
-    pages = await asyncio.gather(*(load(token) for _, _, _, load, _ in _IMPORT_TARGETS),
+    pages = await asyncio.gather(*(load(token) for *_, load, _ in _IMPORT_TARGETS),
                                  return_exceptions=True)
     links = []
-    for (label, href, allowed, _, is_real), page in zip(_IMPORT_TARGETS, pages):
+    for (label, icon, href, allowed, _, is_real), page in zip(_IMPORT_TARGETS, pages):
         if isinstance(page, APIError) and page.status in (403, 404):
             continue
         if isinstance(page, BaseException):
@@ -926,7 +930,8 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
         if is_real(page):
             return None
         if allowed(settings, role):
-            links.append(A(t(label), href=f"{href}?hint=import", cls="getting-started-link"))
+            links.append(A(Span(icon, cls="getting-started-link-icon", aria_hidden="true"), t(label),
+                           href=f"{href}?hint=import", cls="getting-started-link"))
     if not links:
         return None
     options = ""
@@ -936,10 +941,16 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
     return Div(
         Div(
             H2(t("dashboard.getting_started_title"), cls="section-title"),
-            Button("×", id="getting-started-dismiss", type="button", cls="getting-started-dismiss",
-                   title=t("settings.dismiss"), aria_label=t("settings.dismiss"),
-                   hx_post="/dashboard/getting-started/dismiss", hx_target="#getting-started-card",
-                   hx_swap="outerHTML"),
+            Div(
+                Label(Input(type="checkbox", id="getting-started-forever", name="forever", value="1",
+                            cls="form-checkbox"),
+                      t("dashboard.getting_started_forever"), cls="form-label--inline getting-started-forever"),
+                Button("×", id="getting-started-dismiss", type="button", cls="getting-started-dismiss",
+                       title=t("settings.dismiss"), aria_label=t("settings.dismiss"),
+                       hx_post="/dashboard/getting-started/dismiss", hx_include="#getting-started-forever",
+                       hx_target="#getting-started-card", hx_swap="outerHTML"),
+                cls="getting-started-close",
+            ),
             cls="getting-started-head",
         ),
         Div(*links, cls="getting-started-links"),
