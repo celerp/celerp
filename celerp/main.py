@@ -31,6 +31,7 @@ assert_secure_jwt()
 _FIRST_BOOT = not settings.gateway_instance_id
 _BOOT_ID = uuid.uuid4().hex
 ensure_instance_id()
+from celerp.held_back import TITLE as HELD_BACK_TITLE, Failure, HeldBack
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from celerp.models.base import Base
 
@@ -184,30 +185,20 @@ async def _verify_runtime_dependencies() -> None:
     await adopt_legacy_connector_configs()
 
 
-_HELD_BACK_TITLE = "Stored records could not be brought up to date"
-
-
-def _held_back_body(modules: list[str]) -> str:
-    """What a start that held back blocks, and how to lift it."""
-    fix = (f"Enable {', '.join(modules)} in Modules, then restart Celerp." if modules else
-           "Restart Celerp to try again. If this notice returns, run Doctor in Admin or "
-           "restore a backup.")
-    return ("This start could not update the stored records to this release, so Celerp is "
-            "read-only: records can be viewed but not changed, and the updates that depend on "
-            f"them (such as settling manufacturing runs) were held back. {fix}")
-
-
-async def _tell_projections_held_back(modules: list[str]) -> None:
-    """Every company is told, in the notification bell, that this start held back."""
+async def _hold_back(app: FastAPI, cause: HeldBack) -> bool:
+    """Record why this start held the records back and tell every company, in the
+    notification bell. Returns False (the records are not current)."""
+    app.state.held_back = cause
     try:
         from celerp.db import LifecycleSessionLocal as _NoticeSession
         from celerp.notifications.service import notify_every_company
         async with _NoticeSession() as _sess:
-            await notify_every_company(_sess, "system", _HELD_BACK_TITLE, _held_back_body(modules),
-                                       action_url="/modules")
+            await notify_every_company(_sess, "system", HELD_BACK_TITLE, cause.notice(),
+                                       action_url=cause.action_url)
             await _sess.commit()
     except Exception:
         logging.getLogger(__name__).exception("Could not post the held-back notice")
+    return False
 
 
 async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
@@ -220,32 +211,39 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
 
     Returns whether the stored records are current, and records it as
     ``app.state.data_current``: while it is False, changes to records are refused
-    (``DrainMiddleware``) and nothing that reads the projections to change data runs."""
+    (``DrainMiddleware``) and nothing that reads the projections to change data runs.
+    ``app.state.held_back`` records why (``celerp.held_back``)."""
     # Upgrade guard: after a develop build, or a change in projection semantics,
     # rebuild projections with this build's handlers (now that all handlers are
     # registered). Gated by markers so it runs once per change. A failure must not
     # block boot: the markers stay as they were and the next boot retries.
-    app.state.data_current = current = False
-    missing: list[str] = []
+    app.state.data_current = False
+    _update = "Updating the stored records to this release"
     try:
         from celerp.db import LifecycleSessionLocal as _GuardSession
-        from celerp.modules.loader import modules_owning_events
+        from celerp.modules.loader import event_owners
         from celerp.services.dev_release_guard import run_upgrade_guard
         async with _GuardSession() as _guard_sess:
             guard = await run_upgrade_guard(_guard_sess)
             await _guard_sess.commit()
-        current = guard["current"]
-        missing = modules_owning_events(set(guard.get("unknown_event_types") or ()))
-    except Exception:
+    except Exception as exc:
         logging.getLogger(__name__).exception("Projection upgrade failed; the next start retries")
-    if not current:
-        await _tell_projections_held_back(missing)
-        return False
+        return await _hold_back(app, HeldBack((Failure(_update, f"{type(exc).__name__}: {exc}"),)))
+    if not guard["current"]:
+        disabled, unowned = event_owners(set(guard.get("unknown_event_types") or ()))
+        failures: tuple[Failure, ...] = ()
+        if unowned:
+            failures = (Failure("Reading records written by a module that is not installed",
+                                f"No installed module handles these records: {', '.join(unowned)}"),)
+        elif not disabled:
+            failures = (Failure(_update, "The stored records were not brought up to date"),)
+        return await _hold_back(app, HeldBack(failures, tuple(disabled)))
 
     if modules_ready:
         # Allow modules to backfill data for existing companies (e.g. seed
         # chart of accounts when accounting module is first enabled on an
         # instance that already has companies).
+        from celerp.modules.loader import module_label
         from celerp.modules.slots import fire_lifecycle as _fire
         from celerp.db import LifecycleSessionLocal as _LifecycleSession
         # Each hook runs in its own savepoint (fire_lifecycle), so one that
@@ -254,17 +252,18 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
         # refused and the next start runs the hooks again. Seed hooks can replay
         # large ledgers, so they run on the unbounded lifecycle engine, not the
         # timeout-bounded request pool.
-        failed: list[str] = ["?"]
         async with _LifecycleSession() as _sess:
             try:
-                failed = await _fire("on_modules_ready", session=_sess)
+                failed = [Failure(f"Starting the {module_label(module)} module", error)
+                          for module, error in await _fire("on_modules_ready", session=_sess)]
                 await _sess.commit()
-            except Exception:
+            except Exception as exc:
                 await _sess.rollback()
                 logging.getLogger(__name__).exception("on_modules_ready hooks could not be saved")
+                failed = [Failure("Saving the start-up work of the enabled modules",
+                                  f"{type(exc).__name__}: {exc}")]
         if failed:
-            await _tell_projections_held_back([])
-            return False
+            return await _hold_back(app, HeldBack(tuple(failed)))
 
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links
@@ -297,7 +296,7 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
             "missing COGS until a later boot retries"
         )
 
-    app.state.data_current = True
+    app.state.data_current, app.state.held_back = True, None
     return True
 
 @asynccontextmanager

@@ -564,6 +564,13 @@ def module_label(pkg_name: str) -> str:
 def modules_owning_events(event_types: set[str]) -> list[str]:
     """The display names of the installed modules whose projection handlers own these
     event types, enabled or not; an event type no installed module owns is named as is."""
+    owned, unowned = event_owners(event_types)
+    return sorted({*owned, *unowned})
+
+
+def event_owners(event_types: set[str]) -> tuple[list[str], list[str]]:
+    """The display names of the installed modules whose projection handlers own these
+    event types, enabled or not, and the event types no installed module owns."""
     owners: dict[str, str] = {}
     for entry in module_search_path().split(","):
         root = Path(entry)
@@ -576,9 +583,15 @@ def modules_owning_events(event_types: set[str]) -> list[str]:
             label = manifest.get("display_name") or manifest.get("name") or pkg.name
             for contrib in (manifest.get("slots") or {}).get("projection_handler") or []:
                 owners.setdefault(contrib.get("prefix") or "", label)
-    names = {next((label for prefix, label in owners.items() if prefix and t.startswith(prefix)), t)
-             for t in event_types}
-    return sorted(names)
+    owned: set[str] = set()
+    unowned: set[str] = set()
+    for t in event_types:
+        label = next((label for prefix, label in owners.items() if prefix and t.startswith(prefix)), None)
+        if label:
+            owned.add(label)
+        else:
+            unowned.add(t)
+    return sorted(owned), sorted(unowned)
 
 
 # Fields to extract from PLUGIN_MANIFEST for display purposes.

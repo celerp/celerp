@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select, delete
+from sqlalchemy import func, select, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.notification import Notification
@@ -130,8 +130,9 @@ async def notify_every_company(
     """An instance-wide condition, told to every company as a high-priority notice.
 
     Deduped on the unread notice: at most one stands per company per title, so a
-    condition that persists re-notifies only after the prior notice was read. Caller
-    commits. Returns the number of notifications created."""
+    condition that persists re-notifies only after the prior notice was read. A notice
+    that still stands is brought up to date with this body, so it never describes an
+    earlier cause. Caller commits. Returns the number of notifications created."""
     from celerp.models.company import Company
 
     created = 0
@@ -147,6 +148,8 @@ async def notify_every_company(
             .limit(1)
         )).first()
         if already:
+            await session.execute(update(Notification).where(Notification.id == already[0])
+                                  .values(body=body, action_url=action_url))
             continue
         await create(session, cid, category, title, body, action_url=action_url, priority="high")
         created += 1

@@ -3215,6 +3215,19 @@ async def restart_system(token: str) -> dict:
         return _raise(await c.post("/system/restart")).json()
 
 
+async def get_start_report(token: str) -> dict:
+    """GET /system/start-report - why the last start held the records back, if it did."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/system/start-report")).json()
+
+
+async def doctor_report(token: str) -> dict:
+    """POST /admin/doctor - the record checks as a report only (dry run, no repairs).
+    The checks scan every record, so they get the long timeout."""
+    async with _api_client(token, timeout=120.0) as c:
+        return _raise(await c.post("/admin/doctor")).json()
+
+
 # ---------------------------------------------------------------------------
 # Verticals / Category Library
 # ---------------------------------------------------------------------------

@@ -32,7 +32,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_lifecycle_session_ctx
-from celerp.middleware import HELD_BACK_REFUSAL
+from celerp.held_back import held_back
 from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -1088,9 +1088,10 @@ async def run_doctor(
     user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
 ) -> dict:
-    if fix and not getattr(request.app.state, "data_current", True):
+    cause = held_back(request.app)
+    if fix and cause is not None:
         # Repairs read projections the last start did not bring current.
-        raise HTTPException(status_code=503, detail=HELD_BACK_REFUSAL)
+        raise HTTPException(status_code=503, detail=cause.refusal())
     check_names = [c.strip() for c in checks.split(",")] if checks else ALL_CHECKS
     invalid = [c for c in check_names if c not in _CHECK_FNS]
     if invalid:
@@ -1124,6 +1125,8 @@ async def run_doctor(
             "total_fixed": total_fixed,
             "rebuilt": rebuild and fix,
             "results": results,
+            # Why the last start held the records back, with each failed step's error.
+            "held_back": cause.report() if cause is not None else None,
         }
 
         # Write upgrade report when from_version is provided with fix=true

@@ -58,7 +58,7 @@ async def _held_back(session, company_id) -> list:
     """The unread notices telling the company that a start held its updates back."""
     from sqlalchemy import select
 
-    from celerp.main import _HELD_BACK_TITLE
+    from celerp.held_back import TITLE as _HELD_BACK_TITLE
     from celerp.models.notification import Notification
 
     return list((await session.execute(select(Notification).where(
@@ -256,7 +256,7 @@ async def test_a_held_back_start_refuses_changes_until_a_start_brings_the_record
     r = await client.post(f"/manufacturing/{run}/receive", json={}, headers=old["headers"])
     assert r.status_code == 503, r.text
     detail = r.json()["detail"]
-    assert "could not be brought up to date" in detail and "Modules" in detail, detail
+    assert "a module that is not installed" in detail and "open Doctor" in detail, detail
     assert await _stored(session, old["company_id"]) == before
     assert before[2] == {STATUS_DOC_BACKFILL_KEY: None, COGS_BACKFILL_KEY: None}
     assert (await client.get(f"/manufacturing/{run}", headers=old["headers"])).status_code == 200

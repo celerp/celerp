@@ -15,6 +15,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 # Imported at module level so tests can patch celerp.middleware.is_draining
 # and celerp.middleware.get_session_ctx
 from celerp.db import get_session_ctx
+from celerp.held_back import HeldBack, held_back
 from celerp.services.runtime_state import is_draining
 
 logger = logging.getLogger(__name__)
@@ -260,20 +261,15 @@ _DRAIN_BYPASS_PREFIXES = ("/__celerp/", "/health")
 _HELD_BACK_ALLOWED_PREFIXES = ("/auth/", "/notifications", "/companies/me/modules/", "/system/restart",
                                "/system/update", "/ledger/rebuild", "/admin/doctor")
 _HELD_BACK_REFUSED_SUFFIXES = ("/purge-data",)
-HELD_BACK_REFUSAL = (
-    "Stored records could not be brought up to date at the last start, so changes are refused "
-    "until they are. The notice in the notification bell says how to fix it, usually by "
-    "enabling a module in Modules and restarting Celerp."
-)
 
 
-def _refused_while_held_back(scope: Scope, path: str) -> bool:
-    """A change to records, while the last start could not bring them current."""
-    app = scope.get("app")
-    if app is None or getattr(app.state, "data_current", True):
-        return False
-    return (not path.startswith(_HELD_BACK_ALLOWED_PREFIXES)
-            or path.endswith(_HELD_BACK_REFUSED_SUFFIXES))
+def _refused_while_held_back(scope: Scope, path: str) -> HeldBack | None:
+    """Why a change to records is refused: the last start could not bring them current."""
+    cause = held_back(scope.get("app"))
+    if cause is None or (path.startswith(_HELD_BACK_ALLOWED_PREFIXES)
+                         and not path.endswith(_HELD_BACK_REFUSED_SUFFIXES)):
+        return None
+    return cause
 
 
 class DrainMiddleware:
@@ -302,8 +298,8 @@ class DrainMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if _refused_while_held_back(scope, path):
-            await JSONResponse(status_code=503, content={"detail": HELD_BACK_REFUSAL})(scope, receive, send)
+        if (cause := _refused_while_held_back(scope, path)) is not None:
+            await JSONResponse(status_code=503, content={"detail": cause.refusal()})(scope, receive, send)
             return
 
         try:

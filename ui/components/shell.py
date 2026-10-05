@@ -2373,6 +2373,11 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
               title=t("nav.modules_tip", lang),
               cls=f"nav-link {'nav-link--active' if active == 'modules' else ''}"),
         )
+        settings_link.append(
+            A(t("nav.doctor", lang), href="/doctor",
+              title=t("nav.doctor_tip", lang),
+              cls=f"nav-link {'nav-link--active' if active == 'doctor' else ''}"),
+        )
     if role_has_permission(settings, role, "manage_integrations"):
         settings_link.append(
             A(t("msg._web_access", lang), href="/settings/cloud",

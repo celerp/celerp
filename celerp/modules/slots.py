@@ -92,7 +92,7 @@ def all_slots() -> dict[str, list[dict]]:
     return {k: list(v) for k, v in _slots.items()}
 
 
-async def fire_lifecycle(slot: str, **kwargs) -> list[str]:
+async def fire_lifecycle(slot: str, **kwargs) -> list[tuple[str, str]]:
     """Invoke all async callbacks registered under a lifecycle slot.
 
     Each contribution must have a "handler" key pointing to a dotted path
@@ -100,15 +100,15 @@ async def fire_lifecycle(slot: str, **kwargs) -> list[str]:
     Given a ``session``, each hook runs in its own savepoint, so a hook that
     fails rolls back only its own changes. A failing hook never blocks its
     siblings or boot: it is logged at ERROR (with traceback) and swallowed, so a
-    recurrence surfaces as an alert instead of vanishing. Returns the modules
-    whose hook failed.
+    recurrence surfaces as an alert instead of vanishing. Returns each failed hook's
+    module with the error it raised.
     """
     import contextlib
     import logging
 
     _log = logging.getLogger(__name__)
     session = kwargs.get("session")
-    failed: list[str] = []
+    failed: list[tuple[str, str]] = []
 
     for contrib in get(slot):
         handler_path = contrib.get("handler")
@@ -119,7 +119,7 @@ async def fire_lifecycle(slot: str, **kwargs) -> list[str]:
             async with session.begin_nested() if session is not None else contextlib.nullcontext():
                 await func(**kwargs)
         except Exception as exc:
-            failed.append(contrib.get("_module", "?"))
+            failed.append((contrib.get("_module", "?"), f"{type(exc).__name__}: {exc}"))
             _log.exception(
                 "Lifecycle hook %s from %s failed: %s",
                 slot, contrib.get("_module", "?"), exc,

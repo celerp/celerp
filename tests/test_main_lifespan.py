@@ -189,6 +189,7 @@ async def _boot_in_order(monkeypatch, guard) -> tuple[list[str], AsyncMock, Magi
     async def _fire(slot, **kwargs):
         if slot == "on_modules_ready":
             order.append("on_modules_ready")
+        return []
 
     class _Session(_FakeSession):
         def __init__(self):
@@ -261,4 +262,4 @@ async def test_the_modules_settle_nothing_while_the_projections_are_not_current(
     assert order == ["guard"]
     assert app.state.data_current is False
     notify.assert_awaited_once()
-    assert notify.await_args.args[1:3] == ("system", "Stored records could not be brought up to date")
+    assert notify.await_args.args[1:3] == ("system", "An update step failed while Celerp started")

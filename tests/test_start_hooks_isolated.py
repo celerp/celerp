@@ -56,7 +56,7 @@ async def test_a_failing_start_hook_keeps_the_other_hooks_work_and_holds_the_rec
     assert await _lot_account(session, a["company_id"], a["items"]["A"])
     titles = (await session.execute(select(Notification.title).where(
         Notification.company_id == a["company_id"]))).scalars().all()
-    assert "Stored records could not be brought up to date" in titles
+    assert "An update step failed while Celerp started" in titles
     r = await client.post(f"/items/{a['items']['A']}/adjust", json={"new_qty": 1}, headers=a["headers"])
     assert r.status_code == 503, r.text
 
@@ -80,7 +80,7 @@ async def test_the_doctor_reports_but_does_not_repair_while_the_records_are_held
     before = await events()
     r = await client.post("/admin/doctor?fix=true", headers=auth["headers"])
     assert r.status_code == 503, r.text
-    assert "notification bell" in r.json()["detail"]
+    assert r.json()["detail"].startswith("Changes are paused because an update step failed")
     session.expire_all()
     assert await events() == before
     r = await client.post("/admin/doctor", headers=auth["headers"])
