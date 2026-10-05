@@ -105,3 +105,14 @@ async def test_counts_are_asked_for_with_the_same_filters_as_the_rows(ui):
     list_filters = {k: v for k, v in rows.await_args.args[1].items() if k not in ("limit", "offset", "sort", "dir")}
     assert list_filters == {"filter": DEMO_ITEMS_FILTER, "category": "Grain", "attr.size": "L"}
     assert valuation.await_args.args[1] == list_filters
+
+
+def test_every_demo_set_fits_on_one_page_of_the_list():
+    """The hint says to tick the box to select them all, and select-all ticks the rows
+    on the page. The demo list holds at most one business type's untouched set
+    (switching type replaces the untouched set, and setup seeds one), so every set
+    must fit on the list's default page for that sentence to be true."""
+    from celerp.services.demo import _GENERIC_ITEMS, _VERTICAL_ITEMS
+    from ui.routes.inventory import _DEFAULT_PER_PAGE
+    sizes = {"generic": len(_GENERIC_ITEMS), **{k: len(v) for k, v in _VERTICAL_ITEMS.items()}}
+    assert max(sizes.values()) <= _DEFAULT_PER_PAGE, sizes
