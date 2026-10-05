@@ -1167,7 +1167,7 @@ class TestActivityFeed:
             "entity_id": "item:92f778e9-0000-0000-0000-000000000000",
             "name": "Burmese Ruby 2.5ct",
             "ts": "2026-03-20T10:00:00Z",
-        }]))
+        }], {}))
         assert "Burmese Ruby 2.5ct" in html
         # Hash must only appear inside an href, not as visible text
         import re
@@ -1184,7 +1184,7 @@ class TestActivityFeed:
             "entity_id": eid,
             "name": "Emerald",
             "ts": "2026-03-20T10:00:00Z",
-        }]))
+        }], {}))
         assert f"/inventory/{eid}" in html
 
     def test_activity_feed_no_actor_hash(self):
@@ -1197,7 +1197,7 @@ class TestActivityFeed:
             "name": "Test",
             "ts": "2026-03-20T10:00:00Z",
             "actor_name": "Noah Severs",
-        }]))
+        }], {}))
         assert "f9a514bf" not in html
         assert "Noah Severs" in html
 

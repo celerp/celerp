@@ -18,7 +18,7 @@ from ui.components.shell import base_shell, page_header, star_supporter_card, pa
 from ui.components.start_options import start_options, supported_sources
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
-from ui.i18n import t, get_lang, category_labels
+from ui.i18n import t, get_lang
 from celerp.services.doc_balance import awaiting_status_param
 from celerp.services.permissions import role_has_permission as _role_has_permission
 from ui.routes.company_backup import SETTINGS as _RESTORE
@@ -746,10 +746,7 @@ def setup_routes(app):
             activities = []
 
         # The category names the inventory tabs show, so the chart reads the same.
-        try:
-            category_names = category_labels(await api.get_category_display_names(token))
-        except Exception:
-            category_names = {}
+        category_names = await api.get_category_labels(token)
 
         vertical = company.get("vertical") or ""
         cfg = _VERTICAL_CONFIGS.get(vertical, _DEFAULT_CONFIG)
@@ -781,7 +778,7 @@ def setup_routes(app):
             _charts_section(cfg, valuation, ar_aging,
                             kpis_data.get("sales", {}).get("revenue_trend", []), currency,
                             category_names),
-            _activity_feed(activities, currency) if cfg.get("show_activity") else "",
+            _activity_feed(activities, category_names) if cfg.get("show_activity") else "",
             _quick_links(cfg),
             title=f"{t('nav.dashboard')} - {company.get('name', '')}",
             nav_active="dashboard",
@@ -836,6 +833,7 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             result = {"activities": [], "total": 0, "page": 1, "per_page": per_page, "pages": 1}
+        category_names = await api.get_category_labels(token)
 
         activities = result.get("activities", [])
         total = result.get("total", 0)
@@ -864,7 +862,7 @@ def setup_routes(app):
             method="get", action="/history",
         )
 
-        table = activity_table(activities, title="", section_cls="")
+        table = activity_table(activities, title="", section_cls="", category_names=category_names)
 
         pager = pagination(page, total, per_page, "/history", extra) if pages > 1 else ""
 
@@ -1238,11 +1236,11 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
 # Activity feed
 # ---------------------------------------------------------------------------
 
-def _activity_feed(activities: list[dict], currency: str | None = None) -> FT:
+def _activity_feed(activities: list[dict], category_names: dict) -> FT:
     from ui.components.activity import activity_table
     if not activities:
         return ""
-    return activity_table(activities, max_display=15, history_url="/history")
+    return activity_table(activities, max_display=15, history_url="/history", category_names=category_names)
 
 
 
