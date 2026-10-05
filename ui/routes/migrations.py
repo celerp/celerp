@@ -1041,10 +1041,13 @@ def _check_label(row: dict) -> str:
 def _figure(row: dict, column: str) -> str:
     """A check's figure as the app shows figures: money at its currency's decimals, a count
     or quantity as a plain number."""
+    from celerp.importers.schema import COUNTED_MEASURES
+
     value = row.get(column)
     if value is None:
         return "--"
-    return fmt_money(value, row["currency"]) if row.get("currency") else fmt_qty(value)
+    money = row.get("currency") and row.get("check") not in COUNTED_MEASURES
+    return fmt_money(value, row["currency"]) if money else fmt_qty(value)
 
 
 _ROLE_FIELD = "role."

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """The verify page names each check by what it checks, never by the source's internal id,
 and shows every figure the way the rest of the app does: money at its currency's
-decimals, counts and quantities as plain numbers. In every language."""
+decimals, counts and quantities as plain numbers (also a count of documents in one currency). In every language."""
 
 from __future__ import annotations
 
@@ -16,6 +16,9 @@ from fixtures.manager_io import specs
 from fixtures.manager_io.encoder import write_manager_file
 from migration_support import real_engine  # noqa: F401 - fixture
 
+# Counts and quantities: a currency on a document count says which documents were counted,
+# it is not the count's unit.
+COUNTED = {"document_count", "document_status", "inventory_quantity"}
 UUID_TEXT = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
@@ -65,8 +68,10 @@ async def test_verify_checks_read_as_names_and_formatted_figures(real_engine, mo
     # Document checks name the document type in the reader's language, not its code.
     assert t("settings.doc_type_invoice", lang) in table
     assert "invoice:" not in table and ">invoice<" not in table
+    assert any(row["check"] == "document_count" and row["currency"] for row in rows)
     for row in rows:
         if row["celerp"] is None:
             continue
-        shown = fmt_money(row["celerp"], row["currency"]) if row["currency"] else fmt_qty(row["celerp"])
+        money = row["currency"] and row["check"] not in COUNTED
+        shown = fmt_money(row["celerp"], row["currency"]) if money else fmt_qty(row["celerp"])
         assert f">{shown}</td>" in table, (row, shown)
