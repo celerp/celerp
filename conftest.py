@@ -12,6 +12,12 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 # The suite wires the module routes it needs onto the apps itself, so the apps load no
 # module trees of their own (an unset MODULE_DIR would mean the bundled trees).
 os.environ.setdefault("MODULE_DIR", "")
+# CELERP_DATA_DIR is also the packaged-build switch (ui/routes/settings_cloud.py), so an
+# inherited one would run every test as the desktop build. Keep the data location under
+# its plain name; the tests of packaged behavior set CELERP_DATA_DIR themselves.
+_inherited_data_dir = os.environ.pop("CELERP_DATA_DIR", None)
+if _inherited_data_dir:
+    os.environ.setdefault("DATA_DIR", _inherited_data_dir)
 
 # Point config.toml at a per-worker temp file. Otherwise every xdist worker shares
 # ~/.config/celerp/config.toml, which ensure_instance_id() reads+writes on the
