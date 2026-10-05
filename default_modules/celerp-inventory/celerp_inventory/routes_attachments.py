@@ -352,11 +352,11 @@ async def bulk_attach_files(
                     and sku_key not in hero_assigned
                     and (not existing_hero or override_hero)
                 )
-                if is_hero:
-                    hero_assigned.add(sku_key)
-
                 await attach_file(session, company_id, "item", row.entity_id, meta, user.id,
                                   document_tag=tag, is_hero=is_hero, description=label)
+                # Only an image that was attached takes the slot; one that failed leaves it to the next.
+                if is_hero:
+                    hero_assigned.add(sku_key)
                 # NOTE: do NOT re-apply the event here. emit_event() ->
                 # ProjectionEngine.apply_event already appended the file to this
                 # same projection row (session identity map), so row.state is

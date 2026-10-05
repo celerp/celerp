@@ -545,3 +545,30 @@ async def test_bulk_refuses_an_archive_over_the_limits_before_attaching_anything
     assert resp.status_code == 422
     assert message in resp.json()["detail"]
     assert await _item_files(client, token, item_id) == []
+
+
+@pytest.mark.asyncio
+async def test_bulk_image_that_fails_to_attach_leaves_the_hero_slot_for_the_next(
+        client: AsyncClient, small_png: bytes, monkeypatch):
+    from celerp.services import attachments
+
+    token = await _token(client)
+    item_id = await _seed_item(client, token, "BULK-HERO")
+    real_emit = attachments.emit_event
+
+    async def failing_first(session, **kw):
+        if kw.get("event_type") == "item.file.attached" and kw["data"]["filename"] == "BULK-HERO.jpg":
+            raise RuntimeError("the file could not be recorded")
+        return await real_emit(session, **kw)
+
+    monkeypatch.setattr(attachments, "emit_event", failing_first)
+    zip_data = _make_zip({"BULK-HERO.jpg": small_png, "BULK-HERO.png": small_png})
+    resp = await client.post(
+        "/items/attachments/bulk",
+        files={"file": ("batch.zip", zip_data, "application/zip")},
+        headers=_h(token),
+    )
+    assert resp.status_code == 200, resp.text
+    assert {r["file"]: r["status"] for r in resp.json()["report"]} == {"BULK-HERO.jpg": "error", "BULK-HERO.png": "ok"}
+    files = (await client.get(f"/items/{item_id}", headers=_h(token))).json().get("files") or []
+    assert [(f["filename"], f.get("is_hero")) for f in files] == [("BULK-HERO.png", True)]
