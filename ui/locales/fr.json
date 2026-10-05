@@ -3663,5 +3663,6 @@
   "posting.older_stock.short": "Le compte {code} ne porte pas la valeur de ce stock, {value} : au-delà du stock déjà enregistré dessus, il porte {held}. {fix}",
   "posting.older_stock.fix_holder": "Le compte {holder} la porte : choisissez {holder}.",
   "posting.older_stock.fix_move": "Transférez {amount} de {source} vers {code} par une écriture de journal, puis choisissez de nouveau {code}.",
-  "posting.older_stock.fix_reconcile": "Aucun compte de stock ne la porte, les comptes doivent donc être rapprochés : passez une écriture de journal Débit {code} {amount} / Crédit {equity} {amount}, puis choisissez de nouveau {code}."
+  "posting.older_stock.fix_reconcile": "Aucun compte de stock ne la porte, les comptes doivent donc être rapprochés : passez une écriture de journal Débit {code} {amount} / Crédit {equity} {amount}, puis choisissez de nouveau {code}.",
+  "docs.receive_draft_bill": "Cette facture est encore un brouillon, elle n'a donc pas comptabilisé ces marchandises. Finalisez d'abord la facture, puis réceptionnez-les."
 }

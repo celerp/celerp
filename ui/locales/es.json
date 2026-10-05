@@ -3663,5 +3663,6 @@
   "posting.older_stock.short": "La cuenta {code} no tiene el valor de este stock, {value}: además del stock ya registrado en ella, tiene {held}. {fix}",
   "posting.older_stock.fix_holder": "La cuenta {holder} lo tiene: elija {holder}.",
   "posting.older_stock.fix_move": "Traspase {amount} de {source} a {code} con un asiento de diario y vuelva a elegir {code}.",
-  "posting.older_stock.fix_reconcile": "Ninguna cuenta de inventario lo tiene, así que hay que conciliar los libros: registre un asiento de diario Debe {code} {amount} / Haber {equity} {amount} y vuelva a elegir {code}."
+  "posting.older_stock.fix_reconcile": "Ninguna cuenta de inventario lo tiene, así que hay que conciliar los libros: registre un asiento de diario Debe {code} {amount} / Haber {equity} {amount} y vuelva a elegir {code}.",
+  "docs.receive_draft_bill": "Esta factura aún es un borrador, así que no ha contabilizado estos bienes. Finalice primero la factura y luego recíbalos."
 }

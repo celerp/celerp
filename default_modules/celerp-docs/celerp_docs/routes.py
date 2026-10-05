@@ -3548,7 +3548,8 @@ def _refuse_receipt_on_a_draft_bill(state: dict) -> None:
     if state.get("doc_type") != "bill":
         return
     if state.get("status") == "draft" or (state.get("pre_receipt_status") == "draft" and not state.get("finalized")):
-        raise HTTPException(status_code=409, detail=(
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.receive_draft_bill",
             "This bill is still a draft, so it has not booked these goods. "
             "Finalize the bill first, then receive them."))
 

@@ -3663,5 +3663,6 @@
   "posting.older_stock.short": "መለያ {code} የዚህን ክምችት ዋጋ {value} አይይዝም፤ ቀድሞ ከተመዘገበው ክምችት ውጭ {held} ይይዛል። {fix}",
   "posting.older_stock.fix_holder": "መለያ {holder} ይይዘዋል፤ {holder}ን ይምረጡ።",
   "posting.older_stock.fix_move": "{amount}ን ከ{source} ወደ {code} በጆርናል ግቤት ያዛውሩ፣ ከዚያ {code}ን እንደገና ይምረጡ።",
-  "posting.older_stock.fix_reconcile": "ምንም የክምችት መለያ አይይዘውም፣ ስለዚህ መዛግብቱ መታረቅ አለባቸው፤ የጆርናል ግቤት ዴቢት {code} {amount} / ክሬዲት {equity} {amount} ይመዝግቡ፣ ከዚያ {code}ን እንደገና ይምረጡ።"
+  "posting.older_stock.fix_reconcile": "ምንም የክምችት መለያ አይይዘውም፣ ስለዚህ መዛግብቱ መታረቅ አለባቸው፤ የጆርናል ግቤት ዴቢት {code} {amount} / ክሬዲት {equity} {amount} ይመዝግቡ፣ ከዚያ {code}ን እንደገና ይምረጡ።",
+  "docs.receive_draft_bill": "ይህ የአቅራቢ ክፍያ መጠየቂያ ገና ረቂቅ ነው፣ ስለዚህ እነዚህን ዕቃዎች አልመዘገበም። መጀመሪያ መጠየቂያውን ይጨርሱ፣ ከዚያ ዕቃዎቹን ይቀበሉ።"
 }

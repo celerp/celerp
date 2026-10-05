@@ -3663,5 +3663,6 @@
   "posting.older_stock.short": "Akun {code} tidak menampung nilai stok ini sebesar {value}: di luar stok yang sudah tercatat di sana, akun ini menampung {held}. {fix}",
   "posting.older_stock.fix_holder": "Akun {holder} menampungnya: pilih {holder}.",
   "posting.older_stock.fix_move": "Pindahkan {amount} dari {source} ke {code} dengan jurnal, lalu pilih {code} lagi.",
-  "posting.older_stock.fix_reconcile": "Tidak ada akun persediaan yang menampungnya, jadi pembukuan perlu direkonsiliasi: catat jurnal Debit {code} {amount} / Kredit {equity} {amount}, lalu pilih {code} lagi."
+  "posting.older_stock.fix_reconcile": "Tidak ada akun persediaan yang menampungnya, jadi pembukuan perlu direkonsiliasi: catat jurnal Debit {code} {amount} / Kredit {equity} {amount}, lalu pilih {code} lagi.",
+  "docs.receive_draft_bill": "Tagihan ini masih draf, jadi belum membukukan barang ini. Selesaikan tagihan terlebih dahulu, lalu terima barangnya."
 }

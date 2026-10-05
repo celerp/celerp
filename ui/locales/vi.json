@@ -3663,5 +3663,6 @@
   "posting.older_stock.short": "Tài khoản {code} không giữ giá trị {value} của lô hàng này: ngoài phần hàng đã ghi nhận trên đó, tài khoản giữ {held}. {fix}",
   "posting.older_stock.fix_holder": "Tài khoản {holder} giữ giá trị này: hãy chọn {holder}.",
   "posting.older_stock.fix_move": "Chuyển {amount} từ {source} sang {code} bằng bút toán nhật ký, rồi chọn lại {code}.",
-  "posting.older_stock.fix_reconcile": "Không tài khoản tồn kho nào giữ giá trị này, nên sổ sách cần được đối chiếu: ghi bút toán Nợ {code} {amount} / Có {equity} {amount}, rồi chọn lại {code}."
+  "posting.older_stock.fix_reconcile": "Không tài khoản tồn kho nào giữ giá trị này, nên sổ sách cần được đối chiếu: ghi bút toán Nợ {code} {amount} / Có {equity} {amount}, rồi chọn lại {code}.",
+  "docs.receive_draft_bill": "Hóa đơn này vẫn là bản nháp nên chưa ghi nhận số hàng này. Hãy hoàn thiện hóa đơn trước, rồi nhận hàng."
 }

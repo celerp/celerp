@@ -3663,5 +3663,6 @@
   "posting.older_stock.short": "Konto {code} hält den Wert dieses Bestands von {value} nicht: Über den bereits darauf erfassten Bestand hinaus hält es {held}. {fix}",
   "posting.older_stock.fix_holder": "Konto {holder} hält ihn: Wählen Sie {holder}.",
   "posting.older_stock.fix_move": "Buchen Sie {amount} per Journalbuchung von {source} auf {code} um und wählen Sie dann erneut {code}.",
-  "posting.older_stock.fix_reconcile": "Kein Lagerkonto hält ihn, daher müssen die Bücher abgestimmt werden: Buchen Sie eine Journalbuchung Soll {code} {amount} / Haben {equity} {amount} und wählen Sie dann erneut {code}."
+  "posting.older_stock.fix_reconcile": "Kein Lagerkonto hält ihn, daher müssen die Bücher abgestimmt werden: Buchen Sie eine Journalbuchung Soll {code} {amount} / Haben {equity} {amount} und wählen Sie dann erneut {code}.",
+  "docs.receive_draft_bill": "Diese Rechnung ist noch ein Entwurf und hat diese Waren nicht gebucht. Schließen Sie die Rechnung zuerst ab und nehmen Sie die Waren dann an."
 }

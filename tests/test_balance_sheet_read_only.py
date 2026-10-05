@@ -22,8 +22,17 @@ from stock_books import older_release_lot
 from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_migration_sinks import _PROVENANCE, _no_attachments, _persist_mappings, _sink_context
 from test_receipt_accounting import _doc, _finalize, _receive
+from ui import i18n
 
 pytestmark = pytest.mark.asyncio
+
+
+def _in(lang: str, detail) -> str:
+    i18n.set_lang(lang)
+    try:
+        return i18n.refusal_text(detail)
+    finally:
+        i18n.set_lang("en")
 
 
 async def _events(session, company_id) -> int:
@@ -109,7 +118,11 @@ async def test_a_receipt_on_a_draft_bill_is_refused(client, session, auth):
     before = await _events(session, auth["company_id"])
     r = await _receive(client, auth, bill, line)
     assert r.status_code == 409, r.text
-    assert "Finalize the bill" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert "Finalize the bill" in detail["message"]
+    assert detail["message_key"] == "docs.receive_draft_bill"
+    assert _in("de", detail) == "Diese Rechnung ist noch ein Entwurf und hat diese Waren nicht gebucht. " \
+        "Schließen Sie die Rechnung zuerst ab und nehmen Sie die Waren dann an."
     session.expire_all()
     assert await _events(session, auth["company_id"]) == before
 
@@ -129,4 +142,4 @@ async def test_a_further_receipt_on_a_draft_an_earlier_release_received_is_refus
     monkeypatch.setattr(docs_routes, "_refuse_receipt_on_a_draft_bill", refuse)
     r = await _receive(client, auth, bill, line)
     assert r.status_code == 409, r.text
-    assert "Finalize the bill" in r.json()["detail"]
+    assert "Finalize the bill" in r.json()["detail"]["message"]

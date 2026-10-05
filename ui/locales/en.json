@@ -3663,5 +3663,6 @@
   "posting.older_stock.short": "Account {code} does not hold this stock's value of {value}: beyond the stock already recorded on it, it holds {held}. {fix}",
   "posting.older_stock.fix_holder": "Account {holder} holds it: choose {holder}.",
   "posting.older_stock.fix_move": "Move {amount} from {source} to {code} with a journal entry, then choose {code} again.",
-  "posting.older_stock.fix_reconcile": "No inventory account holds it, so the books need reconciling: post a journal entry Dr {code} {amount} / Cr {equity} {amount}, then choose {code} again."
+  "posting.older_stock.fix_reconcile": "No inventory account holds it, so the books need reconciling: post a journal entry Dr {code} {amount} / Cr {equity} {amount}, then choose {code} again.",
+  "docs.receive_draft_bill": "This bill is still a draft, so it has not booked these goods. Finalize the bill first, then receive them."
 }

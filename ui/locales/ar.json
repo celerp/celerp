@@ -3663,5 +3663,6 @@
   "posting.older_stock.short": "الحساب {code} لا يحمل قيمة هذا المخزون البالغة {value}: بخلاف المخزون المسجل عليه بالفعل، يحمل {held}. {fix}",
   "posting.older_stock.fix_holder": "الحساب {holder} يحملها: اختر {holder}.",
   "posting.older_stock.fix_move": "انقل {amount} من {source} إلى {code} بقيد يومية، ثم اختر {code} مرة أخرى.",
-  "posting.older_stock.fix_reconcile": "لا يحملها أي حساب مخزون، لذا يجب تسوية الدفاتر: سجّل قيد يومية مدين {code} {amount} / دائن {equity} {amount}، ثم اختر {code} مرة أخرى."
+  "posting.older_stock.fix_reconcile": "لا يحملها أي حساب مخزون، لذا يجب تسوية الدفاتر: سجّل قيد يومية مدين {code} {amount} / دائن {equity} {amount}، ثم اختر {code} مرة أخرى.",
+  "docs.receive_draft_bill": "هذه الفاتورة لا تزال مسودة، لذا لم تسجل هذه البضائع. اعتمد الفاتورة أولًا، ثم استلمها."
 }

@@ -3663,5 +3663,6 @@
   "posting.older_stock.short": "勘定科目 {code} にはこの在庫の価額 {value} がありません。既に記録された在庫を除くと、残高は {held} です。{fix}",
   "posting.older_stock.fix_holder": "勘定科目 {holder} にあります。{holder} を選択してください。",
   "posting.older_stock.fix_move": "仕訳で {amount} を {source} から {code} へ振り替えてから、もう一度 {code} を選択してください。",
-  "posting.older_stock.fix_reconcile": "どの在庫勘定にもないため、帳簿の照合が必要です。仕訳 借方 {code} {amount} / 貸方 {equity} {amount} を記帳してから、もう一度 {code} を選択してください。"
+  "posting.older_stock.fix_reconcile": "どの在庫勘定にもないため、帳簿の照合が必要です。仕訳 借方 {code} {amount} / 貸方 {equity} {amount} を記帳してから、もう一度 {code} を選択してください。",
+  "docs.receive_draft_bill": "この請求書はまだ下書きのため、これらの商品を計上していません。先に請求書をファイナライズしてから受け取ってください。"
 }
