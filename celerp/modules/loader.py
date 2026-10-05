@@ -1380,9 +1380,11 @@ def _register_module_routes(app, loaded: list[dict], kind: str) -> None:
         route_mod_path = manifest.get(manifest_key)
         if not route_mod_path or not is_running(name):
             continue
-        routes = app.router.routes
-        existing = {k for r in routes for k in _route_keys(r)}
-        start = len(routes)
+        # Snapshot, then re-read app.router.routes after setup: FastHTML's
+        # add_route rebinds (and may replace into) the list, so a captured list
+        # or index goes stale.
+        before = list(app.router.routes)
+        existing = {k for r in before for k in _route_keys(r)}
         try:
             module = _admitted.get(name)
             if module is None:
@@ -1396,17 +1398,19 @@ def _register_module_routes(app, loaded: list[dict], kind: str) -> None:
         except Exception as exc:
             failure: Exception = exc
         else:
+            kept = {id(r) for r in before}
+            added = [r for r in app.router.routes if id(r) not in kept]
             clashes = sorted({
-                path for r in routes[start:]
+                path for r in added
                 for (path, _method) in _route_keys(r) & existing
             })
             failure = RouteConflictError(
                 "route path(s) already registered: " + ", ".join(clashes)) if clashes else None
         if failure is None:
-            _module_routes.setdefault(name, []).extend(routes[start:])
+            _module_routes.setdefault(name, []).extend(added)
             log.info("Module %r: %s routes registered", name, kind.upper())
             continue
-        del routes[start:]
+        app.router.routes[:] = before
         _route_failure(manifest, manifest_key, failure)
         _remove_routes(app, set(_module_routes) - {m["name"] for m in _loaded})
 
