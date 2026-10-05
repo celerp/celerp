@@ -971,9 +971,9 @@ def editable_cell(
     # REST surface moves both halves together instead of leaving the restore on core's.
     restore_url = restore_url or f"{patch_url}/display"
     swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
-    # Apply label_map to options for selects
+    # Apply label_map to options for selects; a (value, label) option already has its label.
     if options is not None and label_map:
-        options = [(o, label_map.get(o, o)) for o in options]
+        options = [(o, label_map.get(o, o)) if isinstance(o, str) else o for o in options]
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
     # ESC: capture scroll position synchronously at keydown (before browser may reset it),

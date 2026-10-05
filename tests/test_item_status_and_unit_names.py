@@ -58,3 +58,15 @@ def test_the_item_page_shows_the_status_in_german(german, status, label):
     xml = to_xml(_detail_table("item:1", {"status": status},
                                [{"key": "status", "label": "Status", "type": "status", "editable": False}]))
     assert label in xml, xml
+
+
+def test_a_unit_picker_with_the_add_new_option_names_the_units_in_german(german):
+    from ui.routes.inventory import _apply_unit_field_override, _unit_labels
+    for field in ("sell_by", "purchase_unit", "weight_unit"):
+        cell_type, options, allow_custom = _apply_unit_field_override(
+            field, "text", None, False, ["piece", "gram", "tola"], ["gram"])
+        xml = to_xml(table.editable_cell(entity_id="item:1", field=field, value="gram", cell_type=cell_type,
+                                         options=options, allow_custom=allow_custom,
+                                         label_map=_unit_labels(field, options)))
+        assert ">Gramm<" in xml and 'data-value="gram"' in xml, xml
+        assert 'data-value="__new__:/settings/inventory?tab=units"' in xml, xml

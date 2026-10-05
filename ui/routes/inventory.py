@@ -2369,10 +2369,8 @@ function celerpPrintLabel(entityId, templateId) {
                 unit_names = []
                 weight_unit_names = []
             cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names, weight_unit_names)
-        label_map: dict | None = None
-        if field in _UNIT_FIELDS:
-            label_map = {u: display_unit(u) for u in options or ()}
-        elif field == "category":
+        label_map: dict | None = _unit_labels(field, options)
+        if field == "category":
             try:
                 label_map = await api.get_category_display_names(token)
             except Exception:
@@ -3134,11 +3132,9 @@ function celerpPrintLabel(entityId, templateId) {
                 )
         from ui.components.table import editable_cell
         restore_url = f"/api/items/{entity_id}/field/{field}/paired-display"
-        unit_labels = ({u: display_unit(u) for u in options or ()}
-                       if field in _UNIT_FIELDS else None)
         return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                              cell_type=cell_type, options=options, allow_custom=allow_custom,
-                             label_map=unit_labels, restore_url=restore_url)
+                             label_map=_unit_labels(field, options), restore_url=restore_url)
 
     @app.get("/api/items/{entity_id}/field/{field}/paired-display")
     async def field_paired_display_cell(request: Request, entity_id: str, field: str):
@@ -6030,6 +6026,14 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
 _UNIVERSAL_FIELD_OPTIONS: dict[str, list[str]] = {
     "inventory_type": ["stocked", "component", "non_stocked", "service", "freight"],
 }
+
+
+def _unit_labels(field: str, options) -> dict | None:
+    """Option labels for a unit picker: each unit by its display name. The add-new option
+    already carries its label."""
+    if field not in _UNIT_FIELDS:
+        return None
+    return {u: display_unit(u) for u in options or () if isinstance(u, str)}
 
 
 def _apply_unit_field_override(
