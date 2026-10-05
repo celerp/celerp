@@ -144,3 +144,13 @@ def test_activity_and_business_type_summary_show_category_names():
             {"categories_added": {"diamond": "Diamond"}})
     finally:
         i18n.set_lang("en")
+
+
+@pytest.mark.asyncio
+async def test_a_library_category_with_no_stored_name_still_reads_translated(owner_ui):
+    """A schema saved for a library category without a stored name lists under its
+    translated library name, not its key."""
+    r = await owner_ui.api.patch("/companies/me/category-schema/wine", json={"fields": []})
+    assert r.status_code == 200, r.text
+    settings = await owner_ui.get("/settings/inventory?tab=categories", headers=_DE)
+    assert re.search(r'class="cat-name-display"[^>]*>Wein<', settings.text), "the Your Categories row"

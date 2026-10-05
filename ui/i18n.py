@@ -160,8 +160,12 @@ def category_label(key: str, stored: str | None = None, lang: str | None = None)
 
 
 def category_labels(names: dict) -> dict:
-    """``category_label`` over a company's stored {key: name} map."""
-    return {k: category_label(k, v) for k, v in (names or {}).items()}
+    """``category_label`` for every library category and every category in a company's
+    stored {key: name} map, so a library category with no stored name still reads in
+    the user's language rather than as its key."""
+    names = names or {}
+    library = (k.removeprefix("category.") for k in _cached_load("en") if k.startswith("category."))
+    return {k: category_label(k, names.get(k)) for k in {*library, *names}}
 
 
 def field_label(f: dict) -> str:
