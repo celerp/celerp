@@ -1723,6 +1723,16 @@ def client_scripts(lang: str = "en") -> list:
     ]
 
 
+def _redirect_notice(request, lang: str) -> list:
+    """Why the caller was sent here, on whichever page answers the redirect: the
+    dashboard, or the page standing in for it where the company turned it off
+    (ui.security.not_permitted_redirect)."""
+    from ui.security import NOT_PERMITTED
+    if request is None or request.query_params.get("notice") != NOT_PERMITTED:
+        return []
+    return [flash(t("perm.redirected_no_access", lang))]
+
+
 def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
     """The outer HTML document shared by every full-chrome page: head assets, the
     supplied nav, top bar, banners, main content, and footer.
@@ -1764,7 +1774,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
                     _backup_banner_html(lang),
                     _GLOBAL_UI_ERROR_HTML,
                     _TOAST_CONTAINER_HTML,
-                    Main(*content, id="main-content", cls="main-content"),
+                    Main(*_redirect_notice(request, lang), *content, id="main-content", cls="main-content"),
                     Div(id="account-gate-host"),
                     Footer(
                         A(t("msg.powered_by", lang), href="https://www.celerp.com", target="_blank",

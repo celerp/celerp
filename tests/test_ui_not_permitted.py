@@ -45,3 +45,21 @@ async def test_the_dashboard_says_why_the_caller_landed_there(ui_client, query, 
         r = await ui_client.get(f"/dashboard{query}", cookies={"celerp_token": make_test_token(role="manager")})
     assert r.status_code == 200, r.text[:300]
     assert (_NOTICE in r.text) is shown
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/modules", "/settings/payments"])
+async def test_a_company_with_the_dashboard_turned_off_is_still_told_why(ui_client, path):
+    """The redirect lands on the dashboard; where the company has turned it off,
+    the page that answers instead still says why the caller was sent away."""
+    company = {"id": "c1", "name": "B", "current_role": "manager",
+               "settings": {"enabled_modules": ["celerp-contacts"]}}
+    cookies = {"celerp_token": make_test_token(role="manager")}
+    with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
+            patch("celerp.modules.loader.route_module",
+                  lambda scope: "celerp-dashboard" if scope.get("path") == "/dashboard" else None):
+        denied = await ui_client.get(path, cookies=cookies)
+        assert denied.status_code == 302
+        landed = await ui_client.get(denied.headers["location"], cookies=cookies)
+    assert "This module is turned off for your company." in landed.text
+    assert landed.text.count(_NOTICE) == 1
