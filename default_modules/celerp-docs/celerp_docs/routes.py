@@ -107,6 +107,8 @@ class LineItem(BaseModel):
     # editable when the parcel actually tracks that measure and splitting is allowed.
     pieces: FiniteFloat | None = None
     weight: FiniteFloat | None = None
+    # Purchasing: what the received lot records about the goods.
+    attributes: dict | None = None
 
     @model_validator(mode="after")
     def _resolve_entity_id(self) -> "LineItem":
@@ -706,6 +708,15 @@ def _check_line_quantity(
     if not math.isfinite(qty):
         raise HTTPException(status_code=422, detail=f"{label}: quantity must be a finite number, got {qty_raw!r}")
     validate_line_quantity(qty, sell_by, unit_map, label=label, require_positive=require_positive)
+
+
+def _reject_line_attributes(line_items: list) -> None:
+    """A line's attributes become the received lot's (see receive), so a line naming a field
+    only the app writes is refused when it is written, as every item writer refuses it."""
+    for li in line_items:
+        attributes = li.get("attributes") if isinstance(li, dict) else getattr(li, "attributes", None)
+        if attributes:
+            reject_system_item_fields({"attributes": attributes})
 
 
 async def _validate_document_line_quantities(
@@ -1528,6 +1539,7 @@ async def create_doc(
 
     _assert_date_order(payload.model_dump(exclude_none=True))
 
+    _reject_line_attributes(payload.line_items)
     # Validate line item quantities against sell_by unit precision
     if payload.line_items:
         unit_map = await _get_unit_map(session, company_id)
@@ -1722,6 +1734,8 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     # caller lacks set_sales_doc_prices, comparing incoming lines against the stored
     # lines by index. Runs for drafts and finalized documents alike, before the draft branch.
     _incoming_lines = (fields_changed.get("line_items") or {}).get("new")
+    if isinstance(_incoming_lines, list):
+        _reject_line_attributes(_incoming_lines)
     if isinstance(_incoming_lines, list) and row.state.get("doc_type") in SALES_PRICED_DOC_TYPES:
         _stored_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
         await _assert_sales_line_price_permission(session, company_id, settings, role, _incoming_lines, _stored_by_idx)

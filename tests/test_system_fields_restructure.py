@@ -60,3 +60,46 @@ async def test_a_merge_cannot_enter_app_owned_fields_as_resolved_attributes(clie
     a, b = await _item(client, auth, 50.0), await _item(client, auth, 70.0)
     with pytest.raises(AssertionError, match="set by the app"):
         await _merge(client, auth, [a, b], resolved_attributes=APP_OWNED)
+
+
+def _goods_line(goods: str, **extra) -> dict:
+    return {"entity_id": goods, "sku": "BILL-ATTR", "name": "Goods", "quantity": 4, "unit_price": 25.0,
+            "line_total": 100.0, "sell_by": "piece", **extra}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via", ["create", "edit"])
+async def test_a_document_line_cannot_enter_app_owned_fields_as_attributes(client, session, auth, via):
+    """A bill line's attributes become the received lot's, so app-owned keys there are refused
+    when the line is written, never accepted and then dropped."""
+    goods = await _item(client, auth, None, qty=0, sku="BILL-ATTR")
+    line = _goods_line(goods, attributes=APP_OWNED)
+    before = await _events(session, auth)
+    if via == "create":
+        r = await client.post("/docs", headers=auth["headers"], json={
+            "doc_type": "bill", "contact_id": "supplier:1", "line_items": [line], "total": 100.0})
+    else:
+        bill = await _doc(client, auth, "bill", [_goods_line(goods)], total=100.0)
+        before = await _events(session, auth)
+        r = await client.patch(f"/docs/{bill}", headers=auth["headers"],
+                               json={"fields_changed": {"line_items": {"new": [line]}}})
+    _refused(r)
+    assert await _events(session, auth) == before
+
+
+@pytest.mark.asyncio
+async def test_a_bill_lines_own_attributes_reach_the_received_lot(client, session, auth):
+    h = auth["headers"]
+    r = await client.post("/companies/me/locations", headers=h, json={"name": "Receiving", "type": "warehouse"})
+    assert r.status_code == 200, r.text
+    goods = await _item(client, auth, None, qty=0, sku="BILL-ATTR")
+    bill = await _doc(client, auth, "bill", [_goods_line(goods, attributes={"colour": "Red"})], total=100.0)
+    assert (await client.get(f"/docs/{bill}", headers=h)).json()["line_items"][0]["attributes"] == {"colour": "Red"}
+    assert (await client.post(f"/docs/{bill}/finalize", headers=h)).status_code == 200
+    r = await client.post(f"/docs/{bill}/receive", headers=h, json={"location_id": r.json()["id"], "received_items": [
+        {"item_id": goods, "sku": "BILL-ATTR", "name": "Goods", "quantity_received": 4, "cost_price": 25,
+         "receive_as": "stock"}]})
+    assert r.status_code == 200, r.text
+    lots = [i for i in (await client.get("/items", headers=h, params={"q": "BILL-ATTR"})).json()["items"]
+            if i["id"] != goods]
+    assert lots and all(i.get("colour") == "Red" or (i.get("attributes") or {}).get("colour") == "Red" for i in lots), lots
