@@ -60,7 +60,7 @@ def test_pt_es_memo_terminology():
 # entry uses. German shipped "Notiz gesendet" / "Auf Notiz" (a note, not goods
 # on consignment) and "Pro-forma-Rechnung"; fr, es and th had the same split.
 _CONSIGNMENT_STEM = {"de": "kommission", "fr": "consignation", "es": "consignación", "th": "ฝากขาย"}
-_MEMO_OUT_KEYS = ("inventory.status_on_memo", "documents.status_memo_out",
+_MEMO_OUT_KEYS = ("inventory.status_on_memo",
                   "dashboard.pieces_on_memo", "settings.doc_type_memo")
 
 

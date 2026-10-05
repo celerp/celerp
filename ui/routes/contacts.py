@@ -336,7 +336,7 @@ def _financial_summary(docs: list[dict], contact_id: str = "", fiscal_year_start
         _card(t("contacts.avg_days_to_pay"), avg_dtp),
         # An unavailable figure shows as EMPTY rather than 0.00, which would wrongly read
         # as "this customer is holding nothing of ours".
-        _card(t("contacts.on_memo"), fmt_money(on_memo_total, None) if on_memo_total is not None else EMPTY,
+        _card(t("inventory.status_on_memo"), fmt_money(on_memo_total, None) if on_memo_total is not None else EMPTY,
               sub_label=t("contacts.out_to_customer"),
               href=f"/inventory?on_memo_to={contact_id}" if (contact_id and on_memo_total is not None) else ""),
         _card(t("contacts.consignment"), fmt_money(total_consigned, None),

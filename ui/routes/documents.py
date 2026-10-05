@@ -648,7 +648,7 @@ _RESERVABLE_STATUSES_UI: dict[str, frozenset[str]] = {
 _STATUS_BADGE: dict[str, tuple[str, str]] = {
     "available":     ("documents.status_available",    "badge--available"),
     "reserved":      ("documents.status_reserved",     "badge--reserved"),
-    "memo_out":      ("documents.status_memo_out",     "badge--memo_out"),
+    "memo_out":      ("inventory.status_on_memo",      "badge--memo_out"),
     "sold":          ("enum.item_status.sold",         "badge--sold"),
     "archived":      ("enum.item_status.archived",     "badge--inactive"),
     "expired":       ("enum.item_status.expired",      "badge--expired"),
@@ -8846,7 +8846,7 @@ async function celerpCsvImport(input, entityId) {{
         _SHIPPED_LABEL_KEYS = {
             "Returned": "documents.line_label_returned",
             "Not shipped": "documents.line_label_not_shipped",
-            "On Memo": "documents.status_memo_out",
+            "On Memo": "inventory.status_on_memo",
             "Sold": "enum.item_status.sold",
         }
 

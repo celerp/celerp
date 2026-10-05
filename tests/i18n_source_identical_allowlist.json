@@ -79,6 +79,7 @@
     "documents.bank",
     "documents.bcc",
     "documents.cc",
+    "documents.memo_ref",
     "enum.mfg_priority.normal",
     "enum.vertical_tag.saas",
     "field.barcode",
