@@ -3644,5 +3644,6 @@
   "event.item.inventory_account.recorded": "บันทึกบัญชีสินค้าคงคลังแล้ว",
   "event.item.inventory_on_books.recorded": "บันทึกสินค้าคงคลังในบัญชีแล้ว",
   "event.mfg.order.wip_opened": "เปิดงานระหว่างทำแล้ว",
-  "event.mfg.order.wip_unresolved": "งานระหว่างทำต้องกระทบยอด"
+  "event.mfg.order.wip_unresolved": "งานระหว่างทำต้องกระทบยอด",
+  "financial.unclosed_net_income": "กำไรสุทธิที่ยังไม่ปิดบัญชี"
 }

@@ -3644,5 +3644,6 @@
   "event.item.inventory_account.recorded": "Akun persediaan dicatat",
   "event.item.inventory_on_books.recorded": "Persediaan dicatat di pembukuan",
   "event.mfg.order.wip_opened": "Barang dalam proses dibuka",
-  "event.mfg.order.wip_unresolved": "Barang dalam proses perlu direkonsiliasi"
+  "event.mfg.order.wip_unresolved": "Barang dalam proses perlu direkonsiliasi",
+  "financial.unclosed_net_income": "Laba bersih belum ditutup"
 }

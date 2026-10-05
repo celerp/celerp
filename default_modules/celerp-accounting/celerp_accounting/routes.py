@@ -2214,19 +2214,21 @@ async def balance_sheet(
     liability_lines, total_liabilities = _section({"liability"}, credit_normal=True)
     equity_lines, total_equity = _section({"equity"}, credit_normal=True)
 
-    # Retained earnings = net income (all revenue - COGS - expenses) accumulated to date.
-    # This equals Assets - Liabilities - explicit Equity by the accounting equation.
-    retained_earnings = total_assets - total_liabilities - total_equity
-    if abs(retained_earnings) >= 0.01:
+    # Net income not yet closed to the retained earnings account (all revenue - COGS -
+    # expenses since the last year-end close). This equals Assets - Liabilities -
+    # explicit Equity by the accounting equation. It is named apart from the retained
+    # earnings account, which has its own line once a year has been closed into it.
+    unclosed_income = total_assets - total_liabilities - total_equity
+    if abs(unclosed_income) >= 0.01:
         equity_lines.append({
             "code": "RE",
-            "name": "Retained Earnings",
+            "name": "Net income not yet closed",
             "account_type": "equity",
-            "amount": retained_earnings,
+            "amount": unclosed_income,
             "synthetic": True,
             "href_pnl": True,
         })
-        total_equity += retained_earnings
+        total_equity += unclosed_income
 
     total_l_e = total_liabilities + total_equity
 

@@ -3644,5 +3644,6 @@
   "event.item.inventory_account.recorded": "Bestandskonto erfasst",
   "event.item.inventory_on_books.recorded": "Bestand in den Büchern erfasst",
   "event.mfg.order.wip_opened": "Unfertige Erzeugnisse eröffnet",
-  "event.mfg.order.wip_unresolved": "Unfertige Erzeugnisse müssen abgestimmt werden"
+  "event.mfg.order.wip_unresolved": "Unfertige Erzeugnisse müssen abgestimmt werden",
+  "financial.unclosed_net_income": "Noch nicht abgeschlossenes Jahresergebnis"
 }

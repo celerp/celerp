@@ -3644,5 +3644,6 @@
   "event.item.inventory_account.recorded": "تم تسجيل حساب المخزون",
   "event.item.inventory_on_books.recorded": "تم تسجيل المخزون في الدفاتر",
   "event.mfg.order.wip_opened": "تم فتح الإنتاج قيد التشغيل",
-  "event.mfg.order.wip_unresolved": "الإنتاج قيد التشغيل يحتاج إلى تسوية"
+  "event.mfg.order.wip_unresolved": "الإنتاج قيد التشغيل يحتاج إلى تسوية",
+  "financial.unclosed_net_income": "صافي الدخل غير المقفل بعد"
 }

@@ -138,3 +138,27 @@ async def test_the_exported_amounts_carry_the_currencys_decimal_places(client, a
     rows = list(csv.DictReader(io.StringIO(r.text.lstrip("﻿"))))
     assets = [row["Amount"] for row in rows if row["Section"] == "Assets" and row["Line"] != "Total"]
     assert [assets[0], assets[1], assets[-1]] == expected
+
+
+async def test_income_not_yet_closed_is_named_apart_from_the_retained_earnings_account(client, auth):
+    """A company with a closed year in its retained earnings account (3200) and income
+    since then shows two equity lines with two different names: "Retained Earnings"
+    once, for the account, and the income not yet closed under its own name, on the
+    API and on the rendered sheet."""
+    from fasthtml.common import to_xml
+    from ui.routes.financial_reports import _balance_sheet_view
+
+    await _account(client, auth, "1900", "asset", None)
+    await _post(client, auth, "1900", "3200", 100.0)   # a year already closed into 3200
+    await _post(client, auth, "1900", "4100", 40.0)    # income since the close
+    r = await client.get("/accounting/balance-sheet", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    sheet = r.json()
+    names = [l["name"] for l in sheet["equity"]["lines"]]
+    assert names.count("Retained Earnings") == 1, names
+    [unclosed] = [l for l in sheet["equity"]["lines"] if l.get("synthetic")]
+    assert (unclosed["name"], unclosed["amount"]) == ("Net income not yet closed", 40.0)
+
+    html = to_xml(_balance_sheet_view(sheet, "USD", as_of="2026-12-31"))
+    assert html.count("Retained Earnings") == 1
+    assert "Net income not yet closed" in html

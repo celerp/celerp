@@ -3644,5 +3644,6 @@
   "event.item.inventory_account.recorded": "Conta de estoque registrada",
   "event.item.inventory_on_books.recorded": "Estoque registrado nos livros",
   "event.mfg.order.wip_opened": "Produção em andamento aberta",
-  "event.mfg.order.wip_unresolved": "A produção em andamento precisa de conciliação"
+  "event.mfg.order.wip_unresolved": "A produção em andamento precisa de conciliação",
+  "financial.unclosed_net_income": "Resultado ainda não encerrado"
 }

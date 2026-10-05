@@ -3644,5 +3644,6 @@
   "event.item.inventory_account.recorded": "Cuenta de existencias registrada",
   "event.item.inventory_on_books.recorded": "Existencias registradas en los libros",
   "event.mfg.order.wip_opened": "Trabajo en curso abierto",
-  "event.mfg.order.wip_unresolved": "El trabajo en curso necesita conciliación"
+  "event.mfg.order.wip_unresolved": "El trabajo en curso necesita conciliación",
+  "financial.unclosed_net_income": "Resultado aún no cerrado"
 }

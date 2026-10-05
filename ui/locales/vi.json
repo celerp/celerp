@@ -3644,5 +3644,6 @@
   "event.item.inventory_account.recorded": "Đã ghi nhận tài khoản tồn kho",
   "event.item.inventory_on_books.recorded": "Đã ghi nhận tồn kho vào sổ sách",
   "event.mfg.order.wip_opened": "Đã mở sản phẩm dở dang",
-  "event.mfg.order.wip_unresolved": "Sản phẩm dở dang cần đối chiếu"
+  "event.mfg.order.wip_unresolved": "Sản phẩm dở dang cần đối chiếu",
+  "financial.unclosed_net_income": "Lợi nhuận chưa kết chuyển"
 }

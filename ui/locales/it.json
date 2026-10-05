@@ -3644,5 +3644,6 @@
   "event.item.inventory_account.recorded": "Conto di magazzino registrato",
   "event.item.inventory_on_books.recorded": "Magazzino registrato a libro",
   "event.mfg.order.wip_opened": "Semilavorati aperti",
-  "event.mfg.order.wip_unresolved": "I semilavorati devono essere riconciliati"
+  "event.mfg.order.wip_unresolved": "I semilavorati devono essere riconciliati",
+  "financial.unclosed_net_income": "Utile non ancora chiuso"
 }

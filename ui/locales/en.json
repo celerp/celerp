@@ -3644,5 +3644,6 @@
   "event.item.inventory_account.recorded": "Stock account recorded",
   "event.item.inventory_on_books.recorded": "Stock recorded on the books",
   "event.mfg.order.wip_opened": "Work in progress opened",
-  "event.mfg.order.wip_unresolved": "Work in progress needs reconciling"
+  "event.mfg.order.wip_unresolved": "Work in progress needs reconciling",
+  "financial.unclosed_net_income": "Net income not yet closed"
 }

@@ -3644,5 +3644,6 @@
   "event.item.inventory_account.recorded": "የክምችት ሂሳብ ተመዝግቧል",
   "event.item.inventory_on_books.recorded": "ክምችት በመዝገብ ላይ ተመዝግቧል",
   "event.mfg.order.wip_opened": "በሂደት ላይ ያለ ሥራ ተከፍቷል",
-  "event.mfg.order.wip_unresolved": "በሂደት ላይ ያለ ሥራ ማስታረቅ ያስፈልገዋል"
+  "event.mfg.order.wip_unresolved": "በሂደት ላይ ያለ ሥራ ማስታረቅ ያስፈልገዋል",
+  "financial.unclosed_net_income": "ገና ያልተዘጋ የተጣራ ገቢ"
 }

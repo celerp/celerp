@@ -3644,5 +3644,6 @@
   "event.item.inventory_account.recorded": "Compte de stock enregistré",
   "event.item.inventory_on_books.recorded": "Stock enregistré dans les comptes",
   "event.mfg.order.wip_opened": "En-cours de production ouvert",
-  "event.mfg.order.wip_unresolved": "L'en-cours de production doit être rapproché"
+  "event.mfg.order.wip_unresolved": "L'en-cours de production doit être rapproché",
+  "financial.unclosed_net_income": "Résultat non encore clôturé"
 }
