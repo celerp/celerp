@@ -322,7 +322,7 @@ async def _render_chips(monkeypatch, p: dict, aggregates: dict) -> tuple[list[st
 
     sent: dict = {}
 
-    async def _get_valuation(_token, **_kw):
+    async def _get_valuation(_token, _params=None):
         # Navigation counts only; its store-wide price totals must not reach the bar.
         return {"item_count": 9, "category_counts": {"ring": 9}, "price_totals": {"Retail": 999999}}
 

@@ -989,37 +989,34 @@ async def _inventory_content(
     #inventory-content so the entire dynamic section re-renders consistently.
     """
     try:
-        valuation = await api.get_valuation(
-            token,
-            category=p.get("category") or None,
-            status=p.get("status") or None,
-            on_memo_to=p.get("on_memo_to") or None,
-            consigned_from=p.get("consigned_from") or None,
-        )
-        params: dict = {"limit": p["per_page"], "offset": (p["page"] - 1) * p["per_page"]}
+        # One filter set for the rows and their counts: the tabs and status cards count
+        # exactly what the list shows for the same search and filters.
+        row_filters: dict = {}
         if p["q"]:
-            params["q"] = p["q"]
+            row_filters["q"] = p["q"]
         if p.get("skus"):
-            params["skus"] = p["skus"]
+            row_filters["skus"] = p["skus"]
         if p["status"]:
-            params["status"] = p["status"]
+            row_filters["status"] = p["status"]
         if p["category"]:
-            params["category"] = p["category"]
+            row_filters["category"] = p["category"]
         if p.get("inventory_type"):
-            params["inventory_type"] = p["inventory_type"]
+            row_filters["inventory_type"] = p["inventory_type"]
         if p.get("location_id"):
-            params["location_id"] = p["location_id"]
+            row_filters["location_id"] = p["location_id"]
         if p.get("source"):
-            params["source"] = p["source"]
+            row_filters["source"] = p["source"]
         if p.get("filter"):
-            params["filter"] = p["filter"]
+            row_filters["filter"] = p["filter"]
         if p.get("on_memo_to"):
-            params["on_memo_to"] = p["on_memo_to"]
+            row_filters["on_memo_to"] = p["on_memo_to"]
         if p.get("consigned_from"):
-            params["consigned_from"] = p["consigned_from"]
+            row_filters["consigned_from"] = p["consigned_from"]
         for akey, aval in (p.get("attr_filters") or {}).items():
             if aval:
-                params[f"attr.{akey}"] = aval
+                row_filters[f"attr.{akey}"] = aval
+        valuation = await api.get_valuation(token, row_filters)
+        params: dict = {**row_filters, "limit": p["per_page"], "offset": (p["page"] - 1) * p["per_page"]}
         if p["sort"]:
             params["sort"] = p["sort"]
             params["dir"] = p["dir"]

@@ -49,8 +49,9 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
 
     # Inventory: delegate entirely to the canonical valuation endpoint.
     # This is the single source of truth for item counts and price totals.
-    from celerp_inventory.routes import get_valuation as _get_valuation
-    valuation = await _get_valuation(company_id=company_id, role=role, settings=settings, session=session)
+    from celerp_inventory.routes import ItemListFilters, get_valuation as _get_valuation
+    valuation = await _get_valuation(filters=ItemListFilters(), attr_filters=[], company_id=company_id,
+                                     role=role, settings=settings, session=session)
     total_value_cost = valuation.get("cost_total", 0.0)
     total_value_retail = valuation.get("retail_total", 0.0)
     active_item_count_inv = valuation.get("active_item_count", 0)

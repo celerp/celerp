@@ -103,3 +103,22 @@ def test_demo_hint_names_the_delete_option_unambiguously():
         assert d["btn.delete"] in hint, path.name
         if d["btn.clear"] == d["btn.delete"]:
             assert d["inv.action"].rstrip(".…") in hint, (path.name, hint)
+
+
+@pytest.mark.asyncio
+async def test_counts_are_asked_for_with_the_same_filters_as_the_rows(ui):
+    """The tabs and status cards come from the valuation call; it gets the very filters
+    the row list gets, the search included, so the counts describe the listed rows."""
+    valuation = AsyncMock(return_value={"item_count": 0, "category_counts": {}})
+    rows = AsyncMock(return_value=_EMPTY)
+    static = AsyncMock(return_value=([], {}, {}, [], [], {}))
+    with patch.multiple("ui.api_client", get_valuation=valuation, list_items=rows,
+                        get_company=AsyncMock(return_value={}),
+                        list_import_batches=AsyncMock(return_value={"batches": []})), \
+         patch("ui.routes.inventory._load_inventory_static_metadata", new=static):
+        r = await ui.get("/inventory", params={"q": DEMO_ITEMS_QUERY, "category": "Grain", "attr.size": "L"},
+                         cookies=authed_cookies(role="owner"))
+    assert r.status_code == 200
+    list_filters = {k: v for k, v in rows.await_args.args[1].items() if k not in ("limit", "offset", "sort", "dir")}
+    assert list_filters == {"q": DEMO_ITEMS_QUERY, "category": "Grain", "attr.size": "L"}
+    assert valuation.await_args.args[1] == list_filters
