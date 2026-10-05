@@ -153,14 +153,18 @@ _RESHAPES = {
     "column_nullable": "c = Base.metadata.tables['users'].c.email\nc.nullable = not c.nullable\n",
     "column_default": "Base.metadata.tables['users'].c.email.server_default = sa.text(\"'x'\")\n",
     "column_primary_key": "Base.metadata.tables['users'].c.email.primary_key = True\n",
+    "column_python_default": "Base.metadata.tables['users'].c.email.default = sa.ColumnDefault('x')\n",
+    "column_onupdate": "Base.metadata.tables['users'].c.email.onupdate = sa.ColumnDefault('x')\n",
+    "column_server_onupdate": "Base.metadata.tables['users'].c.email.server_onupdate = sa.FetchedValue()\n",
 }
 
 
 def _users_state(users) -> tuple:
     """Everything a query against users reads: the table's identity, its columns
-    and each column's name, type, nullability, default and key role."""
+    and each column's name, type, nullability, defaults and key role."""
     return (users.name, users.schema, users.fullname, list(users.columns),
-            [(c.name, c.key, c.type, c.nullable, c.server_default, c.primary_key)
+            [(c.name, c.key, c.type, c.nullable, c.server_default, c.primary_key,
+              c.default, c.onupdate, c.server_onupdate)
              for c in users.columns],
             set(users.constraints), set(users.indexes))
 

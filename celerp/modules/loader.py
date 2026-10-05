@@ -1136,7 +1136,8 @@ def _recording_tables(pkg_name: str):
 
 
 # What a query reads from each column, beyond the column object itself.
-_COLUMN_STATE = ("name", "key", "type", "nullable", "server_default", "primary_key")
+_COLUMN_STATE = ("name", "key", "type", "nullable", "server_default", "primary_key",
+                 "default", "onupdate", "server_onupdate")
 
 
 def _table_shape(table) -> tuple:
