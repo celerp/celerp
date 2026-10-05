@@ -2621,6 +2621,7 @@ async def create_transfer(
     ).scalar_one_or_none()
     if not to_bank:
         raise HTTPException(status_code=404, detail="Destination bank account not found")
+    await require_destinations(session, company_id, {from_bank.chart_account_code, to_bank.chart_account_code})
 
     je_id = f"je:transfer:{uuid.uuid4()}"
     idem_c = f"transfer:{je_id}:c"

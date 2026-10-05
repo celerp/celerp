@@ -35,7 +35,7 @@ from celerp.services.field_schema import reject_system_item_fields
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
 from celerp.services.account_roles import current_settings, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
-from celerp.services.journal_accounts import require_destinations, require_settlement_account
+from celerp.services.journal_accounts import require_destinations, require_line_destinations, require_settlement_account
 from celerp.services.lot_origin import is_stock_type
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.pick import doc_bound_lots
@@ -1764,6 +1764,11 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
                             status_code=409,
                             detail=f"Field '{k}' in line item {i} cannot be changed on a finalized document.",
                         )
+            if row.state.get("doc_type") in _BILL_POSTED:
+                # A line moved to another account posts there if the bill is reverted and finalized again.
+                await require_line_destinations(session, company_id, [
+                    li for i, li in enumerate(incoming_lis)
+                    if isinstance(li, dict) and li.get("account_code") != existing_by_idx.get(i, {}).get("account_code")])
     # Uniqueness check when ref_id is being changed
     new_ref = (fields_changed.get("ref_id") or {}).get("new")
     if new_ref:
@@ -2022,6 +2027,10 @@ async def _refuse_unsellable_lots(session, company_id, entity_id: str, state: di
             sku=sku, status=status))
 
 
+# Documents whose finalize posts the bill entry, each line to its own account when it names one.
+_BILL_POSTED = frozenset({"purchase_order", "bill"})
+
+
 async def _finalize_doc_impl(
     entity_id: str,
     company_id: str,
@@ -2045,6 +2054,8 @@ async def _finalize_doc_impl(
         return {"event_id": None, "already_finalized": True}
     if not (row.state.get("line_items") or []):
         raise HTTPException(status_code=422, detail="Add at least one line item before finalizing this document.")
+    if row.state.get("doc_type") in _BILL_POSTED:
+        await require_line_destinations(session, company_id, row.state["line_items"])
     if row.state.get("doc_type") == "invoice":
         await _refuse_unsellable_lots(session, company_id, entity_id, row.state)
 
@@ -2131,7 +2142,7 @@ async def _finalize_doc_impl(
                     actor_id=_user_id, location_id=None, source="invoice_finalize",
                     idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
                 )
-    elif doc_type in ("purchase_order", "bill"):
+    elif doc_type in _BILL_POSTED:
         # Bill conversion JE: debit expense/inventory accounts, credit accounts payable
         # Covers both PO->bill conversion and directly-created bills finalized directly.
         # Pass revert_count so cycle-aware idempotency keys are used on re-finalize.
@@ -4546,6 +4557,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
     if state.get("doc_type") == "consignment_in":
         if state.get("status") not in ("final", "sent", "received", "partially_received"):
             raise HTTPException(status_code=409, detail="Consignment In must be issued before converting to vendor bill")
+        await require_line_destinations(session, company_id, state.get("line_items"))
         ref = next_doc_ref(company, "bill")
         new_doc_id = f"doc:{ref}"
         new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type"}}
@@ -4733,6 +4745,8 @@ async def import_doc(
     _imp_base_currency = (_imp_company.settings.get("currency", "USD") if _imp_company else "USD")
     if auto_je.import_auto_je_kind(body.data) is not None:
         _require_doc_rate_http(body.data, _imp_base_currency)
+    if auto_je.import_auto_je_kind(body.data) == "bill":
+        await require_line_destinations(session, company_id, body.data.get("line_items"))
 
     entry = await emit_event(
         session,

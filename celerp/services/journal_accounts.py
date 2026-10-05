@@ -194,6 +194,13 @@ async def require_destinations(session: AsyncSession, company_id, codes) -> dict
     return accounts
 
 
+async def require_line_destinations(session: AsyncSession, company_id, line_items) -> None:
+    """Refuse a bill or purchase order whose lines name an account of their own that
+    ``require_destinations`` would refuse: the bill posts each such line there."""
+    await require_destinations(session, company_id, {
+        li["account_code"] for li in line_items or [] if isinstance(li, dict) and li.get("account_code")})
+
+
 async def require_settlement_account(session: AsyncSession, company_id, code: str) -> None:
     """Refuse a new payment or refund through ``code`` unless it can hold money: a
     destination ``require_destinations`` accepts that is an asset account, such as a bank

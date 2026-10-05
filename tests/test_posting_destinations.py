@@ -3,7 +3,8 @@
 """An account a user picks for a new posting must be able to take it.
 
 Wherever a user names the account a new journal line goes to (a stock write-off, a
-bank reconciliation entry, split or tolerance write-off, a manual journal, a payment),
+bank reconciliation entry, split or tolerance write-off, a manual journal, a payment,
+the account on a bill line, a bank in a transfer),
 the account must be in the chart, active, and have nothing under it: a header only
 sums the accounts below it. The check holds the account until the entry is posted, so
 switching it off or putting an account under it meanwhile waits for the posting, and
@@ -33,9 +34,9 @@ def _refused(r, why: str, code: str) -> None:
     assert in_language("de", detail) != detail["message"]
 
 
-async def _account(client, headers, code: str, parent: str = HEADER) -> None:
+async def _account(client, headers, code: str, parent: str = HEADER, account_type: str = "expense") -> None:
     r = await client.post("/accounting/accounts", headers=headers, json={
-        "code": code, "name": f"Account {code}", "account_type": "expense", "parent_code": parent})
+        "code": code, "name": f"Account {code}", "account_type": account_type, "parent_code": parent})
     assert r.status_code == 200, r.text
 
 
@@ -113,7 +114,38 @@ async def _manual_journal(client, headers, code: str):
         "entries": [{"account": code, "debit": 10, "credit": 0}, {"account": "1111", "debit": 0, "credit": 10}]})
 
 
-_PATHS = {"stock write-off": _stock_write_off_line, "reconciliation entry": _recon_create,
+_LINE = {"name": "Cleaning service", "quantity": 1, "unit_price": 40.0}
+
+
+async def _with_line_account(client, headers, doc_type: str, code: str) -> str:
+    """A draft ``doc_type`` whose one line names ``code`` as its own account."""
+    r = await client.post("/docs", headers=headers, json={
+        "doc_type": doc_type, "contact_id": "supplier:1", "line_items": [_LINE]})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    r = await client.patch(f"/docs/{doc}", headers=headers, json={
+        "fields_changed": {"line_items": {"new": [{**_LINE, "account_code": code}]}}})
+    assert r.status_code == 200, r.text
+    return doc
+
+
+async def _bill_line(client, headers, code: str):
+    return await client.post(f"/docs/{await _with_line_account(client, headers, 'bill', code)}/finalize",
+                             headers=headers)
+
+
+def _bill_snapshot(code: str) -> dict:
+    return {"doc_type": "bill", "status": "awaiting_payment", "contact_id": "supplier:1", "currency": "USD",
+            "line_items": [{**_LINE, "line_total": 40.0, "account_code": code}], "subtotal": 40.0, "total": 40.0}
+
+
+async def _bill_import(client, headers, code: str):
+    return await client.post("/docs/import", headers=headers, json={
+        "entity_id": "doc:IMP-1", "event_type": "doc.created", "data": _bill_snapshot(code),
+        "source": "import", "idempotency_key": "imp-1"})
+
+
+_PATHS = {"stock write-off": _stock_write_off_line, "bill line": _bill_line, "bill import": _bill_import, "reconciliation entry": _recon_create,
           "reconciliation split": _recon_split, "reconciliation write-off": _recon_write_off,
           "manual journal": _manual_journal}
 
@@ -142,6 +174,70 @@ async def test_a_stock_write_off_whose_account_was_switched_off_since_it_was_pic
     assert (await _switch_off(client, headers, "6990")).status_code == 200
 
     _refused(await client.post(f"/lists/{wo}/write-off", headers=headers), "inactive", "6990")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("why", ["header", "inactive"])
+async def test_an_account_picked_for_a_line_of_a_finalized_bill_is_refused(client, auth, why):
+    headers = auth["headers"]
+    bill = await _with_line_account(client, headers, "bill", "6100")
+    assert (await client.post(f"/docs/{bill}/finalize", headers=headers)).status_code == 200
+    code = await _destination(client, headers, why)
+
+    _refused(await client.patch(f"/docs/{bill}", headers=headers, json={
+        "fields_changed": {"line_items": {"new": [{**_LINE, "account_code": code}]}}}), why, code)
+
+    [line] = (await client.get(f"/docs/{bill}", headers=headers)).json()["line_items"]
+    assert line["account_code"] == "6100"
+
+
+@pytest.mark.asyncio
+async def test_a_consignment_converted_to_a_bill_with_a_line_on_a_header_is_refused(client, auth):
+    headers = auth["headers"]
+    doc = await _with_line_account(client, headers, "consignment_in", HEADER)
+    assert (await client.post(f"/docs/{doc}/finalize", headers=headers)).status_code == 200
+    bills = (await client.get("/docs?doc_type=bill", headers=headers)).json()["items"]
+
+    _refused(await client.post(f"/docs/{doc}/convert", headers=headers), "header", HEADER)
+
+    assert (await client.get("/docs?doc_type=bill", headers=headers)).json()["items"] == bills
+
+
+@pytest.mark.asyncio
+async def test_a_batch_imported_bill_with_a_line_on_a_header_is_refused_alone(client, auth):
+    headers = auth["headers"]
+
+    def record(entity_id: str, code: str) -> dict:
+        return {"entity_id": entity_id, "event_type": "doc.created", "data": _bill_snapshot(code),
+                "source": "import", "idempotency_key": entity_id}
+
+    r = await client.post("/docs/import/batch", headers=headers, json={"records": [
+        record("doc:IMP-BAD", HEADER), record("doc:IMP-OK", "6100")]})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["created"] == 1, r.json()
+    [error] = r.json()["errors"]
+    assert "doc:IMP-BAD" in error and f"Account {HEADER} is a header account" in error, error
+    assert (await client.get("/docs/doc:IMP-BAD", headers=headers)).status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("why", ["header", "inactive"])
+async def test_a_transfer_into_a_bank_whose_account_cannot_take_a_posting_is_refused(client, auth, why):
+    headers = auth["headers"]
+    [bank] = (await client.get("/accounting/bank-accounts", headers=headers)).json()["items"]
+    r = await client.post("/accounting/bank-accounts", headers=headers, json={
+        "bank_name": "Savings", "account_number": "2", "bank_type": "savings", "currency": "USD"})
+    assert r.status_code == 200, r.text
+    savings = r.json()
+    code = savings["chart_account_code"]
+    if why == "header":
+        await _account(client, headers, f"{code}1", parent=code, account_type="asset")
+    else:
+        assert (await _switch_off(client, headers, code)).status_code == 200
+
+    _refused(await client.post("/accounting/transfers", headers=headers, json={
+        "from_bank_id": bank["id"], "to_bank_id": savings["id"], "amount": 10, "date": "2026-03-01"}), why, code)
 
 
 # --- On real Postgres: the account cannot change between the check and the posting -----
