@@ -4030,5 +4030,17 @@
   "attr.year_edition": "السنة / الإصدار",
   "attr.year_period": "السنة / الحقبة",
   "attr.year_created": "سنة الإنشاء",
-  "attr.year_published": "سنة النشر"
+  "attr.year_published": "سنة النشر",
+  "enum.item_status.available": "متاح",
+  "enum.item_status.draft": "مسودة",
+  "enum.item_status.reserved": "محجوز",
+  "enum.item_status.merged": "مدمج",
+  "unit.piece": "قطعة",
+  "unit.carat": "قيراط",
+  "unit.gram": "غرام",
+  "unit.kg": "كغ",
+  "unit.oz": "أونصة",
+  "unit.lb": "رطل",
+  "unit.liter": "لتر",
+  "unit.meter": "متر"
 }

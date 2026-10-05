@@ -4030,5 +4030,17 @@
   "attr.year_edition": "ปี / ฉบับ",
   "attr.year_period": "ปี / ยุค",
   "attr.year_created": "ปีที่สร้าง",
-  "attr.year_published": "ปีที่พิมพ์"
+  "attr.year_published": "ปีที่พิมพ์",
+  "enum.item_status.available": "มีสินค้า",
+  "enum.item_status.draft": "ร่าง",
+  "enum.item_status.reserved": "จองแล้ว",
+  "enum.item_status.merged": "รวมแล้ว",
+  "unit.piece": "ชิ้น",
+  "unit.carat": "กะรัต",
+  "unit.gram": "กรัม",
+  "unit.kg": "กก.",
+  "unit.oz": "ออนซ์",
+  "unit.lb": "ปอนด์",
+  "unit.liter": "ลิตร",
+  "unit.meter": "เมตร"
 }
