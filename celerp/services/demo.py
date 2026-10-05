@@ -1652,6 +1652,13 @@ async def _untouched_demo_items(session: AsyncSession, company_id: uuid.UUID, en
     return [eid for eid in entity_ids if eid not in touched and not used(eid)]
 
 
+async def untouched_demo_item_ids(session: AsyncSession, company_id: uuid.UUID) -> list[str]:
+    """The demo items the company can still remove as samples: seeded by setup and
+    never edited or used since. Backs the item list's ``filter=demo``."""
+    demo_ids = await demo_item_ids(session, company_id)
+    return await _untouched_demo_items(session, company_id, demo_ids) if demo_ids else []
+
+
 async def delete_untouched_demo_items(session: AsyncSession, company_id: uuid.UUID) -> tuple[int, int]:
     """Delete the demo items the user never edited or used; the rest stay as they are.
 

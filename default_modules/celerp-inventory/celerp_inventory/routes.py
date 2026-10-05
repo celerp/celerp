@@ -1121,6 +1121,14 @@ async def query_items(
                   if "quantity" in r and is_below_reorder(r)
                   and str(r.get("status") or "").lower() != "draft"]
 
+    # Semantic "demo" filter: setup's samples that are still removable, by their origin
+    # (seeded and never edited or used), never by name, so an edited sample or the
+    # user's own item named "[DEMO] ..." is not listed for deletion as a sample.
+    if f.filter == "demo":
+        from celerp.services.demo import untouched_demo_item_ids
+        removable = set(await untouched_demo_item_ids(session, company_id))
+        result = [r for r in result if r.get("id") in removable]
+
     if f.q:
         # Shared q-filter + q_match attachment (single-sourced in celerp_inventory.search):
         # comma = OR groups, & = AND terms, lo-hi = numeric range, bare number =
@@ -1202,6 +1210,8 @@ async def list_items(
     category: exact category to filter on.
     filter: semantic filter. "low_stock" keeps only items at or below their
             reorder point (see celerp.services.reorder.is_below_reorder).
+            "demo" keeps only setup's samples that were never edited or used
+            (see celerp.services.demo.untouched_demo_item_ids).
     on_memo_to: customer contact_id. Scope to items currently out on memo to that
             customer, valued (holding_value) at the price they were quoted.
     consigned_from: supplier contact_id. Scope to items currently held on
