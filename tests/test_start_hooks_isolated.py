@@ -76,7 +76,7 @@ async def test_the_doctor_reports_but_does_not_repair_while_the_records_are_held
         return await session.scalar(select(func.count()).select_from(LedgerEntry).where(
             LedgerEntry.company_id == auth["company_id"]))
 
-    monkeypatch.setattr(app.state, "data_current", False)
+    monkeypatch.setattr(app.state, "data_current", False, raising=False)
     before = await events()
     r = await client.post("/admin/doctor?fix=true", headers=auth["headers"])
     assert r.status_code == 503, r.text
