@@ -742,6 +742,12 @@ def setup_routes(app):
         except Exception:
             activities = []
 
+        # The category names the inventory tabs show, so the chart reads the same.
+        try:
+            category_names = await api.get_category_display_names(token)
+        except Exception:
+            category_names = {}
+
         vertical = company.get("vertical") or ""
         cfg = _VERTICAL_CONFIGS.get(vertical, _DEFAULT_CONFIG)
         currency = company.get("currency")
@@ -769,7 +775,8 @@ def setup_routes(app):
             _kpi_grid(cfg, values, role=role, settings=settings),
             _secondary_kpi_grid(cfg, values, role=role, settings=settings),
             _charts_section(cfg, valuation, ar_aging,
-                            kpis_data.get("sales", {}).get("revenue_trend", []), currency),
+                            kpis_data.get("sales", {}).get("revenue_trend", []), currency,
+                            category_names),
             _activity_feed(activities, currency) if cfg.get("show_activity") else "",
             _quick_links(cfg),
             title=f"{t('nav.dashboard')} - {company.get('name', '')}",
@@ -1058,7 +1065,8 @@ def _chart_empty(title_key: str, sub_key: str, icon: str) -> FT:
 
 
 def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
-                    revenue_trend: list | None = None, currency: str | None = None) -> FT:
+                    revenue_trend: list | None = None, currency: str | None = None,
+                    category_names: dict | None = None) -> FT:
     import json
     show_charts = cfg.get("charts", [])
 
@@ -1074,7 +1082,11 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
     ar_labels = json.dumps(list(buckets.keys())) if ar_has_data else "[]"
     ar_data = json.dumps([float(v) for v in buckets.values()]) if ar_has_data else "[]"
 
-    cats = dict(valuation.get("category_counts", {}))
+    # Category keys are schema slugs; chart them under the inventory tabs' display names.
+    names = category_names or {}
+    cats: dict = {}
+    for key, count in valuation.get("category_counts", {}).items():
+        cats[names.get(key, key)] = cats.get(names.get(key, key), 0) + int(count or 0)
     # Items with no category are still stock: chart them under their own bar.
     uncategorized = int(valuation.get("total_scoped_count") or 0) - sum(int(v or 0) for v in cats.values())
     if uncategorized > 0:
@@ -1135,7 +1147,7 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
         new Chart(revCtx, {{
           type: 'line',
           data: {{ labels: {rev_labels}, datasets: [{{
-            label: 'Revenue', data: {rev_data}, borderColor: colors[0], backgroundColor: rg,
+            label: {json.dumps(t('acct.section_revenue'))}, data: {rev_data}, borderColor: colors[0], backgroundColor: rg,
             fill: true, tension: 0.35, borderWidth: 2.5, pointRadius: 3,
             pointBackgroundColor: colors[0], pointBorderColor: '#fff', pointBorderWidth: 1.5 }}] }},
           options: {{
@@ -1165,7 +1177,7 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
       if (catCtx && {cat_labels}.length > 0) {{
         new Chart(catCtx, {{
           type: 'bar',
-          data: {{ labels: {cat_labels}, datasets: [{{ label: 'Items', data: {cat_data}, backgroundColor: colors[0] }}] }},
+          data: {{ labels: {cat_labels}, datasets: [{{ label: {json.dumps(t('th.items'))}, data: {cat_data}, backgroundColor: colors[0] }}] }},
           options: {{
             indexAxis: 'y', responsive: true,
             scales: {{ x: {{ ticks: {{ color: textColor }}, grid: {{ color: gridColor }} }}, y: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }} }},

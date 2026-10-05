@@ -3,18 +3,15 @@
 """The dashboard card promises "Import is always at the top of the page", and
 its links open the list pages with an arrow on that page's Import button. Every
 list page with an Import button therefore carries exactly one data-import-hint, in
-the page header's action bar. The UI runs against the real API in process.
+the page header's action bar. The UI runs against the real API in process (owner_ui).
 """
 from __future__ import annotations
 
 import json
 import re
-import uuid
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 
 pytestmark = pytest.mark.asyncio
 
@@ -22,28 +19,6 @@ _EN = json.loads((Path(__file__).parent.parent / "ui" / "locales" / "en.json").r
 
 _LIST_PAGES = ["/inventory", "/contacts/customers", "/contacts/vendors", "/docs", "/lists",
                "/subscriptions?direction=sales", "/subscriptions?direction=purchasing"]
-
-
-@pytest.fixture()
-async def owner_ui(client):
-    from celerp.main import app as api_app
-    from ui.app import app as ui_app
-
-    r = await client.post("/auth/register", json={
-        "company_name": "Hint Co", "email": f"hint-{uuid.uuid4().hex[:8]}@test.example",
-        "name": "Owner", "password": "pwvalid1",
-    })
-    assert r.status_code == 200, r.text
-    token = r.json()["access_token"]
-
-    def _bridged(tok, timeout=10.0):
-        return AsyncClient(transport=ASGITransport(app=api_app), base_url="http://test",
-                           headers={"Authorization": f"Bearer {tok}"}, follow_redirects=True)
-
-    with patch("ui.api_client._client", _bridged):
-        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
-                               follow_redirects=False, cookies={"celerp_token": token}) as ui:
-            yield ui
 
 
 def _hint_count(html: str) -> int:
