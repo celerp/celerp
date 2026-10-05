@@ -17,13 +17,10 @@ from sqlalchemy import select
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD
 from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
-from celerp.services.fulfill import execute_fulfill
 from celerp.services.lot_origin import held_value
-from celerp.services.pick import compute_pick_plan
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
-from test_fulfillment import _barcode_allocator
 from test_money_stock_and_contact_invariants import _account_net
-from test_posting_roles_lots import _credits, _forget_origin, _lot, _new_inventory_account, _sell
+from test_posting_roles_lots import _credits, _lot, _new_inventory_account, _sell
 from test_posting_roles_merge import _merged
 from test_receipt_accounting import _doc, _receive
 
@@ -53,34 +50,20 @@ async def _books_match_lots(session, auth, *accounts: str) -> dict[str, float]:
     return books
 
 
-async def _fulfil(session, auth, doc_id: str, lot_id: str) -> dict:
-    cid = auth["company_id"]
-    doc = await session.get(Projection, {"company_id": cid, "entity_id": doc_id}, populate_existing=True)
-    lot = await session.get(Projection, {"company_id": cid, "entity_id": lot_id}, populate_existing=True)
-    plan = compute_pick_plan(doc.state.get("line_items", []), [{
-        "entity_id": lot_id, "sku": lot.state["sku"], "quantity": float(lot.state["quantity"]),
-        "created_at": lot.created_at.isoformat() if lot.created_at else "",
-        "expires_at": lot.state.get("expires_at"), "cost_total": float(lot.state["cost_total"])}])
-    assert any(p.action == "split" for p in plan.picks)
-    out = await execute_fulfill(session, doc_entity_id=doc_id, doc_state=doc.state, pick_result=plan,
-                                company_id=cid, user_id=str(auth["user_id"]), doc_type="invoice",
-                                allocate_barcodes=_barcode_allocator(session, cid))
-    await session.commit()
-    return next(fi for fi in out["fulfilled_items"] if fi["action"] == "split")
+async def _fulfil(session, client, auth, doc_id: str) -> str:
+    """Ship the invoice's one line the way a user does, and return the lot it shipped."""
+    doc = await _state(session, auth, doc_id)
+    [line] = doc["line_items"]
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [line["item_id"]]})
+    assert r.status_code == 200, r.text
+    [line] = (await _state(session, auth, doc_id))["line_items"]
+    return line["item_id"]
 
 
 async def _revert(client, auth, doc_id: str, lot_id: str) -> None:
     r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"], json={"line_entity_ids": [lot_id]})
     assert r.status_code == 200, r.text
-
-
-async def _order(client, auth, sku: str, qty: float) -> str:
-    r = await client.post("/docs", headers=auth["headers"], json={
-        "doc_type": "invoice", "line_items": [{"sku": sku, "name": "Lot", "quantity": qty,
-                                                   "unit_price": 50.0, "sell_by": "piece"}],
-        "total": 50.0 * qty})
-    assert r.status_code == 200, r.text
-    return r.json()["id"]
 
 
 # --- A part split off for a fulfilment keeps its lot's account -------------------------
@@ -93,14 +76,15 @@ async def test_a_part_fulfilled_then_returned_after_a_remap_sells_from_its_lots_
     for role in ("inventory_purchased", "inventory_opening"):
         await _remap(session, auth, role, new)
 
-    order = await _order(client, auth, "FUL", 3)
-    part = await _fulfil(session, auth, order, lot)
-    assert (await _state(session, auth, part["item_id"]))[_FIELD] == origin
-    await _revert(client, auth, order, part["item_id"])
-    restored = await _state(session, auth, part["item_id"])
+    order = await _sell(client, auth, (lot, 3))
+    part = await _fulfil(session, client, auth, order)
+    assert part != lot
+    assert (await _state(session, auth, part))[_FIELD] == origin
+    await _revert(client, auth, order, part)
+    restored = await _state(session, auth, part)
     assert (restored["status"], restored[_FIELD], restored["cost_total"]) == ("available", origin, 15.0)
 
-    inv = await _sell(client, auth, (part["item_id"], 3))
+    inv = await _sell(client, auth, (part, 3))
     assert _credits(await _state(session, auth, f"je:auto:{inv}:fin")) == {origin: 15.0}
     assert await _account_net(session, auth["company_id"], new) == 0.0
 
