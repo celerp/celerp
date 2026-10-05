@@ -2579,7 +2579,7 @@
   "settings.type_reset_prefix": "Escribe ",
   "settings.type_reset_suffix": " para confirmar. Esta acción no se puede deshacer.",
   "settings.delete_everything": "Eliminar todo",
-  "system.factory_reset.held_elsewhere": "Hay registros en {table} que no son solo de esta empresa y hacen referencia a sus datos, por lo que esta empresa no se puede restablecer. No se eliminó nada.",
+  "system.factory_reset.held_elsewhere": "Esta empresa no se puede restablecer porque hay registros en {table} que pertenecen a otra empresa y hacen referencia a sus datos. No se eliminó nada.",
   "system.factory_reset.name_mismatch": "Escriba el nombre de la empresa exactamente como se muestra para restablecer esta empresa.",
   "system.factory_reset.reference_cycle": "Las tablas {tables} se hacen referencia entre sí en un ciclo, por lo que esta empresa no se puede restablecer. No se eliminó nada.",
   "settings.click_to_edit": "Haz clic para editar",

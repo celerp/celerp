@@ -2580,7 +2580,7 @@
   "settings.type_reset_prefix": "Geben Sie ",
   "settings.type_reset_suffix": " ein, um zu bestätigen. Dieser Vorgang kann nicht rückgängig gemacht werden.",
   "settings.delete_everything": "Alles löschen",
-  "system.factory_reset.held_elsewhere": "Einige Datensätze in {table} gehören nicht nur zu dieser Firma und verweisen auf deren Daten. Daher kann diese Firma nicht zurückgesetzt werden. Es wurde nichts gelöscht.",
+  "system.factory_reset.held_elsewhere": "Diese Firma kann nicht zurückgesetzt werden, weil Datensätze in {table}, die zu einer anderen Firma gehören, auf ihre Daten verweisen. Es wurde nichts gelöscht.",
   "system.factory_reset.name_mismatch": "Geben Sie den Firmennamen genau wie angezeigt ein, um diese Firma zurückzusetzen.",
   "system.factory_reset.reference_cycle": "Die Tabellen {tables} verweisen in einer Schleife aufeinander. Daher kann diese Firma nicht zurückgesetzt werden. Es wurde nichts gelöscht.",
   "settings.click_to_edit": "Zum Bearbeiten anklicken",

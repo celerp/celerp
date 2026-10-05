@@ -2579,7 +2579,7 @@
   "settings.type_reset_prefix": "พิมพ์ ",
   "settings.type_reset_suffix": " เพื่อยืนยัน การดำเนินการนี้ไม่สามารถย้อนกลับได้",
   "settings.delete_everything": "ลบทั้งหมด",
-  "system.factory_reset.held_elsewhere": "มีระเบียนใน {table} ที่ไม่ได้เป็นของบริษัทนี้เพียงบริษัทเดียวอ้างอิงถึงข้อมูลของบริษัท จึงรีเซ็ตบริษัทนี้ไม่ได้ ไม่มีการลบข้อมูลใด",
+  "system.factory_reset.held_elsewhere": "รีเซ็ตบริษัทนี้ไม่ได้ เพราะระเบียนใน {table} ที่เป็นของบริษัทอื่นอ้างอิงถึงข้อมูลของบริษัทนี้ ไม่มีการลบข้อมูลใด",
   "system.factory_reset.name_mismatch": "พิมพ์ชื่อบริษัทให้ตรงตามที่แสดงเพื่อรีเซ็ตบริษัทนี้",
   "system.factory_reset.reference_cycle": "ตาราง {tables} อ้างอิงถึงกันเป็นวง จึงรีเซ็ตบริษัทนี้ไม่ได้ ไม่มีการลบข้อมูลใด",
   "settings.click_to_edit": "คลิกเพื่อแก้ไข",
