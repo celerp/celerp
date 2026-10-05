@@ -3249,7 +3249,7 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
     )
 
 
-def _terms_tab(terms: list[dict], lang: str = "en", prefix: str = "terms", import_path: str | None = "/settings/import/payment-terms") -> FT:
+def _terms_tab(terms: list[dict], lang: str = "en", prefix: str = "terms") -> FT:
     def _row(idx: int, term: dict) -> FT:
         return Tr(
             _term_display_cell(idx, "name", term, prefix=prefix),
@@ -3270,9 +3270,9 @@ def _terms_tab(terms: list[dict], lang: str = "en", prefix: str = "terms", impor
         Button(t("btn.new_term"), cls="btn btn--primary",
                hx_post=f"/settings/{prefix}/new", hx_swap="none",
                hx_on__after_request="window.location.reload()"),
+        A(import_icon(), t("btn.import_payment_terms_csv"), href="/settings/import/payment-terms",
+          cls="btn btn--secondary ml-sm"),
     ]
-    if import_path:
-        actions.append(A(import_icon(), t("btn.import_payment_terms_csv"), href=import_path, cls="btn btn--secondary ml-sm"))
 
     return Div(
         Div(*actions, cls="page-actions mb-md"),
