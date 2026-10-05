@@ -61,7 +61,7 @@ async def test_subscriptions_shell_follows_browser_language(owner_ui, path):
     de = json.loads((Path(__file__).parent.parent / "ui" / "locales" / "de.json").read_text())
     r = await owner_ui.get(path, headers={"Accept-Language": "de-DE,de;q=0.9"})
     assert r.status_code == 200
-    assert json.dumps(de["shell.import_hint"], ensure_ascii=False)[1:-1] in r.text
+    assert json.dumps(de["shell.import_hint"])[1:-1] in r.text  # as the shell serializes it
     assert _EN["shell.import_hint"] not in r.text
 
 
@@ -137,3 +137,22 @@ async def test_contacts_new_button_and_placeholder_are_keyed(owner_ui, path, kin
         assert f'placeholder="{cat[f"contacts.search_{kind}s_placeholder"]}"' in r.text, (lang, path)
     assert _EN[f"contacts.new_{kind}"] == {"customer": "New Customer", "vendor": "New Vendor"}[kind]
     assert _DE[f"contacts.new_{kind}"] == {"customer": "Neuer Kunde", "vendor": "Neuer Lieferant"}[kind]
+
+
+def test_import_hint_names_the_file_and_the_template():
+    """The arrow says which file to bring: a spreadsheet saved as CSV or .xlsx, with a
+    template on the import page."""
+    hint = _EN["shell.import_hint"]
+    assert "CSV" in hint and ".xlsx" in hint, hint
+    assert "template" in hint, hint
+
+
+@pytest.mark.parametrize("path", _LIST_PAGES)
+async def test_every_import_target_takes_csv_or_xlsx_and_offers_a_template(owner_ui, path):
+    """What the arrow says holds on every page its Import button opens."""
+    r = await owner_ui.get(path)
+    href = re.search(r'<a[^>]*data-import-hint[^>]*>', _header_actions(r.text)).group(0)
+    target = re.search(r'href="([^"]+)"', href).group(1)
+    page = (await owner_ui.get(target)).text
+    assert 'accept=".csv,.xlsx"' in page, target
+    assert _EN["btn.download_template"] in page, target

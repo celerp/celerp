@@ -3619,5 +3619,5 @@
   "dashboard.getting_started_forever": "عدم الإظهار مرة أخرى",
   "dashboard.demo_note": "العناصر المميزة بـ [DEMO] هي أمثلة وهي محسوبة في هذه الأرقام. يحذفها أول استيراد للمنتجات، ما لم تكن قد عدّلتها.",
   "dashboard.getting_started_from_spreadsheet": "الاستيراد من جدول بيانات:",
-  "shell.import_hint": "انقر على استيراد لرفع ملفك"
+  "shell.import_hint": "انقر على استيراد لرفع ملف CSV أو Excel (.xlsx). تحتوي الصفحة التالية على قالب للتنزيل."
 }

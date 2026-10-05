@@ -3619,5 +3619,5 @@
   "dashboard.getting_started_forever": "Non mostrare più",
   "dashboard.demo_note": "Gli articoli contrassegnati [DEMO] sono esempi e sono inclusi in queste cifre. La prima importazione di prodotti li rimuove, a meno che tu non li abbia modificati.",
   "dashboard.getting_started_from_spreadsheet": "Importa da un foglio di calcolo:",
-  "shell.import_hint": "Fai clic su Importa per caricare il tuo file"
+  "shell.import_hint": "Fai clic su Importa per caricare un file CSV o Excel (.xlsx). La pagina successiva ha un modello da scaricare."
 }

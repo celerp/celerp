@@ -3619,5 +3619,5 @@
   "dashboard.getting_started_forever": "Ne plus afficher",
   "dashboard.demo_note": "Les articles marqués [DEMO] sont des exemples et sont inclus dans ces chiffres. Votre premier import de produits les supprime, sauf si vous les avez modifiés.",
   "dashboard.getting_started_from_spreadsheet": "Importer depuis un tableur :",
-  "shell.import_hint": "Cliquez sur Importer pour envoyer votre fichier"
+  "shell.import_hint": "Cliquez sur Importer pour envoyer un fichier CSV ou Excel (.xlsx). La page suivante propose un modèle à télécharger."
 }

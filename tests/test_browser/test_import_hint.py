@@ -17,7 +17,7 @@ from playwright.sync_api import Page, expect
 
 pytestmark = pytest.mark.browser
 
-_HINT_TEXT = "Click Import to upload your file"
+_HINT_TEXT = json.loads((Path(__file__).parents[2] / "ui" / "locales" / "en.json").read_text())["shell.import_hint"]
 _CARD_LINKS = [("Products", "/inventory"), ("Customers & suppliers", "/contacts/customers"),
                ("Documents", "/docs")]
 

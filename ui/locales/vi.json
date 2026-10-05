@@ -3619,5 +3619,5 @@
   "dashboard.getting_started_forever": "Không hiển thị lại",
   "dashboard.demo_note": "Các mục có đánh dấu [DEMO] là mẫu và được tính trong các số liệu này. Lần nhập sản phẩm đầu tiên sẽ xóa chúng, trừ khi bạn đã thay đổi chúng.",
   "dashboard.getting_started_from_spreadsheet": "Nhập từ bảng tính:",
-  "shell.import_hint": "Bấm Nhập để tải tệp của bạn lên"
+  "shell.import_hint": "Bấm Nhập để tải lên tệp CSV hoặc Excel (.xlsx). Trang tiếp theo có mẫu để tải xuống."
 }

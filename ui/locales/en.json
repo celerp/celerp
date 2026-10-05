@@ -3619,5 +3619,5 @@
   "dashboard.getting_started_forever": "Don't show this again",
   "dashboard.demo_note": "Items marked [DEMO] are samples and are counted in these figures. Your first product import removes them unless you have changed them.",
   "dashboard.getting_started_from_spreadsheet": "Import from a spreadsheet:",
-  "shell.import_hint": "Click Import to upload your file"
+  "shell.import_hint": "Click Import to upload a CSV or Excel (.xlsx) file. The next page has a template to download."
 }

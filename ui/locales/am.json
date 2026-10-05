@@ -3619,5 +3619,5 @@
   "dashboard.getting_started_forever": "ዳግም አታሳይ",
   "dashboard.demo_note": "[DEMO] የተደረገባቸው ዕቃዎች ናሙናዎች ናቸው፣ በእነዚህ አሃዞችም ውስጥ ተቆጥረዋል። የመጀመሪያው የምርት ማስገባትዎ ያስወግዳቸዋል፣ ካልቀየሯቸው በስተቀር።",
   "dashboard.getting_started_from_spreadsheet": "ከተመን ሉህ አስገባ:",
-  "shell.import_hint": "ፋይልዎን ለመስቀል አስገባን ጠቅ ያድርጉ"
+  "shell.import_hint": "የCSV ወይም የExcel (.xlsx) ፋይል ለመስቀል አስገባን ጠቅ ያድርጉ። ቀጣዩ ገጽ የሚወርድ አብነት አለው።"
 }

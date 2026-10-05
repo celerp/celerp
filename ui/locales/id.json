@@ -3619,5 +3619,5 @@
   "dashboard.getting_started_forever": "Jangan tampilkan lagi",
   "dashboard.demo_note": "Item bertanda [DEMO] adalah contoh dan ikut dihitung dalam angka ini. Impor produk pertama Anda menghapusnya, kecuali Anda telah mengubahnya.",
   "dashboard.getting_started_from_spreadsheet": "Impor dari spreadsheet:",
-  "shell.import_hint": "Klik Impor untuk mengunggah file Anda"
+  "shell.import_hint": "Klik Impor untuk mengunggah file CSV atau Excel (.xlsx). Halaman berikutnya menyediakan templat untuk diunduh."
 }

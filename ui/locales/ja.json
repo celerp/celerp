@@ -3619,5 +3619,5 @@
   "dashboard.getting_started_forever": "今後表示しない",
   "dashboard.demo_note": "[DEMO] の付いた品目はサンプルで、これらの数値に含まれています。最初の商品インポートで削除されます（変更したものは残ります）。",
   "dashboard.getting_started_from_spreadsheet": "スプレッドシートからインポート:",
-  "shell.import_hint": "インポートをクリックしてファイルをアップロード"
+  "shell.import_hint": "インポートをクリックして CSV または Excel (.xlsx) ファイルをアップロードします。次のページでテンプレートをダウンロードできます。"
 }
