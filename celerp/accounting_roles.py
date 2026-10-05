@@ -187,6 +187,10 @@ LANDED_KIND_BY_ROLE: dict[str, str] = {role.value: kind for kind, role in LANDED
 INVENTORY_VALUE_ROLES: frozenset[AccountRole] = frozenset({
     R.INVENTORY, R.INVENTORY_PURCHASED, R.INVENTORY_OPENING, *LANDED_ROLE_BY_KIND.values()})
 
+# Roles whose recognized balance keeps moving on the account it was recognized on, after
+# a remap (account_roles.continue_role): such an account stays usable while it holds one.
+CONTINUED_ROLES: tuple[AccountRole, ...] = (R.WORK_IN_PROGRESS, R.INVENTORY_OPENING)
+
 # Roles grouped by the workflow that needs them, for migration readiness and the
 # Settings panel. A group's roles only block finalization when the company uses it.
 ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {

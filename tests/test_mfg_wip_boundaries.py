@@ -6,8 +6,9 @@ A locked day refuses receiving and completing as it refuses issuing. A run, its
 components and its account belong to one company and are absent to every other. Labor
 and overhead stay planning data: a run carries only the value of the materials issued
 to it. A component's cost cannot be corrected once part of it went into a run, so the
-run keeps the value it was given. A run whose work in progress account can no longer take postings is refused
-rather than moved somewhere else.
+run keeps the value it was given. The account a run's balance stays on after a
+remap cannot be switched off while it carries that balance, and a run whose account can
+no longer take postings anyway is refused rather than moved somewhere else.
 """
 from __future__ import annotations
 
@@ -16,8 +17,10 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy import update
 
-from mfg_runs import WIP, complete, issue, product, receive, role, run, set_settings, snapshot
+from celerp_accounting.models import Account
+from mfg_runs import WIP, balances, complete, issue, product, receive, role, run, set_settings, snapshot
 from stock_books import assert_settled
 from test_cost_restatement import TZ, _item, _set_cost, _state, company_auth
 from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
@@ -88,16 +91,43 @@ async def test_labor_and_overhead_are_not_added_to_work_in_progress(client, sess
     await assert_settled(client, session, auth)
 
 
-async def test_a_run_whose_account_was_switched_off_is_refused_and_changes_nothing(client, session, auth):
-    raw, item, order = await _issued(client, auth)
+async def _moved_on(client, session, auth) -> str:
+    """Work in progress remapped to a new account; returns the account the run's balance stays on."""
     first = await role(session, auth, WIP)
     r = await client.post("/accounting/accounts", headers=auth["headers"], json={
         "code": "1135", "name": "Production in progress", "account_type": "asset"})
     assert r.status_code in (200, 201), r.text
     r = await client.put(f"/accounting/posting-accounts/{WIP}", headers=auth["headers"], json={"code": "1135"})
     assert r.status_code == 200, r.text
+    return first
+
+
+async def test_an_account_still_carrying_a_runs_balance_cannot_be_switched_off(client, session, auth):
+    raw, item, order = await _issued(client, auth)
+    first = await _moved_on(client, session, auth)
+    carried = (await balances(session, auth))[first]
+
+    off = await client.patch(f"/accounting/accounts/{first}", headers=auth["headers"], json={"is_active": False})
+    assert off.status_code == 409, off.text
+    detail = off.json()["detail"]
+    assert detail["message_key"] == "posting.account_keeps_balance", off.text
+    assert (detail["params"]["code"], detail["params"]["role"]) == (first, WIP)
+    assert float(detail["params"]["balance"]) == carried
+
+    assert (await complete(client, auth, order, key="c")).status_code == 200
+    assert first not in await balances(session, auth)
     off = await client.patch(f"/accounting/accounts/{first}", headers=auth["headers"], json={"is_active": False})
     assert off.status_code == 200, off.text
+    await assert_settled(client, session, auth)
+
+
+async def test_a_run_whose_account_cannot_take_postings_is_refused_and_changes_nothing(client, session, auth):
+    """An account switched off before it could be refused (an older release, an import)."""
+    raw, item, order = await _issued(client, auth)
+    first = await _moved_on(client, session, auth)
+    await session.execute(update(Account).where(
+        Account.company_id == auth["company_id"], Account.code == first).values(is_active=False))
+    await session.commit()
     before = await snapshot(session, auth, raw, item, order)
 
     for r in (await receive(client, auth, order, 1, key="r"), await complete(client, auth, order, key="c")):

@@ -3621,6 +3621,7 @@
   "posting.problem.header": "{role} está asignada a la cuenta {code}, una cuenta de agrupación; elija una cuenta dentro de ella.",
   "posting.refused": "{problems} Elija la cuenta en Ajustes > Contabilidad > Cuentas de contabilización.",
   "posting.continued_account_unusable": "Este saldo se lleva en la cuenta {code}, que ahora no puede recibirlo: {problem} Vuelva a habilitar esa cuenta en el plan de cuentas.",
+  "posting.account_keeps_balance": "La cuenta {code} todavía lleva {balance} de {role}, que sigue moviéndose en esta cuenta hasta que se liquide, por lo que aún no se puede desactivar.",
   "posting.type_or": " o ",
   "notice.posting_unmapped.title": "Las cuentas de contabilización requieren atención",
   "notice.posting_unmapped.body": "Elija la cuenta para: {roles}. Hasta entonces, se rechaza todo lo que se contabilice en ellas.",

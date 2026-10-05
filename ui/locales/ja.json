@@ -3621,6 +3621,7 @@
   "posting.problem.header": "{role} は集計勘定 {code} に設定されています。その下の勘定を選択してください。",
   "posting.refused": "{problems} 設定 > 会計 > 転記勘定 で勘定を選択してください。",
   "posting.continued_account_unusable": "この残高は勘定 {code} に記録されていますが、現在この勘定では受け付けられません: {problem} 勘定科目表でこの勘定を再び使用できるようにしてください。",
+  "posting.account_keeps_balance": "勘定 {code} には {role} の残高 {balance} がまだあり、精算されるまでこの勘定で動き続けるため、まだ無効にできません。",
   "posting.type_or": " または ",
   "notice.posting_unmapped.title": "転記勘定の確認が必要です",
   "notice.posting_unmapped.body": "次の勘定を選択してください: {roles}。選択するまで、これらへの転記はすべて拒否されます。",

@@ -3621,6 +3621,7 @@
   "posting.problem.header": "{role} diatur ke akun {code}, sebuah akun induk; pilih akun di bawahnya.",
   "posting.refused": "{problems} Pilih akunnya di Pengaturan > Akuntansi > Akun posting.",
   "posting.continued_account_unusable": "Saldo ini dicatat pada akun {code}, yang saat ini tidak dapat menerimanya: {problem} Aktifkan kembali akun tersebut di bagan akun.",
+  "posting.account_keeps_balance": "Akun {code} masih membawa {balance} untuk {role}, yang tetap bergerak di akun ini sampai dilunasi, jadi akun ini belum bisa dinonaktifkan.",
   "posting.type_or": " atau ",
   "notice.posting_unmapped.title": "Akun posting perlu diperhatikan",
   "notice.posting_unmapped.body": "Pilih akun untuk: {roles}. Sampai saat itu, semua yang diposting ke sana ditolak.",

@@ -3621,6 +3621,7 @@
   "posting.problem.header": "{role} được đặt là tài khoản {code}, một tài khoản tổng hợp; hãy chọn một tài khoản bên dưới nó.",
   "posting.refused": "{problems} Hãy chọn tài khoản trong Cài đặt > Kế toán > Tài khoản ghi sổ.",
   "posting.continued_account_unusable": "Số dư này được giữ trên tài khoản {code}, hiện không thể nhận số dư: {problem} Hãy cho phép dùng lại tài khoản đó trong hệ thống tài khoản.",
+  "posting.account_keeps_balance": "Tài khoản {code} vẫn còn {balance} của {role}, số dư này tiếp tục được ghi trên tài khoản này cho đến khi tất toán, nên chưa thể tắt tài khoản.",
   "posting.type_or": " hoặc ",
   "notice.posting_unmapped.title": "Tài khoản ghi sổ cần được xem xét",
   "notice.posting_unmapped.body": "Hãy chọn tài khoản cho: {roles}. Cho đến lúc đó, mọi bút toán ghi vào chúng đều bị từ chối.",

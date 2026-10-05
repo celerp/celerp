@@ -3621,6 +3621,7 @@
   "posting.problem.header": "{role} ወደ ርዕስ ሒሳብ {code} ተዘጋጅቷል፤ ከሥሩ ያለ ሒሳብ ይምረጡ።",
   "posting.refused": "{problems} ሒሳቡን በቅንብሮች > ሒሳብ አያያዝ > የመመዝገቢያ ሒሳቦች ውስጥ ይምረጡ።",
   "posting.continued_account_unusable": "ይህ ቀሪ ሒሳብ በሒሳብ {code} ላይ ተይዟል፣ ይህም አሁን ሊቀበለው አይችልም፦ {problem} ያንን ሒሳብ በሒሳቦች ሰንጠረዥ ውስጥ እንደገና ጥቅም ላይ የሚውል ያድርጉት።",
+  "posting.account_keeps_balance": "መለያ {code} አሁንም የ{role} {balance} ይዟል፤ ይህ ቀሪ ሂሳብ እስኪጣራ ድረስ በዚህ መለያ ላይ ይንቀሳቀሳል፣ ስለዚህ መለያውን ገና ማጥፋት አይቻልም።",
   "posting.type_or": " ወይም ",
   "notice.posting_unmapped.title": "የመመዝገቢያ ሒሳቦች ትኩረት ያስፈልጋቸዋል",
   "notice.posting_unmapped.body": "ሒሳቡን ይምረጡ ለ፦ {roles}። እስከዚያው ድረስ ወደነሱ የሚመዘገብ ማንኛውም ነገር ውድቅ ይደረጋል።",

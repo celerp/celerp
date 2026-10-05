@@ -151,7 +151,8 @@ def _balance(entries: list[tuple[str, dict]], code: str) -> Decimal:
                 for _, e in entries if e.get("account") == code), Decimal("0"))
 
 
-async def _balances(session: AsyncSession, company_id, codes) -> dict[str, Decimal]:
+async def account_balances(session: AsyncSession, company_id, codes) -> dict[str, Decimal]:
+    """The posted balance (debit less credit) of each of ``codes``, read once."""
     entries = await _posted_entries(session, company_id)
     return {code: _balance(entries, code) for code in codes}
 
@@ -501,7 +502,7 @@ async def _normalize(session: AsyncSession, company_id, user_id) -> bool:
         return True
     production = await in_production(session, company_id)
     value = round_money(sum((v for _, v in held), Decimal("0")) + production, currency)
-    balance = await _balances(session, company_id, (p, ob))
+    balance = await account_balances(session, company_id, (p, ob))
     if round_money(balance[p] + balance[ob], currency) < value:
         # an older release brought its opening inventory entry current only when the
         # balance sheet was opened: book what it would have, then compare
@@ -513,7 +514,7 @@ async def _normalize(session: AsyncSession, company_id, user_id) -> bool:
             if exc.status_code == 422:
                 raise _Retry from exc
             raise
-        balance = await _balances(session, company_id, (p, ob))
+        balance = await account_balances(session, company_id, (p, ob))
     books = round_money(balance[p] + balance[ob], currency)
     day = business_date_of(None, settings.get("timezone"))
     kept: list[Projection] = []

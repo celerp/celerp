@@ -3621,6 +3621,7 @@
   "posting.problem.header": "{role} est défini sur le compte {code}, un compte de regroupement ; choisissez un compte en dessous.",
   "posting.refused": "{problems} Choisissez le compte dans Paramètres > Comptabilité > Comptes d'imputation.",
   "posting.continued_account_unusable": "Ce solde est tenu sur le compte {code}, qui ne peut pas le recevoir pour l'instant : {problem} Rendez ce compte à nouveau utilisable dans le plan comptable.",
+  "posting.account_keeps_balance": "Le compte {code} porte encore {balance} au titre de {role}, qui continue d'être mouvementé sur ce compte jusqu'à son apurement ; il ne peut donc pas encore être désactivé.",
   "posting.type_or": " ou ",
   "notice.posting_unmapped.title": "Les comptes d'imputation demandent votre attention",
   "notice.posting_unmapped.body": "Choisissez le compte pour : {roles}. D'ici là, toute écriture vers ces comptes est refusée.",

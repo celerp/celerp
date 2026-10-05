@@ -3621,6 +3621,7 @@
   "posting.problem.header": "{role} ist auf Konto {code} gesetzt, ein Sammelkonto; wählen Sie ein Konto darunter.",
   "posting.refused": "{problems} Wählen Sie das Konto unter Einstellungen > Buchhaltung > Buchungskonten.",
   "posting.continued_account_unusable": "Dieser Saldo wird auf Konto {code} geführt, das ihn derzeit nicht aufnehmen kann: {problem} Machen Sie dieses Konto im Kontenplan wieder nutzbar.",
+  "posting.account_keeps_balance": "Konto {code} führt noch {balance} für {role}. Dieser Saldo wird bis zu seinem Ausgleich auf diesem Konto bewegt, daher kann das Konto noch nicht deaktiviert werden.",
   "posting.type_or": " oder ",
   "notice.posting_unmapped.title": "Buchungskonten erfordern Aufmerksamkeit",
   "notice.posting_unmapped.body": "Wählen Sie das Konto für: {roles}. Bis dahin wird alles abgelehnt, was darauf bucht.",

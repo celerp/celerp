@@ -3621,6 +3621,7 @@
   "posting.problem.header": "{role} is set to account {code}, a header account; choose an account under it.",
   "posting.refused": "{problems} Choose the account in Settings > Accounting > Posting accounts.",
   "posting.continued_account_unusable": "This balance is kept on account {code}, which cannot take it now: {problem} Make that account usable again in the chart of accounts.",
+  "posting.account_keeps_balance": "Account {code} still carries {balance} of {role}, which keeps moving on this account until it is cleared, so it cannot be switched off yet.",
   "posting.type_or": " or ",
   "notice.posting_unmapped.title": "Posting accounts need attention",
   "notice.posting_unmapped.body": "Choose the account for: {roles}. Until then, anything that posts to them is refused.",

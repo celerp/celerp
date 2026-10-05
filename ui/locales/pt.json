@@ -3621,6 +3621,7 @@
   "posting.problem.header": "{role} está definida para a conta {code}, uma conta sintética; escolha uma conta abaixo dela.",
   "posting.refused": "{problems} Escolha a conta em Configurações > Contabilidade > Contas de lançamento.",
   "posting.continued_account_unusable": "Este saldo é mantido na conta {code}, que não pode recebê-lo agora: {problem} Torne essa conta utilizável novamente no plano de contas.",
+  "posting.account_keeps_balance": "A conta {code} ainda tem {balance} de {role}, que continua a movimentar-se nesta conta até ser liquidado, por isso ainda não pode ser desativada.",
   "posting.type_or": " ou ",
   "notice.posting_unmapped.title": "As contas de lançamento precisam de atenção",
   "notice.posting_unmapped.body": "Escolha a conta para: {roles}. Até lá, tudo o que for lançado nelas é recusado.",

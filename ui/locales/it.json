@@ -3621,6 +3621,7 @@
   "posting.problem.header": "{role} è impostato sul conto {code}, un conto di raggruppamento; scegliere un conto al suo interno.",
   "posting.refused": "{problems} Scegliere il conto in Impostazioni > Contabilità > Conti di registrazione.",
   "posting.continued_account_unusable": "Questo saldo è tenuto sul conto {code}, che ora non può riceverlo: {problem} Rendere di nuovo utilizzabile quel conto nel piano dei conti.",
+  "posting.account_keeps_balance": "Il conto {code} riporta ancora {balance} di {role}, che continua a muoversi su questo conto finché non viene azzerato, quindi non può ancora essere disattivato.",
   "posting.type_or": " o ",
   "notice.posting_unmapped.title": "I conti di registrazione richiedono attenzione",
   "notice.posting_unmapped.body": "Scegliere il conto per: {roles}. Fino ad allora, ogni registrazione su di essi viene rifiutata.",

@@ -21,10 +21,11 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import POSTABLE_ROLES, ROLE_LABELS, AccountRole, allowed_types
+from celerp.accounting_roles import CONTINUED_ROLES, POSTABLE_ROLES, ROLE_LABELS, AccountRole, allowed_types, refusal
 from celerp.models.projections import Projection
-from celerp.services.account_roles import current_settings, role_map
+from celerp.services.account_roles import current_settings, role_map, scope_codes
 from celerp.services.company_lock import lock_chart
+from celerp.services.lot_origin import account_balances
 from celerp_accounting.models import Account
 
 # The account types an account may sit under. Cost of sales and operating expenses
@@ -213,6 +214,14 @@ async def change_account(
                    "Choose another account in Settings > Accounting > Posting accounts first.",
         )
     if is_active is False and acc.is_active:
+        kept = [r for r in CONTINUED_ROLES if code in scope_codes(settings, r.value)]
+        if kept and (balance := (await account_balances(session, company_id, {code}))[code]):
+            # A remap leaves such a balance where it was recognized (account_roles.continue_role).
+            raise HTTPException(status_code=409, detail=refusal(
+                "posting.account_keeps_balance",
+                (f"Account {code} still carries {balance} of {ROLE_LABELS[kept[0]]}, which keeps moving "
+                 "on this account until it is cleared, so it cannot be switched off yet."),
+                code=code, role=kept[0].value, balance=str(balance)))
         active_children = (await session.execute(
             select(Account.code).where(
                 Account.company_id == company_id, Account.parent_code == code, Account.is_active.is_(True),
