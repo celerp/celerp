@@ -22,7 +22,7 @@ from celerp.output.document_context import prepare_document_output
 from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
-from ui.components.table import breadcrumbs, display_enum, pagination, per_page_value, search_bar, status_cards
+from ui.components.table import breadcrumbs, display_enum, empty_state_cta, pagination, per_page_value, search_bar, status_cards
 from ui.config import get_token as _token, get_role as _get_role
 from ui.routes.settings import _check_permission
 from ui.i18n import t
@@ -84,7 +84,8 @@ def _sub_status_cards(items: list[dict], active_status: str, direction: str) -> 
 
 def _sub_table(subs: list[dict], direction: str) -> FT:
     if not subs:
-        return Div(P(t("label.no_subscription_templates_found"), cls="text-muted empty-state"), id="sub-table")
+        return Div(empty_state_cta(t("label.no_subscription_templates_found"), t("page.new_subscription"),
+                                   f"/subscriptions/new?direction={direction}", hx_post=True), id="sub-table")
 
     def _row(s: dict) -> FT:
         eid = s.get("id") or s.get("entity_id", "")
