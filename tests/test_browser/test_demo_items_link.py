@@ -164,6 +164,13 @@ def test_select_all_and_delete_removes_exactly_the_demo_items(page: Page, fresh_
     expect(page.locator(".import-arrow")).to_be_visible()
     _select_all_and_delete(page)
     assert sorted(i["name"] for i in _items(fresh_company)) == _KEPT
+    en = json.loads((_LOCALES / "en.json").read_text())
+    expect(page.locator("#data-table")).to_contain_text(en["inventory.no_demo_items"])
+    banner = page.locator(".holdings-scope-banner")
+    expect(banner).to_contain_text(en["inventory.demo_scope_label"])
+    banner.get_by_role("link", name=en["table.clear_filter_btn"]).click()
+    page.wait_for_url("**/inventory")
+    expect(page.locator("#data-table tbody tr")).to_have_count(len(_KEPT))
     page.goto("/dashboard")
     expect(page.locator("h1.page-title")).to_be_visible()
     expect(page.locator("#demo-note")).to_have_count(0)
