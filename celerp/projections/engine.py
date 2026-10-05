@@ -87,7 +87,7 @@ async def unhandled_event_types(session, company_id=None) -> set[str]:
     """Ledger event types a replay cannot apply as written: not in the event catalog, or
     owned by a module whose handler is not running, which would fold them into records as
     raw data."""
-    from celerp.events.schemas import EVENT_SCHEMA_MAP
+    from celerp.events.schemas import EVENT_SCHEMA_MAP, RETIRED_EVENT_TYPES
 
     query = select(LedgerEntry.event_type).distinct()
     if company_id:
@@ -95,7 +95,7 @@ async def unhandled_event_types(session, company_id=None) -> set[str]:
     types = set((await session.execute(query)).scalars())
     running = _get_module_handlers()
     declared = _declared_prefixes()
-    return {t for t in types if t not in EVENT_SCHEMA_MAP
+    return {t for t in types if (t not in EVENT_SCHEMA_MAP and t not in RETIRED_EVENT_TYPES)
             or (not any(t.startswith(p) for p in running) and any(t.startswith(p) for p in declared))}
 
 

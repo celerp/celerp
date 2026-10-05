@@ -921,6 +921,7 @@ class MfgOrderScheduled(BaseModel):
 # The standalone BOM entity was retired (recipes live on the inventory item). Its bom.* event
 # schemas are gone too: nothing emits them, and historical bom.* events replay through the
 # projection engine's default merge handler, which does not validate against EVENT_SCHEMA_MAP.
+RETIRED_EVENT_TYPES = frozenset({"bom.created", "bom.updated", "bom.deleted"})
 
 # -----------------
 # Scanning

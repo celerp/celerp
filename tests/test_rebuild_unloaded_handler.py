@@ -61,3 +61,29 @@ async def test_full_rebuild_with_a_module_handler_not_running_is_refused(client,
         slots._slots.clear()
         slots._slots.update(saved)
     assert "crm.contact.created" in raised.value.event_types
+
+
+@pytest.mark.asyncio
+async def test_ledger_with_retired_bom_events_still_rebuilds(client, session):
+    """bom.* events written by celerp-manufacturing v1.0 to v1.1.x have no module
+    that writes them anymore; they replay through the default merge, so the
+    company rebuild and the installation-wide rebuild both go ahead."""
+    from celerp.models.ledger import LedgerEntry
+    from celerp.projections.engine import ProjectionEngine
+    h = {"Authorization": f"Bearer {await register_admin(client)}"}
+    cid = uuid.UUID(str((await client.get("/companies/me", headers=h)).json()["id"]))
+    r = await client.post("/crm/contacts", json={"name": "Alice"}, headers=h)
+    assert r.status_code == 200, r.text
+    bom = f"bom:{uuid.uuid4()}"
+    for event_type, data in (("bom.created", {"name": "Old recipe", "components": []}),
+                             ("bom.updated", {"name": "Older recipe"}),
+                             ("bom.deleted", {})):
+        session.add(LedgerEntry(
+            company_id=cid, entity_id=bom, entity_type="bom", event_type=event_type, data=data,
+            source="api", idempotency_key=str(uuid.uuid4()), metadata_={}))
+    await session.commit()
+
+    r = await client.post("/ledger/rebuild", headers=h)
+    assert r.status_code == 200, r.text
+    await ProjectionEngine.rebuild(session)
+    assert bom in await _rows(session, cid)
