@@ -7618,6 +7618,26 @@ async def receive_return(
     return result
 
 
+def _parcel_moved_on(item_state: dict | None, item_id: str, came_in: float) -> str | None:
+    """Why a parcel a receipt created can no longer be taken back whole, or None when it is
+    still as the receipt left it: available, holding what came in, none of it reserved.
+    A split, a sale or an adjustment changes what it holds, so undoing the receipt would
+    leave the moved part behind outside it."""
+    if item_state is None:
+        return f"{item_id} (not found - may have already been removed)"
+    sku = item_state.get("sku") or item_id
+    status = item_state.get("status") or "unknown"
+    if status != "available":
+        return f"SKU '{sku}' is '{status}' - cannot archive"
+    held = float(item_state.get("quantity") or 0)
+    if abs(held - came_in) > 1e-9:
+        return f"SKU '{sku}' holds {held:g} of the {came_in:g} that came in (split, sold or adjusted since)"
+    reserved = float(item_state.get("reserved_quantity") or 0)
+    if reserved > 0:
+        return f"SKU '{sku}' has {reserved:g} reserved"
+    return None
+
+
 @router.delete("/{entity_id}/receive-return")
 async def undo_receive_return(
     entity_id: str,
@@ -7647,19 +7667,13 @@ async def undo_receive_return(
     }
     total_cogs = sum(lot_costs.values())
 
-    # Pre-flight: verify every returned item is still "available" before archiving.
-    # If an item was re-sold or already archived, we cannot silently remove it.
+    # Pre-flight: every returned item is still as the return left it before archiving.
+    # If an item was re-sold, split or already archived, we cannot silently remove it.
     if item_ids:
         item_rows = {eid: r.state for eid, r in (await lock_projections(session, company_id, item_ids)).items()}
-        blocked: list[str] = []
-        for iid in item_ids:
-            item_state = item_rows.get(iid)
-            if item_state is None:
-                blocked.append(f"{iid} (not found - may have already been removed)")
-            elif item_state.get("status") != "available":
-                sku = item_state.get("sku") or iid
-                status = item_state.get("status") or "unknown"
-                blocked.append(f"SKU '{sku}' is '{status}' - cannot archive")
+        came_in = {r["item_id"]: float(r.get("quantity") or 0) for r in received_items if r.get("item_id")}
+        blocked = [why for iid in item_ids
+                   if (why := _parcel_moved_on(item_rows.get(iid), iid, came_in[iid])) is not None]
         if blocked:
             raise HTTPException(
                 status_code=409,
@@ -7756,18 +7770,12 @@ async def undo_receive(
 
     now = datetime.now(timezone.utc).isoformat()
 
-    # Pre-flight: every parcel is still available and every lot still holds what came in.
+    # Pre-flight: every parcel is still as the receipt left it and every lot still holds what came in.
     item_rows = {eid: r.state for eid, r in
                  (await lock_projections(session, company_id, [*received_item_ids, *added])).items()}
-    blocked: list[str] = []
-    for iid in received_item_ids:
-        item_state = item_rows.get(iid)
-        if item_state is None:
-            blocked.append(f"{iid} (not found - may have already been removed)")
-        elif item_state.get("status") != "available":
-            sku = item_state.get("sku") or iid
-            status = item_state.get("status") or "unknown"
-            blocked.append(f"SKU '{sku}' is '{status}' - cannot archive")
+    came_in = await _returnable_quantities(session, company_id, state)
+    blocked = [why for iid in received_item_ids
+               if (why := _parcel_moved_on(item_rows.get(iid), iid, came_in.get(iid, 0.0))) is not None]
     for lot, (qty, _) in added.items():
         lot_state = item_rows.get(lot) or {}
         on_hand = float(lot_state.get("quantity") or 0)
