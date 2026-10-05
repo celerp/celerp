@@ -1800,6 +1800,7 @@
   "shell.js_downloading_pct": "Baixando... {pct}%",
   "shell.js_version_ready": "v{version} pronto para instalação",
   "shell.update_check_failed": "Falha na verificação de atualizações",
+  "shell.update_download_failed": "Falha no download da atualização",
   "shell.error_prefix": "Erro:",
   "shell.checking": "Verificando...",
   "shell.restarting": "Reiniciando...",

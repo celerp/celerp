@@ -1800,6 +1800,7 @@
   "shell.js_downloading_pct": "جاري التنزيل... {pct}%",
   "shell.js_version_ready": "الإصدار v{version} جاهز للتثبيت",
   "shell.update_check_failed": "فشل التحقق من التحديث",
+  "shell.update_download_failed": "فشل تنزيل التحديث",
   "shell.error_prefix": "خطأ:",
   "shell.checking": "جاري التحقق...",
   "shell.restarting": "جاري إعادة التشغيل...",

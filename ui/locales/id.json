@@ -1800,6 +1800,7 @@
   "shell.js_downloading_pct": "Sedang mengunduh... {pct}%",
   "shell.js_version_ready": "v{version} siap diinstal",
   "shell.update_check_failed": "Pemeriksaan pembaruan gagal",
+  "shell.update_download_failed": "Pengunduhan pembaruan gagal",
   "shell.error_prefix": "Kesalahan:",
   "shell.checking": "Memeriksa...",
   "shell.restarting": "Sedang memulai ulang...",

@@ -1800,6 +1800,7 @@
   "shell.js_downloading_pct": "Đang tải xuống... {pct}%",
   "shell.js_version_ready": "v{version} đã sẵn sàng để cài đặt",
   "shell.update_check_failed": "Kiểm tra cập nhật không thành công",
+  "shell.update_download_failed": "Tải xuống bản cập nhật không thành công",
   "shell.error_prefix": "Lỗi:",
   "shell.checking": "Đang kiểm tra...",
   "shell.restarting": "Đang khởi động lại...",

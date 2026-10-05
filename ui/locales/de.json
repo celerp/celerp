@@ -1801,6 +1801,7 @@
   "shell.js_downloading_pct": "Wird heruntergeladen... {pct} %",
   "shell.js_version_ready": "v{version} bereit zur Installation",
   "shell.update_check_failed": "Update-Prüfung fehlgeschlagen",
+  "shell.update_download_failed": "Update-Download fehlgeschlagen",
   "shell.error_prefix": "Fehler:",
   "shell.checking": "Wird geprüft...",
   "shell.restarting": "Neustart...",

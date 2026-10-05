@@ -1800,6 +1800,7 @@
   "shell.js_downloading_pct": "กำลังดาวน์โหลด... {pct}%",
   "shell.js_version_ready": "v{version} พร้อมติดตั้งแล้ว",
   "shell.update_check_failed": "การตรวจสอบอัปเดตล้มเหลว",
+  "shell.update_download_failed": "การดาวน์โหลดอัปเดตล้มเหลว",
   "shell.error_prefix": "ข้อผิดพลาด:",
   "shell.checking": "กำลังตรวจสอบ...",
   "shell.restarting": "กำลังรีสตาร์ท...",

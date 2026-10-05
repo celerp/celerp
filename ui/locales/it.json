@@ -1801,6 +1801,7 @@
   "shell.js_downloading_pct": "Download in corso... {pct}%",
   "shell.js_version_ready": "v{version} pronto per l’installazione",
   "shell.update_check_failed": "Verifica aggiornamenti non riuscita",
+  "shell.update_download_failed": "Download dell'aggiornamento non riuscito",
   "shell.error_prefix": "Errore:",
   "shell.checking": "Verifica in corso...",
   "shell.restarting": "Riavvio in corso...",

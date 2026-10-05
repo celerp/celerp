@@ -1922,6 +1922,7 @@
   "shell.js_downloading_pct": "Downloading... {pct}%",
   "shell.js_version_ready": "v{version} ready to install",
   "shell.update_check_failed": "Update check failed",
+  "shell.update_download_failed": "Update download failed",
   "shell.error_prefix": "Error:",
   "shell.checking": "Checking...",
   "shell.restarting": "Restarting...",

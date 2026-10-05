@@ -1105,7 +1105,7 @@ document.addEventListener('DOMContentLoaded', function() {
           setCheckBtn(false);
           setProgress(-1);
         } else if (s.status === 'error') {
-          setState(i18n.updateCheckFailed, false);
+          setState(s.downloadFailed ? i18n.updateDownloadFailed : i18n.updateCheckFailed, false);
           resetToIdle();
         } else {
           setState(i18n.upToDate, false);
@@ -1667,6 +1667,7 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "versionReady": t("shell.js_version_ready", lang),
         "updateReady": t("shell.js_update_ready", lang),
         "updateCheckFailed": t("shell.update_check_failed", lang),
+        "updateDownloadFailed": t("shell.update_download_failed", lang),
         "checking": t("shell.checking", lang),
         "restarting": t("shell.restarting", lang),
         "updateAvailablePrefix": t("shell.update_available_prefix", lang),

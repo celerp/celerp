@@ -1903,6 +1903,7 @@
   "shell.js_downloading_pct": "በማውረድ ላይ... {pct}%",
   "shell.js_version_ready": "v{version} ለመጫን ዝግጁ ነው",
   "shell.update_check_failed": "የማዘመን ፍተሻ አልተሳካም",
+  "shell.update_download_failed": "የማዘመን ማውረድ አልተሳካም",
   "shell.error_prefix": "ስህተት፦",
   "shell.checking": "በማጣራት ላይ...",
   "shell.restarting": "እንደገና በመጀመር ላይ...",

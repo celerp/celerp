@@ -1801,6 +1801,7 @@
   "shell.js_downloading_pct": "Téléchargement en cours... {pct} %",
   "shell.js_version_ready": "v{version} prêt à être installé",
   "shell.update_check_failed": "Échec de la recherche de mise à jour",
+  "shell.update_download_failed": "Échec du téléchargement de la mise à jour",
   "shell.error_prefix": "Erreur :",
   "shell.checking": "Vérification en cours...",
   "shell.restarting": "Redémarrage en cours...",
