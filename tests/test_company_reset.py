@@ -334,7 +334,7 @@ async def test_a_hidden_star_card_stays_hidden_after_a_reset(real_engine, real_c
     never brings it back for anyone."""
     from celerp.routers import stars
 
-    async def no_relay(medium):
+    async def no_relay(medium, lang):
         return None
     monkeypatch.setattr(stars, "get_star_cta", no_relay)
     _local_files(monkeypatch, tmp_path)

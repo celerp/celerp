@@ -20,6 +20,7 @@ from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
 from celerp.services.runtime_state import dismiss_star_prompt, star_prompt_dismissed
 from celerp.services.star_cta import get_star_cta, neutral_cta
+from ui.i18n import available_langs
 
 router = APIRouter()
 
@@ -27,14 +28,19 @@ router = APIRouter()
 @router.get("/cta")
 async def star_cta(
     medium: str = "footer",
+    lang: str = "en",
     _company=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Return the relay-resolved CTA for ``medium`` (or the neutral link if the relay
-    is unreachable), plus the install-level dismissed flag. Neutral mode when disabled."""
+    """Return the relay-resolved CTA for ``medium`` with its copy asked for in the UI
+    language ``lang`` (English when it is not one of the app's languages), or the neutral
+    link if the relay is unreachable, plus the install-level dismissed flag. Neutral mode
+    when disabled."""
     if not settings.star_cta_enabled:
         return {"mode": "neutral"}
-    cta = await get_star_cta(medium) or neutral_cta(medium)
+    if lang not in available_langs():
+        lang = "en"
+    cta = await get_star_cta(medium, lang) or neutral_cta(medium)
     return {**cta, "dismissed": await star_prompt_dismissed(session)}
 
 

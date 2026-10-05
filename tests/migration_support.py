@@ -302,16 +302,20 @@ async def real_engine(_db_engine, monkeypatch):
 
     from celerp.models.base import Base
 
+    from celerp.services.runtime_state import _drain_cache_bust
+
     # migration_cleanup_tasks, connector_configs and the payment tables have no foreign keys, so
-    # the cascade from companies misses them.
+    # the cascade from companies misses them; system_runtime_state is the installation's own
+    # state (the star card dismissal), which a reset keeps.
     tables = ", ".join(t for t in ("users", "companies", "migration_cleanup_tasks", "connector_configs",
                                    "payment_closures", "payment_recoveries", "unmatched_payments",
-                                   "unmatched_refunds")
+                                   "unmatched_refunds", "system_runtime_state")
                        if t in Base.metadata.tables)
 
     async def _truncate():
         async with engine.begin() as conn:
             await conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+        _drain_cache_bust()
 
     await _truncate()
     monkeypatch.setattr(celerp.db, "engine", engine)

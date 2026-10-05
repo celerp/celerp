@@ -74,3 +74,34 @@ async def test_dismiss_then_cta_shows_dismissed(client):
 async def test_cta_requires_auth(client):
     r = await client.get("/stars/cta")
     assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_cta_asks_the_relay_in_the_ui_language(owner_ui, monkeypatch):
+    """The star card asks for its copy in the language the page is shown in: the UI
+    proxy forwards it and the API passes it on to the relay request."""
+    from httpx import ASGITransport, AsyncClient
+
+    from celerp.main import app
+
+    def bridged(tok, timeout=10.0, follow_redirects=False):
+        return AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           headers={"Authorization": f"Bearer {tok}"})
+
+    monkeypatch.setattr("ui.api_client._local_client", bridged)
+    asked = AsyncMock(return_value={"mode": "founding", "url": "https://celerp.com/github"})
+    owner_ui.cookies.set("celerp_lang", "de")
+    with patch("celerp.routers.stars.get_star_cta", new=asked):
+        r = await owner_ui.get("/stars/cta", params={"medium": "dashboard"})
+    assert r.status_code == 200, r.text
+    asked.assert_awaited_once_with("dashboard", "de")
+
+
+@pytest.mark.asyncio
+async def test_cta_language_outside_the_catalogs_asks_in_english(client):
+    token = await _register(client, "lang")
+    asked = AsyncMock(return_value=None)
+    with patch("celerp.routers.stars.get_star_cta", new=asked):
+        r = await client.get("/stars/cta", headers=_h(token), params={"medium": "footer", "lang": "xx-evil"})
+    assert r.status_code == 200
+    asked.assert_awaited_once_with("footer", "en")
