@@ -1406,7 +1406,10 @@ def data_table(
             )
         ]
         status_val = str(row.get("status", "") or "").lower()
+        # autocomplete off: the stored selection decides the tick, never the browser
+        # restoring a form on Back or Forward.
         checkbox_td = [Td(Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
+                     autocomplete="off",
                      data_entity_id=entity_id,
                      data_sku=row.get("sku", ""),
                      data_name=row.get("name", ""),

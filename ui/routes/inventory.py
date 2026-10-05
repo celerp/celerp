@@ -3114,6 +3114,7 @@ function celerpPrintLabel(entityId, templateId) {
         # Checkbox cell (matches data_table output)
         checkbox_td = Td(
             Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
+                  autocomplete="off",
                   data_entity_id=entity_id,
                   data_sku=flat.get("sku", ""),
                   data_name=flat.get("name", ""),
