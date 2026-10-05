@@ -202,6 +202,6 @@ async def test_an_upload_holding_the_item_first_is_saved_and_the_delete_waits(co
         deleted = await asyncio.wait_for(delete, timeout=30)
 
     assert uploaded and stored
-    assert deleted == {"deleted": 1}
+    assert deleted == {"deleted": 1, "kept": 0}
     assert await _rows(committed_engine, company_id, "projections") == 0
     assert await _rows(committed_engine, company_id, "ledger") == 0

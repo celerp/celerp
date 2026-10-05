@@ -266,3 +266,26 @@ def test_hint_is_one_line_at_phone_width_in_every_language(page: Page, fresh_com
         page.wait_for_load_state("load")
         heights[lang] = round(tip.bounding_box()["height"])
     assert {lang for lang, h in heights.items() if h > heights["en"]} == set(), heights
+
+
+def test_a_sample_edited_on_the_demo_list_survives_its_delete(page: Page, fresh_company):
+    """The owner renames a listed sample inline on the demo list, then selects all and
+    chooses Delete. The renamed item is no longer a sample: it stays, and the result
+    says it was kept. Red statement: Delete removed every ticked row, so the renamed
+    item was hard-deleted with the samples."""
+    _seed(fresh_company)
+    page.goto("/inventory?filter=demo")
+    row = page.locator("#data-table tbody tr", has_text="DEMO-AGR-002")
+    row.locator("[hx-get*='/field/name/edit']").first.dblclick()
+    field = page.locator("#data-table .cell-input:visible").first
+    field.fill("Kept: edited on the demo list")
+    field.press("Enter")
+    expect(page.locator("#data-table tbody tr", has_text="Kept: edited on the demo list")).to_have_count(1)
+    page.on("dialog", lambda d: d.accept())
+    page.locator("#select-all-rows").check()
+    expect(page.locator("#bulk-count")).to_contain_text("3")
+    page.select_option("#bulk-action-select", "delete")
+    en = json.loads((_LOCALES / "en.json").read_text())
+    expect(page.locator("#bulk-action-result")).to_contain_text(
+        en["settings.business_type_changes.demo_kept"].format(count=1))
+    assert sorted(i["name"] for i in _items(fresh_company)) == sorted([*_KEPT, "Kept: edited on the demo list"])

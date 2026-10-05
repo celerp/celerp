@@ -61,7 +61,7 @@ async def test_inventory_search_box_shows_the_search_from_the_address(ui):
 async def test_bulk_delete_reloads_the_list_the_owner_is_on(ui):
     """After select-all plus Delete on the demo list, the table reloads that same
     list, not the whole catalog, so the emptied list reads as done."""
-    with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 4})):
+    with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 2, "kept": 0})):
         r = await ui.post(
             "/api/items/bulk/delete", data={"selected": ["item:a", "item:b"]},
             headers={"HX-Current-URL": "http://testserver/inventory?filter=demo&page=2"},
