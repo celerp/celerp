@@ -1007,7 +1007,7 @@ async def _check_posting_origins(
         roles = await panel(session, company_id)
         for row in (roles or {}).get("roles", []):
             if row["required"] and row["status"] != "ready":
-                findings.append({"kind": "posting_account", "role": row["role"], "problem": row["problem"],
+                findings.append({"kind": "posting_account", "role": row["role"], "problem": row["problem"]["message"],
                                  "fix": POSTING_ACCOUNTS_PATH})
 
         settings = await current_settings(session, company_id)

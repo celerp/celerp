@@ -3601,5 +3601,19 @@
   "mfg.output_in_production": "{sku} stammt aus Fertigungsauftrag {order}, der noch offen ist; seine Kosten stehen erst fest, wenn der Auftrag abgeschlossen ist. Schließen Sie den Auftrag ab, bevor Sie diesen Bestand teilen, umwandeln, verwenden, herunterzählen oder abschreiben; bis dahin kann er ganz verkauft oder zusammengeführt werden.",
   "mfg.output_memo_conversion": "Schließen Sie diesen Fertigungsauftrag ab, bevor Sie dieses Memo in eine Rechnung umwandeln. Die Kosten der Fertigerzeugnisse stehen noch nicht fest.",
   "mfg.output_cost_pending": "{sku} wird zu den Kosten von Bestand aus dem Fertigungsauftrag {order} zurückgenommen, der noch offen ist; diese Kosten stehen daher noch nicht fest. Schließen Sie den Auftrag ab, bevor Sie diese Rücksendung annehmen.",
-  "mfg.period_locked": "Die Bücher sind für {day} gesperrt, daher kann dieser Lauf erst abgestimmt werden, wenn diese Periode offen ist."
+  "mfg.period_locked": "Die Bücher sind für {day} gesperrt, daher kann dieser Lauf erst abgestimmt werden, wenn diese Periode offen ist.",
+  "posting.problem.unset": "Für {role} ist kein Konto festgelegt.",
+  "posting.problem.not_in_chart": "{role} ist auf Konto {code} gesetzt, das nicht im Kontenplan steht.",
+  "posting.problem.inactive": "{role} ist auf Konto {code} gesetzt, das inaktiv ist.",
+  "posting.problem.wrong_type": "{role} ist auf Konto {code} vom Typ {type} gesetzt; es muss vom Typ {types} sein.",
+  "posting.problem.header": "{role} ist auf Konto {code} gesetzt, ein Sammelkonto; wählen Sie ein Konto darunter.",
+  "posting.refused": "{problems} Wählen Sie das Konto unter Einstellungen > Buchhaltung > Buchungskonten.",
+  "posting.continued_account_unusable": "Dieser Saldo wird auf Konto {code} geführt, das ihn derzeit nicht aufnehmen kann: {problem} Machen Sie dieses Konto im Kontenplan wieder nutzbar.",
+  "posting.type_or": " oder ",
+  "notice.posting_unmapped.title": "Buchungskonten erfordern Aufmerksamkeit",
+  "notice.posting_unmapped.body": "Wählen Sie das Konto für: {roles}. Bis dahin wird alles abgelehnt, was darauf bucht.",
+  "notice.older_stock_unplaced.title": "Älterer Bestand braucht ein Bestandskonto",
+  "notice.older_stock_unplaced.body": "Die Bücher konnten {count} ältere Charge(n) im Bestand nicht belegen, daher ist dafür noch kein Bestandskonto erfasst. Wählen Sie das Konto jeder Charge unter Einstellungen > Buchhaltung > Buchungskonten.",
+  "notice.older_stock_moved.title": "Älterer Bestand auf gekauften Bestand umgebucht",
+  "notice.older_stock_moved.body": "Ältere Versionen buchten die Kosten von verkauftem Anfangsbestand auf {p}, daher stimmten {p} und {ob} nur zusammen mit Ihrem Bestand überein. Eine Buchung vom {day} hat {amount} {currency} von {ob} auf {p} umgebucht; Ihr älterer Bestand liegt jetzt auf {p}. Gesamtbestand und Gewinnvortrag sind unverändert."
 }

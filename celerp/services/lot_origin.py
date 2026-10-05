@@ -330,7 +330,9 @@ async def _notify_unplaced(session: AsyncSession, company_id, count: int) -> Non
         session, company_id, "accounting", "Older stock needs an inventory account",
         f"The books could not vouch for {count} older lot(s) in stock, so they record no inventory account "
         "yet. Choose the account each one sits on under Settings > Accounting > Posting accounts.",
-        action_url=POSTING_ACCOUNTS_PATH, priority="high")
+        action_url=POSTING_ACCOUNTS_PATH, priority="high",
+        i18n={"title": "notice.older_stock_unplaced.title", "body": "notice.older_stock_unplaced.body",
+              "params": {"count": count}})
 
 
 async def period_open(session: AsyncSession, company_id, day: str) -> bool:
@@ -547,7 +549,9 @@ async def _notify_moved(session: AsyncSession, company_id, p: str, ob: str, amou
         session, company_id, "accounting", "Older stock moved to purchased inventory",
         f"Older releases booked the cost of opening stock sold to {p}, so {p} and {ob} only matched your stock "
         f"together. One entry dated {day} moved {amount} {currency} from {ob} to {p}, and your older stock now "
-        f"sits on {p}. Total inventory and retained earnings are unchanged.")
+        f"sits on {p}. Total inventory and retained earnings are unchanged.",
+        i18n={"title": "notice.older_stock_moved.title", "body": "notice.older_stock_moved.body",
+              "params": {"p": p, "ob": ob, "day": day, "amount": str(amount), "currency": currency}})
 
 
 async def open_inventory_origins(session: AsyncSession, company_id, user_id=None) -> bool:

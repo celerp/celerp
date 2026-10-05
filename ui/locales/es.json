@@ -3601,5 +3601,19 @@
   "mfg.output_in_production": "{sku} procede de la orden de producción {order}, que sigue abierta, y su costo solo es definitivo cuando la orden se completa. Complete la orden antes de dividir, transformar, usar, reducir o dar de baja este stock; hasta entonces puede venderse entero o fusionarse.",
   "mfg.output_memo_conversion": "Complete esta orden de producción antes de convertir esta nota en factura. El costo de los productos terminados aún no es definitivo.",
   "mfg.output_cost_pending": "{sku} vuelve al costo de existencias de la orden de producción {order}, que sigue abierta, por lo que ese costo aún no es definitivo. Complete la orden antes de recibir esta devolución.",
-  "mfg.period_locked": "La contabilidad está cerrada para {day}, así que este ciclo no se puede conciliar hasta que ese periodo esté abierto."
+  "mfg.period_locked": "La contabilidad está cerrada para {day}, así que este ciclo no se puede conciliar hasta que ese periodo esté abierto.",
+  "posting.problem.unset": "{role} no tiene ninguna cuenta asignada.",
+  "posting.problem.not_in_chart": "{role} está asignada a la cuenta {code}, que no está en el plan de cuentas.",
+  "posting.problem.inactive": "{role} está asignada a la cuenta {code}, que está inactiva.",
+  "posting.problem.wrong_type": "{role} está asignada a la cuenta {code}, de tipo {type}; debe ser de tipo {types}.",
+  "posting.problem.header": "{role} está asignada a la cuenta {code}, una cuenta de agrupación; elija una cuenta dentro de ella.",
+  "posting.refused": "{problems} Elija la cuenta en Ajustes > Contabilidad > Cuentas de contabilización.",
+  "posting.continued_account_unusable": "Este saldo se lleva en la cuenta {code}, que ahora no puede recibirlo: {problem} Vuelva a habilitar esa cuenta en el plan de cuentas.",
+  "posting.type_or": " o ",
+  "notice.posting_unmapped.title": "Las cuentas de contabilización requieren atención",
+  "notice.posting_unmapped.body": "Elija la cuenta para: {roles}. Hasta entonces, se rechaza todo lo que se contabilice en ellas.",
+  "notice.older_stock_unplaced.title": "El inventario anterior necesita una cuenta de inventario",
+  "notice.older_stock_unplaced.body": "Los libros no pudieron respaldar {count} lote(s) anteriores en existencia, por lo que aún no registran ninguna cuenta de inventario. Elija la cuenta de cada uno en Ajustes > Contabilidad > Cuentas de contabilización.",
+  "notice.older_stock_moved.title": "Inventario anterior trasladado a inventario comprado",
+  "notice.older_stock_moved.body": "Versiones anteriores contabilizaron el costo del inventario inicial vendido en {p}, por lo que {p} y {ob} solo cuadraban con su inventario en conjunto. Un asiento con fecha {day} trasladó {amount} {currency} de {ob} a {p}, y su inventario anterior ahora está en {p}. El inventario total y las ganancias retenidas no cambian."
 }

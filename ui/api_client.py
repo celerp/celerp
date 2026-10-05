@@ -10,6 +10,7 @@ from typing import BinaryIO
 import httpx
 
 from celerp.capacity import REQUEST_DB_POOL_SIZE
+from ui.i18n import refusal_text
 
 logger = logging.getLogger(__name__)
 
@@ -310,12 +311,13 @@ def _raise(r: httpx.Response) -> httpx.Response:
         detail = body.get("detail", r.text) if isinstance(body, dict) else r.text
         data = None
         if isinstance(detail, dict) and "message" in detail:
-            # Structured detail (message + extras): keep detail a plain string for
-            # the sites that render it, carry the full payload on APIError.data.
+            # Structured detail (message + extras): detail becomes the plain string
+            # the sites render, in the user's language (refusal_text); the full
+            # payload rides on APIError.data.
             # Dict details WITHOUT a message key (e.g. {"errors": [...]} from
             # fulfill/revert/reserve) pass through unchanged - callers json-dump them.
             data = detail
-            detail = detail.get("message") or r.text
+            detail = refusal_text(detail) or r.text
         elif isinstance(body, dict) and set(body) - {"detail"}:
             # An error body carrying structured fields beyond `detail` (a top-level
             # machine "code" like scan_run_conflict, with a plain-string detail):

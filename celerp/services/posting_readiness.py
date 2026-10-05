@@ -124,6 +124,8 @@ async def notify_unmapped(session: AsyncSession, company_id) -> bool:
         session, company_id, NOTICE_CATEGORY, NOTICE_TITLE,
         f"Choose the account for: {labels}. Until then, anything that posts to them is refused.",
         action_url=POSTING_ACCOUNTS_PATH, priority="high",
+        i18n={"title": "notice.posting_unmapped.title", "body": "notice.posting_unmapped.body",
+              "params": {"roles": missing}},
     )
     return True
 
@@ -320,7 +322,7 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
     for role, code in final.items():
         problem = target_problem(role, trial, held.get(code))
         if problem:
-            problems.append(problem)
+            problems.append(problem["message"])
     if problems:
         raise ReadinessError(" ".join(problems))
     settings = {**(company.settings or {}), SCHEMA_KEY: POSTING_ROLES_SCHEMA}
@@ -334,7 +336,7 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
     await session.flush()
 
 
-def _status(role: str, current: dict[str, str], chart: dict[str, dict], required: bool) -> tuple[str, str | None]:
+def _status(role: str, current: dict[str, str], chart: dict[str, dict], required: bool) -> tuple[str, dict | None]:
     """Whether the role's account can take new postings: ready, missing, inactive or
     wrong_type, with the reason; unused when no account is set and nothing needs one."""
     code = current.get(role)

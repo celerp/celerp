@@ -3601,5 +3601,19 @@
   "mfg.output_in_production": "{sku} came from production run {order}, which is still open, and its cost is final only when the run is completed. Complete the run before splitting, transforming, using, counting down or writing off this stock; until then it can be sold whole or merged.",
   "mfg.output_memo_conversion": "Complete this production run before converting this memo to an invoice. Its finished-goods cost is not final yet.",
   "mfg.output_cost_pending": "{sku} comes back at the cost of stock from production run {order}, which is still open, so that cost is not final yet. Complete the run before receiving this return.",
-  "mfg.period_locked": "The books are locked for {day}, so this run cannot be reconciled until that period is open."
+  "mfg.period_locked": "The books are locked for {day}, so this run cannot be reconciled until that period is open.",
+  "posting.problem.unset": "{role} has no account set.",
+  "posting.problem.not_in_chart": "{role} is set to account {code}, which is not in the chart of accounts.",
+  "posting.problem.inactive": "{role} is set to account {code}, which is inactive.",
+  "posting.problem.wrong_type": "{role} is set to account {code}, of type {type}; it must be of type {types}.",
+  "posting.problem.header": "{role} is set to account {code}, a header account; choose an account under it.",
+  "posting.refused": "{problems} Choose the account in Settings > Accounting > Posting accounts.",
+  "posting.continued_account_unusable": "This balance is kept on account {code}, which cannot take it now: {problem} Make that account usable again in the chart of accounts.",
+  "posting.type_or": " or ",
+  "notice.posting_unmapped.title": "Posting accounts need attention",
+  "notice.posting_unmapped.body": "Choose the account for: {roles}. Until then, anything that posts to them is refused.",
+  "notice.older_stock_unplaced.title": "Older stock needs an inventory account",
+  "notice.older_stock_unplaced.body": "The books could not vouch for {count} older lot(s) in stock, so they record no inventory account yet. Choose the account each one sits on under Settings > Accounting > Posting accounts.",
+  "notice.older_stock_moved.title": "Older stock moved to purchased inventory",
+  "notice.older_stock_moved.body": "Older releases booked the cost of opening stock sold to {p}, so {p} and {ob} only matched your stock together. One entry dated {day} moved {amount} {currency} from {ob} to {p}, and your older stock now sits on {p}. Total inventory and retained earnings are unchanged."
 }

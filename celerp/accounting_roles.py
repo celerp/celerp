@@ -225,22 +225,43 @@ def allowed_types(role: str, role_map: dict[str, str]) -> frozenset[str]:
     return ROLE_TYPES[role]
 
 
-def target_problem(role: str, role_map: dict[str, str], account: dict | None) -> str | None:
-    """Why ``account`` cannot take new recognition for ``role``, or None when it can.
+def refusal(key: str, message: str, /, **params) -> dict:
+    """A message the UI can show in the user's language: ``message`` is the English text,
+    ``message_key`` and ``params`` let a translation say the same thing (ui.i18n.refusal_text).
+    A ``role`` param is shown as that posting role's label, ``type`` and ``types`` as
+    account types."""
+    return {"message": message, "message_key": key, "params": params}
+
+
+def type_list(types) -> str:
+    return " or ".join(sorted(types))
+
+
+def target_problem(role: str, role_map: dict[str, str], account: dict | None) -> dict | None:
+    """Why ``account`` cannot take new recognition for ``role`` (a ``refusal``), or None
+    when it can.
 
     ``account`` is the chart row as {"code", "account_type", "is_active",
     "has_children"}, or None when the company has no such account."""
     code = role_map.get(str(role))
-    label = ROLE_LABELS[AccountRole(role)]
+    role = AccountRole(role)
+    label = ROLE_LABELS[role]
     if account is None:
-        return f"{label} is set to account {code}, which is not in the chart of accounts."
+        return refusal("posting.problem.not_in_chart",
+                       f"{label} is set to account {code}, which is not in the chart of accounts.",
+                       role=role.value, code=code)
+    code = account["code"]
     if not account.get("is_active", True):
-        return f"{label} is set to account {account['code']}, which is inactive."
+        return refusal("posting.problem.inactive", f"{label} is set to account {code}, which is inactive.",
+                       role=role.value, code=code)
     types = allowed_types(role, role_map)
     if account.get("account_type") not in types:
-        want = " or ".join(sorted(types))
-        return (f"{label} is set to account {account['code']}, a {account.get('account_type')} "
-                f"account; it must be {want}.")
-    if AccountRole(role) in POSTABLE_ROLES and account.get("has_children"):
-        return f"{label} is set to account {account['code']}, a header account; choose an account under it."
+        return refusal("posting.problem.wrong_type",
+                       f"{label} is set to account {code}, of type {account.get('account_type')}; "
+                       f"it must be of type {type_list(types)}.",
+                       role=role.value, code=code, type=account.get("account_type"), types=sorted(types))
+    if role in POSTABLE_ROLES and account.get("has_children"):
+        return refusal("posting.problem.header",
+                       f"{label} is set to account {code}, a header account; choose an account under it.",
+                       role=role.value, code=code)
     return None

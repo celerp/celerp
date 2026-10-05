@@ -120,7 +120,7 @@ async def test_role_line_on_an_inactive_current_target_is_refused(client, sessio
         await _post(session, cid, [
             {"account": "1120", "debit": 5, "account_roles": ["receivable"]}, {"account": "4100", "credit": 5},
         ])
-    assert "inactive" in exc.value.detail
+    assert "inactive" in exc.value.detail["message"]
 
 
 @pytest.mark.asyncio
@@ -165,7 +165,7 @@ async def test_resolution_never_falls_back_to_a_default_code(client, session):
     await _roles(session, cid, {"sales_revenue": "4100"})
     with pytest.raises(PostingRoleError) as exc:
         await resolve_many(session, cid, ["receivable", "sales_revenue"])
-    assert "accounts receivable" in exc.value.detail
+    assert "accounts receivable" in exc.value.detail["message"].lower()
     assert exc.value.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
     assert await resolve(session, cid, "sales_revenue") == "4100"
 
@@ -176,10 +176,10 @@ async def test_resolution_refuses_a_target_of_the_wrong_type_or_missing(client, 
     await _roles(session, cid, {"receivable": "4100", "payable": "2999"})
     with pytest.raises(PostingRoleError) as exc:
         await resolve(session, cid, "receivable")
-    assert "must be asset" in exc.value.detail
+    assert "must be of type asset" in exc.value.detail["message"]
     with pytest.raises(PostingRoleError) as exc:
         await resolve(session, cid, "payable")
-    assert "not in the chart" in exc.value.detail
+    assert "not in the chart" in exc.value.detail["message"]
 
 
 @pytest.mark.asyncio
@@ -188,7 +188,7 @@ async def test_default_deposit_must_be_a_concrete_account(client, session):
     await _roles(session, cid, {"default_deposit": "1110"})
     with pytest.raises(PostingRoleError) as exc:
         await resolve(session, cid, "default_deposit")
-    assert "header" in exc.value.detail
+    assert "header" in exc.value.detail["message"]
 
 
 @pytest.mark.asyncio

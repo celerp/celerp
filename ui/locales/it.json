@@ -3601,5 +3601,19 @@
   "mfg.output_in_production": "{sku} proviene dall'ordine di produzione {order}, ancora aperto, e il suo costo è definitivo solo quando l'ordine è completato. Completa l'ordine prima di dividere, trasformare, usare, ridurre o stornare questo stock; fino ad allora può essere venduto intero o unito.",
   "mfg.output_memo_conversion": "Completa questo ordine di produzione prima di convertire questo memo in fattura. Il costo dei prodotti finiti non è ancora definitivo.",
   "mfg.output_cost_pending": "{sku} rientra al costo di merce dell'ordine di produzione {order}, ancora aperto, quindi quel costo non è ancora definitivo. Completa l'ordine prima di ricevere questo reso.",
-  "mfg.period_locked": "La contabilità è bloccata per il {day}, quindi questa produzione non può essere riconciliata finché quel periodo non è aperto."
+  "mfg.period_locked": "La contabilità è bloccata per il {day}, quindi questa produzione non può essere riconciliata finché quel periodo non è aperto.",
+  "posting.problem.unset": "Per {role} non è impostato alcun conto.",
+  "posting.problem.not_in_chart": "{role} è impostato sul conto {code}, che non è nel piano dei conti.",
+  "posting.problem.inactive": "{role} è impostato sul conto {code}, che è inattivo.",
+  "posting.problem.wrong_type": "{role} è impostato sul conto {code}, di tipo {type}; deve essere di tipo {types}.",
+  "posting.problem.header": "{role} è impostato sul conto {code}, un conto di raggruppamento; scegliere un conto al suo interno.",
+  "posting.refused": "{problems} Scegliere il conto in Impostazioni > Contabilità > Conti di registrazione.",
+  "posting.continued_account_unusable": "Questo saldo è tenuto sul conto {code}, che ora non può riceverlo: {problem} Rendere di nuovo utilizzabile quel conto nel piano dei conti.",
+  "posting.type_or": " o ",
+  "notice.posting_unmapped.title": "I conti di registrazione richiedono attenzione",
+  "notice.posting_unmapped.body": "Scegliere il conto per: {roles}. Fino ad allora, ogni registrazione su di essi viene rifiutata.",
+  "notice.older_stock_unplaced.title": "Le giacenze precedenti richiedono un conto di magazzino",
+  "notice.older_stock_unplaced.body": "I libri non hanno potuto confermare {count} lotto/i precedente/i in giacenza, quindi non registrano ancora un conto di magazzino. Scegliere il conto di ciascuno in Impostazioni > Contabilità > Conti di registrazione.",
+  "notice.older_stock_moved.title": "Giacenze precedenti spostate nel magazzino acquistato",
+  "notice.older_stock_moved.body": "Le versioni precedenti registravano il costo delle giacenze iniziali vendute su {p}, quindi {p} e {ob} corrispondevano alle giacenze solo insieme. Una registrazione datata {day} ha spostato {amount} {currency} da {ob} a {p}, e le giacenze precedenti ora sono su {p}. Magazzino totale e utili portati a nuovo restano invariati."
 }

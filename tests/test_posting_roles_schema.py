@@ -91,7 +91,7 @@ async def test_a_role_whose_seeded_target_is_gone_stays_unmapped_and_only_its_ow
 
     r = await _pay(client, auth, gain_doc, 100.0, conversion_rate=1.2)
     assert r.status_code == 409, r.text
-    assert "exchange gain" in r.json()["detail"].lower()
+    assert "exchange gain" in r.json()["detail"]["message"].lower()
     assert r.headers["X-Celerp-Fix"] == POSTING_ACCOUNTS_PATH
 
 

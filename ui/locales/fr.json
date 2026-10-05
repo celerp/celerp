@@ -3601,5 +3601,19 @@
   "mfg.output_in_production": "{sku} provient de l'ordre de fabrication {order}, encore ouvert, et son coût n'est définitif qu'à la clôture de l'ordre. Terminez l'ordre avant de diviser, transformer, utiliser, réduire ou mettre au rebut ce stock ; d'ici là, il peut être vendu entier ou fusionné.",
   "mfg.output_memo_conversion": "Terminez cet ordre de fabrication avant de convertir ce mémo en facture. Le coût des produits finis n'est pas encore définitif.",
   "mfg.output_cost_pending": "{sku} revient au coût d'un stock issu de l'ordre de fabrication {order}, encore ouvert, et ce coût n'est donc pas encore définitif. Terminez l'ordre avant de réceptionner ce retour.",
-  "mfg.period_locked": "La comptabilité est verrouillée pour le {day}, ce cycle ne peut donc pas être rapproché tant que cette période n'est pas ouverte."
+  "mfg.period_locked": "La comptabilité est verrouillée pour le {day}, ce cycle ne peut donc pas être rapproché tant que cette période n'est pas ouverte.",
+  "posting.problem.unset": "Aucun compte n'est défini pour {role}.",
+  "posting.problem.not_in_chart": "{role} est défini sur le compte {code}, qui ne figure pas dans le plan comptable.",
+  "posting.problem.inactive": "{role} est défini sur le compte {code}, qui est inactif.",
+  "posting.problem.wrong_type": "{role} est défini sur le compte {code}, de type {type} ; il doit être de type {types}.",
+  "posting.problem.header": "{role} est défini sur le compte {code}, un compte de regroupement ; choisissez un compte en dessous.",
+  "posting.refused": "{problems} Choisissez le compte dans Paramètres > Comptabilité > Comptes d'imputation.",
+  "posting.continued_account_unusable": "Ce solde est tenu sur le compte {code}, qui ne peut pas le recevoir pour l'instant : {problem} Rendez ce compte à nouveau utilisable dans le plan comptable.",
+  "posting.type_or": " ou ",
+  "notice.posting_unmapped.title": "Les comptes d'imputation demandent votre attention",
+  "notice.posting_unmapped.body": "Choisissez le compte pour : {roles}. D'ici là, toute écriture vers ces comptes est refusée.",
+  "notice.older_stock_unplaced.title": "Le stock ancien a besoin d'un compte de stock",
+  "notice.older_stock_unplaced.body": "Les livres n'ont pas pu justifier {count} lot(s) ancien(s) en stock, qui n'ont donc pas encore de compte de stock. Choisissez le compte de chacun dans Paramètres > Comptabilité > Comptes d'imputation.",
+  "notice.older_stock_moved.title": "Stock ancien transféré vers le stock acheté",
+  "notice.older_stock_moved.body": "Des versions antérieures ont comptabilisé le coût du stock d'ouverture vendu sur {p}, si bien que {p} et {ob} ne correspondaient à votre stock qu'ensemble. Une écriture datée du {day} a transféré {amount} {currency} de {ob} vers {p}, et votre stock ancien est maintenant sur {p}. Le stock total et les résultats reportés sont inchangés."
 }

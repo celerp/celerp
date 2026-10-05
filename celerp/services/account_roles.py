@@ -29,6 +29,7 @@ from celerp.accounting_roles import (
     UNGUESSED_ROLES,
     AccountRole,
     is_role,
+    refusal,
     target_problem,
 )
 from celerp.models.company import Company
@@ -37,10 +38,12 @@ from celerp.models.company import Company
 class PostingRoleError(HTTPException):
     """A role new recognition needs is missing or its account cannot take the posting."""
 
-    def __init__(self, message: str):
+    def __init__(self, problems: list[dict]):
+        text = " ".join(p["message"] for p in problems)
         super().__init__(
             status_code=409,
-            detail=f"{message} Choose the account in Settings > Accounting > Posting accounts.",
+            detail=refusal("posting.refused", f"{text} Choose the account in Settings > Accounting > Posting accounts.",
+                           problems=problems),
             headers={"X-Celerp-Fix": POSTING_ACCOUNTS_PATH},
         )
 
@@ -250,14 +253,15 @@ async def current_settings(session: AsyncSession, company_id) -> dict:
     return dict(company.settings or {}) if company is not None else {}
 
 
-def target_problems(roles: list[str], current: dict[str, str], accounts: dict[str, dict] | None) -> dict[str, str]:
+def target_problems(roles: list[str], current: dict[str, str], accounts: dict[str, dict] | None) -> dict[str, dict]:
     """Why each role's mapped account cannot take new recognition. ``accounts`` is
     None when accounting is not running, so only the mapping itself is checked."""
-    problems: dict[str, str] = {}
+    problems: dict[str, dict] = {}
     for role in roles:
         code = current.get(role)
         if not code:
-            problems[role] = f"No account is set for {ROLE_LABELS[AccountRole(role)].lower()}."
+            problems[role] = refusal("posting.problem.unset", f"{ROLE_LABELS[AccountRole(role)]} has no account set.",
+                                     role=role)
         elif accounts is not None:
             problem = target_problem(role, current, accounts.get(code))
             if problem:
@@ -279,7 +283,7 @@ async def resolve_many(session: AsyncSession, company_id, roles) -> dict[str, st
     accounts = await lock_accounts(session, company_id, {current[r] for r in wanted if current.get(r)})
     problems = target_problems(wanted, current, accounts)
     if problems:
-        raise PostingRoleError(" ".join(problems[r] for r in wanted if r in problems))
+        raise PostingRoleError([problems[r] for r in wanted if r in problems])
     return {r: current[r] for r in wanted}
 
 
@@ -301,11 +305,11 @@ async def continue_role(session: AsyncSession, company_id, role, code: str) -> s
         return code
     problem = target_problem(role, {role: code}, accounts.get(code))
     if problem:
-        raise HTTPException(status_code=409, detail={
-            "message": (f"This balance is kept on account {code}, which cannot take it now: {problem} "
-                        "Make that account usable again in the chart of accounts."),
-            "message_key": "posting.continued_account_unusable",
-            "params": {"code": code, "problem": problem}})
+        raise HTTPException(status_code=409, detail=refusal(
+            "posting.continued_account_unusable",
+            (f"This balance is kept on account {code}, which cannot take it now: {problem['message']} "
+             "Make that account usable again in the chart of accounts."),
+            code=code, problem=problem))
     return code
 
 

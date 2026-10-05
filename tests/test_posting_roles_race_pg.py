@@ -316,7 +316,7 @@ async def test_a_role_moved_onto_a_parent_while_a_child_is_placed_is_refused(com
 
     _, out = await _second(committed_engine, factory, place, remap)
     assert isinstance(out, HTTPException) and out.status_code == 422, out
-    assert "header account" in out.detail
+    assert "header account" in out.detail["message"]
     assert (await _settings(factory, cid))["posting_roles"]["receivable"] == "1120"
 
 

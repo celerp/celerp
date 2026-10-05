@@ -985,7 +985,11 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         loadNotifications();
         if (data.priority === 'high' && Notification.permission === 'granted') {
-          new Notification(data.title, { body: data.body });
+          // The listed notice is in the reader's language; the pushed one is as stored.
+          fetch('/notifications?limit=20').then(function(r) { return r.json(); }).then(function(d) {
+            var n = (d.items || []).find(function(i) { return i.id === data.id; });
+            if (n) new Notification(n.title, { body: n.body });
+          }).catch(function() {});
         }
       } catch(err) {}
     });

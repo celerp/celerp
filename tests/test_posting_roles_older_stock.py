@@ -908,7 +908,7 @@ async def test_an_older_draft_records_nothing_on_upgrade_when_the_opening_accoun
     assert await _accounts(session, auth, draft) == [None]
     r = await client.post("/items/bulk/make-available", headers=auth["headers"], json={"entity_ids": [draft]})
     assert r.status_code == 409, r.text
-    assert _REPAIR in r.json()["detail"]
+    assert _REPAIR in r.json()["detail"]["message"]
     assert (await _status(session, auth, draft), *await _accounts(session, auth, draft)) == ("draft", None)
 
 

@@ -3601,5 +3601,19 @@
   "mfg.output_in_production": "{sku} berasal dari perintah produksi {order} yang masih terbuka, dan biayanya baru final setelah perintah selesai. Selesaikan perintah sebelum memecah, mengubah, memakai, mengurangi, atau menghapus stok ini; sampai saat itu stok dapat dijual utuh atau digabung.",
   "mfg.output_memo_conversion": "Selesaikan perintah produksi ini sebelum mengubah memo ini menjadi faktur. Biaya barang jadinya belum final.",
   "mfg.output_cost_pending": "{sku} kembali dengan biaya stok dari order produksi {order} yang masih terbuka, sehingga biaya itu belum final. Selesaikan order tersebut sebelum menerima retur ini.",
-  "mfg.period_locked": "Pembukuan dikunci untuk {day}, jadi proses ini baru dapat direkonsiliasi setelah periode tersebut dibuka."
+  "mfg.period_locked": "Pembukuan dikunci untuk {day}, jadi proses ini baru dapat direkonsiliasi setelah periode tersebut dibuka.",
+  "posting.problem.unset": "{role} belum diatur ke akun mana pun.",
+  "posting.problem.not_in_chart": "{role} diatur ke akun {code}, yang tidak ada di bagan akun.",
+  "posting.problem.inactive": "{role} diatur ke akun {code}, yang tidak aktif.",
+  "posting.problem.wrong_type": "{role} diatur ke akun {code} dengan tipe {type}; tipenya harus {types}.",
+  "posting.problem.header": "{role} diatur ke akun {code}, sebuah akun induk; pilih akun di bawahnya.",
+  "posting.refused": "{problems} Pilih akunnya di Pengaturan > Akuntansi > Akun posting.",
+  "posting.continued_account_unusable": "Saldo ini dicatat pada akun {code}, yang saat ini tidak dapat menerimanya: {problem} Aktifkan kembali akun tersebut di bagan akun.",
+  "posting.type_or": " atau ",
+  "notice.posting_unmapped.title": "Akun posting perlu diperhatikan",
+  "notice.posting_unmapped.body": "Pilih akun untuk: {roles}. Sampai saat itu, semua yang diposting ke sana ditolak.",
+  "notice.older_stock_unplaced.title": "Stok lama memerlukan akun persediaan",
+  "notice.older_stock_unplaced.body": "Pembukuan tidak dapat memastikan {count} lot lama yang ada di stok, sehingga belum mencatat akun persediaan. Pilih akun masing-masing di Pengaturan > Akuntansi > Akun posting.",
+  "notice.older_stock_moved.title": "Stok lama dipindahkan ke persediaan pembelian",
+  "notice.older_stock_moved.body": "Versi sebelumnya membukukan biaya stok awal yang terjual ke {p}, sehingga {p} dan {ob} hanya cocok dengan stok Anda jika digabung. Satu jurnal bertanggal {day} memindahkan {amount} {currency} dari {ob} ke {p}, dan stok lama Anda sekarang ada di {p}. Total persediaan dan laba ditahan tidak berubah."
 }

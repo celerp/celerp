@@ -128,7 +128,7 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict) -
             if current.get(role) == code:
                 problems = target_problems([role], current, accounts)
                 if problems:
-                    raise PostingRoleError(problems[role])
+                    raise PostingRoleError([problems[role]])
             elif code not in scope_codes(settings, role):
                 raise HTTPException(
                     status_code=422,

@@ -155,7 +155,29 @@ def refusal_text(detail) -> str:
     key = detail.get("message_key")
     if not key:
         return message
-    return t_or(str(key), message, **(detail.get("params") or {}))
+    params = {name: _refusal_param(name, value) for name, value in (detail.get("params") or {}).items()}
+    return t_or(str(key), message, **params)
+
+
+def _refusal_param(name: str, value):
+    """A refusal param as the user reads it: a nested refusal, or a list of them, in
+    the user's language; a ``role`` as its label and ``roles`` as their labels;
+    ``type``/``types`` as account types."""
+    from ui.components.table import display_enum
+
+    if isinstance(value, dict) and "message" in value:
+        return refusal_text(value)
+    if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
+        return " ".join(refusal_text(v) for v in value)
+    if name == "role":
+        return role_label(str(value), str(value).replace("_", " "))
+    if name == "roles" and isinstance(value, list):
+        return ", ".join(role_label(str(r), str(r).replace("_", " ")) for r in value)
+    if name == "type":
+        return display_enum(value, "account_type")
+    if name == "types" and isinstance(value, list):
+        return t("posting.type_or").join(display_enum(v, "account_type") for v in value)
+    return value
 
 
 def field_label(f: dict) -> str:

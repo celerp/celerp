@@ -104,7 +104,7 @@ async def test_an_unmapped_role_stops_finalize_and_points_at_the_fix(session, cl
     inv = await _invoice(client, auth, 100.0, finalize=False)
     r = await client.post(f"/docs/{inv}/finalize", headers=auth["headers"])
     assert r.status_code == 409, r.text
-    assert "accounts receivable" in r.json()["detail"]
+    assert "Accounts receivable has no account set" in r.json()["detail"]["message"]
     assert r.headers["X-Celerp-Fix"] == POSTING_ACCOUNTS_PATH
     assert await _state(session, auth, f"je:auto:{inv}:fin") == {}
     assert await _account_net(session, auth["company_id"], "1120") == 0.0

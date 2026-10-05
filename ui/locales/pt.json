@@ -3601,5 +3601,19 @@
   "mfg.output_in_production": "{sku} veio da ordem de produção {order}, que ainda está aberta, e seu custo só é definitivo quando a ordem é concluída. Conclua a ordem antes de dividir, transformar, usar, reduzir ou baixar este estoque; até lá, ele pode ser vendido inteiro ou mesclado.",
   "mfg.output_memo_conversion": "Conclua esta ordem de produção antes de converter este memorando em fatura. O custo dos produtos acabados ainda não é definitivo.",
   "mfg.output_cost_pending": "{sku} volta ao custo de estoque da ordem de produção {order}, que ainda está aberta, por isso esse custo ainda não é definitivo. Conclua a ordem antes de receber esta devolução.",
-  "mfg.period_locked": "A contabilidade está bloqueada para {day}, por isso este ciclo não pode ser conciliado até esse período estar aberto."
+  "mfg.period_locked": "A contabilidade está bloqueada para {day}, por isso este ciclo não pode ser conciliado até esse período estar aberto.",
+  "posting.problem.unset": "{role} não tem nenhuma conta definida.",
+  "posting.problem.not_in_chart": "{role} está definida para a conta {code}, que não está no plano de contas.",
+  "posting.problem.inactive": "{role} está definida para a conta {code}, que está inativa.",
+  "posting.problem.wrong_type": "{role} está definida para a conta {code}, do tipo {type}; ela deve ser do tipo {types}.",
+  "posting.problem.header": "{role} está definida para a conta {code}, uma conta sintética; escolha uma conta abaixo dela.",
+  "posting.refused": "{problems} Escolha a conta em Configurações > Contabilidade > Contas de lançamento.",
+  "posting.continued_account_unusable": "Este saldo é mantido na conta {code}, que não pode recebê-lo agora: {problem} Torne essa conta utilizável novamente no plano de contas.",
+  "posting.type_or": " ou ",
+  "notice.posting_unmapped.title": "As contas de lançamento precisam de atenção",
+  "notice.posting_unmapped.body": "Escolha a conta para: {roles}. Até lá, tudo o que for lançado nelas é recusado.",
+  "notice.older_stock_unplaced.title": "O estoque antigo precisa de uma conta de estoque",
+  "notice.older_stock_unplaced.body": "Os livros não puderam comprovar {count} lote(s) antigo(s) em estoque, portanto ainda não registram uma conta de estoque. Escolha a conta de cada um em Configurações > Contabilidade > Contas de lançamento.",
+  "notice.older_stock_moved.title": "Estoque antigo transferido para estoque comprado",
+  "notice.older_stock_moved.body": "Versões anteriores lançaram o custo do estoque inicial vendido em {p}, de modo que {p} e {ob} só correspondiam ao seu estoque em conjunto. Um lançamento datado de {day} transferiu {amount} {currency} de {ob} para {p}, e seu estoque antigo agora está em {p}. O estoque total e os lucros acumulados não mudam."
 }

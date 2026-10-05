@@ -30,6 +30,7 @@ class NotificationOut(BaseModel):
     title: str
     body: str
     action_url: str | None
+    i18n: dict | None = None
     priority: str
     read: bool
     created_at: str
@@ -64,6 +65,7 @@ async def list_notifications(
                 title=n.title,
                 body=n.body,
                 action_url=n.action_url,
+                i18n=n.i18n,
                 priority=n.priority,
                 read=n.read,
                 created_at=n.created_at.isoformat(),

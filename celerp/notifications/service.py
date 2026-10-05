@@ -35,8 +35,12 @@ async def create(
     user_id: uuid.UUID | None = None,
     action_url: str | None = None,
     priority: str = "medium",
+    i18n: dict | None = None,
 ) -> Notification:
-    """Create a notification, prune old ones, and publish to SSE subscribers."""
+    """Create a notification, prune old ones, and publish to SSE subscribers.
+
+    ``i18n`` ({"title": key, "body": key, "params": {...}}) names the message keys the
+    English ``title`` and ``body`` were written from."""
     notif = Notification(
         company_id=company_id,
         user_id=user_id,
@@ -45,6 +49,7 @@ async def create(
         body=body,
         action_url=action_url,
         priority=priority,
+        i18n=i18n,
     )
     session.add(notif)
     await session.flush()

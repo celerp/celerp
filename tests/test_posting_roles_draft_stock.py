@@ -146,7 +146,7 @@ async def test_a_draft_stays_a_draft_when_the_opening_account_cannot_take_it(ses
     before = await _events(session, auth)
     r = await _move(client, auth, "make-available", draft)
     assert r.status_code == 409, r.text
-    assert _REPAIR in r.json()["detail"]
+    assert _REPAIR in r.json()["detail"]["message"]
     assert await _events(session, auth) == before
     assert await _lot_state(session, auth, draft) == ("draft", None)
     assert await _entries(session, auth, draft) == []

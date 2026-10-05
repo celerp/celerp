@@ -57,7 +57,7 @@ async def test_an_online_payment_is_refused_when_no_default_deposit_account_is_s
     with pytest.raises(HTTPException) as exc:
         await deposit_account(session, auth["company_id"])
     assert exc.value.status_code == 409
-    assert "No account is set for default deposit account" in exc.value.detail
+    assert "Default deposit account has no account set" in exc.value.detail["message"]
 
 
 @pytest.mark.asyncio

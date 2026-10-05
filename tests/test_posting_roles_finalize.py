@@ -176,7 +176,7 @@ async def test_an_unsuitable_choice_is_refused_with_the_reason(session, monkeypa
     with pytest.raises(MigrationError) as exc:
         await _finalize(context, monkeypatch, {**_CHOICES, "roles": {**_CHOICES["roles"], "sales_revenue": "210"}})
     assert exc.value.status_code == 409
-    assert "Sales revenue is set to account 210, a liability account; it must be revenue." in exc.value.detail
+    assert "Sales revenue is set to account 210, of type liability; it must be of type revenue." in exc.value.detail
     assert (await _company(context)).is_migration_staged
 
 

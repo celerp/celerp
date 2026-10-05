@@ -25,7 +25,7 @@ from ui.routes.accounting_import import ACCOUNT_TYPES
 CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
 from ui.routes.settings import _token, _check_permission
 from ui.routes.settings_general import _section_breadcrumb
-from ui.i18n import role_label, t
+from ui.i18n import refusal_text, role_label, t
 
 
 # Raw bank-account type values. Canonical everywhere (API, comparisons); the
@@ -344,7 +344,7 @@ def _posting_role_row(row: dict, error: str | None = None) -> FT:
         Td(role_label(row["role"], row["label"])),
         _posting_display_cell(row["role"], row.get("code"), row.get("name"), error),
         Td(Span(t(f"posting.status_{status}"), cls=f"badge badge--{_POSTING_BADGE.get(status, 'overdue')}"),
-           P(row["problem"], cls="text-muted") if row.get("problem") else None),
+           P(refusal_text(row["problem"]), cls="text-muted") if row.get("problem") else None),
         Td(", ".join(row.get("earlier") or []) or EMPTY),
         id=f"posting-{row['role']}",
     )

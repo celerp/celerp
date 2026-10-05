@@ -43,7 +43,7 @@ async def test_a_role_that_receives_postings_refuses_a_header(session, auth, rol
     with pytest.raises(HTTPException) as err:
         await set_role(session, cid, role.value, code)
     assert err.value.status_code == 422
-    assert "header account" in err.value.detail
+    assert "header account" in err.value.detail["message"]
 
 
 @pytest.mark.parametrize("role", _GROUPING, ids=lambda r: r.value)

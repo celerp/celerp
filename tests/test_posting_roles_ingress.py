@@ -139,7 +139,7 @@ async def test_an_item_created_available_is_not_created_when_the_opening_account
     before = await _events(session, auth["company_id"])
     r = await _create(client, auth, cost_total=200.0, status="available", sku="NOPE-1")
     assert r.status_code == 409, r.text
-    assert "Settings > Accounting > Posting accounts" in r.json()["detail"]
+    assert "Settings > Accounting > Posting accounts" in r.json()["detail"]["message"]
     await session.rollback()  # the refused request's work ends with it, as its own session would
     assert await _events(session, auth["company_id"]) == before
     assert await _items_by_sku(session, auth["company_id"], "NOPE-1") == []

@@ -90,7 +90,7 @@ async def test_a_missing_inactive_or_wrong_type_account_is_shown_as_such(session
     assert _row(panel, "payable")["status"] == "missing"
     assert _row(panel, "sales_revenue")["status"] == "inactive"
     assert _row(panel, "cogs")["status"] == "wrong_type"
-    assert "it must be" in _row(panel, "cogs")["problem"]
+    assert "it must be" in _row(panel, "cogs")["problem"]["message"]
 
 
 @pytest.mark.asyncio
@@ -122,11 +122,11 @@ async def test_a_wrong_type_inactive_or_other_company_account_is_refused(session
     await session.commit()
     before = await _roles(session, cid)
 
-    for code, reason in (("2110", "a liability account; it must be asset"), ("1189", "which is inactive"),
+    for code, reason in (("2110", "of type liability; it must be of type asset"), ("1189", "which is inactive"),
                          ("1188", "which is not in the chart of accounts")):
         r = await _put(client, auth, "receivable", code)
         assert r.status_code == 422, (code, r.text)
-        assert reason in r.json()["detail"]
+        assert reason in r.json()["detail"]["message"]
     r = await _put(client, auth, "not_a_role", "1120")
     assert r.status_code == 422
     assert await _roles(session, cid) == before
@@ -180,7 +180,8 @@ _PANEL = {
          "code": "1120", "name": "Accounts Receivable", "status": "ready", "problem": None, "earlier": ["1121"],
          "candidates": [{"code": "1120", "name": "Accounts Receivable", "account_type": "asset"}]},
         {"role": "general_expense", "label": "General expenses", "group": "core", "required": True,
-         "code": None, "name": None, "status": "missing", "problem": "No account is set for general expenses.",
+         "code": None, "name": None, "status": "missing", "problem": {"message": "General expenses has no account set.",
+                     "message_key": "posting.problem.unset", "params": {"role": "general_expense"}},
          "earlier": [], "candidates": [{"code": f"6{i:03}", "name": f"Expense {i}", "account_type": "expense"}
                                        for i in range(12)]},
         {"role": "fx_gain", "label": "Exchange gain", "group": "fx", "required": False,
