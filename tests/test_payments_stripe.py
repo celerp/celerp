@@ -981,6 +981,50 @@ async def test_unmatched_dates_are_the_company_business_day(client, session, pay
     assert cells.count(booked_day) == 4 and "2026-10-04" not in cells
 
 
+# 02:00 UTC on Oct 5 is still Oct 4 in New York, and already Oct 5 in Bangkok.
+_PAID_NY_EVENING = datetime.datetime(2026, 10, 5, 2, 0, tzinfo=datetime.timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_unmatched_rows_are_dated_in_their_own_company(client, session, payments_on):
+    """The list shows every company's rows. Each is dated on its own company's
+    calendar, the day it books on there, whichever company it is viewed from."""
+    from celerp.models.payment_closure import UnmatchedRefund
+    from celerp.services.payments import receive_payment
+    tok_a = await _register(client)
+    assert (await client.patch("/companies/me", json={"settings": {"timezone": "Asia/Bangkok"}},
+                               headers=_h(tok_a))).status_code == 200
+    r = await client.post("/companies", json={"name": "Second Co"}, headers=_h(tok_a))
+    assert r.status_code == 200, r.text
+    tok_b = r.json()["access_token"]
+    assert (await client.patch("/companies/me", json={"settings": {"timezone": "America/New_York"}},
+                               headers=_h(tok_b))).status_code == 200
+    cid_b = _company_id(tok_b)
+    assert await receive_payment({"company_id": cid_b, "entity_id": "doc:gone", "reference": "pi_ny",
+                                  "amount_minor": 100, "currency": "usd",
+                                  "paid_at": _PAID_NY_EVENING.isoformat(),
+                                  "context": dict(BOOKS, timezone="America/New_York"), "managed": True})
+    session.add(UnmatchedRefund(refund_id="re_ny", cycle=1, transition="applied", reference="pi_x",
+                                amount_minor=100, currency="USD", former_company=cid_b, document="doc:gone",
+                                received_at=_PAID_NY_EVENING, occurred_at=_PAID_NY_EVENING))
+    await session.commit()
+    eid, _ = await _payable_invoice(client, tok_b)
+    viewed = {}
+    for viewer, tok in (("own company", tok_b), ("other company", tok_a)):
+        body = (await client.get("/payments/unmatched", headers=_h(tok))).json()
+        [payment] = [p for p in body["items"] if p["reference"] == "pi_ny"]
+        [refund] = [x for x in body["refunds"] if x["refund_id"] == "re_ny"]
+        viewed[viewer] = (payment["paid_on"], refund["received_on"], refund["refunded_on"])
+
+    rec = await client.post("/payments/unmatched/record", headers=_h(tok_b),
+                            json={"reference": "pi_ny", "entity_id": eid})
+    assert rec.status_code == 200, rec.text
+    booked_day = (await _doc_state(client, tok_b, eid))["payments"][0]["payment_date"]
+
+    assert booked_day == "2026-10-04"
+    assert viewed == {"own company": (booked_day,) * 3, "other company": (booked_day,) * 3}
+
+
 @pytest.mark.asyncio
 async def test_unmatched_payments_name_their_company_and_invoice_while_they_exist(client, session):
     """The table shows names a person knows, not ids: the company's name and the
