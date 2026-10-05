@@ -468,3 +468,54 @@ def test_a_stop_before_the_servers_start_releases_the_lock_and_unwinds(tmp_path,
         _start({**CFG, "database": dict(CFG["database"])})
     assert stopped.value.code == 0
     assert not (tmp_path / "update.lock").exists()
+
+
+def test_a_server_that_ignores_the_stop_is_killed(tmp_path):
+    """A server that does not stop when asked never holds the supervisor open: after
+    a bounded wait it is killed and the supervisor exits, so the database it
+    started is stopped too."""
+    import signal
+    import subprocess
+
+    from celerp.cli import _start
+
+    handlers: dict = {}
+    spawned: list = []
+
+    class _Wedged(_Proc):
+        killed = False
+
+        def poll(self):
+            return 0 if self.killed else None
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            if self.killed:
+                return 0
+            if timeout is None:
+                raise AssertionError("waited on a wedged server with no time limit")
+            raise subprocess.TimeoutExpired("server", timeout)
+
+    def fake_popen(cmd, env, **kwargs):
+        proc = _Wedged("api" if any("celerp.main" in s for s in cmd) else "ui")
+        spawned.append(proc)
+        return proc
+
+    def stopped_while_starting(*_servers, **_kw):
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    with (
+        patch("subprocess.Popen", side_effect=fake_popen),
+        patch("celerp.cli._read_config", return_value=CFG),
+        patch("celerp.cli._config_to_env", return_value={}),
+        patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
+        patch("celerp.cli._migrate_to_head"),
+        patch("celerp.cli._wait_ready", side_effect=stopped_while_starting),
+        patch("signal.signal", side_effect=lambda sig, handler: handlers.__setitem__(sig, handler)),
+        pytest.raises(SystemExit) as stopped,
+    ):
+        _start({**CFG, "database": dict(CFG["database"])})
+    assert stopped.value.code == 0
+    assert [p.name for p in spawned] == ["api", "ui"] and all(p.killed for p in spawned)

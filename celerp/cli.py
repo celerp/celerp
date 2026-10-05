@@ -1338,11 +1338,9 @@ def _supervise(cfg: dict, release_lock) -> None:
     # are still starting also ends them.
     def _shutdown(sig, frame):
         click.echo("\nShutting down...")
-        children = [p for p in (api_proc, ui_proc) if p is not None]
-        for proc in children:
-            proc.terminate()
-        for proc in children:
-            proc.wait()
+        for proc in (api_proc, ui_proc):
+            if proc is not None:
+                update.stop_process(proc)
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _shutdown)
@@ -1372,8 +1370,7 @@ def _supervise(cfg: dict, release_lock) -> None:
                 except update.UpdateError as exc:
                     click.echo(f"Ignoring update request: {exc}", err=True)
                     target = None
-                ui_proc.terminate()
-                ui_proc.wait()
+                update.stop_process(ui_proc)
                 if target:
                     click.echo(f"Updating Celerp to {target}...")
                     steps = _update_steps(cfg)
@@ -1398,11 +1395,11 @@ def _supervise(cfg: dict, release_lock) -> None:
                 ui_proc = spawn_ui(env, ui_port)
             else:
                 click.echo(f"API server exited with code {api_proc.returncode}", err=True)
-                ui_proc.terminate()
+                update.stop_process(ui_proc)
                 sys.exit(api_proc.returncode)
         if ui_proc.poll() is not None:
             click.echo(f"UI server exited with code {ui_proc.returncode}", err=True)
-            api_proc.terminate()
+            update.stop_process(api_proc)
             sys.exit(ui_proc.returncode)
         time.sleep(0.5)
 

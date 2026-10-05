@@ -734,7 +734,8 @@ def _step(*args: str, env: dict | None = None) -> str:
     return result.stdout
 
 
-def _terminate(proc: subprocess.Popen) -> None:
+def stop_process(proc: subprocess.Popen) -> None:
+    """Ask a server to stop; kill it if it has not stopped within 15 seconds."""
     if proc.poll() is None:
         proc.terminate()
         try:
@@ -834,7 +835,7 @@ class SupervisorSteps(Steps):
                     break
             time.sleep(0.5)
         if version != target:
-            _terminate(api)
+            stop_process(api)
             raise UpdateError(f"reported version {version}" if version else "not healthy")
         ui = self._spawn_ui(env, ui_port)
         if not self._wait_ready((api, api_port), (ui, ui_port), VERIFY_TIMEOUT_SECONDS):
@@ -844,7 +845,7 @@ class SupervisorSteps(Steps):
 
     def stop_children(self, children: tuple) -> None:
         for proc in children:
-            _terminate(proc)
+            stop_process(proc)
 
     def restore(self, path: Path, target: str) -> None:
         """Restore the pre-update dump. `target` may already be recorded as having

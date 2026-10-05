@@ -515,7 +515,7 @@ def test_start_respawns_api_on_sentinel(tmp_path):
             self.returncode = code
         def poll(self): return self.returncode if self._dead else None
         def terminate(self): pass
-        def wait(self): pass
+        def wait(self, timeout=None): pass
 
     def fake_popen(cmd, env, **kwargs):
         spawn_calls.append(list(cmd))
@@ -575,7 +575,7 @@ def test_start_exits_without_sentinel(tmp_path):
             self.returncode = code
         def poll(self): return self.returncode if self._dead else None
         def terminate(self): pass
-        def wait(self): pass
+        def wait(self, timeout=None): pass
 
     def fake_popen(cmd, env, **kwargs):
         spawn_calls.append(list(cmd))
@@ -614,7 +614,7 @@ def test_start_points_the_ui_at_the_configured_api_port(valid_cfg, tmp_path, mon
         returncode = 1
         def poll(self): return 1
         def terminate(self): pass
-        def wait(self): pass
+        def wait(self, timeout=None): pass
 
     def fake_popen(cmd, env, **kwargs):
         envs["api" if _is_api_cmd(cmd) else "ui"] = env
