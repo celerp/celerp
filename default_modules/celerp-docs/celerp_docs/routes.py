@@ -30,6 +30,7 @@ from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCL
 from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
+from celerp.services.field_schema import reject_system_item_fields
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole
 from celerp.services.account_roles import current_settings, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
@@ -3780,6 +3781,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             # same set_inventory_prices gate as every inventory writer.
             _inherited = (sku_ref.get("attributes") or {}) | {k: sku_ref.get(k) for k in _INHERIT}
             _authored = {k: v for k, v in (item_data.get("attributes") or {}).items() if _inherited.get(k) != v}
+            reject_system_item_fields({"attributes": _authored})
             reject_price_change(price_keys_in({"attributes": _authored}, _recv_price_lists), role, settings)
             # Payload values always take precedence for the fields below
             item_data.update({

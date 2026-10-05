@@ -3085,6 +3085,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     _price_lists = (await get_price_config(session, company_id))[0]
     for _child in payload.children:
         _validate_sku(_child.sku)
+        reject_system_item_fields({"attributes": _child.attributes})
         reject_price_change(price_keys_in({"attributes": _child.attributes}, _price_lists), role, settings)
     parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
     if parent is None or not is_item_available(parent.state):
@@ -3979,6 +3980,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     from celerp.services.auto_je import company_currency, merge_reclassification
     from celerp_inventory.services import external_link_for_state, normalize_sku
 
+    reject_system_item_fields({"attributes": payload.resolved_attributes or {}})
     reject_price_change(
         price_keys_in({"attributes": payload.resolved_attributes or {}}, (await get_price_config(session, company_id))[0]),
         role, settings,
