@@ -3601,6 +3601,7 @@
   "mfg.reconcile_values": "{item} non è più un componente di questa produzione, è indicato due volte o ha un valore negativo.",
   "mfg.reopen_unrecorded": "Questa produzione è stata completata da una versione precedente o con la contabilità in un altro stato, quindi la chiusura non può essere annullata con esattezza. Non può essere riaperta; avvia una nuova produzione per il lavoro successivo.",
   "mfg.reconcile_value_too_large": "Il valore indicato per {item} è troppo grande per essere registrato.",
+  "mfg.component_merged": "{sku} è stato unito in {merged_into}, quindi non ha più giacenza propria. Indicare invece {merged_into} nella ricetta.",
   "mfg.reconcile_over_history": "{item} è uscito dal magazzino con {recorded} quando questo ordine lo ha usato, quindi l'ordine non può detenerne {value}. Indicare al massimo {recorded}.",
   "mfg.reconcile_missing": "Indica il valore di ogni componente ancora in questa produzione: {items} non ne ha.",
   "mfg.reconcile_account": "Scegli il conto da cui proviene questo valore: un conto di magazzino che detiene almeno {total} oltre alle sue giacenze, oppure utili portati a nuovo per un valore mai registrato in contabilità.",

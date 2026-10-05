@@ -3601,6 +3601,7 @@
   "mfg.reconcile_values": "{item} não é um componente que ainda esteja neste ciclo, aparece duas vezes ou tem valor negativo.",
   "mfg.reopen_unrecorded": "Este ciclo foi concluído por uma versão anterior ou com a contabilidade em outro estado, por isso a conclusão não pode ser revertida com exatidão. Ele não pode ser reaberto; inicie um novo ciclo para continuar.",
   "mfg.reconcile_value_too_large": "O valor informado para {item} é grande demais para ser registrado.",
+  "mfg.component_merged": "{sku} foi mesclado em {merged_into} e não tem mais estoque próprio. Use {merged_into} na receita.",
   "mfg.reconcile_over_history": "{item} saiu do estoque com {recorded} quando esta ordem o usou, então a ordem não pode manter {value} dele. Informe no máximo {recorded}.",
   "mfg.reconcile_missing": "Informe o valor de cada componente que ainda está neste ciclo: {items} não tem nenhum.",
   "mfg.reconcile_account": "Escolha a conta de onde sai este valor: uma conta de estoque que detenha pelo menos {total} além do seu estoque disponível, ou lucros acumulados para um valor que a contabilidade nunca registrou.",

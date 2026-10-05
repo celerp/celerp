@@ -3601,6 +3601,7 @@
   "mfg.reconcile_values": "{item} n'est plus un composant de ce cycle, est indiqué deux fois ou a une valeur négative.",
   "mfg.reopen_unrecorded": "Ce cycle a été terminé par une version antérieure ou alors que la comptabilité était dans un autre état : sa clôture ne peut pas être annulée exactement. Il ne peut pas être rouvert ; créez un nouveau cycle pour la suite.",
   "mfg.reconcile_value_too_large": "La valeur indiquée pour {item} est trop élevée pour être enregistrée.",
+  "mfg.component_merged": "{sku} a été fusionné dans {merged_into} et n'a plus de stock propre. Indiquez plutôt {merged_into} dans la recette.",
   "mfg.reconcile_over_history": "{item} a quitté le stock pour {recorded} lorsque cet ordre l'a utilisé, l'ordre ne peut donc pas en détenir {value}. Indiquez au plus {recorded}.",
   "mfg.reconcile_missing": "Indiquez la valeur de chaque composant encore dans ce cycle : {items} n'en a pas.",
   "mfg.reconcile_account": "Choisissez le compte d'où provient cette valeur : un compte de stock qui détient au moins {total} au-delà de son stock disponible, ou les résultats reportés pour une valeur que la comptabilité n'a jamais portée.",

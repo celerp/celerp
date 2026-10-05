@@ -332,7 +332,7 @@ async def set_item_recipe(
 
     Validates components, rolls the standard cost up from current component costs,
     and emits ``item.recipe.set``. Hard errors (422) on self-reference, unknown
-    component SKUs, items that are not stock, and recipe cycles — per GDR, validation lives
+    component SKUs, items that are not stock, items merged into another, and recipe cycles — per GDR, validation lives
     at the function level. The company lock is taken before anything is read, so the items
     the recipe names are checked and saved in one step that a Delete cannot come between.
     """
@@ -357,6 +357,7 @@ async def set_item_recipe(
     for comp in recipe["components"]:
         cstate = graph.get(comp.get("item_id")) or {}
         movements.require_stock(cstate, comp.get("item_id"))
+        await movements.require_not_merged(session, company_id, cstate, comp.get("item_id"))
         comp["unit"] = cstate.get("sell_by") or cstate.get("unit") or comp.get("unit")
         comp["sku"] = cstate.get("sku") or comp.get("sku")
 

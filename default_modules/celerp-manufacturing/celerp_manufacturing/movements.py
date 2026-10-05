@@ -103,6 +103,21 @@ def require_stock(state: dict, item_id: str, http_status: int = 422) -> None:
                      sku=sku, inventory_type=state.get("inventory_type"))
 
 
+async def require_not_merged(session: AsyncSession, company_id, state: dict, item_id: str,
+                             http_status: int = 422) -> None:
+    """A component merged into another item holds no stock of its own any more: a recipe
+    names the item it was merged into instead, and the refusal says which one."""
+    if state.get("status") != "merged":
+        return
+    sku = state.get("sku") or item_id
+    target_id = state.get("merged_into")
+    target = await session.get(Projection, {"company_id": company_id, "entity_id": target_id}) if target_id else None
+    into = ((target.state or {}) if target is not None else {}).get("sku") or target_id or "another item"
+    raise refuse(http_status, "component_merged",
+                 f"{sku} was merged into {into}, so it holds no stock of its own. Name {into} in the recipe "
+                 "instead.", sku=sku, merged_into=into)
+
+
 async def mfg_settings(session: AsyncSession, company_id) -> dict:
     company = await session.get(Company, company_id)
     return (company.settings or {}).get("manufacturing", {}) if company else {}
@@ -334,6 +349,7 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
         s = row.state or {}
         sku = s.get("sku") or item_id
         refuse_draft(s, item_id)
+        await require_not_merged(op.session, op.company_id, s, item_id, 409)
         held = held_value(row)  # a stocked item or component (_require_executable_shape)
         if not is_item_available(s) or s.get("status_doc_id") or held is None:
             raise refuse(409, "item_unavailable",
