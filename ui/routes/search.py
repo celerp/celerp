@@ -12,7 +12,6 @@ from starlette.responses import Response
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.icons import CONTACT_ICON, DOC_ICON, ITEM_ICON
 from ui.components.table import display_enum
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
@@ -119,19 +118,19 @@ def setup_routes(app):
         # provider returns each record's entity id under "id"; detail hrefs link
         # straight to the record's own page.
         descriptors = [
-            ("celerp-inventory", "items", ITEM_ICON,
+            ("celerp-inventory", "items", "📦",
              lambda r: r.get("name") or r.get("sku") or "",
              lambda r: f"/inventory/{r.get('id', '')}",
              lambda r: r.get("sku") or "",
              frozenset({"sold", "archived", "merged", "expired", "disposed"}),
              "item_status"),
-            ("celerp-contacts", "items", CONTACT_ICON,
+            ("celerp-contacts", "items", "👤",
              lambda r: r.get("name") or r.get("contact_name") or "",
              lambda r: f"/contacts/{r.get('id', '')}",
              lambda r: "",
              frozenset(),
              "contact_status"),
-            ("celerp-docs", "items", DOC_ICON,
+            ("celerp-docs", "items", "📄",
              lambda r: r.get("doc_number") or r.get("ref") or "",
              lambda r: f"/docs/{r.get('id', '')}",
              lambda r: r.get("doc_type") or "",

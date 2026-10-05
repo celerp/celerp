@@ -31,6 +31,7 @@ from fasthtml.common import *
 from starlette.responses import StreamingResponse
 import ui.api_client as api
 from celerp.services import import_stage
+from ui.components.icons import import_icon
 from ui.i18n import t, get_lang
 from ui.components.table import searchable_select
 
@@ -1166,7 +1167,7 @@ def _fix_errors_panel(
                     cls="csv-fix-table data-table",
                 ),
                 Div(
-                    Button(t("btn.fix_import"),
+                    Button(import_icon(), t("btn.fix_import"),
                         type="submit",
                         cls="btn btn--primary",
                         hx_disabled_elt="this",
@@ -1341,6 +1342,7 @@ def _confirm_panel(
                 *[Input(type="hidden", name=k, value=v) for k, v in hidden.items()],
                 upsert_control,
                 Button(
+                    import_icon(),
                     t("import.import_all_rows", n=n),
                     cls="btn btn--primary",
                     type="submit",
@@ -1495,7 +1497,7 @@ def plan_review_panel(
                 Div(
                     Button(t("import.btn_recheck"), type="submit", cls="btn btn--secondary", hx_disabled_elt="this")
                     if errors else "",
-                    Button(t("import.import_all_rows", n=ready), type="button", cls="btn btn--primary",
+                    Button(import_icon(), t("import.import_all_rows", n=ready), type="button", cls="btn btn--primary",
                            hx_post=confirm_action, hx_target="#import-preview", hx_swap="outerHTML",
                            hx_disabled_elt="this", hx_indicator="#import-spinner")
                     if not errors else "",
@@ -1572,7 +1574,7 @@ def import_abort_panel(
         _step_indicator(review_step, has_mapping=has_mapping),
         P(message, cls="flash flash--error"),
         Div(
-            A(t("msg.import_more"), href=import_more_href, cls="btn btn--secondary"),
+            A(import_icon(), t("msg.import_more"), href=import_more_href, cls="btn btn--secondary"),
             A(t("btn.cancel"), href=back_href, cls="btn btn--ghost"),
             cls="flex-row gap-sm mt-md",
         ),
@@ -1662,7 +1664,7 @@ def import_result_panel(
         error_block,
         Div(
             A(t("import.view_entity", label=label_title), href=back_href, cls="btn btn--primary"),
-            A(t("msg.import_more"), href=import_more_href, cls="btn btn--secondary"),
+            A(import_icon(), t("msg.import_more"), href=import_more_href, cls="btn btn--secondary"),
             cls="flex-row gap-sm mt-md",
         ),
         id="import-preview",

@@ -10,6 +10,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
+from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.shell import base_shell, flash, page_header, page_title
 from ui.config import COOKIE_NAME
@@ -337,7 +338,7 @@ def _chart_tab(chart: list[dict]) -> FT:
     return Div(
         Div(
             A(t("acct.add_account"), href="/settings/accounting/chart/new", cls="btn btn--primary"),
-            A(t("acct.import_chart_csv"), href="/accounting/import/chart", cls="btn btn--secondary"),
+            A(import_icon(), t("acct.import_chart_csv"), href="/accounting/import/chart", cls="btn btn--secondary"),
             Form(
                 Button(t("btn.seed_default_chart"), type="submit", cls="btn btn--secondary"),
                 hx_post="/settings/accounting/chart/seed",

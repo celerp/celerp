@@ -16,6 +16,7 @@ from starlette.responses import RedirectResponse, Response
 
 from celerp.importers import tabular
 import ui.api_client as api
+from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, flash, page_header, page_title
@@ -398,7 +399,7 @@ def _workspace_view(
                     Input(type="file", name="csv_file", accept=".csv", cls="form-input", required=True),
                     cls="form-field",
                 ),
-                Button(t("doc.import_csv"), type="submit", cls="btn btn--primary btn--sm"),
+                Button(import_icon(), t("doc.import_csv"), type="submit", cls="btn btn--primary btn--sm"),
                 hx_post=f"/accounting/reconcile/{session_id}/import",
                 hx_target="#recon-workspace",
                 hx_swap="outerHTML",

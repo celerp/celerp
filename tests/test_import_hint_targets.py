@@ -49,7 +49,8 @@ async def test_every_list_page_has_exactly_one_import_hint(owner_ui, path):
     assert hinted, f"{path}: the hinted Import button sits in the header action bar"
     assert "/import" in hinted.group(0)
     # The arrow says "Click Import", so the button it points at says Import.
-    label = re.search(r'<a[^>]*data-import-hint[^>]*>([^<]*)</a>', actions).group(1).strip()
+    inner = re.search(r'<a[^>]*data-import-hint[^>]*>(.*?)</a>', actions, re.S).group(1)
+    label = re.sub(r"<[^>]+>", "", inner).strip()
     assert label == _EN["btn.import"], (path, label)
 
 

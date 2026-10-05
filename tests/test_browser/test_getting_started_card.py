@@ -33,17 +33,6 @@ def test_card_options_side_by_side_and_flush_left(page: Page, fresh_company, wid
     assert_start_options_layout(page, _CARD, cat["setup.option_restore_title"], cat["setup.option_move_title"])
 
 
-def test_card_links_carry_icons(page: Page, fresh_company):
-    page.goto("/dashboard")
-    links = page.locator(f"{_CARD} .getting-started-link")
-    expect(links).to_have_count(3)
-    for i in range(3):
-        icon = links.nth(i).locator(".getting-started-link-icon")
-        expect(icon).to_have_count(1)
-        assert icon.inner_text().strip(), f"link {i} has an empty icon"
-        assert icon.get_attribute("aria-hidden") == "true"
-
-
 def test_close_without_tick_comes_back_on_reload(page: Page, fresh_company):
     page.goto("/dashboard")
     card = page.locator(_CARD)

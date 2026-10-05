@@ -19,6 +19,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
+from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import breadcrumbs, display_enum, pagination, per_page_value, search_bar, status_cards
@@ -267,7 +268,7 @@ def setup_routes(app) -> None:
                            label=t(f"subscriptions.search_{side}")),
                 Button(t("page.new_subscription"), hx_post=f"/subscriptions/new?direction={direction}",
                        hx_swap="none", cls="btn btn--primary"),
-                A(t("btn.import"), href="/subscriptions/import", cls="btn btn--secondary",
+                A(import_icon(), t("btn.import"), href="/subscriptions/import", cls="btn btn--secondary",
                   data_import_hint=True) if can_import else "",
             ),
             _sub_status_cards(all_items, status, direction),

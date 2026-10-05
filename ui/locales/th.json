@@ -3618,5 +3618,6 @@
   "dashboard.finish_setup": "ตั้งค่าให้เสร็จ: เลือกประเภทธุรกิจ",
   "dashboard.getting_started_forever": "ไม่ต้องแสดงอีก",
   "dashboard.demo_note": "รายการที่มีเครื่องหมาย [DEMO] เป็นตัวอย่างและรวมอยู่ในตัวเลขเหล่านี้ การนำเข้าสินค้าครั้งแรกจะลบรายการเหล่านี้ เว้นแต่คุณได้แก้ไขแล้ว",
+  "dashboard.getting_started_from_spreadsheet": "นำเข้าจากสเปรดชีต:",
   "shell.import_hint": "คลิกนำเข้าเพื่ออัปโหลดไฟล์ของคุณ"
 }

@@ -3420,13 +3420,16 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .getting-started-head .section-title { margin: 0 0 12px; }
 .getting-started-close { display: flex; align-items: center; gap: 12px; margin-left: auto; }
 .getting-started-forever { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--c-text2); }
-.getting-started-link-icon { margin-right: 6px; }
+.getting-started-lead { font-size: 13px; margin: 0 0 8px; }
 .getting-started-dismiss { background: none; border: none; font-size: 22px; line-height: 1; cursor: pointer;
   color: var(--c-text2); padding: 0; }
 .getting-started-links { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
 .getting-started-link { display: inline-block; padding: 8px 14px; border: 1px solid var(--c-border);
   border-radius: var(--radius); background: var(--c-bg3); color: var(--c-text); text-decoration: none; font-weight: 500; }
 .getting-started-link:hover { border-color: var(--c-accent); color: var(--c-accent); }
+/* The spreadsheet icon on every spreadsheet Import button (ui/components/icons.py). */
+.import-icon { display: inline-flex; vertical-align: -0.125em; margin-inline-end: 6px; }
+.btn--icon > .import-icon { margin-inline-end: 0; font-size: 16px; }
 .getting-started-note { font-size: 13px; color: var(--c-text2); margin: 8px 0; }
 .import-arrow { position: relative; width: fit-content; max-width: 100%; box-sizing: border-box;
   margin: -4px 0 16px; padding: 8px 12px; border-radius: 6px; background: var(--c-accent); color: #fff; font-size: 13px; font-weight: 500;

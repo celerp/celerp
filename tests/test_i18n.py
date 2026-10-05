@@ -833,6 +833,7 @@ _GETTING_STARTED_KEYS = (
     "dashboard.getting_started_title", "dashboard.getting_started_products",
     "dashboard.getting_started_contacts", "dashboard.getting_started_documents",
     "dashboard.getting_started_where", "dashboard.demo_note",
+    "dashboard.getting_started_from_spreadsheet",
     "dashboard.finish_setup", "shell.import_hint",
 )
 

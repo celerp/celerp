@@ -15,6 +15,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
+from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, info_tip, page_header, page_title
@@ -734,7 +735,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
                        label=t(f"contacts.search_{nav_key}")),
             Button(t(f"contacts.new_{contact_type}"), hx_post=create_url, hx_swap="none", cls="btn btn--primary") if _can_edit else "",
             A(t("btn.export_csv"), href=f"{base_url}/export/csv", cls="btn btn--secondary") if _can_import_export else "",
-            A(t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary", data_import_hint=True) if _can_import_export else "",
+            A(import_icon(), t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary", data_import_hint=True) if _can_import_export else "",
         ),
         Div(column_manager(schema, et), cls="column-manager-row"),
         _contacts_bulk_toolbar(contact_type),

@@ -3618,5 +3618,6 @@
   "dashboard.finish_setup": "Einrichtung abschließen: Unternehmenstyp auswählen",
   "dashboard.getting_started_forever": "Nicht mehr anzeigen",
   "dashboard.demo_note": "Mit [DEMO] markierte Artikel sind Beispiele und in diesen Zahlen enthalten. Ihr erster Produktimport entfernt sie, sofern Sie sie nicht geändert haben.",
+  "dashboard.getting_started_from_spreadsheet": "Aus einer Tabelle importieren:",
   "shell.import_hint": "Klicken Sie auf Importieren, um Ihre Datei hochzuladen"
 }

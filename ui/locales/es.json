@@ -3618,5 +3618,6 @@
   "dashboard.finish_setup": "Termine la configuración: elija su tipo de negocio",
   "dashboard.getting_started_forever": "No volver a mostrar",
   "dashboard.demo_note": "Los artículos marcados [DEMO] son ejemplos y se incluyen en estas cifras. Su primera importación de productos los elimina, salvo que los haya modificado.",
+  "dashboard.getting_started_from_spreadsheet": "Importar desde una hoja de cálculo:",
   "shell.import_hint": "Haga clic en Importar para subir su archivo"
 }

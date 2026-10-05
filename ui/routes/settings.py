@@ -12,6 +12,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
+from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
@@ -3235,7 +3236,7 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
                hx_on__after_request="window.location.reload()"),
     ]
     if import_path:
-        actions.append(A(t("btn.import_taxes_csv"), href=import_path, cls="btn btn--secondary ml-sm"))
+        actions.append(A(import_icon(), t("btn.import_taxes_csv"), href=import_path, cls="btn btn--secondary ml-sm"))
 
     return Div(
         Div(*actions, cls="page-actions mb-md"),
@@ -3271,7 +3272,7 @@ def _terms_tab(terms: list[dict], lang: str = "en", prefix: str = "terms", impor
                hx_on__after_request="window.location.reload()"),
     ]
     if import_path:
-        actions.append(A(t("btn.import_payment_terms_csv"), href=import_path, cls="btn btn--secondary ml-sm"))
+        actions.append(A(import_icon(), t("btn.import_payment_terms_csv"), href=import_path, cls="btn btn--secondary ml-sm"))
 
     return Div(
         Div(*actions, cls="page-actions mb-md"),
@@ -3755,7 +3756,7 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
             Button(t("btn.new_location"), cls="btn btn--primary",
                    hx_post="/settings/locations/new", hx_swap="none",
                    hx_on__after_request="window.location.href='/settings/inventory?tab=locations'"),
-            A(t("settings.import_locations_csv"), href="/settings/import/locations", cls="btn btn--secondary ml-sm"),
+            A(import_icon(), t("settings.import_locations_csv"), href="/settings/import/locations", cls="btn btn--secondary ml-sm"),
             cls="page-actions mb-md",
         ),
         Table(

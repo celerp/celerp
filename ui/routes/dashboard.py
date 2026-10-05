@@ -11,7 +11,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 import asyncio
 
-from ui.components.icons import CONTACT_ICON, DOC_ICON, ITEM_ICON
+from ui.components.icons import import_icon
 from ui.components.import_access import can_import_documents
 from ui.components.shell import base_shell, page_header, star_supporter_card, page_title
 from ui.components.start_options import start_options, supported_sources
@@ -917,13 +917,13 @@ def _real_docs(page: dict) -> bool:
 
 
 _IMPORT_TARGETS = (
-    ("dashboard.getting_started_products", ITEM_ICON, "/inventory",
+    ("dashboard.getting_started_products", "/inventory",
      lambda s, r: _role_has_permission(s, r, "import_export_data"),
      lambda tok: api.list_items(tok, {"status": "all", "limit": 50}), _real_items),
-    ("dashboard.getting_started_contacts", CONTACT_ICON, "/contacts/customers",
+    ("dashboard.getting_started_contacts", "/contacts/customers",
      lambda s, r: _role_has_permission(s, r, "import_export_data"),
      lambda tok: api.list_contacts(tok, {"limit": 5}), _real_contacts),
-    ("dashboard.getting_started_documents", DOC_ICON, "/docs",
+    ("dashboard.getting_started_documents", "/docs",
      can_import_documents,
      lambda tok: api.list_docs(tok, {"limit": 1}), _real_docs),
 )
@@ -941,7 +941,7 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
     pages = await asyncio.gather(*(load(token) for *_, load, _ in _IMPORT_TARGETS),
                                  return_exceptions=True)
     links = []
-    for (label, icon, href, allowed, _, is_real), page in zip(_IMPORT_TARGETS, pages):
+    for (label, href, allowed, _, is_real), page in zip(_IMPORT_TARGETS, pages):
         if isinstance(page, APIError) and page.status in (403, 404):
             continue
         if isinstance(page, BaseException):
@@ -949,7 +949,7 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
         if is_real(page):
             return None
         if allowed(settings, role):
-            links.append(A(Span(icon, cls="getting-started-link-icon", aria_hidden="true"), t(label),
+            links.append(A(import_icon(), t(label),
                            href=f"{href}?hint=import", cls="getting-started-link"))
     if not links:
         return None
@@ -972,6 +972,7 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
             ),
             cls="getting-started-head",
         ),
+        P(t("dashboard.getting_started_from_spreadsheet"), cls="getting-started-lead"),
         Div(*links, cls="getting-started-links"),
         P(t("dashboard.getting_started_where"), cls="getting-started-note"),
         options,
