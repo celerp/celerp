@@ -1089,7 +1089,9 @@ def _fix_errors_panel(
     for col in visible_cols:
         label = column_label(col, col_labels)
         is_err_col = col in error_cols
-        badge = t("import.n_errors_paren", n=col_error_counts.get(col, 0)) if is_err_col else ""
+        n_err = col_error_counts.get(col, 0)
+        badge = (" " + t("import.n_errors_paren_one" if n_err == 1 else "import.n_errors_paren_many", n=n_err)
+                 if is_err_col else "")
         tooltip = _COL_TOOLTIPS.get(col)
         th_content: Any = (
             Span(
