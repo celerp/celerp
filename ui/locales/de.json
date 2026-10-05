@@ -1760,7 +1760,7 @@
   "table.stock_guard_prompt": "Einige ausgewählte Artikel sind noch vorrätig. Durch die Archivierung wird das Produkt aus dem Sortiment genommen, der Lagerbestand bleibt jedoch in der Buchhaltung erhalten. Was soll mit dem verbleibenden Lagerbestand geschehen?",
   "table.keep_stock_on_books": "Lagerbestand in der Buchhaltung belassen",
   "table.write_off_remaining_stock": "Restbestand abschreiben",
-  "table.confirm_merge": "{n}-Artikel in {target} zusammenführen?",
+  "table.confirm_merge": "{n} Artikel in {target} zusammenführen?",
   "table.a_new_sku": "eine neue Artikelnummer",
   "table.new_doc_type": "Neues {type}",
   "table.search_or_select": "Suchen oder auswählen…",

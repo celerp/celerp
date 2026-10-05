@@ -1759,7 +1759,7 @@
   "table.stock_guard_prompt": "لا تزال بعض العناصر المحددة تحتوي على مخزون. تؤدي الأرشفة إلى سحب المنتج من السوق مع إبقاء مخزونه مسجلاً في السجلات. ماذا يجب أن يحدث للمخزون المتبقي؟",
   "table.keep_stock_on_books": "الاحتفاظ بالمخزون مسجلاً في السجلات",
   "table.write_off_remaining_stock": "شطب المخزون المتبقي",
-  "table.confirm_merge": "دمج عناصر {n} في {target}؟",
+  "table.confirm_merge": "دمج {n} عناصر في {target}؟",
   "table.a_new_sku": "SKU جديد",
   "table.new_doc_type": "{type} جديد",
   "table.search_or_select": "ابحث أو حدد...",

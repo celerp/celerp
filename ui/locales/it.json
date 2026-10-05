@@ -1760,7 +1760,7 @@
   "table.stock_guard_prompt": "Alcuni articoli selezionati hanno ancora scorte. L’archiviazione ritira il prodotto ma lascia le sue scorte nei registri. Cosa deve succedere alle scorte rimanenti?",
   "table.keep_stock_on_books": "Mantenere le scorte nei registri",
   "table.write_off_remaining_stock": "Cancellare le scorte rimanenti",
-  "table.confirm_merge": "Unire gli articoli {n} in {target}?",
+  "table.confirm_merge": "Unire {n} articoli in {target}?",
   "table.a_new_sku": "un nuovo SKU",
   "table.new_doc_type": "Nuovo {type}",
   "table.search_or_select": "Cerca o seleziona...",

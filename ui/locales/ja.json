@@ -1759,7 +1759,7 @@
   "table.stock_guard_prompt": "選択したアイテムの一部にはまだ在庫があります。アーカイブ処理により製品は廃止されますが、在庫は帳簿上に残ります。残りの在庫をどう処理しますか？",
   "table.keep_stock_on_books": "在庫を帳簿上に残す",
   "table.write_off_remaining_stock": "残りの在庫を廃棄処理する",
-  "table.confirm_merge": "{n}のアイテムを{target}に統合しますか？",
+  "table.confirm_merge": "{n}件のアイテムを{target}に統合しますか？",
   "table.a_new_sku": "新しいSKU",
   "table.new_doc_type": "新しい{type}",
   "table.search_or_select": "検索または選択...",

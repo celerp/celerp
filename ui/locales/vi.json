@@ -1759,7 +1759,7 @@
   "table.stock_guard_prompt": "Một số mặt hàng đã chọn vẫn còn tồn kho. Việc lưu trữ sẽ ngừng kinh doanh sản phẩm nhưng vẫn giữ tồn kho trên sổ sách. Nên xử lý số tồn kho còn lại như thế nào?",
   "table.keep_stock_on_books": "Giữ tồn kho trên sổ sách",
   "table.write_off_remaining_stock": "Xóa sổ tồn kho còn lại",
-  "table.confirm_merge": "Hợp nhất các mặt hàng {n} vào {target}?",
+  "table.confirm_merge": "Hợp nhất {n} mặt hàng vào {target}?",
   "table.a_new_sku": "một SKU mới",
   "table.new_doc_type": "{type} mới",
   "table.search_or_select": "Tìm kiếm hoặc chọn...",

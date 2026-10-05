@@ -1759,7 +1759,7 @@
   "table.stock_guard_prompt": "Algunos artículos seleccionados aún tienen existencias. El archivo retira el producto, pero deja sus existencias en los registros. ¿Qué debe hacerse con las existencias restantes?",
   "table.keep_stock_on_books": "Mantener el stock en los registros",
   "table.write_off_remaining_stock": "Dar de baja el stock restante",
-  "table.confirm_merge": "¿Fusionar los artículos {n} en {target}?",
+  "table.confirm_merge": "¿Fusionar {n} artículos en {target}?",
   "table.a_new_sku": "un nuevo SKU",
   "table.new_doc_type": "Nuevo {type}",
   "table.search_or_select": "Buscar o seleccionar...",

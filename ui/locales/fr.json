@@ -1760,7 +1760,7 @@
   "table.stock_guard_prompt": "Certains articles sélectionnés sont encore en stock. L’archivage retire le produit de la vente mais laisse son stock dans la comptabilité. Que faire du stock restant ?",
   "table.keep_stock_on_books": "Conserver le stock dans la comptabilité",
   "table.write_off_remaining_stock": "Passer le stock restant en perte",
-  "table.confirm_merge": "Fusionner les articles {n} dans {target} ?",
+  "table.confirm_merge": "Fusionner {n} articles dans {target} ?",
   "table.a_new_sku": "un nouveau SKU",
   "table.new_doc_type": "Nouveau {type}",
   "table.search_or_select": "Rechercher ou sélectionner…",
