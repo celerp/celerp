@@ -116,3 +116,17 @@ async def test_a_receipt_on_a_draft_bill_is_refused(client, session, auth):
     await _finalize(client, auth, bill)
     r = await _receive(client, auth, bill, line)
     assert r.status_code == 200, r.text
+
+
+async def test_a_further_receipt_on_a_draft_an_earlier_release_received_is_refused(client, session, auth, monkeypatch):
+    import celerp_docs.routes as docs_routes
+
+    refuse = docs_routes._refuse_receipt_on_a_draft_bill
+    bill = await _doc(client, auth, "bill", [{"sku": "OLD-G", "name": "Goods", "quantity": 4, "unit_price": 10}])
+    line = {"po_line_index": 0, "sku": "OLD-G", "name": "Goods", "quantity_received": 2}
+    monkeypatch.setattr(docs_routes, "_refuse_receipt_on_a_draft_bill", lambda state: None)
+    assert (await _receive(client, auth, bill, line)).status_code == 200  # as the earlier release took it in
+    monkeypatch.setattr(docs_routes, "_refuse_receipt_on_a_draft_bill", refuse)
+    r = await _receive(client, auth, bill, line)
+    assert r.status_code == 409, r.text
+    assert "Finalize the bill" in r.json()["detail"]

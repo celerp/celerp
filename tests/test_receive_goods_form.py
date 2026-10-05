@@ -14,7 +14,7 @@ from fasthtml.common import to_xml
 
 import ui.api_client as api_client
 from test_cost_restatement import _item, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
-from test_receipt_accounting import _doc, _parcels
+from test_receipt_accounting import _doc, _finalize, _parcels
 
 
 class _Routes:
@@ -84,6 +84,8 @@ async def test_the_receive_goods_form_records_a_receipt_into_the_chosen_location
     if doc_type == "bill":
         lines.append({"name": "Delivery", "quantity": 1, "unit_price": 5.0})
     doc_id = await _doc(client, auth, doc_type, lines)
+    if doc_type == "bill":
+        await _finalize(client, auth, doc_id)
     doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
 
     page = _ReceiveForm()

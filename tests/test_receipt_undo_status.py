@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Undoing a bill's receipt puts the bill back where its receipt found it.
 
-A draft bill whose goods came in before it was issued is still a draft once the
-receipt is undone: it has not been issued and books no payable. An issued bill goes
-back to what its payments make it, so a paid bill stays paid.
+A draft bill whose goods an earlier release received before it was issued is still a
+draft once the receipt is undone: it has not been issued and books no payable. An
+issued bill goes back to what its payments make it, so a paid bill stays paid.
 """
 from __future__ import annotations
 
@@ -39,6 +39,13 @@ async def _post(client, h: dict, path: str, body: dict | None = None) -> dict:
     return r.json()
 
 
+def _receives_on_drafts(monkeypatch) -> None:
+    """Receive as an earlier release did, which took goods in on a bill still a draft."""
+    import celerp_docs.routes as docs_routes
+
+    monkeypatch.setattr(docs_routes, "_refuse_receipt_on_a_draft_bill", lambda state: None)
+
+
 async def _receive_and_undo(client, h: dict, bill: str, sku: str) -> dict:
     loc = await default_location_id(client, h)
     await _post(client, h, f"/docs/{bill}/receive", {"location_id": loc, "received_items": [
@@ -49,8 +56,9 @@ async def _receive_and_undo(client, h: dict, bill: str, sku: str) -> dict:
     return (await client.get(f"/docs/{bill}", headers=h)).json()
 
 
-async def test_undoing_a_receipt_on_a_draft_bill_leaves_it_a_draft(client):
+async def test_undoing_an_earlier_receipt_on_a_draft_bill_leaves_it_a_draft(client, monkeypatch):
     h = await _owner(client)
+    _receives_on_drafts(monkeypatch)
     bill = await _bill(client, h, "RU-DRAFT")
 
     doc = await _receive_and_undo(client, h, bill, "RU-DRAFT")
@@ -125,8 +133,9 @@ async def _undo_receipt(client, h: dict, bill: str) -> dict:
     return (await client.get(f"/docs/{bill}", headers=h)).json()
 
 
-async def test_an_earlier_draft_bill_with_goods_in_is_still_a_draft_when_its_receipt_is_undone(client, session):
+async def test_an_earlier_draft_bill_with_goods_in_is_still_a_draft_when_its_receipt_is_undone(client, session, monkeypatch):
     h = await _owner(client)
+    _receives_on_drafts(monkeypatch)
     cid = await _company_id(client, h)
     bill = await _bill(client, h, "RU-OLD-DRAFT")
     await _receive(client, h, bill, "RU-OLD-DRAFT")
@@ -139,9 +148,10 @@ async def test_an_earlier_draft_bill_with_goods_in_is_still_a_draft_when_its_rec
     assert not doc.get("finalized")
 
 
-async def test_an_earlier_draft_bill_whose_receipt_was_undone_shows_as_a_draft_again(client, session):
+async def test_an_earlier_draft_bill_whose_receipt_was_undone_shows_as_a_draft_again(client, session, monkeypatch):
     """The earlier release marked such a bill final although it was never issued."""
     h = await _owner(client)
+    _receives_on_drafts(monkeypatch)
     cid = await _company_id(client, h)
     bill = await _bill(client, h, "RU-OLD-UNDONE")
     doc = await _receive_and_undo(client, h, bill, "RU-OLD-UNDONE")
@@ -155,8 +165,9 @@ async def test_an_earlier_draft_bill_whose_receipt_was_undone_shows_as_a_draft_a
     assert not doc.get("finalized")
 
 
-async def test_an_earlier_bill_issued_after_its_goods_came_in_stays_final(client, session):
+async def test_an_earlier_bill_issued_after_its_goods_came_in_stays_final(client, session, monkeypatch):
     h = await _owner(client)
+    _receives_on_drafts(monkeypatch)
     cid = await _company_id(client, h)
     bill = await _bill(client, h, "RU-OLD-ISSUED")
     await _receive(client, h, bill, "RU-OLD-ISSUED")
@@ -206,11 +217,12 @@ async def test_an_earlier_bill_imported_as_issued_stays_final(client, session):
     assert doc["status"] == "final"
 
 
-async def test_the_upgrade_fills_in_earlier_receipts_once(client, session):
+async def test_the_upgrade_fills_in_earlier_receipts_once(client, session, monkeypatch):
     from celerp.models.projections import Projection
     from celerp_docs.legacy_receipts import record_legacy_receipts
 
     h = await _owner(client)
+    _receives_on_drafts(monkeypatch)
     cid = await _company_id(client, h)
     bill = await _bill(client, h, "RU-OLD-ONCE")
     await _receive(client, h, bill, "RU-OLD-ONCE")

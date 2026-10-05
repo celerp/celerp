@@ -3509,6 +3509,17 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
     return cost
 
 
+def _refuse_receipt_on_a_draft_bill(state: dict) -> None:
+    """A bill not yet issued books nothing, so goods received on it would sit on no entry.
+    That includes a draft an earlier release already received goods on."""
+    if state.get("doc_type") != "bill":
+        return
+    if state.get("status") == "draft" or (state.get("pre_receipt_status") == "draft" and not state.get("finalized")):
+        raise HTTPException(status_code=409, detail=(
+            "This bill is still a draft, so it has not booked these goods. "
+            "Finalize the bill first, then receive them."))
+
+
 @router.post("/{entity_id}/receive")
 async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("fulfill_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # A receipt adds to the quantity and cost of the lots it reads, so it waits for any
@@ -3521,11 +3532,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     doc_type = row.state.get("doc_type")
     if doc_type not in ("purchase_order", "bill", "consignment_in"):
         raise HTTPException(status_code=409, detail="receive is only valid for bills, purchase orders, and consignment_in documents")
-    if doc_type == "bill" and row.state.get("status") == "draft":
-        # A draft bill books nothing, so goods received on it would sit on no entry.
-        raise HTTPException(status_code=409, detail=(
-            "This bill is still a draft, so it has not booked these goods. "
-            "Finalize the bill first, then receive them."))
+    _refuse_receipt_on_a_draft_bill(row.state)
 
     location_uuid = None
     if payload.location_id:
