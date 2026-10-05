@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""The top bar fits a phone and a desktop window in English and German: every control
+"""On every list page the top bar fits a phone and a desktop window in English and German: every control
 is on screen, none overlaps another, the search box keeps room to type, and the company
 and language names are shown whole."""
 from __future__ import annotations
@@ -39,12 +39,13 @@ def _overlap(a: dict, b: dict) -> bool:
             and a["y"] < b["y"] + b["height"] - 0.5 and b["y"] < a["y"] + a["height"] - 0.5)
 
 
+@pytest.mark.parametrize("path", ["/inventory", "/docs", "/lists"])
 @pytest.mark.parametrize("lang", ["en", "de"])
 @pytest.mark.parametrize("width", [390, 1280])
-def test_topbar_controls_fit_without_overlap(page: Page, fresh_company, ui_server, lang, width):
+def test_topbar_controls_fit_without_overlap(page: Page, fresh_company, ui_server, lang, width, path):
     page.context.add_cookies([{"name": "celerp_lang", "value": lang, "url": ui_server}])
     page.set_viewport_size({"width": width, "height": 800})
-    page.goto("/inventory")
+    page.goto(path)
     page.wait_for_selector(_CONTROLS["company"], state="visible")
     page.wait_for_load_state("load")
 

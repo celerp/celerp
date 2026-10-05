@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""The inventory page header reads cleanly on a phone and a desktop window, in English
+"""The inventory, documents and lists page headers read cleanly on a phone and a desktop window, in English
 and German (900 is a window narrow enough to wrap the header beside the sidebar):
 no control overlaps another, the search caption sits directly above its
 box, the box keeps room to type (and on a phone shows its placeholder whole), and every type tab
@@ -27,18 +27,19 @@ def _overlap(a: dict, b: dict) -> bool:
             and a["y"] < b["y"] + b["height"] - 0.5 and b["y"] < a["y"] + a["height"] - 0.5)
 
 
-def _open(page: Page, ui_server: str, lang: str, width: int) -> None:
+def _open(page: Page, ui_server: str, lang: str, width: int, path: str = "/inventory") -> None:
     page.context.add_cookies([{"name": "celerp_lang", "value": lang, "url": ui_server}])
     page.set_viewport_size({"width": width, "height": 800})
-    page.goto("/inventory")
+    page.goto(path)
     page.wait_for_selector(".page-header #search-input", state="visible")
     page.wait_for_load_state("load")
 
 
+@pytest.mark.parametrize("path", ["/inventory", "/docs", "/lists"])
 @pytest.mark.parametrize("lang", ["en", "de"])
 @pytest.mark.parametrize("width", [390, 900, 1280])
-def test_inventory_header_stacks_without_overlap(page: Page, fresh_company, ui_server, lang, width):
-    _open(page, ui_server, lang, width)
+def test_list_page_header_stacks_without_overlap(page: Page, fresh_company, ui_server, lang, width, path):
+    _open(page, ui_server, lang, width, path)
     header = page.locator(".page-header")
     boxes = {"title": header.locator(".page-title").bounding_box(),
              "caption": header.locator(".search-scope-label").bounding_box(),
