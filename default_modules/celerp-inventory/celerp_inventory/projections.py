@@ -105,6 +105,12 @@ def is_item_available(state: dict) -> bool:
     return str(state.get("status") or DEFAULT_ITEM_STATUS).lower() in _ACTIVE_STATUSES
 
 
+def is_manufacturable(item_state: dict | None) -> bool:
+    """A product made from a recipe: an order for it is met by making it, whatever is in stock."""
+    recipe = (item_state or {}).get("recipe") or {}
+    return bool(recipe.get("components"))
+
+
 # What demand_claim says a document may do with an item.
 FREE_STOCK = "free"          # any document may draw it
 OWN_RESERVED = "reserved"    # reserved to this document: only it may draw it

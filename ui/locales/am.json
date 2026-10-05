@@ -3628,5 +3628,7 @@
   "notice.older_stock_moved.body": "ቀደምት ስሪቶች የተሸጠውን የመክፈቻ ክምችት ወጪ ወደ {p} መዝግበዋል፣ ስለዚህ {p} እና {ob} ከክምችትዎ ጋር የሚዛመዱት በአንድ ላይ ብቻ ነበር። በ{day} የተመዘገበ አንድ ግቤት {amount} {currency} ከ{ob} ወደ {p} አዛውሯል፣ የቆየ ክምችትዎም አሁን በ{p} ላይ ነው። ጠቅላላ ክምችት እና የተያዘ ትርፍ አልተለወጡም።",
   "item.draft": "{sku} ረቂቅ ነው፣ ገና ክምችት አይደለም፦ መጀመሪያ እንዲገኝ ያድርጉት።",
   "item.reserve_not_available": "{sku} {status} ነው፦ ሊያዝ የሚችለው የሚገኝ ክምችት ብቻ ነው።",
-  "item.reserve_out_of_range": "{sku} {held} አለው፣ {reserved} ተይዟል፦ የ{change} የማስያዝ ለውጥ {result} ይተዋል፣ ይህም ከ0 እስከ {held} ውጭ ነው።"
+  "item.reserve_out_of_range": "{sku} {held} አለው፣ {reserved} ተይዟል፦ የ{change} የማስያዝ ለውጥ {result} ይተዋል፣ ይህም ከ0 እስከ {held} ውጭ ነው።",
+  "item.invoice_not_available": "{sku} {status} ነው፦ ደረሰኝ ሊቆረጥለት የሚችለው የሚገኝ ክምችት ብቻ ነው።",
+  "import.migration_source_reserved": "{entity_id} ምንጩን \"migration\" ብሎ ይገልጻል፦ ያንን ምንጭ የሚጽፈው የውሂብ ፍልሰት ብቻ ነው።"
 }

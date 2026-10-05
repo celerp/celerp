@@ -31,7 +31,7 @@ from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.field_schema import reject_system_item_fields
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
 from celerp.services.account_roles import current_settings, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.journal_accounts import require_settlement_account
@@ -1980,6 +1980,32 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     return {"event_id": entry.id}
 
 
+async def _refuse_unsellable_lots(session, company_id, entity_id: str, state: dict) -> None:
+    """Finalizing an invoice books the cost of the lots its lines are bound to, so each must be
+    stock this invoice can sell: free, reserved to it, out on a memo (the customer keeps it), or
+    already sold to it or to the memo it was converted from. A lot sold elsewhere, expired or
+    otherwise not stock is refused by name and status (409) before anything is booked. A product
+    made from a recipe is exempt: an order for it is met by making it."""
+    from celerp_inventory.projections import demand_claim, is_manufacturable
+    lines = [li.get("entity_id") or li.get("item_id") for li in state.get("line_items") or []]
+    lots = await lock_projections(session, company_id, lines)
+    sold_to = {entity_id, state.get("source_memo_id")} - {None, ""}
+    for eid in dict.fromkeys(e for e in lines if e):
+        if eid not in lots:
+            continue
+        lot = lots[eid].state
+        if is_non_stock_line(lot.get("inventory_type"), lot.get("sell_by")) or is_manufacturable(lot):
+            continue
+        status = str(lot.get("status") or "").lower()
+        if demand_claim(lot, entity_id) is not None or status == "memo_out" or (
+                status == "sold" and lot.get("status_doc_id") in sold_to):
+            continue
+        sku = lot.get("sku") or eid
+        raise HTTPException(status_code=409, detail=refusal(
+            "item.invoice_not_available", f"{sku} is {status}: only available stock can be invoiced.",
+            sku=sku, status=status))
+
+
 async def _finalize_doc_impl(
     entity_id: str,
     company_id: str,
@@ -2003,6 +2029,8 @@ async def _finalize_doc_impl(
         return {"event_id": None, "already_finalized": True}
     if not (row.state.get("line_items") or []):
         raise HTTPException(status_code=422, detail="Add at least one line item before finalizing this document.")
+    if row.state.get("doc_type") == "invoice":
+        await _refuse_unsellable_lots(session, company_id, entity_id, row.state)
 
     # Snapshot scalar values early — avoids ORM lazy-load issues after multiple flush() calls.
     _initial_doc_state = dict(row.state)

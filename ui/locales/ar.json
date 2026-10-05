@@ -3628,5 +3628,7 @@
   "notice.older_stock_moved.body": "كانت الإصدارات السابقة تُسجّل تكلفة المخزون الافتتاحي المبيع على {p}، لذا لم يطابق {p} و{ob} مخزونك إلا مجتمعين. نقل قيد بتاريخ {day} مبلغ {amount} {currency} من {ob} إلى {p}، وأصبح مخزونك القديم الآن على {p}. إجمالي المخزون والأرباح المحتجزة دون تغيير.",
   "item.draft": "{sku} مسودة وليست مخزونًا بعد: اجعله متاحًا أولاً.",
   "item.reserve_not_available": "{sku} حالته {status}: لا يمكن حجز إلا المخزون المتاح.",
-  "item.reserve_out_of_range": "{sku} يحتوي على {held} منها {reserved} محجوز: تغيير الحجز بمقدار {change} سيترك {result}، خارج النطاق من 0 إلى {held}."
+  "item.reserve_out_of_range": "{sku} يحتوي على {held} منها {reserved} محجوز: تغيير الحجز بمقدار {change} سيترك {result}، خارج النطاق من 0 إلى {held}.",
+  "item.invoice_not_available": "{sku} حالته {status}: لا يمكن إصدار فاتورة إلا للمخزون المتاح.",
+  "import.migration_source_reserved": "{entity_id} يدّعي المصدر \"migration\": لا يكتب هذا المصدر إلا ترحيل البيانات."
 }

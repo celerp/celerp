@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Callable
 
+from celerp_inventory.projections import is_manufacturable
+
 from .costing import MAX_RECIPE_DEPTH, RecipeError, component_quantity, output_quantity
 
 ItemLookup = Callable[[str], dict | None]
@@ -21,11 +23,6 @@ ItemLookup = Callable[[str], dict | None]
 def for_product(item_state: dict | None, exc: RecipeError) -> RecipeError:
     """A recipe refusal naming the product whose recipe it is, as the user knows it (its SKU)."""
     return RecipeError(f"{(item_state or {}).get('sku') or 'This product'}: {exc}")
-
-
-def is_manufacturable(item_state: dict | None) -> bool:
-    recipe = (item_state or {}).get("recipe") or {}
-    return bool(recipe.get("components"))
 
 
 def mfg_idem_key(source_doc_id: str, item_id: str, operation: str) -> str:

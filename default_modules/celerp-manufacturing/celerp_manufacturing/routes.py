@@ -38,13 +38,14 @@ from celerp.services.fulfill import outstanding_physical_lines
 from celerp.services.lot_origin import refuse_draft
 from celerp.services.permissions import require_permission
 from celerp.schemas.numbers import FiniteFloat
+from celerp_inventory.projections import is_manufacturable
 
 from .costing import RecipeError, labor_hours, output_quantity, roll_up_cost, where_used
 
 # Default hours-per-day for converting daily labor lines into the est-hours column.
 # Set per work center; the company's default center supplies the value.
 DEFAULT_HOURS_PER_DAY = 8.0
-from .expansion import expand_recipe, explode_demand, for_product, is_manufacturable, mfg_idem_key, output_line
+from .expansion import expand_recipe, explode_demand, for_product, mfg_idem_key, output_line
 from . import movements
 from .labor import apply_labor_providers
 from .search import _INCOMPLETE_STATUSES, search_orders

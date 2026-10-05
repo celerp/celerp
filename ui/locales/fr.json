@@ -3628,5 +3628,7 @@
   "notice.older_stock_moved.body": "Des versions antérieures ont comptabilisé le coût du stock d'ouverture vendu sur {p}, si bien que {p} et {ob} ne correspondaient à votre stock qu'ensemble. Une écriture datée du {day} a transféré {amount} {currency} de {ob} vers {p}, et votre stock ancien est maintenant sur {p}. Le stock total et les résultats reportés sont inchangés.",
   "item.draft": "{sku} est un brouillon, pas encore du stock : rendez-le d'abord disponible.",
   "item.reserve_not_available": "{sku} est {status} : seul le stock disponible peut être réservé.",
-  "item.reserve_out_of_range": "{sku} contient {held} dont {reserved} réservé : une modification de réservation de {change} laisserait {result}, hors de 0 à {held}."
+  "item.reserve_out_of_range": "{sku} contient {held} dont {reserved} réservé : une modification de réservation de {change} laisserait {result}, hors de 0 à {held}.",
+  "item.invoice_not_available": "{sku} est {status} : seul le stock disponible peut être facturé.",
+  "import.migration_source_reserved": "{entity_id} déclare la source \"migration\" : seule une migration de données écrit cette source."
 }

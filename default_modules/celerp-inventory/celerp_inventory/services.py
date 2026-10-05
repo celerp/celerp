@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, refusal
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp.events.engine import emit_event, find_event_by_idempotency
@@ -3417,9 +3417,16 @@ async def commit_import_batch(
     *,
     operation_key: str | None = None,
 ) -> BatchImportResult:
-    """Write an item import batch and commit it; the route and agent transports call this.
-    The stock its local creates bring in is booked as opening stock; a snapshot of another
-    system's item, or a migrated one, keeps the books it came with."""
+    """Write an item import batch and commit it for the raw-batch route. The stock its local
+    creates bring in is booked as opening stock; a snapshot of another system's item keeps the
+    books it came with. Only a migration run writes source "migration", whose lots keep the
+    books of the system they came from, so a caller claiming it is refused."""
+    claimed = next((rec for rec in body.records if rec.source == "migration"), None)
+    if claimed is not None:
+        raise HTTPException(status_code=422, detail=refusal(
+            "import.migration_source_reserved",
+            f'{claimed.entity_id} claims source "migration": only a data migration writes that source.',
+            entity_id=claimed.entity_id))
     outcome, batch_id = await write_import_batch(
         session, company_id, user, role, settings, body, operation_key=operation_key,
     )
@@ -3428,7 +3435,7 @@ async def commit_import_batch(
     await recognize_opening_lots(
         session, company_id,
         [done.entity_id for rec, done in zip(body.records, outcome.records, strict=True)
-         if done.status == "created" and rec.event_type == "item.created" and rec.source != "migration"],
+         if done.status == "created" and rec.event_type == "item.created"],
         user.id, batch_id)
     await session.commit()
     return BatchImportResult(**outcome.route_counts(cap_rejections=False), batch_id=batch_id)

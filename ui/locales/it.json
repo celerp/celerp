@@ -3628,5 +3628,7 @@
   "notice.older_stock_moved.body": "Le versioni precedenti registravano il costo delle giacenze iniziali vendute su {p}, quindi {p} e {ob} corrispondevano alle giacenze solo insieme. Una registrazione datata {day} ha spostato {amount} {currency} da {ob} a {p}, e le giacenze precedenti ora sono su {p}. Magazzino totale e utili portati a nuovo restano invariati.",
   "item.draft": "{sku} è una bozza, non ancora a magazzino: rendilo prima disponibile.",
   "item.reserve_not_available": "{sku} è {status}: si può riservare solo merce disponibile.",
-  "item.reserve_out_of_range": "{sku} contiene {held} con {reserved} riservato: una variazione della riserva di {change} lascerebbe {result}, fuori da 0 a {held}."
+  "item.reserve_out_of_range": "{sku} contiene {held} con {reserved} riservato: una variazione della riserva di {change} lascerebbe {result}, fuori da 0 a {held}.",
+  "item.invoice_not_available": "{sku} è {status}: si può fatturare solo merce disponibile.",
+  "import.migration_source_reserved": "{entity_id} dichiara l'origine \"migration\": solo una migrazione dei dati scrive questa origine."
 }
