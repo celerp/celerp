@@ -3588,6 +3588,7 @@
   "mfg.not_planned": "Only a planned run can be started. A run on hold carries on through Resume.",
   "mfg.already_on_hold": "This run is already on hold.",
   "mfg.reconcile_values": "{item} is not a component still in this run, is named twice, or has a negative value.",
+  "mfg.reopen_unrecorded": "This run was completed by an older release or while Accounting was in another state, so what completion recorded cannot be reversed exactly. It cannot be reopened; start a new run for further work.",
   "mfg.reconcile_value_too_large": "The value given for {item} is too large to record.",
   "mfg.reconcile_missing": "Give the value of every component still in this run: {items} has none.",
   "mfg.reconcile_account": "Choose the account this value comes off: an inventory account that holds at least {total} beyond its stock on hand, or retained earnings for value the books never carried.",

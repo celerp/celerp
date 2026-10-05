@@ -462,7 +462,33 @@ async def test_a_run_completed_while_accounting_was_off_is_not_reopened_once_it_
     await _upgrade(session)
     before = await snapshot(session, auth, raw, order)
 
-    refusal(await reopen(client, auth, order, key="o"), 409, "reconciliation_required")
+    detail = refusal(await reopen(client, auth, order, key="o"), 409, "reopen_unrecorded")
 
+    assert "Reconcile" not in detail["message"]
     assert await snapshot(session, auth, raw, order) == before
     await _carried(client, session, auth)
+
+
+async def test_a_run_an_older_release_completed_is_refused_reopening_without_pointing_at_reconcile(
+        client, session, auth):
+    """Reconciling refuses a completed run, so telling the user to reconcile first leaves them
+    nowhere: the refusal says the run cannot be reopened and why."""
+    from mfg_runs import reopen
+
+    await _older_release(session, auth)
+    raw = await _item(client, auth, 100.0, qty=10)
+    _, order = await _job(client, auth, raw)
+    await _older_issue(session, auth, order, raw, 10)
+    lot = await _older_receive(session, auth, order, 2)
+    await emit_event(session, company_id=auth["company_id"], entity_id=order, entity_type="mfg_order",
+                     event_type="mfg.order.completed", data={"completed_by": str(auth["user_id"])},
+                     actor_id=auth["user_id"], location_id=None, source="api", idempotency_key=str(uuid.uuid4()),
+                     metadata_={})
+    await session.commit()
+    await _upgrade(session)
+    before = await snapshot(session, auth, raw, order, lot)
+
+    detail = refusal(await reopen(client, auth, order, key="o"), 409, "reopen_unrecorded")
+
+    assert "Reconcile" not in detail["message"]
+    assert await snapshot(session, auth, raw, order, lot) == before

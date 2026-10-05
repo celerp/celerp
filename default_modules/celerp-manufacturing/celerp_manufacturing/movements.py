@@ -1000,7 +1000,9 @@ async def reopen(session: AsyncSession, company_id, user_id, order_id: str, key:
     # A run completed by an older release, or with Accounting in another state, recorded nothing
     # this can reverse exactly.
     if closing is None or bool(closing.get("booked")) != op.books:
-        raise _reconcile()
+        raise refuse(409, "reopen_unrecorded", "This run was completed by an older release or while Accounting "
+                     "was in another state, so what completion recorded cannot be reversed exactly. It cannot "
+                     "be reopened; start a new run for further work.")
     _require_settled(op, state)
     deltas = {lot["lot_item_id"]: _money(lot["delta"]) for lot in closing.get("lots") or []}
     # Completion re-costed only the lots whose cost it could still reach; a lot that keeps what

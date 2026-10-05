@@ -3588,6 +3588,7 @@
   "mfg.not_planned": "Hanya pesanan yang direncanakan yang dapat dimulai. Pesanan yang ditahan dilanjutkan melalui Lanjutkan.",
   "mfg.already_on_hold": "Pesanan ini sudah ditahan.",
   "mfg.reconcile_values": "{item} bukan komponen yang masih ada di proses ini, disebut dua kali, atau bernilai negatif.",
+  "mfg.reopen_unrecorded": "Proses ini diselesaikan oleh rilis lama atau saat Akuntansi dalam keadaan lain, sehingga penyelesaiannya tidak dapat dibalik secara tepat. Proses ini tidak dapat dibuka kembali; mulai proses baru untuk pekerjaan berikutnya.",
   "mfg.reconcile_value_too_large": "Nilai yang diberikan untuk {item} terlalu besar untuk dicatat.",
   "mfg.reconcile_missing": "Masukkan nilai setiap komponen yang masih ada di proses ini: {items} belum memiliki nilai.",
   "mfg.reconcile_account": "Pilih akun asal nilai ini: akun persediaan yang memegang setidaknya {total} di luar stok yang ada, atau laba ditahan untuk nilai yang tidak pernah dicatat di pembukuan.",

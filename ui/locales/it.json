@@ -3588,6 +3588,7 @@
   "mfg.not_planned": "Solo un ordine pianificato può essere avviato. Un ordine in sospeso prosegue con Riprendi.",
   "mfg.already_on_hold": "Questo ordine è già in sospeso.",
   "mfg.reconcile_values": "{item} non è più un componente di questa produzione, è indicato due volte o ha un valore negativo.",
+  "mfg.reopen_unrecorded": "Questa produzione è stata completata da una versione precedente o con la contabilità in un altro stato, quindi la chiusura non può essere annullata con esattezza. Non può essere riaperta; avvia una nuova produzione per il lavoro successivo.",
   "mfg.reconcile_value_too_large": "Il valore indicato per {item} è troppo grande per essere registrato.",
   "mfg.reconcile_missing": "Indica il valore di ogni componente ancora in questa produzione: {items} non ne ha.",
   "mfg.reconcile_account": "Scegli il conto da cui proviene questo valore: un conto di magazzino che detiene almeno {total} oltre alle sue giacenze, oppure utili portati a nuovo per un valore mai registrato in contabilità.",

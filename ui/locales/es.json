@@ -3588,6 +3588,7 @@
   "mfg.not_planned": "Solo se puede iniciar una orden planificada. Una orden en pausa continúa con Reanudar.",
   "mfg.already_on_hold": "Esta orden ya está en pausa.",
   "mfg.reconcile_values": "{item} no es un componente que siga en este ciclo, aparece dos veces o tiene un valor negativo.",
+  "mfg.reopen_unrecorded": "Esta producción se completó con una versión anterior o con la contabilidad en otro estado, por lo que su cierre no puede revertirse con exactitud. No se puede reabrir; cree una nueva producción para continuar.",
   "mfg.reconcile_value_too_large": "El valor indicado para {item} es demasiado grande para registrarlo.",
   "mfg.reconcile_missing": "Indique el valor de cada componente que sigue en este ciclo: {items} no tiene ninguno.",
   "mfg.reconcile_account": "Elija la cuenta de la que sale este valor: una cuenta de inventario que tenga al menos {total} además de sus existencias, o resultados acumulados para un valor que la contabilidad nunca registró.",

@@ -3588,6 +3588,7 @@
   "mfg.not_planned": "Nur ein geplanter Auftrag kann gestartet werden. Ein angehaltener Auftrag wird mit Fortsetzen weitergeführt.",
   "mfg.already_on_hold": "Dieser Auftrag ist bereits angehalten.",
   "mfg.reconcile_values": "{item} ist keine Komponente mehr in diesem Lauf, ist doppelt angegeben oder hat einen negativen Wert.",
+  "mfg.reopen_unrecorded": "Dieser Lauf wurde von einer älteren Version oder in einem anderen Buchhaltungszustand abgeschlossen, daher lässt sich der Abschluss nicht exakt umkehren. Er kann nicht wieder geöffnet werden; legen Sie für weitere Arbeit einen neuen Lauf an.",
   "mfg.reconcile_value_too_large": "Der für {item} angegebene Wert ist zu groß, um ihn zu erfassen.",
   "mfg.reconcile_missing": "Geben Sie den Wert jeder noch im Lauf befindlichen Komponente an: {items} hat keinen.",
   "mfg.reconcile_account": "Wählen Sie das Konto, von dem dieser Wert abgeht: ein Bestandskonto, das mindestens {total} über seinen Lagerbestand hinaus hält, oder Gewinnvortrag für einen Wert, den die Bücher nie geführt haben.",
