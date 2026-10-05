@@ -175,6 +175,22 @@ async def notify_every_company(
     return created
 
 
+async def clear_every_company(session: AsyncSession, category: str, title: str) -> int:
+    """An instance-wide condition (see notify_every_company) no longer holds: every
+    company's unread notice of it is marked read, so a notice that stands always means
+    the condition holds now. Caller commits. Returns count updated."""
+    result = await session.execute(
+        update(Notification)
+        .where(
+            Notification.category == category,
+            Notification.title == title,
+            Notification.read == False,  # noqa: E712
+        )
+        .values(read=True)
+    )
+    return result.rowcount
+
+
 async def get_unread_count(
     session: AsyncSession,
     company_id: uuid.UUID,

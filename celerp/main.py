@@ -297,6 +297,14 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
         )
 
     app.state.data_current, app.state.held_back = True, None
+    try:
+        from celerp.db import LifecycleSessionLocal as _NoticeSession
+        from celerp.notifications.service import clear_every_company
+        async with _NoticeSession() as _sess:
+            await clear_every_company(_sess, "system", HELD_BACK_TITLE)
+            await _sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception("Could not clear the held-back notice")
     return True
 
 @asynccontextmanager
