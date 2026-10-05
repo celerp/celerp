@@ -630,10 +630,22 @@ print(sum(1 for pid in sys.argv[1:] if serving(pid)))
         uses every module it used before the upgrade."""
         for path, field, value in (("/crm/contacts", "name", "E2E Customer"),
                                    ("/items", "sku", "E2E-1")):
-            status, body = http("GET", self.api + path, self.owner)
+            status, body = self.module_get(path)
             items = body.get("items", []) if isinstance(body, dict) else []
             check(status == 200 and any(r.get(field) == value for r in items),
                   f"{path} serves the record seeded before the upgrade ({status})")
+
+    def module_get(self, path: str, timeout: float = 120) -> tuple[int, object]:
+        """GET a module route. /health/ready answers once the database does, and
+        module routes answer 503 "still starting" until the UI process has
+        reported the modules it started; a client tries again, as that says."""
+        deadline = time.time() + timeout
+        while True:
+            status, body = http("GET", self.api + path, self.owner)
+            starting = status == 503 and isinstance(body, dict) and "still starting" in str(body.get("detail"))
+            if not starting or time.time() > deadline:
+                return status, body
+            time.sleep(1)
 
     def seeded_location_present(self) -> bool:
         status, body = http("GET", self.api + "/companies/me/locations", self.owner)
