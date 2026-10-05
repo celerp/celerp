@@ -3616,5 +3616,7 @@
   "notice.older_stock_unplaced.body": "Os livros não puderam comprovar {count} lote(s) antigo(s) em estoque, portanto ainda não registram uma conta de estoque. Escolha a conta de cada um em Configurações > Contabilidade > Contas de lançamento.",
   "notice.older_stock_moved.title": "Estoque antigo transferido para estoque comprado",
   "notice.older_stock_moved.body": "Versões anteriores lançaram o custo do estoque inicial vendido em {p}, de modo que {p} e {ob} só correspondiam ao seu estoque em conjunto. Um lançamento datado de {day} transferiu {amount} {currency} de {ob} para {p}, e seu estoque antigo agora está em {p}. O estoque total e os lucros acumulados não mudam.",
-  "item.draft": "{sku} é um rascunho, ainda não é estoque: torne-o disponível primeiro."
+  "item.draft": "{sku} é um rascunho, ainda não é estoque: torne-o disponível primeiro.",
+  "item.reserve_not_available": "{sku} está {status}: só é possível reservar estoque disponível.",
+  "item.reserve_out_of_range": "{sku} contém {held} com {reserved} reservado: uma alteração de reserva de {change} deixaria {result}, fora de 0 a {held}."
 }

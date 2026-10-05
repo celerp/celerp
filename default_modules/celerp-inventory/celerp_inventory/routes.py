@@ -49,7 +49,7 @@ from .services import (
     preview_import_rows,
     source_header_semantics,
 )
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
 from celerp.services.company_lock import lock_projections
 from celerp.services.item_erasure import depended_on, erase_items
 from celerp.services.lot_origin import (
@@ -4639,9 +4639,37 @@ async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depend
     return {"event_id": entry.id}
 
 
+async def assert_reservable(session: AsyncSession, company_id, entity_id: str, quantity: float,
+                            release: bool = False) -> None:
+    """A reservation holds part of an available lot: it grows only on an available lot, it
+    moves by a positive quantity, and it stays between nothing and the lot's quantity.
+    Judged on the locked row, so two reservations racing on one lot never over-commit it."""
+    row = await lock_item(session, company_id, entity_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    state = row.state or {}
+    refuse_draft(state, entity_id)
+    sku = state.get("sku") or entity_id
+    status = status_value(state.get("status"))
+    if not release and status != "available":
+        raise HTTPException(status_code=409, detail=refusal(
+            "item.reserve_not_available", f"{sku} is {status}: only available stock can be reserved.",
+            sku=sku, status=status))
+    change = -quantity if release else quantity
+    held = float(state.get("quantity") or 0)
+    reserved = float(state.get("reserved_quantity") or 0) + change
+    if quantity <= 0 or not 0 <= reserved <= held:
+        raise HTTPException(status_code=422, detail=refusal(
+            "item.reserve_out_of_range",
+            f"{sku} holds {held:g} with {reserved - change:g} reserved: a reservation change of "
+            f"{change:g} would leave {reserved:g}, outside 0 to {held:g}.",
+            sku=sku, held=f"{held:g}", reserved=f"{reserved - change:g}", change=f"{change:g}",
+            result=f"{reserved:g}"))
+
+
 @router.post("/{entity_id}/reserve")
 async def reserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    await assert_not_draft(session, company_id, entity_id)
+    await assert_reservable(session, company_id, entity_id, payload.quantity)
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -4661,6 +4689,7 @@ async def reserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(
 
 @router.post("/{entity_id}/unreserve")
 async def unreserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    await assert_reservable(session, company_id, entity_id, payload.quantity, release=True)
     entry = await emit_event(
         session,
         company_id=company_id,

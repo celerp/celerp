@@ -3616,5 +3616,7 @@
   "notice.older_stock_unplaced.body": "መዝገቦቹ በክምችት ያሉ {count} የቆዩ ሎቶችን ማረጋገጥ አልቻሉም፣ ስለዚህ እስካሁን የክምችት ሒሳብ አልመዘገቡም። የእያንዳንዱን ሒሳብ በቅንብሮች > ሒሳብ አያያዝ > የመመዝገቢያ ሒሳቦች ውስጥ ይምረጡ።",
   "notice.older_stock_moved.title": "የቆየ ክምችት ወደ የተገዛ ክምችት ተዛውሯል",
   "notice.older_stock_moved.body": "ቀደምት ስሪቶች የተሸጠውን የመክፈቻ ክምችት ወጪ ወደ {p} መዝግበዋል፣ ስለዚህ {p} እና {ob} ከክምችትዎ ጋር የሚዛመዱት በአንድ ላይ ብቻ ነበር። በ{day} የተመዘገበ አንድ ግቤት {amount} {currency} ከ{ob} ወደ {p} አዛውሯል፣ የቆየ ክምችትዎም አሁን በ{p} ላይ ነው። ጠቅላላ ክምችት እና የተያዘ ትርፍ አልተለወጡም።",
-  "item.draft": "{sku} ረቂቅ ነው፣ ገና ክምችት አይደለም፦ መጀመሪያ እንዲገኝ ያድርጉት።"
+  "item.draft": "{sku} ረቂቅ ነው፣ ገና ክምችት አይደለም፦ መጀመሪያ እንዲገኝ ያድርጉት።",
+  "item.reserve_not_available": "{sku} {status} ነው፦ ሊያዝ የሚችለው የሚገኝ ክምችት ብቻ ነው።",
+  "item.reserve_out_of_range": "{sku} {held} አለው፣ {reserved} ተይዟል፦ የ{change} የማስያዝ ለውጥ {result} ይተዋል፣ ይህም ከ0 እስከ {held} ውጭ ነው።"
 }

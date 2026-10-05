@@ -3616,5 +3616,7 @@
   "notice.older_stock_unplaced.body": "Die Bücher konnten {count} ältere Charge(n) im Bestand nicht belegen, daher ist dafür noch kein Bestandskonto erfasst. Wählen Sie das Konto jeder Charge unter Einstellungen > Buchhaltung > Buchungskonten.",
   "notice.older_stock_moved.title": "Älterer Bestand auf gekauften Bestand umgebucht",
   "notice.older_stock_moved.body": "Ältere Versionen buchten die Kosten von verkauftem Anfangsbestand auf {p}, daher stimmten {p} und {ob} nur zusammen mit Ihrem Bestand überein. Eine Buchung vom {day} hat {amount} {currency} von {ob} auf {p} umgebucht; Ihr älterer Bestand liegt jetzt auf {p}. Gesamtbestand und Gewinnvortrag sind unverändert.",
-  "item.draft": "{sku} ist ein Entwurf und noch kein Bestand: Machen Sie es zuerst verfügbar."
+  "item.draft": "{sku} ist ein Entwurf und noch kein Bestand: Machen Sie es zuerst verfügbar.",
+  "item.reserve_not_available": "{sku} ist {status}: Nur verfügbarer Bestand kann reserviert werden.",
+  "item.reserve_out_of_range": "{sku} hat {held} Bestand, davon {reserved} reserviert: Eine Änderung der Reservierung um {change} ergäbe {result}, außerhalb von 0 bis {held}."
 }

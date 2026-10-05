@@ -162,7 +162,7 @@ def refusal_text(detail) -> str:
 def _refusal_param(name: str, value):
     """A refusal param as the user reads it: a nested refusal, or a list of them, in
     the user's language; a ``role`` as its label and ``roles`` as their labels;
-    ``type``/``types`` as account types."""
+    ``type``/``types`` as account types; ``status`` as an item status."""
     from ui.components.table import display_enum
 
     if isinstance(value, dict) and "message" in value:
@@ -173,6 +173,8 @@ def _refusal_param(name: str, value):
         return role_label(str(value), str(value).replace("_", " "))
     if name == "roles" and isinstance(value, list):
         return ", ".join(role_label(str(r), str(r).replace("_", " ")) for r in value)
+    if name == "status":
+        return display_enum(value, "item_status")
     if name == "type":
         return display_enum(value, "account_type")
     if name == "types" and isinstance(value, list):
