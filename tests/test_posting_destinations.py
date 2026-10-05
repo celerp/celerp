@@ -292,3 +292,52 @@ async def test_a_posting_waiting_on_an_account_being_put_under_it_is_refused(com
             "code": "6991", "name": "Account 6991", "account_type": "expense", "parent_code": "6990"})
 
     await _race_recon(committed_engine, client, hold, child, "header")
+
+
+async def _import_child(c, h):
+    return await c.post("/accounting/accounts/import/batch", headers=h, json={"records": [
+        {"code": "6991", "name": "Account 6991", "account_type": "expense", "parent_code": "6990"}]})
+
+
+async def test_a_posting_waiting_on_a_chart_import_putting_an_account_under_it_is_refused(committed_engine, race):
+    client, hold = race
+    await _race_recon(committed_engine, client, hold, _import_child, "header")
+
+
+async def test_a_chart_import_waits_for_a_posting_to_the_account_it_puts_one_under(committed_engine, race):
+    client, hold = race
+    cid, tok = await _company(committed_engine)
+    headers = bearer(tok)
+    await _account(client, headers, "6990")
+    sid, line = await _statement_line(client, headers)
+
+    posted, imported = await _race(
+        committed_engine, client, hold,
+        lambda: client.post(f"/accounting/reconciliation/{sid}/lines/{line}/create", headers=headers,
+                            json={"account_code": "6990"}),
+        lambda: _import_child(client, headers))
+
+    assert posted.status_code == 200, posted.text
+    assert imported.status_code == 200 and imported.json()["created"] == 1, imported.text
+
+
+async def test_a_posting_waiting_on_the_default_chart_putting_an_account_under_it_is_refused(committed_engine, race):
+    from sqlalchemy import text
+
+    from migration_support import maker
+
+    client, hold = race
+    cid, tok = await _company(committed_engine)
+    headers = bearer(tok)
+    async with maker(committed_engine)() as s:  # a chart that never had the default account under 2200
+        await s.execute(text("DELETE FROM accounts WHERE company_id = :c AND code = '2210'"), {"c": cid})
+        await s.commit()
+    sid, line = await _statement_line(client, headers)
+
+    seeded, posted = await _race(
+        committed_engine, client, hold, lambda: client.post("/accounting/chart/seed", headers=headers),
+        lambda: client.post(f"/accounting/reconciliation/{sid}/lines/{line}/create", headers=headers,
+                            json={"account_code": "2200"}))
+
+    assert seeded.status_code == 200 and seeded.json()["added"] == 1, seeded.text
+    _refused(posted, "header", "2200")

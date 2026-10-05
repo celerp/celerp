@@ -220,15 +220,10 @@ async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUI
     if existing:
         return
 
-    acc = Account(
-        id=uuid.uuid4(),
-        company_id=company_id,
-        code=code,
-        name="Default Bank Account (Checking)",
-        account_type="asset",
-        parent_code="1110",
+    await import_service.create_chart_account(
+        session, company_id, code=code, name="Default Bank Account (Checking)",
+        account_type="asset", parent_code="1110",
     )
-    session.add(acc)
 
     bank = BankAccount(
         id=uuid.uuid4(),
@@ -547,17 +542,30 @@ async def seed_chart_endpoint(
     company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Seed the default chart of accounts for this company. Only adds missing accounts."""
+    """Seed the default chart of accounts for this company. Only adds missing accounts,
+    each as one added by hand is; a default account whose parent cannot take it now
+    (inactive, or posted to by a role) is left out and listed."""
+    await lock_chart(session, company_id)
     existing_codes = set(
         (await session.execute(
             select(Account.code).where(Account.company_id == company_id)
         )).scalars().all()
     )
     added = 0
+    not_added: list[str] = []
     for entry in THAI_CHART_OF_ACCOUNTS:
-        if entry["code"] not in existing_codes:
-            session.add(_seeded_account(company_id, entry))
-            added += 1
+        if entry["code"] in existing_codes:
+            continue
+        try:
+            await import_service.create_chart_account(
+                session, company_id, code=entry["code"], name=entry["name"], account_type=entry["account_type"],
+                parent_code=entry["parent_code"], cash_flow_category=entry.get("cash_flow_category"))
+        except HTTPException as exc:
+            if exc.status_code != 422:
+                raise
+            not_added.append(entry["code"])
+            continue
+        added += 1
     # Ensure at least one bank account exists (backfill for existing companies)
     existing_bank = (
         await session.execute(
@@ -568,7 +576,7 @@ async def seed_chart_endpoint(
         await _seed_default_bank_account(session, company_id)
 
     await session.commit()
-    return {"added": added, "already_existed": len(existing_codes)}
+    return {"added": added, "already_existed": len(existing_codes), "not_added": not_added}
 
 
 @router.post("/accounts")
@@ -635,6 +643,18 @@ async def _planned_chart_import(
     return plan_chart_import(body.records, existing, posting_targets(await current_settings(session, company_id)))
 
 
+def _parents_first(rows: list[dict]) -> list[dict]:
+    """The rows of a planned import ordered so each one comes after its parent when
+    the parent is being added too; otherwise in file order."""
+    ordered: list[dict] = []
+    pending = list(rows)
+    while pending:
+        waiting = {row["code"] for row in pending}
+        ordered += [row for row in pending if row["parent_code"] not in waiting]
+        pending = [row for row in pending if row["parent_code"] in waiting]
+    return ordered
+
+
 def _chart_import_result(plan: ChartImportPlan) -> ChartImportResult:
     return ChartImportResult(
         created=len(plan.to_create), skipped=len(plan.skipped_codes),
@@ -672,8 +692,10 @@ async def import_chart_accounts(
     await locked_authority(session, company_id, user.id, ("manage_accounting", "import_export_data"))
     await lock_chart(session, company_id)
     plan = await _planned_chart_import(request, body, company_id, session)
-    for row in plan.to_create:
-        session.add(Account(id=uuid.uuid4(), company_id=company_id, **row))
+    # Each account goes in as one added by hand does, so its parent is locked against a
+    # posting that has just checked it has nothing under it.
+    for row in _parents_first(plan.to_create):
+        await import_service.create_chart_account(session, company_id, **row)
     try:
         await session.commit()
     except IntegrityError:
