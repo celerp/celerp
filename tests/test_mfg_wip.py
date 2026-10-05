@@ -308,6 +308,19 @@ async def test_complete_sends_waste_to_cost_of_goods_sold_and_leaves_the_run_emp
 
 
 @pytest.mark.asyncio
+async def test_completing_with_everything_wasted_makes_no_output(client, session, auth):
+    raw, item, order = await _job(client, session, auth, cost=100.0, stock=10, per=5, qty=2)
+    cogs = await role(session, auth, COGS)
+    assert (await issue(client, auth, order, key="i")).status_code == 200
+    r = await complete(client, auth, order, key="c", waste_quantity=10, waste_reason="all lost")
+    assert r.status_code == 200, r.text
+    state = await _state(session, auth, order)
+    assert (state["status"], state.get("received_lots") or [], state["wip_wasted"]) == ("completed", [], "100.00")
+    assert await _account_net(session, auth["company_id"], cogs) == 100.0
+    await assert_settled(client, session, auth)
+
+
+@pytest.mark.asyncio
 async def test_an_older_run_with_no_output_does_not_go_ahead(client, session, auth):
     """A run an older release created without naming a product has nothing to receive into,
     so it issues, receives and completes nothing until its product is chosen."""

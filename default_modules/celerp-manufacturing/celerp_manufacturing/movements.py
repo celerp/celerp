@@ -590,7 +590,7 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
 async def complete(session: AsyncSession, company_id, user_id, order_id: str, payload: dict,
                    key: str | None, *, at: str, quantity: float | None = None) -> dict:
     """Finish a run: issue what is outstanding, receive the output still to come (``quantity``
-    of it when given, else all of it) and close. ``payload`` holds the closing details
+    of it when given, else all of it, or none when every component issued was wasted) and close. ``payload`` holds the closing details
     (waste_items, or the waste_quantity shorthand with waste_unit; waste_reason, labor_hours).
     What it made is what it received."""
     rk = key or uuid.uuid4().hex
@@ -614,12 +614,23 @@ async def complete(session: AsyncSession, company_id, user_id, order_id: str, pa
                          "Issue all components before completing this run (required by your manufacturing settings).")
         await _issue(op, run, outstanding, f"{rk}:issue", request)
         run = await _run(op)
-    qty = outstanding_output(run.state) if quantity is None else float(quantity)
+    if quantity is not None:
+        qty = float(quantity)
+    else:
+        # Everything issued was wasted: nothing was made, so no output lot is received.
+        qty = 0.0 if _all_wasted(run.state, wasted) else outstanding_output(run.state)
     if qty > _EPS:
         await _receive(op, run, qty, f"{rk}:receive", request)
         run = await _run(op)
     await _close(op, run, payload, request, rk, wasted, names)
     return {"status": "completed"}
+
+
+def _all_wasted(state: dict, wasted: list[dict]) -> bool:
+    """Whether the waste is every component issued to the run, all of it."""
+    issued = {i.get("item_id"): _money(i.get("issued_qty") or 0) for i in state.get("inputs", [])}
+    lost = {w["item_id"]: _money(w["quantity"]) for w in wasted}
+    return bool(wasted) and all(lost.get(item_id, _ZERO) >= qty for item_id, qty in issued.items())
 
 
 def merge_waste(items: list[dict] | None) -> list[dict]:

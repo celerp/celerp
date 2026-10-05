@@ -365,7 +365,7 @@ async def test_waste_over_input_refused(client):
     _all_balanced(entries)
     assert _output_cap(entries) == pytest.approx(0)
     assert _waste_leg(entries) == pytest.approx(800)  # everything issued
-    assert [float(lot["cost_total"]) for lot in await _lots(client, token, over)] == [0.0]
+    assert await _lots(client, token, over) == []  # everything was wasted, so nothing was made
 
 
 # ---------------------------------------------------------------------------
