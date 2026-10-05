@@ -226,3 +226,38 @@ async def test_an_import_row_creating_an_existing_item_is_rejected(committed_eng
     assert r.status_code == 200, r.text
     assert "already exists" in r.text, r.text
     assert await _state(committed_engine, cid, lot) == before
+
+
+async def test_a_reimport_that_empties_the_stock_sets_quantity_and_value_to_zero(committed_engine, race, connector):
+    """A store re-import reporting none left is a change like any other: the quantity
+    becomes zero and the books stop carrying the stock's value."""
+    client, _ = race
+    cid, tok = await _company(committed_engine)
+    assert await connector(cid, _record("qb:6", quantity=2, cost_price=10.0)) == "created"
+    lot = "item:qb:6"
+    await _ok(client, tok, "/items/bulk/make-available", {"entity_ids": [lot]})
+    assert sum((await _books(committed_engine, cid)).values()) == 20
+
+    assert await connector(cid, _record("qb:6", quantity=0, cost_price=10.0)) == "updated"
+
+    assert (await _state(committed_engine, cid, lot))["quantity"] == 0
+    assert sum((await _books(committed_engine, cid)).values()) == 0
+
+
+async def test_a_reimport_that_reports_no_quantity_keeps_the_stock(committed_engine, race, connector):
+    """Accounting systems send no quantity (their record fills it with 0); their
+    re-import leaves the stock as it is."""
+    from celerp_inventory.routes import ItemCreate
+
+    client, _ = race
+    cid, tok = await _company(committed_engine)
+    assert await connector(cid, _record("qb:7", quantity=2, cost_price=10.0)) == "created"
+    lot = "item:qb:7"
+    await _ok(client, tok, "/items/bulk/make-available", {"entity_ids": [lot]})
+
+    record = ItemCreate(sku="QB-1", name="Widget B", description="", sell_by="piece", sale_price=None,
+                        cost_price=10.0, idempotency_key="qb:7")
+    assert await connector(cid, record) == "updated"
+
+    assert (await _state(committed_engine, cid, lot))["quantity"] == 2
+    assert sum((await _books(committed_engine, cid)).values()) == 20

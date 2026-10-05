@@ -1726,6 +1726,15 @@ async def update_item_from_connector(session: AsyncSession, entity_id: str, data
     return True
 
 
+def _reported_quantity(item) -> float | None:
+    """The quantity a connector record reports, or None when it reports none. An
+    ``ItemCreate`` fills an unsent quantity with 0, so on one only a quantity the platform
+    actually sent counts; a reported zero is a change like any other."""
+    if isinstance(item, BaseModel) and "quantity" not in item.model_fields_set:
+        return None
+    return item.quantity
+
+
 async def upsert_from_connector(company_id: str, item) -> str:
     """
     Create or update an item from a connector payload. Returns the write outcome:
@@ -1752,8 +1761,9 @@ async def upsert_from_connector(company_id: str, item) -> str:
     if item.sale_price is not None:
         data["sale_price"] = item.sale_price
         data["retail_price"] = item.sale_price   # canonical selling-price field
-    if item.quantity:
-        data["quantity"] = item.quantity
+    quantity = _reported_quantity(item)
+    if quantity is not None:
+        data["quantity"] = quantity
     if getattr(item, "cost_price", None) is not None:
         data["cost_price"] = item.cost_price     # else margin/COGS/valuation read zero cost
     if getattr(item, "description", None):
