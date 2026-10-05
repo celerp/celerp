@@ -11063,10 +11063,11 @@ class TestPaymentsSettingsPage:
 
     _UNMATCHED = [
         {"reference": "pi_new", "amount": 5000, "currency": "JPY", "company_id": "c-new",
-         "document_id": "doc:2", "received_at": "2026-09-29T09:00:00+00:00", "paid_at": None},
+         "company_name": None, "document_id": "doc:2", "document_ref": None,
+         "received_at": "2026-09-29T09:00:00+00:00", "paid_at": None},
         {"reference": "pi_old", "amount": 1070.0, "currency": "USD", "company_id": "c-old",
-         "document_id": "doc:1", "received_at": "2026-09-28T09:00:00+00:00",
-         "paid_at": "2026-09-25T09:00:00+00:00"},
+         "company_name": "Old Co", "document_id": "doc:1", "document_ref": "INV-0001",
+         "received_at": "2026-09-28T09:00:00+00:00", "paid_at": "2026-09-25T09:00:00+00:00"},
     ]
 
     @pytest.mark.asyncio
@@ -11078,7 +11079,9 @@ class TestPaymentsSettingsPage:
         assert r.status_code == 200
         assert "Payments not matched to an invoice" in r.text
         assert r.text.index("pi_new") < r.text.index("pi_old")  # newest first
-        assert "c-old" in r.text and "doc:1" in r.text and "2026-09-28" in r.text
+        assert "Old Co" in r.text and "INV-0001" in r.text and "2026-09-28" in r.text
+        assert "c-old" not in r.text and "doc:1" not in r.text  # names, never raw ids
+        assert "(deleted)" in r.text  # pi_new's company and invoice are gone
         assert "Paid on" in r.text and "2026-09-25" in r.text  # when the customer paid
         assert "Recorded on" in r.text  # when this installation recorded it
         assert '<td>--</td>' in r.text  # not known for pi_new
@@ -11095,11 +11098,12 @@ class TestPaymentsSettingsPage:
     async def test_refunds_not_applied_yet_are_listed(self, ui_client):
         refunds = [
             {"refund_id": "re_2", "transition": "reversed", "reference": "pi_new", "amount": 50.0,
-             "currency": "USD", "company_id": "c-new", "document_id": "doc:2",
-             "received_at": "2026-09-29T09:00:00+00:00", "occurred_at": None},
+             "currency": "USD", "company_id": "c-new", "company_name": None, "document_id": "doc:2",
+             "document_ref": None, "received_at": "2026-09-29T09:00:00+00:00", "occurred_at": None},
             {"refund_id": "re_1", "transition": "applied", "reference": "pi_old", "amount": 200.0,
-             "currency": "USD", "company_id": "c-old", "document_id": "doc:1",
-             "received_at": "2026-09-28T09:00:00+00:00", "occurred_at": "2026-09-27T09:00:00+00:00"}]
+             "currency": "USD", "company_id": "c-old", "company_name": "Old Co", "document_id": "doc:1",
+             "document_ref": "INV-0001", "received_at": "2026-09-28T09:00:00+00:00",
+             "occurred_at": "2026-09-27T09:00:00+00:00"}]
         with self._mocks(relay=True, enabled=True, refunds=refunds):
             r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
         assert r.status_code == 200
@@ -11107,7 +11111,8 @@ class TestPaymentsSettingsPage:
         assert "Refunds not applied yet" in r.text and "Refunded on" in r.text
         assert r.text.index("pi_new") < r.text.index("pi_old")  # newest first
         assert "<td>Refund reversed</td>" in r.text and "<td>Refund</td>" in r.text
-        assert "2026-09-27" in r.text and "c-old" in r.text and "doc:1" in r.text
+        assert "2026-09-27" in r.text and "Old Co" in r.text and "INV-0001" in r.text
+        assert "c-old" not in r.text and "doc:1" not in r.text and "(deleted)" in r.text
         assert '<td>--</td>' in r.text  # not known for re_2
 
     @pytest.mark.asyncio
