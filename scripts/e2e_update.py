@@ -49,12 +49,13 @@ import sys
 import tarfile
 import tempfile
 import time
-import urllib.error
-import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from smoke_records import http, module_get  # noqa: E402  (shared with the packaged smoke)
 
 REPO = Path(__file__).resolve().parent.parent
 WINDOWS = os.name == "nt"
@@ -131,25 +132,6 @@ def free_ports(n: int) -> list[int]:
     finally:
         for s in socks:
             s.close()
-
-
-def http(method: str, url: str, token: str | None = None, body: dict | None = None,
-         timeout: float = 30) -> tuple[int, dict]:
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Content-Type", "application/json")
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-            return resp.status, json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        raw = exc.read()
-        try:
-            return exc.code, json.loads(raw) if raw else {}
-        except ValueError:
-            return exc.code, {"raw": raw.decode(errors="replace")}
 
 
 # ── Wheels ────────────────────────────────────────────────────────────────────
@@ -630,22 +612,10 @@ print(sum(1 for pid in sys.argv[1:] if serving(pid)))
         uses every module it used before the upgrade."""
         for path, field, value in (("/crm/contacts", "name", "E2E Customer"),
                                    ("/items", "sku", "E2E-1")):
-            status, body = self.module_get(path)
+            status, body = module_get(self.api, path, self.owner)
             items = body.get("items", []) if isinstance(body, dict) else []
             check(status == 200 and any(r.get(field) == value for r in items),
                   f"{path} serves the record seeded before the upgrade ({status})")
-
-    def module_get(self, path: str, timeout: float = 120) -> tuple[int, object]:
-        """GET a module route. /health/ready answers once the database does, and
-        module routes answer 503 "still starting" until the UI process has
-        reported the modules it started; a client tries again, as that says."""
-        deadline = time.time() + timeout
-        while True:
-            status, body = http("GET", self.api + path, self.owner)
-            starting = status == 503 and isinstance(body, dict) and "still starting" in str(body.get("detail"))
-            if not starting or time.time() > deadline:
-                return status, body
-            time.sleep(1)
 
     def seeded_location_present(self) -> bool:
         status, body = http("GET", self.api + "/companies/me/locations", self.owner)

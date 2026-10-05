@@ -10,14 +10,15 @@ any release.
       empty. Modules a fresh copy has not started yet are not needed.
   python scripts/smoke_records.py snapshot http://127.0.0.1:PORT
       Prints the version, every ledger event (id, type, entity), the locations,
-      and the customers and items or the status their pages answer, as one JSON
-      line. Two snapshots of the same data are equal when nothing was lost or
+      and the customers and items or the status their pages answer once
+      Celerp has finished starting, as one JSON line. Two snapshots of the same data are equal when nothing was lost or
       changed, including which of those pages the company is served.
 """
 from __future__ import annotations
 
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -25,13 +26,14 @@ EMAIL = "owner@example.com"
 PASSWORD = "Smoke-Upgrade-Password-1"
 
 
-def http(method: str, url: str, token: str | None = None, body: dict | None = None) -> tuple[int, dict]:
+def http(method: str, url: str, token: str | None = None, body: dict | None = None,
+         timeout: float = 30) -> tuple[int, dict]:
     req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None,
                                  method=method, headers={"Content-Type": "application/json"})
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
             return resp.status, json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
@@ -40,6 +42,21 @@ def http(method: str, url: str, token: str | None = None, body: dict | None = No
             return exc.code, json.loads(raw) if raw else {}
         except ValueError:
             return exc.code, {"raw": raw.decode(errors="replace")}
+
+
+def module_get(api: str, path: str, token: str, timeout: float = 120) -> tuple[int, dict]:
+    """GET a module route. /health/ready answers once the database does, and
+    module routes answer 503 "still starting" until the UI process has reported
+    the modules it started; ask again, as that says. Raises RuntimeError when
+    the route is still starting after ``timeout`` seconds."""
+    deadline = time.monotonic() + timeout
+    while True:
+        status, body = http("GET", api + path, token)
+        if not (status == 503 and isinstance(body, dict) and "still starting" in str(body.get("detail"))):
+            return status, body
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"GET {path} still answers that Celerp is starting after {timeout:.0f} s")
+        time.sleep(1)
 
 
 def fail(why: str) -> None:
@@ -77,7 +94,10 @@ def snapshot(api: str) -> None:
         fail(f"GET /ledger: {status} {ledger}")
     served = {}
     for path, field in (("/companies/me/locations", "name"), ("/crm/contacts", "name"), ("/items", "sku")):
-        status, body = http("GET", api + path, token)
+        try:
+            status, body = module_get(api, path, token)
+        except RuntimeError as exc:
+            fail(str(exc))
         rows = body if isinstance(body, list) else body.get("items", [])
         served[path] = sorted(r.get(field) for r in rows) if status == 200 else status
     print(json.dumps({
