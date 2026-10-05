@@ -3314,6 +3314,7 @@
   "enum.received_state.source_changed": "በላኪው ተቀይሯል",
   "enum.received_state.review_only": "ከተመዘገበ በኋላ የተቀየረ",
   "enum.received_state.not_bookable": "መመዝገብ አይቻልም",
+  "enum.doc_status.void": "ውድቅ ተደርጓል",
   "setup.choose_business_type": "የንግድ አይነት ይምረጡ",
   "setup.business_type_required": "ለመቀጠል የንግድ አይነት ይምረጡ።",
   "setup.unknown_business_type": "ያልታወቀ የንግድ አይነት: {value}",

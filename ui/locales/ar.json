@@ -3314,6 +3314,7 @@
   "enum.received_state.source_changed": "غيّره المرسل",
   "enum.received_state.review_only": "تغير بعد التسجيل",
   "enum.received_state.not_bookable": "لا يمكن تسجيله",
+  "enum.doc_status.void": "باطل",
   "setup.choose_business_type": "اختر نوع العمل",
   "setup.business_type_required": "اختر نوع العمل للمتابعة.",
   "setup.unknown_business_type": "نوع عمل غير معروف: {value}",

@@ -3314,6 +3314,7 @@
   "enum.received_state.source_changed": "Modifié par l'expéditeur",
   "enum.received_state.review_only": "Modifié après enregistrement",
   "enum.received_state.not_bookable": "Non enregistrable",
+  "enum.doc_status.void": "Annulé",
   "setup.choose_business_type": "Choisissez un type d'entreprise",
   "setup.business_type_required": "Choisissez un type d'entreprise pour continuer.",
   "setup.unknown_business_type": "Type d'entreprise inconnu : {value}",

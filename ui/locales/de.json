@@ -3314,6 +3314,7 @@
   "enum.received_state.source_changed": "Vom Absender geändert",
   "enum.received_state.review_only": "Nach dem Buchen geändert",
   "enum.received_state.not_bookable": "Nicht buchbar",
+  "enum.doc_status.void": "Storniert",
   "setup.choose_business_type": "Unternehmenstyp auswählen",
   "setup.business_type_required": "Wählen Sie einen Unternehmenstyp, um fortzufahren.",
   "setup.unknown_business_type": "Unbekannter Unternehmenstyp: {value}",

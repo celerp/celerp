@@ -3314,6 +3314,7 @@
   "enum.received_state.source_changed": "送信者が変更",
   "enum.received_state.review_only": "登録後に変更",
   "enum.received_state.not_bookable": "登録不可",
+  "enum.doc_status.void": "無効",
   "setup.choose_business_type": "業種を選択してください",
   "setup.business_type_required": "続行するには業種を選択してください。",
   "setup.unknown_business_type": "不明な業種: {value}",

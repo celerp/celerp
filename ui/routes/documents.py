@@ -9665,7 +9665,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.overdue", lang),          "count": overdue,        "total": overdue_total,    "status": "overdue",          "color": "red",    "_url": f"{base_url}&overdue_only=1",                                    "_active_key": "overdue"},
             {"label": t("status.unfulfilled", lang),      "count": unfulfilled,    "total": unfulfilled_total,"status": "unfulfilled",      "color": "orange", "_url": f"{base_url}&unfulfilled_only=1",                                "_active_key": "unfulfilled"},
             {"label": t("label.paid", lang),              "count": paid_cnt,       "total": paid_total,       "status": "paid",             "color": "green",  "_url": f"{base_url}&status_in={_PAID_STATUSES}",                        "_active_key": "paid"},
-            {"label": t("btn.void", lang),                "count": void_cnt,       "total": void_total,       "status": "void",             "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),                "count": void_cnt,       "total": void_total,       "status": "void",             "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, total_override=all_issued_cnt, currency=currency, show_all_card=False)
 
@@ -9692,7 +9692,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.all_issued", lang),  "count": all_issued_cnt, "total": None, "status": "all_issued", "color": "blue",  "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
             {"label": t("status.overdue", lang),     "count": overdue,        "total": None, "status": "overdue",    "color": "red",   "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"},
             {"label": t("status.converted", lang),   "count": converted_cnt,  "total": None, "status": "converted",  "color": "green"},
-            {"label": t("btn.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9715,7 +9715,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.draft", lang),       "count": draft_cnt,         "total": None, "status": "draft",        "color": "gray"},
             {"label": t("status.all_issued", lang),  "count": all_issued_cnt,    "total": None, "status": "all_issued",   "color": "blue",   "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
             {"label": t("documents.not_restocked", lang), "count": not_restocked_cnt, "total": None, "status": "not_restocked","color": "orange", "_url": f"{base_url}&not_restocked=1","_active_key": "not_restocked"},
-            {"label": t("btn.void", lang),           "count": void_cnt,          "total": None, "status": "void",         "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),           "count": void_cnt,          "total": None, "status": "void",         "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9748,7 +9748,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.awaiting_payment", lang),"count": awaiting,        "total": None, "status": "awaiting_payment","color": "yellow","_url": f"{base_url}&status_in={awaiting_status_param('bill')}","_active_key": "awaiting_payment"},
             {"label": t("status.overdue", lang),         "count": overdue,         "total": None, "status": "overdue",      "color": "red",    "_url": f"{base_url}&overdue_only=1",                      "_active_key": "overdue"},
             {"label": t("label.paid", lang),             "count": paid_cnt,        "total": None, "status": "paid",         "color": "green"},
-            {"label": t("btn.void", lang),               "count": void_cnt,        "total": None, "status": "void",         "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),               "count": void_cnt,        "total": None, "status": "void",         "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9775,7 +9775,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.all_issued", lang),  "count": all_issued_cnt, "total": None, "status": "all_issued", "color": "blue",  "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
             {"label": t("status.overdue", lang),     "count": overdue,        "total": None, "status": "overdue",    "color": "red",   "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"},
             {"label": t("status.converted", lang),   "count": converted_cnt,  "total": None, "status": "converted",  "color": "green"},
-            {"label": t("btn.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9784,7 +9784,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         cards = [
             {"label": t("status.purchase_order", lang), "count": _cbs.get("draft", 0), "total": None, "status": "draft", "color": "gray"},
             {"label": t("doc.sent", lang),              "count": _cbs.get("sent", 0),  "total": None, "status": "sent",  "color": "blue"},
-            {"label": t("btn.void", lang),              "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),              "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9798,7 +9798,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.draft", lang), "count": _cbs.get("draft", 0), "total": None, "status": "draft", "color": "gray"},
             {"label": t("connectors.open", lang), "count": open_cnt,             "total": None, "status": "open",  "color": "blue",
              "_url": f"{base_url}&status_in={_OPEN_STATUSES}", "_active_key": "open"},
-            {"label": t("btn.void", lang),     "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),     "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=True)
 
@@ -9809,7 +9809,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         ("draft", t("status.draft", lang), "gray"),
         ("awaiting_payment", t("status.awaiting_payment", lang), "yellow"),
         ("paid", t("label.paid", lang), "green"),
-        ("void", t("btn.void", lang), "gray"),
+        ("void", t("enum.doc_status.void", lang), "gray"),
     ]
     card_defs = _DEFAULT_CARDS
     api_counts = _cbs
@@ -9926,7 +9926,7 @@ def _list_status_cards(summary: dict, active_status: str = "", converted_to_type
         {"label": t("status.all_issued"),           "count": all_issued_cnt, "total": None, "status": "all_issued",       "color": "blue",  "_url": f"{base_url}&all_issued=1",              "_active_key": "all_issued"},
         {"label": t("status.converted_to_memo"),    "count": memo_cnt,       "total": None, "status": "converted_to_memo","color": "green", "_url": f"{base_url}&converted_to_type=memo",    "_active_key": "converted_to_memo"},
         {"label": t("status.converted_to_invoice"), "count": invoice_cnt,    "total": None, "status": "converted_to_invoice","color": "green","_url": f"{base_url}&converted_to_type=invoice","_active_key": "converted_to_invoice"},
-        {"label": t("btn.void"),                 "count": void_cnt,       "total": None, "status": "void",             "color": "gray"},
+        {"label": t("enum.doc_status.void"),                 "count": void_cnt,       "total": None, "status": "void",             "color": "gray"},
     ]
     return status_cards(cards, base_url, _active_key or None, show_all_card=False)
 

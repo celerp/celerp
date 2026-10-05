@@ -3314,6 +3314,7 @@
   "enum.received_state.source_changed": "ผู้ส่งเปลี่ยนแปลง",
   "enum.received_state.review_only": "เปลี่ยนหลังบันทึก",
   "enum.received_state.not_bookable": "บันทึกไม่ได้",
+  "enum.doc_status.void": "เป็นโมฆะ",
   "setup.choose_business_type": "เลือกประเภทธุรกิจ",
   "setup.business_type_required": "เลือกประเภทธุรกิจเพื่อดำเนินการต่อ",
   "setup.unknown_business_type": "ไม่รู้จักประเภทธุรกิจ: {value}",
