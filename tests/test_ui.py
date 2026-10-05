@@ -3244,7 +3244,7 @@ class TestSettingsPolish:
                 "company": "/settings/general?tab=company",
                 "users": "/settings/general?tab=users",
                 "taxes": "/settings/sales?tab=taxes",
-                "terms": "/settings/sales?tab=terms",
+                "terms": "/settings/contacts?tab=payment-terms",
                 "schema": "/settings/inventory?tab=categories",
             }
             for tab in ("company", "users", "taxes", "terms"):
@@ -3844,9 +3844,8 @@ class TestDateRangeFilters:
     async def test_settings_gear_link(self, ui_client):
         with patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"lines": [], "buckets": {}})):
             r = await ui_client.get("/reports/ar-aging", cookies=_authed())
-        assert b"settings-gear" in r.content
-        # URL may be /settings/sales?tab=terms (core) or /settings?tab=terms (module layer)
-        assert b"settings" in r.content and b"terms" in r.content
+        # The gear opens the payment terms tab on the Contacts settings page.
+        assert b'href="/settings/contacts?tab=payment-terms" class="settings-gear"' in r.content
 
 
 # ── T2: Global search ────────────────────────────────────────────────────────

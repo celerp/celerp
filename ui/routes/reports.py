@@ -15,7 +15,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title
 from ui.components.table import EMPTY, empty_state_cta, fmt_money
-from ui.config import get_token as _token, get_role as _get_role
+from ui.config import PAYMENT_TERMS_URL, get_token as _token, get_role as _get_role
 from ui.i18n import t, get_lang
 from celerp.services.permissions import role_has_permission
 
@@ -83,7 +83,7 @@ def setup_routes(app):
             data = {"lines": [], "buckets": {}}
         content = [
             page_header(t("page.ar_aging"), A(t("label.back"), href="/reports", cls="btn btn--secondary")),
-            _date_filter_bar("/reports/ar-aging", date_from, date_to, preset, settings_link="/settings/sales?tab=terms", lang=get_lang(request)),
+            _date_filter_bar("/reports/ar-aging", date_from, date_to, preset, settings_link=PAYMENT_TERMS_URL, lang=get_lang(request)),
             _aging_view(data, "AR", sort=sort, sort_dir=sort_dir, currency=currency),
         ]
         return await _page_or_fragment(request, *content, title=page_title("page.ar_aging"), nav_active="reports")
@@ -105,7 +105,7 @@ def setup_routes(app):
             data = {"lines": [], "buckets": {}}
         content = [
             page_header(t("page.ap_aging"), A(t("label.back"), href="/reports", cls="btn btn--secondary")),
-            _date_filter_bar("/reports/ap-aging", date_from, date_to, preset, settings_link="/settings/sales?tab=terms", lang=get_lang(request)),
+            _date_filter_bar("/reports/ap-aging", date_from, date_to, preset, settings_link=PAYMENT_TERMS_URL, lang=get_lang(request)),
             _aging_view(data, "AP", sort=sort, sort_dir=sort_dir, currency=currency),
         ]
         return await _page_or_fragment(request, *content, title=page_title("page.ap_aging"), nav_active="reports")
@@ -139,7 +139,7 @@ def setup_routes(app):
                 A(t("label.back"), href="/reports", cls="btn btn--secondary"),
             ),
             _date_filter_bar("/reports/sales", date_from, date_to, preset,
-                             settings_link="/settings/sales?tab=terms",
+                             settings_link=PAYMENT_TERMS_URL,
                              extra_params=f"&group_by={quote_plus(group_by)}",
                              lang=get_lang(request)),
             _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency, show_margin=_show_margin(request, settings)),
@@ -175,7 +175,7 @@ def setup_routes(app):
                 A(t("label.back"), href="/reports", cls="btn btn--secondary"),
             ),
             _date_filter_bar("/reports/purchases", date_from, date_to, preset,
-                             settings_link="/settings/sales?tab=terms",
+                             settings_link=PAYMENT_TERMS_URL,
                              extra_params=f"&group_by={quote_plus(group_by)}",
                              lang=get_lang(request)),
             _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency, show_margin=_show_margin(request, settings)),

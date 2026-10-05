@@ -13,7 +13,7 @@ from starlette.responses import PlainTextResponse, RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title
-from ui.config import get_token as _token
+from ui.config import PAYMENT_TERMS_URL, get_token as _token
 from ui.i18n import t
 from ui.routes.settings import _check_permission
 from ui.routes.csv_import import (
@@ -661,7 +661,7 @@ def setup_routes(app):
             return import_result_panel(
                 created=0, skipped=0, errors=[e.detail],
                 entity_label=t("settings.tab_terms"),
-                back_href="/settings/contacts?tab=payment-terms",
+                back_href=PAYMENT_TERMS_URL,
                 import_more_href="/settings/import/payment-terms",
                 has_mapping=True,
             )
@@ -672,7 +672,7 @@ def setup_routes(app):
         return import_result_panel(
             created=created, skipped=skipped, errors=errors,
             entity_label=t("settings.tab_terms"),
-            back_href="/settings/contacts?tab=payment-terms",
+            back_href=PAYMENT_TERMS_URL,
             import_more_href="/settings/import/payment-terms",
             has_mapping=True,
         )
