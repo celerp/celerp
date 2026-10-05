@@ -2942,6 +2942,8 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 
 /* --- Form hints --- */
 .form-hint { font-size: 0.78rem; color: var(--text-muted); margin: 2px 0 0; }
+.form-field-error { font-size: 0.78rem; color: var(--c-red-dark); margin: 4px 0 0; }
+.form-input[aria-invalid="true"] { border-color: var(--c-red); }
 
 /* --- Modal dialog (send email, etc.) --- */
 .modal-dialog {
