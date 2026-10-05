@@ -3478,11 +3478,11 @@ celerpUpdateBulkAlloc();
                 cls=row_cls,
             )
 
-        payment_table = Table(
+        payment_table = Div(Table(
             Thead(Tr(Th(t("th.date")), Th(t("th.document")), Th(t("page.contact_detail")), Th(t("label.method")), Th(t("label.reference")), Th(t("label.amount")), Th(t("th.status")))),
             Tbody(*[_pay_row(p) for p in payments_list]) if payments_list else Tbody(Tr(Td(t("doc.no_payments_found"), colspan="7", cls="empty-state-msg"))),
             cls="data-table sticky-head", id="payments-table",
-        )
+        ), cls="table-scroll-wrap")
 
         lang = get_lang(request)
         return await base_shell(
