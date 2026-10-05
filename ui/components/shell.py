@@ -1534,6 +1534,8 @@ def star_supporter_card() -> FT:
             # badge is). Hidden once claimed; the wall link below takes its place.
             Div(
                 A(t("shell.claim_your_badge"), id="star-card-claim", href="/stars/claim", cls="btn btn--primary"),
+                P(t("shell.claim_badge_note"), id="star-card-claim-note",
+                  style="margin:8px 0 0;font-size:13px;color:#555"),
                 id="star-card-actions",
                 style="margin-top:22px",
             ),

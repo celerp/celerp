@@ -1833,7 +1833,7 @@
   "shell.appreciate_support": "Wir bedanken uns für Ihre Unterstützung.",
   "shell.backup_in_progress": "Sicherung läuft: Bearbeitung unterbrochen. Sie können Ihre Daten weiterhin einsehen.",
   "shell.thank_you_support": "Vielen Dank für Ihre Unterstützung!",
-  "shell.claim_your_badge": "Holen Sie sich Ihr Abzeichen",
+  "shell.claim_your_badge": "Abzeichen auf GitHub abholen",
   "shell.see_founders_wall": "Sehen Sie sich die Gründerwand an",
   "shell.search_help_plain_text": "Der Klartext stimmt mit Name, Artikelnummer, Barcode, Beschreibung, Kategorie und Attributen überein.",
   "shell.search_help_or": "ist „ODER“:",
@@ -3623,5 +3623,6 @@
   "dashboard.remove_demo_items": "Demo-Artikel entfernen",
   "dashboard.getting_started_from_spreadsheet": "Aus einer Tabelle importieren:",
   "shell.import_hint": "Klicken Sie auf Importieren, um eine CSV- oder Excel-Datei (.xlsx) hochzuladen. Auf der nächsten Seite gibt es eine Vorlage zum Herunterladen.",
-  "shell.demo_hint": "Setzen Sie das Häkchen, um alle auszuwählen, und wählen Sie dann unter Aktion die Option Löschen."
+  "shell.demo_hint": "Setzen Sie das Häkchen, um alle auszuwählen, und wählen Sie dann unter Aktion die Option Löschen.",
+  "shell.claim_badge_note": "Öffnet GitHub, um Ihren Stern zu prüfen. Mit dem Abholen erscheinen Sie auf der öffentlichen Gründerwand."
 }

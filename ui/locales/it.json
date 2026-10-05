@@ -1833,7 +1833,7 @@
   "shell.appreciate_support": "Ti ringraziamo per il tuo supporto.",
   "shell.backup_in_progress": "Backup in corso: modifica sospesa. È comunque possibile visualizzare i dati.",
   "shell.thank_you_support": "Grazie per il tuo sostegno!",
-  "shell.claim_your_badge": "Richiedi il tuo badge",
+  "shell.claim_your_badge": "Richiedi il tuo badge su GitHub",
   "shell.see_founders_wall": "Guarda la bacheca dei fondatori",
   "shell.search_help_plain_text": "Il testo semplice corrisponde a nome, SKU, codice a barre, descrizione, categoria e attributi.",
   "shell.search_help_or": "è OR:",
@@ -3623,5 +3623,6 @@
   "dashboard.remove_demo_items": "Rimuovi gli articoli demo",
   "dashboard.getting_started_from_spreadsheet": "Importa da un foglio di calcolo:",
   "shell.import_hint": "Fai clic su Importa per caricare un file CSV o Excel (.xlsx). La pagina successiva ha un modello da scaricare.",
-  "shell.demo_hint": "Spunta la casella per selezionarli tutti, poi scegli Elimina."
+  "shell.demo_hint": "Spunta la casella per selezionarli tutti, poi scegli Elimina.",
+  "shell.claim_badge_note": "Apre GitHub per verificare la tua stella. Richiedendolo compari sul muro pubblico dei fondatori."
 }

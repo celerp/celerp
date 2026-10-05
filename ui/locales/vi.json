@@ -1832,7 +1832,7 @@
   "shell.appreciate_support": "Chúng tôi xin cảm ơn sự ủng hộ của bạn.",
   "shell.backup_in_progress": "Đang sao lưu: việc chỉnh sửa tạm dừng. Bạn vẫn có thể xem dữ liệu của mình.",
   "shell.thank_you_support": "Cảm ơn sự ủng hộ của bạn!",
-  "shell.claim_your_badge": "Nhận huy hiệu của bạn",
+  "shell.claim_your_badge": "Nhận huy hiệu của bạn trên GitHub",
   "shell.see_founders_wall": "Xem Bảng vinh danh các nhà sáng lập",
   "shell.search_help_plain_text": "Văn bản thuần túy khớp với tên, SKU, mã vạch, mô tả, danh mục và thuộc tính.",
   "shell.search_help_or": "là HOẶC:",
@@ -3623,5 +3623,6 @@
   "dashboard.remove_demo_items": "Xóa các mục demo",
   "dashboard.getting_started_from_spreadsheet": "Nhập từ bảng tính:",
   "shell.import_hint": "Bấm Nhập để tải lên tệp CSV hoặc Excel (.xlsx). Trang tiếp theo có mẫu để tải xuống.",
-  "shell.demo_hint": "Đánh dấu ô để chọn tất cả, rồi chọn Xóa bỏ."
+  "shell.demo_hint": "Đánh dấu ô để chọn tất cả, rồi chọn Xóa bỏ.",
+  "shell.claim_badge_note": "Mở GitHub để kiểm tra lượt gắn sao của bạn. Khi nhận, bạn sẽ có tên trên bức tường nhà sáng lập công khai."
 }

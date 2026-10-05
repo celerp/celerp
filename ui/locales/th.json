@@ -1832,7 +1832,7 @@
   "shell.appreciate_support": "เราขอขอบคุณสำหรับการสนับสนุนของคุณ",
   "shell.backup_in_progress": "กำลังสำรองข้อมูล: การแก้ไขถูกพักไว้ชั่วคราว คุณยังสามารถดูข้อมูลของคุณได้",
   "shell.thank_you_support": "ขอบคุณสำหรับการสนับสนุน!",
-  "shell.claim_your_badge": "รับป้ายรางวัลของคุณ",
+  "shell.claim_your_badge": "รับป้ายรางวัลของคุณบน GitHub",
   "shell.see_founders_wall": "ดูกำแพงผู้ก่อตั้ง",
   "shell.search_help_plain_text": "ข้อความธรรมดาจะค้นหาจากชื่อ SKU บาร์โค้ด คำอธิบาย หมวดหมู่ และคุณสมบัติ",
   "shell.search_help_or": "คือ OR:",
@@ -3623,5 +3623,6 @@
   "dashboard.remove_demo_items": "ลบรายการตัวอย่าง",
   "dashboard.getting_started_from_spreadsheet": "นำเข้าจากสเปรดชีต:",
   "shell.import_hint": "คลิกนำเข้าเพื่ออัปโหลดไฟล์ CSV หรือ Excel (.xlsx) หน้าถัดไปมีเทมเพลตให้ดาวน์โหลด",
-  "shell.demo_hint": "ทำเครื่องหมายในช่องเพื่อเลือกทั้งหมด แล้วเลือก ลบ"
+  "shell.demo_hint": "ทำเครื่องหมายในช่องเพื่อเลือกทั้งหมด แล้วเลือก ลบ",
+  "shell.claim_badge_note": "เปิด GitHub เพื่อตรวจสอบดาวของคุณ เมื่อรับป้ายแล้ว ชื่อของคุณจะอยู่บนกำแพงผู้ก่อตั้งแบบสาธารณะ"
 }

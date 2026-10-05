@@ -1832,7 +1832,7 @@
   "shell.appreciate_support": "ご支援ありがとうございます。",
   "shell.backup_in_progress": "バックアップ実行中：編集は一時停止されています。データの閲覧は引き続き可能です。",
   "shell.thank_you_support": "ご支援ありがとうございます！",
-  "shell.claim_your_badge": "バッジを獲得する",
+  "shell.claim_your_badge": "GitHub でバッジを受け取る",
   "shell.see_founders_wall": "創設者ウォールを見る",
   "shell.search_help_plain_text": "プレーンテキストは、名前、SKU、バーコード、説明、カテゴリ、および属性に一致します。",
   "shell.search_help_or": "「OR」は：",
@@ -3623,5 +3623,6 @@
   "dashboard.remove_demo_items": "デモ品目を削除",
   "dashboard.getting_started_from_spreadsheet": "スプレッドシートからインポート:",
   "shell.import_hint": "インポートをクリックして CSV または Excel (.xlsx) ファイルをアップロードします。次のページでテンプレートをダウンロードできます。",
-  "shell.demo_hint": "ボックスにチェックを入れてすべて選択し、「消去」を選んでください。"
+  "shell.demo_hint": "ボックスにチェックを入れてすべて選択し、「消去」を選んでください。",
+  "shell.claim_badge_note": "GitHub を開いてスターを確認します。受け取ると、公開の創設者ウォールに掲載されます。"
 }

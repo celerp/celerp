@@ -1952,7 +1952,7 @@
   "shell.appreciate_support": "We appreciate your support.",
   "shell.backup_in_progress": "Backup in progress: editing paused. You can still view your data.",
   "shell.thank_you_support": "Thank you for your support!",
-  "shell.claim_your_badge": "Claim your badge",
+  "shell.claim_your_badge": "Claim your badge on GitHub",
   "shell.see_founders_wall": "See the founders wall",
   "shell.search_help_plain_text": "Plain text matches name, SKU, barcode, description, category and attributes.",
   "shell.search_help_or": "is OR:",
@@ -3623,5 +3623,6 @@
   "dashboard.remove_demo_items": "Remove demo items",
   "dashboard.getting_started_from_spreadsheet": "Import from a spreadsheet:",
   "shell.import_hint": "Click Import to upload a CSV or Excel (.xlsx) file. The next page has a template to download.",
-  "shell.demo_hint": "Tick the box to select them all, then choose Delete."
+  "shell.demo_hint": "Tick the box to select them all, then choose Delete.",
+  "shell.claim_badge_note": "Opens GitHub to check your star. Claiming adds you to the public founders wall."
 }

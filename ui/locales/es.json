@@ -1832,7 +1832,7 @@
   "shell.appreciate_support": "Agradecemos tu apoyo.",
   "shell.backup_in_progress": "Copia de seguridad en curso: edición en pausa. Aún puedes ver tus datos.",
   "shell.thank_you_support": "¡Gracias por tu apoyo!",
-  "shell.claim_your_badge": "Reclama tu insignia",
+  "shell.claim_your_badge": "Reclama tu insignia en GitHub",
   "shell.see_founders_wall": "Ver el muro de los fundadores",
   "shell.search_help_plain_text": "El texto sin formato coincide con el nombre, el SKU, el código de barras, la descripción, la categoría y los atributos.",
   "shell.search_help_or": "es «O»:",
@@ -3623,5 +3623,6 @@
   "dashboard.remove_demo_items": "Eliminar artículos de demostración",
   "dashboard.getting_started_from_spreadsheet": "Importar desde una hoja de cálculo:",
   "shell.import_hint": "Haga clic en Importar para subir un archivo CSV o Excel (.xlsx). La página siguiente tiene una plantilla para descargar.",
-  "shell.demo_hint": "Marque la casilla para seleccionarlos todos y luego elija Borrar."
+  "shell.demo_hint": "Marque la casilla para seleccionarlos todos y luego elija Borrar.",
+  "shell.claim_badge_note": "Abre GitHub para comprobar tu estrella. Al reclamarla, apareces en el muro público de fundadores."
 }

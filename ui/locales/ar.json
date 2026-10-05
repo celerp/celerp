@@ -1832,7 +1832,7 @@
   "shell.appreciate_support": "نقدر دعمك.",
   "shell.backup_in_progress": "عملية النسخ الاحتياطي جارية: تم إيقاف التحرير مؤقتًا. لا يزال بإمكانك عرض بياناتك.",
   "shell.thank_you_support": "شكرًا على دعمك!",
-  "shell.claim_your_badge": "احصل على شارتك",
+  "shell.claim_your_badge": "احصل على شارتك عبر GitHub",
   "shell.see_founders_wall": "شاهد حائط المؤسسين",
   "shell.search_help_plain_text": "النص العادي يطابق الاسم، ورمز المنتج (SKU)، والباركود، والوصف، والفئة، والسمات.",
   "shell.search_help_or": "تعني «أو» (OR):",
@@ -3623,5 +3623,6 @@
   "dashboard.remove_demo_items": "إزالة عناصر العرض التوضيحي",
   "dashboard.getting_started_from_spreadsheet": "الاستيراد من جدول بيانات:",
   "shell.import_hint": "انقر على استيراد لرفع ملف CSV أو Excel (.xlsx). تحتوي الصفحة التالية على قالب للتنزيل.",
-  "shell.demo_hint": "حدّد المربع لاختيارها كلها، ثم اختر يمسح."
+  "shell.demo_hint": "حدّد المربع لاختيارها كلها، ثم اختر يمسح.",
+  "shell.claim_badge_note": "يفتح GitHub للتحقق من نجمتك. عند المطالبة بها تُضاف إلى جدار المؤسسين العام."
 }

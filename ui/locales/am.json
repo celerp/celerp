@@ -1933,7 +1933,7 @@
   "shell.appreciate_support": "የእርስዎን ድጋፍ እናመሰግናለን።",
   "shell.backup_in_progress": "ምትኬ በሂደት ላይ፦ ማረም ባለበት ቆሟል። አሁንም ውሂብዎን ማየት ይችላሉ።",
   "shell.thank_you_support": "ለድጋፍዎ እናመሰግናለን!",
-  "shell.claim_your_badge": "ባጅዎን ይጠይቁ",
+  "shell.claim_your_badge": "ባጅዎን በ GitHub ላይ ይጠይቁ",
   "shell.see_founders_wall": "የመሥራቾችን ግድግዳ ተመልከት",
   "shell.search_help_plain_text": "ግልጽ ጽሑፍ ከስም ፣ ኤስኬዩ ፣ ባርኮድ ፣ መግለጫ ፣ ምድብ እና ባህሪዎች ጋር ይዛመዳል።",
   "shell.search_help_or": "ወይም ማለት ነው፦",
@@ -3623,5 +3623,6 @@
   "dashboard.remove_demo_items": "የማሳያ ዕቃዎችን አስወግድ",
   "dashboard.getting_started_from_spreadsheet": "ከተመን ሉህ አስገባ:",
   "shell.import_hint": "የCSV ወይም የExcel (.xlsx) ፋይል ለመስቀል አስገባን ጠቅ ያድርጉ። ቀጣዩ ገጽ የሚወርድ አብነት አለው።",
-  "shell.demo_hint": "ሁሉንም ለመምረጥ ሳጥኑን ምልክት ያድርጉ፣ ከዚያ አጥፋን ይምረጡ።"
+  "shell.demo_hint": "ሁሉንም ለመምረጥ ሳጥኑን ምልክት ያድርጉ፣ ከዚያ አጥፋን ይምረጡ።",
+  "shell.claim_badge_note": "ኮከብዎን ለማረጋገጥ GitHub ይከፍታል። ባጁን ሲጠይቁ በሕዝብ የመሥራቾች ግድግዳ ላይ ይታከላሉ።"
 }
