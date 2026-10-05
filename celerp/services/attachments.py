@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import AsyncIterator, Literal, Protocol
 
 from fastapi import HTTPException, UploadFile
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event
@@ -576,8 +577,9 @@ async def storing(session: AsyncSession, company_id) -> AsyncIterator[CompanyFil
     The company is held from before the first file is stored until the commit, so a company
     reset either waits and then deletes the files with the company, or has already deleted
     the company and nothing is stored (``CompanyGone``). When the block fails, every file
-    stored in it is deleted again, thumbnail included. A failing commit keeps them: it may
-    have landed before the error arrived, leaving records that point at the files."""
+    stored in it is deleted again, thumbnail included. When the commit reports a failure,
+    the files are deleted only once the database confirms the transaction did not land: a
+    commit can land before its error arrives, leaving records that point at the files."""
     if not await hold_company(session, company_id):
         raise CompanyGone()
     files = CompanyFiles(company_id)
@@ -587,7 +589,27 @@ async def storing(session: AsyncSession, company_id) -> AsyncIterator[CompanyFil
         await session.rollback()
         await files.discard_all()
         raise
-    await session.commit()
+    xact = await session.scalar(text("SELECT pg_current_xact_id()::text"))
+    try:
+        await session.commit()
+    except BaseException:
+        try:
+            landed = await _commit_landed(session.bind, xact)
+        except Exception:
+            logger.warning("could not tell whether the commit storing files for company %s landed",
+                           company_id)
+            landed = True
+        if not landed:
+            await files.discard_all()
+        raise
+
+
+async def _commit_landed(engine, xact: str) -> bool:
+    """Whether transaction ``xact`` committed, read on a fresh connection. A transaction
+    still in progress counts as landed, since it may yet commit."""
+    async with engine.connect() as conn:
+        status = await conn.scalar(text("SELECT pg_xact_status(CAST(CAST(:x AS text) AS xid8))"), {"x": xact})
+    return status != "aborted"
 
 
 # Entity type -> the event that attaches a stored file to one entity of that type.
