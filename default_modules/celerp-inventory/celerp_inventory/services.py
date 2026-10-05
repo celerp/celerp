@@ -23,7 +23,7 @@ from celerp.accounting_roles import LOT_ACCOUNT_FIELD, refusal
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp.events.engine import emit_event, find_event_by_idempotency
-from celerp.importers.results import ImportOutcome
+from celerp.importers.results import ImportOutcome, failure_reason
 from celerp.importers.schema import IMPORT_ITEM_STATUSES
 from celerp.inventory_codes import (
     PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
@@ -3163,7 +3163,7 @@ async def write_import_batch(
         try:
             reject_system_item_fields(data)
         except HTTPException as exc:
-            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {exc.detail}")
+            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {failure_reason(exc)}")
             continue
 
         if event_type == "item.patched":

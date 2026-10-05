@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
 from test_cost_restatement import _item, _merge
+from test_helpers import in_language
 from test_receipt_accounting import _doc
 
 APP_OWNED = {"consignment_flag": "in", "status_doc_id": "doc:FAKE", "reserved_quantity": 2,
@@ -21,9 +22,15 @@ async def _events(session, auth) -> int:
 
 
 def _refused(r) -> None:
+    """Refused with a sentence naming the fields, in the reader's language."""
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
-    assert "set by the app" in detail and "consignment_flag" in detail, detail
+    assert detail["message_key"] == "item.app_owned_fields", detail
+    assert detail["message"] == (
+        "These fields are set by the app and cannot be entered: "
+        f"{', '.join(sorted(APP_OWNED))}. Remove them and try again."), detail
+    german = in_language("de", detail)
+    assert german != detail["message"] and ", ".join(sorted(APP_OWNED)) in german, german
 
 
 @pytest.mark.asyncio

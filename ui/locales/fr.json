@@ -3645,6 +3645,7 @@
   "notice.starter_modules_on.body": "Les articles de départ de cette entreprise et son propre contact, créés lors de son inscription, sont gérés par Inventaire et Contacts, c'est pourquoi les deux ont été activés. Ils figurent sur la page Modules.",
   "notice.work_centers_moved.title": "Les heures par jour sont passées aux postes de travail",
   "notice.work_centers_moved.body": "Le réglage Heures par jour de votre entreprise se trouve désormais sur le nouveau poste de travail Default, sous Paramètres > Fabrication > Postes de travail. Vos estimations de fabrication n’ont pas changé.",
+  "item.app_owned_fields": "Ces champs sont définis par l'application et ne peuvent pas être saisis : {fields}. Retirez-les, puis réessayez.",
   "item.draft": "{sku} est un brouillon, pas encore du stock : rendez-le d'abord disponible.",
   "item.reserve_not_available": "{sku} est {status} : seul le stock disponible peut être réservé.",
   "item.reserve_out_of_range": "{sku} contient {held} dont {reserved} réservé : une modification de réservation de {change} laisserait {result}, hors de 0 à {held}.",

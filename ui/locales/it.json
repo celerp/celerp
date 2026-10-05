@@ -3645,6 +3645,7 @@
   "notice.starter_modules_on.body": "Gli articoli iniziali di questa azienda e il suo contatto, creati al momento della registrazione, sono gestiti da Inventario e Contatti, per questo sono stati attivati entrambi. Sono elencati nella pagina Moduli.",
   "notice.work_centers_moved.title": "Le ore giornaliere sono passate ai centri di lavoro",
   "notice.work_centers_moved.body": "L’impostazione delle ore giornaliere della tua azienda si trova ora nel nuovo centro di lavoro Default, in Impostazioni > Produzione > Centri di lavoro. Le stime di produzione non sono cambiate.",
+  "item.app_owned_fields": "Questi campi sono impostati dall'app e non possono essere inseriti: {fields}. Rimuovili e riprova.",
   "item.draft": "{sku} è una bozza, non ancora a magazzino: rendilo prima disponibile.",
   "item.reserve_not_available": "{sku} è {status}: si può riservare solo merce disponibile.",
   "item.reserve_out_of_range": "{sku} contiene {held} con {reserved} riservato: una variazione della riserva di {change} lascerebbe {result}, fuori da 0 a {held}.",

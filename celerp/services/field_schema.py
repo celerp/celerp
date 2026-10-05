@@ -12,7 +12,7 @@ import uuid as _uuid
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
 from celerp.models.company import Company
 from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS
 from celerp.services.pricing import is_cost_list_name, is_derived, price_key
@@ -48,8 +48,11 @@ def reject_system_item_fields(data: dict) -> None:
     keys = set(data) | (set(attributes) if isinstance(attributes, dict) else set())
     managed = sorted(SYSTEM_ITEM_KEYS & keys)
     if managed:
-        raise HTTPException(status_code=422, detail=(
-            f"{managed} are set by the app and cannot be entered; remove them and try again"))
+        fields = ", ".join(managed)
+        raise HTTPException(status_code=422, detail=refusal(
+            "item.app_owned_fields",
+            f"These fields are set by the app and cannot be entered: {fields}. Remove them and try again.",
+            fields=fields))
 
 # Fields whose edit is gated by edit_inventory_amounts. Superset of the numeric
 # amount keys with sell_by added: changing the sell unit rewrites quantity, so it
