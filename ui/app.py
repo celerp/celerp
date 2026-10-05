@@ -344,21 +344,35 @@ async def _module_refusal(request: Request, module: str) -> Response | None:
     token = request.cookies.get(COOKIE_NAME)
     if not token:
         return _auth_guard(request)
+    from fasthtml.common import to_xml
+    from ui.components.shell import base_shell, minimal_shell, page_header
+    from ui.i18n import t
     try:
-        if uses_module((await api.get_company(token)).get("settings"), module):
-            return None
+        settings = (await api.get_company(token)).get("settings")
     except _APIError as exc:
         if exc.status == 401:
             return _401_redirect(str(exc.detail or ""), request)
-    from fasthtml.common import to_xml
-    from ui.components.shell import base_shell, page_header
-    from ui.i18n import t
+        # Celerp could not say whether the module is on: report that, never "off".
+        # No company was read, so the page carries no menu built from guesses.
+        page = minimal_shell(
+            page_header(t("page.api_unavailable")),
+            Div(P(str(exc.detail or ""), cls="flash flash--error"),
+                A(t("btn.retry"), href=str(request.url.replace(scheme="", netloc="")), cls="btn btn--primary"),
+                cls="content-area"),
+            title=t("page.api_unavailable"),
+            request=request,
+        )
+        return HTMLResponse(to_xml(page), status_code=exc.status)
+    if uses_module(settings, module):
+        return None
     page = await base_shell(
         page_header(t("modules.off_for_company_title")),
         Div(P(t("modules.off_for_company"), cls="flash flash--error"),
-            A(t("error.back_to_dashboard"), href="/dashboard", cls="btn btn--primary"),
+            A(t("error.back_to_dashboard"), href="/", cls="btn btn--primary"),
             cls="content-area"),
         title=t("modules.off_for_company_title"),
+        request=request,
+        company_settings=settings or {},
     )
     return HTMLResponse(to_xml(page), status_code=403)
 
@@ -398,6 +412,7 @@ async def ui_404_handler(request: Request, exc) -> HTMLResponse:
             cls="content-area",
         ),
         title=t("error.not_found_title"),
+        request=request,
     )
     from fasthtml.common import to_xml
     return HTMLResponse(to_xml(page), status_code=404)
@@ -415,10 +430,11 @@ async def ui_500_handler(request: Request, exc) -> HTMLResponse:
         page_header(t("error.something_went_wrong")),
         Div(
             P(t("error.unexpected_error_body"), cls="flash flash--error"),
-            A(t("error.back_to_dashboard"), href="/dashboard", cls="btn btn--primary"),
+            A(t("error.back_to_dashboard"), href="/", cls="btn btn--primary"),
             cls="content-area",
         ),
         title=t("error.server_error_title"),
+        request=request,
     )
     from fasthtml.common import to_xml
     return HTMLResponse(to_xml(page), status_code=500)
