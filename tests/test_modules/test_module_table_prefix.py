@@ -137,3 +137,46 @@ def test_default_module_tables_keep_their_names(module_dir, monkeypatch):
 
     assert loader.is_running(name), loader.load_errors()
     assert table in Base.metadata.tables
+
+
+_RESHAPES = {
+    "added_column": "sa.Table('users', Base.metadata, sa.Column('acme_extra', sa.Text), "
+                    "extend_existing=True)\n",
+    "replaced_column": "sa.Table('users', Base.metadata, sa.Column('email', sa.Integer), "
+                       "extend_existing=True)\n",
+    "added_index": "sa.Index('ix_acme_users', Base.metadata.tables['users'].c.email)\n",
+    "removed_table": "Base.metadata.remove(Base.metadata.tables['users'])\n",
+}
+
+
+@pytest.mark.parametrize("where", ["import", "route_setup"])
+@pytest.mark.parametrize("reshape", sorted(_RESHAPES))
+def test_module_reshaping_a_core_table_is_taken_out_and_the_table_restored(
+        module_dir, where, reshape):
+    """extend_existing (or any other change) on a table the module does not own
+    would change what every query against it reads and writes."""
+    import celerp.models.company  # noqa: F401  (core tables on the metadata)
+
+    users = Base.metadata.tables["users"]
+    shape = (list(users.columns), set(users.constraints), set(users.indexes))
+    name, inner = _module(module_dir, prefix=f"acme{_tag()}_")
+    pkg = module_dir / name
+    code = "import sqlalchemy as sa\nfrom celerp.models.base import Base\n" + _RESHAPES[reshape]
+    if where == "import":
+        (pkg / inner / "models.py").write_text(code)
+        init = pkg / "__init__.py"
+        init.write_text(f"from {inner} import models\n" + init.read_text())
+    else:
+        (pkg / inner / "route_models.py").write_text(code)
+        routes = pkg / inner / "routes.py"
+        routes.write_text(routes.read_text().replace(
+            "def setup_api_routes(app):\n",
+            f"def setup_api_routes(app):\n    import {inner}.route_models\n"))
+
+    app = _start(module_dir, name)
+
+    assert not loader.is_running(name)
+    assert "does not own: users" in loader.load_errors()[name]
+    assert f"/{inner}/ping" not in _paths(app)
+    assert Base.metadata.tables["users"] is users
+    assert (list(users.columns), set(users.constraints), set(users.indexes)) == shape

@@ -1104,16 +1104,60 @@ def load_all(
 @contextmanager
 def _recording_tables(pkg_name: str):
     """Attribute to *pkg_name* every table added to the shared metadata while the
-    block runs (its import, its route setup), whether or not the block fails."""
+    block runs (its import, its route setup), whether or not the block fails.
+
+    A table the module does not own (core's, another module's) must leave the
+    block as it entered: a change (extend_existing columns, constraints or
+    indexes, a removal) is undone and the block raises :class:`ModuleLoadError`,
+    so the module is taken out instead of reshaping a table it does not own."""
     from celerp.models.base import Base
 
     before = set(Base.metadata.tables)
+    own = _module_tables.get(pkg_name, set())
+    shapes = {key: _table_shape(table) for key, table in Base.metadata.tables.items()
+              if key not in own}
     try:
         yield
     finally:
         _module_tables.setdefault(pkg_name, set()).update(set(Base.metadata.tables) - before)
+        altered = sorted(key for key, shape in shapes.items()
+                         if _restore_table(Base.metadata, shape))
         if _removed_tables:
             _sweep_removed_tables()
+        if altered:
+            raise ModuleLoadError(
+                f"Changes table(s) it does not own: {', '.join(altered)}.")
+
+
+def _table_shape(table) -> tuple:
+    return table, list(table.columns), set(table.constraints), set(table.indexes)
+
+
+def _restore_table(metadata, shape: tuple) -> bool:
+    """Put a table back on *metadata* exactly as :func:`_table_shape` saw it.
+    True when anything had changed."""
+    table, columns, constraints, indexes = shape
+    changed = metadata.tables.get(table.key) is not table
+    if changed:
+        metadata._add_table(table.name, table.schema, table)
+    by_key = {c.key: c for c in columns}
+    kept = set(map(id, columns))
+    for column in [c for c in table.columns if id(c) not in kept]:
+        changed = True
+        if column.key in by_key:
+            table._columns.replace(by_key[column.key])
+        else:
+            table._columns.remove(column)
+    for column in columns:
+        if table.columns.get(column.key) is not column:
+            changed = True
+            table._columns.add(column)
+    for current, saved in ((table.constraints, constraints), (table.indexes, indexes)):
+        if current != saved:
+            changed = True
+            current.intersection_update(saved)
+            current.update(saved)
+    return changed
 
 
 def _drop_tables(names: set[str]) -> None:
