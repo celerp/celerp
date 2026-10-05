@@ -2298,11 +2298,11 @@ async def reset_company(
     from celerp.services.migrations import run_cleanup_task
 
     await lock_connector_maintenance(session)
-    await lock_company_for_deletion(session, ctx.company_id)
+    # A reset that waited for another to finish finds the company gone, not its role.
+    if not await lock_company_for_deletion(session, ctx.company_id):
+        raise HTTPException(status_code=404, detail="Company not found")
     await locked_authority(session, ctx.company_id, ctx.user.id, ("manage_company_lifecycle",))
     company = await session.get(Company, ctx.company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found")
     closure = None
     try:
         try:
