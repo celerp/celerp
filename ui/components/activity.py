@@ -34,8 +34,13 @@ _EVENT_TYPES: tuple[str, ...] = (
     "doc.payment.voided", "doc.payment.deleted", "doc.received", "doc.fulfilled", "doc.partially_fulfilled",
     "doc.fulfillment_reversed", "doc.partially_reverted", "doc.line_received",
     "doc.line_returned", "doc.items_returned", "doc.shared", "doc.reverted_to_draft",
-    "contact.created", "contact.updated", "deal.created", "deal.updated",
-    "deal.won", "deal.lost", "memo.created", "memo.returned",
+    "crm.contact.created", "crm.contact.updated", "crm.contact.merged", "crm.contact.tagged",
+    "crm.contact.note_added", "crm.contact.note_updated", "crm.contact.note_removed",
+    "crm.contact.person_added", "crm.contact.person_updated", "crm.contact.person_removed",
+    "crm.contact.address_added", "crm.contact.address_updated", "crm.contact.address_removed",
+    "crm.deal.created", "crm.deal.updated", "crm.deal.stage_changed", "crm.deal.won",
+    "crm.deal.lost", "crm.deal.deleted", "crm.deal.reopened",
+    "memo.created", "memo.returned",
     "scan.checked_in", "scan.checked_out",
 )
 EVENT_TYPE_LABELS: dict[str, str] = {et: f"event.{et}" for et in _EVENT_TYPES}
@@ -234,24 +239,6 @@ _OPERATION_NOISE_REASONS = frozenset({
 _ORIGIN_EVENT_TYPES = frozenset({
     "item.split_from",
     "item.transformed_from",
-})
-
-# Event types that are self-describing via their label; detail column intentionally blank.
-_SELF_DESCRIBING_EVENT_TYPES = frozenset({
-    "doc.finalized",
-    "doc.voided",
-    "doc.reverted_to_draft",
-    "doc.shared",
-    "doc.converted",
-    "doc.converted_to_bill",
-    "item.created",
-    "item.deleted",
-    "contact.created",
-    "deal.created",
-    "deal.won",
-    "deal.lost",
-    "memo.created",
-    "memo.returned",
 })
 
 _SYSTEM_FIELDS = frozenset({"updated_at", "created_at"})
@@ -1025,13 +1012,10 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
             cls=section_cls,
         )
 
-    def _assemble(e: dict, content, detail: str, suffix: str, *, blank_detail: bool = False) -> FT:
+    def _assemble(e: dict, content, detail: str, suffix: str) -> FT:
         when_cell = Td(format_timestamp(str(e.get("ts") or "")) or EMPTY)
         user_cell = Td(actor_label(e))
-        if blank_detail:
-            detail_cell = Td("")
-        else:
-            detail_cell = Td(detail or EMPTY, cls="activity-detail-cell")
+        detail_cell = Td(detail or EMPTY, cls="activity-detail-cell")
         rid = e.get("id")
         attrs = {"id": f"evt-{rid}{suffix}"} if rid is not None else {}
         return Tr(Td(content), when_cell, user_cell, detail_cell, **attrs)
@@ -1080,8 +1064,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
         if not detail and isinstance(data, dict) and data.get("fields_changed"):
             return []
 
-        blank_detail = not detail and raw_type in _SELF_DESCRIBING_EVENT_TYPES
-        return [_assemble(e, content, detail, "", blank_detail=blank_detail)]
+        return [_assemble(e, content, detail, "")]
 
     # Filter first, then slice — so max_display counts meaningful rows only
     all_rows: list[FT] = []
