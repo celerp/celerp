@@ -274,6 +274,26 @@ async def test_a_user_another_company_reaches_through_a_per_user_table_stays(
             await conn.execute(text("DROP TABLE IF EXISTS ext_uses, ext_prefs"))
 
 
+async def test_a_user_another_user_names_stays(real_client, real_engine):  # noqa: F811
+    """A module column on users names who invited each user, and the clerk, Alpha's
+    only, invited the others. Resetting Alpha keeps the clerk those rows still name."""
+    from sqlalchemy import text
+
+    ta, _ = await _two_companies(real_client)
+    async with real_engine.begin() as conn:
+        clerk = (await conn.execute(text("SELECT id FROM users WHERE email = 'clerk@example.com'"))).scalar_one()
+        await conn.execute(text("ALTER TABLE users ADD COLUMN ext_invited_by uuid REFERENCES users(id)"))
+        await conn.execute(text("UPDATE users SET ext_invited_by = :u WHERE id <> :u"), {"u": clerk})
+    try:
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "users", "id = :i", i=clerk) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE users DROP COLUMN IF EXISTS ext_invited_by"))
+
+
 @pytest.mark.parametrize("action", ["SET NULL", "SET DEFAULT"])
 async def test_a_row_whose_key_clears_outlives_the_reset_company(real_client, real_engine, action):  # noqa: F811
     """A module row with no company column names Alpha and Beta through keys that clear

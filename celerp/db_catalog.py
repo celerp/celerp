@@ -141,7 +141,7 @@ def delete_users_left_without_a_company(schema: dict[str, Table]) -> str:
         conds = []
         for fk in schema[name].fks:
             if fk.target == "users":
-                conds += [f"{ident(col)} = users.id" for col in fk.cols]
+                conds += [f"{ident(col)} = u.id" for col in fk.cols]
             elif fk.target not in company and fk.target not in seen and (
                     via := reaching(fk.target, seen | {fk.target})):
                 conds.append(f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} "
@@ -150,8 +150,8 @@ def delete_users_left_without_a_company(schema: dict[str, Table]) -> str:
 
     refs = [f"NOT EXISTS (SELECT 1 FROM {ident(name)} WHERE {cond})"
             for name in sorted(company) for cond in reaching(name, frozenset({name}))]
-    refs += [f"NOT EXISTS (SELECT 1 FROM {ident(name)} WHERE {ident(col)} = users.id)"
+    refs += [f"NOT EXISTS (SELECT 1 FROM {ident(name)} WHERE {ident(col)} = u.id)"
              for name, table in schema.items() if name not in company
              for fk in table.fks if fk.target == "users" and not fk.cascades
              for col in fk.cols]
-    return " AND ".join(["DELETE FROM users WHERE id = ANY(:members)", *refs])
+    return " AND ".join(["DELETE FROM users AS u WHERE u.id = ANY(:members)", *refs])
