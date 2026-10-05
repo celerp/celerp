@@ -294,6 +294,17 @@ from celerp.services.list_behavior import (
 # Selectable list types come straight from the behaviour registry (one source — adding a type
 # there surfaces it here automatically).
 _LIST_TYPES = list(_REG_LIST_TYPES)
+# Display only: the raw list type stays canonical (URLs, API, persistence). Quotation and
+# shipping document share the document-type labels.
+_LIST_TYPE_LABEL_KEYS = {"quotation": "settings_sales.doc_type_quotation",
+                         "shipping_doc": "settings_sales.doc_type_shipping_doc"}
+
+
+def _list_type_label(list_type: str | None) -> str:
+    """The list type's name in the request language."""
+    key = _LIST_TYPE_LABEL_KEYS.get(list_type or "", f"enum.list_type.{list_type}")
+    label = t(key)
+    return label if label != key else _list_behavior(list_type).label
 _LIST_DATE_FIELDS = {"date", "link_expiry"}
 
 _PER_PAGE = 50
@@ -637,7 +648,7 @@ _RESERVABLE_STATUSES_UI: dict[str, frozenset[str]] = {
 _STATUS_BADGE: dict[str, tuple[str, str]] = {
     "available":     ("documents.status_available",    "badge--available"),
     "reserved":      ("documents.status_reserved",     "badge--reserved"),
-    "memo_out":      ("documents.status_memo_out",     "badge--memo_out"),
+    "memo_out":      ("inventory.status_on_memo",      "badge--memo_out"),
     "sold":          ("enum.item_status.sold",         "badge--sold"),
     "archived":      ("enum.item_status.archived",     "badge--inactive"),
     "expired":       ("enum.item_status.expired",      "badge--expired"),
@@ -4280,7 +4291,7 @@ celerpUpdateBulkAlloc();
 
         ref = lst.get("ref_id") or entity_id
         status_label = _list_status_label(lst)
-        list_type_label = _list_behavior(lst.get("list_type")).label
+        list_type_label = _list_type_label(lst.get("list_type"))
         # Locations feed the transfer "Move all to" dropdown; relay state gates the quotation Send
         # modal (same as documents).
         try:
@@ -4353,7 +4364,7 @@ celerpUpdateBulkAlloc();
         enter_js = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
         if field == "list_type":
             input_el = Select(
-                *[Option(_list_behavior(lt).label, value=lt, selected=(lt == value)) for lt in _LIST_TYPES],
+                *[Option(_list_type_label(lt), value=lt, selected=(lt == value)) for lt in _LIST_TYPES],
                 name="value",
                 cls="cell-input cell-input--select", autofocus=True,
                 onchange=f"_celerpPatchListField(this, {_json.dumps(patch_url)}, {_json.dumps(lst.get('status') == 'draft')})",
@@ -5987,7 +5998,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             list_type_selector = Div(
                 Span(t("doc.list_type"), cls="meta-label"),
                 Select(
-                    *[Option(_list_behavior(lt).label, value=lt, selected=(lt == _current_lt)) for lt in _LIST_TYPES],
+                    *[Option(_list_type_label(lt), value=lt, selected=(lt == _current_lt)) for lt in _LIST_TYPES],
                     name="value",
                     onchange=(
                         f"_celerpPatchListField(this, '/lists/{entity_id}/field/list_type', "
@@ -6001,7 +6012,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         else:
             list_type_selector = Div(
                 Span(t("doc.list_type"), cls="meta-label"),
-                Span(_list_behavior(_current_lt).label, cls=f"badge badge--{_current_lt}"),
+                Span(_list_type_label(_current_lt), cls=f"badge badge--{_current_lt}"),
                 cls="list-type-bar",
                 style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;",
             )
@@ -8835,7 +8846,7 @@ async function celerpCsvImport(input, entityId) {{
         _SHIPPED_LABEL_KEYS = {
             "Returned": "documents.line_label_returned",
             "Not shipped": "documents.line_label_not_shipped",
-            "On Memo": "documents.status_memo_out",
+            "On Memo": "inventory.status_on_memo",
             "Sold": "enum.item_status.sold",
         }
 
@@ -9665,7 +9676,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.overdue", lang),          "count": overdue,        "total": overdue_total,    "status": "overdue",          "color": "red",    "_url": f"{base_url}&overdue_only=1",                                    "_active_key": "overdue"},
             {"label": t("status.unfulfilled", lang),      "count": unfulfilled,    "total": unfulfilled_total,"status": "unfulfilled",      "color": "orange", "_url": f"{base_url}&unfulfilled_only=1",                                "_active_key": "unfulfilled"},
             {"label": t("label.paid", lang),              "count": paid_cnt,       "total": paid_total,       "status": "paid",             "color": "green",  "_url": f"{base_url}&status_in={_PAID_STATUSES}",                        "_active_key": "paid"},
-            {"label": t("btn.void", lang),                "count": void_cnt,       "total": void_total,       "status": "void",             "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),                "count": void_cnt,       "total": void_total,       "status": "void",             "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, total_override=all_issued_cnt, currency=currency, show_all_card=False)
 
@@ -9692,7 +9703,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.all_issued", lang),  "count": all_issued_cnt, "total": None, "status": "all_issued", "color": "blue",  "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
             {"label": t("status.overdue", lang),     "count": overdue,        "total": None, "status": "overdue",    "color": "red",   "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"},
             {"label": t("status.converted", lang),   "count": converted_cnt,  "total": None, "status": "converted",  "color": "green"},
-            {"label": t("btn.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9715,7 +9726,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.draft", lang),       "count": draft_cnt,         "total": None, "status": "draft",        "color": "gray"},
             {"label": t("status.all_issued", lang),  "count": all_issued_cnt,    "total": None, "status": "all_issued",   "color": "blue",   "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
             {"label": t("documents.not_restocked", lang), "count": not_restocked_cnt, "total": None, "status": "not_restocked","color": "orange", "_url": f"{base_url}&not_restocked=1","_active_key": "not_restocked"},
-            {"label": t("btn.void", lang),           "count": void_cnt,          "total": None, "status": "void",         "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),           "count": void_cnt,          "total": None, "status": "void",         "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9748,7 +9759,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.awaiting_payment", lang),"count": awaiting,        "total": None, "status": "awaiting_payment","color": "yellow","_url": f"{base_url}&status_in={awaiting_status_param('bill')}","_active_key": "awaiting_payment"},
             {"label": t("status.overdue", lang),         "count": overdue,         "total": None, "status": "overdue",      "color": "red",    "_url": f"{base_url}&overdue_only=1",                      "_active_key": "overdue"},
             {"label": t("label.paid", lang),             "count": paid_cnt,        "total": None, "status": "paid",         "color": "green"},
-            {"label": t("btn.void", lang),               "count": void_cnt,        "total": None, "status": "void",         "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),               "count": void_cnt,        "total": None, "status": "void",         "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9775,7 +9786,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.all_issued", lang),  "count": all_issued_cnt, "total": None, "status": "all_issued", "color": "blue",  "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
             {"label": t("status.overdue", lang),     "count": overdue,        "total": None, "status": "overdue",    "color": "red",   "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"},
             {"label": t("status.converted", lang),   "count": converted_cnt,  "total": None, "status": "converted",  "color": "green"},
-            {"label": t("btn.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9784,7 +9795,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         cards = [
             {"label": t("status.purchase_order", lang), "count": _cbs.get("draft", 0), "total": None, "status": "draft", "color": "gray"},
             {"label": t("doc.sent", lang),              "count": _cbs.get("sent", 0),  "total": None, "status": "sent",  "color": "blue"},
-            {"label": t("btn.void", lang),              "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),              "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9798,7 +9809,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.draft", lang), "count": _cbs.get("draft", 0), "total": None, "status": "draft", "color": "gray"},
             {"label": t("connectors.open", lang), "count": open_cnt,             "total": None, "status": "open",  "color": "blue",
              "_url": f"{base_url}&status_in={_OPEN_STATUSES}", "_active_key": "open"},
-            {"label": t("btn.void", lang),     "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),     "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=True)
 
@@ -9809,7 +9820,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         ("draft", t("status.draft", lang), "gray"),
         ("awaiting_payment", t("status.awaiting_payment", lang), "yellow"),
         ("paid", t("label.paid", lang), "green"),
-        ("void", t("btn.void", lang), "gray"),
+        ("void", t("enum.doc_status.void", lang), "gray"),
     ]
     card_defs = _DEFAULT_CARDS
     api_counts = _cbs
@@ -9926,7 +9937,7 @@ def _list_status_cards(summary: dict, active_status: str = "", converted_to_type
         {"label": t("status.all_issued"),           "count": all_issued_cnt, "total": None, "status": "all_issued",       "color": "blue",  "_url": f"{base_url}&all_issued=1",              "_active_key": "all_issued"},
         {"label": t("status.converted_to_memo"),    "count": memo_cnt,       "total": None, "status": "converted_to_memo","color": "green", "_url": f"{base_url}&converted_to_type=memo",    "_active_key": "converted_to_memo"},
         {"label": t("status.converted_to_invoice"), "count": invoice_cnt,    "total": None, "status": "converted_to_invoice","color": "green","_url": f"{base_url}&converted_to_type=invoice","_active_key": "converted_to_invoice"},
-        {"label": t("btn.void"),                 "count": void_cnt,       "total": None, "status": "void",             "color": "gray"},
+        {"label": t("enum.doc_status.void"),                 "count": void_cnt,       "total": None, "status": "void",             "color": "gray"},
     ]
     return status_cards(cards, base_url, _active_key or None, show_all_card=False)
 
@@ -9938,5 +9949,5 @@ def _list_type_tabs(active: str, state: dict[str, str]) -> FT:
     tabs = [A(t("doc.all"), href="/lists" + (f"?{urlencode(kept)}" if kept else ""), cls=all_cls)]
     for lt in _LIST_TYPES:
         cls = "category-tab" + (" category-tab--active" if lt == active else "")
-        tabs.append(A(_list_behavior(lt).label, href="/lists?" + urlencode({"type": lt, **kept}), cls=cls))
+        tabs.append(A(_list_type_label(lt), href="/lists?" + urlencode({"type": lt, **kept}), cls=cls))
     return Div(*tabs, cls="category-tabs", id="type-tabs")

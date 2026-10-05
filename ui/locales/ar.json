@@ -1832,7 +1832,7 @@
   "shell.appreciate_support": "نقدر دعمك.",
   "shell.backup_in_progress": "عملية النسخ الاحتياطي جارية: تم إيقاف التحرير مؤقتًا. لا يزال بإمكانك عرض بياناتك.",
   "shell.thank_you_support": "شكرًا على دعمك!",
-  "shell.claim_your_badge": "احصل على شارتك",
+  "shell.claim_your_badge": "احصل على شارتك عبر GitHub",
   "shell.see_founders_wall": "شاهد حائط المؤسسين",
   "shell.search_help_plain_text": "النص العادي يطابق الاسم، ورمز المنتج (SKU)، والباركود، والوصف، والفئة، والسمات.",
   "shell.search_help_or": "تعني «أو» (OR):",
@@ -2097,7 +2097,6 @@
   "contacts.total_paid": "إجمالي المبلغ المدفوع",
   "contacts.year_to_date": "منذ بداية العام",
   "contacts.avg_days_to_pay": "متوسط أيام السداد",
-  "contacts.on_memo": "في المذكرة",
   "contacts.out_to_customer": "إلى العميل",
   "contacts.consignment": "شحنة",
   "contacts.held_from_supplier": "محتجز من المورد",
@@ -2327,7 +2326,6 @@
   "documents.sold_reserve_warn": "{n} من الأسطر المحددة قد تم شحنها بالفعل. تعيينها كـ «محجوزة» يعيد البضائع إلى المخزون ويلغي قيد البيع في هذا المستند. هل تريد المتابعة؟",
   "documents.start_audit": "بدء التدقيق",
   "documents.status_available": "متوفر في المخزون",
-  "documents.status_memo_out": "في المذكرة",
   "documents.status_not_received": "لم يتم استلامه",
   "documents.status_reserved": "محجوز",
   "documents.tax": "ضريبة",
@@ -3314,6 +3312,10 @@
   "enum.received_state.source_changed": "غيّره المرسل",
   "enum.received_state.review_only": "تغير بعد التسجيل",
   "enum.received_state.not_bookable": "لا يمكن تسجيله",
+  "enum.doc_status.void": "باطل",
+  "enum.list_type.transfer": "نقل",
+  "enum.list_type.audit": "جرد",
+  "enum.list_type.writeoff": "شطب",
   "setup.choose_business_type": "اختر نوع العمل",
   "setup.business_type_required": "اختر نوع العمل للمتابعة.",
   "setup.unknown_business_type": "نوع عمل غير معروف: {value}",
@@ -3623,5 +3625,6 @@
   "dashboard.remove_demo_items": "إزالة عناصر العرض التوضيحي",
   "dashboard.getting_started_from_spreadsheet": "الاستيراد من جدول بيانات:",
   "shell.import_hint": "انقر على استيراد لرفع ملف CSV أو Excel (.xlsx). تحتوي الصفحة التالية على قالب للتنزيل.",
-  "shell.demo_hint": "حدّد المربع لاختيارها كلها، ثم اختر يمسح."
+  "shell.demo_hint": "حدّد المربع لاختيارها كلها، ثم اختر يمسح.",
+  "shell.claim_badge_note": "يفتح GitHub للتحقق من نجمتك. عند المطالبة بها تُضاف إلى جدار المؤسسين العام."
 }

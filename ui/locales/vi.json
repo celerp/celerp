@@ -1832,7 +1832,7 @@
   "shell.appreciate_support": "Chúng tôi xin cảm ơn sự ủng hộ của bạn.",
   "shell.backup_in_progress": "Đang sao lưu: việc chỉnh sửa tạm dừng. Bạn vẫn có thể xem dữ liệu của mình.",
   "shell.thank_you_support": "Cảm ơn sự ủng hộ của bạn!",
-  "shell.claim_your_badge": "Nhận huy hiệu của bạn",
+  "shell.claim_your_badge": "Nhận huy hiệu của bạn trên GitHub",
   "shell.see_founders_wall": "Xem Bảng vinh danh các nhà sáng lập",
   "shell.search_help_plain_text": "Văn bản thuần túy khớp với tên, SKU, mã vạch, mô tả, danh mục và thuộc tính.",
   "shell.search_help_or": "là HOẶC:",
@@ -2097,7 +2097,6 @@
   "contacts.total_paid": "Tổng số tiền đã thanh toán",
   "contacts.year_to_date": "Từ đầu năm đến nay",
   "contacts.avg_days_to_pay": "Số ngày thanh toán trung bình",
-  "contacts.on_memo": "Trên phiếu ghi chú",
   "contacts.out_to_customer": "Gửi cho khách hàng",
   "contacts.consignment": "Hàng ký gửi",
   "contacts.held_from_supplier": "Giữ lại từ nhà cung cấp",
@@ -2327,7 +2326,6 @@
   "documents.sold_reserve_warn": "{n} trong số các dòng đã chọn đã được giao. Việc đặt chúng thành \"đã đặt trước\" sẽ đưa hàng hóa trở lại kho và hủy ghi nhận bán hàng trên tài liệu này. Tiếp tục?",
   "documents.start_audit": "Bắt đầu kiểm toán",
   "documents.status_available": "Còn hàng",
-  "documents.status_memo_out": "Trên phiếu ghi chú",
   "documents.status_not_received": "Chưa nhận",
   "documents.status_reserved": "Đã đặt giữ",
   "documents.tax": "Thuế",
@@ -3314,6 +3312,10 @@
   "enum.received_state.source_changed": "Người gửi đã thay đổi",
   "enum.received_state.review_only": "Thay đổi sau khi ghi sổ",
   "enum.received_state.not_bookable": "Không thể ghi sổ",
+  "enum.doc_status.void": "Vô hiệu",
+  "enum.list_type.transfer": "Chuyển kho",
+  "enum.list_type.audit": "Kiểm kê",
+  "enum.list_type.writeoff": "Xóa sổ",
   "setup.choose_business_type": "Chọn loại hình kinh doanh",
   "setup.business_type_required": "Chọn loại hình kinh doanh để tiếp tục.",
   "setup.unknown_business_type": "Loại hình kinh doanh không xác định: {value}",
@@ -3623,5 +3625,6 @@
   "dashboard.remove_demo_items": "Xóa các mục demo",
   "dashboard.getting_started_from_spreadsheet": "Nhập từ bảng tính:",
   "shell.import_hint": "Bấm Nhập để tải lên tệp CSV hoặc Excel (.xlsx). Trang tiếp theo có mẫu để tải xuống.",
-  "shell.demo_hint": "Đánh dấu ô để chọn tất cả, rồi chọn Xóa bỏ."
+  "shell.demo_hint": "Đánh dấu ô để chọn tất cả, rồi chọn Xóa bỏ.",
+  "shell.claim_badge_note": "Mở GitHub để kiểm tra lượt gắn sao của bạn. Khi nhận, bạn sẽ có tên trên bức tường nhà sáng lập công khai."
 }

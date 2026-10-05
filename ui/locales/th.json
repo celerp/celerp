@@ -1832,7 +1832,7 @@
   "shell.appreciate_support": "เราขอขอบคุณสำหรับการสนับสนุนของคุณ",
   "shell.backup_in_progress": "กำลังสำรองข้อมูล: การแก้ไขถูกพักไว้ชั่วคราว คุณยังสามารถดูข้อมูลของคุณได้",
   "shell.thank_you_support": "ขอบคุณสำหรับการสนับสนุน!",
-  "shell.claim_your_badge": "รับป้ายรางวัลของคุณ",
+  "shell.claim_your_badge": "รับป้ายรางวัลของคุณบน GitHub",
   "shell.see_founders_wall": "ดูกำแพงผู้ก่อตั้ง",
   "shell.search_help_plain_text": "ข้อความธรรมดาจะค้นหาจากชื่อ SKU บาร์โค้ด คำอธิบาย หมวดหมู่ และคุณสมบัติ",
   "shell.search_help_or": "คือ OR:",
@@ -2097,7 +2097,6 @@
   "contacts.total_paid": "ยอดชำระรวม",
   "contacts.year_to_date": "ตั้งแต่ต้นปี (YTD)",
   "contacts.avg_days_to_pay": "จำนวนวันชำระเงินเฉลี่ย",
-  "contacts.on_memo": "อยู่ในใบยืม",
   "contacts.out_to_customer": "ส่งออกให้ลูกค้าแล้ว",
   "contacts.consignment": "ฝากขาย",
   "contacts.held_from_supplier": "รับฝากจากผู้จำหน่าย",
@@ -2327,7 +2326,6 @@
   "documents.sold_reserve_warn": "{n} รายการที่เลือกถูกจัดส่งไปแล้ว การตั้งเป็นสถานะจองจะนำสินค้ากลับเข้าสต็อกและยกเลิกการบันทึกการขายในเอกสารนี้ ต้องการดำเนินการต่อหรือไม่?",
   "documents.start_audit": "เริ่มการตรวจนับ",
   "documents.status_available": "มีในสต็อก",
-  "documents.status_memo_out": "อยู่ระหว่างฝากขาย",
   "documents.status_not_received": "ยังไม่ได้รับ",
   "documents.status_reserved": "จองแล้ว",
   "documents.tax": "ภาษี",
@@ -3314,6 +3312,10 @@
   "enum.received_state.source_changed": "ผู้ส่งเปลี่ยนแปลง",
   "enum.received_state.review_only": "เปลี่ยนหลังบันทึก",
   "enum.received_state.not_bookable": "บันทึกไม่ได้",
+  "enum.doc_status.void": "เป็นโมฆะ",
+  "enum.list_type.transfer": "โอนย้าย",
+  "enum.list_type.audit": "ตรวจนับ",
+  "enum.list_type.writeoff": "ตัดจำหน่าย",
   "setup.choose_business_type": "เลือกประเภทธุรกิจ",
   "setup.business_type_required": "เลือกประเภทธุรกิจเพื่อดำเนินการต่อ",
   "setup.unknown_business_type": "ไม่รู้จักประเภทธุรกิจ: {value}",
@@ -3623,5 +3625,6 @@
   "dashboard.remove_demo_items": "ลบรายการตัวอย่าง",
   "dashboard.getting_started_from_spreadsheet": "นำเข้าจากสเปรดชีต:",
   "shell.import_hint": "คลิกนำเข้าเพื่ออัปโหลดไฟล์ CSV หรือ Excel (.xlsx) หน้าถัดไปมีเทมเพลตให้ดาวน์โหลด",
-  "shell.demo_hint": "ทำเครื่องหมายในช่องเพื่อเลือกทั้งหมด แล้วเลือก ลบ"
+  "shell.demo_hint": "ทำเครื่องหมายในช่องเพื่อเลือกทั้งหมด แล้วเลือก ลบ",
+  "shell.claim_badge_note": "เปิด GitHub เพื่อตรวจสอบดาวของคุณ เมื่อรับป้ายแล้ว ชื่อของคุณจะอยู่บนกำแพงผู้ก่อตั้งแบบสาธารณะ"
 }

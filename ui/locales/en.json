@@ -1952,7 +1952,7 @@
   "shell.appreciate_support": "We appreciate your support.",
   "shell.backup_in_progress": "Backup in progress: editing paused. You can still view your data.",
   "shell.thank_you_support": "Thank you for your support!",
-  "shell.claim_your_badge": "Claim your badge",
+  "shell.claim_your_badge": "Claim your badge on GitHub",
   "shell.see_founders_wall": "See the founders wall",
   "shell.search_help_plain_text": "Plain text matches name, SKU, barcode, description, category and attributes.",
   "shell.search_help_or": "is OR:",
@@ -2217,7 +2217,6 @@
   "contacts.total_paid": "Total Paid",
   "contacts.year_to_date": "Year To Date",
   "contacts.avg_days_to_pay": "Avg Days to Pay",
-  "contacts.on_memo": "On Memo",
   "contacts.out_to_customer": "Out to customer",
   "contacts.consignment": "Consignment",
   "contacts.held_from_supplier": "Held from supplier",
@@ -2447,7 +2446,6 @@
   "documents.sold_reserve_warn": "{n} of the selected lines are already shipped. Setting them as reserved takes the goods back into stock and reverses the sale posting on this document. Continue?",
   "documents.start_audit": "Start audit",
   "documents.status_available": "In Stock",
-  "documents.status_memo_out": "On Memo",
   "documents.status_not_received": "Not Received",
   "documents.status_reserved": "Reserved",
   "documents.tax": "Tax",
@@ -3314,6 +3312,10 @@
   "enum.received_state.source_changed": "Changed by sender",
   "enum.received_state.review_only": "Changed after booking",
   "enum.received_state.not_bookable": "Cannot be booked",
+  "enum.doc_status.void": "Void",
+  "enum.list_type.transfer": "Transfer",
+  "enum.list_type.audit": "Audit",
+  "enum.list_type.writeoff": "Write-off",
   "setup.choose_business_type": "Choose a business type",
   "setup.business_type_required": "Choose a business type to continue.",
   "setup.unknown_business_type": "Unknown business type: {value}",
@@ -3623,5 +3625,6 @@
   "dashboard.remove_demo_items": "Remove demo items",
   "dashboard.getting_started_from_spreadsheet": "Import from a spreadsheet:",
   "shell.import_hint": "Click Import to upload a CSV or Excel (.xlsx) file. The next page has a template to download.",
-  "shell.demo_hint": "Tick the box to select them all, then choose Delete."
+  "shell.demo_hint": "Tick the box to select them all, then choose Delete.",
+  "shell.claim_badge_note": "Opens GitHub to check your star. Claiming adds you to the public founders wall."
 }

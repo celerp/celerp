@@ -1832,7 +1832,7 @@
   "shell.appreciate_support": "Kami menghargai dukungan Anda.",
   "shell.backup_in_progress": "Pencadangan sedang berlangsung: pengeditan ditangguhkan. Anda masih dapat melihat data Anda.",
   "shell.thank_you_support": "Terima kasih atas dukungan Anda!",
-  "shell.claim_your_badge": "Klaim lencana Anda",
+  "shell.claim_your_badge": "Klaim lencana Anda di GitHub",
   "shell.see_founders_wall": "Lihat dinding pendiri",
   "shell.search_help_plain_text": "Teks biasa cocok dengan nama, SKU, kode batang, deskripsi, kategori, dan atribut.",
   "shell.search_help_or": "adalah ATAU:",
@@ -2097,7 +2097,6 @@
   "contacts.total_paid": "Total yang Telah Dibayar",
   "contacts.year_to_date": "Tahun Ini (YTD)",
   "contacts.avg_days_to_pay": "Rata-rata Hari Pembayaran",
-  "contacts.on_memo": "Dalam Catatan",
   "contacts.out_to_customer": "Dikirim ke pelanggan",
   "contacts.consignment": "Konsinyasi",
   "contacts.held_from_supplier": "Ditahan dari pemasok",
@@ -2327,7 +2326,6 @@
   "documents.sold_reserve_warn": "{n} dari baris yang dipilih telah dikirim. Menetapkannya sebagai dipesan akan mengembalikan barang ke stok dan membatalkan pencatatan penjualan pada dokumen ini. Lanjutkan?",
   "documents.start_audit": "Mulai audit",
   "documents.status_available": "Tersedia",
-  "documents.status_memo_out": "Dalam Catatan",
   "documents.status_not_received": "Belum Diterima",
   "documents.status_reserved": "Dipesan",
   "documents.tax": "Pajak",
@@ -3314,6 +3312,10 @@
   "enum.received_state.source_changed": "Diubah pengirim",
   "enum.received_state.review_only": "Berubah setelah dibukukan",
   "enum.received_state.not_bookable": "Tidak dapat dibukukan",
+  "enum.doc_status.void": "Tidak berlaku",
+  "enum.list_type.transfer": "Transfer",
+  "enum.list_type.audit": "Audit",
+  "enum.list_type.writeoff": "Penghapusan",
   "setup.choose_business_type": "Pilih jenis bisnis",
   "setup.business_type_required": "Pilih jenis bisnis untuk melanjutkan.",
   "setup.unknown_business_type": "Jenis bisnis tidak dikenal: {value}",
@@ -3623,5 +3625,6 @@
   "dashboard.remove_demo_items": "Hapus item demo",
   "dashboard.getting_started_from_spreadsheet": "Impor dari spreadsheet:",
   "shell.import_hint": "Klik Impor untuk mengunggah file CSV atau Excel (.xlsx). Halaman berikutnya menyediakan templat untuk diunduh.",
-  "shell.demo_hint": "Centang kotak untuk memilih semuanya, lalu pilih Menghapus."
+  "shell.demo_hint": "Centang kotak untuk memilih semuanya, lalu pilih Menghapus.",
+  "shell.claim_badge_note": "Membuka GitHub untuk memeriksa bintang Anda. Dengan mengklaim, Anda masuk ke dinding pendiri publik."
 }

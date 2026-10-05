@@ -1833,7 +1833,7 @@
   "shell.appreciate_support": "Nous vous remercions de votre soutien.",
   "shell.backup_in_progress": "Sauvegarde en cours : édition suspendue. Vous pouvez toujours consulter vos données.",
   "shell.thank_you_support": "Merci pour votre soutien !",
-  "shell.claim_your_badge": "Réclamez votre badge",
+  "shell.claim_your_badge": "Obtenir votre badge sur GitHub",
   "shell.see_founders_wall": "Consultez le mur des fondateurs",
   "shell.search_help_plain_text": "Le texte brut correspond au nom, à la référence, au code-barres, à la description, à la catégorie et aux attributs.",
   "shell.search_help_or": "correspond à « OU » :",
@@ -2098,7 +2098,6 @@
   "contacts.total_paid": "Total payé",
   "contacts.year_to_date": "Cumul annuel",
   "contacts.avg_days_to_pay": "Délai moyen de paiement",
-  "contacts.on_memo": "Sur note",
   "contacts.out_to_customer": "Expédié au client",
   "contacts.consignment": "Consignation",
   "contacts.held_from_supplier": "Retenu chez le fournisseur",
@@ -2328,7 +2327,6 @@
   "documents.sold_reserve_warn": "{n} des lignes sélectionnées ont déjà été expédiées. Les marquer comme réservées remet les marchandises en stock et annule l'écriture de vente sur ce document. Continuer ?",
   "documents.start_audit": "Lancer l'audit",
   "documents.status_available": "En stock",
-  "documents.status_memo_out": "En consignation",
   "documents.status_not_received": "Non reçu",
   "documents.status_reserved": "Réservé",
   "documents.tax": "Taxe",
@@ -3314,6 +3312,10 @@
   "enum.received_state.source_changed": "Modifié par l'expéditeur",
   "enum.received_state.review_only": "Modifié après enregistrement",
   "enum.received_state.not_bookable": "Non enregistrable",
+  "enum.doc_status.void": "Annulé",
+  "enum.list_type.transfer": "Transfert",
+  "enum.list_type.audit": "Inventaire",
+  "enum.list_type.writeoff": "Mise au rebut",
   "setup.choose_business_type": "Choisissez un type d'entreprise",
   "setup.business_type_required": "Choisissez un type d'entreprise pour continuer.",
   "setup.unknown_business_type": "Type d'entreprise inconnu : {value}",
@@ -3623,5 +3625,6 @@
   "dashboard.remove_demo_items": "Supprimer les articles de démonstration",
   "dashboard.getting_started_from_spreadsheet": "Importer depuis un tableur :",
   "shell.import_hint": "Cliquez sur Importer pour envoyer un fichier CSV ou Excel (.xlsx). La page suivante propose un modèle à télécharger.",
-  "shell.demo_hint": "Cochez la case pour tous les sélectionner, puis choisissez Supprimer."
+  "shell.demo_hint": "Cochez la case pour tous les sélectionner, puis choisissez Supprimer.",
+  "shell.claim_badge_note": "Ouvre GitHub pour vérifier votre étoile. Obtenir le badge vous ajoute au mur public des fondateurs."
 }

@@ -1833,7 +1833,7 @@
   "shell.appreciate_support": "Ti ringraziamo per il tuo supporto.",
   "shell.backup_in_progress": "Backup in corso: modifica sospesa. È comunque possibile visualizzare i dati.",
   "shell.thank_you_support": "Grazie per il tuo sostegno!",
-  "shell.claim_your_badge": "Richiedi il tuo badge",
+  "shell.claim_your_badge": "Richiedi il tuo badge su GitHub",
   "shell.see_founders_wall": "Guarda la bacheca dei fondatori",
   "shell.search_help_plain_text": "Il testo semplice corrisponde a nome, SKU, codice a barre, descrizione, categoria e attributi.",
   "shell.search_help_or": "è OR:",
@@ -2098,7 +2098,6 @@
   "contacts.total_paid": "Totale pagato",
   "contacts.year_to_date": "Da inizio anno",
   "contacts.avg_days_to_pay": "Giorni medi di pagamento",
-  "contacts.on_memo": "In nota",
   "contacts.out_to_customer": "Spedizione al cliente",
   "contacts.consignment": "Consegna in conto deposito",
   "contacts.held_from_supplier": "Trattenuto dal fornitore",
@@ -2328,7 +2327,6 @@
   "documents.sold_reserve_warn": "{n} delle righe selezionate sono già state spedite. Impostarle come riservate riporta la merce in magazzino e storna la registrazione di vendita su questo documento. Continuare?",
   "documents.start_audit": "Avvia verifica",
   "documents.status_available": "In magazzino",
-  "documents.status_memo_out": "In promemoria",
   "documents.status_not_received": "Non ricevuto",
   "documents.status_reserved": "Riservato",
   "documents.tax": "Imposta",
@@ -3314,6 +3312,10 @@
   "enum.received_state.source_changed": "Modificato dal mittente",
   "enum.received_state.review_only": "Modificato dopo la registrazione",
   "enum.received_state.not_bookable": "Non registrabile",
+  "enum.doc_status.void": "Stornato",
+  "enum.list_type.transfer": "Trasferimento",
+  "enum.list_type.audit": "Inventario",
+  "enum.list_type.writeoff": "Dismissione",
   "setup.choose_business_type": "Scegli un tipo di attività",
   "setup.business_type_required": "Scegli un tipo di attività per continuare.",
   "setup.unknown_business_type": "Tipo di attività sconosciuto: {value}",
@@ -3623,5 +3625,6 @@
   "dashboard.remove_demo_items": "Rimuovi gli articoli demo",
   "dashboard.getting_started_from_spreadsheet": "Importa da un foglio di calcolo:",
   "shell.import_hint": "Fai clic su Importa per caricare un file CSV o Excel (.xlsx). La pagina successiva ha un modello da scaricare.",
-  "shell.demo_hint": "Spunta la casella per selezionarli tutti, poi scegli Elimina."
+  "shell.demo_hint": "Spunta la casella per selezionarli tutti, poi scegli Elimina.",
+  "shell.claim_badge_note": "Apre GitHub per verificare la tua stella. Richiedendolo compari sul muro pubblico dei fondatori."
 }

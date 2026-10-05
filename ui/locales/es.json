@@ -1832,7 +1832,7 @@
   "shell.appreciate_support": "Agradecemos tu apoyo.",
   "shell.backup_in_progress": "Copia de seguridad en curso: edición en pausa. Aún puedes ver tus datos.",
   "shell.thank_you_support": "¡Gracias por tu apoyo!",
-  "shell.claim_your_badge": "Reclama tu insignia",
+  "shell.claim_your_badge": "Reclama tu insignia en GitHub",
   "shell.see_founders_wall": "Ver el muro de los fundadores",
   "shell.search_help_plain_text": "El texto sin formato coincide con el nombre, el SKU, el código de barras, la descripción, la categoría y los atributos.",
   "shell.search_help_or": "es «O»:",
@@ -2097,7 +2097,6 @@
   "contacts.total_paid": "Total pagado",
   "contacts.year_to_date": "Acumulado del año",
   "contacts.avg_days_to_pay": "Plazo medio de pago",
-  "contacts.on_memo": "En nota",
   "contacts.out_to_customer": "Enviado al cliente",
   "contacts.consignment": "En consignación",
   "contacts.held_from_supplier": "Retener del proveedor",
@@ -2327,7 +2326,6 @@
   "documents.sold_reserve_warn": "{n} de las líneas seleccionadas ya se han enviado. Al marcarlas como reservadas, la mercancía vuelve a entrar en stock y se revierte el asiento de venta de este documento. ¿Continuar?",
   "documents.start_audit": "Iniciar auditoría",
   "documents.status_available": "En stock",
-  "documents.status_memo_out": "En consignación",
   "documents.status_not_received": "No recibido",
   "documents.status_reserved": "Reservado",
   "documents.tax": "Impuesto",
@@ -3314,6 +3312,10 @@
   "enum.received_state.source_changed": "Cambiado por el remitente",
   "enum.received_state.review_only": "Cambiado tras registrar",
   "enum.received_state.not_bookable": "No se puede registrar",
+  "enum.doc_status.void": "Anulado",
+  "enum.list_type.transfer": "Traslado",
+  "enum.list_type.audit": "Inventario",
+  "enum.list_type.writeoff": "Baja",
   "setup.choose_business_type": "Elija un tipo de negocio",
   "setup.business_type_required": "Elija un tipo de negocio para continuar.",
   "setup.unknown_business_type": "Tipo de negocio desconocido: {value}",
@@ -3623,5 +3625,6 @@
   "dashboard.remove_demo_items": "Eliminar artículos de demostración",
   "dashboard.getting_started_from_spreadsheet": "Importar desde una hoja de cálculo:",
   "shell.import_hint": "Haga clic en Importar para subir un archivo CSV o Excel (.xlsx). La página siguiente tiene una plantilla para descargar.",
-  "shell.demo_hint": "Marque la casilla para seleccionarlos todos y luego elija Borrar."
+  "shell.demo_hint": "Marque la casilla para seleccionarlos todos y luego elija Borrar.",
+  "shell.claim_badge_note": "Abre GitHub para comprobar tu estrella. Al reclamarla, apareces en el muro público de fundadores."
 }

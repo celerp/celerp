@@ -1832,7 +1832,7 @@
   "shell.appreciate_support": "ご支援ありがとうございます。",
   "shell.backup_in_progress": "バックアップ実行中：編集は一時停止されています。データの閲覧は引き続き可能です。",
   "shell.thank_you_support": "ご支援ありがとうございます！",
-  "shell.claim_your_badge": "バッジを獲得する",
+  "shell.claim_your_badge": "GitHub でバッジを受け取る",
   "shell.see_founders_wall": "創設者ウォールを見る",
   "shell.search_help_plain_text": "プレーンテキストは、名前、SKU、バーコード、説明、カテゴリ、および属性に一致します。",
   "shell.search_help_or": "「OR」は：",
@@ -2097,7 +2097,6 @@
   "contacts.total_paid": "支払総額",
   "contacts.year_to_date": "年初来累計",
   "contacts.avg_days_to_pay": "平均支払日数",
-  "contacts.on_memo": "備考欄",
   "contacts.out_to_customer": "顧客への出荷",
   "contacts.consignment": "委託品",
   "contacts.held_from_supplier": "仕入先からの保留品",
@@ -2327,7 +2326,6 @@
   "documents.sold_reserve_warn": "選択された行のうち {n} はすでに出荷済みです。これらを「予約済み」に設定すると、商品は在庫に戻され、この伝票の販売仕訳が取り消されます。続行しますか？",
   "documents.start_audit": "監査を開始",
   "documents.status_available": "在庫あり",
-  "documents.status_memo_out": "メモあり",
   "documents.status_not_received": "未受領",
   "documents.status_reserved": "予約済み",
   "documents.tax": "税",
@@ -3314,6 +3312,10 @@
   "enum.received_state.source_changed": "送信者が変更",
   "enum.received_state.review_only": "登録後に変更",
   "enum.received_state.not_bookable": "登録不可",
+  "enum.doc_status.void": "無効",
+  "enum.list_type.transfer": "移動",
+  "enum.list_type.audit": "棚卸",
+  "enum.list_type.writeoff": "廃棄",
   "setup.choose_business_type": "業種を選択してください",
   "setup.business_type_required": "続行するには業種を選択してください。",
   "setup.unknown_business_type": "不明な業種: {value}",
@@ -3623,5 +3625,6 @@
   "dashboard.remove_demo_items": "デモ品目を削除",
   "dashboard.getting_started_from_spreadsheet": "スプレッドシートからインポート:",
   "shell.import_hint": "インポートをクリックして CSV または Excel (.xlsx) ファイルをアップロードします。次のページでテンプレートをダウンロードできます。",
-  "shell.demo_hint": "ボックスにチェックを入れてすべて選択し、「消去」を選んでください。"
+  "shell.demo_hint": "ボックスにチェックを入れてすべて選択し、「消去」を選んでください。",
+  "shell.claim_badge_note": "GitHub を開いてスターを確認します。受け取ると、公開の創設者ウォールに掲載されます。"
 }
