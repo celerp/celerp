@@ -1089,6 +1089,30 @@ class TestCategoryInvariant:
         from celerp_inventory.services import resolve_import_category
         assert resolve_import_category("ruby", ["ruby", "gem"], {"gem": "ruby"}) == ("ruby", None)
 
+    @pytest.mark.parametrize("value", ["Farbedelstein", "farbedelstein", "Colored Stone", "colored_stone"])
+    def test_library_category_matches_its_name_in_every_language(self, value):
+        from celerp_inventory.services import resolve_import_category
+        assert resolve_import_category(value, ["colored_stone"], {"colored_stone": "Colored Stone"}) == ("colored_stone", None)
+
+    def test_library_category_with_no_stored_name_matches_its_translation(self):
+        from celerp_inventory.services import resolve_import_category
+        assert resolve_import_category("Farbedelstein", ["colored_stone"], {}) == ("colored_stone", None)
+
+    def test_renamed_category_matches_only_its_own_name(self):
+        from celerp_inventory.services import resolve_import_category
+        names = {"colored_stone": "Stones"}
+        assert resolve_import_category("Farbedelstein", ["colored_stone"], names) == ("Farbedelstein", None)
+        assert resolve_import_category("stones", ["colored_stone"], names) == ("colored_stone", None)
+
+    @pytest.mark.asyncio
+    async def test_translated_category_name_imports_into_the_existing_category(self, session):
+        from celerp_inventory.services import build_import_records
+        cid = await _seed_company(session)
+        await _set_company_settings(session, cid, category_schemas={"colored_stone": []}, category_display_names={"colored_stone": "Colored Stone"})
+        build = await build_import_records(session, cid, [{"name": "A", "category": "Farbedelstein", "sell_by": "piece"}], upsert=False)
+        assert build.errors == []
+        assert build.records[0]["data"]["category"] == "colored_stone"
+
     @pytest.mark.asyncio
     async def test_label_and_slug_drive_the_same_default_unit_and_key(self, session):
         from celerp_inventory.services import build_import_records

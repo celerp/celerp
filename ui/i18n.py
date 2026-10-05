@@ -49,6 +49,7 @@ def _invalidate_cache() -> None:
     """Drop the memoized catalogs. In CELERP_DEBUG_I18N mode _cached_load is the
     raw function with no cache_clear, so the call is guarded."""
     getattr(_cached_load, "cache_clear", lambda: None)()
+    category_label_everywhere.cache_clear()
 
 
 def register_catalog(lang: str, mapping, *, rtl: bool = False) -> None:
@@ -157,6 +158,13 @@ def category_label(key: str, stored: str | None = None, lang: str | None = None)
     if default is not None and (not stored or stored == default):
         return t(tkey, lang)
     return stored or key
+
+
+@lru_cache(maxsize=4096)
+def category_label_everywhere(key: str, stored: str | None = None) -> frozenset[str]:
+    """``category_label`` in every UI language: each name the category is shown as,
+    so a file written in any language can name it (a renamed category has one)."""
+    return frozenset(category_label(key, stored, lang) for lang in available_langs())
 
 
 def category_labels(names: dict) -> dict:
