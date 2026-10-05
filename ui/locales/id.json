@@ -3640,5 +3640,9 @@
   "item.reserve_not_available": "{sku} berstatus {status}: hanya stok yang tersedia yang dapat dipesan.",
   "item.reserve_out_of_range": "{sku} berisi {held} dengan {reserved} dipesan: perubahan pemesanan sebesar {change} akan menyisakan {result}, di luar 0 sampai {held}.",
   "item.invoice_not_available": "{sku} berstatus {status}: hanya stok yang tersedia yang dapat ditagihkan.",
-  "import.migration_source_reserved": "{entity_id} mengklaim sumber \"migration\": hanya migrasi data yang menulis sumber itu."
+  "import.migration_source_reserved": "{entity_id} mengklaim sumber \"migration\": hanya migrasi data yang menulis sumber itu.",
+  "event.item.inventory_account.recorded": "Akun persediaan dicatat",
+  "event.item.inventory_on_books.recorded": "Persediaan dicatat di pembukuan",
+  "event.mfg.order.wip_opened": "Barang dalam proses dibuka",
+  "event.mfg.order.wip_unresolved": "Barang dalam proses perlu direkonsiliasi"
 }

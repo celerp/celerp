@@ -3640,5 +3640,9 @@
   "item.reserve_not_available": "{sku} は {status} です。予約できるのは利用可能な在庫だけです。",
   "item.reserve_out_of_range": "{sku} の数量は {held}、予約済みは {reserved} です。予約を {change} 変更すると {result} になり、0 から {held} の範囲外です。",
   "item.invoice_not_available": "{sku} は {status} です。請求できるのは利用可能な在庫だけです。",
-  "import.migration_source_reserved": "{entity_id} はソース \"migration\" を指定しています。このソースを書き込めるのはデータ移行だけです。"
+  "import.migration_source_reserved": "{entity_id} はソース \"migration\" を指定しています。このソースを書き込めるのはデータ移行だけです。",
+  "event.item.inventory_account.recorded": "在庫勘定を記録しました",
+  "event.item.inventory_on_books.recorded": "在庫を帳簿に記録しました",
+  "event.mfg.order.wip_opened": "仕掛品を開始しました",
+  "event.mfg.order.wip_unresolved": "仕掛品の照合が必要です"
 }

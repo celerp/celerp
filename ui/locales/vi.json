@@ -3640,5 +3640,9 @@
   "item.reserve_not_available": "{sku} đang ở trạng thái {status}: chỉ có thể giữ chỗ hàng có sẵn.",
   "item.reserve_out_of_range": "{sku} có {held}, đã giữ chỗ {reserved}: thay đổi giữ chỗ {change} sẽ còn {result}, ngoài khoảng 0 đến {held}.",
   "item.invoice_not_available": "{sku} đang ở trạng thái {status}: chỉ có thể lập hóa đơn cho hàng có sẵn.",
-  "import.migration_source_reserved": "{entity_id} khai báo nguồn \"migration\": chỉ quá trình di chuyển dữ liệu mới ghi nguồn đó."
+  "import.migration_source_reserved": "{entity_id} khai báo nguồn \"migration\": chỉ quá trình di chuyển dữ liệu mới ghi nguồn đó.",
+  "event.item.inventory_account.recorded": "Đã ghi nhận tài khoản tồn kho",
+  "event.item.inventory_on_books.recorded": "Đã ghi nhận tồn kho vào sổ sách",
+  "event.mfg.order.wip_opened": "Đã mở sản phẩm dở dang",
+  "event.mfg.order.wip_unresolved": "Sản phẩm dở dang cần đối chiếu"
 }

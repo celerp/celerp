@@ -3640,5 +3640,9 @@
   "item.reserve_not_available": "{sku} está {status}: só é possível reservar estoque disponível.",
   "item.reserve_out_of_range": "{sku} contém {held} com {reserved} reservado: uma alteração de reserva de {change} deixaria {result}, fora de 0 a {held}.",
   "item.invoice_not_available": "{sku} está {status}: só é possível faturar estoque disponível.",
-  "import.migration_source_reserved": "{entity_id} declara a origem \"migration\": só uma migração de dados grava essa origem."
+  "import.migration_source_reserved": "{entity_id} declara a origem \"migration\": só uma migração de dados grava essa origem.",
+  "event.item.inventory_account.recorded": "Conta de estoque registrada",
+  "event.item.inventory_on_books.recorded": "Estoque registrado nos livros",
+  "event.mfg.order.wip_opened": "Produção em andamento aberta",
+  "event.mfg.order.wip_unresolved": "A produção em andamento precisa de conciliação"
 }

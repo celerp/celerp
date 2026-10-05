@@ -3640,5 +3640,9 @@
   "item.reserve_not_available": "{sku} è {status}: si può riservare solo merce disponibile.",
   "item.reserve_out_of_range": "{sku} contiene {held} con {reserved} riservato: una variazione della riserva di {change} lascerebbe {result}, fuori da 0 a {held}.",
   "item.invoice_not_available": "{sku} è {status}: si può fatturare solo merce disponibile.",
-  "import.migration_source_reserved": "{entity_id} dichiara l'origine \"migration\": solo una migrazione dei dati scrive questa origine."
+  "import.migration_source_reserved": "{entity_id} dichiara l'origine \"migration\": solo una migrazione dei dati scrive questa origine.",
+  "event.item.inventory_account.recorded": "Conto di magazzino registrato",
+  "event.item.inventory_on_books.recorded": "Magazzino registrato a libro",
+  "event.mfg.order.wip_opened": "Semilavorati aperti",
+  "event.mfg.order.wip_unresolved": "I semilavorati devono essere riconciliati"
 }

@@ -3640,5 +3640,9 @@
   "item.reserve_not_available": "{sku} อยู่ในสถานะ {status}: จองได้เฉพาะสต็อกที่พร้อมใช้งานเท่านั้น",
   "item.reserve_out_of_range": "{sku} มี {held} จองไว้ {reserved}: การเปลี่ยนการจอง {change} จะเหลือ {result} ซึ่งอยู่นอกช่วง 0 ถึง {held}",
   "item.invoice_not_available": "{sku} อยู่ในสถานะ {status}: ออกใบแจ้งหนี้ได้เฉพาะสต็อกที่พร้อมใช้งานเท่านั้น",
-  "import.migration_source_reserved": "{entity_id} ระบุแหล่งที่มา \"migration\": เฉพาะการย้ายข้อมูลเท่านั้นที่เขียนแหล่งที่มานี้ได้"
+  "import.migration_source_reserved": "{entity_id} ระบุแหล่งที่มา \"migration\": เฉพาะการย้ายข้อมูลเท่านั้นที่เขียนแหล่งที่มานี้ได้",
+  "event.item.inventory_account.recorded": "บันทึกบัญชีสินค้าคงคลังแล้ว",
+  "event.item.inventory_on_books.recorded": "บันทึกสินค้าคงคลังในบัญชีแล้ว",
+  "event.mfg.order.wip_opened": "เปิดงานระหว่างทำแล้ว",
+  "event.mfg.order.wip_unresolved": "งานระหว่างทำต้องกระทบยอด"
 }

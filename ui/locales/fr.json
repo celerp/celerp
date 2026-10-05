@@ -3640,5 +3640,9 @@
   "item.reserve_not_available": "{sku} est {status} : seul le stock disponible peut être réservé.",
   "item.reserve_out_of_range": "{sku} contient {held} dont {reserved} réservé : une modification de réservation de {change} laisserait {result}, hors de 0 à {held}.",
   "item.invoice_not_available": "{sku} est {status} : seul le stock disponible peut être facturé.",
-  "import.migration_source_reserved": "{entity_id} déclare la source \"migration\" : seule une migration de données écrit cette source."
+  "import.migration_source_reserved": "{entity_id} déclare la source \"migration\" : seule une migration de données écrit cette source.",
+  "event.item.inventory_account.recorded": "Compte de stock enregistré",
+  "event.item.inventory_on_books.recorded": "Stock enregistré dans les comptes",
+  "event.mfg.order.wip_opened": "En-cours de production ouvert",
+  "event.mfg.order.wip_unresolved": "L'en-cours de production doit être rapproché"
 }
