@@ -3418,7 +3418,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
   padding: 16px 20px; margin-bottom: 20px; }
 .getting-started-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .getting-started-head .section-title { margin: 0 0 12px; }
-.getting-started-close { display: flex; align-items: center; gap: 12px; }
+.getting-started-close { display: flex; align-items: center; gap: 12px; margin-left: auto; }
 .getting-started-forever { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--c-text2); }
 .getting-started-link-icon { margin-right: 6px; }
 .getting-started-dismiss { background: none; border: none; font-size: 22px; line-height: 1; cursor: pointer;
