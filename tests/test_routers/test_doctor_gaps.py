@@ -174,12 +174,12 @@ async def test_doctor_duplicate_jes_legacy_entity_id(client: "AsyncClient", sess
 
 
 # ---------------------------------------------------------------------------
-# orphan_projections: fix=True deletes the orphan (lines 211-216)
+# orphan_projections: fix=True deletes the orphan
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_doctor_orphan_projections_fix(client: "AsyncClient", session: AsyncSession):
-    """orphan_projections fix=True deletes orphaned projections (lines 211-216)."""
+    """orphan_projections fix=True deletes orphaned projections."""
     tok, _ = await _reg(client)
 
     from jose import jwt as _jwt
@@ -209,7 +209,7 @@ async def test_doctor_orphan_projections_fix(client: "AsyncClient", session: Asy
 
 @pytest.mark.asyncio
 async def test_doctor_stale_projections_fix(client: "AsyncClient", session: AsyncSession):
-    """stale_projections: detects and fixes a corrupted projection (lines 240, 248-257)."""
+    """stale_projections: detects and fixes a corrupted projection."""
     tok, _ = await _reg(client)
 
     # Create a contact
@@ -249,7 +249,7 @@ async def test_doctor_stale_projections_fix(client: "AsyncClient", session: Asyn
 
 @pytest.mark.asyncio
 async def test_doctor_unbalanced_jes(client: "AsyncClient", session: AsyncSession):
-    """unbalanced_jes: skips void JEs, detects imbalanced ones (lines 277, 282)."""
+    """unbalanced_jes: skips void JEs, detects imbalanced ones."""
     tok, _ = await _reg(client)
 
     from jose import jwt as _jwt
