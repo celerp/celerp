@@ -188,3 +188,30 @@ async def test_a_lot_whose_history_is_missing_is_refused(client, session, auth):
     refusal(await reconcile(client, auth, order, [(raw, 100.0)], p), 409, "output_unknown")
 
     assert await snapshot(session, auth, raw, order, lot) == before
+
+
+async def test_a_run_is_not_re_costed_below_its_lots_while_another_run_waits(client, session, auth):
+    """Two older runs each took ten of a 100.00 component and received one lot of 100.00.
+    Stating 0.00 for the first would re-cost its lot to nothing and put 100.00 back on an
+    account no stock explains; another run waiting does not change that. Refused, nothing
+    changes, and both runs then reconcile at the value that was issued."""
+    await _older_release(session, auth)
+    runs = []
+    for _ in range(2):
+        raw = await _older_stock(session, auth, 100.0, 10)
+        order = await run(client, auth, await product(client, auth, [(raw, 5)]), 2)
+        await _older_issue(session, auth, order, raw, 10)
+        runs.append((raw, order, await _older_receive(session, auth, order, 1)))
+    await _upgrade(session)
+    p = await role(session, auth, PURCHASED)
+    (raw, order, lot), other = runs
+    before = await snapshot(session, auth, raw, order, lot)
+
+    refusal(await reconcile(client, auth, order, [(raw, 0.0)], p, key="zero"), 422, "reconcile_left")
+
+    assert await snapshot(session, auth, raw, order, lot) == before
+    for raw, order, lot in runs:
+        r = await reconcile(client, auth, order, [(raw, 100.0)], p, key=f"honest-{order}")
+        assert r.status_code == 200, r.text
+        assert await _cost(session, auth, lot) == 50.0
+    await assert_settled(client, session, auth)

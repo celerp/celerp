@@ -1493,7 +1493,10 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
         else:
             room = await account_room(session, company_id, account)
             left = room - amount
-            if left < 0 or (left and not await _awaiting_reconciliation(session, company_id, order_id)):
+            # Value left over may belong to another run still waiting, but only value this run
+            # takes off: lots re-costed below what they carry put value back, which no other
+            # run explains, so then the account must come out exactly matching its stock.
+            if left < 0 or (left and (amount < 0 or not await _awaiting_reconciliation(session, company_id, order_id))):
                 raise refuse(422, "reconcile_left",
                              f"{account} holds {room} beyond its stock on hand; taking {amount} off it would leave "
                              f"{left}, so the books would still disagree with the stock. Give the value it holds.",
