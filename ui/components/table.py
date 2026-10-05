@@ -17,6 +17,12 @@ from celerp.output.doc_print import (  # noqa: F401
 
 # Statuses that dim a row to indicate it is not actively available for sale/use.
 # Allowlist: adding a new status requires an explicit decision (mirrors fulfillment guard pattern).
+def empty_mark() -> FT:
+    """The EMPTY placeholder as a cell's content. Its class keeps the mark in the body font:
+    inside a monospace number or money cell a bare "--" spreads out to read as "- -"."""
+    return Span(EMPTY, cls="cell-empty")
+
+
 INACTIVE_ITEM_STATUSES: frozenset[str] = frozenset({"archived", "expired", "sold", "memo_out", "disposed"})
 
 
@@ -91,7 +97,7 @@ def format_value(v, fmt: str = "text", currency: str | None = None, domain: str 
             return str(v)
     if fmt == "weight":
         s = str(v).strip()
-        return Span(f"{s} ct", cls="cell-weight") if s else Span(EMPTY)
+        return Span(f"{s} ct", cls="cell-weight") if s else empty_mark()
     return str(v)
 
 # Threshold above which a select must become searchable (UI/UX rule i)
@@ -822,6 +828,7 @@ def paired_display_cell(
     else:
         pri_disp = EMPTY
     sec_disp = str(secondary_value) if secondary_value not in (None, "") else EMPTY
+    both_empty = pri_disp == EMPTY and sec_disp == EMPTY
     pri_span = (
         Span(
             pri_disp,
@@ -848,10 +855,10 @@ def paired_display_cell(
         if secondary_editable
         else Span(sec_disp, cls="paired-secondary paired-secondary--readonly")
     )
+    # Nothing to pair yet: one mark, which opens the primary editor (rule k), not "-- --".
+    parts = (pri_span,) if both_empty else (pri_span, Span(" ", cls="paired-sep"), sec_span)
     return Td(
-        pri_span,
-        Span(" ", cls="paired-sep"),
-        sec_span,
+        *parts,
         cls=f"cell cell--paired",
         data_col=primary_field,
     )
@@ -1115,31 +1122,31 @@ def _display_val(value, cell_type: str, currency: str | None = None,
         return Span(label or EMPTY, cls=badge_cls)
     if cell_type == "money":
         try:
-            return Span(fmt_money(s, currency), cls="cell-money") if s else Span(EMPTY)
+            return Span(fmt_money(s, currency), cls="cell-money") if s else empty_mark()
         except ValueError:
-            return Span(EMPTY)
+            return empty_mark()
     if cell_type == "rate":
-        return Span(fmt_rate(s, currency), cls="cell-money") if s else Span(EMPTY)
+        return Span(fmt_rate(s, currency), cls="cell-money") if s else empty_mark()
     if cell_type == "number":
         if not s:
-            return Span(EMPTY)
+            return empty_mark()
         return Span(_normalize_number_str(s), cls="cell-number")
     if cell_type == "date":
         # Store may hold a full timestamp; the cell shows the day, matching _fmt("date").
-        return Span(s[:10], cls="cell-text") if s else Span(EMPTY)
+        return Span(s[:10], cls="cell-text") if s else empty_mark()
     if cell_type == "weight":
-        return Span(f"{s} ct", cls="cell-weight") if s else Span(EMPTY)
+        return Span(f"{s} ct", cls="cell-weight") if s else empty_mark()
     if cell_type == "tags":
         tags = value if isinstance(value, list) else []
-        return Span(*[Span(t, cls="tag-pill tag-pill--sm") for tag in tags]) if tags else Span(EMPTY)
+        return Span(*[Span(t, cls="tag-pill tag-pill--sm") for tag in tags]) if tags else empty_mark()
     if cell_type == "image":
         if s:
             return Img(src=s, cls="cell-thumbnail", loading="lazy", alt="")
         return Span("＋", cls="cell-image-empty", title=t("table.drop_image_upload_hint"))
     if cell_type == "textarea":
         # Multi-line text: preserve line breaks on display (CSS white-space: pre-wrap).
-        return Span(s, cls="cell-textarea") if s else Span(EMPTY)
-    return Span(s or EMPTY, cls="cell-text")
+        return Span(s, cls="cell-textarea") if s else empty_mark()
+    return Span(s, cls="cell-text") if s else empty_mark()
 
 
 def display_cell(
@@ -2132,6 +2139,7 @@ function sendToTypeChanged(docType, docLabel){
       } else if(col==='pieces'){
         span.textContent=fmt||'--';
       }
+      span.classList.toggle('cell-empty',span.textContent==='--');
     });
   });
   } // end if(!window.__celerpHtmxHandlers)

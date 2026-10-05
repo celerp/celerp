@@ -448,6 +448,8 @@ a:hover { text-decoration: underline; }
 .cell-input--status option { background: var(--c-bg2); color: var(--c-text); }
 .cell--alert { color: var(--c-red); }
 .cell--mono { font-family: var(--font-mono); font-size: 11px; }
+/* The "--" empty mark keeps the body font: monospace spaces it out to "- -". */
+.cell-empty { font-family: var(--font); }
 .cell-money { font-family: var(--font-mono); }
 .cell-weight { font-family: var(--font-mono); }
 .cell-actions { display: flex; gap: 4px; align-items: center; }

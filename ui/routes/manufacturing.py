@@ -13,7 +13,7 @@ from starlette.responses import HTMLResponse, RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title, toast_header
-from ui.components.table import (EMPTY, status_cards, empty_state_cta, format_value, search_bar,
+from ui.components.table import (EMPTY, empty_mark, status_cards, empty_state_cta, format_value, search_bar,
                                  bulk_toolbar, filter_th, display_enum, COLUMN_FILTER_JS)
 from ui.config import get_token as _token
 from ui.i18n import t
@@ -86,7 +86,7 @@ _PRIORITIES = ("low", "normal", "high", "urgent")
 def _priority_badge(priority: str | None) -> FT:
     p = (priority or "").lower()
     if p not in _PRIORITIES:
-        return Span(EMPTY)
+        return empty_mark()
     return Span(display_enum(p, domain="mfg_priority"), cls=f"badge badge--prio-{p}")
 
 

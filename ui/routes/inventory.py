@@ -23,7 +23,7 @@ import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
 from ui.components.shell import base_shell, minimal_shell, page_header, search_help, toast_header, page_title
-from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
+from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
 from celerp.services.permissions import role_has_permission
@@ -5327,14 +5327,16 @@ def _valuation_bar(aggregates: dict, currency: str | None = None, lang: str = "e
     never added together."""
     from ui.components.activity import fmt_qty
 
-    def _amount(value, unit: str) -> str:
-        return f"{fmt_qty(value)} {unit}".strip()
+    def _per_unit(label: str, unit: str, value) -> FT:
+        # The unit heads the chip ("Quantity (piece): 8"): unit names are company data with
+        # no plural forms, so "8 piece" cannot be made to agree with its count.
+        return Span(f"{label} ({unit}): {fmt_qty(value)}" if unit else f"{label}: {fmt_qty(value)}", cls="val-chip")
 
     chips = [Span(f"{t('th.items', lang)}: {int(aggregates.get('item_count') or 0):,}", cls="val-chip")]
     for unit, value in (aggregates.get("quantity_by_unit") or {}).items():
-        chips.append(Span(f"{t('th.quantity', lang)}: {_amount(value, unit)}", cls="val-chip"))
+        chips.append(_per_unit(t("th.quantity", lang), unit, value))
     for unit, value in (aggregates.get("weight_by_unit") or {}).items():
-        chips.append(Span(f"{t('th.weight', lang)}: {_amount(value, unit)}", cls="val-chip"))
+        chips.append(_per_unit(t("th.weight", lang), unit, value))
     if aggregates.get("pieces_total") is not None:
         chips.append(Span(f"{t('inventory.th_pieces', lang)}: {fmt_qty(aggregates['pieces_total'])}", cls="val-chip"))
     missing = aggregates.get("price_missing") or {}
@@ -5536,7 +5538,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                     Span(
                         f"{fmt} {sell_by}" if fmt not in ("", None) else EMPTY,
                         title=t("inventory.derived_from_qty"),
-                        cls="cell-derived",
+                        cls="cell-derived" if fmt not in ("", None) else "cell-derived cell-empty",
                     ),
                     id=f"cell-{_safe_id}-weight",
                     cls="cell cell--number",
@@ -5565,7 +5567,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                     Span(
                         fmt if fmt not in ("", None) else EMPTY,
                         title=t("inventory.derived_from_qty"),
-                        cls="cell-derived",
+                        cls="cell-derived" if fmt not in ("", None) else "cell-derived cell-empty",
                     ),
                     id=f"cell-{_safe_id}-pieces",
                     cls="cell cell--number",
@@ -7113,7 +7115,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         if status not in ("completed", "cancelled"):
             opts.append(Option(t("btn.cancel"), value="cancel"))
         if len(opts) == 1:  # closed run - no further actions
-            return Span(EMPTY)
+            return empty_mark()
         return Select(*opts, name="action", cls="wo-action-select", hx_trigger="change",
                       hx_post=f"/api/items/{entity_id}/runs/{rid}/act",
                       hx_target="#production-block", hx_swap="outerHTML", hx_disabled_elt="this")
@@ -7389,7 +7391,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             return (
                 Td(pl_name, cls="detail-label"),
                 Td(_cur(unit_span)),
-                Td(_cur(total_span) if has_qty else Span(EMPTY)),
+                Td(_cur(total_span) if has_qty else empty_mark()),
             ), actions
         unit_id, total_id = f"unit_{conventional_key}", f"total_{conventional_key}"
         # Enter commits by blurring (which fires `change` → the autosave below), matching the
@@ -7458,7 +7460,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             H3(t("inventory.card_sold_price"), cls="section-title"),
             Table(Thead(Tr(Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr))),
                   Tbody(Tr(Td(t("chip.sold"), cls="detail-label"), Td(_cur(unit_span)),
-                           Td(_cur(total_span) if has_qty else Span(EMPTY)))),
+                           Td(_cur(total_span) if has_qty else empty_mark()))),
                   cls="detail-table"),
             cls="detail-card",
         ))
