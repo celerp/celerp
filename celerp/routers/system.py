@@ -176,8 +176,8 @@ async def factory_reset(
     if held:
         raise HTTPException(status_code=409, detail=refusal(
             "system.factory_reset.held_elsewhere",
-            f"Records in {held} that are not only this company's refer to its data, so it "
-            "cannot be reset. Nothing was deleted.", table=held))
+            f"Some records in {held} are not this company's alone and refer to its data, so "
+            "this company cannot be reset. Nothing was deleted.", table=held))
     for delete in _company_deletes(schema):
         await session.execute(text(delete), {"c": str(company_id)})
     await session.execute(text(db_catalog.delete_users_left_without_a_company(schema)), {"members": members})

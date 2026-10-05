@@ -2579,7 +2579,7 @@
   "settings.type_reset_prefix": "Nhập ",
   "settings.type_reset_suffix": " để xác nhận. Thao tác này không thể hoàn tác.",
   "settings.delete_everything": "Xóa tất cả",
-  "system.factory_reset.held_elsewhere": "Các bản ghi trong {table} không chỉ thuộc về công ty này đang tham chiếu đến dữ liệu của công ty, nên không thể đặt lại. Không có gì bị xóa.",
+  "system.factory_reset.held_elsewhere": "Các bản ghi trong {table} không chỉ thuộc về công ty này đang tham chiếu đến dữ liệu của công ty, nên không thể đặt lại công ty này. Không có gì bị xóa.",
   "system.factory_reset.name_mismatch": "Nhập tên công ty chính xác như hiển thị để đặt lại công ty này.",
   "system.factory_reset.reference_cycle": "Các bảng {tables} tham chiếu lẫn nhau thành vòng, nên không thể đặt lại công ty này. Không có gì bị xóa.",
   "settings.click_to_edit": "Nhấp để chỉnh sửa",

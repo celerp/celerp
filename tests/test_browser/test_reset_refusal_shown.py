@@ -8,7 +8,7 @@ import pytest
 
 pytestmark = pytest.mark.browser
 
-_REFUSAL = "Records in ext_links that are not only this company's refer to its data, so it cannot be reset."
+_REFUSAL = "Some records in ext_links are not this company's alone and refer to its data, so this company cannot be reset."
 
 
 def test_a_refused_reset_shows_its_reason_in_the_modal(page, ui_server, fresh_company):
