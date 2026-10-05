@@ -115,6 +115,23 @@ async def test_refusal_message_sits_in_the_shell_content_area_once(ui_client):
     assert r.text.count('class="content-area"') == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["GET", "POST"])
+async def test_htmx_request_to_a_module_that_is_off_navigates_to_its_refusal_page(ui_client, method):
+    """An HTMX request would swap the refusal page into a fragment, or show only a
+    generic error toast. It is sent to the page a full request to the same address
+    lands on: the page saying the module is turned off."""
+    a, b, c = _gate(AsyncMock(return_value=_off("admin")))
+    cookies = {"celerp_token": make_test_token(role="admin")}
+    with a, b, c:
+        r = await ui_client.request(method, "/fake-page?tab=2", cookies=cookies, headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert r.headers["HX-Redirect"] == "/fake-page?tab=2"
+        full = await ui_client.get(r.headers["HX-Redirect"], cookies=cookies)
+    assert full.status_code == 403
+    assert "turned off" in full.text
+
+
 def _request(role: str) -> Request:
     token = make_test_token(role=role)
     return Request({"type": "http", "method": "GET", "path": "/nowhere", "root_path": "",

@@ -83,6 +83,12 @@ def _next_qs(req: Request) -> str:
     return "&next=" + quote(path, safe="")
 
 
+def _hx_redirect(url: str) -> Response:
+    """Send an HTMX request to ``url`` as a real navigation. A 302 or an error page
+    would be swapped into the fragment that fired the request, or end as a toast."""
+    return Response(status_code=200, headers={"HX-Redirect": url})
+
+
 def _auth_guard(req: Request):
     """Redirect unauthenticated requests to login/setup before they reach any route."""
     path = req.url.path
@@ -93,7 +99,7 @@ def _auth_guard(req: Request):
     # An HTMX request follows a 302 and swaps the login page into the fragment (a silent, broken
     # in-page failure). HX-Redirect makes the browser do a real navigation instead.
     if req.headers.get("hx-request"):
-        return Response(status_code=200, headers={"HX-Redirect": f"/login?reason=expired{_next_qs(req)}"})
+        return _hx_redirect(f"/login?reason=expired{_next_qs(req)}")
     nxt = _next_qs(req)
     return RedirectResponse(f"/login?{nxt[1:]}" if nxt else "/login", status_code=302)
 
@@ -366,6 +372,9 @@ async def _module_refusal(request: Request, module: str) -> Response | None:
     settings = company.get("settings")
     if uses_module(settings, module):
         return None
+    if request.headers.get("hx-request"):
+        # The full page at this same address is the refusal that says the module is off.
+        return _hx_redirect(str(request.url.replace(scheme="", netloc="")))
     from celerp.modules.loader import module_label
     from ui.routes.modules_page import manages_modules
     from ui.security import not_permitted_pending
@@ -476,7 +485,7 @@ def _401_redirect(detail: str, request: Request | None = None):
         params = "reason=expired"
     url = f"/login?{params}{_next_qs(request) if request is not None else ''}"
     if request is not None and request.headers.get("hx-request"):
-        resp = Response(status_code=200, headers={"HX-Redirect": url})
+        resp = _hx_redirect(url)
     else:
         resp = _RR(url, status_code=302)
     clear_session_cookies(resp, request)
