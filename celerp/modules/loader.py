@@ -615,8 +615,8 @@ def module_migration_files(pkg_path: Path, migrations_pkg) -> list[Path]:
 def _check_route_source(pkg_path: Path, manifest: dict, kind: str) -> None:
     """Prove, without importing it, that the module's ``{kind}_routes`` names a
     source file inside the module that defines ``setup_{kind}_routes`` or
-    imports it from the module's own code, and that the function is not async
-    wherever its source shows it. Registration later proves the resolved
+    imports it from the module's own code, as a plain top-level def that is not
+    async (_check_source_call_style). Registration later proves the resolved
     callable itself (:func:`_check_owned_callable`)."""
     key = f"{kind}_routes"
     dotted = manifest.get(key)
@@ -639,8 +639,7 @@ def _check_route_source(pkg_path: Path, manifest: dict, kind: str) -> None:
             break
     else:
         raise ModuleLoadError(f"{key} {dotted!r} does not define {setup}.")
-    _check_call_style(f"{key} setup", f"{dotted}:{setup}",
-                      _source_is_async(pkg_path, source, setup), awaited=False)
+    _check_source_call_style(pkg_path, source, f"{key} setup", f"{dotted}:{setup}", awaited=False)
 
 
 def _module_entry_files(pkg_path: Path, manifest: dict) -> list[Path]:
@@ -1864,8 +1863,9 @@ def _check_keywords(slot: str, dotted: str, params) -> None:
 
 def _keyword_validator(slot: str):
     """The admission check for a slot in _HANDLER_KEYWORDS: each handler's
-    parameters, read from the module's source where it shows them. A handler whose
-    source does not show them (bound by a call, or decorated) is checked at load."""
+    parameters, read from the module's source. A handler whose source does not
+    show them is already refused (_check_source_call_style); a class or lambda
+    handler is checked at load."""
     def validate(pkg_path: Path, contribution) -> None:
         for item in contribution if isinstance(contribution, list) else [contribution]:
             dotted = item["handler"]
@@ -2005,9 +2005,8 @@ def _check_slot_contracts(pkg_path: Path, slots_manifest: dict) -> None:
     before any of the module's code runs: the search_provider descriptor, the
     entry rules (_validate_slot_entry), each slot's own validator, and for a
     callable slot an in-module "module.path:function" whose source shows it
-    async exactly where core awaits it. What only importing can show (what the
-    name resolves to, and its async shape where the source cannot tell) is
-    proven at load (_resolve_slot_callables). Raises :class:`ModuleLoadError`.
+    async exactly where core awaits it (_check_source_call_style). Load proves
+    the object importing actually returns (_resolve_slot_callables). Raises :class:`ModuleLoadError`.
     ``slots_manifest`` is already a dict (:func:`_validated_manifest`).
     """
     for slot_name, contribution in slots_manifest.items():
@@ -2019,9 +2018,7 @@ def _check_slot_contracts(pkg_path: Path, slots_manifest: dict) -> None:
                 key, awaited = _CALLABLE_SLOTS[slot_name]
                 subject = f"Slot {slot_name!r}"
                 source = _owned_callable_source(pkg_path, subject, item.get(key))
-                _check_call_style(subject, item[key],
-                                  _source_is_async(pkg_path, source, item[key].split(":")[1]),
-                                  awaited=awaited)
+                _check_source_call_style(pkg_path, source, subject, item[key], awaited=awaited)
         validate = _SLOT_VALIDATORS.get(slot_name)
         if validate is not None:
             validate(pkg_path, contribution)
@@ -2080,10 +2077,10 @@ def _owned_callable_source(pkg_path: Path, subject: str, dotted) -> Path:
     return source
 
 
-def _check_call_style(subject: str, dotted: str, is_async: bool | None, *, awaited: bool) -> None:
+def _check_call_style(subject: str, dotted: str, is_async: bool, *, awaited: bool) -> None:
     """Refuse a callable that is async where core calls it plainly, or plain
-    where core awaits it. ``is_async`` None means not known yet: no verdict."""
-    if is_async is None or is_async == awaited:
+    where core awaits it."""
+    if is_async == awaited:
         return
     if awaited:
         raise ModuleLoadError(f"{subject} callable {dotted!r} must be async; core awaits it.")
@@ -2152,11 +2149,19 @@ def _source_callable(pkg_path: Path, source: Path, name: str, seen: set | None =
     return None
 
 
-def _source_is_async(pkg_path: Path, source: Path, name: str) -> bool | None:
-    """Whether the callable ``name`` in ``source`` is async, from its source
-    (_source_callable); None when the source alone cannot tell."""
-    node = _source_callable(pkg_path, source, name)
-    return None if node is None else isinstance(node, ast.AsyncFunctionDef)
+def _check_source_call_style(pkg_path: Path, source: Path, subject: str, dotted: str, *,
+                             awaited: bool) -> None:
+    """Refuse, before any of the module's code runs, a callable whose source does
+    not show how core may call it: ``dotted`` must name an undecorated def (or a
+    class or lambda) in the module's own code (_source_callable), async exactly
+    where core awaits it. A decorated or call-built callable could be either, and
+    refusing it only at load would come after its migrations ran."""
+    node = _source_callable(pkg_path, source, dotted.split(":")[1])
+    if node is None:
+        raise ModuleLoadError(
+            f"{subject} callable {dotted!r} must be a plain top-level def in the module's "
+            "own code, not decorated, rebound or built by a call.")
+    _check_call_style(subject, dotted, isinstance(node, ast.AsyncFunctionDef), awaited=awaited)
 
 
 def _check_owned_callable(

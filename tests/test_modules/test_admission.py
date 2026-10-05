@@ -290,6 +290,47 @@ def _case_in_production_wrong_arity(base, marker, monkeypatch):
                              ), "session, company_id"
 
 
+_WRAP = "import functools\n\ndef wrap(fn):\n    @functools.wraps(fn)\n    def inner(*a, **k):\n        return fn(*a, **k)\n    return inner\n\n"
+
+
+def _case_hook_decorated(base, marker, monkeypatch):
+    """A decorator can turn an async def into a sync callable: the source cannot
+    prove the call style, so admission refuses it rather than let load find out
+    after the migration ran."""
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             slots={"on_company_created": [{"handler": "{inner}.hooks:created"}]},
+                             code={"hooks.py": _WRAP + "@wrap\nasync def created(session, company_id):\n    pass\n"}
+                             ), "top-level def"
+
+
+def _case_hook_undefined(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             slots={"on_company_created": [{"handler": "{inner}.hooks:created"}]},
+                             code={"hooks.py": "async def other(session, company_id):\n    pass\n"}
+                             ), "top-level def"
+
+
+def _case_hook_call_bound(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             slots={"on_company_created": [{"handler": "{inner}.hooks:created"}]},
+                             code={"hooks.py": "def make():\n    def created(session, company_id):\n"
+                                               "        pass\n    return created\n\ncreated = make()\n"}
+                             ), "top-level def"
+
+
+def _case_lineage_guard_decorated(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             slots={"item_lineage_guard": [{"handler": "{inner}.lineage:guard"}]},
+                             code={"lineage.py": _WRAP + "@wrap\nasync def guard(session, entry):\n    return None\n"}
+                             ), "top-level def"
+
+
+def _case_api_setup_decorated(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker, api_routes="{inner}.api",
+                             code={"api.py": _WRAP + "@wrap\nasync def setup_api_routes(app):\n    pass\n"}
+                             ), "top-level def"
+
+
 @pytest.mark.parametrize("case", [
     _case_async_api_setup,
     _case_async_ui_setup_imported,
@@ -305,6 +346,11 @@ def _case_in_production_wrong_arity(base, marker, monkeypatch):
     _case_lineage_guard_not_async,
     _case_lineage_guard_wrong_arity,
     _case_in_production_wrong_arity,
+    _case_hook_decorated,
+    _case_hook_undefined,
+    _case_hook_call_bound,
+    _case_lineage_guard_decorated,
+    _case_api_setup_decorated,
     _case_name_mismatch,
     _case_reserved_prefix,
     _case_min_version,
@@ -530,8 +576,7 @@ def test_setup_imported_from_another_module_is_refused_before_import(_modules, t
 
 def test_setup_rebound_to_another_module_is_refused(_modules, tmp_path):
     """The route file defines its setup, then rebinds the name to another module's
-    function: provenance is proven on the callable import actually returns,
-    before core calls it."""
+    function: the source no longer shows one plain def, so admission refuses it."""
     marker = tmp_path / "borrowed_setup_ran.txt"
     other, other_inner = _route_module(_modules, f"acme-{_uid()}", kind="ui", body=(
         "def setup_ui_routes(app):\n    pass\n\n"
@@ -542,14 +587,13 @@ def test_setup_rebound_to_another_module_is_refused(_modules, tmp_path):
         f"from {other_inner}.routes import setup_api_routes  # noqa: E402,F811\n"))
 
     loaded = loader.load_all(str(_modules), {folder, other.name})
-    assert loader.is_running(folder)
     loader.register_api_routes(_App(), loaded)
 
     assert not marker.exists()
     assert not loader.is_running(folder)
     assert loader.is_running(other.name)
     assert "api_routes setup" in loader.load_errors()[folder]
-    assert "outside" in loader.load_errors()[folder]
+    assert "top-level def" in loader.load_errors()[folder]
 
 
 def test_owned_route_module_registers(_modules):

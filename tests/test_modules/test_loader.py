@@ -1521,8 +1521,8 @@ class TestSearchProviderSlot:
                 "handler": "celerp.services.auth:get_current_user",
                 "result_key": "items", "permission": "view_inventory"})
 
-    def test_missing_handler_function_rejected_at_load(self, tmp_path):
-        with pytest.raises(ModuleLoadError, match="failed to resolve"):
+    def test_missing_handler_function_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="top-level def"):
             self._load(tmp_path, "good_module_sp_nofn", {
                 "handler": "good_module_sp_nofn:nope", "result_key": "items",
                 "permission": "view_inventory"})
@@ -1532,7 +1532,7 @@ class TestSearchProviderSlot:
             self._load(tmp_path, "good_module_sp_nc", {
                 "handler": "good_module_sp_nc:prov", "result_key": "items",
                 "permission": "view_inventory"},
-                handler_code="prov = 'not a function'\n")
+                handler_code=_ASYNC_HANDLER + "\nglobals()['prov'] = 'not a function'\n")
 
     def test_sync_handler_rejected(self, tmp_path):
         with pytest.raises(ModuleLoadError, match="must be async"):

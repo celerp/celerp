@@ -163,10 +163,20 @@ class TestCallableSlots:
         assert "module.path:function" in msg
 
     @pytest.mark.parametrize("slot", list(CALLABLE))
-    def test_not_callable_refused(self, slot, tmp_path, monkeypatch):
+    def test_not_a_def_refused(self, slot, tmp_path, monkeypatch):
         name = f"slotmod_nc_{slot}"
         _write(tmp_path, name, {slot: [_entry(slot, f"{name}.hooks:fn")]},
                {"hooks.py": "fn = 'not a function'\n"})
+        msg = _refused(tmp_path, name, monkeypatch)
+        assert "top-level def" in msg
+
+    @pytest.mark.parametrize("slot", list(CALLABLE))
+    def test_not_callable_once_imported_refused(self, slot, tmp_path, monkeypatch):
+        """The source shows a def, but importing rebinds the name: load proves
+        the object import returns."""
+        name = f"slotmod_rb_{slot}"
+        _write(tmp_path, name, {slot: [_entry(slot, f"{name}.hooks:fn")]},
+               {"hooks.py": _right_fn(slot) + "\nglobals()['fn'] = 'not a function'\n"})
         msg = _refused(tmp_path, name, monkeypatch)
         assert "not callable" in msg
 

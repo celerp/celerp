@@ -170,18 +170,20 @@ def test_entry_a_slot_cannot_read_is_refused_before_module_code_runs(module_dir,
     assert reason in admission.refused[name], admission.refused
 
 
-@pytest.mark.parametrize("slot,wrapped", [
-    ("item_lineage_guard", "async def target(session, entry):\n    return None\n"),
-    ("inventory_in_production", "async def target(*, session):\n    return 0\n"),
+@pytest.mark.parametrize("slot,shown,wrapped", [
+    ("item_lineage_guard", "async def handler(session, entry, transition):\n    return None\n",
+     "async def target(session, entry):\n    return None\n"),
+    ("inventory_in_production", "async def handler(session, company_id):\n    return 0\n",
+     "async def target(*, session):\n    return 0\n"),
 ])
-def test_handler_whose_signature_only_loading_shows_is_refused_at_load(module_dir, slot, wrapped):
-    """A handler bound by a call cannot have its signature read from source, so
-    admission leaves it to loading, which refuses the wrong one before it is
+def test_handler_whose_signature_only_loading_shows_is_refused_at_load(module_dir, slot, shown, wrapped):
+    """The source shows the right signature but importing rebinds the name, so
+    admission cannot see it; loading refuses the wrong one before it is
     registered."""
     name = _write(module_dir, {slot: [{"handler": "{inner}.wrapped:handler"}]})
     inner = next(p.name for p in (module_dir / name).iterdir() if p.is_dir())
     (module_dir / name / inner / "wrapped.py").write_text(
-        wrapped + "def keep(fn):\n    return fn\nhandler = keep(target)\n")
+        shown + wrapped + "globals()['handler'] = target\n")
 
     admission = loader.admit_modules(str(module_dir), {name})
     assert admission.refused == {}
