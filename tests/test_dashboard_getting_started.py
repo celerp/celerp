@@ -90,7 +90,7 @@ async def test_card_shows_for_new_company_with_permitted_links(ui):
     assert card, "a new company's owner sees the card"
     for href in ("/inventory?hint=import", "/contacts/customers?hint=import", "/docs?hint=import"):
         assert f'href="{href}"' in card
-    assert "Import is always at the top right of the page." in card
+    assert "Import is always at the top of the page." in card
     assert ("Items marked [DEMO] are samples. Your first product import removes them unless you "
             "have changed them.") in card
 

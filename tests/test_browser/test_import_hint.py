@@ -200,3 +200,32 @@ def test_arrow_covers_no_control(page: Page, fresh_company, width, lang):
         assert t["y"] >= b["y"] + b["height"], (path, width, lang, "arrow is below the button")
         assert t["x"] < b["x"] + b["width"] and b["x"] < t["x"] + t["width"], (path, width, lang)
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), (path, width)
+
+
+@pytest.mark.parametrize("lang", ["en", "ar"])
+@pytest.mark.parametrize("width", [390, 1280])
+def test_import_where_line_matches_layout(page: Page, fresh_company, width, lang):
+    """The card says Import is at the top of the page and names no side: which side
+    Import sits on follows the page's reading direction, and the row wraps on a phone.
+    Whatever the direction, the button is in the page header, above the list, on the
+    side the page direction puts the header actions."""
+    words = {"en": ("left", "right"), "ar": ("يسار", "يمين")}[lang]
+    if lang == "ar":
+        page.set_extra_http_headers({"Accept-Language": "ar"})
+    page.set_viewport_size({"width": width, "height": 800})
+    page.goto("/dashboard")
+    note = page.locator("#getting-started-card .getting-started-note").first
+    expect(note).to_be_visible()
+    assert not any(w in note.inner_text().lower() for w in words), note.inner_text()
+    page.goto("/inventory")
+    header = page.locator(".page-header").bounding_box()
+    btn = page.locator("[data-import-hint]").bounding_box()
+    assert header["y"] <= btn["y"] and btn["y"] + btn["height"] <= header["y"] + header["height"]
+    content = page.locator("#inventory-content").bounding_box()
+    assert btn["y"] + btn["height"] <= content["y"]
+    if width == 1280:
+        main = page.locator(".page-header").bounding_box()
+        mid = btn["x"] + btn["width"] / 2
+        on_right = mid > main["x"] + main["width"] / 2
+        ltr = page.evaluate("getComputedStyle(document.querySelector('.page-header')).direction") == "ltr"
+        assert on_right == ltr, (lang, btn, main)

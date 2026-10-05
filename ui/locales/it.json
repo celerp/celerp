@@ -3578,7 +3578,7 @@
   "dashboard.getting_started_products": "Prodotti",
   "dashboard.getting_started_contacts": "Clienti e fornitori",
   "dashboard.getting_started_documents": "Documenti",
-  "dashboard.getting_started_where": "Importa si trova sempre in alto a destra nella pagina.",
+  "dashboard.getting_started_where": "Importa si trova sempre in cima alla pagina.",
   "dashboard.getting_started_demo": "Gli articoli contrassegnati [DEMO] sono esempi. La prima importazione di prodotti li rimuove, a meno che tu non li abbia modificati.",
   "dashboard.finish_setup": "Completa la configurazione: scegli il tipo di attività",
   "shell.import_hint": "Fai clic su Importa per caricare il tuo file"

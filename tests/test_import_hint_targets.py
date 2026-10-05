@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""The dashboard card promises "Import is always at the top right of the page", and
+"""The dashboard card promises "Import is always at the top of the page", and
 its links open the list pages with an arrow on that page's Import button. Every
 list page with an Import button therefore carries exactly one data-import-hint, in
 the page header's action bar. The UI runs against the real API in process.

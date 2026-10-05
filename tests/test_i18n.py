@@ -850,3 +850,23 @@ def test_getting_started_keys_translated_in_every_complete_locale():
         if bad:
             gaps[code] = bad
     assert not gaps, f"untranslated getting-started keys: {gaps}"
+
+
+# Where Import sits depends on reading direction (right in left-to-right languages,
+# left in Arabic) and on width (the header row wraps on a phone), so the card's
+# "where" line names no side in any language. The browser test
+# test_import_where_line_matches_layout checks the "top of the page" half.
+_SIDE_WORDS = {
+    "en": ("left", "right"), "de": ("links", "rechts"), "fr": ("gauche", "droite"),
+    "es": ("izquierda", "derecha"), "it": ("sinistra", "destra"),
+    "pt": ("esquerd", "direit"), "id": ("kiri", "kanan"), "th": ("ซ้าย", "ขวา"),
+    "ja": ("左", "右"), "vi": ("trái", "phải"), "am": ("ግራ", "ቀኝ"), "ar": ("يسار", "يمين"),
+}
+
+
+def test_import_where_line_names_no_side():
+    assert set(_SIDE_WORDS) == set(_shipped_locales())
+    sided = {code: _load_locale(code)["dashboard.getting_started_where"]
+             for code, words in _SIDE_WORDS.items()
+             if any(w in _load_locale(code)["dashboard.getting_started_where"].lower() for w in words)}
+    assert not sided, sided
