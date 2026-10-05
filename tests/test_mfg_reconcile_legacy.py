@@ -131,6 +131,32 @@ async def test_several_older_receipts_are_brought_back_to_what_was_issued(client
     assert [await _cost(session, auth, lot) for lot in lots] == [50.0, 50.0]
 
 
+async def test_lots_whose_excess_the_books_already_carry_are_restated_off_retained_earnings(
+        client, session, auth):
+    """An older release's opening balance put the lots' 50.00 beyond the 100.00 issued on the
+    books, against equity: the account holds exactly its stock, so no inventory account holds
+    the excess beyond its stock and restating the lots to what was issued takes it back off
+    retained earnings. A value below what left the shelf is still refused."""
+    raw, order, lots = await _older_run(client, session, auth, 1, 1)
+    p, re = await role(session, auth, PURCHASED), await role(session, auth, RETAINED)
+    await _emit_auto_posted_je(
+        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id=f"je:auto:ob{order}",
+        idem_create=f"ob{order}:c", idem_posted=f"ob{order}:p", memo="Opening inventory",
+        entries=[{"account": p, "debit": 50.0, "credit": 0.0}, {"account": re, "debit": 0.0, "credit": 50.0}],
+        metadata_={})
+    await session.commit()
+    await assert_settled(client, session, auth)
+    refusal(await reconcile(client, auth, order, [(raw, 60.0)], re, key="under"), 422, "reconcile_excess")
+    refusal(await reconcile(client, auth, order, [(raw, 100.0)], p, key="p"), 422, "reconcile_left")
+
+    r = await reconcile(client, auth, order, [(raw, 100.0)], re)
+
+    assert r.status_code == 200, r.text
+    assert [await _cost(session, auth, lot) for lot in lots] == [50.0, 50.0]
+    await assert_settled(client, session, auth)
+    await _finish(client, session, auth, order)
+
+
 async def test_a_lot_already_sold_is_restated_through_its_sale(client, session, auth):
     raw, order, [lot] = await _older_run(client, session, auth, 1)
     await _fulfil(client, await _invoice(client, session, auth, lot), auth, lot)

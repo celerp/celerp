@@ -1434,7 +1434,9 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
     over the run's output), so the run holds issued value less its lots, exactly as if it
     had been received on this release. Only the value the lots did not already carry comes
     off the account: an inventory account holding it beyond its stock on hand, or retained
-    earnings when the books carry no such value anywhere (they never recognized it). A
+    earnings when the books carry no such value anywhere (they never recognized it). Lots
+    carrying more than every component's recorded issue value, on books holding no less than
+    their stock, give the excess back to retained earnings (an older opening balance booked it). A
     reconciliation that would leave the account holding anything beyond its stock is
     refused while no other run waits for reconciling, so the books carry the stock and the
     work in progress afterwards just as after any live movement."""
@@ -1540,10 +1542,15 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
             # its stock, for an account that does is where this run's value (or its lots' excess)
             # already sits. One holding less (goods invoiced before they are on hand) holds none of it.
             # Nothing taken off a named inventory account is judged by what that account holds, below.
-            holding = sorted(c for c, v in (await account_rooms(session, company_id, inventory)).items() if v > 0)
-            if amount < 0:
-                # The lots already carry more than the value stated: that is stock value the
-                # books hold, never something retained earnings gives up.
+            rooms = await account_rooms(session, company_id, inventory)
+            holding = sorted(c for c, v in rooms.items() if v > 0)
+            shown = all(needed[i][1] is not None and v == needed[i][1] for i, v in values.items())
+            if amount < 0 and (not shown or any(v < 0 for v in rooms.values())):
+                # The lots carry more than the value stated. Unless every component is stated at
+                # what left the shelf for this run and no inventory account holds less than its
+                # stock, that excess is stock value the books never booked (or the value stated
+                # is short), never something retained earnings gives up. Otherwise an older
+                # release's opening balance put it on the books against equity, and it comes off there.
                 raise refuse(422, "reconcile_excess",
                              f"The lots this run already received carry {carried}, more than the {total} stated. "
                              "Give the value that was issued, or take the difference off the inventory account "
