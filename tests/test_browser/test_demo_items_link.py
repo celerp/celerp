@@ -221,3 +221,22 @@ def test_link_and_hint_in_german(page: Page, fresh_company, width):
     page.wait_for_load_state("load")
     assert page.evaluate(_OVERLAPS_JS) == [], width
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
+
+
+def test_back_to_the_demo_list_drops_a_selection_made_elsewhere(page: Page, fresh_company):
+    """Red statement: the selection was cleared only when the one-time hint showed, so
+    Back to the demo list after ticking a real item elsewhere showed "4 selected" over
+    3 rows and Delete removed the real item with the samples."""
+    _seed(fresh_company)
+    page.goto("/dashboard")
+    page.locator("#remove-demo-items").click()
+    expect(page.locator(".import-arrow")).to_be_visible()
+    page.goto("/inventory?q=Real")
+    page.locator("#data-table tbody tr", has_text=_REAL).locator("input.row-select").check()
+    expect(page.locator("#bulk-count")).to_contain_text("1")
+    page.go_back()
+    page.wait_for_url("**/inventory?filter=demo")
+    expect(page.locator(".import-arrow")).to_have_count(0)
+    assert _ticked(page) == 0
+    _select_all_and_delete(page)
+    assert sorted(i["name"] for i in _items(fresh_company)) == _KEPT
