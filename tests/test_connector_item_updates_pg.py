@@ -25,8 +25,10 @@ pytestmark = pytest.mark.asyncio
 
 
 def _record(key: str, **fields) -> SimpleNamespace:
+    """A record from an accounting system. It carries a cost, so it arrives as a draft,
+    which can be deleted."""
     base = {"sku": "QB-1", "name": "Widget", "idempotency_key": key, "sale_price": None,
-            "quantity": None, "cost_price": None, "description": None}
+            "quantity": None, "cost_price": 5.0, "description": None}
     return SimpleNamespace(**(base | fields))
 
 
@@ -118,7 +120,7 @@ async def test_an_item_deleted_before_a_reimport_stays_deleted(committed_engine,
 
 async def test_a_changed_reimport_is_recorded_as_an_update_of_the_changed_fields(committed_engine, race, connector):
     cid, _ = await _company(committed_engine)
-    assert await connector(cid, _record("qb:3", cost_price=None)) == "created"
+    assert await connector(cid, _record("qb:3")) == "created"
     lot = "item:qb:3"
 
     assert await connector(cid, _record("qb:3", sku="QB-1B", name="Widget")) == "updated"

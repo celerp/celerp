@@ -13,7 +13,8 @@ snapshot of another system's item records no account and books nothing. Migrated
 stock keeps the account its source books held it in. With Accounting off nothing is
 booked, and turning Accounting on later books the imported stock as opening stock.
 
-Items from an accounting system arrive as drafts. Items from an online store arrive
+Items from an accounting system arrive as drafts when they carry a cost and available
+when they do not (test_connector_item_cost_rule). Items from an online store arrive
 available and record the opening inventory account. The sample items a new company
 starts with are on the books from the start, and removing or replacing them takes
 exactly their value off again, never the value of an import that replaces them.
@@ -301,7 +302,7 @@ def connector_session(session, monkeypatch):
     return session
 
 
-async def test_an_item_from_an_accounting_system_arrives_as_a_draft_with_nothing_booked(
+async def test_an_item_with_a_cost_from_an_accounting_system_arrives_as_a_draft_with_nothing_booked(
         connector_session, auth):
     import celerp.connectors.upsert as connector
     from celerp_inventory.routes import ItemCreate

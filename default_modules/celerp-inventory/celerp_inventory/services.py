@@ -1770,13 +1770,19 @@ async def upsert_from_connector(company_id: str, item) -> str:
         derived = derived_price_keys((await get_price_config(session, company_id))[0])
         for key in derived:
             data.pop(key, None)
-        # Stock from an accounting system is held on that system's books, so it arrives as
-        # a draft: the user makes it available once it is stock held here.
+        # An item with a cost is stock held on the accounting system's books: it arrives
+        # as a draft, and making it available books its value here. Without a cost there
+        # is nothing to book, so it arrives available on the opening inventory account.
+        has_cost = bool(data.get("cost_price"))
         outcome = await connector_upsert(
             session, company_id=company_id, entity_type="item",
-            event_type="item.created", idem_key=idem_key, data=data, on_create={"status": "draft"},
+            event_type="item.created", idem_key=idem_key, data=data,
+            on_create={"status": "draft" if has_cost else "available"},
             update=functools.partial(update_item_from_connector, company_id=company_id),
         )
+        if outcome == "created" and not has_cost:
+            await recognize_opening_lots(session, uuid.UUID(str(company_id)), [f"item:{idem_key}"], None,
+                                         f"connector:{idem_key}")
         await session.commit()
         return outcome
 
