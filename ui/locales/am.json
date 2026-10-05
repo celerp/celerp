@@ -4030,5 +4030,17 @@
   "attr.year_edition": "ዓመት / እትም",
   "attr.year_period": "ዓመት / ዘመን",
   "attr.year_created": "የተፈጠረበት ዓመት",
-  "attr.year_published": "የታተመበት ዓመት"
+  "attr.year_published": "የታተመበት ዓመት",
+  "enum.item_status.available": "የሚገኝ",
+  "enum.item_status.draft": "ረቂቅ",
+  "enum.item_status.reserved": "የተጠበቀ",
+  "enum.item_status.merged": "የተዋሐደ",
+  "unit.piece": "ቁራጭ",
+  "unit.carat": "ካራት",
+  "unit.gram": "ግራም",
+  "unit.kg": "ኪ.ግ",
+  "unit.oz": "አውንስ",
+  "unit.lb": "ፓውንድ",
+  "unit.liter": "ሊትር",
+  "unit.meter": "ሜትር"
 }

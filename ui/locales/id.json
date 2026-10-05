@@ -4030,5 +4030,17 @@
   "attr.year_edition": "Tahun / Edisi",
   "attr.year_period": "Tahun / Periode",
   "attr.year_created": "Tahun pembuatan",
-  "attr.year_published": "Tahun terbit"
+  "attr.year_published": "Tahun terbit",
+  "enum.item_status.available": "Tersedia",
+  "enum.item_status.draft": "Draf",
+  "enum.item_status.reserved": "Dicadangkan",
+  "enum.item_status.merged": "Digabung",
+  "unit.piece": "buah",
+  "unit.carat": "karat",
+  "unit.gram": "gram",
+  "unit.kg": "kg",
+  "unit.oz": "ons",
+  "unit.lb": "pon",
+  "unit.liter": "liter",
+  "unit.meter": "meter"
 }

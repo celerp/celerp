@@ -40,7 +40,7 @@ from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBAC
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from celerp.importers.tabular import known_headers
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
-from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels
+from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels, unit_label
 from celerp.services.units import is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import splitting_allowed
 from celerp_inventory.services import (
@@ -2736,7 +2736,7 @@ function celerpPrintLabel(entityId, templateId) {
                 unit_formatted = fmt_money(new_cost_price, currency) if new_cost_price != 0 else "--"
                 unit_inner = Span(unit_formatted, cls="cell-money") if unit_formatted != "--" else Span("--")
                 sell_by = (flat.get("sell_by") or "").strip()
-                annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
+                annotation = Span(f"/ {unit_label(sell_by)}", cls="cell-price-unit") if sell_by else ""
                 unit_td = Td(
                     unit_inner, annotation,
                     id=f"cell-{safe_id}-cost_price",
@@ -2937,7 +2937,7 @@ function celerpPrintLabel(entityId, templateId) {
                 formatted = fmt_money(val, currency) if val not in (None, "", "--") else "--"
             except (ValueError, TypeError):
                 formatted = "--"
-            annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
+            annotation = Span(f"/ {unit_label(sell_by)}", cls="cell-price-unit") if sell_by else ""
             inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
             safe_id = entity_id.replace(":", "-")
             price_td = Td(
@@ -5688,7 +5688,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                 entity_id=entity_id, field="status", value=row.get("status", ""),
                 cell_type=_f.get("type", "status"), options=_f.get("options"),
                 editable=_f.get("editable", True),
-                status_doc=(doc_id, doc_num) if doc_id else None,
+                status_doc=(doc_id, doc_num) if doc_id else None, domain="item_status",
             )
         renderers["status"] = _status_renderer
 
@@ -5719,7 +5719,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
             # A read-only cell suppresses the unit annotation next to "--": there is
             # no value the unit could belong to and no edit affordance to hint at.
             annotate = sell_by and (editable or formatted != "--")
-            annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if annotate else ""
+            annotation = Span(f"/ {unit_label(sell_by)}", cls="cell-price-unit") if annotate else ""
             inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
             _safe_eid = entity_id.replace(":", "-")
             attrs: dict = {

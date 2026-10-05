@@ -4030,5 +4030,17 @@
   "attr.year_edition": "Year / Edition",
   "attr.year_period": "Year / Period",
   "attr.year_created": "Year Created",
-  "attr.year_published": "Year Published"
+  "attr.year_published": "Year Published",
+  "enum.item_status.available": "Available",
+  "enum.item_status.draft": "Draft",
+  "enum.item_status.reserved": "Reserved",
+  "enum.item_status.merged": "Merged",
+  "unit.piece": "piece",
+  "unit.carat": "carat",
+  "unit.gram": "gram",
+  "unit.kg": "kg",
+  "unit.oz": "oz",
+  "unit.lb": "lb",
+  "unit.liter": "liter",
+  "unit.meter": "meter"
 }

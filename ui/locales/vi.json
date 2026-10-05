@@ -4030,5 +4030,17 @@
   "attr.year_edition": "Năm / Ấn bản",
   "attr.year_period": "Năm / Thời kỳ",
   "attr.year_created": "Năm sáng tác",
-  "attr.year_published": "Năm xuất bản"
+  "attr.year_published": "Năm xuất bản",
+  "enum.item_status.available": "Có sẵn",
+  "enum.item_status.draft": "Bản nháp",
+  "enum.item_status.reserved": "Đã đặt trước",
+  "enum.item_status.merged": "Đã gộp",
+  "unit.piece": "cái",
+  "unit.carat": "carat",
+  "unit.gram": "gam",
+  "unit.kg": "kg",
+  "unit.oz": "oz",
+  "unit.lb": "lb",
+  "unit.liter": "lít",
+  "unit.meter": "mét"
 }
