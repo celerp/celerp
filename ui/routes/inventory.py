@@ -21,6 +21,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
+from ui.components.demo_items import DEMO_ITEMS_QUERY
 from ui.components.icons import import_icon
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
@@ -53,12 +54,6 @@ from celerp_inventory.services import (
 
 _DEFAULT_PER_PAGE = 50
 
-# The inventory search that lists setup's samples: every one is named "[DEMO] ...".
-# Scoped to the name, because a sample its owner renamed still says [DEMO] in its
-# description and is theirs now.
-DEMO_ITEMS_QUERY = "name:[DEMO]"
-# The dashboard demo note's link: that search, with the hint at the select-all box.
-DEMO_ITEMS_URL = "/inventory?" + urlencode({"q": DEMO_ITEMS_QUERY, "hint": "demo"})
 
 
 def _sp_static_td(val, num: bool = False) -> FT:

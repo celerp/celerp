@@ -11,6 +11,7 @@ the people who can set it. The API is stubbed at ui.api_client.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, patch
 
@@ -39,7 +40,7 @@ def _items_api(page: dict):
     """list_items as the API answers it: the [DEMO] search keeps only items whose name
     carries the marker; every other call returns the page as given."""
     async def _list(token, params=None):
-        from ui.routes.inventory import DEMO_ITEMS_QUERY
+        from ui.components.demo_items import DEMO_ITEMS_QUERY
         if (params or {}).get("q") == DEMO_ITEMS_QUERY:
             hits = [i for i in page.get("items") or [] if "[DEMO]" in (i.get("name") or "")]
             return {"items": hits, "total": len(hits)}
@@ -289,7 +290,7 @@ async def test_demo_note_links_to_the_demo_items(ui):
     for [DEMO] by name, with the hint that points at the select-all box."""
     from html import unescape
     from urllib.parse import parse_qs, urlsplit
-    from ui.routes.inventory import DEMO_ITEMS_QUERY
+    from ui.components.demo_items import DEMO_ITEMS_QUERY
     link = _demo_link(await _dashboard(ui))
     assert "Remove demo items" in link
     href = urlsplit(unescape(re.search(r'href="([^"]+)"', link).group(1)))
@@ -313,3 +314,18 @@ async def test_demo_link_only_for_roles_that_can_delete_items(ui):
     html = await _dashboard(ui, role="viewer")
     assert _DEMO_NOTE in _demo_note(html)
     assert _demo_link(html) == ""
+
+
+def test_dashboard_routes_load_before_the_inventory_module():
+    """A real boot registers the dashboard's routes before the module loader puts the
+    inventory package on the path, and an import error there drops /dashboard
+    silently. The demo note's link must not need the inventory package to load."""
+    import subprocess
+    import sys
+    code = (
+        "import sys; sys.modules['celerp_inventory'] = None\n"
+        "import ui.routes.dashboard\n"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                       cwd=Path(__file__).resolve().parents[1], timeout=60)
+    assert r.returncode == 0, r.stderr[-2000:]

@@ -17,7 +17,8 @@ from celerp_inventory.routes import item_matches_query
 from fasthtml.common import to_xml
 
 from test_helpers import authed_cookies
-from ui.routes.inventory import DEMO_ITEMS_QUERY, _bulk_toolbar
+from ui.components.demo_items import DEMO_ITEMS_QUERY
+from ui.routes.inventory import _bulk_toolbar
 
 
 def _item(**kw) -> dict:
@@ -88,3 +89,17 @@ async def test_bulk_delete_reloads_the_list_the_owner_is_on(ui):
     assert url.path == "/inventory/content", r.text
     assert parse_qs(url.query)["q"] == [DEMO_ITEMS_QUERY], r.text
     assert "page" not in parse_qs(url.query), r.text
+
+
+def test_demo_hint_names_the_delete_option_unambiguously():
+    """The hint names the Delete option as each language shows it. Where the selection
+    bar's Clear button carries the same word, the hint also names the Action menu, so
+    it cannot be read as that button."""
+    import json
+    from pathlib import Path
+    for path in sorted((Path(__file__).resolve().parents[1] / "ui" / "locales").glob("*.json")):
+        d = json.loads(path.read_text(encoding="utf-8"))
+        hint = d["shell.demo_hint"]
+        assert d["btn.delete"] in hint, path.name
+        if d["btn.clear"] == d["btn.delete"]:
+            assert d["inv.action"].rstrip(".…") in hint, (path.name, hint)

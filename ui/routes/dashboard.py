@@ -11,6 +11,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 import asyncio
 
+from ui.components.demo_items import DEMO_ITEMS_QUERY, DEMO_ITEMS_URL
 from ui.components.icons import import_icon
 from ui.components.import_access import can_import_documents
 from ui.components.shell import base_shell, page_header, star_supporter_card, page_title
@@ -21,7 +22,6 @@ from ui.i18n import t, get_lang
 from celerp.services.doc_balance import awaiting_status_param
 from celerp.services.permissions import role_has_permission as _role_has_permission
 from ui.routes.company_backup import SETTINGS as _RESTORE
-from ui.routes.inventory import DEMO_ITEMS_QUERY, DEMO_ITEMS_URL
 from ui.routes.migrations import COMPANY as _MIGRATE
 from ui.routes.setup import has_business_type
 from urllib.parse import urlencode as _urlencode
