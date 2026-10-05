@@ -72,8 +72,9 @@ class HeldBack:
         return "; and ".join(parts)
 
     def notice(self) -> str:
-        """The body of the notice in the notification bell."""
-        return (f"An update step failed while Celerp started: {self._what_failed()}. "
+        """The body of the notice in the notification bell, read under its title ``TITLE``."""
+        what_failed = self._what_failed()
+        return (f"{what_failed[0].upper()}{what_failed[1:]}. "
                 "You can still view all your records. Changes to records are paused, and so is "
                 f"the work that depends on them: {_WAITING}. What to do: {self._what_to_do()}")
 

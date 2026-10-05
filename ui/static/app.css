@@ -3401,5 +3401,6 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .module-import { margin-bottom: 20px; }
 /* Doctor: a failed step's error is shown whole, wrapped, never cut off. */
 .doctor-failures dt { font-weight: 600; margin-top: 8px; }
+.doctor-failures { margin: 0 0 12px; }
 .doctor-failures dd { margin: 4px 0 0; }
 .doctor-error { white-space: pre-wrap; word-break: break-word; }

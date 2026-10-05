@@ -89,7 +89,7 @@ async def test_the_held_back_notice_and_refusal_name_the_cause_in_plain_words(
     body = notice.body
     for word in words:
         assert word in body, body
-    assert "An update step failed while Celerp started" in body
+    assert notice.title == _TITLE and _TITLE not in body, body
     assert "You can still view all your records" in body
     assert "Changes to records are paused" in body
     assert "low-stock alerts" in body and "online stores" in body
