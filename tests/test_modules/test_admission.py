@@ -448,6 +448,26 @@ _case_handler_rebound_through_imported_setattr_alias = _rebound_ready(
     "handler_rebound_through_imported_setattr_alias", "dynamically",
     {"hooks.py": "import sys\nfrom builtins import setattr as put\n" + _READY + _SYNC
                  + "put(sys.modules[__name__], 'ready', _sync)\n"})
+# The module namespace reached as a mapping through a function, a frame, or
+# locals() at module scope, and a module class whose property shadows the def.
+_case_handler_rebound_through_module_locals = _rebound_ready(
+    "handler_rebound_through_module_locals", "dynamically",
+    {"hooks.py": _READY + _SYNC + "locals()['ready'] = _sync\n"})
+_case_handler_rebound_through_function_globals = _rebound_ready(
+    "handler_rebound_through_function_globals", "dynamically",
+    {"hooks.py": _READY + _SYNC + "_sync.__globals__['ready'] = _sync\n"})
+_case_handler_rebound_through_frame_globals = _rebound_ready(
+    "handler_rebound_through_frame_globals", "dynamically",
+    {"hooks.py": "import sys\n" + _READY + _SYNC + "sys._getframe().f_globals['ready'] = _sync\n"})
+_case_handler_shadowed_by_module_class = _rebound_ready(
+    "handler_shadowed_by_module_class", "dynamically",
+    {"hooks.py": "import sys, types\n" + _READY + _SYNC
+                 + "class _M(types.ModuleType):\n    locals()['re' + 'ady'] = property(lambda self: _sync)\n"
+                 + "sys.modules[__name__].__class__ = _M\n"})
+_case_handler_rebound_through_gc_referrers = _rebound_ready(
+    "handler_rebound_through_gc_referrers", "dynamically",
+    {"hooks.py": "import gc\n" + _READY + _SYNC
+                 + "[d for d in gc.get_referrers(ready) if isinstance(d, dict)][0]['ready'] = _sync\n"})
 
 
 def _case_route_setup_rebound_by_match_capture(base, marker, monkeypatch):
@@ -569,6 +589,11 @@ async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
     _case_handler_rebound_through_getattribute,
     _case_handler_rebound_through_imported_exec_alias,
     _case_handler_rebound_through_imported_setattr_alias,
+    _case_handler_rebound_through_module_locals,
+    _case_handler_rebound_through_function_globals,
+    _case_handler_rebound_through_frame_globals,
+    _case_handler_shadowed_by_module_class,
+    _case_handler_rebound_through_gc_referrers,
     _case_route_setup_rebound_by_match_capture,
     _case_manifest_changed_by_submodule_import,
     _case_manifest_changed_by_submodule_attribute,

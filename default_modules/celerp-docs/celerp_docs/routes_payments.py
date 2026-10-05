@@ -438,27 +438,29 @@ async def payments_unmatched(company_id=Depends(get_current_company_id),
                              session: AsyncSession = Depends(get_session)) -> dict:
     """Online payments received for a company or invoice that no longer exists, or
     that the invoice refused, and the refunds of online payments kept until their
-    payment is on its invoice, each newest first. Dates are business days in this
-    company's timezone, the one recording a payment from here books it on; none
-    when that timezone is not usable."""
+    payment is on its invoice, each newest first. Each date is a business day in the
+    timezone of the company the row books in: its own company while that exists,
+    else this one, which recording it from here books it on; none when that
+    timezone is not usable."""
     payments, refunds = await pay.unmatched_payments(session), await pay.unmatched_refunds(session)
-    names = await _names_still_here(session, [*payments, *refunds])
-    company = await session.get(Company, company_id)
-    try:
-        timezone = business_timezone(((company.settings or {}) if company else {}).get("timezone")).key
-    except ValueError:
-        timezone = None
+    names, books_company = await _names_still_here(session, [*payments, *refunds])
+    here = await session.get(Company, company_id)
 
-    def day(instant: datetime.datetime | None) -> str | None:
-        return business_date_at(instant, timezone) if instant and timezone else None
+    def day(row, instant: datetime.datetime | None) -> str | None:
+        company = books_company(row) or here
+        try:
+            timezone = business_timezone(((company.settings or {}) if company else {}).get("timezone")).key
+        except ValueError:
+            return None
+        return business_date_at(instant, timezone) if instant else None
 
     return {"items": [{
         "reference": p.reference, "amount": float(pay.stripe_amount(p.amount_minor, p.currency)),
-        "currency": p.currency, **names(p), "received_on": day(p.received_at), "paid_on": day(p.paid_at),
+        "currency": p.currency, **names(p), "received_on": day(p, p.received_at), "paid_on": day(p, p.paid_at),
     } for p in payments], "refunds": [{
         "refund_id": r.refund_id, "cycle": r.cycle, "transition": r.transition, "reference": r.reference,
         "amount": float(pay.stripe_amount(r.amount_minor, r.currency)), "currency": r.currency,
-        **names(r), "received_on": day(r.received_at), "refunded_on": day(r.occurred_at),
+        **names(r), "received_on": day(r, r.received_at), "refunded_on": day(r, r.occurred_at),
     } for r in refunds]}
 
 
@@ -535,7 +537,8 @@ def _doc_ref(state: dict) -> str | None:
 async def _names_still_here(session: AsyncSession, rows: list):
     """For unmatched *rows*: a function giving each row's company and document ids
     with the company's name and the document's reference, each None once it no
-    longer exists here (the rows outlive both)."""
+    longer exists here (the rows outlive both), and one giving the row's Company
+    while it exists."""
     ids = {}
     for row in rows:
         try:
@@ -544,7 +547,7 @@ async def _names_still_here(session: AsyncSession, rows: list):
             pass
     companies, docs = {}, {}
     if ids:
-        companies = {c.id: c.name for c in (await session.scalars(
+        companies = {c.id: c for c in (await session.scalars(
             select(Company).where(Company.id.in_(ids.values())))).all()}
         docs = {(d.company_id, d.entity_id): _doc_ref(d.state) or d.entity_id for d in (await session.scalars(
             select(Projection).where(Projection.company_id.in_(ids.values()),
@@ -552,6 +555,7 @@ async def _names_still_here(session: AsyncSession, rows: list):
 
     def names(row) -> dict:
         cid = ids.get(row.former_company)
-        return {"company_id": row.former_company, "company_name": companies.get(cid),
+        company = companies.get(cid)
+        return {"company_id": row.former_company, "company_name": company.name if company else None,
                 "document_id": row.document, "document_ref": docs.get((cid, row.document))}
-    return names
+    return names, lambda row: companies.get(ids.get(row.former_company))
