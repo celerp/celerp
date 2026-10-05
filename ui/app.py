@@ -53,8 +53,7 @@ from starlette.responses import Response
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, clear_session_cookies, cookie_domain, is_stale_cookie
 from ui.routes import (
     auth, setup, search, settings, settings_import,
-    settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
-    settings_contacts, settings_cloud, settings_connectors, settings_payments, notifications, events, stars,
+    settings_general, settings_cloud, settings_connectors, settings_payments, notifications, events, stars,
     modules_page, account, commercial, system_update, migrations, company_backup,
 )
 from fasthtml.common import *
@@ -510,17 +509,6 @@ async def proxy_attachment(request: Request, path: str) -> Response:
 
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
-# In dev mode (MODULE_DIR not set), default_modules live next to the repo root.
-# Add each default module package dir to sys.path so _CONDITIONAL_UI imports work.
-# In production, the module loader (load_all) handles sys.path itself.
-_DEFAULT_MODULES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "default_modules")
-if not os.environ.get("MODULE_DIR") and os.path.isdir(_DEFAULT_MODULES_DIR):
-    import sys as _sys
-    for _dm in os.listdir(_DEFAULT_MODULES_DIR):
-        _dm_path = os.path.join(_DEFAULT_MODULES_DIR, _dm)
-        if os.path.isdir(_dm_path) and _dm_path not in _sys.path:
-            _sys.path.insert(0, _dm_path)
-
 # Determine enabled modules from env (set by cli.py _config_to_env).
 # Fall back to config.toml when env is absent (e.g. Electron binary restart).
 _ENABLED_MODULES: set[str] = set(
@@ -554,35 +542,13 @@ if _MODULE_DIR and _ENABLED_MODULES:
 
 # Kernel UI routes — always registered
 for mod in (auth, setup, search, settings, settings_import,
-            settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
-            settings_contacts, settings_cloud, settings_connectors, settings_payments,
+            settings_general, settings_cloud, settings_connectors, settings_payments,
             notifications, events, stars, modules_page, account, commercial, system_update):
     mod.setup_routes(app)
 migrations.migrations_routes(app)
 company_backup.company_backup_routes(app)
 
-# Module-conditional UI routes that no module registers itself. A module's own pages
-# (documents and lists, labels, ...) come from its ui_routes, registered by the loader
-# below; listing them here too would register every one of those pages twice.
-# Import order matters: import/* routes must precede their parent /{entity_id} routes,
-# which the loader registers after this list.
-_CONDITIONAL_UI: list[tuple[str, str]] = [
-    # (backend_module_name, ui_route_module_dotted_path)
-    ("celerp-docs",        "ui.routes.docs_import"),
-    ("celerp-docs",        "ui.routes.lists_import"),
-    ("celerp-accounting",  "ui.routes.accounting_import"),
-    ("celerp-accounting",  "ui.routes.reconciliation"),
-    ("celerp-dashboard",   "ui.routes.dashboard"),
-]
-
 import importlib as _importlib
-for _backend_mod, _ui_mod_path in _CONDITIONAL_UI:
-    if _backend_mod in _OFFERED_MODULES or not _MODULE_DIR:
-        try:
-            _ui_mod = _importlib.import_module(_ui_mod_path)
-            _ui_mod.setup_routes(app)
-        except ImportError:
-            pass  # UI route module not present — skip silently
 
 # AI is proprietary cloud-gated core (not a pluggable module): register its UI + nav directly so it is
 # always present and cannot be replaced by a user-supplied module. Mirrors the API wiring in main.py.

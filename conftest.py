@@ -236,7 +236,9 @@ _dash_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp
 if _os.path.abspath(_dash_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_dash_src))
 from celerp_dashboard.setup import setup_api_routes as _setup_dashboard
+from celerp_dashboard.ui_routes import setup_ui_routes as _setup_dashboard_ui
 _setup_dashboard(app)
+_setup_dashboard_ui(_ui_app)
 
 # Register AI module routes onto the test app.
 _ai_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-ai")
