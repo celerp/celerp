@@ -271,7 +271,7 @@ def setup_routes(app) -> None:
             pagination(page, total, per_page, "/subscriptions", extra),
             cls="page-content",
         )
-        return await base_shell(request, content, title=title,
+        return await base_shell(content, title=title, request=request,
                           nav_active="subscriptions_sales" if direction == "sales" else "subscriptions_purchasing")
 
     # --- Search (HTMX) ---

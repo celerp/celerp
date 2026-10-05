@@ -147,3 +147,19 @@ async def test_a_module_turned_off_is_named_when_opened_directly(lang):
     assert r.status_code == 403
     [box] = _error_boxes(r.text)
     assert "Dashboard" in box
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role, shown", [("manager", False), ("owner", True)])
+async def test_subscriptions_sidebar_offers_only_links_the_role_can_open(role, shown):
+    """The /subscriptions shell is built for the caller's role, so a manager is not
+    offered Modules or Company Details, which would only refuse them."""
+    company = {**_MANAGER, "current_role": role}
+    async with await _client() as c:
+        c.cookies.set("celerp_token", make_test_token(role=role))
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
+                patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value={"items": []})):
+            r = await c.get("/subscriptions")
+    assert r.status_code == 200, r.text
+    assert ('href="/modules"' in r.text) is shown
+    assert ('href="/finance/company-details"' in r.text) is shown
