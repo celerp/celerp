@@ -330,6 +330,9 @@ async def _mark(session: AsyncSession, company_id) -> None:
     company = await locked_company(session, company_id)
     company.settings = {**(company.settings or {}), INVENTORY_ORIGIN_KEY: INVENTORY_ORIGIN_SCHEMA}
     await session.flush()
+    from celerp.notifications import service as notification_service
+
+    await notification_service.mark_done(session, company_id, PERIOD_LOCK_PATH)
     waiting = unrecorded(await _items(session, company_id))
     if waiting:
         await _notify_unplaced(session, company_id, len(waiting))
@@ -447,9 +450,34 @@ async def consumed_facts(session: AsyncSession, company_id, marker: str,
     return found
 
 
+PERIOD_LOCK_PATH = "/settings/accounting?tab=period-lock"
+
+
 class _Retry(Exception):
-    """A period lock forbids the upgrade's writes: roll the company's savepoint back and
-    retry on a later start."""
+    """A posting account the opening entry cannot use forbids the upgrade's writes: roll the
+    company's savepoint back and retry on a later start."""
+
+
+class _Locked(_Retry):
+    """A period lock forbids the upgrade's writes: as _Retry, and the company is told (_notify_locked)."""
+
+
+async def _notify_locked(session: AsyncSession, company_id) -> None:
+    """Older stock left unplaced cannot be sold or moved, so a company whose upgrade a period
+    lock holds back is told which lock and what to do, once per lock date; the notice is
+    marked read when the upgrade runs (_mark)."""
+    from celerp.notifications import service as notification_service
+    from celerp.services.company_lock import locked_company
+
+    day = str(((await locked_company(session, company_id)).settings or {}).get("lock_date") or "")
+    await notification_service.notify_once(
+        session, company_id, "accounting", "Older stock waits for an open period",
+        f"The books are locked through {day}, so older stock could not be placed on its inventory "
+        "account, and it cannot be sold or moved until it is. Move the period lock before today; "
+        "the next start then places it.",
+        action_url=PERIOD_LOCK_PATH,
+        i18n={"title": "notice.older_stock_locked.title", "body": "notice.older_stock_locked.body",
+              "params": {"day": day}})
 
 
 async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) -> bool:
@@ -473,11 +501,14 @@ async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) 
     When the books cannot vouch for the stock, nothing moves and the company is still
     marked, leaving each older lot that has held stock for the user to place. A period
     lock, or a posting account the opening entry cannot use, that forbids a write rolls the whole savepoint back and leaves the company
-    unmarked, to retry on a later start. Running it again changes nothing. Returns
+    unmarked, to retry on a later start; a period lock is told to the company (_notify_locked). Running it again changes nothing. Returns
     whether the company was marked."""
     try:
         async with session.begin_nested():
             return await _normalize(session, company_id, None)
+    except _Locked:
+        await _notify_locked(session, company_id)
+        return False
     except _Retry:
         return False
 
@@ -532,7 +563,7 @@ async def _normalize(session: AsyncSession, company_id, user_id) -> bool:
         await _mark(session, company_id)  # moved once already; the books have changed since
         return True
     if (moved or kept) and not await period_open(session, company_id, day):
-        raise _Retry
+        raise _Locked
     for row in kept:
         await emit_event(session, company_id=company_id, entity_id=row.entity_id, entity_type="item",
                          event_type=KEPT, data={}, actor_id=None, location_id=None, source="system",
@@ -578,10 +609,13 @@ async def open_inventory_origins(session: AsyncSession, company_id, user_id=None
     (normalize_legacy_inventory_origins), so its earlier documents and its lots agree on
     one account. Stock from elsewhere (``books_from_elsewhere``) records nothing and waits for the
     user. A period lock that forbids the entry writes nothing and leaves the company
-    unmarked, to retry on a later start. Returns whether the company was marked."""
+    unmarked and tells the company (_notify_locked), to retry on a later start. Returns whether the company was marked."""
     try:
         async with session.begin_nested():
             return await _open(session, company_id, user_id)
+    except _Locked:
+        await _notify_locked(session, company_id)
+        return False
     except _Retry:
         return False
 
@@ -598,7 +632,7 @@ async def _open(session: AsyncSession, company_id, user_id) -> bool:
         await _mark(session, company_id)
         return True
     if not await period_open(session, company_id, business_date_of(None, settings.get("timezone"))):
-        raise _Retry
+        raise _Locked
     inventory = {code for role in _INVENTORY for code in scope_codes(settings, role)}
     if any(e.get("account") in inventory for _, e in await _posted_entries(session, company_id)):
         await _normalize(session, company_id, user_id)

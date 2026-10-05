@@ -3632,6 +3632,8 @@
   "notice.older_stock_unplaced.body": "Os livros não puderam comprovar {count} lote(s) antigo(s) em estoque, portanto ainda não registram uma conta de estoque. Escolha a conta de cada um em Configurações > Contabilidade > Contas de lançamento.",
   "notice.older_stock_moved.title": "Estoque antigo transferido para estoque comprado",
   "notice.older_stock_moved.body": "Versões anteriores lançaram o custo do estoque inicial vendido em {p}, de modo que {p} e {ob} só correspondiam ao seu estoque em conjunto. Um lançamento datado de {day} transferiu {amount} {currency} de {ob} para {p}, e seu estoque antigo agora está em {p}. O estoque total e os lucros acumulados não mudam.",
+  "notice.older_stock_locked.title": "O estoque antigo aguarda um período aberto",
+  "notice.older_stock_locked.body": "Os livros estão bloqueados até {day}, por isso o estoque antigo não pôde ser colocado na sua conta de estoque e não pode ser vendido nem movido até que seja. Mova o bloqueio de período para antes de hoje; o próximo início o colocará.",
   "notice.mfg_reconcile_needed.title": "Uma ordem de produção precisa de conciliação",
   "notice.mfg_reconcile_needed.body": "O valor dos materiais da ordem de produção de {run} não pode ser calculado a partir do seu histórico ({reason}). Ela não pode emitir, devolver, receber nem concluir até ser conciliada: abra-a por aqui e registre quanto valem os seus materiais.",
   "notice.mfg_wip_recorded.title": "Materiais em produção registrados",

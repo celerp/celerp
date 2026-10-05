@@ -572,6 +572,40 @@ async def test_a_period_lock_that_forbids_the_entry_leaves_everything_for_a_late
     assert await _net(session, auth, "1130-P", "1130-OB") == (30.0, 0.0)
 
 
+async def _lock_notices(session, auth) -> list:
+    from celerp.models.notification import Notification
+
+    session.expire_all()
+    return list((await session.execute(select(Notification).where(
+        Notification.company_id == auth["company_id"],
+        Notification.title == "Older stock waits for an open period"))).scalars().all())
+
+
+async def test_an_upgrade_a_period_lock_holds_back_is_told_once_and_cleared_when_it_runs(session, client, auth):
+    """Older stock the upgrade could not place cannot be sold or moved: the company is told
+    which lock holds it back and what to do, once however often it restarts, and the notice
+    is marked read once the upgrade runs."""
+    await _older_release(session, auth)
+    await _lot(client, auth, 30.0)
+    await _opening_entry(session, auth, 30.0)
+    day = business_date_at(datetime.now(timezone.utc), TZ)
+    await _settings(session, auth, lock_date=day)
+    await _startup(session)
+    await _startup(session)
+    (notice,) = await _lock_notices(session, auth)
+    assert day in notice.body and not notice.read
+    assert notice.action_url == "/settings/accounting?tab=period-lock"
+    assert notice.i18n["title"] == "notice.older_stock_locked.title" and notice.i18n["params"] == {"day": day}
+
+    company = await locked_company(session, auth["company_id"])
+    company.settings = {k: v for k, v in company.settings.items() if k != "lock_date"}
+    await session.commit()
+    await _startup(session)
+    assert await _marked(session, auth)
+    (notice,) = await _lock_notices(session, auth)
+    assert notice.read
+
+
 # The entry is dated the company's business day, not the server's. Each case puts the
 # two on opposite sides of midnight, with the books locked through the earlier day.
 _NEW_YORK = ("America/New_York", datetime(2026, 10, 2, 2, 0, tzinfo=timezone.utc), date(2026, 10, 2))  # Oct 1 there
@@ -666,6 +700,8 @@ async def test_turning_accounting_on_is_refused_when_the_business_day_is_locked(
     assert failures == []
     assert await _accounts(session, auth, lot) == [None]
     assert not await _marked(session, auth)
+    (notice,) = await _lock_notices(session, auth)
+    assert "2026-10-01" in notice.body
 
 
 async def _opening_inventory(session, auth) -> dict | None:

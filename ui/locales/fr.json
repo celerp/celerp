@@ -3632,6 +3632,8 @@
   "notice.older_stock_unplaced.body": "Les livres n'ont pas pu justifier {count} lot(s) ancien(s) en stock, qui n'ont donc pas encore de compte de stock. Choisissez le compte de chacun dans Paramètres > Comptabilité > Comptes d'imputation.",
   "notice.older_stock_moved.title": "Stock ancien transféré vers le stock acheté",
   "notice.older_stock_moved.body": "Des versions antérieures ont comptabilisé le coût du stock d'ouverture vendu sur {p}, si bien que {p} et {ob} ne correspondaient à votre stock qu'ensemble. Une écriture datée du {day} a transféré {amount} {currency} de {ob} vers {p}, et votre stock ancien est maintenant sur {p}. Le stock total et les résultats reportés sont inchangés.",
+  "notice.older_stock_locked.title": "Le stock ancien attend une période ouverte",
+  "notice.older_stock_locked.body": "Les livres sont verrouillés jusqu'au {day}, donc le stock ancien n'a pas pu être affecté à son compte de stock et ne peut être ni vendu ni déplacé tant qu'il ne l'est pas. Déplacez le verrouillage de période avant aujourd'hui ; le prochain démarrage l'affectera.",
   "notice.mfg_reconcile_needed.title": "Un ordre de production doit être rapproché",
   "notice.mfg_reconcile_needed.body": "La valeur des matières de l'ordre de production pour {run} ne peut pas être déterminée à partir de son historique ({reason}). Il ne peut ni sortir, ni retourner, ni réceptionner, ni terminer avant d'être rapproché : ouvrez-le d'ici et indiquez la valeur de ses matières.",
   "notice.mfg_wip_recorded.title": "Matières en production enregistrées",

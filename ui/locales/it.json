@@ -3632,6 +3632,8 @@
   "notice.older_stock_unplaced.body": "I libri non hanno potuto confermare {count} lotto/i precedente/i in giacenza, quindi non registrano ancora un conto di magazzino. Scegliere il conto di ciascuno in Impostazioni > Contabilità > Conti di registrazione.",
   "notice.older_stock_moved.title": "Giacenze precedenti spostate nel magazzino acquistato",
   "notice.older_stock_moved.body": "Le versioni precedenti registravano il costo delle giacenze iniziali vendute su {p}, quindi {p} e {ob} corrispondevano alle giacenze solo insieme. Una registrazione datata {day} ha spostato {amount} {currency} da {ob} a {p}, e le giacenze precedenti ora sono su {p}. Magazzino totale e utili portati a nuovo restano invariati.",
+  "notice.older_stock_locked.title": "Le scorte precedenti attendono un periodo aperto",
+  "notice.older_stock_locked.body": "I libri sono bloccati fino al {day}, quindi le scorte precedenti non sono state assegnate al loro conto di magazzino e non possono essere vendute né spostate finché non lo sono. Sposta il blocco del periodo a prima di oggi; il prossimo avvio le assegnerà.",
   "notice.mfg_reconcile_needed.title": "Un ciclo di produzione deve essere riconciliato",
   "notice.mfg_reconcile_needed.body": "Il valore dei materiali del ciclo di produzione per {run} non può essere ricavato dalla sua cronologia ({reason}). Non può prelevare, restituire, ricevere o completare finché non viene riconciliato: aprilo da qui e registra quanto valgono i suoi materiali.",
   "notice.mfg_wip_recorded.title": "Materiali in produzione registrati",

@@ -3632,6 +3632,8 @@
   "notice.older_stock_unplaced.body": "Die Bücher konnten {count} ältere Charge(n) im Bestand nicht belegen, daher ist dafür noch kein Bestandskonto erfasst. Wählen Sie das Konto jeder Charge unter Einstellungen > Buchhaltung > Buchungskonten.",
   "notice.older_stock_moved.title": "Älterer Bestand auf gekauften Bestand umgebucht",
   "notice.older_stock_moved.body": "Ältere Versionen buchten die Kosten von verkauftem Anfangsbestand auf {p}, daher stimmten {p} und {ob} nur zusammen mit Ihrem Bestand überein. Eine Buchung vom {day} hat {amount} {currency} von {ob} auf {p} umgebucht; Ihr älterer Bestand liegt jetzt auf {p}. Gesamtbestand und Gewinnvortrag sind unverändert.",
+  "notice.older_stock_locked.title": "Älterer Bestand wartet auf eine offene Periode",
+  "notice.older_stock_locked.body": "Die Bücher sind bis {day} gesperrt, daher konnte älterer Bestand keinem Bestandskonto zugeordnet werden und kann bis dahin weder verkauft noch bewegt werden. Verschieben Sie die Periodensperre vor heute; der nächste Start ordnet ihn dann zu.",
   "notice.mfg_reconcile_needed.title": "Produktionslauf muss abgeglichen werden",
   "notice.mfg_reconcile_needed.body": "Der Wert der Materialien im Produktionslauf für {run} lässt sich nicht aus seinem Verlauf ermitteln ({reason}). Er kann nichts ausgeben, zurückgeben, einbuchen oder abschließen, bis er abgeglichen ist: Öffnen Sie ihn von hier und erfassen Sie, was seine Materialien wert sind.",
   "notice.mfg_wip_recorded.title": "Materialien in Produktion erfasst",

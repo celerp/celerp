@@ -3632,6 +3632,8 @@
   "notice.older_stock_unplaced.body": "Pembukuan tidak dapat memastikan {count} lot lama yang ada di stok, sehingga belum mencatat akun persediaan. Pilih akun masing-masing di Pengaturan > Akuntansi > Akun posting.",
   "notice.older_stock_moved.title": "Stok lama dipindahkan ke persediaan pembelian",
   "notice.older_stock_moved.body": "Versi sebelumnya membukukan biaya stok awal yang terjual ke {p}, sehingga {p} dan {ob} hanya cocok dengan stok Anda jika digabung. Satu jurnal bertanggal {day} memindahkan {amount} {currency} dari {ob} ke {p}, dan stok lama Anda sekarang ada di {p}. Total persediaan dan laba ditahan tidak berubah.",
+  "notice.older_stock_locked.title": "Stok lama menunggu periode terbuka",
+  "notice.older_stock_locked.body": "Pembukuan dikunci hingga {day}, sehingga stok lama tidak dapat ditempatkan pada akun persediaannya dan tidak dapat dijual atau dipindahkan sampai ditempatkan. Pindahkan kunci periode ke sebelum hari ini; awal berikutnya akan menempatkannya.",
   "notice.mfg_reconcile_needed.title": "Proses produksi perlu direkonsiliasi",
   "notice.mfg_reconcile_needed.body": "Nilai bahan dalam proses produksi untuk {run} tidak dapat dihitung dari riwayatnya ({reason}). Proses ini tidak dapat mengeluarkan, mengembalikan, menerima, atau menyelesaikan sampai direkonsiliasi: buka dari sini dan catat berapa nilai bahannya.",
   "notice.mfg_wip_recorded.title": "Bahan dalam produksi dicatat",

@@ -3632,6 +3632,8 @@
   "notice.older_stock_unplaced.body": "Sổ sách không xác nhận được {count} lô hàng cũ đang tồn kho, nên chưa ghi nhận tài khoản hàng tồn kho cho chúng. Hãy chọn tài khoản cho từng lô trong Cài đặt > Kế toán > Tài khoản ghi sổ.",
   "notice.older_stock_moved.title": "Hàng tồn kho cũ đã chuyển sang hàng mua vào",
   "notice.older_stock_moved.body": "Các phiên bản trước đã ghi giá vốn của hàng tồn đầu kỳ đã bán vào {p}, nên {p} và {ob} chỉ khớp với hàng tồn kho khi gộp lại. Một bút toán ngày {day} đã chuyển {amount} {currency} từ {ob} sang {p}, và hàng tồn kho cũ hiện nằm trên {p}. Tổng hàng tồn kho và lợi nhuận giữ lại không thay đổi.",
+  "notice.older_stock_locked.title": "Hàng tồn kho cũ đang chờ kỳ mở",
+  "notice.older_stock_locked.body": "Sổ sách bị khóa đến {day}, nên hàng tồn kho cũ chưa thể được gán vào tài khoản hàng tồn kho và không thể bán hay di chuyển cho đến khi được gán. Hãy dời ngày khóa kỳ về trước hôm nay; lần khởi động tiếp theo sẽ gán nó.",
   "notice.mfg_reconcile_needed.title": "Lệnh sản xuất cần được đối chiếu",
   "notice.mfg_reconcile_needed.body": "Không thể tính giá trị nguyên vật liệu trong lệnh sản xuất cho {run} từ lịch sử của nó ({reason}). Lệnh không thể xuất, trả lại, nhận hoặc hoàn thành cho đến khi được đối chiếu: mở lệnh từ đây và ghi nhận giá trị nguyên vật liệu của nó.",
   "notice.mfg_wip_recorded.title": "Đã ghi nhận nguyên vật liệu đang sản xuất",
