@@ -836,6 +836,26 @@ def _premium_credentials():
     return _resolve
 
 
+def _refuse_shared_import_names(candidates: dict[str, AdmittedModule],
+                                refused: dict[str, str]) -> None:
+    """Python holds one module per import name, so of two modules answering to
+    the same one, the second would run the first's code. First-party modules
+    claim their names first, then the rest in name order; a later module whose
+    names overlap a claimed one moves from *candidates* to *refused*."""
+    claimed: dict[str, str] = {}
+    for name in sorted(candidates, key=lambda n: (not candidates[n].first_party, n)):
+        roots = _import_roots(name, candidates[name].path)
+        owner = next((claimed[r] for r in roots if r in claimed), None)
+        if owner is not None:
+            shared = sorted(r for r in roots if claimed.get(r) == owner)
+            refused[name] = (f"Module {owner!r} also ships {', '.join(map(repr, shared))}; "
+                             f"each import name may belong to one module only.")
+            log.error("Module %r refused: %s", name, refused[name])
+            del candidates[name]
+            continue
+        claimed.update(dict.fromkeys(roots, name))
+
+
 def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
     """Decide, without executing any module code, which enabled modules may run.
 
@@ -844,7 +864,8 @@ def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
     resolve_runtime_module_path picks and checks: the manifest is a literal
     that validates; its name matches the folder; the importer's name rules
     (reserved prefix); the Celerp version it needs; the table prefix contract;
-    that no package name it answers to is already taken; that every route
+    that no package name it answers to is already taken, by Python or by
+    another enabled module (_refuse_shared_import_names); that every route
     source lies inside the module and provides its setup function; that no
     code it would execute rebinds a callable core calls (_check_dynamic_writes);
     that the migrations package resolves inside the module; for a
@@ -877,6 +898,7 @@ def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
             refused[name] = reason
             continue
         candidates[name] = module
+    _refuse_shared_import_names(candidates, refused)
     order = _dependency_order(
         {n: m.manifest["depends_on"] for n, m in candidates.items()},
         enabled, installed, refused)

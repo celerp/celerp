@@ -535,6 +535,45 @@ async def test_dependent_of_a_failed_migration_runs_no_migration(
         f"Requires {failing.name!r}, which failed to load.")
 
 
+def _sharing_pair(base: Path, tmp_path: Path, shared: str):
+    """Two migrating modules, the second sorting after the first, that both ship
+    `shared`: the same inner package, or the same top-level source file."""
+    uid, inner = _uid(), f"acme_shared_{_uid()}"
+    pkgs = []
+    for tag in ("a", "b"):
+        marker = tmp_path / f"{tag}.txt"
+        if shared == "package":
+            pkg = _write_module(base, f"acme-{tag}{uid}", {
+                "name": f"acme-{tag}{uid}", "version": "1.0.0",
+                "migrations": f"{inner}.migrations", "table_prefix": f"acme{tag}{uid}_"}, {
+                f"{inner}/__init__.py": "",
+                f"{inner}/migrations/__init__.py": "",
+                f"{inner}/migrations/m_001.py": _marker_line(marker) + "def upgrade():\n    pass\n"})
+        else:
+            pkg = _migrating_module(base, f"acme-{tag}{uid}", marker)
+            (pkg / f"{inner}.py").write_text("")
+        pkgs.append(pkg)
+    return pkgs
+
+
+@pytest.mark.parametrize("shared", ["package", "file"])
+async def test_second_module_shipping_the_same_import_name_is_refused(
+        shared, _db_engine, _modules, tmp_path):
+    """Python holds one module per import name, so two modules answering to the
+    same one would run each other's code. The first in name order keeps it; the
+    second is refused before any of its migrations run."""
+    first, second = _sharing_pair(_modules, tmp_path, shared)
+
+    admission, loaded = await _admit_and_migrate(
+        _db_engine, _modules, {first.name, second.name})
+
+    assert [m["name"] for m in loaded] == [first.name]
+    assert (tmp_path / "a.txt").exists()
+    assert not (tmp_path / "b.txt").exists()
+    assert first.name in admission.refused[second.name]
+    assert "also ships" in loader.load_errors()[second.name]
+
+
 def test_official_marketplace_module_keeps_reserved_prefix(_modules):
     """The reserved prefix is the importer's rule, not a blanket ban: a module the
     marketplace installed as official keeps its celerp- name."""
