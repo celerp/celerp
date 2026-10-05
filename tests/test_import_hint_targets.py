@@ -73,6 +73,20 @@ async def test_every_list_page_has_exactly_one_import_hint(owner_ui, path):
     hinted = re.search(r'<a[^>]*data-import-hint[^>]*>', actions)
     assert hinted, f"{path}: the hinted Import button sits in the header action bar"
     assert "/import" in hinted.group(0)
+    # The arrow says "Click Import", so the button it points at says Import.
+    label = re.search(r'<a[^>]*data-import-hint[^>]*>([^<]*)</a>', actions).group(1).strip()
+    assert label == _EN["btn.import"], (path, label)
+
+
+@pytest.mark.parametrize("path", ["/subscriptions?direction=sales", "/subscriptions?direction=purchasing"])
+async def test_subscriptions_shell_follows_browser_language(owner_ui, path):
+    """The shell around a subscriptions list is built for this request: German
+    browser, German arrow text and nav, and the signed-in user's menu."""
+    de = json.loads((Path(__file__).parent.parent / "ui" / "locales" / "de.json").read_text())
+    r = await owner_ui.get(path, headers={"Accept-Language": "de-DE,de;q=0.9"})
+    assert r.status_code == 200
+    assert json.dumps(de["shell.import_hint"], ensure_ascii=False)[1:-1] in r.text
+    assert _EN["shell.import_hint"] not in r.text
 
 
 async def test_inventory_empty_state_import_link_is_not_a_second_target(owner_ui):

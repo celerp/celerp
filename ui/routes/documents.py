@@ -3969,7 +3969,7 @@ celerpUpdateBulkAlloc();
                            label=t("documents.search_lists")),
                 _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
                 export_link,
-                A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary", data_import_hint=True) if role_has_permission(_settings, _role, "import_export_data") else "",
+                A(t("btn.import"), href="/lists/import", cls="btn btn--secondary", data_import_hint=True) if role_has_permission(_settings, _role, "import_export_data") else "",
             ),
             date_bar,
             _list_type_tabs(list_type, state),
