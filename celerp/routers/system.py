@@ -11,7 +11,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, StrictBool
-from sqlalchemy import Delete, String, exists, select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
@@ -79,24 +79,55 @@ class FactoryReset(BaseModel):
     confirm_name: str = ""
 
 
-def _company_tables() -> list:
-    """Every table holding a company's rows, children before parents. Rows without a
-    company column (conversation messages, migration entity maps, a user's sessions)
-    go with their parent row by ON DELETE CASCADE."""
-    from celerp.models.base import Base
+def _company_rows(schema: dict) -> dict[str, str]:
+    """Every table holding rows of the company bound as ``:c``, with the condition that
+    picks them: its company column, or else a foreign key to rows already picked (a
+    conversation's messages, a run's entity maps). ``schema`` is the database catalog,
+    so a switched-off module's tables are included."""
+    from celerp.db_catalog import ident
 
-    return [t for t in reversed(Base.metadata.sorted_tables)
-            if "company_id" in t.c and t.name != "companies"]
+    owned = {"companies"}
+    while grown := {name for name, table in schema.items() if name not in owned
+                    and ("company_id" in table.columns or any(fk.target in owned for fk in table.fks))}:
+        owned |= grown
+    where: dict[str, str] = {"companies": "id = CAST(:c AS uuid)"}
+
+    def rows(name: str) -> str:
+        if name not in where:
+            table = schema[name]
+            if "company_id" in table.columns:  # a few connector tables keep it as text
+                where[name] = f"company_id = CAST(CAST(:c AS text) AS {ident(table.columns['company_id'].udt)})"
+            else:
+                where[name] = " OR ".join(
+                    f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} "
+                    f"FROM {ident(fk.target)} WHERE {rows(fk.target)})"
+                    for fk in table.fks if fk.target in owned and fk.target != name)
+        return where[name]
+
+    return {name: rows(name) for name in owned}
 
 
-def _users_left_without_a_company(members: list) -> Delete:
-    """Of ``members``, the users no company has any more and no remaining row points to."""
-    from celerp.models.base import Base
+def _company_deletes(schema: dict) -> list[str]:
+    """The deletes that remove the company bound as ``:c``, each table before any it
+    references."""
+    from celerp import db_catalog
 
-    users = User.__table__
-    refs = [fk.parent for t in Base.metadata.sorted_tables for fk in t.foreign_keys
-            if fk.column.table is users and fk.ondelete != "CASCADE"]
-    return users.delete().where(users.c.id.in_(members), *[~exists().where(col == users.c.id) for col in refs])
+    rows = _company_rows(schema)
+    order, _ = db_catalog.fk_order(list(rows), schema)
+    return [f"DELETE FROM {db_catalog.ident(name)} WHERE {rows[name]}"
+            for name in [*sorted(set(rows) - set(order)), *reversed(order)]]
+
+
+def _users_left_without_a_company(schema: dict) -> str:
+    """Of the users bound as ``:members``, delete those no company has any more and no
+    remaining row points to."""
+    from celerp import db_catalog
+
+    ident = db_catalog.ident
+    refs = [f"NOT EXISTS (SELECT 1 FROM {ident(name)} WHERE {ident(col)} = users.id)"
+            for name, table in schema.items()
+            for fk in table.fks if fk.target == "users" and not fk.cascades for col in fk.cols]
+    return " AND ".join(["DELETE FROM users WHERE id = ANY(:members)", *refs])
 
 
 @router.post("/factory-reset")
@@ -109,6 +140,7 @@ async def factory_reset(
     """Delete the signed-in company and every record it holds, once its owner has typed
     the company's exact name. Other companies, and every user one of them still has,
     are untouched. One transaction: a failure part way leaves everything as it was."""
+    from celerp import db_catalog
     from celerp.accounting_roles import refusal
     from celerp.connectors.ownership import lock_connector_maintenance
     from celerp.models.accounting import UserCompany
@@ -124,12 +156,10 @@ async def factory_reset(
     await lock_connector_maintenance(session)
     members = list((await session.execute(
         select(UserCompany.user_id).where(UserCompany.company_id == company_id))).scalars())
-    for table in _company_tables():
-        column = table.c.company_id  # a few connector tables keep it as text
-        await session.execute(table.delete().where(
-            column == (str(company_id) if isinstance(column.type, String) else company_id)))
-    await session.execute(Company.__table__.delete().where(Company.__table__.c.id == company_id))
-    await session.execute(_users_left_without_a_company(members))
+    schema = await db_catalog.read(session)
+    for delete in _company_deletes(schema):
+        await session.execute(text(delete), {"c": str(company_id)})
+    await session.execute(text(_users_left_without_a_company(schema)), {"members": members})
     await session.commit()
 
     # Bust the in-process nonce cache: a deleted user's stale token must not auto-create rows

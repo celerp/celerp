@@ -38,7 +38,7 @@ import re
 import uuid
 import zipfile
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -48,6 +48,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import celerp.db
+from celerp import db_catalog
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.modules.importer import installed_table_prefixes
@@ -178,77 +179,20 @@ class StalePreview(BackupError):
 
 # ── Schema ───────────────────────────────────────────────────────────────────
 
-@dataclass(frozen=True)
-class _Column:
-    udt: str
-    notnull: bool
-    generated: bool
-
-
-@dataclass
-class _Table:
-    name: str
-    columns: dict[str, _Column] = field(default_factory=dict)
-    pk: tuple[str, ...] = ()
-    fks: list[tuple[tuple[str, ...], str, tuple[str, ...]]] = field(default_factory=list)
-
-    @property
-    def insertable(self) -> list[str]:
-        return [c for c, col in self.columns.items() if not col.generated]
-
-
-def _ident(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
-
-
 def _literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
-
-
-async def _schema(session: AsyncSession) -> dict[str, _Table]:
-    tables: dict[str, _Table] = {}
-    for rel, att, udt, notnull, generated in (await session.execute(text(
-            "SELECT c.relname::text, a.attname::text, t.typname::text, a.attnotnull, "
-            "(a.attidentity <> '' OR a.attgenerated <> '' "
-            " OR COALESCE(pg_get_expr(d.adbin, d.adrelid), '') LIKE 'nextval(%') "
-            "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-            "JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped "
-            "JOIN pg_type t ON t.oid = a.atttypid "
-            "LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum "
-            "WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') AND NOT c.relispartition "
-            "ORDER BY c.relname, a.attnum"))).all():
-        tables.setdefault(rel, _Table(rel)).columns[att] = _Column(udt, notnull, generated)
-    for rel, kind, cols, target, tcols in (await session.execute(text(
-            "SELECT c.relname::text, k.contype::text, "
-            "ARRAY(SELECT a.attname::text FROM unnest(k.conkey) WITH ORDINALITY u(n, i) "
-            "      JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = u.n ORDER BY u.i), "
-            "f.relname::text, "
-            "ARRAY(SELECT a.attname::text FROM unnest(k.confkey) WITH ORDINALITY u(n, i) "
-            "      JOIN pg_attribute a ON a.attrelid = k.confrelid AND a.attnum = u.n ORDER BY u.i) "
-            "FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid "
-            "JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_class f ON f.oid = k.confrelid "
-            "WHERE n.nspname = current_schema() AND k.contype IN ('p', 'f') "
-            "ORDER BY c.relname, k.conname"))).all():
-        table = tables.get(rel)
-        if table is None:
-            continue
-        if kind == "p":
-            table.pk = tuple(cols)
-        else:
-            table.fks.append((tuple(cols), target, tuple(tcols)))
-    return tables
 
 
 @dataclass
 class _Plan:
     order: list[str]
-    schema: dict[str, _Table]
+    schema: dict[str, db_catalog.Table]
     owners: dict[str, str]
 
     def outside_fks(self, table: str) -> list[tuple[str, ...]]:
         """Foreign keys of ``table`` pointing at a table the backup does not carry."""
         carried = set(self.order)
-        return [cols for cols, target, _ in self.schema[table].fks
+        return [cols for cols, target, _, _ in self.schema[table].fks
                 if target != "companies" and target not in carried]
 
 
@@ -258,7 +202,7 @@ def _owner(table: str, prefixes: dict[str, str]) -> str | None:
     return max(hits)[1] if hits else None
 
 
-def _module_shape_ok(table: _Table) -> bool:
+def _module_shape_ok(table: db_catalog.Table) -> bool:
     if "company_id" not in table.columns:
         return False
     if len(table.pk) == 1:
@@ -289,7 +233,7 @@ def _refusal(table: str, owners: dict[str, str]) -> BackupError:
 async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
     """The tables a backup carries, parents first. Strict (export) refuses any company
     table it cannot carry; otherwise (restore) such tables are simply not carried."""
-    schema = await _schema(session)
+    schema = await db_catalog.read(session)
     prefixes = installed_table_prefixes("")
     declarations = {module: _declared(module) for module in prefixes}
     owners: dict[str, str] = {}
@@ -320,37 +264,15 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
     while changed:
         changed = False
         keep = set(carried)
-        order, unordered = _fk_order(carried, schema)
+        order, unordered = db_catalog.fk_order(carried, schema)
         for name in list(carried):
-            if name in unordered or any(schema[name].columns[c].notnull for cols, target, _ in schema[name].fks
+            if name in unordered or any(schema[name].columns[c].notnull for cols, target, _, _ in schema[name].fks
                                         if target != "companies" and target not in keep for c in cols):
                 if strict:
                     raise _refusal(name, owners)
                 carried.remove(name)
                 changed = True
     return _Plan(order=order, schema=schema, owners=owners)
-
-
-def _fk_order(tables: list[str], schema: dict[str, _Table]) -> tuple[list[str], set[str]]:
-    """Tables ordered so each follows every table it references, and the tables no such
-    order exists for, which a restore could not insert: those referencing themselves or
-    in a reference cycle."""
-    listed = set(tables)
-    refs = {t: {target for _, target, _ in schema[t].fks if target in listed} for t in tables}
-    unordered = {t for t in tables if t in refs[t]}
-    parents = {t: refs[t] - {t} for t in tables}
-    order: list[str] = []
-    while ready := sorted(t for t, p in parents.items() if not p):
-        order.extend(ready)
-        for t in ready:
-            del parents[t]
-        for p in parents.values():
-            p.difference_update(ready)
-    # What is left is in a cycle or references one; only the cycles are unordered.
-    while behind := [t for t in parents if not any(t in p for p in parents.values())]:
-        for t in behind:
-            del parents[t]
-    return order, unordered | set(parents)
 
 
 async def classify(session: AsyncSession) -> list[str]:
@@ -448,22 +370,22 @@ def _kept_settings(settings: dict | None) -> dict:
     return {k: v for k, v in (settings or {}).items() if k not in DROPPED_SETTINGS}
 
 
-async def _batches(session: AsyncSession, table: _Table, company_id, expr: str):
+async def _batches(session: AsyncSession, table: db_catalog.Table, company_id, expr: str):
     """The company's rows of one table as JSON text, in primary-key order, in batches of at
     most BATCH_ROWS rows and BATCH_BYTES of JSON (a batch always holds at least one row).
 
     The byte cut is made in the database, so rows past it are never sent. After a cut the
     next fetch asks for twice as many rows as fitted, growing back to BATCH_ROWS."""
-    q = _ident(table.name)
+    q = db_catalog.ident(table.name)
     udt = {c: table.columns[c].udt for c in table.pk}
-    keys = ", ".join(f"t.{_ident(c)}::text AS k{i}" for i, c in enumerate(table.pk))
-    natives = ", ".join(f"t.{_ident(c)} AS o{i}" for i, c in enumerate(table.pk))
+    keys = ", ".join(f"t.{db_catalog.ident(c)}::text AS k{i}" for i, c in enumerate(table.pk))
+    natives = ", ".join(f"t.{db_catalog.ident(c)} AS o{i}" for i, c in enumerate(table.pk))
     picked = ", ".join(f"k{i}" for i in range(len(table.pk)))
     ordered = ", ".join(f"o{i}" for i in range(len(table.pk)))
-    order = ", ".join(f"t.{_ident(c)}" for c in table.pk)
-    company = f"CAST(CAST(:c AS text) AS {_ident(table.columns['company_id'].udt)})"
+    order = ", ".join(f"t.{db_catalog.ident(c)}" for c in table.pk)
+    company = f"CAST(CAST(:c AS text) AS {db_catalog.ident(table.columns['company_id'].udt)})"
     after = (f" AND ({order}) > ("
-             + ", ".join(f"CAST(CAST(:k{i} AS text) AS {_ident(udt[c])})" for i, c in enumerate(table.pk)) + ")")
+             + ", ".join(f"CAST(CAST(:k{i} AS text) AS {db_catalog.ident(udt[c])})" for i, c in enumerate(table.pk)) + ")")
     params: dict = {"c": str(company_id), "n": BATCH_ROWS, "b": BATCH_BYTES}
     first = True
     while True:
@@ -563,8 +485,8 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
     tables = []
     for name in plan.order:
         if name in plan.owners and not await session.scalar(text(
-                f"SELECT 1 FROM {_ident(name)} WHERE company_id = "
-                f"CAST(CAST(:c AS text) AS {_ident(plan.schema[name].columns['company_id'].udt)}) LIMIT 1"),
+                f"SELECT 1 FROM {db_catalog.ident(name)} WHERE company_id = "
+                f"CAST(CAST(:c AS text) AS {db_catalog.ident(plan.schema[name].columns['company_id'].udt)}) LIMIT 1"),
                 {"c": str(company_id)}):
             continue
         tables.append(name)
@@ -885,13 +807,13 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
     digests: dict[str, int] = {}
     refs: dict[tuple[str, tuple[str, ...]], set[tuple]] = {}
     keys: dict[tuple[str, tuple[str, ...]], set[tuple]] = {}
-    wanted = {(target, tcols) for t in order for cols, target, tcols in plan.schema[t].fks
+    wanted = {(target, tcols) for t in order for cols, target, tcols, _ in plan.schema[t].fks
               if target in carried and set(cols) <= set(m["tables"][t]["columns"])}
     with zipfile.ZipFile(backup.path) as zf:
         for name in order:
             table, columns = plan.schema[name], m["tables"][name]["columns"]
             present = set(columns)
-            fks = [(cols, target, tcols) for cols, target, tcols in table.fks if set(cols) <= present]
+            fks = [(cols, target, tcols) for cols, target, tcols, _ in table.fks if set(cols) <= present]
             own_keys = [(tcols, keys.setdefault((name, tcols), set())) for target, tcols in wanted if target == name]
             if any(not set(tcols) <= present for tcols, _ in own_keys):
                 raise BackupError(422, DAMAGED)
@@ -952,7 +874,7 @@ async def _check_foreign(session: AsyncSession, plan: _Plan, source: str, values
             continue
         kept = "CAST(company_id AS text) IS DISTINCT FROM :s" if name in EXCLUDED_TABLES else "true"
         if await session.scalar(text(
-                f"SELECT 1 FROM {_ident(name)} WHERE {_ident(table.pk[0])} = ANY(CAST(:v AS {key}[])) "
+                f"SELECT 1 FROM {db_catalog.ident(name)} WHERE {db_catalog.ident(table.pk[0])} = ANY(CAST(:v AS {key}[])) "
                 f"AND {kept} LIMIT 1"), {"v": wanted, "s": source}):
             raise BackupError(422, FOREIGN)
 
@@ -1201,12 +1123,12 @@ def _row_batches(lines, limit: int):
 
 async def _insert(session: AsyncSession, zf: zipfile.ZipFile, table: str, columns: list[str],
                   id_map: dict[str, str]) -> None:
-    cols = ", ".join(_ident(c) for c in columns)
-    picked = ", ".join(f"r.{_ident(c)}" for c in columns)
+    cols = ", ".join(db_catalog.ident(c) for c in columns)
+    picked = ", ".join(f"r.{db_catalog.ident(c)}" for c in columns)
     statement = text(
-        f"INSERT INTO {_ident(table)} ({cols}) SELECT {picked} "
+        f"INSERT INTO {db_catalog.ident(table)} ({cols}) SELECT {picked} "
         f"FROM jsonb_array_elements(CAST(:rows AS jsonb)) WITH ORDINALITY AS e(v, n), "
-        f"jsonb_populate_record(NULL::{_ident(table)}, e.v) AS r ORDER BY e.n")
+        f"jsonb_populate_record(NULL::{db_catalog.ident(table)}, e.v) AS r ORDER BY e.n")
     batches = _row_batches(_lines(zf, f"tables/{table}.jsonl"), BATCH_ROWS)
     while rows := await asyncio.to_thread(next, batches, None):
         await session.execute(statement, {"rows": _dump_rows(remap(rows, id_map))})

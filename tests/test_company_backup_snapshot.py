@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from celerp import db_catalog
 from company_backup_support import manifest, members, token
 from migration_support import auth, maker, real_client, real_engine  # noqa: F401
 from test_company_backup import (
@@ -205,7 +206,7 @@ async def test_export_snapshot_reads_through_one_dedicated_session(real_engine, 
 
     app.dependency_overrides[get_session] = recording
     reads: dict[str, list] = {"schema": [], "rows": [], "company": []}
-    real_schema, real_batches, real_get = cb._schema, cb._batches, AsyncSession.get
+    real_schema, real_batches, real_get = db_catalog.read, cb._batches, AsyncSession.get
 
     async def schema(session):
         reads["schema"].append(session)
@@ -221,7 +222,7 @@ async def test_export_snapshot_reads_through_one_dedicated_session(real_engine, 
             reads["company"].append(self)
         return await real_get(self, entity, ident, *args, **kwargs)
 
-    monkeypatch.setattr(cb, "_schema", schema)
+    monkeypatch.setattr(db_catalog, "read", schema)
     monkeypatch.setattr(cb, "_batches", batches)
     monkeypatch.setattr(AsyncSession, "get", get)
     r = await real_client.get("/company-backups/download", params=params, headers=auth(tok))

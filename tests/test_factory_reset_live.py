@@ -94,20 +94,62 @@ async def test_a_failure_part_way_leaves_both_companies_as_they_were(real_client
     alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
     before = {alpha: await _held(real_engine, alpha), beta: await _held(real_engine, beta)}
     users = await count(real_engine, "users")
-    wipe = system._company_tables
-
-    def broken():
-        from sqlalchemy import Column, MetaData, Table, Uuid
-
-        return [*wipe(), Table("no_such_table", MetaData(), Column("company_id", Uuid))]
-
-    monkeypatch.setattr(system, "_company_tables", broken)
+    wipe = system._company_deletes
+    # The company row goes last, so the failure comes after every other table's delete.
+    monkeypatch.setattr(system, "_company_deletes", lambda schema: [
+        *wipe(schema)[:-1], "DELETE FROM no_such_table WHERE company_id = CAST(:c AS uuid)"])
     with pytest.raises(Exception):  # the in-process transport re-raises the server error
         await _reset(real_client, ta, "Alpha Co")
 
     assert await count(real_engine, "companies") == 2
     assert {alpha: await _held(real_engine, alpha), beta: await _held(real_engine, beta)} == before
     assert await count(real_engine, "users") == users
+
+
+_MODULE_TABLES = (
+    "CREATE TABLE ext_parcels (id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES companies(id), "
+    "packed_by uuid REFERENCES users(id), label text NOT NULL)",
+    "CREATE TABLE ext_parcel_scans (id uuid PRIMARY KEY, "
+    "parcel_id uuid NOT NULL REFERENCES ext_parcels(id), at text NOT NULL)",
+)
+
+
+async def test_a_reset_clears_the_tables_of_a_module_that_is_not_loaded(real_client, real_engine):  # noqa: F811
+    """A module switched off keeps its tables. Its company rows, and the rows that hang
+    off them, go with the company; another company's rows in the same tables stay, and
+    so does a user one of those rows still names."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        clerk = (await conn.execute(text("SELECT id FROM users WHERE email = 'clerk@example.com'"))).scalar_one()
+        for ddl in _MODULE_TABLES:
+            await conn.execute(text(ddl))
+    try:
+        async with real_engine.begin() as conn:
+            for company, label in ((alpha, "alpha"), (beta, "beta")):
+                parcel = uuid.uuid4()
+                await conn.execute(text("INSERT INTO ext_parcels VALUES (:i, :c, :u, :l)"),
+                                   {"i": parcel, "c": company, "u": clerk, "l": label})
+                await conn.execute(text("INSERT INTO ext_parcel_scans VALUES (:i, :p, 'today')"),
+                                   {"i": uuid.uuid4(), "p": parcel})
+
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "companies", "id = :i", i=alpha) == 0
+        assert await count(real_engine, "ext_parcels", "company_id = :i", i=alpha) == 0
+        assert await count(real_engine, "ext_parcels", "company_id = :i", i=beta) == 1
+        assert await count(real_engine, "ext_parcel_scans") == 1
+        assert await count(real_engine, "ext_parcel_scans", "parcel_id IN (SELECT id FROM ext_parcels)") == 1
+        # Beta's parcel still names the clerk, so the clerk stays though Alpha was their only company.
+        assert await count(real_engine, "users", "id = :i", i=clerk) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_parcel_scans, ext_parcels"))
 
 
 @pytest.mark.parametrize("typed", [None, "", "RESET", "alpha co", "Alpha Co "])

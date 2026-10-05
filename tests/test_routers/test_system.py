@@ -100,12 +100,12 @@ def _mock_session():
 
 
 def _reset_session(real):
-    """Session for the factory-reset request: DB-authoritative auth reads delegate to
-    the seeded rollback session ``real``, while the destructive writes are captured
-    instead of run.
+    """Session for the factory-reset request: reads (auth, the members, the database
+    catalog) delegate to the seeded rollback session ``real``, while the destructive
+    writes are captured instead of run.
 
-    Auth now loads the user, membership and company from the DB, so those reads
-    (``get``/``scalar``/``scalars``) must hit the real seeded session. A real wipe and
+    Auth loads the user, membership and company from the DB, so those reads must hit
+    the real seeded session. A real wipe and
     commit would fight the outer rollback transaction, so ``execute``/``commit`` are
     captured no-ops (tests/test_factory_reset_live.py runs the wipe for real). The
     recorded SQL is exposed on ``recorded_sql`` for the wipe assertion.
@@ -133,6 +133,8 @@ def _reset_session(real):
 
         # Destructive writes are captured, never executed.
         async def execute(self, statement, *args, **kwargs):
+            if str(statement).lstrip().startswith("SELECT"):
+                return await real.execute(statement, *args, **kwargs)
             self.recorded_sql.append(str(statement))
             return MagicMock()
 
@@ -221,10 +223,10 @@ class TestFactoryReset:
             recorded = reset_sess.recorded_sql
             deletes = [c for c in recorded if c.startswith("DELETE FROM")]
             for table in ("companies", "user_companies", "locations", "ledger"):
-                assert any(c.startswith(f"DELETE FROM {table} WHERE {table}.") for c in deletes), table
+                assert any(c.startswith(f'DELETE FROM "{table}" WHERE ') for c in deletes), table
             assert [c for c in deletes if " WHERE " not in c] == []
             [users] = [c for c in deletes if c.startswith("DELETE FROM users")]
-            assert "NOT (EXISTS" in users
+            assert "NOT EXISTS" in users
         finally:
             app.dependency_overrides.clear()
             gw_state.set_session_token("")
