@@ -587,6 +587,7 @@ def _reset_loaded_modules(request):
         yield
         return
     from celerp.modules.loader import _loaded, _module_routes
+    from celerp.modules import outcome as _outcome
     from celerp.modules import slots as _slots_mod
     _loaded.clear()
     _module_routes.clear()
@@ -594,6 +595,7 @@ def _reset_loaded_modules(request):
     yield
     _loaded.clear()
     _module_routes.clear()
+    _outcome._awaiting_ui = False  # a lifespan that loaded modules waits for a UI
     _slots_mod._slots.clear()
     _slots_mod._slots.update({k: list(v) for k, v in _slot_snapshot.items()})
 

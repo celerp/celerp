@@ -31,7 +31,7 @@ assert_secure_jwt()
 _FIRST_BOOT = not settings.gateway_instance_id
 _BOOT_ID = uuid.uuid4().hex
 ensure_instance_id()
-from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
+from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from celerp.models.base import Base
 
 from celerp.routers import auth, companies, company_backup, ledger, migrations
@@ -301,6 +301,11 @@ async def _serve(_app: FastAPI, held):
             from celerp.modules.outcome import publish as _publish_outcome
             async with lifecycle_engine.begin() as conn:
                 await conn.run_sync(_publish_outcome)
+            if _loaded_modules:
+                # A module that fails in the UI process stops here before any
+                # module route answers.
+                from celerp.modules.outcome import await_ui_report
+                await_ui_report()
             if update_verify:
                 # Verification proves DB/module/runtime startup without external work.
                 await _verify_runtime_dependencies()
@@ -387,10 +392,6 @@ async def _serve(_app: FastAPI, held):
     # payments close for good, a kept one's reopen). Until then they stay closed.
     from celerp.services.payments import reconcile_payments_loop
     background = [asyncio.create_task(reconcile_payments_loop())]
-    if _loaded_modules:
-        # A module that fails in the UI process stops here too.
-        from celerp.modules.outcome import watch_reported_stops
-        background.append(asyncio.create_task(watch_reported_stops(_app, lifecycle_engine)))
 
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links
@@ -604,6 +605,7 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(DrainMiddleware)
 app.add_middleware(RecoveryMaintenanceMiddleware)
+app.add_middleware(ModuleStartupMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(SlidingTokenRefreshMiddleware)
 app.add_middleware(MaxBodySizeMiddleware, max_body_size_bytes=10 * 1024 * 1024)

@@ -1303,13 +1303,13 @@ def _two_sided_module(base: Path, folder: str, *, fail_ui: bool = False,
 
 
 async def test_ui_route_failure_stops_the_module_in_the_api_process(
-        committed_engine, _modules, tmp_path):
-    """Two processes: this one is the API, the UI is a real ui.app import. A module
-    whose UI routes fail there stops here too, with its dependents."""
-    import asyncio
-
+        committed_engine, _modules, tmp_path, monkeypatch):
+    """Two processes: this one is the API, the UI is a real ui.app import. No module
+    route is served until the UI has reported; a module whose UI routes failed
+    there is stopped here, with its dependents, before any module route answers."""
     from celerp.modules import outcome
 
+    monkeypatch.setattr(outcome, "_awaiting_ui", False)
     failing, failing_inner = _two_sided_module(_modules, f"acme-{_uid()}", fail_ui=True)
     dependent, dependent_inner = _two_sided_module(
         _modules, f"acme-{_uid()}", depends_on=[failing.name])
@@ -1319,21 +1319,16 @@ async def test_ui_route_failure_stops_the_module_in_the_api_process(
     loader.register_api_routes(api, loader.load_all(str(_modules), enabled))
     async with committed_engine.begin() as conn:
         await conn.run_sync(outcome.publish)
+    outcome.await_ui_report()
     assert all(loader.is_running(n) for n in enabled)
+    assert await outcome.confirm_ui_report(api, committed_engine) is False
 
     ui = _ui_process(outcome.BOOT_TOKEN, _engine_url(committed_engine), _modules,
                      ",".join(sorted(enabled)), tmp_path)
     assert "ui setup exploded" in ui["errors"][failing.name]
 
-    watcher = asyncio.create_task(
-        outcome.watch_reported_stops(api, committed_engine, interval=0.05))
-    try:
-        for _ in range(200):
-            if not loader.is_running(failing.name):
-                break
-            await asyncio.sleep(0.05)
-    finally:
-        watcher.cancel()
+    assert await outcome.confirm_ui_report(api, committed_engine) is True
+    assert outcome.ui_report_applied()
 
     for name, inner in ((failing.name, failing_inner), (dependent.name, dependent_inner)):
         assert not loader.is_running(name)
@@ -1436,3 +1431,45 @@ async def test_report_from_an_earlier_api_process_stops_nothing(committed_engine
         fence.release()
     async with committed_engine.connect() as conn:
         assert (await conn.run_sync(outcome.read))["running"] == [healthy.name]
+
+
+async def test_api_serves_no_module_route_until_the_ui_has_reported(
+        committed_engine, _modules, monkeypatch):
+    """Between the API's start and the UI's report a module route answers 503 with
+    a plain message; the rest of the API is served throughout."""
+    import celerp.db
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+
+    from celerp.db_url import sync_url
+    from celerp.middleware import ModuleStartupMiddleware
+    from celerp.migrations.compatibility import Fence
+    from celerp.modules import outcome
+
+    monkeypatch.setattr(outcome, "_awaiting_ui", False)
+    monkeypatch.setattr(celerp.db, "lifecycle_engine", committed_engine)
+    healthy, inner = _two_sided_module(_modules, f"acme-{_uid()}")
+    app = Starlette(routes=[])
+    app.router.add_route("/kernel", lambda r: PlainTextResponse("kernel"))
+    app.add_api_route = app.router.add_route
+    loader.register_api_routes(app, loader.load_all(str(_modules), {healthy.name}))
+    app.add_middleware(ModuleStartupMiddleware)
+    async with committed_engine.begin() as conn:
+        await conn.run_sync(outcome.publish)
+        record = await conn.run_sync(outcome.read)
+    outcome.await_ui_report()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://api") as client:
+        early = await client.get(f"/{inner}/api")
+        assert early.status_code == 503
+        assert early.json() == {"detail": outcome.STARTING}
+        assert (await client.get("/kernel")).status_code == 200
+
+        fence = Fence.join(sync_url(_engine_url(committed_engine)))
+        try:
+            assert outcome.report_stopped(fence, record) == {}
+        finally:
+            fence.release()
+        assert (await client.get(f"/{inner}/api")).status_code == 200
+    assert outcome.ui_report_applied()
