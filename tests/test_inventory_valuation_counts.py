@@ -75,6 +75,7 @@ async def _valuation(client, h, params) -> dict:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(120)  # 504 combinations, about 1200 requests; slower than the suite guard allows on a shared runner
 async def test_counts_equal_rows_for_every_filter_combination(client):
     """Red statement: the valuation loop skipped service, non-stocked and consigned-in
     rows and compared status and category as single values, so ?status=available,
@@ -89,14 +90,21 @@ async def test_counts_equal_rows_for_every_filter_combination(client):
         "inventory_type": [None, "service"],
     }
     bad = []
+    # Category counts come from the rows the other filters leave; one fetch per such set.
+    cat_counts: dict[tuple, dict[str, int]] = {}
     for combo in itertools.product(*dims.values()):
         params = {k: v for k, v in zip(dims, combo) if v}
         rows = await _rows(client, h, params)
         v = await _valuation(client, h, params)
-        cats: dict[str, int] = {}
-        for i in await _rows(client, h, {k: x for k, x in params.items() if k != "category"}):
-            if i.get("category"):
-                cats[i["category"]] = cats.get(i["category"], 0) + 1
+        others = {k: x for k, x in params.items() if k != "category"}
+        key = tuple(sorted(others.items()))
+        if key not in cat_counts:
+            cats: dict[str, int] = {}
+            for i in await _rows(client, h, others):
+                if i.get("category"):
+                    cats[i["category"]] = cats.get(i["category"], 0) + 1
+            cat_counts[key] = cats
+        cats = cat_counts[key]
         statuses: dict[str, int] = {}
         for i in rows:
             statuses[i["status"]] = statuses.get(i["status"], 0) + 1
