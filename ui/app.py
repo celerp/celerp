@@ -329,6 +329,32 @@ class I18nMiddleware:
 
 app.add_middleware(I18nMiddleware)
 
+
+class NoStorePagesMiddleware:
+    """Pure ASGI middleware: HTML responses carry Cache-Control: no-store unless the
+    route set its own, so Back never shows a page cached for another company or user."""
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        async def _send(message):
+            if message["type"] == "http.response.start":
+                headers = message.get("headers", [])
+                names = {k.lower() for k, _ in headers}
+                ctype = next((v for k, v in headers if k.lower() == b"content-type"), b"")
+                if ctype.startswith(b"text/html") and b"cache-control" not in names:
+                    message["headers"] = [*headers, (b"cache-control", b"no-store")]
+            await send(message)
+
+        await self._app(scope, receive, _send)
+
+app.add_middleware(NoStorePagesMiddleware)
+
 # ── Error handlers ─────────────────────────────────────────────────────────────
 
 async def ui_404_handler(request: Request, exc) -> HTMLResponse:
