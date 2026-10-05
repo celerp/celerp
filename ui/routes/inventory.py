@@ -1820,7 +1820,7 @@ def setup_routes(app):
         except (APIError, Exception) as e:
             if isinstance(e, APIError) and e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            schema, item, ledger, locations, company, cat_schemas, price_lists, units_resp = [], {}, [], [], {}, {}, [], {}
+            schema, item, ledger, locations, company, cat_schemas, price_lists, units_resp, category_names = [], {}, [], [], {}, {}, [], {}, {}
         # Split preview for the item-detail split card; own try/except so a non-splittable item
         # (or any preview error) degrades to the disabled card rather than blanking the page.
         try:
