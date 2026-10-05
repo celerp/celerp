@@ -35,6 +35,18 @@ async def ui():
         yield c
 
 
+def _items_api(page: dict):
+    """list_items as the API answers it: the [DEMO] search keeps only items whose name
+    carries the marker; every other call returns the page as given."""
+    async def _list(token, params=None):
+        from ui.routes.inventory import DEMO_ITEMS_QUERY
+        if (params or {}).get("q") == DEMO_ITEMS_QUERY:
+            hits = [i for i in page.get("items") or [] if "[DEMO]" in (i.get("name") or "")]
+            return {"items": hits, "total": len(hits)}
+        return page
+    return _list
+
+
 class _Dash:
     """The API as the dashboard sees it for one company."""
 
@@ -44,7 +56,7 @@ class _Dash:
                         "currency": "EUR", "settings": dict(settings or {})}
         if vertical:
             self.company["settings"].setdefault("vertical", vertical)
-        self.list_items = AsyncMock(return_value=items or {"items": [_DEMO_ITEM], "total": 1})
+        self.list_items = AsyncMock(side_effect=_items_api(items or {"items": [_DEMO_ITEM], "total": 1}))
         self.list_contacts = AsyncMock(return_value=contacts or {"items": [_SELF_CONTACT], "total": 1})
         self.list_docs = AsyncMock(return_value=docs or _EMPTY)
         self.patch_company = AsyncMock(return_value={})
@@ -265,3 +277,39 @@ async def test_no_demo_note_without_demo_items(ui):
     html = await _dashboard(ui, items={"items": [{"id": "item:1", "sku": "R-1", "name": "Ring"}], "total": 1})
     assert _demo_note(html) == ""
     assert "[DEMO]" not in html
+
+
+def _demo_link(html: str) -> str:
+    m = re.search(r'<a[^>]*id="remove-demo-items".*?</a>', _demo_note(html), re.S)
+    return m.group(0) if m else ""
+
+
+async def test_demo_note_links_to_the_demo_items(ui):
+    """The note carries a small "Remove demo items" link to the inventory list searched
+    for [DEMO] by name, with the hint that points at the select-all box."""
+    from html import unescape
+    from urllib.parse import parse_qs, urlsplit
+    from ui.routes.inventory import DEMO_ITEMS_QUERY
+    link = _demo_link(await _dashboard(ui))
+    assert "Remove demo items" in link
+    href = urlsplit(unescape(re.search(r'href="([^"]+)"', link).group(1)))
+    assert href.path == "/inventory"
+    assert parse_qs(href.query) == {"q": [DEMO_ITEMS_QUERY], "hint": ["demo"]}
+    assert DEMO_ITEMS_QUERY == "name:[DEMO]"
+
+
+async def test_demo_note_and_link_follow_the_marked_items(ui):
+    """Demo samples renamed by the owner no longer carry [DEMO]: the note and its link
+    go once no item is marked, so the link never opens an empty list."""
+    renamed = {"items": [{"id": "item:d1", "sku": "DEMO-001", "name": "House rice"}], "total": 1}
+    html = await _dashboard(ui, items=renamed)
+    assert _demo_note(html) == ""
+    assert 'id="remove-demo-items"' not in html
+
+
+async def test_demo_link_only_for_roles_that_can_delete_items(ui):
+    """The note is for everyone who sees the figures; the link leads to Delete, so it
+    shows only to roles allowed to delete items."""
+    html = await _dashboard(ui, role="viewer")
+    assert _DEMO_NOTE in _demo_note(html)
+    assert _demo_link(html) == ""

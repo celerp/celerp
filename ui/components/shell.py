@@ -1381,29 +1381,48 @@ window.celerpUseDays = function(record){
 })();
 """
 
-_IMPORT_HINT_JS = """
-// A list page opened with ?hint=import (from the dashboard's import card) points an
-// arrow at its Import button. The parameter is dropped from the address straight
-// away, so a refresh or a shared link never shows the arrow again. The arrow sits in
-// the page flow under the whole header row, so it never covers another control, and
-// goes on any click or on Esc.
+_LIST_HINT_JS = """
+// A list page opened with ?hint=<name> points an arrow at one control: ?hint=import
+// (the dashboard's import card) at the page's Import button, ?hint=demo (the
+// dashboard's demo note) at the select-all box over the demo items. The parameter is
+// dropped from the address straight away, so a refresh or a shared link never shows
+// the arrow again. The arrow sits in the page flow, so it never covers another
+// control, and goes on any click, its close button included, or on Esc.
 (function(){
+  var HINTS = {
+    // Under the whole header row, pointing up at the button.
+    import: {target: '[data-import-hint]', text: 'importHint',
+             row: function(el){ return el.closest('.page-header') || el.parentElement; }},
+    // Right above the table, pointing down at the box. The list starts with nothing
+    // selected, so a row ticked earlier elsewhere never rides along into Delete.
+    demo: {target: '#select-all-rows', text: 'demoHint', above: true, clearSelection: true,
+           row: function(el){ return el.closest('.table-scroll-wrap') || el.closest('table'); }}
+  };
   var params = new URLSearchParams(location.search);
-  if (params.get('hint') !== 'import') return;
+  var name = params.get('hint');
+  if (!Object.prototype.hasOwnProperty.call(HINTS, name)) return;
+  var hint = HINTS[name];
   params.delete('hint');
   var qs = params.toString();
   history.replaceState(history.state, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
   function start(){
-    var btn = document.querySelector('[data-import-hint]');
+    var btn = document.querySelector(hint.target);
     if (!btn) return;
-    var row = btn.closest('.page-header') || btn.parentElement;
+    if (hint.clearSelection) document.body.dispatchEvent(new CustomEvent('celerpSelectionClear'));
+    var row = hint.row(btn);
     var tip = document.createElement('div');
-    tip.className = 'import-arrow';
+    tip.className = 'import-arrow' + (hint.above ? ' import-arrow--down' : '');
     tip.setAttribute('role', 'status');
-    tip.textContent = window.__shellI18n.importHint;
-    row.after(tip);
+    tip.appendChild(document.createTextNode(window.__shellI18n[hint.text]));
+    var x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'import-arrow-close';
+    x.setAttribute('aria-label', window.__shellI18n.close);
+    x.textContent = '\\u00d7';
+    tip.appendChild(x);
+    if (hint.above) row.before(tip); else row.after(tip);
     btn.classList.add('import-arrow-pulse');
-    // Slide the arrow along its own row so its pointer sits under the button.
+    // Slide the arrow along its own row so its pointer sits on the control.
     function place(){
       var b = btn.getBoundingClientRect();
       var r = tip.parentElement.getBoundingClientRect();
@@ -1425,7 +1444,7 @@ _IMPORT_HINT_JS = """
     document.addEventListener('click', close, true);
     document.addEventListener('keydown', onKey, true);
     window.addEventListener('resize', place);
-    // Late layout (fonts) can still move the button after load.
+    // Late layout (fonts) can still move the control after load.
     window.addEventListener('load', place);
     place();
   }
@@ -1738,7 +1757,7 @@ def _shell_js_i18n(lang: str = "en") -> dict:
     """Translated strings the static JS bundle needs (R2): resolved here at render
     time and handed to the client as a single config object, never spliced into
     the JS source. Read by _CLIENT_JS, _NOTIFICATION_JS, _STAR_CTA_JS and
-    _IMPORT_HINT_JS; the config is injected by client_scripts, before any of them."""
+    _LIST_HINT_JS; the config is injected by client_scripts, before any of them."""
     return {
         "copied": t("shell.copied", lang),
         "copyLabel": t("btn.copy", lang),
@@ -1767,6 +1786,8 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "starOnGithub": t("shell.star_on_github", lang),
         "appreciateSupport": t("shell.appreciate_support", lang),
         "importHint": t("shell.import_hint", lang),
+        "demoHint": t("shell.demo_hint", lang),
+        "close": t("btn.close", lang),
     }
 
 
@@ -1844,7 +1865,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         Script(_USER_MENU_JS),
         Script(_BUG_LINK_JS),
         Script(_STAR_CTA_JS),
-        Script(_IMPORT_HINT_JS),
+        Script(_LIST_HINT_JS),
         Script(_STICKY_HEADER_JS),
         Script(_INFO_TIP_JS),
     ]

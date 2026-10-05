@@ -835,6 +835,7 @@ _GETTING_STARTED_KEYS = (
     "dashboard.getting_started_where", "dashboard.demo_note",
     "dashboard.getting_started_from_spreadsheet",
     "dashboard.finish_setup", "shell.import_hint",
+    "dashboard.remove_demo_items", "shell.demo_hint",
 )
 
 

@@ -21,6 +21,7 @@ from ui.i18n import t, get_lang
 from celerp.services.doc_balance import awaiting_status_param
 from celerp.services.permissions import role_has_permission as _role_has_permission
 from ui.routes.company_backup import SETTINGS as _RESTORE
+from ui.routes.inventory import DEMO_ITEMS_QUERY, DEMO_ITEMS_URL
 from ui.routes.migrations import COMPANY as _MIGRATE
 from ui.routes.setup import has_business_type
 from urllib.parse import urlencode as _urlencode
@@ -774,7 +775,7 @@ def setup_routes(app):
             Script("window.celerpUseDays && window.celerpUseDays(true);"),
             _finish_setup_banner(company, settings, role),
             welcome or "",
-            await _demo_note(token),
+            await _demo_note(token, settings, role),
             _kpi_grid(cfg, values, role=role, settings=settings),
             _secondary_kpi_grid(cfg, values, role=role, settings=settings),
             _charts_section(cfg, valuation, ar_aging,
@@ -893,17 +894,20 @@ def _real_items(page: dict) -> bool:
     return (page.get("total") or 0) > demo
 
 
-async def _demo_note(token: str) -> FT | str:
+async def _demo_note(token: str, settings: dict, role: str) -> FT | str:
     """The figures below count setup's [DEMO] samples while any are left, so say so
-    next to them, for everyone who sees the figures. Nothing when the items cannot be
-    read: the note never claims samples it has not seen."""
+    next to them, for everyone who sees the figures, with a link to the list of them
+    for the roles that may delete items. Nothing when the items cannot be read: the
+    note never claims samples it has not seen."""
     try:
-        page = await api.list_items(token, {"status": "all", "q": "DEMO-", "limit": 50})
+        page = await api.list_items(token, {"q": DEMO_ITEMS_QUERY, "limit": 1})
     except APIError:
         return ""
-    if not any(_is_demo(i) for i in page.get("items") or []):
+    if not page.get("total"):
         return ""
-    return Div(Span("ℹ️", cls="info-banner-icon"), t("dashboard.demo_note"),
+    link = (A(t("dashboard.remove_demo_items"), href=DEMO_ITEMS_URL, id="remove-demo-items")
+            if _role_has_permission(settings, role, "adjust_inventory") else "")
+    return Div(Span("ℹ️", cls="info-banner-icon"), Span(t("dashboard.demo_note"), " ", link),
                cls="info-banner", id="demo-note")
 
 

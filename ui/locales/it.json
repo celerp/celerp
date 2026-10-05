@@ -3619,6 +3619,8 @@
   "dashboard.finish_setup": "Completa la configurazione: scegli il tipo di attività",
   "dashboard.getting_started_forever": "Non mostrare più",
   "dashboard.demo_note": "Gli articoli contrassegnati [DEMO] sono esempi e sono inclusi in queste cifre. La prima importazione di prodotti li rimuove, a meno che tu non li abbia modificati.",
+  "dashboard.remove_demo_items": "Rimuovi gli articoli demo",
   "dashboard.getting_started_from_spreadsheet": "Importa da un foglio di calcolo:",
-  "shell.import_hint": "Fai clic su Importa per caricare un file CSV o Excel (.xlsx). La pagina successiva ha un modello da scaricare."
+  "shell.import_hint": "Fai clic su Importa per caricare un file CSV o Excel (.xlsx). La pagina successiva ha un modello da scaricare.",
+  "shell.demo_hint": "Spunta la casella per selezionarli tutti, poi scegli Elimina."
 }

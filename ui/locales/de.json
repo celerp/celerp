@@ -3619,6 +3619,8 @@
   "dashboard.finish_setup": "Einrichtung abschließen: Unternehmenstyp auswählen",
   "dashboard.getting_started_forever": "Nicht mehr anzeigen",
   "dashboard.demo_note": "Mit [DEMO] markierte Artikel sind Beispiele und in diesen Zahlen enthalten. Ihr erster Produktimport entfernt sie, sofern Sie sie nicht geändert haben.",
+  "dashboard.remove_demo_items": "Demo-Artikel entfernen",
   "dashboard.getting_started_from_spreadsheet": "Aus einer Tabelle importieren:",
-  "shell.import_hint": "Klicken Sie auf Importieren, um eine CSV- oder Excel-Datei (.xlsx) hochzuladen. Auf der nächsten Seite gibt es eine Vorlage zum Herunterladen."
+  "shell.import_hint": "Klicken Sie auf Importieren, um eine CSV- oder Excel-Datei (.xlsx) hochzuladen. Auf der nächsten Seite gibt es eine Vorlage zum Herunterladen.",
+  "shell.demo_hint": "Setzen Sie das Häkchen, um alle auszuwählen, und wählen Sie dann Löschen."
 }

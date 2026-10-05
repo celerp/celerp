@@ -11,11 +11,12 @@ import json
 import logging
 import re
 import uuid
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 logger = logging.getLogger(__name__)
 
 from fasthtml.common import *
+from starlette.datastructures import QueryParams
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
@@ -51,6 +52,13 @@ from celerp_inventory.services import (
 )
 
 _DEFAULT_PER_PAGE = 50
+
+# The inventory search that lists setup's samples: every one is named "[DEMO] ...".
+# Scoped to the name, because a sample its owner renamed still says [DEMO] in its
+# description and is theirs now.
+DEMO_ITEMS_QUERY = "name:[DEMO]"
+# The dashboard demo note's link: that search, with the hint at the select-all box.
+DEMO_ITEMS_URL = "/inventory?" + urlencode({"q": DEMO_ITEMS_QUERY, "hint": "demo"})
 
 
 def _sp_static_td(val, num: bool = False) -> FT:
@@ -714,7 +722,10 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
 
 
 def _parse_params(request: Request) -> dict:
-    q = request.query_params
+    return _parse_query(request.query_params)
+
+
+def _parse_query(q: QueryParams) -> dict:
     try:
         per_page = int(q.get("per_page", _DEFAULT_PER_PAGE))
     except (ValueError, TypeError):
@@ -1316,6 +1327,7 @@ def setup_routes(app):
                     url=_search_url,
                     help=search_help(lang, panel_id="page-search-help-panel"),
                     label=t(_STATUS_SEARCH_LABELS.get(p.get("status") or "available", "inventory.search_any"), lang),
+                    value=p.get("q", ""),
                 ),
                 Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _can_edit_inventory else "",
                 A(t("btn.export_csv", lang), href="/inventory/export/csv?" + urlencode(_base_state(p)), cls="btn btn--secondary") if _can_import_export else "",
@@ -3247,7 +3259,8 @@ function celerpPrintLabel(entityId, templateId) {
 
     # ── Bulk actions (list-level) ─────────────────────────────────────────────
 
-    def _bulk_destructive_success(message: str, redirect_qs: str = "", cls: str = "flash--success") -> Response:
+    def _bulk_destructive_success(request: Request, message: str, redirect_qs: str = "",
+                                  cls: str = "flash--success") -> Response:
         """Return a bulk-action result response that clears the client-side selection.
 
         Sends HX-Trigger: celerpSelectionClear so the JS handler resets CelerpSelection
@@ -3256,11 +3269,15 @@ function celerpPrintLabel(entityId, templateId) {
         variant (success, or warning for a partial-success count).
         """
         from starlette.responses import HTMLResponse
+        # Without a result filter of its own the table reloads the list the owner is on
+        # (search, tab, filters), never the unfiltered default.
+        state = _base_state(_parse_query(QueryParams(urlsplit(request.headers.get("hx-current-url", "")).query)))
+        content_qs = redirect_qs or (f"?{urlencode(state)}" if state else "")
         content = Div(
             P(message, cls=f"flash {cls}"),
             id="bulk-action-result",
             hx_trigger="load delay:1s",
-            hx_get=f"/inventory/content{redirect_qs}",
+            hx_get=f"/inventory/content{content_qs}",
             hx_target="#inventory-content",
             hx_swap="outerHTML",
             **({"hx_push_url": f"/inventory{redirect_qs}"} if redirect_qs else {}),
@@ -3293,7 +3310,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
-        return _bulk_destructive_success(t("inventory.bulk_status_updated", n=updated, status=display_enum(status, domain="item_status")))
+        return _bulk_destructive_success(request, t("inventory.bulk_status_updated", n=updated, status=display_enum(status, domain="item_status")))
 
     @app.post("/api/items/bulk/make-available")
     async def bulk_item_make_available(request: Request):
@@ -3309,7 +3326,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
-        return _bulk_destructive_success(t("inventory.bulk_made_available", n=updated))
+        return _bulk_destructive_success(request, t("inventory.bulk_made_available", n=updated))
 
     @app.post("/api/items/bulk/revert-to-draft")
     async def bulk_item_revert_to_draft(request: Request):
@@ -3325,7 +3342,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
-        return _bulk_destructive_success(t("inventory.bulk_reverted_draft", n=updated))
+        return _bulk_destructive_success(request, t("inventory.bulk_reverted_draft", n=updated))
 
     @app.post("/api/items/{entity_id}/channel-sync/{platform}/{action}")
     async def item_channel_sync(request: Request, entity_id: str, platform: str, action: str):
@@ -3364,7 +3381,7 @@ function celerpPrintLabel(entityId, templateId) {
         if errors:
             return Div(P("; ".join(errors), cls="flash flash--warning"), id="bulk-action-result")
         return HTMLResponse(
-            to_xml(_bulk_destructive_success(t("inventory.bulk_verb_count", verb="Sync", n=result.get("updated", 0)))),
+            to_xml(_bulk_destructive_success(request, t("inventory.bulk_verb_count", verb="Sync", n=result.get("updated", 0)))),
             headers={"HX-Refresh": "true"},
         )
 
@@ -3383,6 +3400,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         return _bulk_destructive_success(
+            request,
             t("inventory.bulk_verb_count", verb="Shopify sync", n=result.get("updated", 0))
         )
 
@@ -3403,7 +3421,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
-        return _bulk_destructive_success(t("inventory.bulk_transferred", n=updated))
+        return _bulk_destructive_success(request, t("inventory.bulk_transferred", n=updated))
 
     @app.post("/api/items/bulk/delete")
     async def bulk_item_delete(request: Request):
@@ -3419,7 +3437,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         deleted = result.get("deleted", len(entity_ids))
-        return _bulk_destructive_success(t("inventory.bulk_deleted", n=deleted))
+        return _bulk_destructive_success(request, t("inventory.bulk_deleted", n=deleted))
 
     # ── Bulk expire ──────────────────────────────────────────────────────
 
@@ -3437,7 +3455,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         expired = result.get("expired", len(entity_ids))
-        return _bulk_destructive_success(t("inventory.bulk_expired", n=expired))
+        return _bulk_destructive_success(request, t("inventory.bulk_expired", n=expired))
 
     # ── Bulk write-off (seed a write-off list from the selection, then open it) ──
     @app.post("/api/items/bulk/write-off")
@@ -3491,7 +3509,7 @@ function celerpPrintLabel(entityId, templateId) {
         if ok == 0:
             return Div(P(t("inventory.bulk_duplicate_failed", n=failed), cls="flash flash--error"), id="bulk-action-result")
         msg = t("inventory.bulk_duplicated_partial", ok=ok, failed=failed) if failed else t("inventory.bulk_duplicated", n=ok)
-        return _bulk_destructive_success(msg, cls="flash--warning" if failed else "flash--success")
+        return _bulk_destructive_success(request, msg, cls="flash--warning" if failed else "flash--success")
 
     # ── Bulk merge (direct — no preview modal) ───────────────────────────
 
@@ -3535,7 +3553,7 @@ function celerpPrintLabel(entityId, templateId) {
         target_item = next((it for it in items if it.get("entity_id") == target_sku_from or it.get("id") == target_sku_from), None)
         target_sku = resulting_sku or (target_item.get("sku", "") if target_item else "")
         redirect_qs = f"?q={target_sku}" if target_sku else ""
-        return _bulk_destructive_success(t("inv.items_merged_successfully"), redirect_qs)
+        return _bulk_destructive_success(request, t("inv.items_merged_successfully"), redirect_qs)
 
     async def _next_transform_sku(token: str, parent_sku: str) -> str:
         """Suggest a fresh child SKU for a TRANSFORM (a new, distinct product derived from
@@ -3671,6 +3689,7 @@ function celerpPrintLabel(entityId, templateId) {
         remaining_qty = mother_qty_override if mother_qty_override is not None else (current_qty - child_qty)
         exact_skus = f"{quote(orig_sku)},{quote(child_sku)}"
         return _bulk_destructive_success(
+            request,
             t("inventory.split_success", orig=orig_sku, remaining=remaining_qty, child=child_sku, child_qty=child_qty),
             f"?skus={exact_skus}&status=all",
         )
@@ -3895,6 +3914,7 @@ function celerpPrintLabel(entityId, templateId) {
         parent_sku = result.get("parent_sku", "")
         exact_skus = f"{quote(parent_sku)},{quote(child_sku)}"
         return _bulk_destructive_success(
+            request,
             t("inventory.transformed", parent=parent_sku, child=child_sku),
             f"?skus={exact_skus}&status=all",
         )
@@ -4928,10 +4948,12 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     action_options.append(Option(t("inv.expire"), value="expire"))
     if role_has_permission(settings or {}, role, "edit_inventory"):
         action_options.append(Option(t("inv.duplicate"), value="duplicate"))
-    # Restore and Delete only shown when viewing archived/expired items
+    # Restore and Delete only shown when viewing archived/expired items; Delete also on
+    # the demo items list, which the dashboard's "Remove demo items" link opens.
     active_status = (p or {}).get("status", "")
     if active_status in ("archived", "expired"):
         action_options.append(Option(t("inv.restore"), value="restore"))
+    if active_status in ("archived", "expired") or (p or {}).get("q") == DEMO_ITEMS_QUERY:
         action_options.append(Option(t("btn.delete"), value="delete"))
     # JS shows/hides these two based on the actual checked rows' statuses (updateBulkToolbar).
     if role_has_permission(settings or {}, role, "edit_inventory"):
