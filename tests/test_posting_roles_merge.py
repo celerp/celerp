@@ -19,7 +19,7 @@ from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
 from celerp.services.company_lock import locked_company
 from test_helpers import invite_user, merge_items
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_posting_roles_landed import _freight_bill
 from test_receipt_accounting import _finalize, _receive
 

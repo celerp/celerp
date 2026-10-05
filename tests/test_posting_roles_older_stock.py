@@ -38,7 +38,8 @@ from celerp.services.auto_je import _emit_auto_posted_je
 from celerp.services.business_time import business_date_at
 from celerp.services.company_lock import locked_company
 from stock_books import assert_settled, older_release_lot
-from test_cost_restatement import TZ, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
+from test_helpers import TZ
 from test_money_stock_and_contact_invariants import _account_net
 from test_posting_roles_lot_origin import _books_match_lots
 from test_posting_roles_lots import _forget_origin, _lot, _sell

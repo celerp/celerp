@@ -20,7 +20,7 @@ from httpx import ASGITransport, AsyncClient
 
 import ui.api_client as api
 from mfg_runs import give_back, issue, product, receive, reopen, run
-from test_cost_restatement import _item, _state, auth, ids  # noqa: F401  (fixtures)
+from test_cost_restatement import _item, _state
 from test_mfg_creation_contract import _count
 from test_mfg_make_selected import _setup
 from test_mfg_wip_upgrade import _events

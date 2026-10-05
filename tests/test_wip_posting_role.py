@@ -26,7 +26,6 @@ from celerp.accounting_roles import (
 from celerp_accounting.models import Account
 from celerp.services.company_lock import locked_company
 from celerp.services.posting_readiness import readiness
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_posting_roles_rollout import _startup
 
 pytestmark = pytest.mark.asyncio

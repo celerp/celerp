@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from celerp.models.projections import Projection
 from mfg_runs import product, set_settings
-from test_cost_restatement import _item, _state, auth, ids  # noqa: F401  (fixtures)
+from test_cost_restatement import _item, _state
 
 pytestmark = pytest.mark.asyncio
 

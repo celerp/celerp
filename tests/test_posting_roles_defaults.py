@@ -16,7 +16,6 @@ from fasthtml.common import to_xml
 from fastapi import HTTPException
 
 from celerp.services.account_roles import set_role
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 
 
 async def _account(client, auth, code: str, account_type: str, parent_code: str) -> None:

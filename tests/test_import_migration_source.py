@@ -12,7 +12,6 @@ from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
 from stock_books import assert_settled
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 
 
 def _record(source: str) -> dict:

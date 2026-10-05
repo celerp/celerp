@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from mfg_runs import product, refusal, run
-from test_cost_restatement import _item, _state, auth, ids  # noqa: F401  (fixtures)
+from test_cost_restatement import _item, _state
 from test_mfg_creation_contract import _count
 from test_mfg_make_selected import _demand
 

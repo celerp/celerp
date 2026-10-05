@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from test_cost_restatement import _item, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _item
 
 
 def _single(client, auth, lot, status):

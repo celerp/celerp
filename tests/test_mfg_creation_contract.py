@@ -24,7 +24,8 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from mfg_runs import complete, issue, product, receive, refusal
 from stock_books import assert_settled
-from test_cost_restatement import _item, _state, auth, company_auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _item, _state
+from test_helpers import company_auth
 
 pytestmark = pytest.mark.asyncio
 

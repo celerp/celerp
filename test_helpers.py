@@ -83,6 +83,25 @@ async def provision_company_books(session, company_id) -> None:
     await session.flush()
 
 
+TZ = "Pacific/Kiritimati"  # the timezone of the company company_auth creates
+
+
+async def company_auth(session, cid, uid) -> dict:
+    """A company with its books and an admin, and the admin's request headers."""
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import Company, User
+
+    session.add(Company(id=cid, name="CostCo", slug=f"costco-{cid.hex[:8]}",
+                        settings={"currency": "USD", "timezone": TZ}))
+    session.add(User(id=uid, email=f"admin-{cid.hex[:8]}@test.co", name="Admin", auth_hash="x", is_active=True))
+    await session.flush()
+    session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
+    await provision_company_books(session, cid)
+    await session.commit()
+    token = await make_authed_token(session, str(uid), str(cid), "admin")
+    return {"headers": {"Authorization": f"Bearer {token}"}, "company_id": cid, "user_id": uid}
+
+
 async def ensure_user(session, user_id) -> None:
     """Insert a minimal users row if absent.
 

@@ -14,40 +14,11 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
-import pytest_asyncio
 from sqlalchemy import func, select
 
-from celerp.models.accounting import UserCompany
-from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from test_helpers import merge_items
-
-TZ = "Pacific/Kiritimati"
-
-
-@pytest.fixture
-def ids():
-    return {"company_id": uuid.uuid4(), "user_id": uuid.uuid4()}
-
-
-@pytest_asyncio.fixture
-async def auth(session, ids):
-    return await company_auth(session, ids["company_id"], ids["user_id"])
-
-
-async def company_auth(session, cid, uid) -> dict:
-    """A company with its books and an admin, and the admin's request headers."""
-    session.add(Company(id=cid, name="CostCo", slug=f"costco-{cid.hex[:8]}",
-                        settings={"currency": "USD", "timezone": TZ}))
-    session.add(User(id=uid, email=f"admin-{cid.hex[:8]}@test.co", name="Admin", auth_hash="x", is_active=True))
-    await session.flush()
-    session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
-    from test_helpers import make_authed_token, provision_company_books
-    await provision_company_books(session, cid)
-    await session.commit()
-    token = await make_authed_token(session, str(uid), str(cid), "admin")
-    return {"headers": {"Authorization": f"Bearer {token}"}, "company_id": cid, "user_id": uid}
+from test_helpers import TZ, merge_items
 
 
 async def _item(client, auth, cost_total: float | None, qty: float = 1, sku: str | None = None) -> str:

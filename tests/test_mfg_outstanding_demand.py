@@ -16,7 +16,7 @@ import uuid
 import pytest
 from celerp.models.projections import Projection
 from mfg_runs import issue, receive, run, set_settings
-from test_cost_restatement import _item, _state, auth, ids  # noqa: F401  (fixtures)
+from test_cost_restatement import _item, _state
 from test_mfg_finalize_supply import _made, _runs_for_doc
 
 pytestmark = pytest.mark.asyncio

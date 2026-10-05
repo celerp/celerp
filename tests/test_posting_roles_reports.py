@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.services.account_roles import set_role
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_money_stock_and_contact_invariants import _account_net
 
 

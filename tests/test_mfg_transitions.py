@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from mfg_runs import cancel, complete, issue, product, receive, refusal, run, snapshot
-from test_cost_restatement import _item, _state, auth, ids  # noqa: F401  (fixtures)
+from test_cost_restatement import _item, _state
 from test_mfg_wip_upgrade import _events
 
 pytestmark = pytest.mark.asyncio

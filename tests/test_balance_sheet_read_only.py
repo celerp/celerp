@@ -19,7 +19,6 @@ from sqlalchemy import func, select
 from celerp.models.ledger import LedgerEntry
 from celerp.services.auto_je import _emit_auto_posted_je
 from stock_books import older_release_lot
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_migration_sinks import _PROVENANCE, _no_attachments, _persist_mappings, _sink_context
 from test_receipt_accounting import _doc, _finalize, _receive
 from ui import i18n

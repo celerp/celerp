@@ -9,7 +9,8 @@ from celerp.models.company import Company
 from celerp_accounting.models import Account
 from celerp.models.accounting import UserCompany
 from celerp.models.company import User
-from test_cost_restatement import TZ, _item
+from test_cost_restatement import _item
+from test_helpers import TZ
 
 pytestmark = pytest.mark.asyncio
 OUT = os.environ["FIXTURE_OUT"]

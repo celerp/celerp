@@ -21,7 +21,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from stock_books import assert_books_carry_stock
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_helpers import sell_item
 from test_posting_roles_draft_stock import _settings
 from test_posting_roles_ingress import _import_rows, _items_by_sku, _raw_record, _row

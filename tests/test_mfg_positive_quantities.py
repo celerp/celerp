@@ -17,7 +17,7 @@ from sqlalchemy import select
 from celerp.projections.engine import ProjectionEngine
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from test_cost_restatement import _item, _state, auth, ids  # noqa: F401  (fixtures)
+from test_cost_restatement import _item, _state
 from mfg_runs import product
 
 pytestmark = pytest.mark.asyncio

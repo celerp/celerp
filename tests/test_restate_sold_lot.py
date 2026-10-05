@@ -13,7 +13,7 @@ import uuid
 import pytest
 
 from stock_books import assert_settled
-from test_cost_restatement import _item, _merge, _sell, _set_cost, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _item, _merge, _sell, _set_cost
 from test_money_stock_and_contact_invariants import _account_net
 
 pytestmark = pytest.mark.asyncio

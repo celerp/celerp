@@ -22,7 +22,7 @@ from celerp.events.engine import emit_event
 from celerp.services.auto_je import _emit_auto_posted_je
 from mfg_runs import PURCHASED, complete, receive, refusal, role, snapshot
 from stock_books import assert_settled
-from test_cost_restatement import _fulfil, _invoice, _merge, _state, auth, ids  # noqa: F401  (fixtures)
+from test_cost_restatement import _fulfil, _invoice, _merge, _state
 from test_mfg_reconcile import reconcile
 from test_mfg_wip_upgrade import _facts, _older_issue, _older_receive, _upgrade, in_production_slot  # noqa: F401
 from mfg_runs import product, run

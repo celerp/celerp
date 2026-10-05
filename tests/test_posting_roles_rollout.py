@@ -12,7 +12,6 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select, update
 
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 
 
 async def _settings(session, company_id) -> dict:

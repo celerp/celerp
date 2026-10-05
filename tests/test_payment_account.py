@@ -15,7 +15,7 @@ import pytest
 from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_payment_refund_accounting import _books, _invoice, _pay, _refund
 
 pytestmark = pytest.mark.asyncio

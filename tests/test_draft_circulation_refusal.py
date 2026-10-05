@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from mfg_runs import issue, product, receive, run
-from test_cost_restatement import _item, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _item
 from test_helpers import merge_items
 
 

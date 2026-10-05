@@ -18,7 +18,6 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import update
 
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 
 
 async def _account(client, auth, code: str, account_type: str, parent_code: str) -> None:

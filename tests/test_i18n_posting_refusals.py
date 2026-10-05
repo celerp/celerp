@@ -18,7 +18,6 @@ import pytest
 from fasthtml.common import to_xml
 from sqlalchemy import select
 
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 from ui import i18n
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -13,7 +13,7 @@ import pytest
 
 from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_receipt_accounting import _books, _doc, _finalize, _receive, _return
 
 _GOODS = {"po_line_index": 0, "sku": "GOODS", "name": "Goods", "quantity_received": 2}

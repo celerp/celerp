@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
-from test_cost_restatement import _item, _merge, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _item, _merge
 from test_receipt_accounting import _doc
 
 APP_OWNED = {"consignment_flag": "in", "status_doc_id": "doc:FAKE", "reserved_quantity": 2,

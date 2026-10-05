@@ -19,7 +19,7 @@ from celerp.models.projections import Projection
 from celerp_manufacturing.routes import _all_item_states, _in_progress_by_item, _stock_by_product
 from mfg_runs import refusal, snapshot
 from stock_books import assert_settled
-from test_cost_restatement import _sell, _state, auth, ids  # noqa: F401  (fixtures)
+from test_cost_restatement import _sell, _state
 from test_mfg_output_lineage import completes_recosted, open_output
 from test_mfg_output_lineage_legacy import older_release_rules
 

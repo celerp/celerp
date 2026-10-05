@@ -15,7 +15,6 @@ import pytest
 
 from celerp.models.projections import Projection
 from stock_books import assert_books_carry_stock
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_posting_roles_ingress import _FIELD, _items_by_sku, _opening_entries, connector_session  # noqa: F401
 from test_posting_roles_older_stock import _make_available
 from test_services.test_connector_upsert_integration import _seed_company, use_test_session  # noqa: F401

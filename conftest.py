@@ -118,6 +118,8 @@ def _create_worker_db(url: str, worker: str) -> str:
 
 _provision_test_database()
 
+import uuid
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
@@ -141,7 +143,7 @@ from ui.app import app as _ui_app
 import sys as _sys, os as _os
 from pathlib import Path
 
-from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available  # noqa: F401
+from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth  # noqa: F401
 
 # Register inventory module routes onto the test app.
 _inv_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-inventory")
@@ -733,6 +735,18 @@ async def session(_db_engine) -> AsyncSession:
         if trans.is_active:
             await trans.rollback()
         await conn.close()
+
+
+@pytest.fixture
+def ids():
+    """Fresh company and user ids for ``auth``."""
+    return {"company_id": uuid.uuid4(), "user_id": uuid.uuid4()}
+
+
+@pytest_asyncio.fixture
+async def auth(session, ids):
+    """A company with its books and an admin (test_helpers.company_auth), and the admin's request headers."""
+    return await company_auth(session, ids["company_id"], ids["user_id"])
 
 
 @pytest_asyncio.fixture

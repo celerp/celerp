@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_receipt_accounting import _doc
 
 

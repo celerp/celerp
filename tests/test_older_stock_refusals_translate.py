@@ -13,7 +13,6 @@ import uuid
 import pytest
 
 from celerp.services.auto_je import _emit_auto_posted_je
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_posting_accounts_panel import _account, _put
 from test_posting_roles_lots import _forget_origin, _lot
 from test_posting_roles_older_stock import _accounts, _choose, _older_release, _restored

@@ -22,8 +22,8 @@ from sqlalchemy import update
 from celerp_accounting.models import Account
 from mfg_runs import WIP, balances, complete, issue, product, receive, role, run, set_settings, snapshot
 from stock_books import assert_settled
-from test_cost_restatement import TZ, _item, _set_cost, _state, company_auth
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _item, _set_cost, _state
+from test_helpers import TZ, company_auth
 
 pytestmark = pytest.mark.asyncio
 

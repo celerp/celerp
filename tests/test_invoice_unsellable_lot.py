@@ -9,7 +9,7 @@ import uuid
 import pytest
 
 from stock_books import assert_settled
-from test_cost_restatement import _item, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _item
 
 
 async def _doc(client, auth, doc_type: str, lot: str, sku: str, qty: float = 1) -> str:

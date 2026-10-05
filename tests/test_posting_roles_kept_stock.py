@@ -30,7 +30,8 @@ from celerp.services.business_time import business_date_at
 from celerp.services.company_lock import locked_company
 from celerp.services.lot_origin import held_value
 from stock_books import assert_books_carry_stock
-from test_cost_restatement import TZ, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
+from test_helpers import TZ
 from test_helpers import sell_item
 from test_posting_roles_merge import _merged
 from test_posting_roles_older_stock import (

@@ -18,7 +18,7 @@ from celerp.accounting_roles import LOT_ACCOUNT_FIELD
 from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
 from celerp.services.lot_origin import held_value
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_money_stock_and_contact_invariants import _account_net
 from test_posting_roles_lots import _credits, _lot, _new_inventory_account, _sell
 from test_posting_roles_merge import _merged

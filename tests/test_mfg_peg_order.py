@@ -10,7 +10,6 @@ and the work orders made when an invoice is posted all settle the same way.
 from __future__ import annotations
 
 import pytest
-from test_cost_restatement import auth, ids  # noqa: F401  (fixtures)
 from test_mfg_finalize_supply import _made, _runs_for_doc
 from test_mfg_outstanding_demand import _auto, _row, _stocked
 from test_mfg_reserved_demand import _make, _order, _pegged

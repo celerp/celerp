@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
-from test_cost_restatement import _item, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _item, _state
 from test_money_stock_and_contact_invariants import (
     _account_net,
     _cleanup,

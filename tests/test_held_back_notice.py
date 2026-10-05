@@ -13,7 +13,6 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.notification import Notification
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 
 pytestmark = pytest.mark.asyncio
 

@@ -19,7 +19,7 @@ from celerp.models.projections import Projection
 from mfg_runs import COGS, OPENING, PURCHASED, WIP, complete, issue, lines, product, receive, refusal, reopen, role, run, snapshot
 from sqlalchemy import select
 from stock_books import assert_settled
-from test_cost_restatement import _item, _merge, _sell, _state, auth, ids  # noqa: F401  (fixtures)
+from test_cost_restatement import _item, _merge, _sell, _state
 
 pytestmark = pytest.mark.asyncio
 

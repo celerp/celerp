@@ -18,7 +18,6 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.notification import Notification
 from celerp.models.projections import Projection
 from stock_books import assert_books_carry_stock, assert_wip_carried
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 
 pytestmark = pytest.mark.asyncio
 

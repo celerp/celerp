@@ -22,8 +22,8 @@ from mfg_runs import (
     role, run, set_settings, snapshot, undo_receipt,
 )
 from stock_books import assert_settled
-from test_cost_restatement import TZ, _invoice, _item, _sell, _state
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _invoice, _item, _sell, _state
+from test_helpers import TZ
 
 pytestmark = pytest.mark.asyncio
 

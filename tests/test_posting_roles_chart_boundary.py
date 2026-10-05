@@ -18,7 +18,6 @@ from celerp.accounting_roles import ROLE_TYPES, AccountRole
 from celerp.services.account_roles import set_role
 from celerp_accounting.chart_rules import change_account
 from celerp_accounting.import_service import create_chart_account
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 
 pytestmark = pytest.mark.asyncio
 

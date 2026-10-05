@@ -15,7 +15,7 @@ import pytest
 
 from celerp_manufacturing.routes import _in_progress_by_item
 from mfg_runs import complete, issue, product, receive, reopen, run, set_settings
-from test_cost_restatement import _item, _sell, _state, auth, ids  # noqa: F401  (fixtures)
+from test_cost_restatement import _item, _sell, _state
 from test_mfg_finalize_supply import _made, _post_invoice, _runs_for_doc
 
 pytestmark = pytest.mark.asyncio

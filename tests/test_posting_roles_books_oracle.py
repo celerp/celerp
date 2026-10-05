@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from stock_books import assert_books_carry_stock
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_helpers import sell_item
 from test_posting_roles_kept_stock import _available, _ok
 from test_posting_roles_merge import _merged

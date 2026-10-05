@@ -28,7 +28,8 @@ from celerp.services.auto_je import _emit_auto_posted_je
 from celerp.services.lot_origin import LOT_ACCOUNT_FIELD, account_room
 from mfg_runs import OPENING, WIP, give_back, issue, lines, receive, refusal, role, set_settings, snapshot
 from stock_books import assert_settled, older_release_lot
-from test_cost_restatement import TZ, _item, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _item, _state
+from test_helpers import TZ
 from test_mfg_wip_upgrade import _carried, _events, _facts, _job, _older_issue, _upgrade, in_production_slot  # noqa: F401
 from test_posting_roles_autoje import _unmap
 from test_posting_roles_lots import _lot

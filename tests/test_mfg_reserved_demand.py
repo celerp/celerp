@@ -12,7 +12,6 @@ orders made when an invoice is posted read the same figures.
 from __future__ import annotations
 
 import pytest
-from test_cost_restatement import auth, ids  # noqa: F401  (fixtures)
 from test_mfg_finalize_supply import _made, _runs_for_doc
 from test_mfg_outstanding_demand import _auto, _figures, _row, _stocked
 

@@ -15,7 +15,7 @@ import pytest
 
 from mfg_runs import OPENING, PURCHASED, WIP, lines, product
 from stock_books import assert_settled
-from test_cost_restatement import _item, auth, ids  # noqa: F401  (fixtures)
+from test_cost_restatement import _item
 from test_mfg_creation_contract import _count
 
 pytestmark = pytest.mark.asyncio

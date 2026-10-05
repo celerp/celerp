@@ -26,7 +26,8 @@ from mfg_runs import (
 )
 from stock_books import assert_settled
 from test_cost_restatement import _sell
-from test_cost_restatement import TZ, _item, _merge, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _item, _merge, _state
+from test_helpers import TZ
 from test_money_stock_and_contact_invariants import _account_net
 from test_receipt_accounting import _doc
 from test_receipt_accounting import _receive as _po_receive

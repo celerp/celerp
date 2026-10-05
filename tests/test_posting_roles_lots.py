@@ -19,7 +19,7 @@ from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
 from celerp.services.company_lock import locked_company
 from stock_books import book_older_opening, older_release_lot
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_money_stock_and_contact_invariants import _account_net
 
 _FIELD = "inventory_account_code"

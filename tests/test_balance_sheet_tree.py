@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_ui import _authed, ui_client  # noqa: F401  (ui_client is a fixture)
 
 pytestmark = pytest.mark.asyncio

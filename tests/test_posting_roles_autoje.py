@@ -17,7 +17,7 @@ from celerp.models.company import Company
 from celerp.services import auto_je
 from celerp.services.account_roles import PostingRoleError, set_role
 from celerp.services.company_lock import locked_company
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_money_stock_and_contact_invariants import _account_net
 
 

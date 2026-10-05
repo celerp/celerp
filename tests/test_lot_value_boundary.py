@@ -25,7 +25,7 @@ from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.company_lock import locked_company
 from stock_books import assert_books_carry_stock, assert_settled
-from test_cost_restatement import _item, _merge, _set_cost, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _item, _merge, _set_cost, _state
 from test_money_stock_and_contact_invariants import _account_net
 from test_receipt_accounting import _doc, _receive
 

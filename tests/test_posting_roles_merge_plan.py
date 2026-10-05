@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_posting_roles_merge import _FIELD, _lot, _merge, _remap, _two_accounts
 
 pytestmark = pytest.mark.asyncio

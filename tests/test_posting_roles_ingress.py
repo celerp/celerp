@@ -30,7 +30,7 @@ from sqlalchemy import func, select
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from stock_books import assert_books_carry_stock
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_money_stock_and_contact_invariants import _account_net
 from test_posting_roles_draft_stock import _inactive, _settings, _unmapped, _wrong_type
 from test_posting_roles_older_stock import _make_available, _without_accounting

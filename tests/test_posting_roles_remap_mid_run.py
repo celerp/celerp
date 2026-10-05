@@ -15,7 +15,7 @@ from celerp.services.account_roles import set_role
 from mfg_runs import OPENING, PURCHASED, balances, complete, give_back, issue, product, receive, reopen, run, \
     undo_receipt
 from stock_books import assert_settled
-from test_cost_restatement import _item, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _item, _state
 from test_posting_roles_lots import _FIELD, _new_inventory_account
 
 pytestmark = pytest.mark.asyncio

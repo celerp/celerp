@@ -10,7 +10,6 @@ import pytest
 from celerp.services.lot_origin import account_rooms
 from mfg_runs import complete, issue, product
 from stock_books import assert_books_carry_stock
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 
 pytestmark = pytest.mark.asyncio
 

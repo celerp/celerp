@@ -20,7 +20,7 @@ from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.lot_origin import recognize_opening_lots
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_helpers import sell_item
 from test_money_stock_and_contact_invariants import (
     _account_net,

@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from celerp.events.engine import emit_event
-from test_cost_restatement import _item, _state, auth, ids  # noqa: F401  (fixtures)
+from test_cost_restatement import _item, _state
 from test_mfg_creation_contract import _count, _create
 
 pytestmark = pytest.mark.asyncio

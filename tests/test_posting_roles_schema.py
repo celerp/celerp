@@ -29,7 +29,6 @@ from celerp.accounting_roles import (
 )
 from celerp.services.company_lock import locked_company
 from migration_support import real_client, real_engine  # noqa: F401  (fixtures)
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_posting_accounts_panel import _panel, _row
 from test_posting_roles_autoje import _invoice, _pay
 from test_posting_roles_copy import _POSTING_KEYS, _accounts, _settings

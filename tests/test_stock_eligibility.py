@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pytest
 from celerp.models.projections import Projection
-from test_cost_restatement import auth, ids  # noqa: F401  (fixtures)
 from test_mfg_outstanding_demand import _invoice, _row, _stocked
 
 pytestmark = pytest.mark.asyncio

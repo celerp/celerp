@@ -17,7 +17,7 @@ import pytest
 from fasthtml.common import to_xml
 
 import ui.api_client as api_client
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_helpers import sell_item
 from test_operation_retries import DATE, _final, _pay
 

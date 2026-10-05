@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from celerp.models.projections import Projection
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_posting_roles_autoje import _account, _invoice, _pay, _remap, _unmap
 
 

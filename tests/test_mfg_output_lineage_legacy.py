@@ -20,7 +20,7 @@ from celerp.modules import slots
 from mfg_runs import PURCHASED, complete, issue, product, receive, refusal, role, run, snapshot
 from test_mfg_output_lineage import refused_unchanged
 from stock_books import assert_settled
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (fixtures)
+from test_cost_restatement import _state
 from test_mfg_reconcile import reconcile
 from test_mfg_reconcile_legacy import _older_stock
 from test_mfg_wip_upgrade import _facts, _older_issue, _older_receive, _upgrade, in_production_slot  # noqa: F401

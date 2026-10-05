@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from stock_books import assert_settled
-from test_cost_restatement import _doc_cogs, _item, _sell, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _doc_cogs, _item, _sell, _state
 
 
 async def _revert(client, auth, doc: str, *lots: str) -> None:

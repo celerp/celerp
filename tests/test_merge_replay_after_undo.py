@@ -9,7 +9,7 @@ import uuid
 import pytest
 
 from stock_books import assert_settled
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_posting_roles_merge import _lot
 
 
