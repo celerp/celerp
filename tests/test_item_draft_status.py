@@ -345,7 +345,7 @@ async def test_reserve_rejected_on_draft(client, session):
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
     r2 = await client.post(f"/items/{item_id}/reserve", json={"quantity": 1}, headers=ctx["admin_h"])
-    assert r2.status_code == 422, r2.text
+    assert r2.status_code == 409, r2.text
 
 
 async def test_expire_rejected_on_draft_single_and_bulk(client, session):
@@ -356,13 +356,13 @@ async def test_expire_rejected_on_draft_single_and_bulk(client, session):
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
     r2 = await client.post(f"/items/{item_id}/expire", headers=ctx["admin_h"])
-    assert r2.status_code == 422, r2.text
+    assert r2.status_code == 409, r2.text
 
     r3 = await client.post("/items", json=_draft_item_body(ctx["location_id"], "BYP-BEXPIRE"),
                            headers=ctx["admin_h"])
     item_id2 = r3.json()["id"]
     r4 = await client.post("/items/bulk/expire", json={"entity_ids": [item_id2]}, headers=ctx["admin_h"])
-    assert r4.status_code == 422, r4.text
+    assert r4.status_code == 409, r4.text
     assert (await _item_state(client, ctx["admin_h"], item_id2)).get("status") == "draft"
 
 
@@ -703,7 +703,7 @@ async def test_merge_rejects_two_draft_sources(client, session):
 
     r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a},
                           headers=ctx["admin_h"])
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
 
     sa = await _item_state(client, ctx["admin_h"], a)
     sb = await _item_state(client, ctx["admin_h"], b)
@@ -719,7 +719,7 @@ async def test_merge_rejects_available_plus_draft_source(client, session):
 
     r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a},
                           headers=ctx["admin_h"])
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
 
     sa = await _item_state(client, ctx["admin_h"], a)
     sb = await _item_state(client, ctx["admin_h"], b)
@@ -736,7 +736,7 @@ async def test_merge_rejects_draft_target_sku_from(client, session):
 
     r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": b},
                           headers=ctx["admin_h"])
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
 
 
 # ── UI surfaces ───────────────────────────────────────────────────────────────

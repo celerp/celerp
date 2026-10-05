@@ -3615,5 +3615,6 @@
   "notice.older_stock_unplaced.title": "Hàng tồn kho cũ cần một tài khoản hàng tồn kho",
   "notice.older_stock_unplaced.body": "Sổ sách không xác nhận được {count} lô hàng cũ đang tồn kho, nên chưa ghi nhận tài khoản hàng tồn kho cho chúng. Hãy chọn tài khoản cho từng lô trong Cài đặt > Kế toán > Tài khoản ghi sổ.",
   "notice.older_stock_moved.title": "Hàng tồn kho cũ đã chuyển sang hàng mua vào",
-  "notice.older_stock_moved.body": "Các phiên bản trước đã ghi giá vốn của hàng tồn đầu kỳ đã bán vào {p}, nên {p} và {ob} chỉ khớp với hàng tồn kho khi gộp lại. Một bút toán ngày {day} đã chuyển {amount} {currency} từ {ob} sang {p}, và hàng tồn kho cũ hiện nằm trên {p}. Tổng hàng tồn kho và lợi nhuận giữ lại không thay đổi."
+  "notice.older_stock_moved.body": "Các phiên bản trước đã ghi giá vốn của hàng tồn đầu kỳ đã bán vào {p}, nên {p} và {ob} chỉ khớp với hàng tồn kho khi gộp lại. Một bút toán ngày {day} đã chuyển {amount} {currency} từ {ob} sang {p}, và hàng tồn kho cũ hiện nằm trên {p}. Tổng hàng tồn kho và lợi nhuận giữ lại không thay đổi.",
+  "item.draft": "{sku} là bản nháp, chưa phải hàng tồn kho: hãy đặt thành có sẵn trước."
 }

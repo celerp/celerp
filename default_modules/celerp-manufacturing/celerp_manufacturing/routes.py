@@ -35,6 +35,7 @@ from celerp.services import migrations
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.fulfill import outstanding_physical_lines
+from celerp.services.lot_origin import refuse_draft
 from celerp.services.permissions import require_permission
 from celerp.schemas.numbers import FiniteFloat
 
@@ -501,8 +502,7 @@ async def build_item(
     movements.require_stock(item.state or {}, item_id)
     if not is_manufacturable(item.state):
         raise HTTPException(status_code=422, detail="Item has no recipe to build from")
-    if str((item.state or {}).get("status") or "").lower() == "draft":
-        raise HTTPException(status_code=422, detail="Cannot build into a draft item; make it available first.")
+    refuse_draft(item.state or {}, item_id)
     key = payload.idempotency_key or str(uuid.uuid4())
     # The run id follows the key, so a retried build finds the run it made instead of a second one.
     order_id = f"mfg:{uuid.uuid5(movements.MFG_LOT_NS, f'build:{key}')}"

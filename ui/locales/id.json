@@ -3615,5 +3615,6 @@
   "notice.older_stock_unplaced.title": "Stok lama memerlukan akun persediaan",
   "notice.older_stock_unplaced.body": "Pembukuan tidak dapat memastikan {count} lot lama yang ada di stok, sehingga belum mencatat akun persediaan. Pilih akun masing-masing di Pengaturan > Akuntansi > Akun posting.",
   "notice.older_stock_moved.title": "Stok lama dipindahkan ke persediaan pembelian",
-  "notice.older_stock_moved.body": "Versi sebelumnya membukukan biaya stok awal yang terjual ke {p}, sehingga {p} dan {ob} hanya cocok dengan stok Anda jika digabung. Satu jurnal bertanggal {day} memindahkan {amount} {currency} dari {ob} ke {p}, dan stok lama Anda sekarang ada di {p}. Total persediaan dan laba ditahan tidak berubah."
+  "notice.older_stock_moved.body": "Versi sebelumnya membukukan biaya stok awal yang terjual ke {p}, sehingga {p} dan {ob} hanya cocok dengan stok Anda jika digabung. Satu jurnal bertanggal {day} memindahkan {amount} {currency} dari {ob} ke {p}, dan stok lama Anda sekarang ada di {p}. Total persediaan dan laba ditahan tidak berubah.",
+  "item.draft": "{sku} adalah draf, belum menjadi stok: jadikan tersedia terlebih dahulu."
 }

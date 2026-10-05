@@ -117,7 +117,7 @@ async def test_issue_rejects_draft_component_and_leaves_quantity_untouched(clien
 
     r = await client.post(f"/manufacturing/{order_id}/issue", headers=_h(token),
                           json={"items": [{"item_id": comp, "quantity": 2}]})
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
     assert (await client.get(f"/items/{comp}", headers=_h(token))).json()["quantity"] == 5
 
 
@@ -141,7 +141,7 @@ async def test_receive_rejects_draft_output_even_if_status_changed_after_order_c
     assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["status"] == "draft"
 
     recv = await client.post(f"/manufacturing/{order_id}/receive", headers=_h(token), json={"quantity": 2})
-    assert recv.status_code == 422, recv.text
+    assert recv.status_code == 409, recv.text
     assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["quantity"] == 4
 
 

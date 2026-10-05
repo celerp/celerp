@@ -53,7 +53,7 @@ from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
 from celerp.services.company_lock import lock_projections
 from celerp.services.item_erasure import depended_on, erase_items
 from celerp.services.lot_origin import (
-    RECORDED, RETIRED, ever_became_stock, in_stock, is_authoring_event, is_stock_type, recorded_value,
+    RECORDED, RETIRED, ever_became_stock, in_stock, is_authoring_event, is_stock_type, recorded_value, refuse_draft,
 )
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
@@ -588,7 +588,7 @@ async def assert_make_available_allowed(session: AsyncSession, company_id, entit
 async def assert_expirable(session: AsyncSession, company_id, entity_id: str) -> None:
     """Expire retires stock the company still owns, so the lot must hold stock on the
     books when its row lock is taken."""
-    await assert_not_draft(session, company_id, entity_id, "expire")
+    await assert_not_draft(session, company_id, entity_id)
     row = await lock_item(session, company_id, entity_id)
     state = (row.state if row else {}) or {}
     _reject_document_held(state, "expired")
@@ -599,15 +599,11 @@ async def assert_expirable(session: AsyncSession, company_id, entity_id: str) ->
         )
 
 
-async def assert_not_draft(session: AsyncSession, company_id, entity_id: str, action: str) -> None:
+async def assert_not_draft(session: AsyncSession, company_id, entity_id: str) -> None:
     """A draft isn't stock yet, so stock-circulation operations (reserve, expire, ...)
     make no sense on it until it is committed via Make Available."""
-    current = _status_of(await lock_item(session, company_id, entity_id))
-    if current == "draft":
-        raise HTTPException(
-            status_code=422,
-            detail=f"Cannot {action} a draft item; make it available first.",
-        )
+    row = await lock_item(session, company_id, entity_id)
+    refuse_draft((row.state if row else None) or {}, entity_id)
 
 
 # ── Search grammar ─────────────────────────────────────────────────────────────
@@ -3990,9 +3986,8 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
         proj = rows.get(sid)
         if proj is None:
             raise HTTPException(status_code=404, detail=f"Item '{sid}' not found.")
+        refuse_draft(proj.state or {}, sid)
         status = str((proj.state or {}).get("status") or "").lower()
-        if status == "draft":
-            raise HTTPException(status_code=422, detail=f"Cannot merge a draft item ({sid}); make it available first.")
         if status == "merged":
             raise HTTPException(status_code=409, detail=f"Item '{sid}' has already been merged.")
         if not is_item_available(proj.state or {}):
@@ -4630,7 +4625,7 @@ async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depend
 
 @router.post("/{entity_id}/reserve")
 async def reserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    await assert_not_draft(session, company_id, entity_id, "reserve")
+    await assert_not_draft(session, company_id, entity_id)
     entry = await emit_event(
         session,
         company_id=company_id,

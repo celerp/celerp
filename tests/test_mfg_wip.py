@@ -158,7 +158,7 @@ async def test_issue_refuses_a_draft_component(client, session, auth):
     r = await client.post("/items/bulk/revert-to-draft", headers=auth["headers"], json={"entity_ids": [raw]})
     assert r.status_code == 200, r.text
     assert (await _state(session, auth, raw))["status"] == "draft"
-    await _refused_issue(client, session, auth, raw, order, 422, "item_draft")
+    await _refused_issue(client, session, auth, raw, order, 409, "item.draft")
 
 
 @pytest.mark.asyncio

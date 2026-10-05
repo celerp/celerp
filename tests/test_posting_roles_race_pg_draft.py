@@ -266,7 +266,7 @@ async def test_reserve_racing_revert_rejected_from_locked_state(committed_engine
         lambda: client.post(f"/items/{lot}/reserve", headers=auth(tok), json={"quantity": 1}))
 
     assert revert.status_code == 200, revert.text
-    assert reserve.status_code == 422, reserve.text
-    assert "make it available first" in reserve.json()["detail"]
+    assert reserve.status_code == 409, reserve.text
+    assert "make it available first" in reserve.json()["detail"]["message"]
     assert (await _state(committed_engine, cid, lot))["status"] == "draft"
     await _books(committed_engine, cid)

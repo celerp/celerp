@@ -3615,5 +3615,6 @@
   "notice.older_stock_unplaced.title": "El inventario anterior necesita una cuenta de inventario",
   "notice.older_stock_unplaced.body": "Los libros no pudieron respaldar {count} lote(s) anteriores en existencia, por lo que aún no registran ninguna cuenta de inventario. Elija la cuenta de cada uno en Ajustes > Contabilidad > Cuentas de contabilización.",
   "notice.older_stock_moved.title": "Inventario anterior trasladado a inventario comprado",
-  "notice.older_stock_moved.body": "Versiones anteriores contabilizaron el costo del inventario inicial vendido en {p}, por lo que {p} y {ob} solo cuadraban con su inventario en conjunto. Un asiento con fecha {day} trasladó {amount} {currency} de {ob} a {p}, y su inventario anterior ahora está en {p}. El inventario total y las ganancias retenidas no cambian."
+  "notice.older_stock_moved.body": "Versiones anteriores contabilizaron el costo del inventario inicial vendido en {p}, por lo que {p} y {ob} solo cuadraban con su inventario en conjunto. Un asiento con fecha {day} trasladó {amount} {currency} de {ob} a {p}, y su inventario anterior ahora está en {p}. El inventario total y las ganancias retenidas no cambian.",
+  "item.draft": "{sku} es un borrador y aún no es existencia: primero póngalo disponible."
 }

@@ -78,7 +78,7 @@ def refusal(r, status: int, key: str) -> dict:
     """The refusal's detail, after checking its status and message key."""
     assert r.status_code == status, r.text
     detail = r.json()["detail"]
-    assert isinstance(detail, dict) and detail.get("message_key") == f"mfg.{key}", detail
+    assert isinstance(detail, dict) and detail.get("message_key") == (key if "." in key else f"mfg.{key}"), detail
     assert detail.get("message"), detail
     return detail
 

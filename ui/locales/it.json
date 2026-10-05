@@ -3615,5 +3615,6 @@
   "notice.older_stock_unplaced.title": "Le giacenze precedenti richiedono un conto di magazzino",
   "notice.older_stock_unplaced.body": "I libri non hanno potuto confermare {count} lotto/i precedente/i in giacenza, quindi non registrano ancora un conto di magazzino. Scegliere il conto di ciascuno in Impostazioni > Contabilità > Conti di registrazione.",
   "notice.older_stock_moved.title": "Giacenze precedenti spostate nel magazzino acquistato",
-  "notice.older_stock_moved.body": "Le versioni precedenti registravano il costo delle giacenze iniziali vendute su {p}, quindi {p} e {ob} corrispondevano alle giacenze solo insieme. Una registrazione datata {day} ha spostato {amount} {currency} da {ob} a {p}, e le giacenze precedenti ora sono su {p}. Magazzino totale e utili portati a nuovo restano invariati."
+  "notice.older_stock_moved.body": "Le versioni precedenti registravano il costo delle giacenze iniziali vendute su {p}, quindi {p} e {ob} corrispondevano alle giacenze solo insieme. Una registrazione datata {day} ha spostato {amount} {currency} da {ob} a {p}, e le giacenze precedenti ora sono su {p}. Magazzino totale e utili portati a nuovo restano invariati.",
+  "item.draft": "{sku} è una bozza, non ancora a magazzino: rendilo prima disponibile."
 }

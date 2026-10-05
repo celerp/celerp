@@ -51,6 +51,7 @@ from celerp.accounting_roles import (
     SCHEMA_KEY,
     SOURCE_CONTROLS_KEY,
     AccountRole,
+    refusal,
 )
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -204,6 +205,15 @@ def _draft(state: dict) -> bool:
     return str(state.get("status") or "").lower() == "draft"
 
 
+def refuse_draft(state: dict, ref: str = "") -> None:
+    """The one refusal for moving a draft lot (409): a draft is not stock until it is made
+    available. Names the lot by its SKU, or by ``ref`` (its id) when it has none."""
+    if _draft(state):
+        sku = state.get("sku") or ref or state.get("entity_id") or ""
+        raise HTTPException(status_code=409, detail=refusal(
+            "item.draft", f"{sku} is a draft, not stock yet: make it available first.", sku=sku))
+
+
 # Item events that author a lot without moving it: none of them means the item has
 # circulated. item.file.* events are authoring too (is_authoring_event).
 AUTHORING_EVENT_TYPES: frozenset[str] = frozenset({
@@ -246,7 +256,7 @@ def assert_draft_not_circulated(event_type: str, transition: Transition) -> None
         return
     if is_authoring_event(event_type) and str(transition.after.get("status") or "").lower() in ("draft", "available"):
         return
-    raise HTTPException(status_code=409, detail="This item is a draft, not stock yet: make it available first.")
+    refuse_draft(before)
 
 
 def _legacy(items: list[Projection]) -> list[Projection]:

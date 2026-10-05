@@ -65,6 +65,7 @@ from celerp.services.lot_origin import (
     held_value,
     is_stock_type,
     period_open,
+    refuse_draft,
 )
 from celerp.services.money import allocate_pro_rata, round_money
 
@@ -332,8 +333,7 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
             raise refuse(404, "item_missing", f"Component {item_id} was not found.", item=item_id)
         s = row.state or {}
         sku = s.get("sku") or item_id
-        if str(s.get("status") or "").lower() == "draft":
-            raise refuse(422, "item_draft", f"{sku} is a draft. Make it available before issuing it.", sku=sku)
+        refuse_draft(s, item_id)
         held = held_value(row)  # a stocked item or component (_require_executable_shape)
         if not is_item_available(s) or s.get("status_doc_id") or held is None:
             raise refuse(409, "item_unavailable",
@@ -545,9 +545,7 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
         raise refuse(409, "issue_first", "Issue every component to this run before receiving its output.")
     out_id = state["output_item_id"]  # a stocked item (_require_executable_shape)
     p = (await lock_projections(op.session, op.company_id, [out_id]))[out_id].state or {}
-    if str(p.get("status") or "").lower() == "draft":
-        raise refuse(422, "output_draft", f"{p.get('sku') or out_id} is a draft. Make it available first.",
-                     sku=p.get("sku") or out_id)
+    refuse_draft(p, out_id)
 
     wip = _wip(state)
     amount = wip if qty >= outstanding - _EPS else op.round(wip * _money(qty) / _money(outstanding))
@@ -1360,9 +1358,7 @@ async def repair_output(session: AsyncSession, company_id, user_id, order_id: st
             raise refuse(422, "no_product", f"{output_item_id} is not an item of this company.", item=output_item_id)
         p = product.state or {}
         require_stock(p, output_item_id)
-        if str(p.get("status") or "").lower() == "draft":
-            raise refuse(422, "output_draft", f"{p.get('sku') or output_item_id} is a draft. Make it available first.",
-                         sku=p.get("sku") or output_item_id)
+        refuse_draft(p, output_item_id)
         data |= {"output_item_id": output_item_id,
                  "expected_outputs": [output_line(p, float(state["expected_outputs"][0]["quantity"]))]}
     elif not data["discarded"]:

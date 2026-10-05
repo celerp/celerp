@@ -3615,5 +3615,6 @@
   "notice.older_stock_unplaced.title": "Older stock needs an inventory account",
   "notice.older_stock_unplaced.body": "The books could not vouch for {count} older lot(s) in stock, so they record no inventory account yet. Choose the account each one sits on under Settings > Accounting > Posting accounts.",
   "notice.older_stock_moved.title": "Older stock moved to purchased inventory",
-  "notice.older_stock_moved.body": "Older releases booked the cost of opening stock sold to {p}, so {p} and {ob} only matched your stock together. One entry dated {day} moved {amount} {currency} from {ob} to {p}, and your older stock now sits on {p}. Total inventory and retained earnings are unchanged."
+  "notice.older_stock_moved.body": "Older releases booked the cost of opening stock sold to {p}, so {p} and {ob} only matched your stock together. One entry dated {day} moved {amount} {currency} from {ob} to {p}, and your older stock now sits on {p}. Total inventory and retained earnings are unchanged.",
+  "item.draft": "{sku} is a draft, not stock yet: make it available first."
 }
