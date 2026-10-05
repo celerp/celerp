@@ -29,7 +29,7 @@ from ui.components.journal import (
     journal_rows, journal_table,
 )
 from ui.components.report_kit import (
-    action_bar, csv_response, date_params, fname_date, href, journal_totals,
+    action_bar, csv_amount, csv_response, date_params, fname_date, href, journal_totals,
     period_subtitle, plain_error_response, print_shell, report_header, totals_chips,
 )
 from ui.config import get_token as _token
@@ -1356,14 +1356,17 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
+            currency = (await api.get_company(token)).get("currency")
             data = await api.get_trial_balance(token, date_params(d_from, d_to))
         except APIError as e:
             return plain_error_response(e)
         rows = [["Code", "Account", "Type", "Debit", "Credit", "Net"]]
         rows += [[l.get("code", ""), l.get("name", ""), l.get("account_type", ""),
-                  l.get("total_debit", 0), l.get("total_credit", 0), l.get("net", 0)]
+                  csv_amount(l.get("total_debit", 0), currency),
+                  csv_amount(l.get("total_credit", 0), currency), csv_amount(l.get("net", 0), currency)]
                  for l in data.get("lines", [])]
-        rows.append(["", "TOTAL", "", data.get("total_debit", 0), data.get("total_credit", 0), ""])
+        rows.append(["", "TOTAL", "", csv_amount(data.get("total_debit", 0), currency),
+                     csv_amount(data.get("total_credit", 0), currency), ""])
         return csv_response(rows, f"trial_balance_{fname_date(d_from)}_{fname_date(d_to)}.csv")
 
     @app.get("/reports/export/general-ledger/csv")
@@ -1376,6 +1379,7 @@ def setup_routes(app):
             d_to = request.query_params.get("date_to", "")
             # One call: the backend buckets summary and detail together, so the
             # export can never disagree with the on-screen general ledger.
+            currency = (await api.get_company(token)).get("currency")
             data = await api.get_general_ledger(
                 token, {**date_params(d_from, d_to), "include_lines": "1"})
         except APIError as e:
@@ -1386,15 +1390,16 @@ def setup_routes(app):
             code, name = row.get("code", ""), row.get("name", "")
             debit_normal = row.get("debit_normal")
             opening = row.get("opening", 0)
-            rows.append([code, name, "", "", "Opening balance", "", "", opening])
+            rows.append([code, name, "", "", "Opening balance", "", "", csv_amount(opening, currency)])
             running = to_decimal(opening)
             for line in row.get("lines", []):
                 debit = to_decimal(line.get("debit") or 0)
                 credit = to_decimal(line.get("credit") or 0)
                 running += (debit - credit) if debit_normal else (credit - debit)
                 rows.append([code, name, line.get("date", ""), line.get("source_ref") or "",
-                             line.get("memo", ""), float(debit), float(credit), float(running)])
-            rows.append([code, name, "", "", "Closing balance", "", "", row.get("closing", 0)])
+                             line.get("memo", ""), csv_amount(debit, currency),
+                             csv_amount(credit, currency), csv_amount(running, currency)])
+            rows.append([code, name, "", "", "Closing balance", "", "", csv_amount(row.get("closing", 0), currency)])
         return csv_response(rows, f"general_ledger_{fname_date(d_from)}_{fname_date(d_to)}.csv")
 
     @app.get("/reports/export/extended-journal/csv")
@@ -1421,6 +1426,7 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
+            currency = (await api.get_company(token)).get("currency")
             data = await api.get_cash_flow(token, date_params(d_from, d_to))
         except APIError as e:
             return plain_error_response(e)
@@ -1428,13 +1434,15 @@ def setup_routes(app):
         for cat in ("operating", "investing", "financing"):
             section = data.get("direct", {}).get(cat, {})
             for l in section.get("lines", []):
-                rows.append([cat, l.get("code", ""), l.get("name", ""), l.get("amount", 0)])
-            rows.append([cat, "", "TOTAL", section.get("total", 0)])
-        rows.append(["", "", "NET CHANGE IN CASH", data.get("net_change", 0)])
-        rows.append(["indirect", "", "Net profit", data.get("indirect", {}).get("net_profit", 0)])
+                rows.append([cat, l.get("code", ""), l.get("name", ""), csv_amount(l.get("amount", 0), currency)])
+            rows.append([cat, "", "TOTAL", csv_amount(section.get("total", 0), currency)])
+        rows.append(["", "", "NET CHANGE IN CASH", csv_amount(data.get("net_change", 0), currency)])
+        rows.append(["indirect", "", "Net profit",
+                     csv_amount(data.get("indirect", {}).get("net_profit", 0), currency)])
         for a in data.get("indirect", {}).get("adjustments", []):
-            rows.append(["indirect", a.get("code", ""), a.get("name", ""), a.get("amount", 0)])
-        rows.append(["indirect", "", "TOTAL", data.get("indirect", {}).get("total", 0)])
+            rows.append(["indirect", a.get("code", ""), a.get("name", ""), csv_amount(a.get("amount", 0), currency)])
+        rows.append(["indirect", "", "TOTAL",
+                     csv_amount(data.get("indirect", {}).get("total", 0), currency)])
         return csv_response(rows, f"cash_flow_{fname_date(d_from)}_{fname_date(d_to)}.csv")
 
     @app.get("/reports/export/statement/csv")
@@ -1448,6 +1456,7 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
+            currency = (await api.get_company(token)).get("currency")
             sections = await _resolve_statements(token, subjects, date_params(d_from, d_to))
         except APIError as e:
             return plain_error_response(e)
@@ -1458,11 +1467,14 @@ def setup_routes(app):
             if s["merged"]:
                 rows.append([t("acct.soa_merged_notice")])
             rows.append(["Date", "Ref", "Type", "Debit", "Credit", "Balance"])
-            rows.append([d_from, "", "Opening Balance", "", "", data.get("opening_balance", 0)])
+            rows.append([d_from, "", "Opening Balance", "", "",
+                         csv_amount(data.get("opening_balance", 0), currency)])
             rows += [[r.get("date", ""), r.get("doc_ref", ""), r.get("kind", ""),
-                      r.get("debit", 0), r.get("credit", 0), r.get("balance", 0)]
+                      csv_amount(r.get("debit", 0), currency), csv_amount(r.get("credit", 0), currency),
+                      csv_amount(r.get("balance", 0), currency)]
                      for r in data.get("rows", [])]
-            rows.append([d_to, "", "Closing Balance", "", "", data.get("closing_balance", 0)])
+            rows.append([d_to, "", "Closing Balance", "", "",
+                         csv_amount(data.get("closing_balance", 0), currency)])
             rows.append([])
         stem = (re.sub(r"[^A-Za-z0-9_-]+", "_",
                        _subject_heading(sections[0]["kind"], sections[0]["data"])).strip("_")
@@ -1478,6 +1490,7 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
+            currency = (await api.get_company(token)).get("currency")
             data = await api.get_pnl(token, date_params(d_from, d_to))
         except APIError as e:
             return plain_error_response(e)
@@ -1492,10 +1505,10 @@ def setup_routes(app):
             section = data.get(key, {})
             for line in section.get("lines", []):
                 amt = float(line.get("amount", 0) or 0)
-                rows.append([label, line.get("code", ""), line.get("name", ""), amt, _pct(amt)])
-            rows.append([f"TOTAL {label}", "", "", section.get("total", 0), ""])
-        rows += [[], ["Gross Profit", "", "", data.get("gross_profit", 0), ""],
-                 ["Net Profit", "", "", data.get("net_profit", 0), ""]]
+                rows.append([label, line.get("code", ""), line.get("name", ""), csv_amount(amt, currency), _pct(amt)])
+            rows.append([f"TOTAL {label}", "", "", csv_amount(section.get("total", 0), currency), ""])
+        rows += [[], ["Gross Profit", "", "", csv_amount(data.get("gross_profit", 0), currency), ""],
+                 ["Net Profit", "", "", csv_amount(data.get("net_profit", 0), currency), ""]]
         return csv_response(rows, f"pnl_{fname_date(d_from)}_{fname_date(d_to)}.csv")
 
     @app.get("/reports/export/balance-sheet/csv")
@@ -1505,6 +1518,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         try:
             as_of = request.query_params.get("as_of", "") or _date.today().isoformat()
+            currency = (await api.get_company(token)).get("currency")
             data = await api.get_balance_sheet(token, {"as_of": as_of})
         except APIError as e:
             return plain_error_response(e)
@@ -1516,6 +1530,7 @@ def setup_routes(app):
             section = data.get(key, {})
             for line in section.get("lines", []):
                 rows.append([label, line.get("depth", 0), "Subtotal" if line.get("is_parent") else "Balance",
-                             line.get("code", ""), line.get("name", ""), line.get("amount", 0)])
-            rows += [[label, "", "Total", "", "", section.get("total", 0)], []]
+                             line.get("code", ""), line.get("name", ""),
+                             csv_amount(line.get("amount", 0), currency)])
+            rows += [[label, "", "Total", "", "", csv_amount(section.get("total", 0), currency)], []]
         return csv_response(rows, f"balance_sheet_{fname_date(as_of)}.csv")

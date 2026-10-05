@@ -106,7 +106,8 @@ async def test_the_exported_sheet_marks_subtotals_so_the_balances_add_up(client,
     a header, and how deep it sits. Adding up the balance lines of a section gives the
     section total; the subtotals only restate them."""
     sheet = await _four_level_sheet(client, auth)
-    with patch("ui.api_client.get_balance_sheet", new=AsyncMock(return_value=sheet)):
+    with patch("ui.api_client.get_balance_sheet", new=AsyncMock(return_value=sheet)), \
+         patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})):
         r = await ui_client.get("/reports/export/balance-sheet/csv?as_of=2026-12-31", cookies=_authed())
     assert r.status_code == 200, r.text
     rows = list(csv.DictReader(io.StringIO(r.text.lstrip("\ufeff"))))
@@ -122,3 +123,18 @@ async def test_the_exported_sheet_marks_subtotals_so_the_balances_add_up(client,
             == sheet[key]["total"]
         assert [(row["Code"], int(row["Level"]), float(row["Amount"]), row["Line"] == "Subtotal")
                 for row in lines if row["Line"] != "Total"] == _shape(sheet[key]["lines"])
+
+
+@pytest.mark.parametrize("currency,expected", [("USD", ["1545.00", "1000.00", "5.00"]), ("JPY", ["1545", "1000", "5"])])
+async def test_the_exported_amounts_carry_the_currencys_decimal_places(client, auth, ui_client, currency, expected):
+    """Every amount in the CSV is written at the company currency's decimal places
+    (1545.00 in dollars, 1545 in yen), never as a raw float such as 1545.0, and with
+    no symbol or digit grouping so a spreadsheet still reads it as a number."""
+    sheet = await _four_level_sheet(client, auth)
+    with patch("ui.api_client.get_balance_sheet", new=AsyncMock(return_value=sheet)), \
+         patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": currency})):
+        r = await ui_client.get("/reports/export/balance-sheet/csv?as_of=2026-12-31", cookies=_authed())
+    assert r.status_code == 200, r.text
+    rows = list(csv.DictReader(io.StringIO(r.text.lstrip("﻿"))))
+    assets = [row["Amount"] for row in rows if row["Section"] == "Assets" and row["Line"] != "Total"]
+    assert [assets[0], assets[1], assets[-1]] == expected
