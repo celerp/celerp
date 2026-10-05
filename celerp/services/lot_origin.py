@@ -116,6 +116,13 @@ def held_value(row: Projection) -> Decimal | None:
     return recorded_value(s)
 
 
+def booked_value(row: Projection, currency: str) -> Decimal:
+    """What a lot's account carries for it: its held value rounded to the currency, the
+    amount every posting moves per lot. Totals over lots sum these, never the raw values,
+    so the stock recorded on an account matches its balance to the cent."""
+    return round_money(held_value(row) or Decimal("0"), currency)
+
+
 def recorded_value(state: dict) -> Decimal:
     """The value a lot's state records: its cost total, else its unit cost times its
     quantity, else nothing (0)."""
@@ -148,10 +155,10 @@ async def _balances(session: AsyncSession, company_id, codes) -> dict[str, Decim
     return {code: _balance(entries, code) for code in codes}
 
 
-def _room(entries: list[tuple[str, dict]], items: list[Projection], code: str) -> Decimal:
+def _room(entries: list[tuple[str, dict]], items: list[Projection], code: str, currency: str) -> Decimal:
     """What ``code`` holds beyond the value of the lots on hand that record it."""
     balance = _balance(entries, code)
-    recorded = sum((held_value(r) or Decimal("0") for r in items if (r.state or {}).get(LOT_ACCOUNT_FIELD) == code),
+    recorded = sum((booked_value(r, currency) for r in items if (r.state or {}).get(LOT_ACCOUNT_FIELD) == code),
                    Decimal("0"))
     return balance - recorded
 
@@ -165,7 +172,7 @@ async def account_rooms(session: AsyncSession, company_id, codes) -> dict[str, D
     """account_room for each of ``codes``, read once."""
     currency = (await current_settings(session, company_id)).get("currency", "USD")
     entries, items = await _posted_entries(session, company_id), await _items(session, company_id)
-    return {code: round_money(_room(entries, items, code), currency) for code in codes}
+    return {code: round_money(_room(entries, items, code, currency), currency) for code in codes}
 
 
 def unrecorded(items: list[Projection]) -> list[Projection]:
@@ -185,7 +192,7 @@ async def stock_off_books(session: AsyncSession, company_id) -> list[dict]:
     findings = [{"kind": "unplaced_lot", "entity_id": r.entity_id, "sku": (r.state or {}).get("sku")}
                 for r in sorted(unrecorded(items), key=lambda r: r.entity_id) if held_value(r)]
     for code in sorted({code for role in _INVENTORY for code in scope_codes(settings, role)}):
-        room = round_money(_room(entries, items, code), currency)
+        room = round_money(_room(entries, items, code, currency), currency)
         if room:
             books = round_money(_balance(entries, code), currency)
             findings.append({"kind": "stock_gap", "account": code, "books": float(books),
@@ -476,7 +483,7 @@ async def _normalize(session: AsyncSession, company_id, user_id) -> bool:
         return True
     p, ob = codes[purchased], codes[opening]
     currency = settings.get("currency", "USD")
-    held = [(r, held_value(r)) for r in items if held_value(r) is not None]
+    held = [(r, booked_value(r, currency)) for r in items if held_value(r) is not None]
     if any((r.state or {}).get(LOT_ACCOUNT_FIELD) not in (None, "", p, ob) for r, _ in held):
         await _mark(session, company_id)
         return True
@@ -500,7 +507,7 @@ async def _normalize(session: AsyncSession, company_id, user_id) -> bool:
     kept: list[Projection] = []
     if books != value:
         retired = await _older_retired_stock(session, company_id, pending)
-        if not retired or books != round_money(value + sum((v for _, v in retired), Decimal("0")), currency):
+        if not retired or books != round_money(value + sum((round_money(v, currency) for _, v in retired), Decimal("0")), currency):
             await _mark(session, company_id)
             return True
         kept = [r for r, _ in retired]
@@ -818,7 +825,7 @@ async def recognize_opening_lots(session: AsyncSession, company_id, item_ids, ac
     lots = [r for r in rows if held_value(r) is not None and not (r.state or {}).get(LOT_ACCOUNT_FIELD)]
     if not lots:
         return
-    value = sum((held_value(r) for r in lots), Decimal("0"))
+    value = sum((booked_value(r, settings.get("currency", "USD")) for r in lots), Decimal("0"))
     opening, retained = AccountRole.INVENTORY_OPENING.value, AccountRole.RETAINED_EARNINGS.value
     accounts = await resolve_many(session, company_id, [opening, retained])
     day = await entry_day(session, company_id, at)
@@ -896,7 +903,7 @@ async def choose_lot_account(session: AsyncSession, company_id, item_id: str, co
     if (row.state or {}).get(LOT_ACCOUNT_FIELD):
         raise HTTPException(status_code=409, detail="This stock already records its inventory account.")
     currency = settings.get("currency", "USD")
-    value = round_money(held_value(row) or Decimal("0"), currency)
+    value = booked_value(row, currency)
     inventory = sorted({c for role in _INVENTORY for c in scope_codes(settings, role)} | {code})
     rooms = await account_rooms(session, company_id, inventory)
     room = rooms[code]

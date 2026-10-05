@@ -96,7 +96,7 @@ async def assert_books_carry_stock(session, company_id, *, unplaced=()) -> dict[
         if code not in held:
             missing.append((lot.entity_id, code))
             continue
-        held[code] += value
+        held[code] += round_money(value, currency)  # each posting moves a lot's value to the cent
     assert not missing, f"lots on hand that record no lot inventory account: {missing}"
     held = {code: round_money(v, currency) for code, v in held.items()}
     assert books == held, f"books {books} != stock recorded on them {held}"
