@@ -54,7 +54,7 @@ from celerp.modules.importer import valid_table_prefixes
 from celerp.modules.loader import (
     is_core_folded, is_running, module_search_path, read_manifest, resolve_module_path, running_version,
 )
-from celerp.modules.registry import company_modules, get_enabled, set_enabled, sync_load_set
+from celerp.modules.registry import company_modules, get_enabled, set_enabled, commit_with_load_set
 from celerp.services import attachments, bootstrap, company_lifecycle
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, verify_password
 from celerp.services.company_lock import hold_company, lock_company, locked_company
@@ -1377,7 +1377,6 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
             await _turn_off_shop_sync(session, new_id, user.id)
             team = await _add_team(session, new_id, plan.team_to_add) if plan.team_to_add else 0
-            await sync_load_set(session)
             await session.commit()
         except BaseException:
             await session.rollback()
@@ -1388,6 +1387,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 except Exception:
                     logger.warning("Removing attachment files of a failed company restore failed", exc_info=True)
             raise
+        # The restore has committed: rewriting the load set's mirror never undoes it.
+        await commit_with_load_set(session)
     if stored:
         await asyncio.to_thread(attachments.clear_landing, str(new_id))
     return RestoreResult(company_id=str(company.id), company_name=company.name, created=True,

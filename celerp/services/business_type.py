@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.services.company_lock import locked_company
 from celerp.modules.loader import module_label
-from celerp.modules.registry import company_modules, enable_for_company, restart_needed, sync_load_set
+from celerp.modules.registry import company_modules, enable_for_company, restart_needed, commit_with_load_set
 from celerp.services.demo import reconcile_vertical_defaults, replace_demo_items
 from celerp.services.vertical_presets import (
     installed_preset_modules,
@@ -73,8 +73,7 @@ async def set_business_type(
     demo = {"replaced": 0, "kept": 0}
     if changed:
         demo = await replace_demo_items(session, company_id, actor_id, vertical)
-    await sync_load_set(session)
-    await session.commit()
+    await commit_with_load_set(session)
 
     old_schemas = before.get("category_schemas") or {}
     labels = with_categories.get("category_display_names") or {}

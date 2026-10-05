@@ -1749,7 +1749,7 @@ async def enable_module(
     """Turn a module on for this company, with the modules it needs. Refused
     for a name that is not an installed module."""
     from celerp.modules.loader import is_running, module_search_path, resolve_module_path
-    from celerp.modules.registry import enable_for_company, get_enabled, restart_needed, sync_load_set
+    from celerp.modules.registry import enable_for_company, get_enabled, restart_needed, commit_with_load_set
 
     if not is_running(module_name) and resolve_module_path(module_name, module_search_path()) is None:
         raise HTTPException(status_code=404, detail="Module not found.")
@@ -1757,8 +1757,7 @@ async def enable_module(
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     company.settings, also_enabled = enable_for_company(company.settings, module_name)
-    await sync_load_set(session)
-    await session.commit()
+    await commit_with_load_set(session)
     return {
         "ok": True, "name": module_name, "enabled": True,
         "also_enabled": also_enabled,
@@ -1776,7 +1775,7 @@ async def disable_module(
     """Turn a module off for this company. Other companies keep using it. Refused for a
     module built into Celerp, which is always on."""
     from celerp.modules.loader import is_core_folded, module_label
-    from celerp.modules.registry import ModuleStillNeeded, disable_for_company, get_enabled, sync_load_set
+    from celerp.modules.registry import ModuleStillNeeded, disable_for_company, get_enabled, commit_with_load_set
 
     if is_core_folded(module_name):
         raise HTTPException(status_code=409, detail=(
@@ -1791,8 +1790,7 @@ async def disable_module(
         raise HTTPException(status_code=409, detail=(
             f"{', '.join(module_label(n) for n in exc.needed_by)} needs this module. "
             "Turn that off first."))
-    await sync_load_set(session)
-    await session.commit()
+    await commit_with_load_set(session)
     return {
         "ok": True, "name": module_name, "enabled": False, "restart_required": False,
         "enabled_modules": sorted(get_enabled(company.settings)),

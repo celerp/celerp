@@ -50,7 +50,7 @@ def set_enabled(company_settings: dict[str, Any], enabled: set[str]) -> dict[str
 # has never chosen (key absent) uses whatever the installation loads, and its
 # first choice starts from that list. The installation loads the union of every
 # company's set, closed over dependencies; config.toml [modules].enabled is only
-# the mirror of that union a restart reads, written by sync_load_set alone.
+# the mirror of that union a restart reads, written by commit_with_load_set alone.
 #
 # What a module that a company has turned off means for that company:
 #   * its routes, pages, menu entries, slot contributions, search results and
@@ -141,18 +141,22 @@ def restart_needed(names) -> bool:
     return any(not is_running(n) and restart_would_load(n) for n in names)
 
 
-async def sync_load_set(session) -> None:
-    """Recompute the load set from every company and write its mirror.
+async def commit_with_load_set(session) -> None:
+    """Commit the caller's change to a company's set, then rewrite the load set's mirror.
 
-    Called inside the writer's transaction after it changed a company's set and
-    before it commits: the lock serializes recomputation, and the union read here
-    sees this writer's change and every committed one. A module no company uses
-    any more is already refused to every company and leaves the process at the
-    next restart, so turning one off never needs a restart."""
+    The mirror is written only after the change committed, so a commit that
+    fails never leaves config.toml disagreeing with the database. It is
+    recomputed in its own transaction under the lock, from committed state
+    alone: whichever writer recomputes last sees every committed change. A
+    module no company uses any more is already refused to every company and
+    leaves the process at the next restart, so turning one off never needs a
+    restart."""
     import asyncio
     from sqlalchemy import text
     from celerp.config import replace_enabled_modules
 
+    await session.commit()
     await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _LOAD_SET_LOCK_KEY})
     names = await load_set(session)
     await asyncio.to_thread(replace_enabled_modules, names)
+    await session.commit()

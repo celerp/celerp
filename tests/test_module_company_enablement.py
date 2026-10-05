@@ -288,3 +288,32 @@ async def test_a_module_built_into_celerp_is_always_on_and_cannot_be_turned_off(
     assert "always on" in r.json()["detail"]
     listed = {m["name"]: m for m in (await client.get("/companies/me/modules", headers=a)).json()}
     assert listed[folded]["enabled"] is True and listed[folded]["running"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_turn_off_that_fails_to_save_leaves_the_load_set_as_it_was(client, session, module_dir, monkeypatch):
+    from sqlalchemy.ext.asyncio import AsyncSession
+    name = f"acme-{_uid()}"
+    _write_module(module_dir, {"name": name, "version": "1.0.0"}, {})
+    h = {"Authorization": f"Bearer {await register_admin(client)}"}
+    assert (await client.post(f"/companies/me/modules/{name}/enable", headers=h)).status_code == 200
+    assert name in _configured()
+
+    real_commit = AsyncSession.commit
+    armed = {"on": True}
+
+    async def commit_fails_once(self):
+        if armed["on"]:
+            armed["on"] = False
+            raise RuntimeError("the database refused the commit")
+        return await real_commit(self)
+
+    monkeypatch.setattr(AsyncSession, "commit", commit_fails_once)
+    with pytest.raises(RuntimeError):
+        await client.post(f"/companies/me/modules/{name}/disable", headers=h)
+    monkeypatch.setattr(AsyncSession, "commit", real_commit)
+    await session.rollback()
+
+    me = (await client.get("/companies/me", headers=h)).json()["settings"]["enabled_modules"]
+    assert name in me
+    assert name in _configured(), "config.toml dropped a module the database still turns on"

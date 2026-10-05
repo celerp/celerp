@@ -1618,7 +1618,7 @@ async def _enable_for_every_company(db_url: str, names: list[str]) -> int:
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
     from celerp.models.company import Company
-    from celerp.modules.registry import enable_for_company, sync_load_set
+    from celerp.modules.registry import enable_for_company, commit_with_load_set
     from celerp.services.company_lock import locked_company
 
     engine = create_async_engine(db_url)
@@ -1629,8 +1629,7 @@ async def _enable_for_every_company(db_url: str, names: list[str]) -> int:
                 company = await locked_company(session, company_id)
                 for name in names:
                     company.settings, _deps = enable_for_company(company.settings, name)
-            await sync_load_set(session)
-            await session.commit()
+            await commit_with_load_set(session)
             return len(company_ids)
     finally:
         await engine.dispose()

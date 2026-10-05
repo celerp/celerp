@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.company import Company
-from celerp.modules.registry import enable_for_company, sync_load_set
+from celerp.modules.registry import enable_for_company, commit_with_load_set
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
@@ -95,8 +95,7 @@ def _build_router() -> APIRouter:
         extra = {k: v for k, v in (preset.get("company_settings") or {}).items() if k not in settings}
         settings.update(extra)
         company.settings = settings
-        await sync_load_set(session)
-        await session.commit()
+        await commit_with_load_set(session)
 
         return {"applied": vertical, "categories": len(categories), "modules": modules, "company_settings": extra}
 
