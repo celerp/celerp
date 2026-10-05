@@ -20,6 +20,7 @@ from celerp import __version__, runtime as _runtime
 _runtime.watch_supervisor_pipe()
 from celerp.db import engine, lifecycle_engine, mask_db_credentials
 from celerp.inventory_codes import CodeConflictError
+from celerp.projections.engine import UnhandledEventsError
 from celerp.services.auto_je import UnbalancedJournalEntry
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 from celerp.gateway.state import load_commercial_context
@@ -653,6 +654,12 @@ async def code_conflict_handler(_request: Request, exc: CodeConflictError):
     # The event boundary raises a CodeConflictError (barcode or RFID / EPC) when a write
     # introduces a physical code another item already holds. One handler on the shared
     # base maps every physical-code collision to 409.
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(UnhandledEventsError)
+async def unhandled_events_handler(_request: Request, exc: UnhandledEventsError):
+    # Every rebuild door (ledger, doctor, admin) is refused the same way before it changes anything.
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
