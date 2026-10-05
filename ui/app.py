@@ -530,23 +530,24 @@ async def proxy_attachment(request: Request, path: str) -> Response:
 
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
+# Correct a bundled-dir first entry so the UI lists imports from the writable drop-in;
+# an unset MODULE_DIR (a bare dev run) means the bundled trees.
+from celerp.modules.loader import with_writable_module_dir as _with_writable_module_dir
+os.environ["MODULE_DIR"] = _with_writable_module_dir(os.environ.get("MODULE_DIR", ""))
+_MODULE_DIR = os.environ["MODULE_DIR"]
+
 # Determine enabled modules from env (set by cli.py _config_to_env).
-# Fall back to config.toml when env is absent (e.g. Electron binary restart).
+# Fall back to config.toml when env is absent (e.g. Electron binary restart, a dev run).
 _ENABLED_MODULES: set[str] = set(
     m.strip() for m in os.environ.get("ENABLED_MODULES", "").split(",") if m.strip()
 )
-if not _ENABLED_MODULES and os.environ.get("MODULE_DIR"):
+if not _ENABLED_MODULES and _MODULE_DIR:
     try:
         from celerp.config import read_config as _read_config
         _cfg = _read_config()
         _ENABLED_MODULES = set(_cfg.get("modules", {}).get("enabled") or [])
     except Exception:
         pass
-
-# Correct a bundled-dir first entry so the UI lists imports from the writable drop-in.
-from celerp.modules.loader import with_writable_module_dir as _with_writable_module_dir
-os.environ["MODULE_DIR"] = _with_writable_module_dir(os.environ.get("MODULE_DIR", ""))
-_MODULE_DIR = os.environ["MODULE_DIR"]
 
 # The API process decides which modules run. Offer only the ones it reports as
 # running; every other enabled module, and anything depending on it, is skipped
@@ -588,7 +589,7 @@ try:
 except ImportError:
     pass  # AI package not present — skip silently
 
-# Register UI routes from external loaded modules (opt-in: no-op if MODULE_DIR not set).
+# Register UI routes from the loaded modules.
 if _admission is not None:
     from celerp.modules.loader import load_all, register_ui_routes
     _ui_loaded = load_all(_MODULE_DIR, _ENABLED_MODULES, admission=_admission)

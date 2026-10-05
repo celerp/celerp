@@ -88,6 +88,8 @@ async def test_modules_ready_commit_guarded(monkeypatch):
     monkeypatch.setattr("celerp.modules.loader.register_api_routes", lambda *a, **k: None)
     monkeypatch.setattr("celerp.modules.loader.demoted_first_party", lambda *a, **k: [])
     monkeypatch.setattr("celerp.db.LifecycleSessionLocal", lambda: _FakeSession(rollback_spy))
+    # Boot's connector adoption reads the companies table; this test has no schema.
+    monkeypatch.setattr("celerp.connectors.outbound_queue.adopt_legacy_connector_configs", AsyncMock())
 
     # Keep the relay tunnel down (no public url, no live share).
     monkeypatch.setattr("celerp.gateway.has_active_share", AsyncMock(return_value=False))

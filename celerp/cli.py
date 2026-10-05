@@ -291,9 +291,9 @@ def _config_to_env(cfg: dict, root: Path | None = None) -> dict:
     # installs into MODULE_DIR.split(",")[0]), then the read-only bundled
     # default (core) and premium (opt-in add-ons) trees. Keeping the writable
     # dir separate means a sideload never lands in default_modules/.
-    from celerp.modules.loader import first_party_names, is_first_party, writable_module_dir
+    from celerp.modules.loader import bundled_module_dirs, first_party_names, is_first_party, writable_module_dir
     _pkg_root = root or runtime.package_root()
-    _mod_dirs = [_pkg_root / "default_modules", _pkg_root / "premium_modules"]
+    _mod_dirs = bundled_module_dirs(_pkg_root)
     _writable_dir = None
     try:
         _writable_dir = writable_module_dir()

@@ -53,3 +53,31 @@ def test_ui_starts_with_every_default_module_and_registers_each_page_once(tmp_pa
     out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert "error" not in out, out["error"]
     assert out["dupes"] == []
+
+
+# Boots ui.app as the documented dev run does: no MODULE_DIR, no ENABLED_MODULES,
+# the enabled list read from config.toml. The API's record is stubbed to "every
+# module given is running".
+_DEV_BOOT = textwrap.dedent("""
+    import json, sys
+    import celerp.modules.outcome as outcome
+    outcome.reported_by_api = lambda api_url, database_url: {"running": sys.argv[1].split(",")}
+    import ui.app
+    print(json.dumps(sorted({getattr(r, "path", "") for r in ui.app.app.router.routes})))
+""")
+
+
+def test_dev_run_without_module_dir_loads_the_default_modules(tmp_path):
+    """`uvicorn ui.app:app` with MODULE_DIR unset searches the module trees
+    `celerp start` gives it, so the document and label pages are there."""
+    enabled = _default_module_names()
+    config = tmp_path / "config.toml"
+    config.write_text("[modules]\nenabled = [" + ", ".join(f'"{m}"' for m in enabled) + "]\n")
+    env = {k: v for k, v in os.environ.items() if k not in ("MODULE_DIR", "ENABLED_MODULES")}
+    env.update(CELERP_CONFIG=str(config), CELERP_DATA_DIR=str(tmp_path / "data"))
+    proc = subprocess.run([sys.executable, "-c", _DEV_BOOT, ",".join(enabled)],
+                          cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    paths = set(json.loads(proc.stdout.strip().splitlines()[-1]))
+    assert "/docs" in paths
+    assert "/settings/labels" in paths

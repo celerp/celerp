@@ -523,10 +523,15 @@ def test_with_writable_module_dir_leaves_safe_first_entry(tmp_path):
     assert loader.with_writable_module_dir(safe) == safe
 
 
-def test_with_writable_module_dir_empty_unchanged():
-    """No module dir configured stays off - the helper never invents one."""
+def test_with_writable_module_dir_defaults_an_unset_dir_to_the_bundled_trees(monkeypatch, tmp_path):
+    """No module dir given (a bare `uvicorn` dev run) searches what `celerp start`
+    gives a launch: the writable drop-in first, then the bundled trees that exist."""
     from celerp.modules import loader
-    assert loader.with_writable_module_dir("") == ""
+    monkeypatch.setattr(loader, "writable_module_dir", lambda: tmp_path / "modules")
+    root = loader.BUNDLED_SOURCE_DIR.parent
+    bundled = [str(d) for d in loader.bundled_module_dirs(root) if d.exists()]
+    assert loader.with_writable_module_dir("").split(",") == [str(tmp_path / "modules"), *bundled]
+    assert str(root / "default_modules") in bundled
 
 
 # ── Copy-ignore is the shared digest-exclude set (DRY) ────────────────────────

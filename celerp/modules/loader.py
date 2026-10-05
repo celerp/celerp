@@ -147,15 +147,25 @@ def writable_module_dir() -> Path:
     return d
 
 
+def bundled_module_dirs(root: Path) -> list[Path]:
+    """The module trees shipped under the package root *root*: the default (core)
+    modules, then the premium (opt-in add-on) ones. Either may be absent."""
+    return [root / "default_modules", root / "premium_modules"]
+
+
 def with_writable_module_dir(module_dir_env: str) -> str:
     """Ensure a launch path's MODULE_DIR writes imports to a safe location.
 
-    The importer installs into MODULE_DIR.split(",")[0]. If that first entry is a
-    bundled/trusted dir (the dev/CLI footgun: MODULE_DIR=default_modules), a
-    writable data-dir drop-in is prepended so imports land there, with the bundled
-    dir kept on the path for default discovery. An already-safe first entry, or an
-    unset MODULE_DIR (module system off), is returned unchanged."""
+    An unset MODULE_DIR (a bare `uvicorn` dev run) means the bundled trees that
+    exist, as `celerp start` gives them. The importer installs into
+    MODULE_DIR.split(",")[0]. If that first entry is a bundled/trusted dir (the
+    dev/CLI footgun: MODULE_DIR=default_modules), a writable data-dir drop-in is
+    prepended so imports land there, with the bundled dir kept on the path for
+    default discovery. An already-safe first entry is returned unchanged."""
     entries = [e.strip() for e in module_dir_env.split(",") if e.strip()]
+    if not entries:
+        entries = [str(d) for d in bundled_module_dirs(BUNDLED_SOURCE_DIR.parent) if d.exists()]
+        module_dir_env = ",".join(entries)
     if not entries or not is_bundled_dir(Path(entries[0])):
         return module_dir_env
     try:
