@@ -175,7 +175,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
                 li.pop("entity_id", None)
                 li.pop("quantity_received", None)
         # Fulfillment state is independent of doc status - do not clear it here.
-        # Use the /unfulfill endpoint to explicitly revert fulfillment.
+        # Revert lines (revert-lines) reverts fulfillment explicitly.
     elif event_type == "doc.unvoided":
         restored = data.get("restored_status", "final")
         current["status"] = restored

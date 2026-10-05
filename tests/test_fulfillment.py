@@ -522,60 +522,6 @@ async def test_sold_item_state_carries_status_doc_and_is_searchable(client, sess
 
 
 @pytest.mark.asyncio
-async def test_unfulfill_restores_stock_and_reverses_je(client, session, auth, _setup_ids):
-    """Un-fulfill: restores stock and reverses JE."""
-    from celerp.models.projections import Projection
-    from celerp.services.fulfill import execute_fulfill, execute_unfulfill
-    from celerp.services.pick import compute_pick_plan
-
-    item_id = await _create_item(client, auth, "RESTORE-A", 10, cost_price=3.0)
-    doc_id = await _create_and_finalize_invoice(client, auth, [
-        {"sku": "RESTORE-A", "quantity": 10, "unit_price": 8.0},
-    ])
-
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    available_inv = [{
-        "entity_id": item_id, "sku": "RESTORE-A", "quantity": 10,
-        "created_at": "", "expires_at": None, "cost_total": 30.0,
-    }]
-    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
-    await execute_fulfill(
-        session, doc_entity_id=doc_id, doc_state=doc_row.state,
-        pick_result=pick_result, company_id=_setup_ids["company_id"],
-        user_id=str(_setup_ids["user_id"]),
-    )
-    await session.commit()
-
-    # Verify item is sold and qty preserved (= fulfilled qty) after fulfillment
-    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) == 10
-
-    # Re-read doc state (now has fulfilled_items)
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    assert doc_row.state.get("fulfillment_status") == "fulfilled"
-
-    # Un-fulfill
-    result = await execute_unfulfill(
-        session, doc_entity_id=doc_id, doc_state=doc_row.state,
-        company_id=_setup_ids["company_id"],
-        user_id=str(_setup_ids["user_id"]), reason="test",
-    )
-    await session.commit()
-
-    assert result["success"] is True
-
-    # Verify stock restored
-    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) == 10
-    assert inv_row.state.get("status") == "available"
-
-    # Verify doc fulfillment cleared
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    assert doc_row.state.get("fulfillment_status") is None
-
-
-@pytest.mark.asyncio
 async def test_void_blocked_while_fulfilled_and_state_untouched(client, session, auth, _setup_ids):
     """Voiding a fulfilled doc is REFUSED (goods must come back first), and the
     refused attempt changes nothing: fulfillment state and stock stay as they were."""

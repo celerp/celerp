@@ -17,7 +17,7 @@ from sqlalchemy import select
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD
 from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
-from celerp.services.fulfill import execute_fulfill, execute_unfulfill
+from celerp.services.fulfill import execute_fulfill
 from celerp.services.lot_origin import held_value
 from celerp.services.pick import compute_pick_plan
 from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
@@ -69,12 +69,9 @@ async def _fulfil(session, auth, doc_id: str, lot_id: str) -> dict:
     return next(fi for fi in out["fulfilled_items"] if fi["action"] == "split")
 
 
-async def _unfulfil(session, auth, doc_id: str) -> None:
-    cid = auth["company_id"]
-    doc = await session.get(Projection, {"company_id": cid, "entity_id": doc_id}, populate_existing=True)
-    await execute_unfulfill(session, doc_entity_id=doc_id, doc_state=doc.state, company_id=cid,
-                            user_id=str(auth["user_id"]), doc_type="invoice")
-    await session.commit()
+async def _revert(client, auth, doc_id: str, lot_id: str) -> None:
+    r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"], json={"line_entity_ids": [lot_id]})
+    assert r.status_code == 200, r.text
 
 
 async def _order(client, auth, sku: str, qty: float) -> str:
@@ -99,7 +96,7 @@ async def test_a_part_fulfilled_then_returned_after_a_remap_sells_from_its_lots_
     order = await _order(client, auth, "FUL", 3)
     part = await _fulfil(session, auth, order, lot)
     assert (await _state(session, auth, part["item_id"]))[_FIELD] == origin
-    await _unfulfil(session, auth, order)
+    await _revert(client, auth, order, part["item_id"])
     restored = await _state(session, auth, part["item_id"])
     assert (restored["status"], restored[_FIELD], restored["cost_total"]) == ("available", origin, 15.0)
 

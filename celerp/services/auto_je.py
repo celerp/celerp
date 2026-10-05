@@ -18,7 +18,6 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.account_roles import (
     AmbiguousOriginError,
-    PostingRoleError,
     current_settings,
     line_has_role,
     line_roles,
@@ -1942,30 +1941,6 @@ async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str,
         entries=await _cogs_entries(session, company_id, await lots_by_account(session, company_id, lot_costs)),
         metadata_={"trigger": "doc.fulfilled", "doc_id": doc_id},
     )
-
-
-async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, cycle: int = 0) -> None:
-    """Reverse the COGS JE created when a doc was fulfilled.
-
-    cycle must match the value passed to create_for_doc_fulfilled for this fulfill cycle.
-    """
-    cycle_tag = f"fulfill-{cycle}" if cycle else "fulfill"
-    je_id = f"je:auto:{doc_id}:{cycle_tag}"
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
-    if row is not None and row.state.get("status") == "posted":
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=je_id,
-            entity_type="journal_entry",
-            event_type="acc.journal_entry.voided",
-            data=je_void_data(f"Reversed: {doc_id} fulfillment reversed", row.state),
-            actor_id=user_id,
-            location_id=None,
-            source="auto_je",
-            idempotency_key=f"je:auto:{doc_id}:{cycle_tag}:void",
-            metadata_={"trigger": "doc.fulfillment_reversed", "doc_id": doc_id},
-        )
 
 
 async def create_for_return_received(session, *, company_id, user_id, cn_id: str, lot_costs: dict[str, float], je_suffix: str,

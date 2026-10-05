@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Fulfill and un-fulfill execution — emits events, creates JEs.
+"""Fulfill execution - emits events, creates JEs.
 
 Used by core for data-integrity reversals (void, revert, unvoid)
 and by the fulfillment module's toggle/pick screen.
@@ -271,118 +271,6 @@ async def execute_fulfill(
         "fulfilled_items": fulfilled_items,
         "total_cogs": je_cogs,
     }
-
-
-async def execute_unfulfill(
-    session: AsyncSession,
-    *,
-    doc_entity_id: str,
-    doc_state: dict,
-    company_id,
-    user_id,
-    reason: str = "manual",
-    doc_type: str = "",
-) -> dict[str, Any]:
-    """Reverse fulfillment: restore item quantities, emit reversal events, reverse COGS JE.
-
-    Returns: {success: bool, reversed_items: [...]}
-    """
-    fulfilled_items = doc_state.get("fulfilled_items", [])
-    cid = _to_uuid(company_id)
-    uid = _to_uuid(user_id)
-    doc_number = doc_state.get("doc_number") or doc_state.get("ref_id") or ""
-    reversed_items: list[dict] = []
-
-    if not fulfilled_items:
-        # No items to reverse - still emit the doc event to clear fulfillment_status
-        await emit_event(
-            session,
-            company_id=cid,
-            entity_id=doc_entity_id,
-            entity_type="doc",
-            event_type="doc.fulfillment_reversed",
-            data={
-                "reversed_items": [],
-                "reversed_by": str(uid),
-                "reason": reason,
-            },
-            actor_id=uid,
-            location_id=None,
-            source="fulfillment",
-            idempotency_key=str(_uuid.uuid4()),
-            metadata_={},
-        )
-        return {"success": True, "reversed_items": []}
-
-    for fi in fulfilled_items:
-        item_id = fi.get("item_id")
-        action = fi.get("action", "full")
-
-        # Inbound and service items have no physical stock to restore.
-        if not item_id or action in ("service", "inbound"):
-            reversed_items.append({
-                "item_id": None,
-                "sku": fi.get("sku", ""),
-                "quantity": fi.get("quantity", 0),
-                "action": action,
-            })
-            continue
-
-        qty = float(fi.get("quantity", 0))
-        await emit_event(
-            session,
-            company_id=cid,
-            entity_id=item_id,
-            entity_type="item",
-            event_type="item.fulfillment_reversed",
-            data={
-                "source_doc_id": doc_entity_id,
-                "doc_number": doc_number,
-                "quantity_restored": qty,
-                "reversed_by": str(uid),
-                "reason": reason,
-                "doc_type": doc_type,
-            },
-            actor_id=uid,
-            location_id=None,
-            source="fulfillment",
-            idempotency_key=str(_uuid.uuid4()),
-            metadata_={"doc_id": doc_entity_id},
-        )
-        reversed_items.append({
-            "item_id": item_id,
-            "sku": fi.get("sku", ""),
-            "quantity": qty,
-            "action": action,
-        })
-
-    # Emit doc.fulfillment_reversed
-    await emit_event(
-        session,
-        company_id=cid,
-        entity_id=doc_entity_id,
-        entity_type="doc",
-        event_type="doc.fulfillment_reversed",
-        data={
-            "reversed_items": reversed_items,
-            "reversed_by": str(uid),
-            "reason": reason,
-        },
-        actor_id=uid,
-        location_id=None,
-        source="fulfillment",
-        idempotency_key=str(_uuid.uuid4()),
-        metadata_={},
-    )
-
-    # Reverse COGS JE (only if there were outbound items; inbound has no COGS)
-    has_outbound = any(fi.get("action") not in ("service", "inbound") for fi in fulfilled_items if fi.get("item_id"))
-    if has_outbound:
-        await auto_je.void_for_doc_fulfilled(
-            session, company_id=cid, user_id=uid, doc_id=doc_entity_id,
-        )
-
-    return {"success": True, "reversed_items": reversed_items}
 
 
 async def _returned_lots(session: AsyncSession, cid, doc_ids: list[str]) -> dict[str, list[tuple[str | None, str, float]]]:
