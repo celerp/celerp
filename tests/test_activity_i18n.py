@@ -94,6 +94,13 @@ def test_price_set_detail_translates_the_price_field():
     assert detail_from_entry({"price_type": "cost_price", "new_price": 5}, "item.pricing.set").startswith("XX_COST")
 
 
+
+def test_price_set_detail_translates_a_price_list_named_by_name():
+    """A price set by a system price list's name (as the API accepts) reads in the user's
+    language, like the list does elsewhere. Red statement: the feed showed "Retail" in
+    every language."""
+    assert detail_from_entry({"price_type": "Retail", "new_price": 12}, "item.pricing.set").startswith("XX_RETAIL →")
+
 def test_relative_time_translates():
     ts = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
     assert relative_time(ts) == "XX 3 DAYS"

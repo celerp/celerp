@@ -16,7 +16,7 @@ from decimal import Decimal, InvalidOperation
 from fasthtml.common import *
 from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA, cost_columns
 from celerp.services.pricing import PRICE_LISTS_FALLBACK
-from ui.i18n import t, get_lang, category_label, field_label
+from ui.i18n import t, get_lang, category_label, field_label, price_list_label
 from ui.components.table import EMPTY, fmt_money, fmt_rate
 
 # Known ledger event types. The label for each is resolved at render time via
@@ -323,7 +323,11 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None,
     if event_type == "item.pricing.set":
         price_type = data.get("price_type", "")
         new_price = data.get("new_price")
-        label = _field_name(price_type) if price_type else t("field.price")
+        # price_type is a price field key, or a price list's name as the API also accepts;
+        # a system list named by name reads in the user's language.
+        label = price_list_label(price_type) if price_type else t("field.price")
+        if label == price_type:
+            label = _field_name(price_type)
         return f"{label} → {fmt_price(new_price, price_type, currency)}" if new_price is not None else label
     if event_type == "item.status.set":
         new_status = data.get("new_status", "")
