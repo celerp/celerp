@@ -769,6 +769,32 @@ def test_setup_rebound_to_another_module_is_refused(_modules, tmp_path):
     assert "top-level def" in loader.load_errors()[folder]
 
 
+def test_setup_rebound_after_admission_is_refused_at_registration(_modules, tmp_path):
+    """Registration proves where the setup it calls comes from, not what admission
+    read: a route file changed after admission to rebind its setup to another
+    module's function never runs that function as this module's."""
+    marker = tmp_path / "borrowed_setup_ran.txt"
+    other, other_inner = _route_module(_modules, f"acme-{_uid()}", kind="ui", body=(
+        "def setup_ui_routes(app):\n    pass\n\n"
+        "def setup_api_routes(app):\n    " + _marker_line(marker)))
+    folder = f"acme-{_uid()}"
+    pkg, inner = _route_module(_modules, folder, depends_on=[other.name],
+                               body="def setup_api_routes(app):\n    pass\n")
+    admission = loader.admit_modules(str(_modules), {folder, other.name})
+    assert admission.refused == {}
+    routes = pkg / inner / "routes.py"
+    routes.write_text(routes.read_text()
+                      + f"\nfrom {other_inner}.routes import setup_api_routes  # noqa: E402,F811\n")
+
+    loaded = loader.load_all(str(_modules), {folder, other.name}, admission=admission)
+    loader.register_api_routes(_App(), loaded)
+
+    assert not marker.exists(), "another module's setup ran as this module's"
+    assert not loader.is_running(folder)
+    assert loader.is_running(other.name)
+    assert "outside module" in loader.load_errors()[folder]
+
+
 def test_owned_route_module_registers(_modules):
     folder = f"acme-{_uid()}"
     _pkg, inner = _route_module(_modules, folder)
