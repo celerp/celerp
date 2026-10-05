@@ -968,6 +968,19 @@ def _inventory_page_error(request: Request, lang: str) -> FT:
     )
 
 
+# The demo list offers Delete, and the bulk selection outlives the list it was made
+# on. So the demo list starts with nothing selected whenever it renders (the link,
+# Back, a refresh, a reload after Delete, a page restored from the back cache), and a
+# row ticked on another list never rides into Delete with the samples.
+_CLEAR_SELECTION_JS = """(function(){
+  function clear(){ document.body.dispatchEvent(new CustomEvent('celerpSelectionClear')); }
+  clear();
+  if (window.__celerpClearOnShow) return;
+  window.__celerpClearOnShow = true;
+  window.addEventListener('pageshow', function(e){ if (e.persisted) clear(); });
+})();"""
+
+
 async def _inventory_content(
     token: str,
     p: dict,
@@ -1168,6 +1181,7 @@ async def _inventory_content(
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], list_total, p["per_page"], "/inventory", extra_params),
         Script(SERVER_FILTER_JS),
+        Script(_CLEAR_SELECTION_JS) if p.get("filter") == DEMO_ITEMS_FILTER else None,
         Div(id="modal-container"),
         id="inventory-content",
     )
