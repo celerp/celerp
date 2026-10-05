@@ -240,6 +240,40 @@ async def test_a_user_only_the_reset_company_names_goes_with_their_sessions(real
             await conn.execute(text("DROP TABLE IF EXISTS ext_notes"))
 
 
+@pytest.mark.parametrize("action", ["CASCADE", "NO ACTION"])
+async def test_a_user_another_company_reaches_through_a_per_user_table_stays(
+        real_client, real_engine, action):  # noqa: F811
+    """The clerk belongs to Alpha only. A per-user table (no company column, cascading from
+    users) holds the clerk's preference, and one of Beta's rows names that preference.
+    Resetting Alpha keeps the clerk, so Beta's row is neither deleted nor tripped over."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    beta = await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        clerk = (await conn.execute(text("SELECT id FROM users WHERE email = 'clerk@example.com'"))).scalar_one()
+        await conn.execute(text("CREATE TABLE ext_prefs (id uuid PRIMARY KEY, "
+                                "user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE)"))
+        await conn.execute(text("CREATE TABLE ext_uses (id uuid PRIMARY KEY, company_id uuid NOT NULL "
+                                f"REFERENCES companies(id), pref_id uuid REFERENCES ext_prefs(id) ON DELETE {action})"))
+        pref = uuid.uuid4()
+        await conn.execute(text("INSERT INTO ext_prefs VALUES (:p, :u)"), {"p": pref, "u": clerk})
+        await conn.execute(text("INSERT INTO ext_uses VALUES (:i, :c, :p)"), {"i": uuid.uuid4(), "c": beta, "p": pref})
+    try:
+        before = {t: await _rows(real_engine, t) for t in ("ext_prefs", "ext_uses")}
+
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "users", "id = :i", i=clerk) == 1
+        assert {t: await _rows(real_engine, t) for t in before} == before
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_uses, ext_prefs"))
+
+
 @pytest.mark.parametrize("action", ["SET NULL", "SET DEFAULT"])
 async def test_a_row_whose_key_clears_outlives_the_reset_company(real_client, real_engine, action):  # noqa: F811
     """A module row with no company column names Alpha and Beta through keys that clear

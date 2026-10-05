@@ -129,11 +129,29 @@ def delete_users_left_without_a_company(schema: dict[str, Table]) -> str:
     """Of the users bound as ``:members``, delete those no remaining row still names.
 
     A row of a company, or one hanging off it, keeps its user whatever its foreign key
-    does on delete: a cascade or a set-null would change that company's data. Elsewhere
-    (a session, a badge) a cascading reference goes with the user."""
+    does on delete, and so does one that names the user through rows of tables outside
+    any company (a per-user preference): deleting the user would cascade into, change or
+    trip over that company's data. Elsewhere (a session, a badge) a cascading reference
+    goes with the user."""
     company = company_tables(schema)
-    refs = [f"NOT EXISTS (SELECT 1 FROM {ident(name)} WHERE {ident(col)} = users.id)"
-            for name, table in schema.items()
-            for fk in table.fks if fk.target == "users" and (name in company or not fk.cascades)
-            for col in fk.cols]
+
+    def reaching(name: str, seen: frozenset[str]) -> list[str]:
+        """Conditions picking the rows of ``name`` that name the user, directly or
+        through rows of tables outside any company."""
+        conds = []
+        for fk in schema[name].fks:
+            if fk.target == "users":
+                conds += [f"{ident(col)} = users.id" for col in fk.cols]
+            elif fk.target not in company and fk.target not in seen and (
+                    via := reaching(fk.target, seen | {fk.target})):
+                conds.append(f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} "
+                             f"FROM {ident(fk.target)} WHERE {' OR '.join(via)})")
+        return conds
+
+    refs = [f"NOT EXISTS (SELECT 1 FROM {ident(name)} WHERE {cond})"
+            for name in sorted(company) for cond in reaching(name, frozenset({name}))]
+    refs += [f"NOT EXISTS (SELECT 1 FROM {ident(name)} WHERE {ident(col)} = users.id)"
+             for name, table in schema.items() if name not in company
+             for fk in table.fks if fk.target == "users" and not fk.cascades
+             for col in fk.cols]
     return " AND ".join(["DELETE FROM users WHERE id = ANY(:members)", *refs])
