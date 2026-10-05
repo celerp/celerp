@@ -1265,7 +1265,7 @@ class TestActivityFeed:
         from ui.components.activity import detail_from_entry
         result = detail_from_entry({"price_type": "cost_price", "new_price": 100.0}, "item.pricing.set")
         assert "100.0" in result
-        assert "Cost Price" in result
+        assert result.startswith("Cost → ")
 
     def test_detail_from_entry_qty_adjusted(self):
         from ui.components.activity import detail_from_entry

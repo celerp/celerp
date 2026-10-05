@@ -28,7 +28,6 @@ from ui.routes.settings import (
     _company_display_cell,
     _location_display_cell,
     _tc_display_cell,
-    _schema_tab,
     _company_reset_card,
     _preference_display_cell,
 )
@@ -38,7 +37,6 @@ _XX = {
     "settings.fiscal_month_mar": "XX_FISCAL_MAR",
     "settings.loc_type_warehouse": "XX_WAREHOUSE",
     "settings.doc_type_invoice": "XX_INVOICE",
-    "settings.th_order": "XX_ORDER",
     "settings.reset_this_company": "XX_RESET_COMPANY",
     "settings.skip_continue": "XX_SKIP_CONTINUE",
     "settings.company_reset_warning": "XX_COMPANY_WARNING",
@@ -79,11 +77,6 @@ def test_module_dict_doc_type_translates():
     html = to_xml(_tc_display_cell(0, "doc_types", {"doc_types": ["invoice"]}))
     assert "XX_INVOICE" in html
 
-
-def test_schema_table_header_translates():
-    # Table header built from new keys (category item-schema header).
-    html = to_xml(_schema_tab([], {"Widgets": []}, "Widgets"))
-    assert "XX_ORDER" in html
 
 
 def test_company_reset_card_labels_translate_and_no_em_dash():

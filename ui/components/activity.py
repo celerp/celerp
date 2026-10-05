@@ -14,7 +14,9 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 
 from fasthtml.common import *
-from ui.i18n import t, get_lang, category_label
+from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA, cost_columns
+from celerp.services.pricing import PRICE_LISTS_FALLBACK
+from ui.i18n import t, get_lang, category_label, field_label
 from ui.components.table import EMPTY, fmt_money, fmt_rate
 
 # Known ledger event types. The label for each is resolved at render time via
@@ -262,6 +264,17 @@ _FIELD_LABEL_KEYS: tuple[str, ...] = (
     "category", "barcode", "location",
 )
 _FIELD_LABELS: dict[str, str] = {k: f"field.{k}" for k in _FIELD_LABEL_KEYS}
+# Item fields not listed above read as their inventory column headers do.
+_ITEM_FIELDS: dict[str, dict] = {f["key"]: f for f in [*DEFAULT_ITEM_SCHEMA, *cost_columns(PRICE_LISTS_FALLBACK)]}
+
+
+def _field_name(key: str) -> str:
+    """Display name for a changed field key; an unknown key (a custom attribute) is
+    title-cased as named."""
+    if key in _FIELD_LABELS:
+        return t(_FIELD_LABELS[key])
+    field = _ITEM_FIELDS.get(key)
+    return field_label(field) if field else key.replace("_", " ").title()
 
 # ID fields that carry a raw entity-ID value; suppressed when a companion
 # human-readable field is present in the same changeset.
@@ -300,7 +313,7 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
     if event_type == "item.pricing.set":
         price_type = data.get("price_type", "")
         new_price = data.get("new_price")
-        label = price_type.replace("_", " ").title() if price_type else t("field.price")
+        label = _field_name(price_type) if price_type else t("field.price")
         return f"{label} → {fmt_price(new_price, price_type, currency)}" if new_price is not None else label
     if event_type == "item.status.set":
         new_status = data.get("new_status", "")
@@ -718,7 +731,7 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
                 # emit nothing - never fall back to a misleading bare "Lines edited".
                 continue
             label_key = _COMPLEX_LABELS.get(k)
-            label = t(label_key) if label_key else t("activity.generic_updated", field=k.replace('_', ' ').title())
+            label = t(label_key) if label_key else t("activity.generic_updated", field=_field_name(k))
             if label not in complex_labels:
                 complex_labels.append(label)
             continue
@@ -734,8 +747,7 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
 
         old_str = _fmt_field_value(k, old, currency) if not _empty(old) else t("activity.none")
         new_str = _fmt_field_value(k, new, currency) if not _empty(new) else t("activity.none")
-        label_key = _FIELD_LABELS.get(k)
-        label = t(label_key) if label_key else k.replace("_", " ").title()
+        label = _field_name(k)
         if not _empty(new):
             scalar_parts.append(f"{label}: {old_str} → {new_str}")
         else:
