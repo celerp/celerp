@@ -68,7 +68,7 @@ def _apply(patches):
 
 
 def _stop(patches):
-    for p in patches:
+    for p in reversed(patches):
         p.stop()
 
 
@@ -95,7 +95,6 @@ async def test_a_viewer_opening_ai_lands_on_the_dashboard_with_the_notice(ui_cli
     patches = _patch_page(get_company=AsyncMock(return_value=company))
     dashboard = [
         patch("ui.routes.dashboard._load_dashboard", new=AsyncMock(return_value=(company, {}, {}, {}, []))),
-        patch("ui.api_client.get_company", new=AsyncMock(return_value=company)),
         patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}})),
         patch("ui.api_client.get_activity", new=AsyncMock(return_value=[])),
     ]
