@@ -55,6 +55,7 @@ from celerp.services.units import (
     validate_quantity,
 )
 from celerp_inventory.projections import is_core_item_key
+from ui.i18n import category_label_everywhere
 
 logger = logging.getLogger(__name__)
 
@@ -1956,8 +1957,9 @@ def resolve_import_category(value: str, category_keys, display_names: dict) -> t
     """Resolve a source category to the company's canonical category key.
 
     Returns ``(category, error)``. An exact key wins, then a unique case-insensitive
-    key, then a unique case-insensitive display label. Several candidates are an
-    error rather than a guess; an unknown value is kept as a custom category.
+    key, then a unique case-insensitive display label in any UI language. Several
+    candidates are an error rather than a guess; an unknown value is kept as a
+    custom category.
     """
     value = str(value or "").strip()
     if not value:
@@ -1968,7 +1970,9 @@ def resolve_import_category(value: str, category_keys, display_names: dict) -> t
     folded = value.casefold()
     for candidates in (
         sorted(k for k in keys if k.casefold() == folded),
-        sorted(k for k in keys if str(display_names.get(k) or "").strip().casefold() == folded),
+        sorted(k for k in keys if any(
+            label.strip().casefold() == folded for label in category_label_everywhere(k, display_names.get(k) or None)
+        )),
     ):
         if len(candidates) == 1:
             return candidates[0], None
