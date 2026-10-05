@@ -308,7 +308,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
             Td(Div(source_icon or "", Strong(label),
                    Div(description, cls="text-muted small") if description else "",
                    cls="module-name-cell"),
-               data_filter_value=label),
+               data_filter_value=label, cls="module-cell"),
             _deps_cell(m, name_to_label),
             Td(f"v{version}" if version and version != "unknown" else "--"),
             Td(author or "--"),
@@ -741,7 +741,7 @@ def _marketplace_module_cell(m: dict, lang: str) -> FT:
         links.append(A(t("marketplace.feedback", lang), href=m["feedback"],
                        target="_blank", rel="noopener noreferrer"))
     parts.append(Div(*links, cls="marketplace-card__links"))
-    return Td(*parts, data_filter_value=m["name"])
+    return Td(*parts, data_filter_value=m["name"], cls="module-cell")
 
 
 def _checkout_consent(m: dict, lang: str) -> str:
@@ -912,7 +912,7 @@ def _community_module_cell(m: dict, lang: str) -> FT:
                    href=m.get("feedback") or "https://github.com/celerp/community-modules/discussions",
                    target="_blank", rel="noopener noreferrer"))
     parts.append(Div(*links, cls="marketplace-card__links"))
-    return Td(*parts, data_filter_value=m["name"])
+    return Td(*parts, data_filter_value=m["name"], cls="module-cell")
 
 
 def _community_row(m: dict, lang: str, installed: set[str], owner: bool, *,
