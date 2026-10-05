@@ -2564,7 +2564,7 @@
   "settings.doc_type_credit_note": "Gutschrift",
   "settings.doc_type_memo": "Kommissionsware ausgehend",
   "settings.doc_type_purchase_order": "Bestellung",
-  "settings.doc_type_bill": "Rechnung",
+  "settings.doc_type_bill": "Lieferantenrechnung",
   "settings.doc_type_consignment_in": "Kommissionsware eingehend",
   "settings.tax_type_sales": "Verkauf",
   "settings.tax_type_purchase": "Einkauf",

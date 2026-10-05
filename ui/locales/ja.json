@@ -2563,7 +2563,7 @@
   "settings.doc_type_credit_note": "クレジットノート",
   "settings.doc_type_memo": "受託出荷",
   "settings.doc_type_purchase_order": "発注書",
-  "settings.doc_type_bill": "請求書",
+  "settings.doc_type_bill": "仕入請求書",
   "settings.doc_type_consignment_in": "受託入庫",
   "settings.tax_type_sales": "売上",
   "settings.tax_type_purchase": "仕入",

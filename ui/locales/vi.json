@@ -2563,7 +2563,7 @@
   "settings.doc_type_credit_note": "Ghi chú tín dụng",
   "settings.doc_type_memo": "Hàng ký gửi xuất",
   "settings.doc_type_purchase_order": "Đơn đặt hàng",
-  "settings.doc_type_bill": "Hóa đơn",
+  "settings.doc_type_bill": "Hóa đơn nhà cung cấp",
   "settings.doc_type_consignment_in": "Hàng ký gửi nhập",
   "settings.tax_type_sales": "Bán hàng",
   "settings.tax_type_purchase": "Mua hàng",

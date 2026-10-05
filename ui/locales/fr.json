@@ -2564,7 +2564,7 @@
   "settings.doc_type_credit_note": "Note de crédit",
   "settings.doc_type_memo": "Consignation sortante",
   "settings.doc_type_purchase_order": "Bon de commande",
-  "settings.doc_type_bill": "Facture",
+  "settings.doc_type_bill": "Facture fournisseur",
   "settings.doc_type_consignment_in": "Consignation entrante",
   "settings.tax_type_sales": "Ventes",
   "settings.tax_type_purchase": "Achats",

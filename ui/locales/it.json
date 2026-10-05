@@ -2564,7 +2564,7 @@
   "settings.doc_type_credit_note": "Nota di credito",
   "settings.doc_type_memo": "Consegna in uscita",
   "settings.doc_type_purchase_order": "Ordine d'acquisto",
-  "settings.doc_type_bill": "Fattura",
+  "settings.doc_type_bill": "Fattura fornitore",
   "settings.doc_type_consignment_in": "Consegna in entrata",
   "settings.tax_type_sales": "Vendite",
   "settings.tax_type_purchase": "Acquisti",
