@@ -295,22 +295,47 @@ def test_finishing_with_posting_accounts_unchosen_is_refused_in_german(page, ui_
         assert i18n.t(f"posting.role.{role}", lang="de") in body, (role, body[:1500])
 
 
-def test_the_posting_accounts_fit_the_verify_page_in_german(page, ui_server, fresh_company):
-    """On a desktop screen each posting account's picker stays inside the page's card, however
-    long the German label of an account it offers to add."""
-    run_id = _new_company_run(page, "Wide Goods Ltd")
+_PAST_THE_CARD = """() => {
+  const card = document.querySelector('.auth-card');
+  if (!card || !card.querySelector('table')) return null;
+  const edge = card.getBoundingClientRect().right - parseFloat(getComputedStyle(card).paddingRight);
+  const tables = [...card.querySelectorAll('table')].map(t => t.closest('.table-scroll-wrap') || t);
+  return [document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          ...tables.map(b => Math.round(b.getBoundingClientRect().right - edge))];
+}"""
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_every_wizard_page_fits_the_screen(page, ui_server, fresh_company, width):
+    """No wizard page scrolls sideways and every table stays inside the card: a coverage
+    note or a check label carrying an ID wraps, and on a phone a table still wider than the
+    card scrolls inside its own box. The steps before the run are read as the helper walks
+    them; the run's own pages are read again in German, the longer labels."""
+    over = {}
+
+    def measure(_page=None):
+        found = page.evaluate(_PAST_THE_CARD)
+        if found is not None:
+            over[re.sub(r"[0-9a-f-]{36}", "{run}", urlsplit(page.url).path) + f" ({lang})"] = found
+
+    lang = "en"
+    page.set_viewport_size({"width": width, "height": 900})
+    page.on("load", measure)
+    run_id = _new_company_run(page, "Fitting Goods Ltd")
+    page.remove_listener("load", measure)
     host = ui_server.split("//", 1)[1].split(":", 1)[0]
     page.context.add_cookies([{"name": "celerp_lang", "value": "de", "domain": host, "path": "/"}])
+    lang = "de"
     try:
-        page.set_viewport_size({"width": 1280, "height": 900})
-        page.goto(f"/migrations/{run_id}/verify")
-        page.wait_for_selector('[name^="role."]', state="attached")
-        card, table = page.evaluate("""[document.querySelector('.auth-card'),
-          document.querySelector('[name^="role."]').closest('table')].map(e => e.getBoundingClientRect().right)""")
-        padding = page.evaluate("parseFloat(getComputedStyle(document.querySelector('.auth-card')).paddingRight)")
+        for path in (f"/migrations/{run_id}", f"/migrations/{run_id}/verify"):
+            page.goto(path)
+            measure()
     finally:
         page.context.clear_cookies(name="celerp_lang")
-    assert table <= card - padding + 0.5, f"the posting accounts reach {table:.0f}px, past the card at {card - padding:.0f}px"
+    assert {"/setup/new-company/migrate/coverage (en)", "/setup/new-company/migrate/review (en)",
+            "/migrations/{run} (de)", "/migrations/{run}/verify (de)"} <= set(over), sorted(over)
+    wide = {where: px for where, px in over.items() if max(px) > 0}
+    assert not wide, f"past the screen or the card at {width}px (page, then each table): {wide}"
 
 
 def test_an_added_posting_account_the_chart_refuses_is_refused_in_german(page, ui_server, fresh_company, monkeypatch):

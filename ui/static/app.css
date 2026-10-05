@@ -158,7 +158,11 @@ a:hover { text-decoration: underline; }
 .quick-link-action { color: inherit; text-decoration: none; background: none; border: 0; padding: 0; font: inherit; cursor: pointer; }
 .quick-link-action::after { content: ""; position: absolute; inset: 0; }
 .migration-source { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
-.migration-wizard .data-table { margin-bottom: 16px; }
+/* The wizard card has a fixed width, so its tables fill the card (not the base max-content)
+   and their text wraps between words (a coverage note, a check label) instead of pushing
+   the table past the card. Figures never wrap. */
+.migration-wizard .data-table { margin-bottom: 16px; width: 100%; }
+.migration-wizard .data-table td:not(.cell--number, .cell--money) { white-space: normal; overflow-wrap: break-word; }
 
 /* ─── Sidebar ─────────────────────────────────────────────────────────── */
 .sidebar {
@@ -253,7 +257,7 @@ a:hover { text-decoration: underline; }
 @media (max-width: 900px) {
   .main-content :is(div, form, section, article, aside, fieldset, details) { min-width: 0; }
   .main-content form { flex-wrap: wrap; }
-  .main-content .data-table:not(.table-scroll-wrap > .data-table) { display: block; max-width: 100%; overflow-x: auto; }
+  :is(.main-content, .migration-wizard) .data-table:not(.table-scroll-wrap > .data-table) { display: block; max-width: 100%; overflow-x: auto; }
 }
 
 /* ─── Page header ─────────────────────────────────────────────────────── */
@@ -389,7 +393,7 @@ a:hover { text-decoration: underline; }
 .posting-accounts td p { white-space: normal; max-width: 360px; margin: 4px 0 0; }
 /* Choosing posting accounts on the migration verify page: the two columns share the card and
    each picker fills its column, so a long account label never pushes the table past the card. */
-.posting-choices { table-layout: fixed; width: 100%; }
+.posting-choices { table-layout: fixed; }
 .posting-choices select, .posting-choices .combobox-wrap { width: 100%; }
 
 /* Pencil icon affordance on hover — pure CSS, no extra HTML */
