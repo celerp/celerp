@@ -1141,7 +1141,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
         return await base_shell(
-            page_header(t("btn.create_user", lang), A(t("btn.back_to_settings", lang), href="/settings/general?tab=users", cls="btn btn--secondary")),
+            page_header(t("btn.create_user", lang), A(t("btn.back", lang), href="/settings/general?tab=users", cls="btn btn--secondary")),
             Div(
                 H3(t("settings.new_user", lang), cls="settings-section-title"),
                 Form(
@@ -1937,7 +1937,7 @@ def setup_routes(app):
             Div(*radio_rows, style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;"),
             Div(
                 Button(t("btn.connect_to_cloud"), type="submit", cls="btn btn--sm btn--primary"),
-                Button(t("btn.back_to_settings"),
+                Button(t("btn.back"),
                     type="button",
                     cls="btn btn--sm btn--outline",
                     hx_get="/settings/cloud-connect",
@@ -2016,7 +2016,7 @@ def setup_routes(app):
                     hx_disabled_elt="this",
                     hx_sync="#cloud-relay-tab:drop",
                 ),
-                Button(t("btn.back_to_settings"),
+                Button(t("btn.back"),
                     type="button",
                     cls="btn btn--sm btn--outline",
                     hx_get="/settings/cloud-connect",

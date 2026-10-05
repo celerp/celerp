@@ -622,7 +622,7 @@ def setup_routes(app):
 
         return await base_shell(
             page_header(t("btn.start_reconciliation"),
-                        A(t("btn.back_to_settings"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary")),
+                        A(t("btn.back"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary")),
             form,
             title=page_title("btn.start_reconciliation"),
             nav_active="accounting",

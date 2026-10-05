@@ -25,6 +25,7 @@ from ui.routes.csv_import import (
     apply_fixes_to_rows,
     column_mapping_form,
     error_report_response,
+    import_back_link,
     import_result_panel,
     import_numbered,
     stage_tabular_upload,
@@ -53,7 +54,7 @@ def setup_routes(app):
         return await base_shell(
             page_header(
                 t("lists_import.import_lists"),
-                A(t("btn.back_to_settings"), href="/lists", cls="btn btn--secondary"),
+                import_back_link("/lists"),
                 A(t("btn.download_template"), href="/lists/import/template", cls="btn btn--secondary"),
             ),
             upload_form(

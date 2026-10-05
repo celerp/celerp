@@ -433,7 +433,7 @@ async def _account_error_page(request: Request, message: str) -> FT:
         _section_breadcrumb(t("page.accounting")),
         page_header(
             t("settings_accounting.chart_of_accounts"),
-            A(t("btn.back_to_settings"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
+            A(t("btn.back"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
         ),
         Div(P(message, cls="error-banner"), cls="settings-card"),
         title=page_title("settings_accounting.chart_of_accounts"),
@@ -534,7 +534,7 @@ def setup_routes(app):
             _section_breadcrumb(t("page.accounting")),
             page_header(
                 t("acct.add_bank_account"),
-                A(t("btn.back_to_settings"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary"),
+                A(t("btn.back"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary"),
             ),
             Div(
                 Form(
@@ -639,7 +639,7 @@ def setup_routes(app):
             _section_breadcrumb(t("page.accounting")),
             page_header(
                 t("settings_accounting.edit_named", name=b.get("bank_name") or t("settings_accounting.bank_account")),
-                A(t("btn.back_to_settings"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary"),
+                A(t("btn.back"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary"),
             ),
             Div(
                 Form(
@@ -837,7 +837,7 @@ def setup_routes(app):
             _section_breadcrumb(t("page.accounting")),
             page_header(
                 t("acct.add_account"),
-                A(t("btn.back_to_settings"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
+                A(t("btn.back"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
             ),
             Div(_account_form(chart), cls="settings-card"),
             title=page_title("acct.add_account"),
@@ -894,7 +894,7 @@ def setup_routes(app):
             _section_breadcrumb(t("page.accounting")),
             page_header(
                 t("settings_accounting.edit_named", name=acct.get("name") or code),
-                A(t("btn.back_to_settings"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
+                A(t("btn.back"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
             ),
             Div(_account_form(chart, values=acct), cls="settings-card"),
             title=page_title("settings_accounting.edit_account"),

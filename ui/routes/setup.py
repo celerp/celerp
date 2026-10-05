@@ -285,7 +285,7 @@ def setup_routes(app):
         deactivated = request.query_params.get("reason", "") == "deactivated"
         # A deactivated company leaves nothing to go back to.
         back = "" if deactivated else P(
-            A(t("btn.back_to_settings"), href="/settings/general?tab=company", cls="auth-link"),
+            A(t("btn.back"), href="/settings/general?tab=company", cls="auth-link"),
             cls="auth-alt-action",
         )
         return auth_shell(

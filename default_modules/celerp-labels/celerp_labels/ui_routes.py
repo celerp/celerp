@@ -1027,7 +1027,7 @@ async def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict],
                 method="post",
             ) if template_opts else Div(
                 P(t("label.no_label_templates_configured"), cls="flash flash--warning"),
-                Button(t("btn.back_to_settings"), onclick="history.back()", cls="btn btn--secondary", type="button"),
+                Button(t("btn.back"), onclick="history.back()", cls="btn btn--secondary", type="button"),
             ),
             cls="settings-card",
             style="max-width:480px;margin:2rem auto;",
