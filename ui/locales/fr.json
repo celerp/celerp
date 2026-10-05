@@ -3588,6 +3588,7 @@
   "mfg.not_planned": "Seul un ordre planifié peut être démarré. Un ordre en attente reprend avec Reprendre.",
   "mfg.already_on_hold": "Cet ordre est déjà en attente.",
   "mfg.reconcile_values": "{item} n'est plus un composant de ce cycle, est indiqué deux fois ou a une valeur négative.",
+  "mfg.reconcile_value_too_large": "La valeur indiquée pour {item} est trop élevée pour être enregistrée.",
   "mfg.reconcile_missing": "Indiquez la valeur de chaque composant encore dans ce cycle : {items} n'en a pas.",
   "mfg.reconcile_account": "Choisissez le compte d'où provient cette valeur : un compte de stock qui détient au moins {total} au-delà de son stock disponible, ou les résultats reportés pour une valeur que la comptabilité n'a jamais portée.",
   "mfg.output_unknown": "Cet ordre a déjà reçu de la production, mais son historique ne montre ni dans quels lots elle est allée ni ce qu'ils ont coûté : il ne peut donc pas être rapproché.",

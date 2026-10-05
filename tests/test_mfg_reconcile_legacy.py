@@ -215,3 +215,13 @@ async def test_a_run_is_not_re_costed_below_its_lots_while_another_run_waits(cli
         assert r.status_code == 200, r.text
         assert await _cost(session, auth, lot) == 50.0
     await assert_settled(client, session, auth)
+
+
+async def test_a_value_too_large_to_record_is_refused(client, session, auth):
+    raw, order, [lot] = await _older_run(client, session, auth, 1)
+    p = await role(session, auth, PURCHASED)
+    before = await snapshot(session, auth, raw, order, lot)
+
+    refusal(await reconcile(client, auth, order, [(raw, 1e300)], p, key="huge"), 422, "reconcile_value_too_large")
+
+    assert await snapshot(session, auth, raw, order, lot) == before

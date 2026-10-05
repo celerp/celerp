@@ -24,7 +24,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -1411,7 +1411,12 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
     needed = await still_held(session, company_id, order_id, run.state)
     values: dict[str, Decimal] = {}
     for line in components:
-        item_id, value = line.get("item_id"), op.round(_money(line.get("value")))
+        item_id = line.get("item_id")
+        try:
+            value = op.round(_money(line.get("value")))
+        except InvalidOperation:
+            raise refuse(422, "reconcile_value_too_large", f"The value given for {item_id} is too large to record.",
+                         item=item_id) from None
         if item_id not in needed or item_id in values or value < 0:
             raise refuse(422, "reconcile_values", f"{item_id} is not a component still in this run, is named "
                          "twice, or has a negative value.", item=item_id)
