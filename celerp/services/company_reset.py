@@ -153,11 +153,13 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
                                 "Nothing was deleted.")
     # A connector set up before companies had their own is adopted by the only company left
     # at the next startup, so a reset must never be what leaves one company standing beside it.
+    # An unfinished import's company does not count: discarding it removes it again.
     from celerp.config import ensure_instance_id
     unassigned = sorted(set((await session.scalars(
         select(ConnectorConfig.connector).where(ConnectorConfig.company_id == ensure_instance_id()))).all()))
     if unassigned and len((await session.scalars(
-            select(Company.id).where(Company.id != company.id).limit(2))).all()) <= 1:
+            select(Company.id).where(Company.id != company.id, Company.is_migration_staged.is_(False))
+            .limit(2))).all()) <= 1:
         raise ResetRefused(409, f"{', '.join(unassigned)} was set up before companies had their own "
                                 "connectors and belongs to no company yet. Connect it in the company it "
                                 "belongs to before resetting this one. Nothing was deleted.")

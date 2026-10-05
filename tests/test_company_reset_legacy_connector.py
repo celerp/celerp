@@ -10,7 +10,8 @@ import pytest
 from sqlalchemy import text
 
 from company_backup_support import company, owner, token
-from migration_support import auth, maker, real_client, real_engine  # noqa: F401
+from migration_support import (  # noqa: F401
+    auth, maker, migrate_as_owner, migration_env, real_client, real_engine)
 
 pytestmark = pytest.mark.asyncio
 LEGACY = "inst-legacy-connector"
@@ -72,5 +73,23 @@ async def test_reset_that_leaves_two_companies_keeps_the_legacy_connector_unassi
     r = await real_client.post("/companies/me/reset", json={"company_name": NAMES[0]},
                                headers=auth(await token(real_engine, boss, ids[0])))
     assert r.status_code == 200, r.text
+    await outbound_queue.adopt_legacy_connector_configs()
+    assert await _rows(real_engine) == [(LEGACY, "woocommerce", "legacy-secret")]
+
+
+async def test_unfinished_import_company_does_not_count_as_one_that_stays(
+        real_engine, real_client, legacy_install, migration_env):
+    """Discarding the import removes its company again, so with it as the only other
+    company besides one, the reset is refused and the connector stays unassigned."""
+    from celerp.connectors import outbound_queue
+    boss, ids = await legacy_install(2)
+    tok = await token(real_engine, boss, ids[1])
+    run_id = await migrate_as_owner(real_client, tok)
+    r = await real_client.post("/companies/me/reset", json={"company_name": NAMES[0]},
+                               headers=auth(await token(real_engine, boss, ids[0])))
+    assert r.status_code == 409, r.text
+    assert "woocommerce" in r.json()["detail"] and "Nothing was deleted" in r.json()["detail"]
+    d = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(tok))
+    assert d.status_code == 200, d.text
     await outbound_queue.adopt_legacy_connector_configs()
     assert await _rows(real_engine) == [(LEGACY, "woocommerce", "legacy-secret")]
