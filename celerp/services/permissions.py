@@ -48,8 +48,8 @@ ROLES: list[Role] = [
 # floor_role: the lowest role an owner may set as a key's minimum. Every grantable
 # key floors at viewer, so the owner-editable matrix can grant any read or write down
 # to viewer. The one exception is manage_company_settings, whose floor is admin: it
-# reaches the module data purge, which drops tables, so no override may hand it below
-# admin. The floor also clamps every stored override up to at least the floor on read,
+# changes company-wide settings, including which modules the company uses, so no
+# override may hand it below admin. The floor also clamps every stored override up to at least the floor on read,
 # so the invariant holds for grandfathered overrides, not only at save time.
 PERMISSIONS: list[Permission] = [
     Permission("view_dashboards", "View dashboards", "viewer", True, "viewer"),
