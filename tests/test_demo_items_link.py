@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""The dashboard's "Remove demo items" link opens the inventory list searched for
-[DEMO] by name. That search finds exactly the items whose name carries the marker,
-the search box shows it, and the list offers the existing bulk Delete for it.
+"""The dashboard's "Remove demo items" link opens the inventory list filtered to
+setup's untouched samples (?filter=demo), and that list offers the existing bulk
+Delete. What the filter selects is tested at the API (test_demo_items_filter.py).
 """
 from __future__ import annotations
 
@@ -13,37 +13,20 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
-from celerp_inventory.routes import item_matches_query
 from fasthtml.common import to_xml
 
 from test_helpers import authed_cookies
-from ui.components.demo_items import DEMO_ITEMS_QUERY
+from ui.components.demo_items import DEMO_ITEMS_FILTER
 from ui.routes.inventory import _bulk_toolbar
-
-
-def _item(**kw) -> dict:
-    base = {"name": "", "sku": "", "description": "", "category": ""}
-    base.update(kw)
-    return base
-
-
-def test_demo_search_keeps_the_brackets_and_reads_the_name_only():
-    """The marker is the literal "[DEMO]" in the name. A sample renamed by its owner
-    still says [DEMO] in its description and keeps its DEMO- SKU, and is not found."""
-    assert item_matches_query(_item(name="[DEMO] Jasmine Rice - 25kg bag", sku="DEMO-AGR-001"),
-                              DEMO_ITEMS_QUERY)
-    assert not item_matches_query(_item(name="House rice", sku="DEMO-AGR-001",
-                                        description="[DEMO] Jasmine rice 25kg bag."), DEMO_ITEMS_QUERY)
-    assert not item_matches_query(_item(name="DEMO kit", sku="KIT-1"), DEMO_ITEMS_QUERY)
 
 
 def test_demo_items_view_offers_bulk_delete():
     """Delete sits in the bulk menu for archived and expired items, and for the demo
     items the dashboard link opens; any other active list does not offer it."""
-    demo = to_xml(_bulk_toolbar([], p={"q": DEMO_ITEMS_QUERY}))
-    other = to_xml(_bulk_toolbar([], p={"q": "rice"}))
+    demo = to_xml(_bulk_toolbar([], p={"filter": DEMO_ITEMS_FILTER}))
     assert 'value="delete"' in demo
-    assert 'value="delete"' not in other
+    for other in ({"q": "rice"}, {"q": "name:[DEMO]"}, {"filter": "low_stock"}):
+        assert 'value="delete"' not in to_xml(_bulk_toolbar([], p=other)), other
 
 
 _EMPTY = {"items": [], "total": 0}
@@ -59,7 +42,7 @@ async def ui():
 
 @pytest.mark.asyncio
 async def test_inventory_search_box_shows_the_search_from_the_address(ui):
-    """A list opened with ?q= (the demo link, a shared link, a refresh) shows that
+    """A list opened with ?q= (a shared link, a refresh) shows that
     search in its box, so the filter is visible and can be cleared."""
     mocks = {
         "get_item_schema": [], "get_all_category_schemas": {}, "get_company_category_schemas": {},
@@ -68,26 +51,26 @@ async def test_inventory_search_box_shows_the_search_from_the_address(ui):
         "list_import_batches": {"batches": []}, "get_units": [], "get_price_lists": [],
     }
     with patch.multiple("ui.api_client", **{k: AsyncMock(return_value=v) for k, v in mocks.items()}):
-        r = await ui.get("/inventory", params={"q": DEMO_ITEMS_QUERY}, cookies=authed_cookies(role="owner"))
+        r = await ui.get("/inventory", params={"q": "name:rice"}, cookies=authed_cookies(role="owner"))
     assert r.status_code == 200
     assert 'id="search-input"' in r.text
-    assert 'value="name:[DEMO]"' in r.text
+    assert 'value="name:rice"' in r.text
 
 
 @pytest.mark.asyncio
 async def test_bulk_delete_reloads_the_list_the_owner_is_on(ui):
-    """After select-all plus Delete on the demo search, the table reloads that same
-    search, not the whole catalog, so the emptied list reads as done."""
+    """After select-all plus Delete on the demo list, the table reloads that same
+    list, not the whole catalog, so the emptied list reads as done."""
     with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 4})):
         r = await ui.post(
             "/api/items/bulk/delete", data={"selected": ["item:a", "item:b"]},
-            headers={"HX-Current-URL": "http://testserver/inventory?q=name%3A%5BDEMO%5D&page=2"},
+            headers={"HX-Current-URL": "http://testserver/inventory?filter=demo&page=2"},
             cookies=authed_cookies(role="owner"),
         )
     assert r.status_code == 200
     url = urlsplit(html.unescape(re.search(r'hx-get="([^"]+)"', r.text).group(1)))
     assert url.path == "/inventory/content", r.text
-    assert parse_qs(url.query)["q"] == [DEMO_ITEMS_QUERY], r.text
+    assert parse_qs(url.query)["filter"] == [DEMO_ITEMS_FILTER], r.text
     assert "page" not in parse_qs(url.query), r.text
 
 
@@ -108,7 +91,7 @@ def test_demo_hint_names_the_delete_option_unambiguously():
 @pytest.mark.asyncio
 async def test_counts_are_asked_for_with_the_same_filters_as_the_rows(ui):
     """The tabs and status cards come from the valuation call; it gets the very filters
-    the row list gets, the search included, so the counts describe the listed rows."""
+    the row list gets, the demo filter included, so the counts describe the listed rows."""
     valuation = AsyncMock(return_value={"item_count": 0, "category_counts": {}})
     rows = AsyncMock(return_value=_EMPTY)
     static = AsyncMock(return_value=([], {}, {}, [], [], {}))
@@ -116,9 +99,9 @@ async def test_counts_are_asked_for_with_the_same_filters_as_the_rows(ui):
                         get_company=AsyncMock(return_value={}),
                         list_import_batches=AsyncMock(return_value={"batches": []})), \
          patch("ui.routes.inventory._load_inventory_static_metadata", new=static):
-        r = await ui.get("/inventory", params={"q": DEMO_ITEMS_QUERY, "category": "Grain", "attr.size": "L"},
+        r = await ui.get("/inventory", params={"filter": DEMO_ITEMS_FILTER, "category": "Grain", "attr.size": "L"},
                          cookies=authed_cookies(role="owner"))
     assert r.status_code == 200
     list_filters = {k: v for k, v in rows.await_args.args[1].items() if k not in ("limit", "offset", "sort", "dir")}
-    assert list_filters == {"q": DEMO_ITEMS_QUERY, "category": "Grain", "attr.size": "L"}
+    assert list_filters == {"filter": DEMO_ITEMS_FILTER, "category": "Grain", "attr.size": "L"}
     assert valuation.await_args.args[1] == list_filters

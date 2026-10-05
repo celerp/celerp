@@ -21,7 +21,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
-from ui.components.demo_items import DEMO_ITEMS_QUERY
+from ui.components.demo_items import DEMO_ITEMS_FILTER
 from ui.components.icons import import_icon
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
@@ -4935,7 +4935,7 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     active_status = (p or {}).get("status", "")
     if active_status in ("archived", "expired"):
         action_options.append(Option(t("inv.restore"), value="restore"))
-    if active_status in ("archived", "expired") or (p or {}).get("q") == DEMO_ITEMS_QUERY:
+    if active_status in ("archived", "expired") or (p or {}).get("filter") == DEMO_ITEMS_FILTER:
         action_options.append(Option(t("btn.delete"), value="delete"))
     # JS shows/hides these two based on the actual checked rows' statuses (updateBulkToolbar).
     if role_has_permission(settings or {}, role, "edit_inventory"):

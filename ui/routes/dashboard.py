@@ -11,7 +11,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 import asyncio
 
-from ui.components.demo_items import DEMO_ITEMS_QUERY, DEMO_ITEMS_URL
+from ui.components.demo_items import DEMO_ITEMS_FILTER, DEMO_ITEMS_URL
 from ui.components.icons import import_icon
 from ui.components.import_access import can_import_documents
 from ui.components.shell import base_shell, page_header, star_supporter_card, page_title
@@ -895,12 +895,12 @@ def _real_items(page: dict) -> bool:
 
 
 async def _demo_note(token: str, settings: dict, role: str) -> FT | str:
-    """The figures below count setup's [DEMO] samples while any are left, so say so
-    next to them, for everyone who sees the figures, with a link to the list of them
-    for the roles that may delete items. Nothing when the items cannot be read: the
+    """The figures below count setup's [DEMO] samples while any untouched ones are
+    left, so say so next to them, for everyone who sees the figures, with a link to
+    the list of them for the roles that may delete items. Nothing when the items cannot be read: the
     note never claims samples it has not seen."""
     try:
-        page = await api.list_items(token, {"q": DEMO_ITEMS_QUERY, "limit": 1})
+        page = await api.list_items(token, {"filter": DEMO_ITEMS_FILTER, "limit": 1})
     except APIError:
         return ""
     if not page.get("total"):
