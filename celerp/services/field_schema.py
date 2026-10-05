@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.models.company import Company
 from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS
 from celerp.services.pricing import is_cost_list_name, is_derived, price_key
+from ui.i18n import field_label_key
 
 # Reserved system value for a field whose sources disagreed and cannot be reconciled (e.g. a merge
 # of items holding different values for a dropdown or custom attribute). There is ONE canonical form,
@@ -132,6 +133,16 @@ def _rehydrate_builtin_metadata(schema: list[dict]) -> list[dict]:
     return out
 
 
+def _rehydrate_category_label_keys(fields: list[dict]) -> list[dict]:
+    """Reattach the label_key of each category field whose label is still a library
+    label (the category PATCH model drops it, as it does for built-ins), so the field
+    reads in the user's language; a renamed field keeps its literal label."""
+    return [
+        {**f, "label_key": key} if "label_key" not in f and (key := field_label_key(f.get("label") or "")) else f
+        for f in fields
+    ]
+
+
 def _inject_price_columns(base: list[dict], price_lists: list[dict]) -> list[dict]:
     """Insert a money column for each price list after position 5 (location).
 
@@ -200,7 +211,8 @@ def all_category_schemas(company_settings: dict) -> dict:
         if cat and cat not in merged:
             merged[cat] = contrib.get("fields") or []
     merged.update(company_settings.get("category_schemas") or {})
-    return merged
+    return {cat: _rehydrate_category_label_keys(fields) if isinstance(fields, list) else fields
+            for cat, fields in merged.items()}
 
 
 def union_category_attr_keys(cat_schemas: dict) -> list[str]:
@@ -283,7 +295,7 @@ async def get_effective_field_schema(
 
     if category:
         cat_schemas: dict[str, list[dict]] = settings.get("category_schemas") or {}
-        cat_fields: list[dict] = cat_schemas.get(category) or []
+        cat_fields: list[dict] = _rehydrate_category_label_keys(cat_schemas.get(category) or [])
         if cat_fields:
             keys_in_cat = {f["key"] for f in cat_fields}
             merged = [f for f in base_schema if f["key"] not in keys_in_cat]

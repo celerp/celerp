@@ -50,6 +50,7 @@ def _invalidate_cache() -> None:
     raw function with no cache_clear, so the call is guarded."""
     getattr(_cached_load, "cache_clear", lambda: None)()
     category_label_everywhere.cache_clear()
+    _field_label_keys.cache_clear()
 
 
 def register_catalog(lang: str, mapping, *, rtl: bool = False) -> None:
@@ -174,6 +175,24 @@ def category_labels(names: dict) -> dict:
     names = names or {}
     library = (k.removeprefix("category.") for k in _cached_load("en") if k.startswith("category."))
     return {k: category_label(k, names.get(k)) for k in {*library, *names}}
+
+
+@lru_cache(maxsize=1)
+def _field_label_keys() -> dict[str, str]:
+    """English text -> translation key of every item field label in the catalog: the
+    built-in fields (``field.label.*``) and the category library's fields (``attr.*``),
+    a built-in winning where both read the same."""
+    en = _cached_load("en")
+    keys = {v: k for k, v in en.items() if k.startswith("attr.")}
+    keys.update({v: k for k, v in en.items() if k.startswith("field.label.")})
+    return keys
+
+
+def field_label_key(label: str) -> str | None:
+    """The translation key of an item field label still reading as a library label, so
+    a library category's field shows in the user's language; ``None`` for a label the
+    user typed, which shows as typed."""
+    return _field_label_keys().get(label)
 
 
 def field_label(f: dict) -> str:
