@@ -3663,6 +3663,7 @@
   "posting.older_stock.no_account": "La scorta {sku} non ha un conto di magazzino registrato, quindi il suo costo non può essere spostato senza tirare a indovinare. Scegliere il conto di magazzino in Scorte precedenti in Impostazioni > Contabilità > Conti di registrazione.",
   "posting.older_stock.no_item": "Articolo non trovato.",
   "posting.older_stock.already_recorded": "Questa giacenza registra già il suo conto di magazzino.",
+  "posting.older_stock.not_waiting": "Questo articolo non ha giacenza a libro, quindi non c'è nulla da assegnare.",
   "posting.older_stock.short": "Il conto {code} non contiene il valore di questa giacenza, {value}: oltre alla giacenza già registrata, contiene {held}. {fix}",
   "posting.older_stock.fix_holder": "Il conto {holder} lo contiene: scegli {holder}.",
   "posting.older_stock.fix_move": "Sposta {amount} da {source} a {code} con una scrittura contabile, poi scegli di nuovo {code}.",

@@ -3663,6 +3663,7 @@
   "posting.older_stock.no_account": "สต็อก {sku} ยังไม่มีบัญชีสินค้าคงคลังที่บันทึกไว้ จึงย้ายต้นทุนโดยไม่เดาไม่ได้ เลือกบัญชีสินค้าคงคลังในส่วนสต็อกเก่าที่ การตั้งค่า > การบัญชี > บัญชีสำหรับการบันทึก",
   "posting.older_stock.no_item": "ไม่พบสินค้า",
   "posting.older_stock.already_recorded": "สต็อกนี้บันทึกบัญชีสินค้าคงคลังไว้แล้ว",
+  "posting.older_stock.not_waiting": "สินค้านี้ไม่มีสต็อกในบัญชี จึงไม่มีอะไรให้กำหนดบัญชี",
   "posting.older_stock.short": "บัญชี {code} ไม่มีมูลค่าของสต็อกนี้ {value}: นอกจากสต็อกที่บันทึกไว้แล้ว บัญชีนี้มี {held} {fix}",
   "posting.older_stock.fix_holder": "บัญชี {holder} มีมูลค่านี้: เลือก {holder}",
   "posting.older_stock.fix_move": "โอน {amount} จาก {source} ไปยัง {code} ด้วยรายการบันทึกบัญชี แล้วเลือก {code} อีกครั้ง",

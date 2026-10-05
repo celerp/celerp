@@ -41,14 +41,14 @@ registration (lot_origin.recognize_opening_lots), for tests that count the entri
 their own documents write."""
 
 async def older_release_lot(session, company_id, actor_id, cost: float, *, qty: float = 1,
-                            sku: str | None = None) -> str:
-    """Commit a lot on hand as an older release brought it in: no inventory account
-    recorded on it and no entry booking it."""
+                            sku: str | None = None, status: str = "available") -> str:
+    """Commit a lot as an older release brought it in (on hand unless ``status`` says
+    otherwise): no inventory account recorded on it and no entry booking it."""
     lot = f"item:{uuid.uuid4()}"
     await emit_event(session, company_id=company_id, entity_id=lot, entity_type="item",
                      event_type="item.created",
                      data={"sku": sku or f"OLD-{uuid.uuid4().hex[:6]}", "name": "Lot", "quantity": qty,
-                           "sell_by": "piece", "status": "available", "cost_total": cost},
+                           "sell_by": "piece", "status": status, "cost_total": cost},
                      actor_id=actor_id, location_id=None, source="api",
                      idempotency_key=str(uuid.uuid4()), metadata_={})
     await session.commit()

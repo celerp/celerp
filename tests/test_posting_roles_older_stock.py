@@ -1029,3 +1029,27 @@ async def test_older_stock_waits_for_accounting_to_be_turned_on_then_is_placed(s
     assert await _books_match_lots(session, auth, "1130-P", "1130-OB") == {"1130-P": 100.0, "1130-OB": 0.0}
     await _sold(client, auth, (sold, 1))
     await assert_settled(client, session, auth)
+
+
+# --- Only stock on the books waiting for its account can be placed ---------------------
+
+
+@pytest.mark.parametrize("status,cost", [("draft", 10.0), ("sold", 10.0), ("available", 0.0)])
+async def test_older_stock_off_the_books_or_worth_nothing_cannot_be_given_an_account(
+        session, client, auth, status, cost):
+    await _older_release(session, auth)
+    await _restored(session, client, auth)
+    waiting = await _lot(client, auth, 30.0)
+    await _opening_entry(session, auth, 30.0)
+    item = await older_release_lot(session, auth["company_id"], auth["user_id"], cost, status=status)
+    await _startup(session)
+
+    r = await _choose(client, auth, item, "1130-OB")
+
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "posting.older_stock.not_waiting", detail
+    assert detail["message"] == "This item holds no stock on the books, so there is nothing to place.", detail
+    assert in_language("de", detail) != detail["message"]
+    assert await _accounts(session, auth, item) == [None]
+    assert (await _choose(client, auth, waiting, "1130-OB")).status_code == 200

@@ -3663,6 +3663,7 @@
   "posting.older_stock.no_account": "Bestand {sku} hat kein erfasstes Bestandskonto, daher können seine Kosten nicht ohne Raten bewegt werden. Wählen Sie sein Bestandskonto unter Älterer Bestand in Einstellungen > Buchhaltung > Buchungskonten.",
   "posting.older_stock.no_item": "Artikel nicht gefunden.",
   "posting.older_stock.already_recorded": "Für diesen Bestand ist das Lagerkonto bereits erfasst.",
+  "posting.older_stock.not_waiting": "Dieser Artikel hält keinen Bestand in den Büchern, daher gibt es nichts zuzuordnen.",
   "posting.older_stock.short": "Konto {code} hält den Wert dieses Bestands von {value} nicht: Über den bereits darauf erfassten Bestand hinaus hält es {held}. {fix}",
   "posting.older_stock.fix_holder": "Konto {holder} hält ihn: Wählen Sie {holder}.",
   "posting.older_stock.fix_move": "Buchen Sie {amount} per Journalbuchung von {source} auf {code} um und wählen Sie dann erneut {code}.",

@@ -3663,6 +3663,7 @@
   "posting.older_stock.no_account": "المخزون {sku} ليس له حساب مخزون مسجل، لذا لا يمكن نقل تكلفته دون تخمين. اختر حساب مخزونه ضمن المخزون القديم من إعدادات > محاسبة > حسابات الترحيل.",
   "posting.older_stock.no_item": "الصنف غير موجود.",
   "posting.older_stock.already_recorded": "هذا المخزون يسجل حساب المخزون الخاص به بالفعل.",
+  "posting.older_stock.not_waiting": "لا يحتفظ هذا الصنف بأي مخزون في الدفاتر، لذا لا يوجد ما يمكن تخصيصه.",
   "posting.older_stock.short": "الحساب {code} لا يحمل قيمة هذا المخزون البالغة {value}: بخلاف المخزون المسجل عليه بالفعل، يحمل {held}. {fix}",
   "posting.older_stock.fix_holder": "الحساب {holder} يحملها: اختر {holder}.",
   "posting.older_stock.fix_move": "انقل {amount} من {source} إلى {code} بقيد يومية، ثم اختر {code} مرة أخرى.",

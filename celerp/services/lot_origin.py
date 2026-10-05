@@ -179,10 +179,16 @@ async def account_rooms(session: AsyncSession, company_id, codes) -> dict[str, D
     return {code: round_money(_room(entries, items, code, currency), currency) for code in codes}
 
 
+def awaits_account(row: Projection) -> bool:
+    """Whether a lot is older stock waiting for its inventory account: on hand, holding
+    value on the books, and recording no account. A lot holding nothing (a draft, sold,
+    or an older lot used up in production) carries nothing to place."""
+    return not (row.state or {}).get(LOT_ACCOUNT_FIELD) and bool(held_value(row))
+
+
 def unrecorded(items: list[Projection]) -> list[Projection]:
-    """The lots on hand holding value that record no inventory account. A lot holding
-    nothing (an older lot used up in production) carries nothing to place."""
-    return [r for r in items if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and held_value(r)]
+    """The lots waiting for their inventory account (``awaits_account``)."""
+    return [r for r in items if awaits_account(r)]
 
 
 async def stock_off_books(session: AsyncSession, company_id) -> list[dict]:
@@ -958,6 +964,10 @@ async def choose_lot_account(session: AsyncSession, company_id, item_id: str, co
     if (row.state or {}).get(LOT_ACCOUNT_FIELD):
         raise HTTPException(status_code=409, detail=refusal(
             "posting.older_stock.already_recorded", "This stock already records its inventory account."))
+    if not awaits_account(row):
+        raise HTTPException(status_code=422, detail=refusal(
+            "posting.older_stock.not_waiting",
+            "This item holds no stock on the books, so there is nothing to place."))
     currency = settings.get("currency", "USD")
     value = booked_value(row, currency)
     inventory = sorted({c for role in _INVENTORY for c in scope_codes(settings, role)} | {code})

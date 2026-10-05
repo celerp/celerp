@@ -3663,6 +3663,7 @@
   "posting.older_stock.no_account": "在庫 {sku} には記録された棚卸資産勘定がないため、推測せずに原価を移動できません。設定 > 会計 > 転記勘定 の旧在庫で棚卸資産勘定を選択してください。",
   "posting.older_stock.no_item": "品目が見つかりません。",
   "posting.older_stock.already_recorded": "この在庫には既に在庫勘定が記録されています。",
+  "posting.older_stock.not_waiting": "この品目は帳簿上の在庫を持たないため、割り当てるものはありません。",
   "posting.older_stock.short": "勘定科目 {code} にはこの在庫の価額 {value} がありません。既に記録された在庫を除くと、残高は {held} です。{fix}",
   "posting.older_stock.fix_holder": "勘定科目 {holder} にあります。{holder} を選択してください。",
   "posting.older_stock.fix_move": "仕訳で {amount} を {source} から {code} へ振り替えてから、もう一度 {code} を選択してください。",

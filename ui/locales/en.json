@@ -3663,6 +3663,7 @@
   "posting.older_stock.no_account": "Stock {sku} has no recorded inventory account, so its cost cannot be moved without guessing. Choose its inventory account under Older stock in Settings > Accounting > Posting accounts.",
   "posting.older_stock.no_item": "Item not found.",
   "posting.older_stock.already_recorded": "This stock already records its inventory account.",
+  "posting.older_stock.not_waiting": "This item holds no stock on the books, so there is nothing to place.",
   "posting.older_stock.short": "Account {code} does not hold this stock's value of {value}: beyond the stock already recorded on it, it holds {held}. {fix}",
   "posting.older_stock.fix_holder": "Account {holder} holds it: choose {holder}.",
   "posting.older_stock.fix_move": "Move {amount} from {source} to {code} with a journal entry, then choose {code} again.",
