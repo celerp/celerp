@@ -186,8 +186,11 @@ async def test_cloud_summary_links_to_system_recovery():
 
 
 async def test_legacy_import_on_fresh_install_is_system_recovery(ui, real_engine):
-    """On a fresh install the whole-installation restore is a small link and its page states it replaces everything."""
-    page = _page(await ui.get("/setup"))
+    """On a fresh install the whole-installation restore is a small link inside the restore
+    page (restore has one entry point on the setup form), and its page states it
+    replaces everything."""
+    assert not [h for h, _, _ in _anchors(_page(await ui.get("/setup"))) if h == "/setup/import-backup"]
+    page = _page(await ui.get("/setup/restore-backup"))
     links = [(h, c) for h, c, t in _anchors(page) if h == "/setup/import-backup"]
     assert len(links) == 1 and "quick-link-action" not in links[0][1]
     assert _link(page, "/setup/import-backup", RECOVER)
