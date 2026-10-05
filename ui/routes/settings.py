@@ -19,7 +19,7 @@ from ui.components.shell import base_shell, page_header, flash, toast_header, pa
 from ui.components.table import EMPTY, unwrap_address
 from celerp.services.currencies import CURRENCY_CODES, currency_label
 from ui.components.currency import currency_combobox_td
-from ui.components.phone import phone_input_td as _phone_input_td, phone_head_items as _phone_head_items
+from ui.components.phone import phone_input_td as _phone_input_td
 from ui.config import PAYMENT_TERMS_URL, PRIVACY_POLICY_URL
 from ui.config import get_token as _token
 from ui.config import get_role as _get_role
@@ -1849,7 +1849,6 @@ def setup_routes(app):
             return Response(content="", media_type="text/html")
         if len(companies) <= 1:
             return Response(content="", media_type="text/html")
-        current = next((c.get("company_name", "") for c in companies if c.get("is_current")), companies[0].get("company_name", ""))
         options = [
             Option(c.get("company_name", ""), value=c.get("company_id", ""), selected=c.get("is_current", False))
             for c in companies
