@@ -112,3 +112,52 @@ async def test_contacts_import_back_button_label(owner_ui, path, home):
     assert back, f"{path}: a back button to {home}"
     assert _html.unescape(back.group(1)).strip() == _EN["btn.back"]
     assert "Back to settings" not in r.text
+
+
+# Each list page's search label is one complete keyed sentence per page and per
+# filter, never a lower-cased label dropped into a template ("available-Bestand
+# durchsuchen", "verkaufsabonnements suchen"). English reads as it always has.
+_DE = json.loads((Path(__file__).parent.parent / "ui" / "locales" / "de.json").read_text())
+_SEARCH_LABELS = [
+    ("/inventory", "inventory.search_available", "Search available inventory"),
+    ("/inventory?status=sold", "inventory.search_sold", "Search sold inventory"),
+    ("/inventory?status=memo_out", "inventory.search_memo_out", "Search memo out inventory"),
+    ("/inventory?status=nonsense", "inventory.search_any", "Search inventory"),
+    ("/docs", "documents.search_all", "Search documents"),
+    ("/docs?type=invoice", "documents.search_invoice", "Search invoices"),
+    ("/docs?type=list", "documents.search_lists", "Search lists"),
+    ("/contacts/customers", "contacts.search_customers", "Search customers"),
+    ("/contacts/vendors", "contacts.search_vendors", "Search vendors"),
+    ("/subscriptions?direction=sales", "subscriptions.search_sales", "Search sales subscriptions"),
+    ("/subscriptions?direction=purchasing", "subscriptions.search_purchasing", "Search purchasing subscriptions"),
+]
+
+
+def _search_label(html: str) -> str:
+    m = re.search(r'<small class="search-scope-label">(.*?)</small>', html, re.S)
+    assert m, "the page has a search label"
+    return m.group(1).strip()
+
+
+@pytest.mark.parametrize("path,key,english", _SEARCH_LABELS)
+async def test_search_label_is_one_keyed_sentence(owner_ui, path, key, english):
+    r = await owner_ui.get(path)
+    assert r.status_code == 200, (path, r.status_code)
+    assert _search_label(r.text) == english == _EN.get(key), path
+    r = await owner_ui.get(path, headers={"Accept-Language": "de"})
+    assert r.status_code == 200, (path, r.status_code)
+    assert key in _DE and _DE[key] != english, key
+    assert _search_label(r.text) == _DE[key], path
+
+
+@pytest.mark.parametrize("path,kind", [("/contacts/customers", "customer"), ("/contacts/vendors", "vendor")])
+async def test_contacts_new_button_and_placeholder_are_keyed(owner_ui, path, kind):
+    """"New {type}" fed with the plural label minus its last letter gave "Neues
+    Lieferante" in German. The button and the search placeholder are keyed per type."""
+    for lang, cat in (("en", _EN), ("de", _DE)):
+        r = await owner_ui.get(path, headers={"Accept-Language": lang})
+        assert r.status_code == 200
+        assert f">{cat[f'contacts.new_{kind}']}</button>" in r.text, (lang, path)
+        assert f'placeholder="{cat[f"contacts.search_{kind}s_placeholder"]}"' in r.text, (lang, path)
+    assert _EN[f"contacts.new_{kind}"] == {"customer": "New Customer", "vendor": "New Vendor"}[kind]
+    assert _DE[f"contacts.new_{kind}"] == {"customer": "Neuer Kunde", "vendor": "Neuer Lieferant"}[kind]

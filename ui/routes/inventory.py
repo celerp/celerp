@@ -1314,7 +1314,7 @@ def setup_routes(app):
                     target="#inventory-content",
                     url=_search_url,
                     help=search_help(lang, panel_id="page-search-help-panel"),
-                    label=t("inventory.search_label", status=display_enum(p.get('status') or 'available', domain='item_status').lower()),
+                    label=t(_STATUS_SEARCH_LABELS.get(p.get("status") or "available", "inventory.search_any"), lang),
                 ),
                 A(t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary", data_import_hint=True) if _can_import_export else "",
                 Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _can_edit_inventory else "",
@@ -5169,6 +5169,13 @@ _VERTICAL_STATUS_TABS: dict[str, list[tuple[str, str]]] = {
         ("sold", "chip.sold"), ("expired", "chip.expired"), ("archived", "chip.archived"), ("all", "doc.all"),
     ],
 }
+# The inventory search label per status filter: one whole sentence each, so every
+# language can word it naturally. Any other status gets the plain "Search inventory".
+_STATUS_SEARCH_LABELS: dict[str, str] = {
+    s: f"inventory.search_{s}"
+    for s in ("available", "reserved", "sold", "archived", "all", "expired", "memo_out", "draft")
+}
+
 _DEFAULT_STATUS_TABS: list[tuple[str, str]] = [
     ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("sold", "chip.sold"),
     ("archived", "chip.archived"), ("all", "doc.all"),

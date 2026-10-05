@@ -707,6 +707,10 @@ _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "subscription_invoice": "documents.page_subscription_templates",
     "subscription_po": "documents.page_subscription_po_templates",
 }
+# The search label per doc-type list, a whole sentence each (same doc types as above).
+_DOC_TYPE_SEARCH_LABELS: dict[str, str] = {
+    dt: "documents.search_lists" if dt == "list" else f"documents.search_{dt}" for dt in _DOC_TYPE_PAGE_LABELS
+}
 # Short explanatory banner shown above certain doc-type lists where the purpose isn't
 # obvious. Values are i18n keys resolved at render time (see _doc_type_intro).
 _DOC_TYPE_INTRO: dict[str, str] = {
@@ -1342,7 +1346,7 @@ def setup_routes(app):
                     target="#doc-content",
                     url=search_url,
                     value=q,
-                    label=t("documents.search_section", section=section_title.lower()),
+                    label=t(_DOC_TYPE_SEARCH_LABELS.get(doc_type, "documents.search_all")),
                 ),
                 Button(
                     new_label,

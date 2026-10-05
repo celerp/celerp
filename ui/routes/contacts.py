@@ -730,9 +730,9 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
     return await base_shell(
         page_header(
             label,
-            search_bar(placeholder=t("contacts.search_placeholder", scope=label.lower()), target="#contacts-content", url=search_url, value=q,
-                       label=t("contacts.search_scope", scope=label.lower())),
-            Button(t("contacts.new_type", type=label[:-1]), hx_post=create_url, hx_swap="none", cls="btn btn--primary") if _can_edit else "",
+            search_bar(placeholder=t(f"contacts.search_{nav_key}_placeholder"), target="#contacts-content", url=search_url, value=q,
+                       label=t(f"contacts.search_{nav_key}")),
+            Button(t(f"contacts.new_{contact_type}"), hx_post=create_url, hx_swap="none", cls="btn btn--primary") if _can_edit else "",
             A(t("btn.export_csv"), href=f"{base_url}/export/csv", cls="btn btn--secondary") if _can_import_export else "",
             A(t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary", data_import_hint=True) if _can_import_export else "",
         ),
