@@ -3628,7 +3628,7 @@
   "dashboard.remove_demo_items": "Hapus item demo",
   "dashboard.getting_started_from_spreadsheet": "Impor dari spreadsheet:",
   "shell.import_hint": "Klik Impor untuk mengunggah file CSV atau Excel (.xlsx). Halaman berikutnya menyediakan templat untuk diunduh.",
-  "shell.demo_hint": "Centang kotak untuk memilih semuanya, lalu pilih Menghapus.",
+  "shell.demo_hint": "Centang kotak, lalu pilih Menghapus.",
   "shell.claim_badge_note": "Membuka GitHub untuk memeriksa bintang Anda. Dengan mengklaim, Anda masuk ke dinding pendiri publik.",
   "category.accessory_fashion": "Aksesori Fesyen",
   "category.activewear": "Pakaian Olahraga",
