@@ -34,12 +34,14 @@ def output_quantity(recipe: dict) -> float:
     return qty
 
 
-def component_quantity(comp: dict) -> float:
+def component_quantity(comp: dict, lookup: ItemLookup) -> float:
     """How much of one component a batch uses; refused when it is nothing or less, the same
-    rule a recipe is saved under (see ``output_quantity``)."""
+    rule a recipe is saved under (see ``output_quantity``). The refusal names the component by
+    its SKU, from ``lookup`` when an older recipe did not store it."""
     qty = float(comp.get("quantity") or 0)
     if not qty > 0:
-        raise RecipeError(f"Component {comp.get('sku') or comp.get('item_id')} quantity must be greater than zero")
+        sku = comp.get("sku") or (lookup(comp.get("item_id")) or {}).get("sku") or comp.get("item_id")
+        raise RecipeError(f"Component {sku} quantity must be greater than zero")
     return qty
 
 
@@ -90,7 +92,7 @@ def roll_up_cost(recipe: dict, lookup: ItemLookup, *, currency: str = "USD", _pa
         if cid in _path:
             raise RecipeError(f"recipe cycle detected at {cid}")
         child_cost = unit_cost(lookup(cid), lookup, currency=currency, _path=_path | {cid}, _depth=_depth + 1)
-        line = component_quantity(comp) * child_cost
+        line = component_quantity(comp, lookup) * child_cost
         # Annotate the line in-place so the UI can show each component's catalog unit cost (a rate)
         # and extended cost (an amount) without re-deriving any cost logic (single source = this module).
         comp["unit_cost"] = float(round_rate(child_cost, currency))

@@ -26,7 +26,7 @@ def _item(sku, components=None, output_qty=1, **kw):
 
 def test_expand_basic() -> None:
     item = _item("RING", [{"item_id": "GOLD", "quantity": 2}])
-    assert expand_recipe(item, 3) == [{"item_id": "GOLD", "quantity": 6.0}]
+    assert expand_recipe(item, 3, {}.get) == [{"item_id": "GOLD", "quantity": 6.0}]
 
 
 def test_output_line_names_the_product() -> None:
@@ -37,26 +37,26 @@ def test_output_line_names_the_product() -> None:
 def test_expand_output_qty_batch() -> None:
     # recipe yields 10 per batch; comp 5 per batch; build 20 → 5 * (20/10) = 10
     item = _item("WIDGET", [{"item_id": "RAW", "quantity": 5}], output_qty=10)
-    inputs = expand_recipe(item, 20)
+    inputs = expand_recipe(item, 20, {}.get)
     assert inputs == [{"item_id": "RAW", "quantity": 10.0}]
 
 
 def test_expand_multiple_components() -> None:
     item = _item("ASM", [{"item_id": "A", "quantity": 1}, {"item_id": "B", "quantity": 3}])
-    inputs = expand_recipe(item, 4)
+    inputs = expand_recipe(item, 4, {}.get)
     assert inputs == [{"item_id": "A", "quantity": 4.0}, {"item_id": "B", "quantity": 12.0}]
 
 
 def test_expand_nested_single_level() -> None:
     # A sub-assembly stays ONE input line (consumed as stock); expand is single-level.
     item = _item("RING", [{"item_id": "SUB", "quantity": 2}])
-    inputs = expand_recipe(item, 1)
+    inputs = expand_recipe(item, 1, {}.get)
     assert inputs == [{"item_id": "SUB", "quantity": 2.0}]
 
 
 def test_expand_non_manufacturable_raises() -> None:
     with pytest.raises(RecipeError):
-        expand_recipe(_item("RAW"), 5)
+        expand_recipe(_item("RAW"), 5, {}.get)
 
 
 # --- explode_demand (recursive JIT) ----------------------------------------
@@ -100,7 +100,7 @@ def test_explode_demand_refusal_names_the_product_by_its_sku() -> None:
          "item:gold": _item("GOLD")}
     with pytest.raises(RecipeError) as exc:
         explode_demand([("item:ring", 1)], g.get)
-    assert str(exc.value) == "RING-9: Component item:gold quantity must be greater than zero"
+    assert str(exc.value) == "RING-9: Component GOLD quantity must be greater than zero"
 
 
 # --- helpers ----------------------------------------------------------------

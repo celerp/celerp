@@ -117,3 +117,34 @@ async def test_an_older_invalid_recipe_still_rebuilds_and_never_blocks_a_price_e
         LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == made))).scalars().all()
     assert "item.recipe.set" in rows
     assert (await _state(session, auth, made))["recipe"]["output_qty"] == 0
+
+
+async def test_an_older_zero_component_is_refused_by_its_sku(client, session, auth):
+    """A recipe an older release stored with a component at zero names that component by the SKU
+    the user knows it by, when a run is built from it and on the pick list, never by an internal id."""
+    raw = await _item(client, auth, 100.0, qty=10)
+    raw_sku = (await _state(session, auth, raw))["sku"]
+    made = await product(client, auth, [(raw, 1)])
+    # Older releases stored components without their SKU.
+    legacy = {"output_qty": 1, "components": [{"item_id": raw, "quantity": 0}], "labor": [], "overhead": []}
+    entry = LedgerEntry(company_id=auth["company_id"], entity_id=made, entity_type="item",
+                        event_type="item.recipe.set", data={"recipe": legacy}, actor_id=auth["user_id"],
+                        location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={})
+    session.add(entry)
+    await session.flush()
+    await ProjectionEngine.apply_event(session, entry)
+    await session.commit()
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "contact_name": "Buyer", "total": 50.0,
+        "line_items": [{"name": "Product", "quantity": 1, "unit_price": 50.0, "entity_id": made}]})
+    assert r.status_code == 200, r.text
+    assert (await client.post(f"/docs/{r.json()['id']}/finalize", headers=auth["headers"])).status_code == 200
+
+    built = await client.post(f"/manufacturing/items/{made}/build", headers=auth["headers"], json={"quantity": 1})
+    picked = await client.post("/manufacturing/to-make/requirements", headers=auth["headers"],
+                               json={"item_ids": [made]})
+
+    for r in (built, picked):
+        _says_positive(r)
+        assert f"Component {raw_sku} quantity" in r.text, r.text
+        assert raw not in r.text, r.text

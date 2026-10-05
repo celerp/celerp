@@ -52,11 +52,12 @@ def output_line(item_state: dict, quantity: float) -> dict:
             "category": item_state.get("category")}
 
 
-def expand_recipe(item_state: dict, build_qty: float) -> list[dict]:
+def expand_recipe(item_state: dict, build_qty: float, lookup: ItemLookup) -> list[dict]:
     """One finished item + build quantity → the inputs of a manufacturing order.
 
     Single-level: each component (including a sub-assembly) becomes one input line scaled by
     build_qty / output_qty. Raises RecipeError if the item is not manufacturable (caller must gate).
+    ``lookup`` resolves a component's state, so a refusal can name it by its SKU.
     """
     recipe = (item_state or {}).get("recipe") or {}
     components = recipe.get("components") or []
@@ -64,7 +65,7 @@ def expand_recipe(item_state: dict, build_qty: float) -> list[dict]:
         raise RecipeError("item has no recipe to expand")
     factor = float(build_qty) / output_quantity(recipe)
     return merge_inputs(
-        {"item_id": c["item_id"], "quantity": round(component_quantity(c) * factor, 6)}
+        {"item_id": c["item_id"], "quantity": round(component_quantity(c, lookup) * factor, 6)}
         for c in components if c.get("item_id")
     )
 
@@ -97,7 +98,7 @@ def explode_demand(lines: list[tuple[str, float]], lookup: ItemLookup) -> dict:
                 continue
             if cid in path:
                 raise RecipeError(f"recipe cycle detected at {cid}")
-            _walk(cid, component_quantity(c) * factor, path | {cid}, depth + 1)
+            _walk(cid, component_quantity(c, lookup) * factor, path | {cid}, depth + 1)
 
     for item_id, qty in lines:
         state = lookup(item_id)

@@ -233,11 +233,14 @@ async def _created_before(session: AsyncSession, company_id, key: str, fingerpri
     return stored
 
 
-def _recipe_inputs(item_state: dict, qty: float) -> list[dict]:
+async def _recipe_inputs(session: AsyncSession, company_id, item_state: dict, qty: float) -> list[dict]:
     """The components a run making ``qty`` of a product uses, from its recipe; a recipe that
-    cannot make anything is refused with the reason, naming the product."""
+    cannot make anything is refused with the reason, naming the product and the component."""
+    ids = {c.get("item_id") for c in ((item_state or {}).get("recipe") or {}).get("components") or []} - {None}
+    rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(ids)))).all() if ids else []
     try:
-        return expand_recipe(item_state, qty)
+        return expand_recipe(item_state, qty, dict(rows).get)
     except RecipeError as exc:
         raise HTTPException(status_code=422, detail=str(for_product(item_state, exc)))
 
@@ -512,7 +515,7 @@ async def build_item(
         session, company_id, order_id,
         {
             "description": f"Build {payload.quantity:g} x {item.state.get('sku', '')}",
-            "order_type": "assembly", "inputs": _recipe_inputs(item.state, payload.quantity),
+            "order_type": "assembly", "inputs": await _recipe_inputs(session, company_id, item.state, payload.quantity),
             # The product this run makes — links the run to its product Manufacturing tab.
             "output_item_id": item_id,
         },
@@ -804,7 +807,7 @@ async def _emit_work_order(session, company_id, actor_id, item_id: str, item_sta
     order_id = f"mfg:{uuid.uuid5(movements.MFG_LOT_NS, key) if key else uuid.uuid4()}"
     data = {
         "description": f"Build {qty:g} x {item_state.get('sku', '')}",
-        "order_type": "assembly", "inputs": _recipe_inputs(item_state, qty), "output_item_id": item_id,
+        "order_type": "assembly", "inputs": await _recipe_inputs(session, company_id, item_state, qty), "output_item_id": item_id,
     }
     if source:
         data.update({k: v for k, v in source.items() if v not in (None, "")})
