@@ -81,7 +81,7 @@ async def test_contacts_import_back_button_label(owner_ui, path, home):
     import html as _html
     r = await owner_ui.get(path)
     assert r.status_code == 200
-    back = re.search(rf'<a[^>]*href="{re.escape(home)}"[^>]*>([^<]*)</a>', r.text)
+    back = re.search(rf'<a[^>]*href="{re.escape(home)}"[^>]*>([^<]*)</a>', _header_actions(r.text))
     assert back, f"{path}: a back button to {home}"
     assert _html.unescape(back.group(1)).strip() == _EN["btn.back"]
     assert "Back to settings" not in r.text

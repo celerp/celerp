@@ -458,7 +458,9 @@ def test_setup_screen_in_german(playwright, fresh, width):
     try:
         page = ctx.new_page()
         page.goto(f"{fresh.ui}/setup", wait_until="networkidle")
-        text = page.locator("body").inner_text()
+        # Visible text plus the placeholders, which carry the dropdown prompts.
+        text = page.locator("body").inner_text() + "\n" + "\n".join(page.evaluate(
+            "() => Array.from(document.querySelectorAll('[placeholder]')).map(el => el.placeholder)"))
         for key in _SETUP_SCREEN_KEYS:
             de_value = de[key].split("{")[0].strip()
             en_value = en[key].split("{")[0].strip()

@@ -7,6 +7,7 @@ any click, on Esc, or when the button scrolls away, and never comes back on refr
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from pathlib import Path
 
@@ -19,6 +20,19 @@ pytestmark = pytest.mark.browser
 _HINT_TEXT = "Click Import to upload your file"
 _CARD_LINKS = [("Products", "/inventory"), ("Customers & suppliers", "/contacts/customers"),
                ("Documents", "/docs")]
+
+
+def _clear_session_registry() -> None:
+    """Wipe session_registry rows so a second user can log in."""
+    import psycopg2
+    from urllib.parse import urlsplit
+    parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
+    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
+                            password=parts.password, dbname=parts.path.lstrip("/"))
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM session_registry;")
+    conn.close()
 
 
 def _boxes(page: Page):
@@ -90,8 +104,10 @@ def test_no_arrow_without_import_button(page: Page, fresh_company, api_server):
     r = fresh_company.post("/companies/me/users", json={"email": email, "name": "Viewer", "role": "viewer",
                                                         "password": "Viewer12345!"})
     assert r.status_code == 200, r.text
-    token = httpx.post(f"{api_server}/auth/login", json={"email": email, "password": "Viewer12345!"},
-                       timeout=10).json()["access_token"]
+    _clear_session_registry()
+    lr = httpx.post(f"{api_server}/auth/login", json={"email": email, "password": "Viewer12345!"}, timeout=10)
+    assert lr.status_code == 200, lr.text
+    token = lr.json()["access_token"]
     page.context.add_cookies([{"name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/"}])
     errors: list[str] = []
     page.on("pageerror", lambda e: errors.append(str(e)))
