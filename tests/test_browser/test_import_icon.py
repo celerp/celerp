@@ -77,6 +77,17 @@ def test_every_import_button_has_the_spreadsheet_icon(page: Page, fresh_company)
     expect(icon).to_have_count(1)
     seen.add(icon.evaluate("e => e.outerHTML"))
 
+    # A bank reconciliation with no statement yet offers its statement CSV import.
+    r = fresh_company.post("/accounting/bank-accounts", json={
+        "bank_name": "Icon Bank", "account_number": "****1234", "bank_type": "checking",
+        "currency": "USD", "opening_balance": 1000.0})
+    assert r.status_code == 200, r.text
+    r = fresh_company.post("/accounting/reconciliation/start", json={
+        "bank_account_id": r.json()["id"], "statement_date": "2026-03-31", "statement_balance": 1000.0})
+    assert r.status_code == 200, r.text
+    page.goto(f"/accounting/reconcile/{r.json()['id']}")
+    seen.add(_icon(page, page.locator("form[hx-post$='/import'] button[type='submit']"))["markup"])
+
     # The shared CSV import steps: fix-and-import, import-all, import-more.
     _upload_locations(page, b"name,type\nIcon Warehouse,warehouse\n,warehouse\n")
     seen.add(_icon(page, page.locator("button", has_text="Fix & Import"))["markup"])
