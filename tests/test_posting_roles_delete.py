@@ -264,3 +264,42 @@ async def test_an_imported_draft_is_removed_by_undoing_its_import_not_by_delete(
     assert await _exists(session, auth, lot)
     assert (await _undo(client, auth, batch)).status_code == 200
     assert not await _exists(session, auth, lot)
+
+
+# --- From import to delete --------------------------------------------------------------
+
+@pytest.mark.parametrize("accounting", ["on", "turned_on_later"])
+async def test_stock_from_import_to_delete_keeps_the_books_equal_to_the_stock_at_every_step(
+        session, client, auth, accounting):
+    """One company's stock from its first import to deleting a mistaken draft, with
+    Accounting on throughout or turned on after the first import: after every step the
+    inventory accounts carry exactly the stock on hand."""
+    company = auth["company_id"]
+    if accounting == "turned_on_later":
+        await _without_accounting(session, auth)
+    first = await _imported(client, auth, _row("E2E-A", 30.0), _row("E2E-B", 10.0, qty=3))
+    mistake = await _draft(client, auth, 40.0)
+    if accounting == "turned_on_later":
+        await assert_books_carry_stock(session, company)
+        await _startup(session)
+    assert await assert_books_carry_stock(session, company) == {"1130-P": 0, "1130-OB": 90}
+
+    [sold] = await _items_by_sku(session, company, "E2E-A")
+    await sell_item(client, auth["headers"], sold.entity_id)
+    assert await assert_books_carry_stock(session, company) == {"1130-P": 0, "1130-OB": 30}
+
+    assert (await _delete(client, auth, mistake)).status_code == 200
+    assert not await _exists(session, auth, mistake)
+    assert await assert_books_carry_stock(session, company) == {"1130-P": 0, "1130-OB": 30}
+
+    second = await _imported(client, auth, _row("E2E-C", 20.0, qty=1))
+    assert await assert_books_carry_stock(session, company) == {"1130-P": 0, "1130-OB": 50}
+    assert (await _undo(client, auth, second)).status_code == 200
+    assert await _items_by_sku(session, company, "E2E-C") == []
+    assert await assert_books_carry_stock(session, company) == {"1130-P": 0, "1130-OB": 30}
+
+    r = await _undo(client, auth, first)  # part of it was sold, so the import stays
+    assert r.status_code == 409, r.text
+    await session.rollback()  # the refused request's work ends with it, as its own session would
+    assert len(await _items_by_sku(session, company, "E2E-B")) == 1
+    assert await assert_books_carry_stock(session, company) == {"1130-P": 0, "1130-OB": 30}
