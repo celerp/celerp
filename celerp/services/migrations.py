@@ -753,6 +753,13 @@ def _rule(expectation: ReconciliationExpectation) -> tuple[str, Decimal]:
     return f"within {allowance} {tol.currency}", allowance
 
 
+def _same_places(*figures: Decimal) -> list[str]:
+    """The figures written to one number of decimal places, the most any of them carries,
+    so a row never shows 57.00 beside 57.0 and no difference is rounded away."""
+    places = max(max(0, -f.as_tuple().exponent) for f in figures)
+    return [str(f.quantize(Decimal(1).scaleb(-places))) for f in figures]
+
+
 def _row(expectation: ReconciliationExpectation, actual: Decimal | None) -> dict:
     rule, allowance = _rule(expectation)
     row = {"check": str(expectation.measure), "key": expectation.key, "currency": expectation.currency,
@@ -765,7 +772,8 @@ def _row(expectation: ReconciliationExpectation, actual: Decimal | None) -> dict
             row["rule"] = f"{rule}; Celerp cannot measure this figure"
         return row
     difference = actual - expectation.expected
-    row.update(celerp=str(actual), difference=str(difference))
+    source, celerp, shown = _same_places(expectation.expected, actual, difference)
+    row.update(source=source, celerp=celerp, difference=shown)
     if difference == 0:
         row["result"] = "pass"
     elif abs(difference) <= allowance:
