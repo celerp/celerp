@@ -43,7 +43,7 @@ async def dismiss(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Dismiss the GitHub-star ask for the whole install (onboarding/milestone cards)."""
+    """Dismiss the GitHub-star ask for the whole install (dashboard card)."""
     await dismiss_star_prompt(session)
     return {"dismissed": True}
 

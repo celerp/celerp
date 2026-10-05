@@ -26,7 +26,7 @@ import pytest
 from celerp.services import import_stage
 from httpx import ASGITransport, AsyncClient
 
-from test_onboarding_import_invariants import (  # noqa: F401  (fixtures)
+from test_import_invariants import (  # noqa: F401  (fixtures)
     _COMPANY_A,
     _import_clean,
     _item_count,

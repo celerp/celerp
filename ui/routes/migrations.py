@@ -152,7 +152,7 @@ def wizard_page(request: Request, *content, status_code: int = 200, title: str =
 
 
 def back_link(href: str) -> FT:
-    label = t("auth.back_to_setup") if href == "/setup" else t("btn.back")
+    label = t("auth.return_to_setup") if href == "/setup" else t("btn.back")
     return P(A(label, href=href, cls="auth-link"), cls="auth-alt-action")
 
 
@@ -193,7 +193,7 @@ def choice_card(label: str, desc: str, *, href: str | None = None, post_to: str 
 
 
 def chooser(title: str, subtitle: str, cards: list, back: FT | str = "") -> FT:
-    """The setup choice screen shared by /setup and /setup/new-company."""
+    """The choice screen for adding another company (/setup/new-company)."""
     return Div(
         auth_header(title, subtitle),
         Div(*cards, cls="quick-links-grid"),

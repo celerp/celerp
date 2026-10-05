@@ -30,11 +30,8 @@ from ui.routes.csv_import import (
     error_report_response,
     import_result_panel,
     import_numbered,
-    entered_from_onboarding,
     import_back_link,
-    import_page_href,
     translated_labels,
-    onboarding_entry_cookie,
     stage_tabular_upload,
     upload_form,
     validate_cell,
@@ -274,7 +271,7 @@ def setup_routes(app):
         """The upload page's header, the same before and after a failed upload."""
         return page_header(
             t("docs_import.import_documents"),
-            import_back_link(request, "/docs", "btn.back_to_settings"),
+            import_back_link("/docs"),
             A(t("btn.download_template"), href="/docs/import/template", cls="btn btn--secondary"),
         )
 
@@ -299,7 +296,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         # A link handed over from the accept page fills the field; importing it stays a click.
-        return await _import_page(request, link=link), onboarding_entry_cookie(request)
+        return await _import_page(request, link=link)
 
     @app.get("/docs/received")
     async def received_list_page(request: Request):
@@ -475,7 +472,7 @@ def setup_routes(app):
                 csv_ref=csv_ref,
                 sample_rows=rows,
                 confirm_action="/docs/import/mapped",
-                back_href=import_page_href("/docs/import", entered_from_onboarding(request)),
+                back_href="/docs/import",
                 required_targets=_DOC_IMPORT_SPEC.required,
                 col_labels=translated_labels(_DOC_IMPORT_LABEL_KEYS),
             ),
@@ -520,7 +517,7 @@ def setup_routes(app):
                     csv_ref=csv_ref,
                     sample_rows=rows,
                     confirm_action="/docs/import/mapped",
-                    back_href=import_page_href("/docs/import", entered_from_onboarding(request)),
+                    back_href="/docs/import",
                     required_targets=_DOC_IMPORT_SPEC.required,
                     col_labels=translated_labels(_DOC_IMPORT_LABEL_KEYS),
                     errors=mapping_errors,
@@ -546,7 +543,7 @@ def setup_routes(app):
                 validate=lambda c, v, r: validate_cell(_DOC_IMPORT_SPEC, c, v),
                 confirm_action="/docs/import/confirm",
                 error_report_action="/docs/import/errors",
-                back_href=import_page_href("/docs/import", entered_from_onboarding(request)),
+                back_href="/docs/import",
                 revalidate_action="/docs/import/revalidate",
                 has_mapping=True,
                 upsert_label=t("docs_import.upsert_label"),
@@ -582,7 +579,7 @@ def setup_routes(app):
             validate=lambda c, v, r: validate_cell(_DOC_IMPORT_SPEC, c, v),
             confirm_action="/docs/import/confirm",
             error_report_action="/docs/import/errors",
-            back_href=import_page_href("/docs/import", entered_from_onboarding(request)),
+            back_href="/docs/import",
             revalidate_action="/docs/import/revalidate",
             has_mapping=True,
             upsert_label=t("docs_import.upsert_label"),
@@ -696,5 +693,4 @@ def setup_routes(app):
             back_href="/docs",
             import_more_href="/docs/import",
             has_mapping=True,
-            from_onboarding=entered_from_onboarding(request),
         )

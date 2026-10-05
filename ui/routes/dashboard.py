@@ -753,7 +753,7 @@ def setup_routes(app):
             page_header(t("page.dashboard", lang)),
             # Stargazer/supporter ask shown where setup actually lands (company-settings
             # managers only; hidden in neutral/dismissed). Self-hides once dismissed install-wide.
-            *([star_supporter_card("dashboard")] if _role_has_permission(settings, role, "manage_company_settings") else []),
+            *([star_supporter_card()] if _role_has_permission(settings, role, "manage_company_settings") else []),
             _kpi_grid(cfg, values, role=role, settings=settings),
             _secondary_kpi_grid(cfg, values, role=role, settings=settings),
             _charts_section(cfg, valuation, ar_aging,

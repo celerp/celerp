@@ -116,7 +116,7 @@ def test_parse_share_link_rejects_other_links(link):
 
 @pytest.mark.asyncio
 async def test_import_page_offers_shared_import(ui_routes):
-    page, _cookie = await ui_routes[("GET", "/docs/import")](_FormReq({}, "GET"))
+    page = await ui_routes[("GET", "/docs/import")](_FormReq({}, "GET"))
     html = to_xml(page)
     assert 'action="/docs/import/shared"' in html
     assert 'action="/docs/import/shared-file"' in html
@@ -130,7 +130,7 @@ async def test_import_page_fills_the_link_it_was_handed(ui_routes, monkeypatch):
         raise AssertionError("Opening the page must not import anything")
 
     monkeypatch.setattr(di.api, "import_shared_doc", _never)
-    page, _cookie = await ui_routes[("GET", "/docs/import")](_FormReq({}, "GET"), link="https://shop.example.com/share/abc123")
+    page = await ui_routes[("GET", "/docs/import")](_FormReq({}, "GET"), link="https://shop.example.com/share/abc123")
     html = to_xml(page)
     assert 'value="https://shop.example.com/share/abc123"' in html
 

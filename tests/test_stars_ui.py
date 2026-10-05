@@ -7,7 +7,6 @@ from __future__ import annotations
 from fasthtml.common import to_xml
 
 from ui.components.shell import _topbar, base_shell, star_supporter_card
-from ui.routes.auth import _onboarding_view
 
 
 async def test_footer_cta_present_and_gold():
@@ -27,7 +26,7 @@ def test_supporter_badge_slot_in_topbar_for_user():
 
 
 def test_supporter_card_component():
-    xml = to_xml(star_supporter_card("dashboard"))
+    xml = to_xml(star_supporter_card())
     assert 'id="star-supporter-card"' in xml
     assert "/stars/cta?medium=dashboard" in xml
     assert "/stars/claim" in xml             # claim handshake link
@@ -60,11 +59,5 @@ def test_supporter_card_component():
     assert "display:none" in xml.split('id="star-supporter-card"')[1][:90]
 
 
-def test_card_medium_is_parameterized():
-    assert "/stars/cta?medium=onboarding" in to_xml(star_supporter_card("onboarding"))
-    assert "/stars/cta?medium=dashboard" in to_xml(star_supporter_card("dashboard"))
-
-
-def test_onboarding_view_has_no_card():
-    """Getting started stays on setting up the business; the dashboard carries the card."""
-    assert 'id="star-supporter-card"' not in to_xml(_onboarding_view(set()))
+def test_card_asks_for_the_dashboard_copy():
+    assert "/stars/cta?medium=dashboard" in to_xml(star_supporter_card())

@@ -1,9 +1,9 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Render-time language resolution for the auth / onboarding routes.
+"""Render-time language resolution for the auth routes.
 
-The auth pages (login, setup, backup restore, onboarding, password reset) build
+The auth pages (login, setup, backup restore, password reset) build
 every user-facing label, heading, button, placeholder, and status message by
 calling ``t()`` at render time. These tests prove that by registering a sentinel
 language ``xx`` and asserting its unmistakable values reach the rendered output

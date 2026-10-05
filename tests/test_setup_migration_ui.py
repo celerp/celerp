@@ -395,23 +395,24 @@ _UPLOAD = {"files": ("books.manager", b"source bytes", "application/octet-stream
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_setup_landing_offers_all_setup_paths(ui, router, session, sample_module):
+async def test_setup_form_offers_restore_and_move(ui, router, session, sample_module):
     r = await ui.get("/setup")
     assert r.status_code == 200
     page = _page(r)
-    for label in ("Start a new company", "Move from another system", "Restore a company backup",
-                  "Try sample company", "Recover an entire Celerp installation"):
-        assert label in page
-    assert 'href="/setup/fresh"' in page
-    assert 'href="/setup/migrate"' in page
-    assert re.search(r'<form\b[^>]*action="/setup/migrate/sample"[^>]*method="post"'
-                     r'|<form\b[^>]*method="post"[^>]*action="/setup/migrate/sample"', page)
-    assert 'href="/setup/import-backup"' in page
+    assert re.search(r'<form\b[^>]*action="/setup"', page)
+    assert _link(page, "/setup/restore-backup", "Restore a Celerp backup")
+    assert _link(page, "/setup/migrate", "Move your books from another system")
 
-    for path in ("/setup/fresh", "/setup/migrate", "/setup/import-backup"):
+    for path in ("/setup/restore-backup", "/setup/migrate"):
         r = await ui.get(path)
         assert r.status_code == 200, path
         assert _back(_page(r), "/setup"), path
+    # Recovering a whole installation is offered from the restore page.
+    assert _link(_page(await ui.get("/setup/restore-backup")), "/setup/import-backup",
+                 "Recover an entire Celerp installation")
+    r = await ui.get("/setup/import-backup")
+    assert r.status_code == 200
+    assert _back(_page(r), "/setup")
 
     r = await ui.post("/setup/migrate/sample")
     assert r.status_code == 303
@@ -426,28 +427,23 @@ async def test_setup_landing_offers_all_setup_paths(ui, router, session, sample_
 
     router.overrides[("GET", "/auth/bootstrap-status")] = _respond(
         200, {"bootstrapped": True, "setup_code_required": False})
-    for path in ("/setup", "/setup/fresh", "/setup/migrate"):
+    for path in ("/setup", "/setup/migrate"):
         r = await ui.get(path)
         assert r.status_code == 302, path
         assert r.headers["location"] == "/login"
 
 
-@pytest.mark.asyncio
-async def test_setup_fresh_path_registers_without_migration_state(ui, router, session):
-    r = await ui.get("/setup/fresh")
-    assert r.status_code == 200
-    page = _page(r)
-    assert re.search(r'<form\b[^>]*action="/setup"', page)
-    for field in ("company_name", "name", "email", "password", "confirm_password"):
-        assert _inputs(page, field), field
-    assert _back(page, "/setup")
+_GOOD_SETUP = {"company_name": "Keep Co", "name": "Kept Name", "email": "kept@example.com",
+               "password": "correct-horse-9", "confirm_password": "correct-horse-9",
+               "vertical": "blank", "currency": "USD", "timezone": "UTC"}
 
-    r = await ui.post("/setup", data={
-        "company_name": "Fresh Start Ltd", "name": "First Owner", "email": "owner@example.com",
-        "password": "correct-horse-9", "confirm_password": "correct-horse-9",
-    })
+
+@pytest.mark.asyncio
+async def test_setup_registers_and_applies_without_migration_state(ui, router, session):
+    r = await ui.post("/setup", data={**_GOOD_SETUP, "company_name": "Fresh Start Ltd",
+                                      "email": "owner@example.com"})
     assert r.status_code == 302
-    assert r.headers["location"] == "/setup/company"
+    assert r.headers["location"] in ("/dashboard", "/setup/activating")
     assert _cookie_header(r, "celerp_token") and _cookie_header(r, "celerp_refresh")
     assert await _users_companies(session) == (1, 1)
     assert await _migration_runs(session) == 0
@@ -455,18 +451,16 @@ async def test_setup_fresh_path_registers_without_migration_state(ui, router, se
 
 
 @pytest.mark.asyncio
-async def test_setup_fresh_failure_states_keep_back_to_setup(ui, router, session):
+async def test_setup_failure_states_keep_typed_values(ui, router, session):
     from ui.i18n import t
 
     router.overrides[("GET", "/auth/bootstrap-status")] = _raise(httpx.ConnectError)
-    for path in ("/setup", "/setup/fresh"):
-        r = await ui.get(path)
-        assert r.status_code == 200, path
-        assert t("error.api_unavailable") in _page(r), path
+    r = await ui.get("/setup")
+    assert r.status_code == 200
+    assert t("error.api_unavailable") in _page(r)
     del router.overrides[("GET", "/auth/bootstrap-status")]
 
-    good = {"company_name": "Keep Co", "name": "Kept Name", "email": "kept@example.com",
-            "password": "correct-horse-9", "confirm_password": "correct-horse-9"}
+    good = _GOOD_SETUP
     cases = [
         ({**good, "name": ""}, t("settings.all_fields_required"), None),
         ({**good, "confirm_password": "different-horse-9"}, t("settings.passwords_do_not_match"), None),
@@ -486,7 +480,6 @@ async def test_setup_fresh_failure_states_keep_back_to_setup(ui, router, session
         assert r.status_code == 200, message
         page = _page(r)
         assert message in page
-        assert _back(page, "/setup"), message
         assert _attr(_inputs(page, "company_name")[0], "value") == form["company_name"]
         assert _attr(_inputs(page, "email")[0], "value") == form["email"]
         assert _attr(_inputs(page, "name")[0], "value") == form["name"]

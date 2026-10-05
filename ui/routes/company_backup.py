@@ -193,6 +193,10 @@ async def _upload_page(request: Request, mode: WizardMode, error: str | None = N
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full"),
             method="post", action=f"{mode.base}/read", enctype="multipart/form-data", cls="auth-form",
         ),
+        # First run offers restore once, here; a backup of a whole installation
+        # (not one company) is recovered from its own page.
+        P(A(t("setup.recover_installation"), href="/setup/import-backup", cls="auth-link"),
+          cls="auth-alt-action") if mode is BOOTSTRAP else "",
         back_link(mode.back),
         status_code=status_code,
         title=_TITLE,

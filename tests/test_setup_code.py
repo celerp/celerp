@@ -108,8 +108,8 @@ def test_init_no_start_mints_setup_code(tmp_config):
 def test_setup_form_shows_code_field_only_when_required():
     from fasthtml.common import to_xml
     from ui.routes.auth import _setup_form
-    assert 'name="setup_code"' in to_xml(_setup_form(setup_code_required=True))
-    assert 'name="setup_code"' not in to_xml(_setup_form(setup_code_required=False))
+    assert 'name="setup_code"' in to_xml(_setup_form({}, setup_code_required=True))
+    assert 'name="setup_code"' not in to_xml(_setup_form({}, setup_code_required=False))
 
 
 def test_init_without_no_start_has_no_setup_code(tmp_config):

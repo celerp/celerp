@@ -1,14 +1,12 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Auth + onboarding routes.
+"""Sign-in and first-run setup routes.
 
 State machine:
-    bootstrapped=false  → /setup           (first-admin + company wizard)
-    bootstrapped=true   → /login           (normal login)
-    logged in, company setup pending and role can set it up
-                        → /onboarding      (getting-started hub)
-    logged in, otherwise → /dashboard
+    bootstrapped=false  -> /setup           (one form: first admin, company, business type, currency)
+    bootstrapped=true   -> /login           (normal login)
+    logged in           -> /dashboard
 
 /register is disabled at the public URL once bootstrapped.
 """
@@ -16,6 +14,7 @@ State machine:
 from __future__ import annotations
 
 import json
+import logging
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -28,15 +27,15 @@ from ui.api_client import start_company as api_start_company
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.api_client import migration_staged_run as api_migration_staged_run
-from ui.components.shell import auth_shell, flash, page_title, toast_header
-from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, get_role, set_session_cookies, clear_session_cookies
+from ui.components.shell import auth_shell, client_scripts, flash, page_title, toast_header
+from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies
 from ui.i18n import t, get_lang
-from ui.routes.csv_import import ONBOARDING_MARKER
 from celerp.services.app_paths import is_app_local_path
 from celerp.config import settings as _settings
 from celerp.services.auth import MIN_PASSWORD_LENGTH, NO_COMPANY
-from celerp.services.permissions import role_has_permission
 
+
+logger = logging.getLogger(__name__)
 
 # Where a login with no company left signs in and starts a new one.
 START_COMPANY = "/setup/start-company"
@@ -243,14 +242,7 @@ def setup_routes(app):
         if (gate := await _unbootstrapped_gate(request)) is not None:
             return gate
         from ui.api_client import setup_code_required as _code_req
-        return auth_shell(_setup_chooser(code_required=await _code_req()), title=t("page.setup"))
-
-    @app.get("/setup/fresh")
-    async def setup_fresh_page(request: Request):
-        if (gate := await _unbootstrapped_gate(request)) is not None:
-            return gate
-        from ui.api_client import setup_code_required as _code_req
-        return auth_shell(_setup_form(setup_code_required=await _code_req()), title=t("page.setup"))
+        return await _setup_page(request, {}, code_required=await _code_req())
 
     @app.get("/setup/import-backup")
     async def setup_import_page(request: Request):
@@ -370,47 +362,61 @@ def setup_routes(app):
 
     @app.post("/setup")
     async def setup_submit(request: Request):
+        from ui.routes.setup import apply_company_setup, company_setup_error
         try:
             bootstrapped = await bootstrap_status()
         except APIError as e:
             return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
         if bootstrapped:
-            return RedirectResponse("/login", status_code=302)
+            # A second submit after setup finished: the signed-in owner goes on to the
+            # dashboard, anyone else signs in.
+            return RedirectResponse("/dashboard" if request.cookies.get(COOKIE_NAME) else "/login",
+                                    status_code=302)
         form = await request.form()
-        company_name = str(form.get("company_name", "")).strip()
-        name = str(form.get("name", "")).strip()
-        email = str(form.get("email", "")).strip()
+        values = {k: str(form.get(k, "")).strip() for k in _SETUP_KEPT_FIELDS}
         password = str(form.get("password", ""))
         confirm = str(form.get("confirm_password", ""))
-        setup_code = str(form.get("setup_code", "")).strip()
 
         from ui.api_client import setup_code_required as _code_req
         code_required = await _code_req()
 
-        def _fail(msg):
-            return auth_shell(_setup_form(company_name=company_name, name=name, email=email, error=msg,
-                                          setup_code_required=code_required), title=t("page.setup"))
+        async def _fail(msg: str, field: str):
+            return await _setup_page(request, values, code_required=code_required, error=msg, error_field=field)
 
-        if not all([company_name, name, email, password]):
-            return _fail(t("settings.all_fields_required"))
+        missing = next((f for f in ("company_name", "name", "email") if not values[f]), None)
+        if missing or not password:
+            return await _fail(t("settings.all_fields_required"), missing or "password")
         if password != confirm:
-            return _fail(t("settings.passwords_do_not_match"))
+            return await _fail(t("settings.passwords_do_not_match"), "password")
         if len(password) < MIN_PASSWORD_LENGTH:
-            return _fail(t("settings.password_min_length"))
-        if code_required and not setup_code:
-            return _fail(t("auth.setup_code_required"))
+            return await _fail(t("settings.password_min_length"), "password")
+        if code_required and not values["setup_code"]:
+            return await _fail(t("auth.setup_code_required"), "setup_code")
+        # The browser only suggests; the server checks every choice before anything
+        # is created.
+        if invalid := company_setup_error(values["currency"], values["vertical"]):
+            return await _fail(invalid[1], invalid[0])
         try:
-            access_token, refresh_token = await api_register(company_name, email, name, password,
-                                                             setup_code=setup_code or None)
+            access_token, refresh_token = await api_register(values["company_name"], values["email"],
+                                                             values["name"], password,
+                                                             setup_code=values["setup_code"] or None)
         except APIError as e:
-            return _fail(e.detail)
+            return await _fail(e.detail, "password")
         except Exception as e:
-            return _fail(t("auth.server_error", e=e))
-        resp = RedirectResponse("/setup/company", status_code=302)
+            return await _fail(t("auth.server_error", e=e), "password")
+        # The account exists from here on, so every outcome signs the user in.
+        try:
+            nxt = await apply_company_setup(access_token, values["currency"], str(form.get("timezone", "")),
+                                            values["vertical"])
+        except Exception:
+            # The retry page shows a fixed message; the reason stays in the server log.
+            logger.exception("First-run setup could not apply the business type")
+            nxt = "/setup/company?failed=1"
+        resp = RedirectResponse(nxt, status_code=302)
         set_session_cookies(resp, access_token, refresh_token, request)
         return resp
 
-    # ── Post-login landing: company picker or onboarding/dashboard ──────────
+    # ── Post-login landing ──────────────────────────────────────────────────
 
     @app.get("/")
     async def root(request: Request):
@@ -421,7 +427,7 @@ def setup_routes(app):
         # Validate token - stale cookies (e.g. after init --force) must not
         # skip setup when the DB has been wiped.
         try:
-            company = await api_get_company(token)
+            await api_get_company(token)
         except APIError as e:
             if e.status == 401:
                 bootstrapped = await bootstrap_status()
@@ -434,46 +440,7 @@ def setup_routes(app):
                 return staged
             # Any other API error: let them through to dashboard (transient failure)
             return RedirectResponse("/dashboard", status_code=302)
-        # A company still being set up resumes its getting-started hub, but only for
-        # someone who can set it up; the hub is a landing page, never a gate.
-        if _resumes_onboarding(company, request):
-            return RedirectResponse("/onboarding", status_code=302)
         return RedirectResponse("/dashboard", status_code=302)
-
-    # ── Onboarding / data integration landing ───────────────────────────────
-
-    @app.get("/onboarding")
-    async def onboarding_page(request: Request):
-        token = request.cookies.get(COOKIE_NAME)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            await api_get_company(token)
-        except APIError:
-            return RedirectResponse("/login", status_code=302)
-        return _onboarding_page(request)
-
-    @app.post("/onboarding/complete")
-    async def onboarding_complete(request: Request):
-        """Finish the getting-started hub: clear the company's pending flag (when the
-        role may change company settings) and go to the dashboard. The dashboard is
-        only reported once the flag is stored; otherwise the hub is shown again with
-        the reason, so the user can retry."""
-        token = request.cookies.get(COOKIE_NAME)
-        if not token:
-            return RedirectResponse("/login", status_code=303)
-        try:
-            company = await api_get_company(token)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=303)
-            return _onboarding_page(request, error=t("onboarding.complete_failed", detail=e.detail))
-        if _can_set_up(company, request):
-            try:
-                await api.patch_company(token, {"onboarding_pending": False})
-            except APIError as e:
-                return _onboarding_page(request, error=t("onboarding.complete_failed", detail=e.detail))
-        return RedirectResponse("/dashboard", status_code=303)
 
     # ── Company switcher (HTMX partial) ─────────────────────────────────────
 
@@ -695,76 +662,126 @@ async def _unbootstrapped_gate(request: Request):
     return None
 
 
-def _setup_chooser(code_required: bool) -> FT:
-    """First-run landing: every way to start, one card each, and below them the small
-    link to whole-installation recovery."""
-    from ui.routes.company_backup import BOOTSTRAP as RESTORE
-    from ui.routes.migrations import BOOTSTRAP, chooser, choice_card
-    # The sample run needs the setup code when one is configured; the migration
-    # source page asks for it next to its sample button.
-    sample = (
-        choice_card(t("setup.card_sample"), t("setup.card_sample_desc"), href=BOOTSTRAP.base)
-        if code_required else
-        choice_card(t("setup.card_sample"), t("setup.card_sample_desc"), post_to=f"{BOOTSTRAP.base}/sample")
+# What a failed submit renders back: everything the user typed except the passwords.
+_SETUP_KEPT_FIELDS = ("company_name", "name", "email", "setup_code", "vertical", "currency")
+
+
+async def _setup_page(request: Request, values: dict, *, code_required: bool,
+                      error: str | None = None, error_field: str = "") -> FT:
+    from ui.components.start_options import supported_sources
+    return auth_shell(
+        *client_scripts(get_lang(request)),
+        _setup_form(values, error=error, error_field=error_field, setup_code_required=code_required,
+                    sources=await supported_sources()),
+        title=t("page.setup"),
     )
-    return chooser(
-        t("page.set_up_your_workspace"),
-        t("msg.you_are_first_admin"),
-        [
-            choice_card(t("setup.card_new"), t("setup.card_new_desc"), href="/setup/fresh"),
-            choice_card(t("setup.card_move"), t("setup.card_move_desc"), href=BOOTSTRAP.base),
-            choice_card(t("setup.card_restore"), t("setup.card_restore_desc"), href=RESTORE.base),
-            sample,
-        ],
-        P(A(t("setup.recover_installation"), href="/setup/import-backup", cls="auth-link"), cls="auth-alt-action"),
-    )
+
+
+# Keeps the typed values (never the passwords) while the user looks at an
+# additional option and comes back, and makes Create a single submit. Runs before
+# the dropdowns initialise, so a restored choice is the one they show.
+_SETUP_FORM_JS = """
+(function () {
+  var form = document.getElementById('setup-form');
+  var KEY = 'celerp-setup-form';
+  var KEPT = %s;
+  function field(name) { return form.querySelector('[name="' + name + '"]'); }
+  function save() {
+    var data = {};
+    KEPT.forEach(function (name) { var el = field(name); if (el && el.value) data[name] = el.value; });
+    try { sessionStorage.setItem(KEY, JSON.stringify(data)); } catch (e) {}
+  }
+  var saved = {};
+  try { saved = JSON.parse(sessionStorage.getItem(KEY) || '{}') || {}; } catch (e) {}
+  KEPT.forEach(function (name) {
+    var el = field(name);
+    if (!el || el.value || !saved[name]) return;
+    var wrap = el.closest('.combobox-wrap');
+    if (!wrap) { el.value = saved[name]; return; }
+    var opt = wrap.querySelector('.combobox-option[data-value="' + CSS.escape(saved[name]) + '"]');
+    if (!opt) return;
+    el.value = saved[name];
+    wrap.querySelector('.combobox-input').value = opt.textContent;
+  });
+  save();
+  form.addEventListener('input', save);
+  form.addEventListener('change', save);
+  window.addEventListener('pagehide', function () { if (!form.dataset.sent) save(); });
+  var button = form.querySelector('button[type="submit"]');
+  form.addEventListener('submit', function () {
+    form.dataset.sent = '1';
+    try { sessionStorage.removeItem(KEY); } catch (e) {}
+    button.disabled = true;
+  });
+  // Coming back with the browser's Back button shows the page from cache.
+  window.addEventListener('pageshow', function () { button.disabled = false; delete form.dataset.sent; });
+  var focus = form.dataset.focus && field(form.dataset.focus);
+  if (focus) {
+    var wrap = focus.closest('.combobox-wrap');
+    (wrap ? wrap.querySelector('.combobox-input') : focus).focus();
+  }
+})();
+""" % json.dumps(list(_SETUP_KEPT_FIELDS))
 
 
 def _setup_form(
-    company_name: str = "", name: str = "", email: str = "", error: str | None = None,
-    setup_code_required: bool = False,
+    values: dict, error: str | None = None, error_field: str = "",
+    setup_code_required: bool = False, sources: list[str] | None = None,
 ) -> FT:
-    lang = "en"
-    _code_field = ""
+    from ui.components.start_options import start_options
+    from ui.routes.company_backup import BOOTSTRAP as RESTORE
+    from ui.routes.migrations import BOOTSTRAP as MIGRATE
+    from ui.routes.setup import company_choice_fields, company_choice_script
+    v = {k: values.get(k, "") for k in _SETUP_KEPT_FIELDS}
+
+    def _text(label_key: str, name: str, *, type: str = "text", autocomplete: str, hint: str = "") -> FT:
+        return Div(
+            Label(t(label_key), For=name, cls="form-label"),
+            Input(type=type, id=name, name=name, value=v.get(name, "") if type != "password" else "",
+                  required=True, autocomplete=autocomplete, cls="form-input",
+                  # The first field takes focus on a fresh page; after an error the
+                  # script focuses the field the error is about.
+                  autofocus=(name == "company_name" and not error)),
+            P(hint, cls="form-hint") if hint else "",
+            cls="form-group",
+        )
+
+    code_field = ""
     if setup_code_required:
         from celerp.config import config_path as _cp
-        _code_field = Div(
+        code_field = Div(
             Label(t("label.setup_code"), For="setup_code", cls="form-label"),
-            Input(type="text", id="setup_code", name="setup_code",
-                  placeholder="", required=True, cls="form-input"),
+            Input(type="text", id="setup_code", name="setup_code", value=v["setup_code"],
+                  required=True, autocomplete="off", cls="form-input"),
             P(t("msg.setup_code_hint", path=str(_cp().parent / "setup-code")), cls="form-hint"),
             cls="form-group",
         )
     return Div(
-        auth_header(t("page.set_up_your_workspace"), t("msg.you_are_first_admin", lang)),
+        auth_header(t("page.set_up_your_workspace"), t("msg.you_are_first_admin")),
         Form(
             flash(error) if error else "",
-            Div(Label(t("label.company_name", lang), For="company_name", cls="form-label"),
-                Input(type="text", id="company_name", name="company_name", value=company_name,
-                      placeholder="Acme Corp", required=True, autofocus=True, cls="form-input"),
-                cls="form-group"),
-            Div(Label(t("label.your_name", lang), For="name", cls="form-label"),
-                Input(type="text", id="name", name="name", value=name,
-                      placeholder="Jane Smith", required=True, cls="form-input"),
-                cls="form-group"),
-            Div(Label(t("label.email", lang), For="email", cls="form-label"),
-                Input(type="email", id="email", name="email", value=email,
-                      placeholder="you@example.com", required=True, cls="form-input"),
-                cls="form-group"),
-            Div(Label(t("label.password", lang), For="password", cls="form-label"),
-                Input(type="password", id="password", name="password",
-                      placeholder=t("auth.ph_min_8_chars"), required=True, cls="form-input"),
-                cls="form-group"),
-            Div(Label(t("label.confirm_password", lang), For="confirm_password", cls="form-label"),
-                Input(type="password", id="confirm_password", name="confirm_password",
-                      placeholder="••••••••", required=True, cls="form-input"),
-                cls="form-group"),
-            _code_field,
-            Button(t("btn.create_workspace", lang), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action="/setup", cls="auth-form",
+            _text("label.company_name", "company_name", autocomplete="organization"),
+            _text("label.your_name", "name", autocomplete="name"),
+            _text("label.email", "email", type="email", autocomplete="email"),
+            _text("label.password", "password", type="password", autocomplete="new-password",
+                  hint=t("setup.password_hint", n=MIN_PASSWORD_LENGTH)),
+            _text("label.confirm_password", "confirm_password", type="password", autocomplete="new-password"),
+            code_field,
+            *company_choice_fields(v["currency"], v["vertical"]),
+            Button(t("btn.create_workspace"), type="submit", cls="btn btn--primary btn--full"),
+            method="post", action="/setup", id="setup-form", cls="auth-form",
+            data_focus=error_field if error else "",
         ),
-        P(A(t("auth.back_to_setup"), href="/setup", cls="auth-link"), cls="auth-alt-action"),
-        cls="auth-card",
+        Script(_SETUP_FORM_JS),
+        company_choice_script(),
+        Div(
+            H2(t("setup.options_heading"), cls="setup-options-heading"),
+            start_options(restore_href=RESTORE.base, move_href=MIGRATE.base, sources=sources or []),
+            P(t("setup.not_sure_yet"), cls="setup-options-note"),
+            P(t("setup.later_from_dashboard"), cls="setup-options-note"),
+            cls="setup-options",
+        ),
+        cls="auth-card setup-card",
     )
 
 
@@ -826,68 +843,10 @@ document.querySelector('#restore-btn').closest('form').addEventListener('submit'
             enctype="multipart/form-data", cls="auth-form",
         ),
         P(
-            A(t("auth.back_to_setup"), href="/setup", cls="auth-link"),
+            A(t("auth.return_to_setup"), href="/setup", cls="auth-link"),
             cls="auth-alt-action",
         ),
         cls="auth-card",
-    )
-
-
-def _can_set_up(company: dict, request: Request) -> bool:
-    return role_has_permission(company.get("settings") or {}, get_role(request), "manage_company_settings")
-
-
-def _resumes_onboarding(company: dict, request: Request) -> bool:
-    return (company.get("settings") or {}).get("onboarding_pending") is True and _can_set_up(company, request)
-
-
-# Getting-started actions: (page path, title key, description key, query string). Imports carry the onboarding
-# marker so they return to this hub; the store connector opens on its own tab.
-_ONBOARDING_ACTIONS: tuple[tuple[str, str, str, str], ...] = (
-    ("/inventory/import", "onboarding.products", "onboarding.file_desc", f"{ONBOARDING_MARKER}=1"),
-    ("/crm/import/contacts", "onboarding.contacts", "onboarding.file_desc", f"{ONBOARDING_MARKER}=1"),
-    ("/docs/import", "onboarding.documents", "onboarding.file_desc", f"{ONBOARDING_MARKER}=1"),
-    ("/setup/new-company/migrate", "setup.card_move", "onboarding.move_desc", ""),
-    ("/settings/cloud", "onboarding.connect", "onboarding.connect_desc", "tab=website"),
-)
-
-
-def _onboarding_page(request: Request, error: str | None = None) -> FT:
-    registered = {getattr(r, "path", None) for r in request.app.routes}
-    return auth_shell(
-        _onboarding_view(registered, error=error),
-        title=page_title("page.get_started"),
-    )
-
-
-def _onboarding_view(registered: set[str], error: str | None = None) -> FT:
-    """The getting-started hub. Only actions whose page is registered in this
-    installation are offered."""
-    cards = [
-        A(
-            Strong(t(title)),
-            P(t(desc), cls="quick-link-desc"),
-            href=f"{path}?{query}" if query else path,
-            cls="quick-link-card",
-        )
-        for path, title, desc, query in _ONBOARDING_ACTIONS
-        if path in registered
-    ]
-    return Div(
-        auth_header(t("onboarding.title"), t("onboarding.subtitle")),
-        H2(t("onboarding.bring_in_data"), cls="section-title"),
-        Div(*cards, cls="quick-links-grid"),
-        Div(
-            flash(error) if error else "",
-            P(t("onboarding.start_working_desc"), cls="auth-subtitle"),
-            Form(
-                Button(t("onboarding.start_working"), type="submit", cls="btn btn--secondary"),
-                method="post",
-                action="/onboarding/complete",
-            ),
-            cls="mt-lg text-center",
-        ),
-        cls="onboarding-card",
     )
 
 

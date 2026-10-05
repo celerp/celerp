@@ -156,8 +156,9 @@ async def test_modules_added_without_removing_unrelated(client):
     assert "celerp-unrelated-extra" in enabled_cfg
     assert "celerp-inventory" in enabled_cfg
     await _set(client, h, "blank")
-    assert "celerp-inventory" in read_config()["modules"]["enabled"], "a switch never disables modules"
-    assert "celerp-inventory" in get_enabled(await _settings(client, h))
+    # The general type has no manufacturing; switching to it keeps it enabled.
+    assert "celerp-manufacturing" in read_config()["modules"]["enabled"], "a switch never disables modules"
+    assert "celerp-manufacturing" in get_enabled(await _settings(client, h))
 
 
 @pytest.mark.asyncio

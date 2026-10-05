@@ -18,16 +18,6 @@
     },
     {
       "file": "ui/routes/auth.py",
-      "text": "Acme Corp",
-      "reason": "sample input value shown as a placeholder example"
-    },
-    {
-      "file": "ui/routes/auth.py",
-      "text": "Jane Smith",
-      "reason": "sample input value shown as a placeholder example"
-    },
-    {
-      "file": "ui/routes/auth.py",
       "text": "you@example.com",
       "reason": "example email input value"
     },

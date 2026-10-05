@@ -97,7 +97,7 @@ async def test_import_page_header_and_title_translate(monkeypatch):
     monkeypatch.setattr(di, "_token", lambda request: "tok")
 
     handler = _routes()[("GET", "/docs/import")]
-    page, _cookie = await handler(_FormReq({}, "GET"))
+    page = await handler(_FormReq({}, "GET"))
     html = to_xml(page)
 
     # page_header(t(...)) renders the sentinel as the H1 text.

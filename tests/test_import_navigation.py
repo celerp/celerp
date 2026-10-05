@@ -1,11 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Getting started reads clearly and always leads somewhere sensible.
+"""Import and add-company pages read clearly and always lead somewhere sensible.
 
-The hub offers every way in (files, moving books, a connected store) and says
-plainly what each costs; company details can be left and searched; import pages
-return to the hub they were opened from; every import target is named in the
-reader's language; the migration upload says which file each system gives."""
+The add-company chooser offers the sample company; import pages go back to the
+list they belong to; every import target is named in the reader's language; the
+migration upload says which file each system gives."""
 
 from __future__ import annotations
 
@@ -17,50 +16,23 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fasthtml.common import to_xml
-from starlette.requests import Request
+from httpx import ASGITransport, AsyncClient
 
-from test_onboarding_import_invariants import _CompanyApi, _fake_ui, _ui_request, stage_dir  # noqa: F401
+from test_helpers import make_test_token
+from test_import_invariants import _company, stage_dir  # noqa: F401
 from ui.i18n import _current_lang, t
 from ui.routes import csv_import as ci
 
 _LOCALES = Path(__file__).resolve().parent.parent / "ui" / "locales"
 
 
-def _hub() -> str:
-    from ui.routes.auth import _ONBOARDING_ACTIONS, _onboarding_view
-    return to_xml(_onboarding_view({path for path, *_ in _ONBOARDING_ACTIONS}))
-
-
-def _hrefs(html: str) -> list[str]:
-    return [h.replace("&amp;", "&") for h in re.findall(r'href="([^"]+)"', html)]
-
-
-# ── N1 / N3 / N8: the getting-started hub ────────────────────────────────────
-
-def test_hub_offers_moving_books_from_another_system():
-    """RED before the change: the hub had no way to move books from another system."""
-    out = _hub()
-    assert "/setup/new-company/migrate" in _hrefs(out)
-    assert t("onboarding.move_desc") in out
-
-
-def test_hub_connector_states_its_subscription_and_opens_the_store_tab():
-    """RED before the change: the connector card hid that syncing needs a paid subscription."""
-    out = _hub()
-    assert "/settings/cloud?tab=website" in _hrefs(out)
-    assert "Celerp Connect" in out and "paid subscription" in out
-
-
-def test_hub_shows_no_supporter_promotion():
-    """RED before the change: the hub carried the star card, whose script failed on the page."""
-    out = _hub()
-    assert "star-supporter" not in out and "celerpStarFetch" not in out
-
-
-def test_hub_imports_keep_their_way_back():
-    links = _hrefs(_hub())
-    for path in ("/inventory/import", "/crm/import/contacts", "/docs/import"):
-        assert f"{path}?{ci.ONBOARDING_MARKER}=1" in links
+async def _ui_request(method: str, path: str, **kwargs):
+    from ui.app import app as ui_app
+    company = _company({})
+    with patch("ui.routes.auth.api_get_company", new=AsyncMock(return_value=company)), \
+         patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+            return await c.request(method, path, cookies={"celerp_token": make_test_token(role="owner")}, **kwargs)
 
 
 # ── N4: adding a company, and the company details form ───────────────────────
@@ -73,74 +45,41 @@ async def test_add_company_chooser_offers_the_sample_company():
     assert 'action="/setup/new-company/migrate/sample"' in r.text
 
 
-def test_company_details_has_a_way_back_and_a_searchable_business_type():
-    """RED before the change: no Back, and a plain select of every business type."""
-    from ui.routes.setup import _company_details_form
-    out = to_xml(_company_details_form({}, lang="en"))
-    assert 'href="/setup/new-company"' in out
-    assert "combobox" in out and 'name="vertical"' in out
-    assert not re.search(r'<select[^>]*name="vertical"', out)
-
-
 def test_retail_is_a_business_type():
     """RED before the change: a general shop had no business type of its own."""
     from ui.routes.setup import business_type_options
     assert "retail" in {value for value, _ in business_type_options()}
 
 
-async def test_company_details_without_a_business_type_explains_and_keeps_values():
-    api = _CompanyApi()
-    r = await _fake_ui(api, "POST", "/setup/company",
-                       data={"currency": "EUR", "timezone": "UTC", "phone": "+66 2 555 0100"})
-    assert r.status_code == 200
-    assert t("setup.business_type_required") in r.text
-    assert "+66 2 555 0100" in r.text and 'value="EUR"' in r.text.replace("selected ", "")
-    assert api.calls == []
+# ── N2: import pages go back to their list ────────────────────
+
+def test_upload_page_back_goes_to_its_list():
+    link = to_xml(ci.import_back_link("/docs"))
+    assert 'href="/docs"' in link and t("btn.back") in link
 
 
-# ── N2: import pages return to where they were opened from ────────────────────
-
-def _request(method: str, query: str = "", cookie: str = "") -> Request:
-    headers = [(b"cookie", cookie.encode())] if cookie else []
-    return Request({"type": "http", "method": method, "path": "/x", "query_string": query.encode(),
-                    "headers": headers})
-
-
-@pytest.mark.parametrize("method,query,cookie,expected", [
-    ("GET", f"{ci.ONBOARDING_MARKER}=1", "", "/onboarding"),
-    ("POST", "", f"{ci._ONBOARDING_COOKIE}=1", "/onboarding"),
-    ("GET", "", "", "/docs"),
-    ("POST", "", "", "/docs"),
-])
-def test_upload_page_back_follows_its_origin(method, query, cookie, expected):
-    """RED before the change: contact and document upload pages always went back to their list."""
-    link = to_xml(ci.import_back_link(_request(method, query, cookie), "/docs", "btn.back_to_settings"))
-    assert f'href="{expected}"' in link
-
-
-@pytest.mark.parametrize("path", ["/crm/import/contacts", "/docs/import"])
-async def test_upload_pages_opened_from_the_hub_go_back_to_it(path):
-    r = await _ui_request("GET", f"{path}?{ci.ONBOARDING_MARKER}=1")
+@pytest.mark.parametrize("path,home", [("/crm/import/contacts", "/contacts/customers"), ("/docs/import", "/docs")])
+async def test_upload_pages_go_back_to_their_list(path, home):
+    r = await _ui_request("GET", path)
     assert r.status_code == 200, r.text
-    assert 'href="/onboarding"' in r.text
+    assert f'href="{home}"' in r.text
 
 
 async def test_document_upload_error_keeps_the_page_header(stage_dir):  # noqa: F811
     """RED before the change: a failed document upload lost Back and the template link."""
-    r = await _ui_request("POST", "/docs/import/preview", cookies={ci._ONBOARDING_COOKIE: "1"},
+    r = await _ui_request("POST", "/docs/import/preview",
                           files={"csv_file": ("orders.csv", io.BytesIO(b""), "text/csv")})
     assert r.status_code == 200, r.text
-    assert 'href="/onboarding"' in r.text and 'href="/docs/import/template"' in r.text
+    assert 'href="/docs"' in r.text and 'href="/docs/import/template"' in r.text
 
 
-async def test_product_mapping_cancel_returns_to_the_hub_page(stage_dir):  # noqa: F811
-    """RED before the change: Cancel on the mapping step dropped the getting-started origin."""
+async def test_product_mapping_cancel_returns_to_the_upload_page(stage_dir):  # noqa: F811
     with patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])), \
          patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})):
-        r = await _ui_request("POST", "/inventory/import/preview", cookies={ci._ONBOARDING_COOKIE: "1"},
+        r = await _ui_request("POST", "/inventory/import/preview",
                               files={"csv_file": ("stock.csv", io.BytesIO(b"Name,Qty\nBasket,4\n"), "text/csv")})
     assert r.status_code == 200, r.text
-    assert f'href="/inventory/import?{ci.ONBOARDING_MARKER}=1"' in r.text.replace("&amp;", "&")
+    assert 'href="/inventory/import"' in r.text
 
 
 # ── N7: the migration upload says which file each system gives ────────────────

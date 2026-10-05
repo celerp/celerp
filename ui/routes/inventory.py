@@ -1432,13 +1432,13 @@ def setup_routes(app):
             return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
         return await base_shell(
-            _import_page_header(request.query_params.get(ONBOARDING_MARKER) == "1"),
+            _import_page_header(),
             _import_upload_form(),
             title=page_title("page.import_inventory"),
             nav_active="inventory",
             lang=lang,
             request=request,
-        ), onboarding_entry_cookie(request)
+        )
 
     @app.get("/inventory/import/template")
     async def inventory_import_template(request: Request):
@@ -1483,11 +1483,10 @@ def setup_routes(app):
         except Exception:
             price_lists = PRICE_LISTS_FALLBACK
         spec = _build_import_spec(price_lists)
-        rows, csv_ref, err = await stage_tabular_upload(token, form, known=known_headers(spec.cols),
-                                                        from_onboarding=entered_from_onboarding(request))
+        rows, csv_ref, err = await stage_tabular_upload(token, form, known=known_headers(spec.cols))
         if err:
             return await base_shell(
-                _import_page_header(entered_from_onboarding(request)),
+                _import_page_header(),
                 _import_upload_form(error=err),
                 title=page_title("page.import_inventory"),
                 nav_active="inventory",
@@ -1498,7 +1497,7 @@ def setup_routes(app):
         cols = list(rows[0].keys()) if rows else []
         if not cols:
             return await base_shell(
-                _import_page_header(entered_from_onboarding(request)),
+                _import_page_header(),
                 _import_upload_form(error=t("inventory.csv_no_columns")),
                 title=page_title("page.import_inventory"),
                 nav_active="inventory",
@@ -1517,7 +1516,7 @@ def setup_routes(app):
                 csv_ref=csv_ref,
                 sample_rows=rows,
                 confirm_action="/inventory/import/mapped",
-                back_href=import_page_href("/inventory/import", entered_from_onboarding(request)),
+                back_href="/inventory/import",
                 required_targets=spec.required,
                 category_attrs=cat_attrs,
                 col_labels=_import_field_labels(price_lists, cat_schemas),
@@ -1542,7 +1541,7 @@ def setup_routes(app):
         staged = await load_import_draft(token, str(form.get("csv_ref") or ""))
         if staged is None:
             return await base_shell(
-                _import_page_header(entered_from_onboarding(request)),
+                _import_page_header(),
                 _import_upload_form(error=t("inventory.csv_expired")),
                 title=page_title("page.import_inventory"),
                 nav_active="inventory",
@@ -1550,7 +1549,6 @@ def setup_routes(app):
                 request=request,
             )
         csv_text, uploaded, _revision = staged
-        from_onboarding = bool(uploaded.get("from_onboarding"))
 
         try:
             price_lists = await api.get_price_lists(token)
@@ -1584,7 +1582,7 @@ def setup_routes(app):
                     csv_ref=csv_ref,
                     sample_rows=rows,
                     confirm_action="/inventory/import/mapped",
-                    back_href=import_page_href("/inventory/import", from_onboarding),
+                    back_href="/inventory/import",
                     required_targets=spec.required,
                     category_attrs=cat_attrs,
                     errors=mapping_errors,
@@ -1603,8 +1601,7 @@ def setup_routes(app):
         cols = list(dict.fromkeys([*(remapped_cols or spec.cols), *(k for row in rows for k in row)]))
 
         # The mapped rows become the import's draft; every later step reads it.
-        draft = {"upsert": False, "decisions": {}, "from_onboarding": from_onboarding,
-                 "source": uploaded.get("source") or {}}
+        draft = {"upsert": False, "decisions": {}, "source": uploaded.get("source") or {}}
         csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols), draft)
         return RedirectResponse(f"/inventory/import/draft/{csv_ref}", status_code=303)
 
@@ -1690,10 +1687,9 @@ def setup_routes(app):
         form = await request.form()
         csv_ref = str(form.get("csv_ref") or "")
         loaded = await load_import_draft(token, csv_ref)
-        back = "/onboarding" if loaded and loaded[1].get("from_onboarding") else "/inventory"
         if loaded is not None:
             import_stage.delete_ref(csv_ref)
-        return Response("", headers={"HX-Redirect": back})
+        return Response("", headers={"HX-Redirect": "/inventory"})
 
     @app.post("/inventory/import/confirm")
     async def inventory_import_confirm(request: Request):
@@ -1755,7 +1751,6 @@ def setup_routes(app):
             import_more_href="/inventory/import",
             has_mapping=True,
             extra=extra,
-            from_onboarding=bool(draft.get("from_onboarding")),
         )
 
     # ── Blank-create: /inventory/create-blank ──────────────────────────────────
@@ -7550,11 +7545,8 @@ from ui.routes.csv_import import (
     apply_fixes_to_rows as _apply_fixes,
     column_mapping_form,
     import_abort_panel,
+    import_back_link,
     import_result_panel,
-    entered_from_onboarding,
-    import_page_href,
-    ONBOARDING_MARKER,
-    onboarding_entry_cookie,
     plan_error_report_response,
     plan_review_panel,
     stage_tabular_upload,
@@ -7687,12 +7679,11 @@ def _import_price_col_labels(price_lists: list[dict]) -> dict[str, str]:
     return labels
 
 
-def _import_page_header(from_onboarding: bool) -> FT:
-    """The upload page's header, the same before and after a failed upload: Back
-    returns to where the import was opened from."""
+def _import_page_header() -> FT:
+    """The upload page's header, the same before and after a failed upload."""
     return page_header(
         t("page.import_inventory"),
-        A(t("btn.back"), href="/onboarding" if from_onboarding else "/inventory", cls="btn btn--secondary"),
+        import_back_link("/inventory"),
         A(t("btn.download_template"), href="/inventory/import/template", cls="btn btn--secondary"),
     )
 

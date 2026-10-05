@@ -107,7 +107,7 @@ Every business domain is a self-contained module. The full set ships with the do
 | `celerp-labels` | Label printing, barcode generation |
 | `celerp-verticals` | Industry presets - configure for your business type on first run |
 
-The onboarding wizard lets you pick your industry. Modules can be toggled any time at **Settings > Modules**.
+The setup form asks for your business type. Modules can be toggled any time at **Settings > Modules**.
 
 ### Build your own
 

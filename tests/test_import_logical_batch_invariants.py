@@ -258,7 +258,7 @@ async def _names_with_sku(session, company_id: str, sku: str) -> list[str]:
 
 
 async def _snapshot(session, company_id: str) -> dict:
-    from test_onboarding_import_invariants import _business_snapshot
+    from test_import_invariants import _business_snapshot
     return await _business_snapshot(session, company_id)
 
 

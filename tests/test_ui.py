@@ -5,7 +5,7 @@
 
 Tests the FastHTML UI layer (ui/app.py) via httpx AsyncClient.
 Covers:
-  - Auth routing state machine (unauthenticated, bootstrap, onboarding, dashboard)
+  - Auth routing state machine (unauthenticated, bootstrap, dashboard)
   - Click-to-edit cell endpoints (GET edit form, PATCH save)
   - Company switcher
   - Search/filter HTMX partials
@@ -510,15 +510,6 @@ class TestAuthRouting:
     async def test_attachment_proxy_requires_auth(self, ui_client):
         """GET /static/attachments/* without cookie → redirect to login."""
         r = await ui_client.get("/static/attachments/some-uuid/file.pdf")
-        assert r.status_code in (302, 303)
-        assert "/login" in r.headers.get("location", "")
-
-    @pytest.mark.asyncio
-    async def test_onboarding_validates_token(self, ui_client):
-        """GET /onboarding with expired/invalid token → redirect to login."""
-        from ui.api_client import APIError
-        with patch("ui.routes.auth.api_get_company", new=AsyncMock(side_effect=APIError(401, "expired"))):
-            r = await ui_client.get("/onboarding", cookies=_authed())
         assert r.status_code in (302, 303)
         assert "/login" in r.headers.get("location", "")
 
@@ -9509,7 +9500,7 @@ class TestModulesUI:
         assert b"module-build-card" not in r.content
 
     @pytest.mark.asyncio
-    async def test_modules_page_empty_shows_onboarding(self, ui_client):
+    async def test_modules_page_empty_shows_empty_state(self, ui_client):
         from contextlib import ExitStack
         mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=[])}
         with ExitStack() as stack:
@@ -16828,9 +16819,9 @@ class TestInventoryImportDraftReview:
     @pytest.mark.asyncio
     async def test_cancel_deletes_the_draft(self, ui_client):
         from celerp.services.import_stage import read_draft
-        ref = self._draft([{"sku": "X8", "name": "Ring", "sell_by": "piece", "quantity": "1"}], {"from_onboarding": True})
+        ref = self._draft([{"sku": "X8", "name": "Ring", "sell_by": "piece", "quantity": "1"}])
         r = await ui_client.post("/inventory/import/cancel", data={"csv_ref": ref}, cookies=_authed())
-        assert r.headers.get("HX-Redirect") == "/onboarding"
+        assert r.headers.get("HX-Redirect") == "/inventory"
         assert read_draft(_TEST_COMPANY_ID, ref) is None
 
     @pytest.mark.asyncio

@@ -1354,11 +1354,11 @@ window.celerpStarFetch = window.celerpStarFetch || (function(){
 """
 
 
-def star_supporter_card(medium: str = "dashboard") -> FT:
+def star_supporter_card() -> FT:
     """The GitHub-star ask: a gold-bordered, dismissable card. The COPY (header + body
     + tooltip) is the relay's single source of truth, hydrated from /stars/cta; the card
     shows only in a non-neutral mode (relay reachable) and when not dismissed. Rendered
-    on the dashboard (where setup lands) and onboarding."""
+    on the dashboard (where setup lands)."""
     # Fetch the CTA copy + the user's badge together. If they've already claimed, show
     # the relay's thank-you copy ({badge} -> their label); otherwise show the ask. All
     # copy stays relay-sourced; the card is hidden in neutral (relay down) or dismissed.
@@ -1366,7 +1366,7 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
         "(function(){"
         "if(!window.celerpStarFetch)return;"
         "Promise.all(["
-        "window.celerpStarFetch('/stars/cta?medium=" + medium + "').catch(function(){return null}),"
+        "window.celerpStarFetch('/stars/cta?medium=dashboard').catch(function(){return null}),"
         "window.celerpStarFetch('/stars/badge').catch(function(){return null})"
         "]).then(function(res){"
         "var d=res[0],bd=res[1];"
@@ -2123,7 +2123,7 @@ _BUG_LINK_JS = """
     [/^\\/(accounting|finance|payments)/, "Accounting"],
     [/^\\/(contacts|crm)/, "Contacts / CRM"],
     [/^\\/(reports|dashboard|history)/, "Reporting"],
-    [/^\\/(settings|setup|onboarding|subscriptions)/, "Setup / admin / permissions"]
+    [/^\\/(settings|setup|subscriptions)/, "Setup / admin / permissions"]
   ];
   window.celerpBugUrl = function(base) {
     var path = location.pathname;
@@ -2397,7 +2397,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
 
 
 def auth_shell(*content, title: str = "Celerp") -> FT:
-    """Minimal shell for login/register/setup/onboarding pages."""
+    """Minimal shell for login/register/setup pages."""
     return Html(
         Head(
             Meta(charset="utf-8"),

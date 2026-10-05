@@ -124,27 +124,10 @@ a:hover { text-decoration: underline; }
 /* ─── Auth card wide variant ──────────────────────────────────────────── */
 .auth-card--wide { max-width: 520px; }
 
-/* ─── Wizard steps ────────────────────────────────────────────────────── */
-.wizard-steps { display: flex; gap: 0; margin-bottom: 28px; overflow: hidden; }
-.wizard-step { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
-.wizard-step:not(:last-child)::after { content: ""; flex: 1; height: 1px; background: var(--c-border); margin: 0 6px; min-width: 8px; }
-.step-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
-.step-num { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text2); flex-shrink: 0; }
-.step-num--active { background: var(--c-accent); border-color: var(--c-accent); color: #fff; }
-.step-num--done { background: var(--c-green); border-color: var(--c-green); color: #fff; }
-.step-label { font-size: 11px; color: var(--c-text2); white-space: nowrap; }
-.step-label--active { color: var(--c-text); font-weight: 600; }
-
 /* ─── Form extras ─────────────────────────────────────────────────────── */
 .form-textarea { resize: vertical; min-height: 72px; line-height: 1.5; font-family: inherit; }
 .form-group--inline { flex-direction: row; align-items: center; gap: 8px; }
 .form-label--inline { font-size: 13px; color: var(--c-text); cursor: pointer; margin: 0; }
-
-/* ─── Added users list ────────────────────────────────────────────────── */
-.added-users-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; background: var(--c-bg3); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 10px 12px; }
-.added-user-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
-.added-user-name { font-weight: 600; min-width: 120px; }
-.added-user-email { color: var(--c-text2); flex: 1; }
 
 /* ─── Onboarding card ─────────────────────────────────────────────────── */
 .onboarding-card { background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 36px 40px; max-width: 640px; margin: 0 auto; }
@@ -154,6 +137,16 @@ a:hover { text-decoration: underline; }
    submit button, stretched over the whole card. */
 .auth-container:has(.setup-chooser),
 .auth-container:has(.migration-wizard) { max-width: 760px; }
+.auth-container:has(.setup-card) { max-width: 600px; }
+.setup-options { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--c-border); }
+.setup-options-heading { font-size: 15px; font-weight: 600; color: var(--c-text); margin: 0 0 12px; }
+.setup-options-note { font-size: 12px; color: var(--c-text2); margin: 8px 0 0; }
+.start-options { display: flex; flex-direction: column; gap: 12px; }
+.start-option { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; background: var(--c-bg3); border: 1px solid var(--c-border); border-radius: var(--radius); }
+.start-option-icon { font-size: 18px; line-height: 1.2; color: var(--c-accent); flex-shrink: 0; width: 20px; text-align: center; }
+.start-option-title { font-size: 14px; font-weight: 600; }
+.start-option-desc { font-size: 13px; color: var(--c-text2); line-height: 1.5; margin: 4px 0 0; }
+.start-option-note { font-size: 12px; color: var(--c-text2); font-style: italic; margin: 4px 0 0; }
 .quick-link-card:has(.quick-link-action) { position: relative; margin: 0; }
 .quick-link-action { color: inherit; text-decoration: none; background: none; border: 0; padding: 0; font: inherit; cursor: pointer; }
 .quick-link-action::after { content: ""; position: absolute; inset: 0; }
@@ -1723,6 +1716,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .activating-body { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 32px 0; }
 .activating-spinner { width: 48px; height: 48px; border: 4px solid var(--c-border); border-top-color: var(--c-accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 .activating-status { font-size: 14px; color: var(--c-text2); }
+.activating-status--error { color: var(--c-red-dark); }
 .activating-modules { width: 100%; max-width: 320px; }
 .activating-module-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
 .activating-module { font-size: 13px; padding: 6px 10px; border-radius: 6px; display: flex; align-items: center; gap: 8px; }

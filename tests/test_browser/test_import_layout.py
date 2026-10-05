@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Getting started and the product import read cleanly on a desktop and a phone.
+"""The dashboard, add-company pages and the product import read cleanly on a desktop and a phone.
 
 Each screen loads with no page or console errors, never scrolls the whole page
 sideways (a wide table scrolls inside its own box), and on a 390 px phone the
@@ -55,8 +55,8 @@ def _check(page, width: int, problems: list[str]) -> None:
         assert box and box["x"] >= 0 and box["x"] + box["width"] <= width
 
 
-@pytest.mark.parametrize("path", ["/onboarding", "/dashboard", "/setup/new-company", "/setup/new-company/migrate"])
-def test_getting_started_pages(sized, ui_server, path):
+@pytest.mark.parametrize("path", ["/dashboard", "/setup/new-company", "/setup/new-company/migrate"])
+def test_start_pages(sized, ui_server, path):
     page, width = sized
     problems = _watch(page)
     page.goto(f"{ui_server}{path}", wait_until="load")
@@ -66,7 +66,7 @@ def test_getting_started_pages(sized, ui_server, path):
 def test_product_import_upload_mapping_and_review(sized, ui_server):
     page, width = sized
     problems = _watch(page)
-    page.goto(f"{ui_server}/inventory/import?from_onboarding=1", wait_until="load")
+    page.goto(f"{ui_server}/inventory/import", wait_until="load")
     _check(page, width, problems)
 
     page.locator("input[type='file']").first.set_input_files(

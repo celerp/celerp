@@ -34,7 +34,6 @@ SEPARATE = ("Celerp restores this as a separate company so your current company 
             "overwritten. You can verify the restored company before deactivating the old one.")
 NOTHING_WRITTEN = "Nothing has been written yet."
 RESTORED = "Restored from the backup of "
-CHOICES = ["Start a new company", "Move from another system", "Restore a company backup", "Try sample company"]
 RECOVER = "Recover an entire Celerp installation"
 REPO = Path(__file__).resolve().parents[1]
 
@@ -112,12 +111,6 @@ def _anchors(page: str) -> list[tuple[str, str, str]]:
         out.append((href.group(1) if href else "", cls.group(1) if cls else "",
                     re.sub(r"<[^>]+>", "", inner).strip()))
     return out
-
-
-def _cards(page: str) -> list[str]:
-    """Visible labels of the chooser cards, links and buttons alike, in page order."""
-    found = re.findall(r'<(a|button)\b[^>]*class="[^"]*\bquick-link-action\b[^"]*"[^>]*>(.*?)</\1>', page, flags=re.S)
-    return [re.sub(r"<[^>]+>", "", inner).strip() for _, inner in found]
 
 
 def _cookie(r: httpx.Response, name: str) -> str:
@@ -300,7 +293,7 @@ async def test_bootstrap_restore_ui_journey(ui, real_engine, real_client, code_c
     r = await ui.get("/setup")
     assert r.status_code == 200, r.text
     base = "/setup/restore-backup"
-    assert _link(_page(r), base, "Restore a company backup")
+    assert _link(_page(r), base, "Restore a Celerp backup")
     r = await ui.get(base)
     assert r.status_code == 200, r.text
     assert 'name="setup_code"' in r.text and 'type="file"' in r.text
@@ -336,31 +329,19 @@ async def test_company_copy_page_gone(ui, real_engine):
         assert (await ui.get(path)).status_code == 404, path
 
 
-# ── First-run chooser ────────────────────────────────────────────────────────
+# ── Setup form start options ─────────────────────────────────────────────────
 
-async def test_first_run_chooser_choices(ui, real_engine):
-    """The first-run chooser offers exactly the four ways to start and a small whole-installation link."""
-    r = await ui.get("/setup")
-    assert r.status_code == 200, r.text
-    page = _page(r)
-    assert _cards(page) == CHOICES
-    anchors = _anchors(page)
-    assert ("/setup/restore-backup", "Restore a company backup") in [(h, t) for h, c, t in anchors
-                                                                      if "quick-link-action" in c]
-    recover = [(h, c) for h, c, t in anchors if t == RECOVER]
-    assert recover == [(h, c) for h, c in recover if h == "/setup/import-backup" and "quick-link-action" not in c]
-    assert len(recover) == 1
-
-
-async def test_first_run_chooser_no_competing_copy_and_backup(ui, real_engine):
-    """The first-run chooser has no company copy choice and no card for the whole-installation restore."""
+async def test_setup_form_offers_one_restore_entry_point(ui, real_engine):
+    """The setup form links the company restore once; the whole-installation recovery
+    sits on the restore page, so restore has one entry point and no copy choice."""
     page = _page(await ui.get("/setup"))
     assert re.search(r"\bcop(y|ies)\b", page, re.I) is None
-    assert "Restore a Celerp backup" not in page
     assert "/setup/open-copy" not in page
-    cards = [h for h, c, _ in _anchors(page) if "quick-link-action" in c]
-    assert "/setup/import-backup" not in cards
-    assert [h for h, _, _ in _anchors(page)].count("/setup/import-backup") == 1
+    hrefs = [h for h, _, _ in _anchors(page)]
+    assert hrefs.count("/setup/restore-backup") == 1
+    assert "/setup/import-backup" not in hrefs
+    restore = _page(await ui.get("/setup/restore-backup"))
+    assert [(h, t) for h, _, t in _anchors(restore) if h == "/setup/import-backup"] == [("/setup/import-backup", RECOVER)]
 
 
 # ── Migration completion ─────────────────────────────────────────────────────

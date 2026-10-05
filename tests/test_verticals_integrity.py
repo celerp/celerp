@@ -153,9 +153,9 @@ def test_default_terms_are_keyed_by_preset_name(table: str):
 def test_setup_catalog_never_defaults_to_first_preset():
     """With nothing stored, the setup business-type control submits nothing and shows
     only its prompt; the server refuses an empty choice with a message."""
-    from fasthtml.common import to_xml
+    from fasthtml.common import Div, to_xml
     from test_setup_business_type import _selected_values, _shows_only_placeholder, _vertical_select
-    from ui.routes.setup import _company_details_form
-    control = _vertical_select(to_xml(_company_details_form({})))
+    from ui.routes.setup import company_choice_fields
+    control = _vertical_select(to_xml(Div(*company_choice_fields("", ""))))
     assert _selected_values(control) == [""]
     assert _shows_only_placeholder(control)

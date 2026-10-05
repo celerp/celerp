@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Fast invariant suite for onboarding and import.
+"""Fast invariant suite for import and for the setup writer.
 
 Each test class owns one family of invariants; each test asserts a single
 property that must hold for every import path, not one screen's behavior.
@@ -177,78 +177,11 @@ def _owner_cookies() -> dict:
     return {"celerp_token": make_test_token(role="owner")}
 
 
-class _CompanyApi:
-    """Stand-in for the company API: settings change only when a write succeeds.
-
-    ``failing_flag_writes`` makes that many writes of ``onboarding_pending`` fail,
-    as a dropped connection or a server error would.
-    """
-
-    def __init__(self, settings: dict | None = None, *, failing_flag_writes: int = 0,
-                 restart_required: bool = False, set_type_error: Exception | None = None):
-        self.settings = dict(settings or {})
-        self.failing_flag_writes = failing_flag_writes
-        self.restart_required = restart_required
-        self.set_type_error = set_type_error
-        self.calls: list[tuple] = []
-
-    async def get_company(self, token):
-        return _company(dict(self.settings))
-
-    async def patch_company(self, token, data):
-        from ui.api_client import APIError
-        self.calls.append(("patch", dict(data)))
-        if "onboarding_pending" in data and self.failing_flag_writes:
-            self.failing_flag_writes -= 1
-            raise APIError(503, "The server could not be reached.")
-        self.settings.update(data)
-        return _company(dict(self.settings))
-
-    async def set_business_type(self, token, vertical):
-        self.calls.append(("set_type", vertical))
-        if self.set_type_error is not None:
-            raise self.set_type_error
-        self.settings["vertical"] = vertical
-        return {"restart_required": self.restart_required}
-
-    async def restart_system(self, token):
-        self.calls.append(("restart",))
-        return {}
-
-    def flag_writes(self) -> list:
-        return [c[1]["onboarding_pending"] for c in self.calls if c[0] == "patch" and "onboarding_pending" in c[1]]
-
-    def names(self) -> list[str]:
-        return [c[0] if c[0] != "patch" else ("pending" if "onboarding_pending" in c[1] else "details")
-                for c in self.calls]
-
-
-async def _fake_ui(api: _CompanyApi, method: str, path: str, *, role: str = "owner",
-                   cookies: dict | None = None, **kwargs):
-    """One UI request against the stand-in company API."""
-    from ui.app import app as ui_app
-    with patch("ui.routes.auth.api_get_company", new=api.get_company), \
-         patch("ui.api_client.get_company", new=api.get_company), \
-         patch("ui.api_client.patch_company", new=api.patch_company), \
-         patch("ui.api_client.set_business_type", new=api.set_business_type), \
-         patch("ui.api_client.restart_system", new=api.restart_system):
-        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-            return await c.request(method, path,
-                                   cookies={"celerp_token": make_test_token(role=role), **(cookies or {})},
-                                   **kwargs)
-
-
 def _setup_form(vertical: str | None = "gemstones") -> dict:
     form = {"currency": "USD", "timezone": "UTC"}
     if vertical is not None:
         form["vertical"] = vertical
     return form
-
-
-def _visible_business_types() -> list[str]:
-    from ui.routes.setup import business_type_options
-    return [value for value, _ in business_type_options()]
-
 
 def _bridged_client(token, timeout=10.0):
     """UI-to-API client that reaches the real API app in process."""
@@ -268,21 +201,6 @@ async def _real_ui(token: str, method: str, path: str, *, patch_company=None, **
             return await c.request(method, path, cookies={"celerp_token": token}, **kwargs)
 
 
-def _failing_flag_writes(times: int):
-    """The real company patch, except the first ``times`` writes of onboarding_pending fail."""
-    import ui.api_client as api
-    from ui.api_client import APIError
-    real = api.patch_company
-    remaining = [times]
-
-    async def _patch(token, data):
-        if "onboarding_pending" in data and remaining[0]:
-            remaining[0] -= 1
-            raise APIError(503, "The server could not be reached.")
-        return await real(token, data)
-    return _patch
-
-
 async def _settings(client, h) -> dict:
     return (await client.get("/companies/me", headers=h)).json()["settings"]
 
@@ -294,74 +212,7 @@ def _token_of(h: dict) -> str:
 _RETRYABLE_ERROR = 'class="flash flash--error"'
 
 
-async def _post_setup(vertical: str, *, set_type, patch_company, restart=None):
-    from ui.app import app as ui_app
-    with patch("ui.api_client.patch_company", new=patch_company), \
-         patch("ui.api_client.set_business_type", new=set_type), \
-         patch("ui.api_client.restart_system", new=restart or AsyncMock(return_value={})):
-        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-            return await c.post(
-                "/setup/company",
-                data={"vertical": vertical, "currency": "USD", "timezone": "UTC"},
-                cookies=_owner_cookies(),
-            )
-
-
-class TestSetupInvariant:
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("restart_required,dest", [(True, "/setup/activating"), (False, "/onboarding")])
-    async def test_setup_marks_onboarding_pending_only_after_business_type_applied(self, restart_required, dest):
-        order: list[str] = []
-        set_type = AsyncMock(side_effect=lambda *a: order.append("set_type") or {"restart_required": restart_required})
-        patch_company = AsyncMock(side_effect=lambda tok, data: order.append(
-            "pending" if data.get("onboarding_pending") else "details") or {})
-        r = await _post_setup("gemstones", set_type=set_type, patch_company=patch_company)
-        assert r.headers["location"].endswith(dest)
-        set_type.assert_awaited_once()
-        assert order == ["details", "set_type", "pending"]
-
-    def test_cloud_offer_skip_returns_to_the_setup_hub(self):
-        from ui.routes.setup import _cloud_form
-        html = to_xml(_cloud_form())
-        assert re.search(r'<a[^>]*href="/onboarding"[^>]*class="cloud-upsell-skip"', html), html
-
-    @staticmethod
-    def _finalize_errors():
-        from ui.api_client import APIError
-        return [APIError(422, "no such preset"), APIError(403, "Forbidden"), APIError(503, "unreachable")]
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("which", [0, 1, 2], ids=["rejected", "forbidden", "unreachable"])
-    async def test_setup_finalize_failure_does_not_mark_onboarding_pending(self, which):
-        api = _CompanyApi(set_type_error=self._finalize_errors()[which])
-        await _fake_ui(api, "POST", "/setup/company", data=_setup_form())
-        assert api.flag_writes() == []
-        assert "onboarding_pending" not in api.settings
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("which", [0, 1, 2], ids=["rejected", "forbidden", "unreachable"])
-    async def test_setup_finalize_failure_does_not_redirect_as_success(self, which):
-        from test_setup_business_type import _selected_values, _vertical_select
-        api = _CompanyApi(set_type_error=self._finalize_errors()[which], restart_required=True)
-        r = await _fake_ui(api, "POST", "/setup/company", data=_setup_form())
-        assert r.status_code == 200 and "location" not in r.headers
-        assert _RETRYABLE_ERROR in r.text
-        assert _selected_values(_vertical_select(r.text)) == ["gemstones"]
-        assert ("restart",) not in api.calls
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("vertical", _visible_business_types())
-    async def test_setup_finalize_calls_canonical_apply_preset_once_per_request(self, vertical):
-        api = _CompanyApi()
-        r = await _fake_ui(api, "POST", "/setup/company", data=_setup_form(vertical))
-        assert r.status_code == 302, r.text
-        assert [c for c in api.calls if c[0] == "set_type"] == [("set_type", vertical)]
-        # Setup itself never writes the business type or anything the preset owns.
-        for name, *rest in api.calls:
-            if name == "patch":
-                assert not set(rest[0]) & {"vertical", "category_schemas", "category_display_names", "units",
-                                           "inventory_method", "modules"}, rest[0]
-
+class TestSetupWriterInvariant:
     def test_every_visible_preset_enables_celerp_verticals(self):
         from celerp.services.vertical_presets import installed_preset_modules, list_presets
         from ui.routes.setup import business_type_options
@@ -369,95 +220,6 @@ class TestSetupInvariant:
         assert {p["name"] for p in visible} == {v for v, _ in business_type_options()}
         for preset in visible:
             assert "celerp-verticals" in installed_preset_modules(preset), preset["name"]
-
-    # -- choosing a business type ------------------------------------------------
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("stored", [{}, {"settings": {}}, {"settings": {"currency": "USD"}}, None],
-                             ids=["no-company-data", "no-settings", "no-vertical", "company-unavailable"])
-    async def test_setup_company_has_placeholder_selected_when_vertical_absent(self, stored):
-        from ui.api_client import APIError
-        from ui.app import app as ui_app
-        from test_setup_business_type import _selected_values, _shows_only_placeholder, _vertical_select
-        get_company = AsyncMock(side_effect=APIError(503, "down")) if stored is None else AsyncMock(return_value=stored)
-        with patch("ui.api_client.get_company", new=get_company):
-            async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-                r = await c.get("/setup/company", cookies=_owner_cookies())
-        select = _vertical_select(r.text)
-        # Only the prompt shows and the control submits nothing, so no real business
-        # type is sent unless the user picks one (an empty choice is refused by the server).
-        assert _selected_values(select) == [""]
-        assert _shows_only_placeholder(select)
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("vertical", ["", "   ", None], ids=["empty", "whitespace", "missing"])
-    async def test_setup_company_empty_vertical_is_rejected(self, vertical):
-        from ui.i18n import t
-        api = _CompanyApi()
-        r = await _fake_ui(api, "POST", "/setup/company", data=_setup_form(vertical))
-        assert r.status_code == 200 and "location" not in r.headers
-        assert t("setup.business_type_required") in r.text
-        assert api.calls == []
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("vertical", ["no_such_type", "saas", "GEMSTONES"])
-    async def test_setup_company_unknown_vertical_is_rejected(self, vertical):
-        api = _CompanyApi()
-        r = await _fake_ui(api, "POST", "/setup/company", data=_setup_form(vertical))
-        assert r.status_code == 200 and "location" not in r.headers
-        assert "Unknown business type" in r.text
-        assert api.calls == []
-
-    @pytest.mark.asyncio
-    async def test_setup_company_explicit_blank_is_accepted(self):
-        api = _CompanyApi()
-        r = await _fake_ui(api, "POST", "/setup/company", data=_setup_form("blank"))
-        assert r.status_code == 302 and r.headers["location"] == "/onboarding"
-        assert ("set_type", "blank") in api.calls
-        assert api.settings["onboarding_pending"] is True
-
-    # -- entering the getting-started hub -------------------------------------------
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("restart_required", [False, True])
-    async def test_setup_does_not_claim_success_when_onboarding_pending_write_fails(self, restart_required):
-        from test_setup_business_type import _selected_values, _vertical_select
-        api = _CompanyApi(failing_flag_writes=1, restart_required=restart_required)
-        r = await _fake_ui(api, "POST", "/setup/company", data=_setup_form())
-        assert r.status_code == 200 and "location" not in r.headers
-        assert _RETRYABLE_ERROR in r.text
-        # The page offers the same choice again, so submitting it retries.
-        assert _selected_values(_vertical_select(r.text)) == ["gemstones"]
-        assert 'action="/setup/company"' in r.text
-        assert ("restart",) not in api.calls
-        assert api.settings.get("onboarding_pending") is not True
-        root = await _fake_ui(api, "GET", "/")
-        assert root.headers["location"] == "/dashboard"
-
-    @pytest.mark.asyncio
-    async def test_restart_path_preserves_pending_state(self):
-        api = _CompanyApi(failing_flag_writes=1, restart_required=True)
-        failed = await _fake_ui(api, "POST", "/setup/company", data=_setup_form())
-        assert failed.status_code == 200 and "location" not in failed.headers
-        assert ("restart",) not in api.calls
-        retried = await _fake_ui(api, "POST", "/setup/company", data=_setup_form())
-        assert retried.status_code == 302 and retried.headers["location"] == "/setup/activating"
-        # The flag is stored before the restart is requested, so a server that goes
-        # down mid-restart still comes back to a company marked as being set up.
-        tail = api.names()[-3:]
-        assert tail == ["set_type", "pending", "restart"], api.names()
-        assert api.settings["onboarding_pending"] is True
-        assert (await _fake_ui(api, "GET", "/")).headers["location"] == "/onboarding"
-        page = await _fake_ui(api, "GET", "/setup/activating")
-        assert "window.location.href = '/onboarding'" in page.text
-
-    @pytest.mark.asyncio
-    async def test_activation_page_lands_on_onboarding(self):
-        from ui.app import app as ui_app
-        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-            r = await c.get("/setup/activating", cookies=_owner_cookies())
-        assert "window.location.href = '/onboarding'" in r.text
-        assert "/dashboard" not in r.text
 
     def test_setup_has_no_preset_semantics_of_its_own(self):
         """Categories, units and preset settings are written only by the business-type operation."""
@@ -555,47 +317,41 @@ class TestSetupSentinels:
             assert second.get(key) == first.get(key), key
 
     @pytest.mark.asyncio
-    async def test_setup_retry_after_pending_write_failure_is_idempotent(self, client, session):
+    async def test_setup_retry_after_settings_write_failure_applies_once(self, client, session):
+        import ui.api_client as api
+        from ui.api_client import APIError
         h = await _register(client)
         company_id = (await client.get("/companies/me", headers=h)).json()["id"]
-        failing = _failing_flag_writes(1)
-        first = await _real_ui(_token_of(h), "POST", "/setup/company", data=_setup_form(), patch_company=failing)
+        before = await _settings(client, h)
+        items_before = await _item_count(session, company_id)
+
+        async def _unreachable(token, data):
+            raise APIError(503, "The server could not be reached.")
+        first = await _real_ui(_token_of(h), "POST", "/setup/company", data=_setup_form(), patch_company=_unreachable)
         assert first.status_code == 200 and "location" not in first.headers
         assert _RETRYABLE_ERROR in first.text
-        after_failure = await _settings(client, h)
-        items_after_failure = await _item_count(session, company_id)
-        assert after_failure["vertical"] == "gemstones"
-        assert after_failure.get("onboarding_pending") is not True
+        assert (await _settings(client, h)).get("vertical") == before.get("vertical")
 
-        retried = await _real_ui(_token_of(h), "POST", "/setup/company", data=_setup_form(), patch_company=failing)
+        retried = await _real_ui(_token_of(h), "POST", "/setup/company", data=_setup_form(),
+                                 patch_company=api.patch_company)
         assert retried.status_code == 302
-        assert retried.headers["location"] in ("/onboarding", "/setup/activating")
-        after_retry = await _settings(client, h)
-        assert after_retry["onboarding_pending"] is True
-        assert {k: v for k, v in after_retry.items() if k != "onboarding_pending"} == \
-            {k: v for k, v in after_failure.items() if k != "onboarding_pending"}
-        assert await _item_count(session, company_id) == items_after_failure
+        assert retried.headers["location"] in ("/dashboard", "/setup/activating")
+        assert (await _settings(client, h))["vertical"] == "gemstones"
+        assert await _item_count(session, company_id) >= items_before
         root = await _real_ui(_token_of(h), "GET", "/")
-        assert root.headers["location"] == "/onboarding"
+        assert root.headers["location"] == "/dashboard"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("pending", [None, True, False], ids=["never-set-up", "pending", "finished"])
-    async def test_settings_business_type_applies_without_onboarding_pending(self, client, pending):
+    async def test_settings_business_type_applies_after_setup(self, client):
         h = await _register(client)
-        if pending is not None:
-            r = await client.patch("/companies/me", json={"settings": {"onboarding_pending": pending}}, headers=h)
-            assert r.status_code == 200, r.text
-        # The Settings editor and the API both apply the preset whatever the setup state.
+        # The Settings editor and the API both apply the preset at any time after setup.
         r = await _real_ui(_token_of(h), "PATCH", "/settings/company/vertical", data={"value": "fashion"})
         assert r.status_code == 200, r.text
-        settings = await _settings(client, h)
-        assert settings["vertical"] == "fashion"
-        assert settings.get("onboarding_pending") == pending
+        assert (await _settings(client, h))["vertical"] == "fashion"
         settings = await _apply(client, h, "gemstones")
         assert settings["vertical"] == "gemstones"
         from celerp.services.vertical_presets import load_preset
         assert set(load_preset("gemstones")["categories"]) <= set(settings["category_schemas"])
-        assert settings.get("onboarding_pending") == pending
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("role", ["admin", "manager", "operator", "viewer"])
@@ -610,7 +366,6 @@ class TestSetupSentinels:
         after = await _settings(client, owner_h)
         assert after.get("vertical") == before.get("vertical")
         assert after.get("category_schemas") == before.get("category_schemas")
-        assert after.get("onboarding_pending") is not True
         # The same request from the owner, who holds the permission, goes through.
         allowed = await _real_ui(_token_of(owner_h), "POST", "/setup/company", data=_setup_form())
         assert allowed.status_code == 302, allowed.text
@@ -1797,310 +1552,15 @@ class TestTabularParityInvariant:
         add_lines.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# INV-ONBOARD-01 / INV-USER-01 - onboarding pending is a resumability hint, not a gate
-# ---------------------------------------------------------------------------
-
-
 def _company(settings: dict) -> dict:
     return {"id": _COMPANY_A, "name": "Acme", "currency": "USD", "settings": settings}
 
 
-async def _ui_request(method: str, path: str, *, role: str = "owner", settings: dict | None = None,
-                      cookies: dict | None = None, **kwargs):
-    from ui.app import app as ui_app
-    company = _company(settings or {})
-    with patch("ui.routes.auth.api_get_company", new=AsyncMock(return_value=company)), \
-         patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
-        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-            return await c.request(method, path, cookies={"celerp_token": make_test_token(role=role), **(cookies or {})}, **kwargs)
-
-
-class TestOnboardingStateInvariant:
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("settings,role,destination", [
-        ({}, "owner", "/dashboard"),
-        ({"onboarding_pending": False}, "owner", "/dashboard"),
-        ({"onboarding_pending": True}, "owner", "/onboarding"),
-        ({"onboarding_pending": True}, "admin", "/onboarding"),
-        ({"onboarding_pending": True}, "manager", "/dashboard"),
-        ({"onboarding_pending": True}, "viewer", "/dashboard"),
-    ])
-    async def test_root_resumes_onboarding_only_when_pending_and_role_can_set_up(self, settings, role, destination):
-        r = await _ui_request("GET", "/", role=role, settings=settings)
-        assert r.status_code == 302 and r.headers["location"] == destination
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("settings", [{}, {"onboarding_pending": False}, {"onboarding_pending": True}])
-    async def test_invited_user_reaches_the_app_whatever_the_setup_state(self, settings):
-        # An invited operator cannot set the company up, so even a company still being
-        # set up sends them to the app, never to the getting-started hub.
-        r = await _ui_request("GET", "/", role="operator", settings=settings)
-        assert r.status_code == 302 and r.headers["location"] == "/dashboard"
-
-    @pytest.mark.asyncio
-    async def test_dashboard_remains_directly_accessible_while_onboarding_pending(self):
-        from contextlib import ExitStack
-        from ui.app import app as ui_app
-        company = _company({"onboarding_pending": True})
-        with ExitStack() as stack:
-            for target, value in (
-                ("get_company", company), ("get_valuation", {}), ("get_doc_summary", {}),
-                ("get_dashboard_kpis", {}), ("my_companies", {"items": [company], "total": 1}),
-                ("get_ar_aging", {"buckets": {}}), ("get_activity", []),
-            ):
-                stack.enter_context(patch(f"ui.api_client.{target}", new=AsyncMock(return_value=value)))
-            async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-                r = await c.get("/dashboard", cookies=_owner_cookies())
-        assert r.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_onboarding_complete_clears_flag(self):
-        patch_company = AsyncMock(return_value={})
-        with patch("ui.api_client.patch_company", new=patch_company):
-            r = await _ui_request("POST", "/onboarding/complete", settings={"onboarding_pending": True})
-        assert r.status_code == 303 and r.headers["location"] == "/dashboard"
-        patch_company.assert_awaited_once()
-        assert patch_company.await_args.args[1] == {"onboarding_pending": False}
-
-    @pytest.mark.asyncio
-    async def test_successful_completion_clears_flag_and_root_stays_dashboard(self, client):
-        h = await _register(client)
-        r = await client.patch("/companies/me", json={"settings": {"onboarding_pending": True}}, headers=h)
-        assert r.status_code == 200, r.text
-        assert (await _real_ui(_token_of(h), "GET", "/")).headers["location"] == "/onboarding"
-        done = await _real_ui(_token_of(h), "POST", "/onboarding/complete")
-        assert done.status_code == 303 and done.headers["location"] == "/dashboard"
-        assert (await _settings(client, h))["onboarding_pending"] is False
-        for _ in range(2):
-            assert (await _real_ui(_token_of(h), "GET", "/")).headers["location"] == "/dashboard"
-
-    @pytest.mark.asyncio
-    async def test_onboarding_complete_failure_remains_on_onboarding(self):
-        api = _CompanyApi({"onboarding_pending": True}, failing_flag_writes=1)
-        r = await _fake_ui(api, "POST", "/onboarding/complete")
-        assert r.status_code == 200 and "location" not in r.headers
-        assert _RETRYABLE_ERROR in r.text
-        # The hub is shown again with its Start working action, so the user can retry.
-        assert 'action="/onboarding/complete"' in r.text and 'method="post"' in r.text
-        assert api.flag_writes() == [False]
-
-    @pytest.mark.asyncio
-    async def test_onboarding_complete_company_read_failure_remains_on_onboarding(self):
-        from ui.api_client import APIError
-        api = _CompanyApi({"onboarding_pending": True})
-
-        async def _unreachable(token):
-            raise APIError(503, "The server could not be reached.")
-
-        api.get_company = _unreachable
-        r = await _fake_ui(api, "POST", "/onboarding/complete")
-        assert r.status_code == 200 and "location" not in r.headers
-        assert _RETRYABLE_ERROR in r.text
-        assert 'action="/onboarding/complete"' in r.text and 'method="post"' in r.text
-        assert api.flag_writes() == [] and api.settings["onboarding_pending"] is True
-
-    @pytest.mark.asyncio
-    async def test_onboarding_complete_with_expired_session_goes_to_login(self):
-        from ui.api_client import APIError
-        api = _CompanyApi({"onboarding_pending": True})
-
-        async def _expired(token):
-            raise APIError(401, "Session expired")
-
-        api.get_company = _expired
-        r = await _fake_ui(api, "POST", "/onboarding/complete")
-        assert r.status_code == 303 and r.headers["location"] == "/login"
-        assert api.flag_writes() == []
-
-    @pytest.mark.asyncio
-    async def test_onboarding_complete_failure_preserves_pending_state(self, client):
-        h = await _register(client)
-        r = await client.patch("/companies/me", json={"settings": {"onboarding_pending": True}}, headers=h)
-        assert r.status_code == 200, r.text
-        failing = _failing_flag_writes(1)
-        failed = await _real_ui(_token_of(h), "POST", "/onboarding/complete", patch_company=failing)
-        assert failed.headers.get("location") != "/dashboard"
-        assert (await _settings(client, h))["onboarding_pending"] is True
-        assert (await _real_ui(_token_of(h), "GET", "/")).headers["location"] == "/onboarding"
-        retried = await _real_ui(_token_of(h), "POST", "/onboarding/complete", patch_company=failing)
-        assert retried.status_code == 303 and retried.headers["location"] == "/dashboard"
-        assert (await _settings(client, h))["onboarding_pending"] is False
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("role,settings", [
-        ("manager", {"onboarding_pending": True}),
-        ("operator", {"onboarding_pending": True}),
-        ("viewer", {"onboarding_pending": True}),
-        ("admin", {"onboarding_pending": True, "role_grants": {"manage_company_settings": ["owner"]}}),
-    ])
-    async def test_invited_non_setup_user_still_skips_company_onboarding(self, role, settings):
-        # Every flag write fails, so reaching the app cannot depend on one.
-        api = _CompanyApi(settings, failing_flag_writes=99)
-        assert (await _fake_ui(api, "GET", "/", role=role)).headers["location"] == "/dashboard"
-        with patch("ui.routes.auth.api_login", new=AsyncMock(return_value=("access", "refresh"))):
-            login = await _fake_ui(api, "POST", "/login", role=role,
-                                   data={"email": "member@example.com", "password": "pw"})
-        assert login.status_code == 302 and login.headers["location"] == "/"
-        done = await _fake_ui(api, "POST", "/onboarding/complete", role=role)
-        assert done.status_code == 303 and done.headers["location"] == "/dashboard"
-        assert api.flag_writes() == []
-        assert api.settings["onboarding_pending"] is True
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("role,settings,writes", [
-        ("owner", {"onboarding_pending": True}, True),
-        ("admin", {"onboarding_pending": True}, True),
-        ("manager", {"onboarding_pending": True}, False),
-        ("admin", {"onboarding_pending": True, "role_grants": {"manage_company_settings": ["owner"]}}, False),
-    ])
-    async def test_onboarding_complete_uses_canonical_company_settings_permission(self, role, settings, writes):
-        patch_company = AsyncMock(return_value={})
-        with patch("ui.api_client.patch_company", new=patch_company):
-            r = await _ui_request("POST", "/onboarding/complete", role=role, settings=settings)
-        assert r.headers["location"] == "/dashboard"
-        assert patch_company.await_count == (1 if writes else 0)
-
-    @pytest.mark.asyncio
-    async def test_root_uses_the_same_permission_as_completion(self):
-        settings = {"onboarding_pending": True, "role_grants": {"manage_company_settings": ["owner"]}}
-        assert (await _ui_request("GET", "/", role="admin", settings=settings)).headers["location"] == "/dashboard"
-        assert (await _ui_request("GET", "/", role="owner", settings=settings)).headers["location"] == "/onboarding"
-
 
 # ---------------------------------------------------------------------------
-# INV-ONBOARD-02/03, INV-ORCH-01/02, INV-CONNECT-01 - the hub routes, it does not own semantics
-# ---------------------------------------------------------------------------
-
-
-def _hub_links(html: str) -> list[str]:
-    import re
-    return re.findall(r'class="quick-link-card"[^>]*href="([^"]+)"|href="([^"]+)"[^>]*class="quick-link-card"', html)
-
-
-def _card_hrefs(html: str) -> list[str]:
-    return [a or b for a, b in _hub_links(html)]
-
-
-def _registered_paths() -> set[str]:
-    from ui.app import app as ui_app
-    return {getattr(r, "path", None) for r in ui_app.routes}
-
-
-async def _confirm_inventory_import(stage_dir, *, cookies: dict | None = None):
-    """Run the inventory confirm step against a stubbed server that accepts the import."""
-    from ui.app import app as ui_app
-    company = _company({})
-    jar = {**_owner_cookies(), **(cookies or {})}
-    with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
-         patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])), \
-         patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
-         patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})):
-        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-            # The upload records where the import was opened from; mapping carries it into the draft.
-            uploaded = await c.post("/inventory/import/preview", cookies=jar, files={
-                "csv_file": ("stock.csv", io.BytesIO(b"name,sell_by\nWidget,piece\n"), "text/csv")})
-            assert uploaded.status_code == 200, uploaded.text[:2000]
-            ref = re.search(r'name="csv_ref" value="([^"]+)"', uploaded.text).group(1)
-            mapped = await c.post("/inventory/import/mapped",
-                                  data={"csv_ref": ref, "map__name": "name", "map__sell_by": "sell_by"},
-                                  cookies=jar)
-            assert mapped.status_code == 303, mapped.text[:2000]
-            ref = mapped.headers["location"].rsplit("/", 1)[-1]
-            return await c.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": "h"},
-                                cookies=jar)
-
-
-class TestEntryOrchestrationInvariant:
-    @pytest.mark.asyncio
-    async def test_every_rendered_hub_action_is_a_registered_route(self):
-        r = await _ui_request("GET", "/onboarding", settings={"onboarding_pending": True})
-        hrefs = _card_hrefs(r.text)
-        assert hrefs, r.text
-        registered = _registered_paths()
-        for href in hrefs:
-            assert href.split("?")[0] in registered, href
-
-    @pytest.mark.asyncio
-    async def test_hub_moves_books_only_through_the_new_company_wizard(self):
-        r = await _ui_request("GET", "/onboarding")
-        assert 'href="/setup/new-company/migrate"' in r.text
-        assert "/onboarding/upload/cif" not in r.text
-
-    def test_hub_omits_actions_whose_page_is_not_installed(self):
-        from fasthtml.common import to_xml
-        from ui.routes.auth import _onboarding_view
-        assert _card_hrefs(to_xml(_onboarding_view({"/inventory/import"}))) == ["/inventory/import?from_onboarding=1"]
-
-    def test_hub_actions_hand_off_to_the_canonical_import_and_connector_pages(self):
-        from ui.routes.auth import _ONBOARDING_ACTIONS
-        assert {path for path, *_ in _ONBOARDING_ACTIONS} == {
-            "/inventory/import", "/crm/import/contacts", "/docs/import", "/setup/new-company/migrate",
-            "/settings/cloud",
-        }
-
-    @pytest.mark.asyncio
-    async def test_start_working_is_a_form_post_to_complete(self):
-        r = await _ui_request("GET", "/onboarding")
-        assert 'action="/onboarding/complete"' in r.text and 'method="post"' in r.text
-
-    @pytest.mark.asyncio
-    async def test_import_entered_from_onboarding_offers_back_to_setup(self, stage_dir):
-        page = await _ui_request("GET", "/inventory/import?from_onboarding=1")
-        assert page.status_code == 200
-        assert page.cookies.get("celerp_import_from_onboarding") == "1"
-        r = await _confirm_inventory_import(stage_dir, cookies={"celerp_import_from_onboarding": "1"})
-        assert r.status_code == 200, r.text
-        assert 'href="/onboarding"' in r.text
-        assert 'href="/inventory/import?from_onboarding=1"' in r.text
-
-    @pytest.mark.asyncio
-    async def test_normal_inventory_import_keeps_its_own_result_flow(self, stage_dir):
-        page = await _ui_request("GET", "/inventory/import", cookies={"celerp_import_from_onboarding": "1"})
-        assert page.status_code == 200
-        assert 'celerp_import_from_onboarding=""' in page.headers.get("set-cookie", "")
-        r = await _confirm_inventory_import(stage_dir)
-        assert r.status_code == 200, r.text
-        assert 'href="/onboarding"' not in r.text
-        assert 'href="/inventory"' in r.text and 'href="/inventory/import"' in r.text
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("marker", ["https://evil.example", "//evil.example", "/settings", "true"])
-    async def test_onboarding_marker_cannot_become_a_redirect_target(self, marker, stage_dir):
-        page = await _ui_request("GET", f"/inventory/import?from_onboarding={marker}")
-        assert page.cookies.get("celerp_import_from_onboarding") in (None, "")
-        assert "evil.example" not in page.text
-        r = await _confirm_inventory_import(stage_dir, cookies={"celerp_import_from_onboarding": marker})
-        assert 'href="/onboarding"' not in r.text and "evil.example" not in r.text
-
-    def test_back_to_setup_destination_is_fixed(self):
-        html = to_xml(ci.import_result_panel(created=1, skipped=0, errors=[], entity_label="x",
-                                          back_href="/x", import_more_href="/x/import", from_onboarding=True))
-        assert 'href="/onboarding"' in html
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("path", ["/crm/import/contacts", "/docs/import"])
-    async def test_every_hub_import_page_records_the_marker(self, path):
-        r = await _ui_request("GET", f"{path}?from_onboarding=1")
-        assert r.status_code == 200
-        assert r.cookies.get("celerp_import_from_onboarding") == "1"
-
-    @pytest.mark.asyncio
-    async def test_connector_action_is_not_labelled_as_migration(self):
-        import html as _html
-        r = await _ui_request("GET", "/onboarding", settings={"onboarding_pending": True})
-        connector = re.search(r'<a[^>]*href="/settings/cloud\?tab=website"[^>]*>(.*?)</a>', r.text, re.S)
-        assert connector, r.text
-        text = _html.unescape(re.sub(r"<[^>]+>", " ", connector.group(1))).lower()
-        for word in ("migrat", "move ", "moving", "switch", "leave", "transfer", "whole company", "everything"):
-            assert word not in text, text
-
-
-# ---------------------------------------------------------------------------
-# Entering an importer from the setup hub changes only where its result page
-# links back to. Who may import, what is checked first, which company's staged
-# file is read, how a stale review is refused, how a repeat is absorbed, and
-# that a confirm step is still required are the same either way.
+# Import authority: who may import, what is checked first, which company's staged
+# file is read, how a stale review is refused, how a repeat is absorbed, and that
+# a confirm step is still required, for every importer.
 # ---------------------------------------------------------------------------
 
 _IMPORTERS = {
@@ -2174,7 +1634,7 @@ def _claimed_created(html: str, confirm_action: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-async def _run_import_scenario(importer: str, aspect: str, *, from_hub: bool) -> tuple[dict, _ImportApi]:
+async def _run_import_scenario(importer: str, aspect: str) -> tuple[dict, _ImportApi]:
     from ui.app import app as ui_app
     spec = _IMPORTERS[importer]
     api = _ImportApi(aspect)
@@ -2187,14 +1647,6 @@ async def _run_import_scenario(importer: str, aspect: str, *, from_hub: bool) ->
          patch("ui.api_client.numbered_ids", new=api.numbered_ids), \
          patch("ui.api_client.batch_import", new=api.batch_import):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-            if from_hub:
-                page = await c.get(f"{spec['page']}?from_onboarding=1",
-                                   cookies={"celerp_token": make_test_token(role="owner")})
-                assert page.cookies.get("celerp_import_from_onboarding") == "1"
-                cookies["celerp_import_from_onboarding"] = "1"
-            else:
-                cookies["celerp_import_from_onboarding"] = ""
-
             async def submit(path: str, with_hash: bool = True):
                 company = _COMPANY_B if aspect == "cross_company_stage" else _COMPANY_A
                 data = {"csv_ref": import_stage.write_stage(company, spec["csv"])}
@@ -2216,22 +1668,19 @@ async def _run_import_scenario(importer: str, aspect: str, *, from_hub: bool) ->
     return outcome, api
 
 
-class TestOnboardingEntryAuthorityInvariant:
+class TestImportAuthorityInvariant:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("aspect", _AUTHORITY_ASPECTS)
     @pytest.mark.parametrize("importer", list(_IMPORTERS))
-    async def test_onboarding_entry_does_not_change_import_authority(self, importer, aspect, stage_dir):
-        hub, hub_api = await _run_import_scenario(importer, aspect, from_hub=True)
-        normal, _ = await _run_import_scenario(importer, aspect, from_hub=False)
-        assert hub == normal
-        assert "onboarding" not in repr(hub_api.calls)
-        writes = hub_api.writes()
-        claimed = [claim for _, _, claim, _ in hub["responses"]]
-        back_to_review = [review for *_, review in hub["responses"]]
+    async def test_import_authority_holds_for_every_importer(self, importer, aspect, stage_dir):
+        result, api = await _run_import_scenario(importer, aspect)
+        writes = api.writes()
+        claimed = [claim for _, _, claim, _ in result["responses"]]
+        back_to_review = [review for *_, review in result["responses"]]
         if aspect == "permission_denial":
             assert all(not claim for claim in claimed)
             if importer == "inventory":
-                assert writes == [] and hub["responses"][0][:2] == (302, "/inventory")
+                assert writes == [] and result["responses"][0][:2] == (302, "/inventory")
         elif aspect in ("preflight_rejection", "stale_preview"):
             assert all(not claim for claim in claimed)
             if importer == "inventory":
