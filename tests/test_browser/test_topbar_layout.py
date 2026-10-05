@@ -67,6 +67,15 @@ def test_topbar_controls_fit_without_overlap(page: Page, fresh_company, ui_serve
             assert not _overlap(boxes[a], boxes[other]), f"{a} overlaps {other}: {boxes[a]} {boxes[other]}"
 
     assert boxes["search"]["width"] >= 200, f"search box too narrow to type in: {boxes['search']}"
+    # A placeholder longer than the box ends in a visible ellipsis, never a hard cut.
+    ph = page.locator(_CONTROLS["search"]).evaluate("""(el) => {
+      const c = document.createElement('canvas').getContext('2d');
+      const cs = getComputedStyle(el);
+      c.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
+      return {need: Math.ceil(c.measureText(el.placeholder).width), overflow: cs.textOverflow,
+              have: el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)};
+    }""")
+    assert ph["need"] <= ph["have"] + 1 or ph["overflow"] == "ellipsis", f"search placeholder is cut: {ph}"
     for name in ("company", "language"):
         fit = page.locator(_CONTROLS[name]).first.evaluate(_TEXT_FIT_JS)
         assert fit["need"] <= fit["have"] + 1, f"{name} '{fit['text']}' is cut: {fit}"

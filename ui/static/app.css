@@ -1125,6 +1125,7 @@ a:hover { text-decoration: underline; }
 .global-search-input {
   width: 100%; padding: 6px 30px 6px 12px; font-size: 12px; border-radius: var(--radius);
   background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text);
+  text-overflow: ellipsis;
 }
 .global-search-input:focus { outline: none; border-color: var(--c-accent); }
 .global-search-results {
