@@ -388,6 +388,97 @@ _case_handler_deleted = _rebound_ready(
     "handler_deleted", "top-level def",
     {"hooks.py": _READY + "del ready\n"})
 
+# Bindings with no ast.Name node, code-object swaps, and writers reached
+# through getattr: each rebinds ``ready`` after the source showed its def.
+_SYNC = "def _sync(session=None, **kw):\n    return None\n"
+_case_handler_rebound_by_match_capture = _rebound_ready(
+    "handler_rebound_by_match_capture", "top-level def",
+    {"hooks.py": _READY + _SYNC + "match _sync:\n    case ready:\n        pass\n"})
+_case_handler_rebound_by_match_star = _rebound_ready(
+    "handler_rebound_by_match_star", "top-level def",
+    {"hooks.py": _READY + "match [1]:\n    case [*ready]:\n        pass\n"})
+_case_handler_rebound_by_match_mapping_rest = _rebound_ready(
+    "handler_rebound_by_match_mapping_rest", "top-level def",
+    {"hooks.py": _READY + "match {}:\n    case {**ready}:\n        pass\n"})
+_case_handler_deleted_by_except_as = _rebound_ready(
+    "handler_deleted_by_except_as", "top-level def",
+    {"hooks.py": _READY + "try:\n    raise ValueError\nexcept ValueError as ready:\n    pass\n"})
+_case_handler_code_swapped = _rebound_ready(
+    "handler_code_swapped", "dynamically",
+    {"hooks.py": _READY + _SYNC + "ready.__code__ = _sync.__code__\n"})
+_case_handler_code_swapped_through_setattr = _rebound_ready(
+    "handler_code_swapped_through_setattr", "dynamically",
+    {"hooks.py": _READY + _SYNC + "setattr(ready, '__code__', _sync.__code__)\n"})
+_case_handler_defaults_replaced = _rebound_ready(
+    "handler_defaults_replaced", "dynamically",
+    {"hooks.py": _READY + "ready.__kwdefaults__ = {}\nready.__defaults__ = (1,)\n"})
+_case_handler_rebound_through_getattr_setattr = _rebound_ready(
+    "handler_rebound_through_getattr_setattr", "dynamically",
+    {"hooks.py": "import sys, builtins\n" + _READY + _SYNC
+                 + "getattr(builtins, 'set' + 'attr')(sys.modules[__name__], 're' + 'ady', _sync)\n"})
+_case_handler_rebound_through_getattr_exec = _rebound_ready(
+    "handler_rebound_through_getattr_exec", "dynamically",
+    {"hooks.py": "import builtins\n" + _READY + _SYNC
+                 + "getattr(builtins, 'ex' + 'ec')('ready = _sync')\n"})
+_case_handler_rebound_through_getattr_constant = _rebound_ready(
+    "handler_rebound_through_getattr_constant", "dynamically",
+    {"hooks.py": "import builtins\n" + _READY + _SYNC
+                 + "getattr(builtins, 'exec')('ready = _sync')\n"})
+_case_handler_rebound_through_getattr_alias = _rebound_ready(
+    "handler_rebound_through_getattr_alias", "dynamically",
+    {"hooks.py": "import builtins\n" + _READY + _SYNC
+                 + "g = getattr\ng(builtins, 'ex' + 'ec')('ready = _sync')\n"})
+_case_handler_rebound_through_attrgetter = _rebound_ready(
+    "handler_rebound_through_attrgetter", "dynamically",
+    {"hooks.py": "import builtins, operator\n" + _READY + _SYNC
+                 + "operator.attrgetter('ex' + 'ec')(builtins)('ready = _sync')\n"})
+_case_handler_rebound_through_attrgetter_value = _rebound_ready(
+    "handler_rebound_through_attrgetter_value", "dynamically",
+    {"hooks.py": "import builtins, operator\n" + _READY + _SYNC
+                 + "ag = operator.attrgetter\nag('ex' + 'ec')(builtins)('ready = _sync')\n"})
+_case_handler_rebound_through_getattribute = _rebound_ready(
+    "handler_rebound_through_getattribute", "dynamically",
+    {"hooks.py": "import builtins\n" + _READY + _SYNC
+                 + "object.__getattribute__(builtins, 'ex' + 'ec')('ready = _sync')\n"})
+_case_handler_rebound_through_imported_exec_alias = _rebound_ready(
+    "handler_rebound_through_imported_exec_alias", "dynamically",
+    {"hooks.py": "from builtins import exec as run\n" + _READY + _SYNC
+                 + "run('ready = _sync')\n"})
+_case_handler_rebound_through_imported_setattr_alias = _rebound_ready(
+    "handler_rebound_through_imported_setattr_alias", "dynamically",
+    {"hooks.py": "import sys\nfrom builtins import setattr as put\n" + _READY + _SYNC
+                 + "put(sys.modules[__name__], 'ready', _sync)\n"})
+
+
+def _case_route_setup_rebound_by_match_capture(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker, api_routes="{inner}.api",
+                             code={"api.py": "def setup_api_routes(app):\n    pass\n"
+                                             "async def _real(app):\n    pass\n"
+                                             "match _real:\n    case setup_api_routes:\n"
+                                             "        pass\n"}
+                             ), "top-level def"
+
+
+def _manifest_changed_by_submodule(name: str, body: str):
+    """A module whose __init__.py holds a valid PLUGIN_MANIFEST literal and
+    imports a file of its own that reaches the manifest and changes it."""
+    def case(base, marker, monkeypatch):
+        pkg = _migrating_module(base, f"acme-{_uid()}", marker, code={"mut.py": body})
+        inner = next(p.name for p in pkg.iterdir() if p.is_dir())
+        init = pkg / "__init__.py"
+        init.write_text(init.read_text() + f"from .{inner} import mut\n")
+        return pkg, "dynamically"
+    case.__name__ = f"_case_{name}"
+    return case
+
+
+_case_manifest_changed_by_submodule_import = _manifest_changed_by_submodule(
+    "manifest_changed_by_submodule_import",
+    "from .. import PLUGIN_MANIFEST as m\nm['version'] = '9.9.9'\n")
+_case_manifest_changed_by_submodule_attribute = _manifest_changed_by_submodule(
+    "manifest_changed_by_submodule_attribute",
+    "import sys\nsys.modules[__package__.rpartition('.')[0]].PLUGIN_MANIFEST['version'] = '9.9.9'\n")
+
 
 def _case_route_setup_rebound_through_globals(base, marker, monkeypatch):
     return _migrating_module(base, f"acme-{_uid()}", marker, api_routes="{inner}.api",
@@ -424,6 +515,11 @@ _case_manifest_deleted = _manifest_changed("manifest_deleted", "del PLUGIN_MANIF
 _case_manifest_set_through_module = _manifest_changed(
     "manifest_set_through_module",
     "import sys\nsetattr(sys.modules[__name__], 'PLUGIN_MANIFEST', {})\n", "dynamically")
+_case_manifest_rebound_by_match_capture = _manifest_changed(
+    "manifest_rebound_by_match_capture", "match {}:\n    case PLUGIN_MANIFEST:\n        pass\n")
+_case_manifest_deleted_by_except_as = _manifest_changed(
+    "manifest_deleted_by_except_as",
+    "try:\n    raise ValueError\nexcept ValueError as PLUGIN_MANIFEST:\n    pass\n")
 
 
 async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
@@ -457,6 +553,27 @@ async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
     _case_handler_module_replaced,
     _case_handler_module_replaced_by_update,
     _case_route_setup_rebound_through_globals,
+    _case_handler_rebound_by_match_capture,
+    _case_handler_rebound_by_match_star,
+    _case_handler_rebound_by_match_mapping_rest,
+    _case_handler_deleted_by_except_as,
+    _case_handler_code_swapped,
+    _case_handler_code_swapped_through_setattr,
+    _case_handler_defaults_replaced,
+    _case_handler_rebound_through_getattr_setattr,
+    _case_handler_rebound_through_getattr_exec,
+    _case_handler_rebound_through_getattr_constant,
+    _case_handler_rebound_through_getattr_alias,
+    _case_handler_rebound_through_attrgetter,
+    _case_handler_rebound_through_attrgetter_value,
+    _case_handler_rebound_through_getattribute,
+    _case_handler_rebound_through_imported_exec_alias,
+    _case_handler_rebound_through_imported_setattr_alias,
+    _case_route_setup_rebound_by_match_capture,
+    _case_manifest_changed_by_submodule_import,
+    _case_manifest_changed_by_submodule_attribute,
+    _case_manifest_rebound_by_match_capture,
+    _case_manifest_deleted_by_except_as,
     _case_manifest_bound_twice,
     _case_manifest_item_set,
     _case_manifest_updated,

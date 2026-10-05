@@ -62,7 +62,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from celerp.modules.importer import (
-    _RESERVED_PREFIX, PREMIUM_MARKER, ModuleImportError, _check_min_version,
+    _RESERVED_PREFIX, PREMIUM_MARKER, ModuleImportError, _bound_names, _check_min_version,
     _read_manifest as _read_literal_manifest, _validate_name, _validate_name_chars,
     _validate_table_prefix,
 )
@@ -1710,13 +1710,20 @@ def _scan_protected_imports(pkg_path: Path, entry: Path | None) -> set[str]:
 
 # Names whose use writes a module's namespace in a way its source cannot show:
 # the namespace mappings, code built from strings, and attribute writers reached
-# through an attribute (builtins.setattr, object.__setattr__). Writes to
-# sys.modules, which replace a whole module, are refused alongside them.
+# through an attribute (builtins.setattr, object.__setattr__) or by name
+# (getattr(builtins, 'exec')). Writes to sys.modules, which replace a whole
+# module, are refused alongside them.
 _NAMESPACE_WRITERS = frozenset({"globals", "vars", "exec", "eval", "__builtins__"})
 _MAPPING_WRITERS = frozenset({
     "update", "setdefault", "pop", "popitem", "clear", "__setitem__", "__delitem__"})
 _NAMESPACE_WRITER_ATTRS = _NAMESPACE_WRITERS | {
-    "__dict__", "setattr", "delattr", "__setattr__", "__delattr__"}
+    "__dict__", "setattr", "delattr", "__setattr__", "__delattr__", "__getattribute__"}
+# Attribute access by a name held in a value: the call, and where its name
+# sits among the call's arguments (None: every argument is a name).
+_ATTR_BY_NAME = {"setattr": 1, "delattr": 1, "getattr": 1,
+                 "attrgetter": None, "methodcaller": 0}
+# Function attributes that change what an existing def runs or is called with.
+_FUNCTION_INTERNALS = frozenset({"__code__", "__defaults__", "__kwdefaults__"})
 
 
 def _module_values(tree: ast.Module) -> set[str]:
@@ -1753,18 +1760,32 @@ def _is_module_value(node, names: set[str]) -> bool:
 
 def _dynamic_write(tree: ast.Module, handlers: set[str]) -> str | None:
     """The first construct in ``tree`` that may write one of ``handlers`` into a
-    module's namespace where the source cannot show it, or None."""
+    module's namespace where the source cannot show it, or None. ``handlers``
+    holds PLUGIN_MANIFEST, which only its own literal in the package
+    ``__init__.py`` may name."""
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
     called = {id(n.func) for n in calls}
+    guarded = handlers | _FUNCTION_INTERNALS
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id in _NAMESPACE_WRITERS:
             return node.id
-        if isinstance(node, ast.Name) and node.id in ("setattr", "delattr") and id(node) not in called:
+        if (isinstance(node, ast.Name) and node.id in _ATTR_BY_NAME
+                and id(node) not in called):
             return f"{node.id} used as a value"
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in _NAMESPACE_WRITER_ATTRS | {"getattr", "PLUGIN_MANIFEST"}:
+                    return f"an import of {alias.name}"
+                if alias.name in _ATTR_BY_NAME and alias.asname:
+                    return f"{alias.name} imported as {alias.asname}"
         if isinstance(node, ast.Attribute):
+            if node.attr in ("attrgetter", "methodcaller") and id(node) not in called:
+                return f"{node.attr} used as a value"
             if node.attr in _NAMESPACE_WRITER_ATTRS:
                 return node.attr
-            if isinstance(node.ctx, (ast.Store, ast.Del)) and node.attr in handlers:
+            if node.attr == "PLUGIN_MANIFEST":
+                return "PLUGIN_MANIFEST reached through a module"
+            if isinstance(node.ctx, (ast.Store, ast.Del)) and node.attr in guarded:
                 return f"an assignment to .{node.attr}"
             if (isinstance(node.value, ast.Attribute) and node.value.attr == "modules"
                     and node.attr in _MAPPING_WRITERS):
@@ -1772,20 +1793,28 @@ def _dynamic_write(tree: ast.Module, handlers: set[str]) -> str | None:
         if (isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del))
                 and isinstance(node.value, ast.Attribute) and node.value.attr == "modules"):
             return "a write to sys.modules"
+    refused = guarded | _NAMESPACE_WRITER_ATTRS
     modules = None
     for node in calls:
-        if not (isinstance(node.func, ast.Name) and node.func.id in ("setattr", "delattr")):
+        fn = node.func
+        by_target = isinstance(fn, ast.Name) and fn.id in ("setattr", "delattr", "getattr")
+        fn_name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", None)
+        if not by_target and fn_name not in ("attrgetter", "methodcaller"):
             continue
         if any(isinstance(a, ast.Starred) for a in node.args) or node.keywords:
-            return f"{node.func.id} with unpacked arguments"
-        target, attr = (node.args + [None, None])[:2]
-        if isinstance(attr, ast.Constant) and attr.value not in handlers:
-            continue
-        if isinstance(attr, ast.Constant):
-            return f"{node.func.id} of {attr.value!r}"
-        modules = _module_values(tree) if modules is None else modules
-        if target is None or attr is None or _is_module_value(target, modules):
-            return f"{node.func.id} of a computed name on a module"
+            return f"{fn_name} with unpacked arguments"
+        at = _ATTR_BY_NAME[fn_name]
+        names = node.args if at is None else node.args[at:at + 1]
+        for attr in names or [None]:
+            if isinstance(attr, ast.Constant) and isinstance(attr.value, str):
+                if set(attr.value.split(".")) & refused:
+                    return f"{fn_name} of {attr.value!r}"
+                continue
+            if not by_target:
+                return f"{fn_name} of a computed name"
+            modules = _module_values(tree) if modules is None else modules
+            if attr is None or _is_module_value(node.args[0], modules):
+                return f"{fn_name} of a computed name on a module"
     return None
 
 
@@ -2295,20 +2324,7 @@ def _top_level_binding(tree: ast.Module, name: str):
     """The one statement that binds ``name`` in a module, when that is the only
     place the source binds (or deletes) it at all, it sits at the top level and
     no later star import can rebind it; else None."""
-    bindings = []
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            bound = [node.name]
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            bound = [(a.asname or a.name).split(".")[0] for a in node.names]
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
-            bound = [node.id]
-        elif isinstance(node, (ast.Global, ast.Nonlocal)):
-            bound = node.names
-        else:
-            continue
-        if name in bound:
-            bindings.append(node)
+    bindings = [node for node in ast.walk(tree) if name in _bound_names(node)]
     if len(bindings) != 1:
         return None
     (binding,) = bindings

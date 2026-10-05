@@ -84,6 +84,26 @@ def _validate_name(name: str, *, official: bool = False) -> None:
         )
 
 
+def _bound_names(node) -> list[str]:
+    """The names one AST node binds (or deletes) in its scope: definitions,
+    imports, assignment targets, global and nonlocal declarations, match
+    captures and except-as names, which Python deletes again when the handler
+    ends."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return [(a.asname or a.name).split(".")[0] for a in node.names]
+    if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        return [node.id]
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return list(node.names)
+    if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.ExceptHandler)):
+        return [node.name] if node.name else []
+    if isinstance(node, ast.MatchMapping):
+        return [node.rest] if node.rest else []
+    return []
+
+
 def _manifest_node(tree: ast.Module):
     """The `PLUGIN_MANIFEST = {...}` assignment node in a parsed module, or None.
 
@@ -93,9 +113,7 @@ def _manifest_node(tree: ast.Module):
     module declares."""
     uses = [n for n in ast.walk(tree)
             if isinstance(n, ast.Name) and n.id == "PLUGIN_MANIFEST"
-            or isinstance(n, (ast.Global, ast.Nonlocal)) and "PLUGIN_MANIFEST" in n.names
-            or isinstance(n, (ast.Import, ast.ImportFrom))
-            and any((a.asname or a.name) == "PLUGIN_MANIFEST" for a in n.names)]
+            or "PLUGIN_MANIFEST" in _bound_names(n)]
     node = next((n for n in tree.body if isinstance(n, ast.Assign)
                  and any(isinstance(t, ast.Name) and t.id == "PLUGIN_MANIFEST"
                          for t in n.targets)), None)
