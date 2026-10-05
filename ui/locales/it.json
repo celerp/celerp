@@ -3533,5 +3533,13 @@
   "pay.unmatched_refused_too_small": "Questa fattura ha un residuo inferiore al pagamento.",
   "pay.unmatched_refused_refused": "Questa fattura non può ricevere questo pagamento.",
   "documents.return_to_unmatched": "Togliere questo pagamento dalla fattura e rimetterlo tra i pagamenti non abbinati",
-  "btn.confirm_return_to_unmatched": "Rimetti tra i pagamenti non abbinati"
+  "btn.confirm_return_to_unmatched": "Rimetti tra i pagamenti non abbinati",
+  "notif.install_owner.title": "Ora sei il proprietario dell'installazione",
+  "notif.install_owner.body": "{name} ti ha nominato proprietario dell'installazione. Puoi installare moduli, gestire i backup e Celerp Cloud e cedere la proprietà a un altro utente da Impostazioni > Utenti.",
+  "notif.update_ok.title": "Celerp è stato aggiornato a {to}",
+  "notif.update_ok.body": "Celerp ora è alla versione {to}.",
+  "notif.update_failed.title": "Impossibile aggiornare Celerp a {to}",
+  "notif.update_failed.body": "Celerp è ancora alla versione {from}: {reason}. I tuoi dati non sono stati modificati.",
+  "notif.update_rollback_failed.title": "Impossibile aggiornare Celerp a {to}",
+  "notif.update_rollback_failed.body": "L'aggiornamento a {to} non è riuscito ({reason}) e non è stato possibile ripristinare il database. Il backup creato prima dell'aggiornamento è conservato; consulta le istruzioni di aggiornamento per ripristinarlo."
 }

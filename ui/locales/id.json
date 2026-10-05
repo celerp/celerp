@@ -3533,5 +3533,13 @@
   "pay.unmatched_refused_too_small": "Sisa tagihan faktur ini lebih kecil dari pembayaran.",
   "pay.unmatched_refused_refused": "Faktur ini tidak dapat menerima pembayaran ini.",
   "documents.return_to_unmatched": "Lepas pembayaran ini dari faktur dan kembalikan ke pembayaran yang belum dicocokkan",
-  "btn.confirm_return_to_unmatched": "Kembalikan ke pembayaran belum dicocokkan"
+  "btn.confirm_return_to_unmatched": "Kembalikan ke pembayaran belum dicocokkan",
+  "notif.install_owner.title": "Anda sekarang pemilik instalasi",
+  "notif.install_owner.body": "{name} menjadikan Anda pemilik instalasi. Anda dapat memasang modul, mengelola cadangan dan Celerp Cloud, serta menyerahkan kepemilikan ke pengguna lain dari Pengaturan > Pengguna.",
+  "notif.update_ok.title": "Celerp telah diperbarui ke {to}",
+  "notif.update_ok.body": "Celerp sekarang versi {to}.",
+  "notif.update_failed.title": "Celerp tidak dapat diperbarui ke {to}",
+  "notif.update_failed.body": "Celerp masih versi {from}: {reason}. Data Anda tidak diubah.",
+  "notif.update_rollback_failed.title": "Celerp tidak dapat diperbarui ke {to}",
+  "notif.update_rollback_failed.body": "Pembaruan ke {to} gagal ({reason}) dan basis data tidak dapat dipulihkan. Cadangan yang dibuat sebelum pembaruan disimpan; lihat petunjuk pembaruan untuk memulihkannya."
 }

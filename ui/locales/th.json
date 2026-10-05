@@ -3533,5 +3533,13 @@
   "pay.unmatched_refused_too_small": "ยอดค้างของใบแจ้งหนี้นี้น้อยกว่าการชำระเงิน",
   "pay.unmatched_refused_refused": "ใบแจ้งหนี้นี้รับการชำระเงินนี้ไม่ได้",
   "documents.return_to_unmatched": "นำการชำระเงินนี้ออกจากใบแจ้งหนี้และคืนไปยังการชำระเงินที่ยังไม่จับคู่",
-  "btn.confirm_return_to_unmatched": "คืนไปยังการชำระเงินที่ยังไม่จับคู่"
+  "btn.confirm_return_to_unmatched": "คืนไปยังการชำระเงินที่ยังไม่จับคู่",
+  "notif.install_owner.title": "คุณเป็นเจ้าของการติดตั้งแล้ว",
+  "notif.install_owner.body": "{name} ได้ตั้งให้คุณเป็นเจ้าของการติดตั้ง คุณสามารถติดตั้งโมดูล จัดการข้อมูลสำรองและ Celerp Cloud และโอนความเป็นเจ้าของให้ผู้ใช้อื่นได้จาก การตั้งค่า > ผู้ใช้",
+  "notif.update_ok.title": "อัปเดต Celerp เป็น {to} แล้ว",
+  "notif.update_ok.body": "ขณะนี้ Celerp เป็นเวอร์ชัน {to}",
+  "notif.update_failed.title": "ไม่สามารถอัปเดต Celerp เป็น {to}",
+  "notif.update_failed.body": "Celerp ยังคงเป็นเวอร์ชัน {from}: {reason} ข้อมูลของคุณไม่มีการเปลี่ยนแปลง",
+  "notif.update_rollback_failed.title": "ไม่สามารถอัปเดต Celerp เป็น {to}",
+  "notif.update_rollback_failed.body": "การอัปเดตเป็น {to} ล้มเหลว ({reason}) และไม่สามารถกู้คืนฐานข้อมูลได้ ข้อมูลสำรองที่สร้างไว้ก่อนการอัปเดตยังคงอยู่ ดูวิธีกู้คืนในคำแนะนำการอัปเดต"
 }

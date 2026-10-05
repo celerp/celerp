@@ -9,6 +9,7 @@ is in-process (asyncio.Queue per subscriber). No Redis required.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -23,6 +24,21 @@ from celerp.notifications.sse import publish
 log = logging.getLogger(__name__)
 
 MAX_PER_COMPANY = 100
+
+
+async def create_keyed(
+    session: AsyncSession,
+    company_id: uuid.UUID,
+    category: str,
+    key: str,
+    params: dict[str, Any],
+    **kwargs: Any,
+) -> Notification:
+    """Create a notification the UI renders in the reader's language: the title holds
+    the message key and the body holds the key plus its parameters as JSON
+    (see ui.i18n.localize_notification)."""
+    body = json.dumps({"key": f"{key}.body", "params": params})
+    return await create(session, company_id, category, f"{key}.title", body, **kwargs)
 
 
 async def create(

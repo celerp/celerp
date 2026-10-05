@@ -3533,5 +3533,13 @@
   "pay.unmatched_refused_too_small": "المبلغ المستحق على هذه الفاتورة أقل من الدفعة.",
   "pay.unmatched_refused_refused": "لا يمكن تسجيل هذه الدفعة على هذه الفاتورة.",
   "documents.return_to_unmatched": "إزالة هذه الدفعة من الفاتورة وإعادتها إلى الدفعات غير المطابقة",
-  "btn.confirm_return_to_unmatched": "إعادة إلى الدفعات غير المطابقة"
+  "btn.confirm_return_to_unmatched": "إعادة إلى الدفعات غير المطابقة",
+  "notif.install_owner.title": "أنت الآن مالك التثبيت",
+  "notif.install_owner.body": "جعلك {name} مالك التثبيت. يمكنك تثبيت الوحدات وإدارة النسخ الاحتياطية وCelerp Cloud ونقل الملكية إلى مستخدم آخر من الإعدادات > المستخدمون.",
+  "notif.update_ok.title": "تم تحديث Celerp إلى {to}",
+  "notif.update_ok.body": "يعمل Celerp الآن بالإصدار {to}.",
+  "notif.update_failed.title": "تعذر تحديث Celerp إلى {to}",
+  "notif.update_failed.body": "لا يزال Celerp على الإصدار {from}: {reason}. لم تتغير بياناتك.",
+  "notif.update_rollback_failed.title": "تعذر تحديث Celerp إلى {to}",
+  "notif.update_rollback_failed.body": "فشل التحديث إلى {to} ({reason}) وتعذرت استعادة قاعدة البيانات. تم الاحتفاظ بالنسخة الاحتياطية المأخوذة قبل التحديث؛ راجع تعليمات التحديث لاستعادتها."
 }

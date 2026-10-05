@@ -694,10 +694,8 @@ async def transfer_install_owner(
     await session.flush()
     target.is_install_owner = True
     from celerp.notifications import service as notif_service
-    await notif_service.create(
-        session, company_id, "system", "You are now the installation owner",
-        f"{current.name or current.email} made you the installation owner. You can install modules, "
-        "manage backups and Celerp Cloud, and hand ownership on to another user from Settings > Users.",
+    await notif_service.create_keyed(
+        session, company_id, "system", "notif.install_owner", {"name": current.name or current.email},
         user_id=target.id, action_url="/settings/general?tab=users", priority="high",
     )
     await session.commit()

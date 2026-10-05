@@ -391,18 +391,15 @@ async def _owner_timezone(session) -> str | None:
     return (settings or {}).get("timezone")
 
 
-def result_message(result: dict) -> tuple[str, str]:
-    """(title, body) for the notification about an update attempt."""
+def result_message(result: dict) -> tuple[str, dict]:
+    """(message key, parameters) for the notification about an update attempt."""
     if result.get("ok"):
-        return (f"Celerp was updated to {result['to']}",
-                f"Celerp is now on version {result['to']}.")
-    title = f"Celerp could not update to {result['to']}"
-    reason = reason_text(result.get("reason", ""))
+        return "notif.update_ok", {"to": result["to"]}
+    params = {"to": result["to"], "from": result["from"],
+              "reason": reason_text(result.get("reason", ""))}
     if result.get("outcome") == ROLLBACK_FAILED:
-        return title, (f"The update to {result['to']} failed ({reason}) and the database "
-                       "could not be restored. The backup taken before the update is kept; "
-                       "see the update instructions to restore it.")
-    return title, f"Celerp is still on {result['from']}: {reason}. Your data was not changed."
+        return "notif.update_rollback_failed", params
+    return "notif.update_failed", params
 
 
 async def notify_last_result(session) -> int:
@@ -422,11 +419,11 @@ async def notify_last_result(session) -> int:
     result = state.get("last_result")
     if not result or result.get("notified"):
         return 0
-    title, body = result_message(result)
+    key, params = result_message(result)
     company_ids = (await session.execute(
         select(Company.id).where(Company.is_active.is_(True)))).scalars().all()
     for company_id in company_ids:
-        await notif_service.create(session, company_id, "system", title, body, priority="high")
+        await notif_service.create_keyed(session, company_id, "system", key, params, priority="high")
     await session.commit()
     result["notified"] = True
     write_state(state)

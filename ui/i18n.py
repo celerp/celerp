@@ -126,6 +126,19 @@ def t(key: str, lang: str | None = None, **kwargs) -> str:
     return text.format(**kwargs) if kwargs else text
 
 
+def localize_notification(item: dict, lang: str | None = None) -> dict:
+    """Render a keyed notification (celerp.notifications.service.create_keyed) in
+    *lang*. A notification with a plain-text body is returned unchanged."""
+    try:
+        keyed = json.loads(item.get("body") or "")
+    except ValueError:
+        return item
+    if not isinstance(keyed, dict) or "key" not in keyed:
+        return item
+    params = keyed.get("params") or {}
+    return {**item, "title": t(item["title"], lang, **params), "body": t(keyed["key"], lang, **params)}
+
+
 def field_label(f: dict) -> str:
     """Display label for an item-schema field, resolved through t() at render time.
 

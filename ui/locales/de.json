@@ -3533,5 +3533,13 @@
   "pay.unmatched_refused_too_small": "Auf dieser Rechnung ist weniger offen als die Zahlung.",
   "pay.unmatched_refused_refused": "Diese Rechnung kann diese Zahlung nicht aufnehmen.",
   "documents.return_to_unmatched": "Diese Zahlung von der Rechnung nehmen und zurück zu den nicht zugeordneten Zahlungen legen",
-  "btn.confirm_return_to_unmatched": "Zurück zu den nicht zugeordneten Zahlungen"
+  "btn.confirm_return_to_unmatched": "Zurück zu den nicht zugeordneten Zahlungen",
+  "notif.install_owner.title": "Sie sind jetzt der Installationsinhaber",
+  "notif.install_owner.body": "{name} hat Sie zum Installationsinhaber gemacht. Sie können Module installieren, Sicherungen und Celerp Cloud verwalten und die Inhaberschaft unter Einstellungen > Benutzer an einen anderen Benutzer übergeben.",
+  "notif.update_ok.title": "Celerp wurde auf {to} aktualisiert",
+  "notif.update_ok.body": "Celerp läuft jetzt in Version {to}.",
+  "notif.update_failed.title": "Celerp konnte nicht auf {to} aktualisiert werden",
+  "notif.update_failed.body": "Celerp läuft weiterhin in Version {from}: {reason}. Ihre Daten wurden nicht geändert.",
+  "notif.update_rollback_failed.title": "Celerp konnte nicht auf {to} aktualisiert werden",
+  "notif.update_rollback_failed.body": "Die Aktualisierung auf {to} ist fehlgeschlagen ({reason}) und die Datenbank konnte nicht wiederhergestellt werden. Die vor der Aktualisierung erstellte Sicherung bleibt erhalten; die Anleitung zur Aktualisierung beschreibt die Wiederherstellung."
 }

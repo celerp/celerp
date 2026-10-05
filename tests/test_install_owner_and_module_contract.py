@@ -12,6 +12,7 @@ from sqlalchemy import select
 from celerp.gateway.client import GatewayClient
 from celerp.models.company import User
 from celerp.modules.api import ai_query
+from ui.i18n import localize_notification
 from test_helpers import invite_user, register_admin
 
 
@@ -200,8 +201,13 @@ async def test_handover_tells_the_new_owner_and_the_users_list_names_the_owner(c
     assert await owners() == ["heir@example.test"]
 
     told = (await client.get("/notifications", headers=next_h)).json()["items"]
-    assert [n["title"] for n in told] == ["You are now the installation owner"]
-    assert "hand ownership on" in told[0]["body"]
+    assert [n["title"] for n in told] == ["notif.install_owner.title"]
+    shown = localize_notification(told[0], "en")
+    assert shown["title"] == "You are now the installation owner"
+    assert "hand ownership on" in shown["body"]
+    german = localize_notification(told[0], "de")
+    assert german["title"] == "Sie sind jetzt der Installationsinhaber"
+    assert "Einstellungen > Benutzer" in german["body"]
     assert told[0]["action_url"] == "/settings/general?tab=users"
     others = (await client.get("/notifications", headers=admin_h)).json()["items"]
-    assert "You are now the installation owner" not in [n["title"] for n in others]
+    assert "notif.install_owner.title" not in [n["title"] for n in others]

@@ -3533,5 +3533,13 @@
   "pay.unmatched_refused_too_small": "Số còn nợ của hóa đơn này nhỏ hơn khoản thanh toán.",
   "pay.unmatched_refused_refused": "Hóa đơn này không thể nhận khoản thanh toán này.",
   "documents.return_to_unmatched": "Gỡ khoản thanh toán này khỏi hóa đơn và đưa lại vào thanh toán chưa khớp",
-  "btn.confirm_return_to_unmatched": "Đưa lại vào thanh toán chưa khớp"
+  "btn.confirm_return_to_unmatched": "Đưa lại vào thanh toán chưa khớp",
+  "notif.install_owner.title": "Bạn hiện là chủ sở hữu bản cài đặt",
+  "notif.install_owner.body": "{name} đã chỉ định bạn làm chủ sở hữu bản cài đặt. Bạn có thể cài đặt mô-đun, quản lý bản sao lưu và Celerp Cloud, và chuyển quyền sở hữu cho người dùng khác trong Cài đặt > Người dùng.",
+  "notif.update_ok.title": "Celerp đã được cập nhật lên {to}",
+  "notif.update_ok.body": "Celerp hiện ở phiên bản {to}.",
+  "notif.update_failed.title": "Không thể cập nhật Celerp lên {to}",
+  "notif.update_failed.body": "Celerp vẫn ở phiên bản {from}: {reason}. Dữ liệu của bạn không bị thay đổi.",
+  "notif.update_rollback_failed.title": "Không thể cập nhật Celerp lên {to}",
+  "notif.update_rollback_failed.body": "Cập nhật lên {to} thất bại ({reason}) và không thể khôi phục cơ sở dữ liệu. Bản sao lưu tạo trước khi cập nhật vẫn được giữ; xem hướng dẫn cập nhật để khôi phục."
 }

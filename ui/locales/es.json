@@ -3533,5 +3533,13 @@
   "pay.unmatched_refused_too_small": "Esta factura debe menos que el pago.",
   "pay.unmatched_refused_refused": "Esta factura no puede recibir este pago.",
   "documents.return_to_unmatched": "Quitar este pago de la factura y devolverlo a los pagos sin asignar",
-  "btn.confirm_return_to_unmatched": "Devolver a pagos sin asignar"
+  "btn.confirm_return_to_unmatched": "Devolver a pagos sin asignar",
+  "notif.install_owner.title": "Ahora es el propietario de la instalación",
+  "notif.install_owner.body": "{name} le ha nombrado propietario de la instalación. Puede instalar módulos, gestionar copias de seguridad y Celerp Cloud, y ceder la propiedad a otro usuario desde Ajustes > Usuarios.",
+  "notif.update_ok.title": "Celerp se actualizó a {to}",
+  "notif.update_ok.body": "Celerp está ahora en la versión {to}.",
+  "notif.update_failed.title": "Celerp no pudo actualizarse a {to}",
+  "notif.update_failed.body": "Celerp sigue en la versión {from}: {reason}. Sus datos no se modificaron.",
+  "notif.update_rollback_failed.title": "Celerp no pudo actualizarse a {to}",
+  "notif.update_rollback_failed.body": "La actualización a {to} falló ({reason}) y no se pudo restaurar la base de datos. Se conserva la copia de seguridad tomada antes de la actualización; consulte las instrucciones de actualización para restaurarla."
 }

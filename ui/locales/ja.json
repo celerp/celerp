@@ -3533,5 +3533,13 @@
   "pay.unmatched_refused_too_small": "この請求書の未払額は支払額より少ないです。",
   "pay.unmatched_refused_refused": "この請求書はこの支払いを受けられません。",
   "documents.return_to_unmatched": "この支払いを請求書から外し、未照合の支払いに戻す",
-  "btn.confirm_return_to_unmatched": "未照合の支払いに戻す"
+  "btn.confirm_return_to_unmatched": "未照合の支払いに戻す",
+  "notif.install_owner.title": "あなたがインストールの所有者になりました",
+  "notif.install_owner.body": "{name} があなたをインストールの所有者にしました。モジュールのインストール、バックアップと Celerp Cloud の管理、設定 > ユーザーからの他のユーザーへの所有権の引き継ぎができます。",
+  "notif.update_ok.title": "Celerp を {to} に更新しました",
+  "notif.update_ok.body": "Celerp は現在バージョン {to} です。",
+  "notif.update_failed.title": "Celerp を {to} に更新できませんでした",
+  "notif.update_failed.body": "Celerp はバージョン {from} のままです: {reason}。データは変更されていません。",
+  "notif.update_rollback_failed.title": "Celerp を {to} に更新できませんでした",
+  "notif.update_rollback_failed.body": "{to} への更新に失敗し ({reason})、データベースを復元できませんでした。更新前に作成したバックアップは保持されています。復元方法は更新手順を参照してください。"
 }

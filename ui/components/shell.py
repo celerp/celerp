@@ -972,7 +972,11 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         loadNotifications();
         if (data.priority === 'high' && Notification.permission === 'granted') {
-          new Notification(data.title, { body: data.body });
+          // The stream carries the stored message key; show the rendered copy.
+          fetch('/notifications?limit=5').then(function(r) { return r.json(); }).then(function(d) {
+            var n = (d.items || []).find(function(x) { return x.id === data.id; });
+            if (n) new Notification(n.title, { body: n.body });
+          }).catch(function() {});
         }
       } catch(err) {}
     });

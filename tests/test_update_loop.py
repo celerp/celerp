@@ -13,6 +13,7 @@ from sqlalchemy import select, update as sa_update
 from celerp.models.company import Company
 from celerp.models.notification import Notification
 from celerp.services import update
+from ui.i18n import localize_notification
 from test_helpers import register_admin
 
 # 20:30 UTC is 03:30 in Bangkok (inside the window) and outside it in UTC.
@@ -103,12 +104,16 @@ async def test_notifies_every_company_once(client, session, cfg_dir, ok, title):
 
     rows = (await session.execute(
         select(Notification).where(Notification.category == "system"))).scalars().all()
-    assert len(rows) == 2 and {r.title for r in rows} == {title}
+    shown = [localize_notification({"title": r.title, "body": r.body}, "en") for r in rows]
+    assert len(rows) == 2 and {n["title"] for n in shown} == {title}
     assert {r.priority for r in rows} == {"high"}
     assert update.read_state()["last_result"]["notified"] is True
     if not ok:
-        assert "still on 1.0.0" in rows[0].body and "not changed" in rows[0].body
-        assert update.reason_text("install_failed") in rows[0].body
+        assert "still on 1.0.0" in shown[0]["body"] and "not changed" in shown[0]["body"]
+        assert update.reason_text("install_failed") in shown[0]["body"]
+        german = localize_notification({"title": rows[0].title, "body": rows[0].body}, "de")
+        assert german["title"] == "Celerp konnte nicht auf 1.1.0 aktualisiert werden"
+        assert "Ihre Daten wurden nicht geändert" in german["body"]
 
 
 @pytest.mark.asyncio

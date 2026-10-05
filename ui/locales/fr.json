@@ -3533,5 +3533,13 @@
   "pay.unmatched_refused_too_small": "Cette facture doit moins que le paiement.",
   "pay.unmatched_refused_refused": "Cette facture ne peut pas recevoir ce paiement.",
   "documents.return_to_unmatched": "Retirer ce paiement de la facture et le remettre parmi les paiements non rapprochés",
-  "btn.confirm_return_to_unmatched": "Remettre parmi les paiements non rapprochés"
+  "btn.confirm_return_to_unmatched": "Remettre parmi les paiements non rapprochés",
+  "notif.install_owner.title": "Vous êtes maintenant le propriétaire de l'installation",
+  "notif.install_owner.body": "{name} vous a désigné propriétaire de l'installation. Vous pouvez installer des modules, gérer les sauvegardes et Celerp Cloud, et transmettre la propriété à un autre utilisateur depuis Paramètres > Utilisateurs.",
+  "notif.update_ok.title": "Celerp a été mis à jour vers {to}",
+  "notif.update_ok.body": "Celerp est maintenant en version {to}.",
+  "notif.update_failed.title": "Celerp n'a pas pu être mis à jour vers {to}",
+  "notif.update_failed.body": "Celerp reste en version {from} : {reason}. Vos données n'ont pas été modifiées.",
+  "notif.update_rollback_failed.title": "Celerp n'a pas pu être mis à jour vers {to}",
+  "notif.update_rollback_failed.body": "La mise à jour vers {to} a échoué ({reason}) et la base de données n'a pas pu être restaurée. La sauvegarde prise avant la mise à jour est conservée ; consultez les instructions de mise à jour pour la restaurer."
 }
