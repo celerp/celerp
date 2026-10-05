@@ -1,7 +1,8 @@
-"""The inventory list names the default unit in German, like the item page does.
+"""The inventory list and recipe name the default unit in German, like the item page does.
 
-The price-cell unit annotation, the derived weight cell and the valuation chips of the
-inventory list still print the stored unit name ("piece", "gram")."""
+The price-cell unit annotation, the derived weight cell, the valuation chips and the
+recipe materials tables (editor and work sheet) still print the stored unit name
+("piece", "gram")."""
 
 from __future__ import annotations
 
@@ -43,3 +44,20 @@ def test_valuation_chips_name_the_unit_in_german(german):
     xml = to_xml(_valuation_bar({"item_count": 1, "quantity_by_unit": {"piece": 3},
                                  "weight_by_unit": {"gram": 100}}, "USD", "de"))
     assert "3 Stück" in xml and "100 Gramm" in xml, xml
+
+
+_RECIPE_ITEM = {"id": "item:p", "name": "Ring", "recipe": {"components": [
+    {"item_id": "item:c", "sku": "C-1", "quantity": 2, "unit": "piece"}]}}
+_COMPONENT = {"id": "item:c", "name": "Clasp", "sku": "C-1"}
+
+
+def test_recipe_materials_name_the_unit_in_german(german):
+    from ui.routes.inventory import _recipe_section
+    xml = to_xml(_recipe_section("item:p", _RECIPE_ITEM, [_COMPONENT], "USD"))
+    assert ">Stück<" in xml and ">piece<" not in xml, xml
+
+
+def test_worksheet_materials_name_the_unit_in_german(german):
+    from ui.routes.inventory import _worksheet_print_view
+    xml = to_xml(_worksheet_print_view("item:p", _RECIPE_ITEM, [_COMPONENT], "2026-10-05"))
+    assert ">Stück<" in xml and ">piece<" not in xml, xml

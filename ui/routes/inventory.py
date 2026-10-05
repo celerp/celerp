@@ -6607,7 +6607,7 @@ def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: 
                 Tbody(*[Tr(
                     Td(_component_label(c, by_id)),
                     Td(f"{float(c.get('quantity') or 0):g}", cls="ws-num"),
-                    Td(c.get("unit") or EM),
+                    Td(display_unit(c.get("unit")) or EM),
                 ) for c in comps]),
                 cls="ws-tbl",
             ),
@@ -6776,7 +6776,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         return Tr(
             Td(A(label, href=f"/inventory/{cid}", cls="table-link") if not orphan else Span(label)),
             _recipe_cell(entity_id, "components", i, "quantity", c.get("quantity")),
-            Td(c.get("unit") or EMPTY, cls="comp-unit-cell"),
+            Td(display_unit(c.get("unit")) or EMPTY, cls="comp-unit-cell"),
             # Unit cost + extended cost are read-only: they come from the component's catalog cost.
             Td(_recipe_money(c.get("unit_cost"), currency), cls="recipe-amount"),
             Td(_recipe_money(c.get("line_cost"), currency), cls="recipe-amount"),
