@@ -24,7 +24,7 @@ from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
-from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
+from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from celerp.services.cost_visibility import COST_ITEM_KEYS
@@ -445,8 +445,8 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
         """Strip abbreviation in parens from a unit label: 'Carat (ct)' -> 'Carat'."""
         return re.sub(r"\s*\([^)]*\)\s*$", "", label).strip()
 
-    sell_by_display = _unit_display_name(sell_by_label)
-    weight_display = _unit_display_name(weight_unit_label)
+    sell_by_display = display_unit(preview.get("sell_by"), _unit_display_name(sell_by_label))
+    weight_display = display_unit(preview.get("weight_unit"), _unit_display_name(weight_unit_label))
 
     # QTY is always shown. Weight/pieces columns follow one symmetric rule:
     #   - weight-type sell_by: qty IS weight, so the weight column is a read-only mirror of
@@ -2325,7 +2325,7 @@ function celerpPrintLabel(entityId, templateId) {
             from ui.components.table import display_cell
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
-                                cell_type=_f.get("type", "text"), editable=False)
+                                cell_type=_f.get("type", "text"), editable=False, domain="item_status")
         if field in _locked_edit_keys(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item)):
             # Amount fields and sell_by (edit_inventory_amounts) and prices
             # (set_inventory_prices): this GET is the single edit-entry chokepoint, so
@@ -2360,7 +2360,7 @@ function celerpPrintLabel(entityId, templateId) {
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         from ui.components.table import editable_cell
         # Apply unit-field override (sell_by, purchase_unit, weight_unit → searchable select)
-        if field in ("sell_by", "purchase_unit", "weight_unit", "gross_weight_unit"):
+        if field in _UNIT_FIELDS:
             try:
                 units_resp = await api.get_units(token)
                 unit_names = [u["name"] for u in units_resp if u.get("name")]
@@ -2370,7 +2370,9 @@ function celerpPrintLabel(entityId, templateId) {
                 weight_unit_names = []
             cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names, weight_unit_names)
         label_map: dict | None = None
-        if field == "category":
+        if field in _UNIT_FIELDS:
+            label_map = {u: display_unit(u) for u in options or ()}
+        elif field == "category":
             try:
                 label_map = await api.get_category_display_names(token)
             except Exception:
@@ -2468,7 +2470,7 @@ function celerpPrintLabel(entityId, templateId) {
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
                             editable=f_def.get("editable", True) if f_def else True,
-                            label_map=label_map, placeholder=_placeholder)
+                            label_map=label_map, placeholder=_placeholder, domain="item_status")
 
     _PAIRED_FIELDS: dict[str, str] = {"quantity": "sell_by", "sell_by": "quantity",
                                       "weight": "weight_unit", "weight_unit": "weight",
@@ -2681,7 +2683,7 @@ function celerpPrintLabel(entityId, templateId) {
                 unit_formatted = fmt_money(new_cost_price, currency) if new_cost_price != 0 else "--"
                 unit_inner = Span(unit_formatted, cls="cell-money") if unit_formatted != "--" else Span("--")
                 sell_by = (flat.get("sell_by") or "").strip()
-                annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
+                annotation = Span(f"/ {display_unit(sell_by)}", cls="cell-price-unit") if sell_by else ""
                 unit_td = Td(
                     unit_inner, annotation,
                     id=f"cell-{safe_id}-cost_price",
@@ -2887,7 +2889,7 @@ function celerpPrintLabel(entityId, templateId) {
                 formatted = fmt_money(val, currency) if val not in (None, "", "--") else "--"
             except (ValueError, TypeError):
                 formatted = "--"
-            annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
+            annotation = Span(f"/ {display_unit(sell_by)}", cls="cell-price-unit") if sell_by else ""
             inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
             safe_id = entity_id.replace(":", "-")
             price_td = Td(
@@ -2932,7 +2934,7 @@ function celerpPrintLabel(entityId, templateId) {
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
                             editable=f_def.get("editable", True) if f_def else True,
-                            label_map=label_map, placeholder=_placeholder)
+                            label_map=label_map, placeholder=_placeholder, domain="item_status")
 
     # ── Paired-cell endpoints (quantity+sell_by, weight+weight_unit, purchase_unit+purchase_conversion_factor) ─────────
 
@@ -3102,7 +3104,7 @@ function celerpPrintLabel(entityId, templateId) {
                 return await _paired_display(token, entity_id, field, _get_role(request), _pe_settings)
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         # Field-specific overrides
-        if field in ("sell_by", "purchase_unit", "weight_unit", "gross_weight_unit"):
+        if field in _UNIT_FIELDS:
             try:
                 units_resp = await api.get_units(token)
                 unit_names = [u["name"] for u in units_resp if u.get("name")]
@@ -3132,9 +3134,11 @@ function celerpPrintLabel(entityId, templateId) {
                 )
         from ui.components.table import editable_cell
         restore_url = f"/api/items/{entity_id}/field/{field}/paired-display"
+        unit_labels = ({u: display_unit(u) for u in options or ()}
+                       if field in _UNIT_FIELDS else None)
         return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                              cell_type=cell_type, options=options, allow_custom=allow_custom,
-                             restore_url=restore_url)
+                             label_map=unit_labels, restore_url=restore_url)
 
     @app.get("/api/items/{entity_id}/field/{field}/paired-display")
     async def field_paired_display_cell(request: Request, entity_id: str, field: str):
@@ -3677,7 +3681,7 @@ function celerpPrintLabel(entityId, templateId) {
         fmt = lambda v, d=2: f"{float(v):.{d}f}" if v is not None else ""
 
         unit_select = Select(
-            *[Option(u, value=u, selected=(u == parent_sell_by)) for u in unit_names],
+            *[Option(display_unit(u), value=u, selected=(u == parent_sell_by)) for u in unit_names],
             name="child_sell_by",
             cls="form-input form-input--xs",
             onchange="transformUnitChanged(this)",
@@ -3696,8 +3700,8 @@ function celerpPrintLabel(entityId, templateId) {
             _sp_static_td(item.get("sku", "")),
             _sp_static_td(parent_name),
             _sp_static_td(parent_category),
-            _sp_static_td(f"{fmt(parent_qty)} {parent_sell_by}", num=True),
-            _sp_static_td(f"{fmt(parent_weight)} {parent_weight_unit}" if parent_weight is not None else "--", num=True),
+            _sp_static_td(f"{fmt(parent_qty)} {display_unit(parent_sell_by)}", num=True),
+            _sp_static_td(f"{fmt(parent_weight)} {display_unit(parent_weight_unit)}" if parent_weight is not None else "--", num=True),
             _sp_static_td(str(int(parent_pieces)) if parent_pieces is not None else "--", num=True),
         ]
         if can_see_cost:
@@ -5318,6 +5322,8 @@ def _inventory_type_tabs(p: dict) -> FT:
         )
 
     return Div(*[_tab(it, label) for it, label in _TABS], cls="category-tabs inventory-type-tabs", id="inventory-type-tabs")
+# Item fields whose value is a unit name: edited by a unit select, shown via display_unit.
+_UNIT_FIELDS: frozenset[str] = frozenset({"sell_by", "purchase_unit", "weight_unit", "gross_weight_unit"})
 _PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit", "gross_weight": "gross_weight_unit", "purchase_unit": "purchase_conversion_factor"}
 # Derived from _PAIRED_TABLE — secondary fields already rendered inside paired cells; exclude from standalone rows
 _PAIRED_SECONDARY_KEYS: frozenset[str] = frozenset(_PAIRED_TABLE.values())
@@ -5557,7 +5563,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                 entity_id=entity_id, field="status", value=row.get("status", ""),
                 cell_type=_f.get("type", "status"), options=_f.get("options"),
                 editable=_f.get("editable", True),
-                status_doc=(doc_id, doc_num) if doc_id else None,
+                status_doc=(doc_id, doc_num) if doc_id else None, domain="item_status",
             )
         renderers["status"] = _status_renderer
 
@@ -7420,6 +7426,7 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str | N
                 editable=f.get("editable", True),
                 currency=currency,
                 label_map=_inventory_type_labels() if key == "inventory_type" else None,
+                domain="item_status",
             )
         return Tr(
             Td(field_label(f), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""), cls="detail-label"),

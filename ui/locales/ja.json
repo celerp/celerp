@@ -3738,5 +3738,16 @@
   "nav.group.inventory": "在庫",
   "nav.group.manufacturing": "製造業",
   "nav.group.subscriptions": "定期購入",
-  "nav.group.contacts": "連絡先"
+  "nav.group.contacts": "連絡先",
+  "enum.item_status.draft": "下書き",
+  "enum.item_status.available": "在庫あり",
+  "enum.item_status.reserved": "予約済み",
+  "enum.item_status.returned": "返却済み",
+  "enum.item_status.active": "有効",
+  "enum.item_status.merged": "統合済み",
+  "enum.unit.piece": "個",
+  "enum.unit.carat": "カラット",
+  "enum.unit.gram": "グラム",
+  "enum.unit.liter": "リットル",
+  "enum.unit.meter": "メートル"
 }

@@ -3738,5 +3738,16 @@
   "nav.group.inventory": "Inventário",
   "nav.group.manufacturing": "Fabricação",
   "nav.group.subscriptions": "Assinaturas",
-  "nav.group.contacts": "Contatos"
+  "nav.group.contacts": "Contatos",
+  "enum.item_status.draft": "Rascunho",
+  "enum.item_status.available": "Disponível",
+  "enum.item_status.reserved": "Reservado",
+  "enum.item_status.returned": "Devolvido",
+  "enum.item_status.active": "Ativo",
+  "enum.item_status.merged": "Mesclado",
+  "enum.unit.piece": "unidade",
+  "enum.unit.carat": "quilate",
+  "enum.unit.gram": "grama",
+  "enum.unit.liter": "litro",
+  "enum.unit.meter": "metro"
 }

@@ -3738,5 +3738,16 @@
   "nav.group.inventory": "รายการสิ่งของ",
   "nav.group.manufacturing": "การผลิต",
   "nav.group.subscriptions": "การสมัครรับข้อมูล",
-  "nav.group.contacts": "ผู้ติดต่อ"
+  "nav.group.contacts": "ผู้ติดต่อ",
+  "enum.item_status.draft": "ร่าง",
+  "enum.item_status.available": "มีสินค้า",
+  "enum.item_status.reserved": "จองแล้ว",
+  "enum.item_status.returned": "คืนแล้ว",
+  "enum.item_status.active": "ใช้งานอยู่",
+  "enum.item_status.merged": "รวมแล้ว",
+  "enum.unit.piece": "ชิ้น",
+  "enum.unit.carat": "กะรัต",
+  "enum.unit.gram": "กรัม",
+  "enum.unit.liter": "ลิตร",
+  "enum.unit.meter": "เมตร"
 }

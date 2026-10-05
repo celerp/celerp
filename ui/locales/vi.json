@@ -3738,5 +3738,16 @@
   "nav.group.inventory": "Hàng tồn kho",
   "nav.group.manufacturing": "Chế tạo",
   "nav.group.subscriptions": "Đăng ký",
-  "nav.group.contacts": "Danh bạ"
+  "nav.group.contacts": "Danh bạ",
+  "enum.item_status.draft": "Bản nháp",
+  "enum.item_status.available": "Có sẵn",
+  "enum.item_status.reserved": "Đã đặt trước",
+  "enum.item_status.returned": "Đã trả lại",
+  "enum.item_status.active": "Đang hoạt động",
+  "enum.item_status.merged": "Đã gộp",
+  "enum.unit.piece": "chiếc",
+  "enum.unit.carat": "carat",
+  "enum.unit.gram": "gam",
+  "enum.unit.liter": "lít",
+  "enum.unit.meter": "mét"
 }

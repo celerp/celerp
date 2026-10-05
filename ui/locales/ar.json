@@ -3738,5 +3738,16 @@
   "nav.group.inventory": "جرد",
   "nav.group.manufacturing": "تصنيع",
   "nav.group.subscriptions": "الاشتراكات",
-  "nav.group.contacts": "جهات الاتصال"
+  "nav.group.contacts": "جهات الاتصال",
+  "enum.item_status.draft": "مسودة",
+  "enum.item_status.available": "متاح",
+  "enum.item_status.reserved": "محجوز",
+  "enum.item_status.returned": "أُرجع",
+  "enum.item_status.active": "نشط",
+  "enum.item_status.merged": "مدمج",
+  "enum.unit.piece": "قطعة",
+  "enum.unit.carat": "قيراط",
+  "enum.unit.gram": "غرام",
+  "enum.unit.liter": "لتر",
+  "enum.unit.meter": "متر"
 }

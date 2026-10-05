@@ -3738,5 +3738,16 @@
   "nav.group.inventory": "Inventory",
   "nav.group.manufacturing": "Manufacturing",
   "nav.group.subscriptions": "Subscriptions",
-  "nav.group.contacts": "Contacts"
+  "nav.group.contacts": "Contacts",
+  "enum.item_status.draft": "Draft",
+  "enum.item_status.available": "Available",
+  "enum.item_status.reserved": "Reserved",
+  "enum.item_status.returned": "Returned",
+  "enum.item_status.active": "Active",
+  "enum.item_status.merged": "Merged",
+  "enum.unit.piece": "piece",
+  "enum.unit.carat": "carat",
+  "enum.unit.gram": "gram",
+  "enum.unit.liter": "liter",
+  "enum.unit.meter": "meter"
 }

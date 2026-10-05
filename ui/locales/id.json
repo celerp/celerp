@@ -3738,5 +3738,16 @@
   "nav.group.inventory": "Inventaris",
   "nav.group.manufacturing": "Manufaktur",
   "nav.group.subscriptions": "Langganan",
-  "nav.group.contacts": "Kontak"
+  "nav.group.contacts": "Kontak",
+  "enum.item_status.draft": "Draf",
+  "enum.item_status.available": "Tersedia",
+  "enum.item_status.reserved": "Dicadangkan",
+  "enum.item_status.returned": "Dikembalikan",
+  "enum.item_status.active": "Aktif",
+  "enum.item_status.merged": "Digabungkan",
+  "enum.unit.piece": "buah",
+  "enum.unit.carat": "karat",
+  "enum.unit.gram": "gram",
+  "enum.unit.liter": "liter",
+  "enum.unit.meter": "meter"
 }

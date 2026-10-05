@@ -3738,5 +3738,16 @@
   "nav.group.inventory": "Lager",
   "nav.group.manufacturing": "Fertigung",
   "nav.group.subscriptions": "Abonnements",
-  "nav.group.contacts": "Kontakte"
+  "nav.group.contacts": "Kontakte",
+  "enum.item_status.draft": "Entwurf",
+  "enum.item_status.available": "Verfügbar",
+  "enum.item_status.reserved": "Reserviert",
+  "enum.item_status.returned": "Zurückgegeben",
+  "enum.item_status.active": "Aktiv",
+  "enum.item_status.merged": "Zusammengeführt",
+  "enum.unit.piece": "Stück",
+  "enum.unit.carat": "Karat",
+  "enum.unit.gram": "Gramm",
+  "enum.unit.liter": "Liter",
+  "enum.unit.meter": "Meter"
 }

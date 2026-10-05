@@ -39,6 +39,18 @@ def display_enum(raw_value, domain: str | None = None) -> str:
     translated = t(key)
     return translated if translated != key else fallback
 
+def display_unit(name, fallback: str | None = None) -> str:
+    """Display name for a unit. An app default unit (``enum.unit.<name>``) reads in the user's
+    language; a unit the company named shows as named, or as ``fallback`` when one is given.
+    DISPLAY ONLY: the unit name stays the stored value."""
+    raw = str(name or "")
+    key = f"enum.unit.{raw}"
+    translated = t(key) if raw else key
+    if translated != key:
+        return translated
+    return fallback if fallback is not None else raw
+
+
 # Default column widths for fixed-layout tables.
 # Keys are schema field keys; "_attr_default" applies to any column not listed here.
 _DEFAULT_COL_WIDTHS: dict[str, str] = {
@@ -825,7 +837,7 @@ def paired_display_cell(
         pri_disp = format_fn(primary_value) if format_fn is not None else str(primary_value)
     else:
         pri_disp = EMPTY
-    sec_disp = str(secondary_value) if secondary_value not in (None, "") else EMPTY
+    sec_disp = display_unit(secondary_value) if secondary_value not in (None, "") else EMPTY
     pri_span = (
         Span(
             pri_disp,
@@ -874,9 +886,9 @@ def purchase_display_cell(
     """
     pu_edit = f"/api/items/{entity_id}/field/purchase_unit/paired-edit"
     cf_edit = f"/api/items/{entity_id}/field/purchase_conversion_factor/paired-edit"
-    pu_disp = str(pu_val) if pu_val not in (None, "") else EMPTY
+    pu_disp = display_unit(pu_val) if pu_val not in (None, "") else EMPTY
     cf_disp = str(cf_val) if cf_val not in (None, "") else EMPTY
-    sb_disp = str(sb_val) if sb_val not in (None, "") else EMPTY
+    sb_disp = display_unit(sb_val) if sb_val not in (None, "") else EMPTY
     return Td(
         Span(
             pu_disp,

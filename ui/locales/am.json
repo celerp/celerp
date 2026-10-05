@@ -3738,5 +3738,16 @@
   "nav.group.inventory": "ክምችት",
   "nav.group.manufacturing": "ማምረቻ",
   "nav.group.subscriptions": "ምዝገባዎች",
-  "nav.group.contacts": "እውቂያዎች"
+  "nav.group.contacts": "እውቂያዎች",
+  "enum.item_status.draft": "ረቂቅ",
+  "enum.item_status.available": "የሚገኝ",
+  "enum.item_status.reserved": "የተጠበቀ",
+  "enum.item_status.returned": "ተመልሷል",
+  "enum.item_status.active": "ንቁ",
+  "enum.item_status.merged": "ተዋሕዷል",
+  "enum.unit.piece": "ቁራጭ",
+  "enum.unit.carat": "ካራት",
+  "enum.unit.gram": "ግራም",
+  "enum.unit.liter": "ሊትር",
+  "enum.unit.meter": "ሜትር"
 }
