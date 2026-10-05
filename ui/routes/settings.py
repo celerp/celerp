@@ -559,8 +559,9 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
     app.delete(f"/settings/{prefix}/{{idx}}")(_make_delete(get_fn_name, patch_fn_name, redirect_url, "get_default_price_list"))
 
 
-def _factory_reset_card() -> FT:
-    """Reset All Data card — lives inside the existing Danger Zone section."""
+def _factory_reset_card(company_name: str) -> FT:
+    """Reset this company's data. Lives in the Danger Zone; the owner confirms by typing
+    the company's exact name, which the server checks again."""
     modal_id = "factory-reset-modal"
     step1_id = "factory-reset-step1"
     step2_id = "factory-reset-step2"
@@ -573,10 +574,7 @@ def _factory_reset_card() -> FT:
         f"document.getElementById('{step2_id}').style.display='block';"
         f"document.getElementById('{input_id}').focus();"
     )
-    validate_js = (
-        f"document.getElementById('{btn_id}').disabled="
-        f"document.getElementById('{input_id}').value!=='RESET';"
-    )
+    validate_js = f"document.getElementById('{btn_id}').disabled=this.value!==this.dataset.expected;"
     success_js = (
         f"document.getElementById('{modal_id}').addEventListener('htmx:afterRequest',function(e){{"
         f"if(e.detail.xhr.status===200){{window.location.href='/setup';}}"
@@ -632,8 +630,8 @@ def _factory_reset_card() -> FT:
                     cls="modal-dialog__header",
                 ),
                 Div(
-                    P(t("settings.type_reset_prefix"), Strong("RESET"), t("settings.type_reset_suffix")),
-                    Input(type="text", id=input_id, placeholder="RESET",
+                    P(t("settings.type_reset_prefix"), Strong(company_name), t("settings.type_reset_suffix")),
+                    Input(type="text", id=input_id, name="confirm_name", data_expected=company_name,
                           autocomplete="off", cls="form-input",
                           oninput=validate_js),
                     Div(
@@ -643,6 +641,7 @@ def _factory_reset_card() -> FT:
                                cls="btn btn--danger",
                                disabled=True,
                                hx_post="/settings/factory-reset",
+                               hx_include=f"#{input_id}",
                                hx_target="#reset-flash",
                                hx_swap="innerHTML",
                                onclick=success_js),
@@ -2366,9 +2365,10 @@ def setup_routes(app):
         if not role_has_permission({}, role, "manage_company_lifecycle"):
             return Div(t("settings.owner_role_required"), cls="flash flash--error")
         token = _token(request)
+        form = await request.form()
         try:
             async with api._local_client(token, timeout=30.0, follow_redirects=False) as c:
-                r = await c.post("/system/factory-reset")
+                r = await c.post("/system/factory-reset", json={"confirm_name": str(form.get("confirm_name") or "")})
             if r.status_code != 200:
                 return Div(api.error_text(r, t("settings.reset_failed")), cls="flash flash--error")
         except Exception as exc:
@@ -3081,7 +3081,7 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
                     ),
                     cls="settings-card settings-card--danger",
                 ),
-                _factory_reset_card(),
+                _factory_reset_card(company.get("name") or ""),
                 *(
                     [
                         Div(

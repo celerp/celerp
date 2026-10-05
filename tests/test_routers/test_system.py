@@ -105,11 +105,10 @@ def _reset_session(real):
     instead of run.
 
     Auth now loads the user, membership and company from the DB, so those reads
-    (``get``/``scalar``/``scalars``) must hit the real seeded session. A real
-    TRUNCATE ... CASCADE and commit would fight the outer rollback transaction, so
-    ``execute``/``commit`` are captured no-ops (tests/test_factory_reset_live.py runs
-    the wipe for real). The recorded SQL is exposed on ``recorded_sql`` for the wipe
-    assertion.
+    (``get``/``scalar``/``scalars``) must hit the real seeded session. A real wipe and
+    commit would fight the outer rollback transaction, so ``execute``/``commit`` are
+    captured no-ops (tests/test_factory_reset_live.py runs the wipe for real). The
+    recorded SQL is exposed on ``recorded_sql`` for the wipe assertion.
     """
     class _CapturingSession:
         """Plain object (not an AsyncMock) so FastAPI never tries to deepcopy mock
@@ -177,6 +176,7 @@ class TestFactoryReset:
                 r = await c.post(
                     "/system/factory-reset",
                     headers={"Authorization": f"Bearer {jwt}", "X-Session-Token": token},
+                    json={"confirm_name": "TestCo"},
                 )
             assert r.status_code == 403
         finally:
@@ -195,6 +195,7 @@ class TestFactoryReset:
                 r = await c.post(
                     "/system/factory-reset",
                     headers={"Authorization": f"Bearer {jwt}", "X-Session-Token": token},
+                    json={"confirm_name": "TestCo"},
                 )
             assert r.status_code == 200
             assert r.json() == {"ok": True}
@@ -204,7 +205,7 @@ class TestFactoryReset:
 
     @pytest.mark.asyncio
     async def test_factory_reset_wipes_data(self, owner_jwt, session):
-        """All expected DELETE/TRUNCATE calls are executed."""
+        """Every delete is limited to this company; users go only when no company keeps them."""
         jwt, token = owner_jwt
         reset_sess = _reset_session(session)
         app.dependency_overrides[get_session] = lambda: reset_sess
@@ -214,13 +215,16 @@ class TestFactoryReset:
                 r = await c.post(
                     "/system/factory-reset",
                     headers={"Authorization": f"Bearer {jwt}", "X-Session-Token": token},
+                    json={"confirm_name": "TestCo"},
                 )
             assert r.status_code == 200
             recorded = reset_sess.recorded_sql
-            assert any("DELETE FROM users" in c for c in recorded)
-            assert any("DELETE FROM companies" in c for c in recorded)
-            assert any("DELETE FROM user_companies" in c for c in recorded)
-            assert any("DELETE FROM locations" in c for c in recorded)
+            deletes = [c for c in recorded if c.startswith("DELETE FROM")]
+            for table in ("companies", "user_companies", "locations", "ledger"):
+                assert any(c.startswith(f"DELETE FROM {table} WHERE {table}.") for c in deletes), table
+            assert [c for c in deletes if " WHERE " not in c] == []
+            [users] = [c for c in deletes if c.startswith("DELETE FROM users")]
+            assert "NOT (EXISTS" in users
         finally:
             app.dependency_overrides.clear()
             gw_state.set_session_token("")
@@ -241,6 +245,7 @@ class TestFactoryReset:
                 r = await c.post(
                     "/system/factory-reset",
                     headers={"Authorization": f"Bearer {jwt}", "X-Session-Token": token},
+                    json={"confirm_name": "TestCo"},
                 )
             assert r.status_code == 200
         app.dependency_overrides.clear()
@@ -272,6 +277,7 @@ class TestFactoryReset:
                     r = await c.post(
                         "/system/factory-reset",
                         headers={"Authorization": f"Bearer {jwt}", "X-Session-Token": token},
+                        json={"confirm_name": "TestCo"},
                     )
             assert r.status_code == 200
             assert not att_dir.exists(), "Attachment directory should have been deleted"

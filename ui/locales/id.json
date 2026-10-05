@@ -2579,6 +2579,7 @@
   "settings.type_reset_prefix": "Ketik",
   "settings.type_reset_suffix": "untuk mengonfirmasi. Tindakan ini tidak dapat dibatalkan.",
   "settings.delete_everything": "Hapus semuanya",
+  "system.factory_reset.name_mismatch": "Ketik nama perusahaan persis seperti yang ditampilkan untuk mengatur ulang perusahaan ini.",
   "settings.click_to_edit": "Klik untuk mengedit",
   "settings.click_to_change": "Klik untuk mengubah",
   "settings.options_only_apply": "Opsi hanya berlaku untuk kolom pilihan/status",

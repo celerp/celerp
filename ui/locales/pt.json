@@ -2579,6 +2579,7 @@
   "settings.type_reset_prefix": "Digite",
   "settings.type_reset_suffix": "para confirmar. Esta ação não pode ser desfeita.",
   "settings.delete_everything": "Excluir tudo",
+  "system.factory_reset.name_mismatch": "Digite o nome da empresa exatamente como mostrado para redefinir esta empresa.",
   "settings.click_to_edit": "Clique para editar",
   "settings.click_to_change": "Clique para alterar",
   "settings.options_only_apply": "As opções se aplicam apenas aos campos de seleção/status",

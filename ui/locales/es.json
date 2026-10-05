@@ -2579,6 +2579,7 @@
   "settings.type_reset_prefix": "Escribe",
   "settings.type_reset_suffix": "para confirmar. Esta acción no se puede deshacer.",
   "settings.delete_everything": "Eliminar todo",
+  "system.factory_reset.name_mismatch": "Escriba el nombre de la empresa exactamente como se muestra para restablecer esta empresa.",
   "settings.click_to_edit": "Haz clic para editar",
   "settings.click_to_change": "Haz clic para cambiar",
   "settings.options_only_apply": "Las opciones solo se aplican a los campos de selección/estado",

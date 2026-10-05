@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, StrictBool
+from sqlalchemy import Delete, String, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
@@ -74,47 +75,64 @@ async def start_report(request: Request) -> dict:
 
 # ── Factory reset ─────────────────────────────────────────────────────────────
 
-_TRUNCATE_TABLES = [
-    "ledger", "projections", "notifications", "import_batches", "sync_runs",
-    "doc_share_tokens", "ai_conversations", "ai_messages", "ai_batch_jobs",
-    "outbound_queue", "connector_configs", "connector_sources",
-    "accounts", "bank_accounts", "bank_statement_lines",
-    "label_templates", "reconciliation_rules", "reconciliation_sessions",
-    "marketplace_configs", "session_registry", "user_auth_state",
-]
+class FactoryReset(BaseModel):
+    confirm_name: str = ""
+
+
+def _company_tables() -> list:
+    """Every table holding a company's rows, children before parents. Rows without a
+    company column (conversation messages, migration entity maps, a user's sessions)
+    go with their parent row by ON DELETE CASCADE."""
+    from celerp.models.base import Base
+
+    return [t for t in reversed(Base.metadata.sorted_tables)
+            if "company_id" in t.c and t.name != "companies"]
+
+
+def _users_left_without_a_company(members: list) -> Delete:
+    """Of ``members``, the users no company has any more and no remaining row points to."""
+    from celerp.models.base import Base
+
+    users = User.__table__
+    refs = [fk.parent for t in Base.metadata.sorted_tables for fk in t.foreign_keys
+            if fk.column.table is users and fk.ondelete != "CASCADE"]
+    return users.delete().where(users.c.id.in_(members), *[~exists().where(col == users.c.id) for col in refs])
 
 
 @router.post("/factory-reset")
 async def factory_reset(
+    body: FactoryReset | None = None,
     _: None = require_permission("manage_company_lifecycle"),
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Wipe all company data and return the system to a fresh-install state."""
-    from sqlalchemy import text
+    """Delete the signed-in company and every record it holds, once its owner has typed
+    the company's exact name. Other companies, and every user one of them still has,
+    are untouched. One transaction: a failure part way leaves everything as it was."""
+    from celerp.accounting_roles import refusal
     from celerp.connectors.ownership import lock_connector_maintenance
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import Company
 
+    company = await session.get(Company, company_id)
+    if company is None or (body.confirm_name if body else "") != company.name:
+        raise HTTPException(status_code=422, detail=refusal(
+            "system.factory_reset.name_mismatch",
+            "Type the company name exactly as shown to reset this company."))
     # Signing in has already read on this session, so the wipe runs in the request's own
     # transaction and is committed in one step.
     await lock_connector_maintenance(session)
-    for table in _TRUNCATE_TABLES:
-        await session.execute(text(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE"))
-    await session.execute(
-        text("DELETE FROM user_companies WHERE company_id = :cid"),
-        {"cid": str(company_id)},
-    )
-    await session.execute(
-        text("DELETE FROM locations WHERE company_id = :cid"),
-        {"cid": str(company_id)},
-    )
-    await session.execute(text("DELETE FROM users"))
-    await session.execute(
-        text("DELETE FROM companies WHERE id = :cid"),
-        {"cid": str(company_id)},
-    )
+    members = list((await session.execute(
+        select(UserCompany.user_id).where(UserCompany.company_id == company_id))).scalars())
+    for table in _company_tables():
+        column = table.c.company_id  # a few connector tables keep it as text
+        await session.execute(table.delete().where(
+            column == (str(company_id) if isinstance(column.type, String) else company_id)))
+    await session.execute(Company.__table__.delete().where(Company.__table__.c.id == company_id))
+    await session.execute(_users_left_without_a_company(members))
     await session.commit()
 
-    # Bust in-process nonce cache — all users deleted, stale tokens must not auto-create rows
+    # Bust the in-process nonce cache: a deleted user's stale token must not auto-create rows
     from celerp.services.session_tracker import _nonce_cache_bust_all
     _nonce_cache_bust_all()
 

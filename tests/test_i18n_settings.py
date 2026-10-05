@@ -88,7 +88,7 @@ def test_schema_table_header_translates():
 
 def test_factory_reset_card_labels_translate_and_no_em_dash():
     # Plain labels plus the em-dash-fixed warning copy.
-    html = to_xml(_factory_reset_card())
+    html = to_xml(_factory_reset_card("Alpha Trading"))
     assert "XX_RESET_ALL" in html
     assert "XX_SKIP_CONTINUE" in html
     assert "XX_FACTORY_WARNING" in html

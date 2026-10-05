@@ -187,7 +187,7 @@ async def test_cloud_summary_links_to_system_recovery():
 async def test_factory_reset_backup_link_unchanged():
     """The factory reset card still offers the whole-installation export first."""
     from ui.routes.settings import _factory_reset_card
-    assert 'href="/backup/export"' in to_xml(_factory_reset_card())
+    assert 'href="/backup/export"' in to_xml(_factory_reset_card("Alpha Trading"))
 
 
 async def test_legacy_import_on_fresh_install_is_system_recovery(ui, real_engine):

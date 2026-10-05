@@ -2579,6 +2579,7 @@
   "settings.type_reset_prefix": "確認するには",
   "settings.type_reset_suffix": "と入力してください。この操作は元に戻せません。",
   "settings.delete_everything": "すべて削除",
+  "system.factory_reset.name_mismatch": "この会社をリセットするには、表示どおりに会社名を正確に入力してください。",
   "settings.click_to_edit": "編集するにはクリック",
   "settings.click_to_change": "変更するにはクリック",
   "settings.options_only_apply": "オプションは選択/ステータスフィールドにのみ適用されます",

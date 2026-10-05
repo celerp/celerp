@@ -2699,6 +2699,7 @@
   "settings.type_reset_prefix": "Type ",
   "settings.type_reset_suffix": " to confirm. This cannot be undone.",
   "settings.delete_everything": "Delete everything",
+  "system.factory_reset.name_mismatch": "Type the company name exactly as shown to reset this company.",
   "settings.click_to_edit": "Click to edit",
   "settings.click_to_change": "Click to change",
   "settings.options_only_apply": "Options only apply to select/status fields",

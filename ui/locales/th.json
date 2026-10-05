@@ -2579,6 +2579,7 @@
   "settings.type_reset_prefix": "พิมพ์ ",
   "settings.type_reset_suffix": " เพื่อยืนยัน การดำเนินการนี้ไม่สามารถย้อนกลับได้",
   "settings.delete_everything": "ลบทั้งหมด",
+  "system.factory_reset.name_mismatch": "พิมพ์ชื่อบริษัทให้ตรงตามที่แสดงเพื่อรีเซ็ตบริษัทนี้",
   "settings.click_to_edit": "คลิกเพื่อแก้ไข",
   "settings.click_to_change": "คลิกเพื่อเปลี่ยน",
   "settings.options_only_apply": "ตัวเลือกใช้ได้เฉพาะกับฟิลด์แบบเลือก/สถานะเท่านั้น",

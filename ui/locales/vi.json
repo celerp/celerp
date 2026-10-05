@@ -2579,6 +2579,7 @@
   "settings.type_reset_prefix": "Nhập",
   "settings.type_reset_suffix": "để xác nhận. Thao tác này không thể hoàn tác.",
   "settings.delete_everything": "Xóa tất cả",
+  "system.factory_reset.name_mismatch": "Nhập tên công ty chính xác như hiển thị để đặt lại công ty này.",
   "settings.click_to_edit": "Nhấp để chỉnh sửa",
   "settings.click_to_change": "Nhấp để thay đổi",
   "settings.options_only_apply": "Các tùy chọn chỉ áp dụng cho các trường chọn/trạng thái",

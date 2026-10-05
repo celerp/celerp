@@ -2580,6 +2580,7 @@
   "settings.type_reset_prefix": "Geben Sie",
   "settings.type_reset_suffix": "ein, um zu bestätigen. Dieser Vorgang kann nicht rückgängig gemacht werden.",
   "settings.delete_everything": "Alles löschen",
+  "system.factory_reset.name_mismatch": "Geben Sie den Firmennamen genau wie angezeigt ein, um diese Firma zurückzusetzen.",
   "settings.click_to_edit": "Zum Bearbeiten anklicken",
   "settings.click_to_change": "Zum Ändern anklicken",
   "settings.options_only_apply": "Optionen gelten nur für Auswahl-/Statusfelder",
