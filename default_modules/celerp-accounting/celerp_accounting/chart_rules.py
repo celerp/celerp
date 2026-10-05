@@ -16,6 +16,7 @@ account row takes that row FOR UPDATE, so it waits for postings in flight.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -26,6 +27,57 @@ from celerp.models.projections import Projection
 from celerp.services.account_roles import current_settings, role_map
 from celerp.services.company_lock import lock_chart
 from celerp_accounting.models import Account
+
+# The account types the reports know how to sign and classify. This module is
+# authoritative; the chart of accounts screen holds a copy for its dropdown, and a
+# test keeps the two in lockstep.
+ACCOUNT_TYPES = ("asset", "liability", "equity", "revenue", "cogs", "expense", "other")
+
+ACCOUNT_CODE_MAX = 32  # Account.code column width
+
+
+def trimmed_text(value: Any, what: str) -> str:
+    """A text field, trimmed. The database cannot store a NUL character, so one
+    is refused here with the field's name rather than failing the whole write."""
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail=f"{what} must be text.")
+    if "\x00" in value:
+        raise HTTPException(status_code=422, detail=f"{what} cannot contain a NUL character.")
+    return value.strip()
+
+
+def checked_account_code(value: Any) -> str:
+    """The account code, trimmed. Postings and parents refer to accounts by code,
+    so a blank or over-long one is refused rather than stored or cut short."""
+    code = trimmed_text(value, "Account code")
+    if not code:
+        raise HTTPException(status_code=422, detail="Account code is required.")
+    if len(code) > ACCOUNT_CODE_MAX:
+        raise HTTPException(
+            status_code=422, detail=f"Account code must be {ACCOUNT_CODE_MAX} characters or fewer.",
+        )
+    return code
+
+
+def checked_account_name(value: Any) -> str:
+    """The account name, trimmed. Every report labels the account with it."""
+    name = trimmed_text(value, "Account name")
+    if not name:
+        raise HTTPException(status_code=422, detail="Account name is required.")
+    return name
+
+
+def checked_account_type(value: Any) -> str:
+    """The account's type, which decides its sign on every report. A type outside
+    the known set has no honest sign convention, so it is refused rather than
+    guessed at."""
+    if value not in ACCOUNT_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail="Account type must be one of: " + ", ".join(ACCOUNT_TYPES) + ".",
+        )
+    return value
+
 
 # The account types an account may sit under. Cost of sales and operating expenses
 # are both costs and are commonly grouped together; every other type keeps to its own

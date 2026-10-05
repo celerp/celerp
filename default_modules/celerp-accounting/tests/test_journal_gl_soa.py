@@ -2190,7 +2190,7 @@ async def test_the_balance_sheet_rejects_an_unparsable_as_of(client):
 def test_the_screen_offers_exactly_the_account_types_the_api_accepts():
     """The chart screen and the API run in separate processes, so the two copies
     of this list can drift silently. The API is the authoritative side."""
-    from celerp_accounting.routes import ACCOUNT_TYPES
+    from celerp_accounting.chart_rules import ACCOUNT_TYPES
     from ui.routes.accounting_import import ACCOUNT_TYPES as OFFERED
     assert set(OFFERED) == set(ACCOUNT_TYPES)
 

@@ -22,7 +22,12 @@ from celerp.importers.results import ImportOutcome
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp_accounting.models import Account, BankAccount
-from celerp_accounting.chart_rules import check_new_account
+from celerp_accounting.chart_rules import (
+    check_new_account,
+    checked_account_code,
+    checked_account_name,
+    checked_account_type,
+)
 
 JOURNAL_CREATED = "acc.journal_entry.created"
 
@@ -165,9 +170,11 @@ async def create_chart_account(
 async def add_posting_account(
     session: AsyncSession, company_id: uuid.UUID, *, code: str, name: str, account_type: str,
 ) -> None:
-    """A top-level account added for a posting role (``ChartAccess.add_account``)."""
-    await create_chart_account(session, company_id, code=code, name=name, account_type=account_type,
-                               parent_code=None)
+    """A top-level account added through ``ChartAccess.add_account``, checked as an
+    account added in Settings is."""
+    await create_chart_account(session, company_id, code=checked_account_code(code),
+                               name=checked_account_name(name),
+                               account_type=checked_account_type(account_type), parent_code=None)
     await session.flush()
 
 
