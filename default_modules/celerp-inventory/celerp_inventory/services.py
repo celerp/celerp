@@ -1953,6 +1953,16 @@ def is_item_field_key(key: str) -> bool:
 _DROPDOWN_THRESHOLD = 30
 
 
+async def company_category_keys(session: AsyncSession, company_id, company_settings: dict) -> set[str]:
+    """Every category a company has: the ones in its category settings and the ones
+    only its items carry."""
+    category = Projection.state["category"].as_string()
+    carried = (await session.execute(
+        select(category).distinct().where(Projection.company_id == company_id, Projection.entity_type == "item")
+    )).scalars()
+    return {k.strip() for k in (*(company_settings.get("category_schemas") or {}), *carried) if k and k.strip()}
+
+
 def resolve_import_category(value: str, category_keys, display_names: dict) -> tuple[str, str | None]:
     """Resolve a source category to the company's canonical category key.
 
@@ -2534,7 +2544,7 @@ async def build_import_records(
     company = await session.get(Company, company_id)
     company_settings = (company.settings or {}) if company else {}
     currency = company_settings.get("currency") or "USD"
-    category_keys = list(company_settings.get("category_schemas") or {})
+    category_keys = await company_category_keys(session, company_id, company_settings)
     category_names = dict(company_settings.get("category_display_names") or {})
 
     units = await get_company_units(session, company_id)
@@ -3567,6 +3577,10 @@ async def write_import_batch(
     # This also prevents two imports from locking the same item set in opposite orders.
     if body.records:
         await lock_item_code_namespace(session, company_id)
+    company = await session.get(Company, company_id)
+    company_settings = (company.settings or {}) if company else {}
+    category_keys = await company_category_keys(session, company_id, company_settings)
+    category_names = dict(company_settings.get("category_display_names") or {})
 
     for rec in body.records:
         data = dict(rec.data)
@@ -3593,6 +3607,11 @@ async def write_import_batch(
                 "remove these columns and import again"
             )
             continue
+        if data.get("category"):
+            data["category"], category_error = resolve_import_category(data["category"], category_keys, category_names)
+            if category_error:
+                outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {category_error}")
+                continue
 
         if event_type == "item.patched":
             if primary is not None:

@@ -39,6 +39,7 @@ from .services import (
     apply_source_semantics,
     build_item_import_spec,
     commit_import_batch,
+    company_category_keys,
     import_items,
     lot_fields,
     import_preview_hash,
@@ -1394,25 +1395,11 @@ async def list_item_categories(
     from celerp.models.company import Company as _Company
     import uuid as _uuid
 
-    # Categories defined in company settings (category library / vertical presets)
     co = await session.get(
         _Company,
         _uuid.UUID(str(company_id)) if isinstance(company_id, str) else company_id,
     )
-    schema_cats: set[str] = set()
-    if co:
-        schema_cats = {k.strip() for k in ((co.settings or {}).get("category_schemas") or {}).keys() if k.strip()}
-
-    # Categories that exist on actual item projections
-    stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
-    rows = (await session.execute(stmt)).scalars().all()
-    item_cats: set[str] = {
-        str(r.state.get("category") or "").strip()
-        for r in rows
-        if r.state.get("category") and str(r.state.get("category") or "").strip()
-    }
-
-    return sorted(schema_cats | item_cats)
+    return sorted(await company_category_keys(session, company_id, (co.settings or {}) if co else {}))
 
 
 # Upper bound on a single bulk-metadata request. A detail list can carry a few
