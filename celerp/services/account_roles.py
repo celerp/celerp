@@ -190,9 +190,11 @@ class LotOriginError(HTTPException):
     def __init__(self, sku: str):
         super().__init__(
             status_code=409,
-            detail=(f"Stock {sku or 'item'} has no recorded inventory account, so its cost cannot be moved "
-                    "without guessing. Choose its inventory account under Older stock in "
-                    "Settings > Accounting > Posting accounts."),
+            detail=refusal(
+                "posting.older_stock.no_account",
+                f"Stock {sku or 'item'} has no recorded inventory account, so its cost cannot be moved "
+                "without guessing. Choose its inventory account under Older stock in "
+                "Settings > Accounting > Posting accounts.", sku=sku or "item"),
             headers={"X-Celerp-Fix": POSTING_ACCOUNTS_PATH},
         )
 

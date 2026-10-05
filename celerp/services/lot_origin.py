@@ -465,8 +465,9 @@ class _Locked(_Retry):
 
 
 async def _notify_locked(session: AsyncSession, company_id) -> None:
-    """Older stock left unplaced cannot be sold or moved, so a company whose upgrade a period
-    lock holds back is told which lock and what to do, once per lock date; the notice is
+    """Older stock left unplaced cannot be sold or moved until its account is known, so a
+    company whose upgrade a period lock holds back is told which lock and both ways on: choose
+    the account now, or move the lock for the next start. Once per lock date; the notice is
     marked read when the upgrade runs (_mark)."""
     from celerp.notifications import service as notification_service
     from celerp.services.company_lock import locked_company
@@ -475,8 +476,8 @@ async def _notify_locked(session: AsyncSession, company_id) -> None:
     await notification_service.notify_once(
         session, company_id, "accounting", "Older stock waits for an open period",
         f"The books are locked through {day}, so older stock could not be placed on its inventory "
-        "account, and it cannot be sold or moved until it is. Move the period lock before today; "
-        "the next start then places it.",
+        "account. Choose its inventory account under Older stock in Settings > Accounting > "
+        "Posting accounts, or move the period lock before today so the next start places it.",
         action_url=PERIOD_LOCK_PATH,
         i18n={"title": "notice.older_stock_locked.title", "body": "notice.older_stock_locked.body",
               "params": {"day": day}})

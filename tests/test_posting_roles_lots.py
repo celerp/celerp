@@ -133,7 +133,7 @@ async def test_an_older_lot_with_no_provable_account_refuses_to_move_its_cost(se
     assert r.status_code == 200, r.text
     r = await client.post(f"/docs/{r.json()['id']}/finalize", headers=auth["headers"])
     assert r.status_code == 409, r.text
-    assert "no recorded inventory account" in r.json()["detail"]
+    assert "no recorded inventory account" in r.json()["detail"]["message"]
     assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
 
 
@@ -279,7 +279,7 @@ async def test_an_older_lot_waits_for_its_account_and_only_one_that_holds_it_can
     inv = r.json()["id"]
     r = await client.post(f"/docs/{inv}/finalize", headers=auth["headers"])
     assert r.status_code == 409, r.text
-    assert "OLD-2 has no recorded inventory account" in r.json()["detail"]
+    assert "OLD-2 has no recorded inventory account" in r.json()["detail"]["message"]
     assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
     await session.rollback()  # the refused request's work ends with it, as its own session would
 

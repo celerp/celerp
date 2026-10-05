@@ -165,7 +165,7 @@ async def test_older_stock_with_no_provable_account_is_refused_before_anything_c
 
     r = await _merge(client, auth, [a, b])
     assert r.status_code == 409, r.text
-    assert "Stock OLD-A has no recorded inventory account" in r.json()["detail"]
+    assert "Stock OLD-A has no recorded inventory account" in r.json()["detail"]["message"]
     assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
     await session.rollback()
     assert await _items(session, auth) == items

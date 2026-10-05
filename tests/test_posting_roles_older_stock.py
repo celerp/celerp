@@ -39,12 +39,13 @@ from celerp.services.business_time import business_date_at
 from celerp.services.company_lock import locked_company
 from stock_books import assert_settled, older_release_lot
 from test_cost_restatement import _state
-from test_helpers import TZ
+from test_helpers import TZ, in_language
 from test_money_stock_and_contact_invariants import _account_net
 from test_posting_roles_lot_origin import _books_match_lots
 from test_posting_roles_lots import _forget_origin, _lot, _sell
 from test_posting_roles_merge import _merge
 from test_posting_roles_rollout import _startup
+from ui import i18n
 
 pytestmark = pytest.mark.asyncio
 
@@ -583,9 +584,10 @@ async def _lock_notices(session, auth) -> list:
 
 
 async def test_an_upgrade_a_period_lock_holds_back_is_told_once_and_cleared_when_it_runs(session, client, auth):
-    """Older stock the upgrade could not place cannot be sold or moved: the company is told
-    which lock holds it back and what to do, once however often it restarts, and the notice
-    is marked read once the upgrade runs."""
+    """Older stock the upgrade could not place cannot be sold or moved until its account is
+    known: the company is told which lock holds it back and both ways on (choose the account
+    now, or move the lock), once however often it restarts, and the notice is marked read
+    once the upgrade runs."""
     await _older_release(session, auth)
     await _lot(client, auth, 30.0)
     await _opening_entry(session, auth, 30.0)
@@ -595,6 +597,10 @@ async def test_an_upgrade_a_period_lock_holds_back_is_told_once_and_cleared_when
     await _startup(session)
     (notice,) = await _lock_notices(session, auth)
     assert day in notice.body and not notice.read
+    # Choosing the account is open while the period stays locked, so the notice names it.
+    assert notice.body == i18n.t("notice.older_stock_locked.body", "en", day=day)
+    assert _REPAIR in notice.body and "cannot be sold" not in notice.body
+    assert "Buchungskonten" in i18n.t("notice.older_stock_locked.body", "de", day=day)
     assert notice.action_url == "/settings/accounting?tab=period-lock"
     assert notice.i18n["title"] == "notice.older_stock_locked.title" and notice.i18n["params"] == {"day": day}
 
@@ -831,7 +837,11 @@ async def test_an_unresolved_lot_moves_its_cost_once_an_account_that_holds_it_is
     assert r.status_code == 200, r.text
     r = await client.post(f"/docs/{r.json()['id']}/finalize", headers=auth["headers"])
     assert r.status_code == 409, r.text
-    assert "has no recorded inventory account" in r.json()["detail"] and _REPAIR in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert "has no recorded inventory account" in detail["message"] and _REPAIR in detail["message"]
+    german = in_language("de", detail)
+    assert german.startswith(f"Bestand {detail['params']['sku']} hat kein erfasstes Bestandskonto")
+    assert "Buchungskonten" in german
     assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
 
     r = await _choose(client, auth, lot, "1130-P")

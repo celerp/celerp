@@ -151,7 +151,7 @@ async def test_a_restored_copy_keeps_posting_accounts_and_every_origin(real_engi
     doc = await _post(real_client, copy_tok, "/docs", {"doc_type": "invoice", "total": 50.0, "line_items": [
         {"entity_id": lot_ids["LOT-OLDER"], "name": "Lot", "quantity": 1, "unit_price": 50.0, "sell_by": "piece"}]})
     r = await real_client.post(f"/docs/{doc['id']}/finalize", headers=auth(copy_tok))
-    assert r.status_code == 409 and "Stock LOT-OLDER has no recorded inventory account" in r.json()["detail"]
+    assert r.status_code == 409 and "Stock LOT-OLDER has no recorded inventory account" in r.json()["detail"]["message"]
     await _lot(real_client, copy_tok, "LOT-COPY", 5.0)
     assert (await _lots(real_engine, copy))["LOT-COPY"] == "1131"
 
