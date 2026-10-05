@@ -3676,5 +3676,16 @@
   "posting.two_accounts_chosen": "{role} ha due conti scelti.",
   "posting.code_in_use": "Il codice conto {code} è già in uso. Scegli quel conto o aggiungine uno con un altro codice.",
   "posting.already_set": "{role} è già impostato sul conto {code}; modificalo nelle Impostazioni al termine.",
-  "posting.choose_accounts_for": "Scegli il conto di registrazione per: {roles}."
+  "posting.choose_accounts_for": "Scegli il conto di registrazione per: {roles}.",
+  "chart.field.code": "Codice conto",
+  "chart.field.name": "Nome conto",
+  "chart.field.parent_code": "Codice conto superiore",
+  "chart.not_text": "{field} deve essere testo.",
+  "chart.has_nul": "{field} non può contenere un carattere NUL.",
+  "chart.code_too_long": "{field} deve avere al massimo {max} caratteri.",
+  "chart.code_required": "Il codice conto è obbligatorio.",
+  "chart.name_required": "Il nome del conto è obbligatorio.",
+  "chart.type_unknown": "Il tipo di conto deve essere uno di: {choices}.",
+  "chart.code_exists": "Il codice conto {code} esiste già.",
+  "chart.accounting_not_running": "La contabilità non è attiva, quindi non è possibile aggiungere conti al piano dei conti."
 }

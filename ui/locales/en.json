@@ -3676,5 +3676,16 @@
   "posting.two_accounts_chosen": "{role} has two accounts chosen.",
   "posting.code_in_use": "Account code {code} is already in use. Choose that account or add one with another code.",
   "posting.already_set": "{role} is already set to account {code}; change it in Settings after finishing.",
-  "posting.choose_accounts_for": "Choose the posting account for: {roles}."
+  "posting.choose_accounts_for": "Choose the posting account for: {roles}.",
+  "chart.field.code": "Account code",
+  "chart.field.name": "Account name",
+  "chart.field.parent_code": "Parent code",
+  "chart.not_text": "{field} must be text.",
+  "chart.has_nul": "{field} cannot contain a NUL character.",
+  "chart.code_too_long": "{field} must be {max} characters or fewer.",
+  "chart.code_required": "Account code is required.",
+  "chart.name_required": "Account name is required.",
+  "chart.type_unknown": "Account type must be one of: {choices}.",
+  "chart.code_exists": "Account code {code} already exists",
+  "chart.accounting_not_running": "Accounting is not running, so no account can be added to the chart of accounts."
 }

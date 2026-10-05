@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import refusal
 from celerp.events.engine import emit_event
 from celerp.importers.results import ImportOutcome
 from celerp.models.ledger import LedgerEntry
@@ -151,7 +152,8 @@ async def create_chart_account(
         select(Account.id).where(Account.company_id == company_id, Account.code == code)
     )).scalar_one_or_none()
     if existing:
-        raise HTTPException(status_code=409, detail=f"Account code {code} already exists")
+        raise HTTPException(status_code=409, detail=refusal(
+            "chart.code_exists", f"Account code {code} already exists", code=code))
     await check_new_account(session, company_id, account_type=account_type, parent_code=parent_code)
     acc = Account(
         id=uuid.uuid4(),

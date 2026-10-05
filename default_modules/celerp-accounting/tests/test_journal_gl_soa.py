@@ -2167,7 +2167,7 @@ async def test_creating_an_account_with_an_unknown_type_is_rejected(client):
     r = await client.post("/accounting/accounts", json={
         "code": "1191", "name": "Odd", "account_type": "liabilty"}, headers=_h(tok))
     assert r.status_code == 422, r.text
-    assert "asset" in r.json()["detail"] and "liability" in r.json()["detail"]
+    assert "asset" in r.json()["detail"]["message"] and "liability" in r.json()["detail"]["message"]
 
 
 async def test_patching_an_account_to_an_unknown_type_is_rejected(client):
@@ -2175,7 +2175,7 @@ async def test_patching_an_account_to_an_unknown_type_is_rejected(client):
     r = await client.patch("/accounting/accounts/1111",
                            json={"account_type": "cash"}, headers=_h(tok))
     assert r.status_code == 422, r.text
-    assert "cash" not in r.json()["detail"]
+    assert "cash" not in r.json()["detail"]["message"]
 
 
 async def test_the_balance_sheet_rejects_an_unparsable_as_of(client):

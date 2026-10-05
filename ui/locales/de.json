@@ -3676,5 +3676,16 @@
   "posting.two_accounts_chosen": "Für {role} sind zwei Konten gewählt.",
   "posting.code_in_use": "Die Kontonummer {code} ist bereits vergeben. Wählen Sie dieses Konto oder fügen Sie eines mit einer anderen Nummer hinzu.",
   "posting.already_set": "{role} ist bereits auf Konto {code} gesetzt; ändern Sie es nach dem Abschluss in den Einstellungen.",
-  "posting.choose_accounts_for": "Wählen Sie das Buchungskonto für: {roles}."
+  "posting.choose_accounts_for": "Wählen Sie das Buchungskonto für: {roles}.",
+  "chart.field.code": "Kontonummer",
+  "chart.field.name": "Kontoname",
+  "chart.field.parent_code": "Übergeordnete Kontonummer",
+  "chart.not_text": "{field} muss Text sein.",
+  "chart.has_nul": "{field} darf kein NUL-Zeichen enthalten.",
+  "chart.code_too_long": "{field} darf höchstens {max} Zeichen lang sein.",
+  "chart.code_required": "Die Kontonummer ist erforderlich.",
+  "chart.name_required": "Der Kontoname ist erforderlich.",
+  "chart.type_unknown": "Der Kontotyp muss einer der folgenden sein: {choices}.",
+  "chart.code_exists": "Die Kontonummer {code} ist bereits vergeben.",
+  "chart.accounting_not_running": "Die Buchhaltung läuft nicht, daher kann dem Kontenplan kein Konto hinzugefügt werden."
 }

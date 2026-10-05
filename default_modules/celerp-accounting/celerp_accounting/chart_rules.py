@@ -37,34 +37,51 @@ ACCOUNT_TYPES = ("asset", "liability", "equity", "revenue", "cogs", "expense", "
 ACCOUNT_CODE_MAX = 32  # Account.code column width
 
 
-def trimmed_text(value: Any, what: str) -> str:
-    """A text field, trimmed. The database cannot store a NUL character, so one
-    is refused here with the field's name rather than failing the whole write."""
+# The fields a refusal names, with their English labels.
+FIELD_LABELS = {"code": "Account code", "name": "Account name", "parent_code": "Parent code"}
+
+
+def _field(field: str) -> dict:
+    return refusal(f"chart.field.{field}", FIELD_LABELS[field])
+
+
+def trimmed_text(value: Any, field: str) -> str:
+    """A text field (a FIELD_LABELS key), trimmed. The database cannot store a NUL
+    character, so one is refused here with the field's name rather than failing the
+    whole write."""
+    label = FIELD_LABELS[field]
     if not isinstance(value, str):
-        raise HTTPException(status_code=422, detail=f"{what} must be text.")
+        raise HTTPException(status_code=422, detail=refusal(
+            "chart.not_text", f"{label} must be text.", field=_field(field)))
     if "\x00" in value:
-        raise HTTPException(status_code=422, detail=f"{what} cannot contain a NUL character.")
+        raise HTTPException(status_code=422, detail=refusal(
+            "chart.has_nul", f"{label} cannot contain a NUL character.", field=_field(field)))
     return value.strip()
+
+
+def checked_code_length(code: str, field: str) -> str:
+    """``code`` (a code field), refused when it would not fit the code column."""
+    if len(code) > ACCOUNT_CODE_MAX:
+        raise HTTPException(status_code=422, detail=refusal(
+            "chart.code_too_long", f"{FIELD_LABELS[field]} must be {ACCOUNT_CODE_MAX} characters or fewer.",
+            field=_field(field), max=ACCOUNT_CODE_MAX))
+    return code
 
 
 def checked_account_code(value: Any) -> str:
     """The account code, trimmed. Postings and parents refer to accounts by code,
     so a blank or over-long one is refused rather than stored or cut short."""
-    code = trimmed_text(value, "Account code")
+    code = trimmed_text(value, "code")
     if not code:
-        raise HTTPException(status_code=422, detail="Account code is required.")
-    if len(code) > ACCOUNT_CODE_MAX:
-        raise HTTPException(
-            status_code=422, detail=f"Account code must be {ACCOUNT_CODE_MAX} characters or fewer.",
-        )
-    return code
+        raise HTTPException(status_code=422, detail=refusal("chart.code_required", "Account code is required."))
+    return checked_code_length(code, "code")
 
 
 def checked_account_name(value: Any) -> str:
     """The account name, trimmed. Every report labels the account with it."""
-    name = trimmed_text(value, "Account name")
+    name = trimmed_text(value, "name")
     if not name:
-        raise HTTPException(status_code=422, detail="Account name is required.")
+        raise HTTPException(status_code=422, detail=refusal("chart.name_required", "Account name is required."))
     return name
 
 
@@ -73,10 +90,9 @@ def checked_account_type(value: Any) -> str:
     the known set has no honest sign convention, so it is refused rather than
     guessed at."""
     if value not in ACCOUNT_TYPES:
-        raise HTTPException(
-            status_code=422,
-            detail="Account type must be one of: " + ", ".join(ACCOUNT_TYPES) + ".",
-        )
+        choices = ", ".join(ACCOUNT_TYPES)
+        raise HTTPException(status_code=422, detail=refusal(
+            "chart.type_unknown", f"Account type must be one of: {choices}.", choices=choices))
     return value
 
 

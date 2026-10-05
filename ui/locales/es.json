@@ -3676,5 +3676,16 @@
   "posting.two_accounts_chosen": "{role} tiene dos cuentas elegidas.",
   "posting.code_in_use": "El código de cuenta {code} ya está en uso. Elija esa cuenta o añada una con otro código.",
   "posting.already_set": "{role} ya está asignada a la cuenta {code}; cámbiela en Configuración al terminar.",
-  "posting.choose_accounts_for": "Elija la cuenta de contabilización para: {roles}."
+  "posting.choose_accounts_for": "Elija la cuenta de contabilización para: {roles}.",
+  "chart.field.code": "Código de cuenta",
+  "chart.field.name": "Nombre de cuenta",
+  "chart.field.parent_code": "Código de cuenta superior",
+  "chart.not_text": "{field} debe ser texto.",
+  "chart.has_nul": "{field} no puede contener un carácter NUL.",
+  "chart.code_too_long": "{field} debe tener {max} caracteres o menos.",
+  "chart.code_required": "El código de cuenta es obligatorio.",
+  "chart.name_required": "El nombre de cuenta es obligatorio.",
+  "chart.type_unknown": "El tipo de cuenta debe ser uno de: {choices}.",
+  "chart.code_exists": "El código de cuenta {code} ya existe.",
+  "chart.accounting_not_running": "La contabilidad no está activa, así que no se puede añadir ninguna cuenta al plan de cuentas."
 }

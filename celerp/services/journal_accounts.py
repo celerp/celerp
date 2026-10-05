@@ -28,7 +28,14 @@ from typing import Awaitable, Callable
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import ROLE_LABELS, SCHEMA_KEY, AccountRole, is_role, unknown_role
+from celerp.accounting_roles import (
+    ROLE_LABELS,
+    SCHEMA_KEY,
+    AccountRole,
+    is_role,
+    refusal,
+    unknown_role,
+)
 from celerp.models.company import Company
 from celerp.services.account_roles import (
     PostingRoleError,
@@ -102,12 +109,13 @@ async def add_account(session: AsyncSession, company_id, code: str, name: str, a
 
     The chart checks it as an account added in Settings: a blank or over-long code, a
     blank name, a type the reports cannot sign, or a code already in use is refused
-    with an HTTPException carrying a plain message. Refused too while the accounting
+    with an HTTPException carrying a keyed refusal. Refused too while the accounting
     module is not running, since there is no chart to add to. The caller commits.
     """
     chart = chart_access()
     if chart is None:
-        raise HTTPException(status_code=409, detail=(
+        raise HTTPException(status_code=409, detail=refusal(
+            "chart.accounting_not_running",
             "Accounting is not running, so no account can be added to the chart of accounts."))
     await chart.add_account(session, company_id, code=code, name=name, account_type=account_type)
 

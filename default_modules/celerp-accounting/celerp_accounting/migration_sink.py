@@ -18,7 +18,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
-from celerp.importers.results import RecordOutcome
+from celerp.importers.results import RecordOutcome, failure_reason
 from celerp.importers.schema import (
     AccountControl,
     CIFAccount,
@@ -165,7 +165,7 @@ async def _import_accounts(context: SinkContext, accounts: list[CIFAccount]) -> 
                     context, account, resolved.get(account.parent_external_id or ""), existing, taken,
                 )
             except Exception as exc:
-                outcomes[index] = RecordOutcome("", "failed", f"Account {account.name}: {exc}")
+                outcomes[index] = RecordOutcome("", "failed", f"Account {account.name}: {failure_reason(exc)}")
                 continue
             resolved[account.source_external_id] = code
             outcomes[index] = RecordOutcome(code, "created")

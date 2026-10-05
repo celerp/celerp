@@ -289,6 +289,40 @@ def test_finishing_with_posting_accounts_unchosen_is_refused_in_german(page, ui_
         assert i18n.t(f"posting.role.{role}", lang="de") in body, (role, body[:1500])
 
 
+def test_an_added_posting_account_the_chart_refuses_is_refused_in_german(page, ui_server, fresh_company, monkeypatch):
+    """Adding the proposed accounts when the chart cannot take them (here a code longer
+    than the chart allows) shows the chart's refusal in German."""
+    from celerp.services import posting_readiness
+
+    real = posting_readiness._proposals
+    monkeypatch.setattr(posting_readiness, "_proposals", lambda chart: {
+        role: {**proposal, "code": "P" * 30 + proposal["code"]} for role, proposal in real(chart).items()})
+    page.goto("/setup/new-company")
+    page.click('a:has-text("Move from another system")')
+    page.wait_for_url(re.compile(r"/setup/new-company/migrate$"))
+    _upload(page, "Example Bookkeeping")
+    _through_review(page, "Refused Account Goods Ltd")
+    page.click('button:has-text("Create company and migrate")')
+    page.wait_for_url(re.compile(r"/migrations/[0-9a-f-]{36}$"))
+    run_id = _run_id(page)
+    _wait_ready(page, run_id)
+    host = ui_server.split("//", 1)[1].split(":", 1)[0]
+    page.context.add_cookies([{"name": "celerp_lang", "value": "de", "domain": host, "path": "/"}])
+    try:
+        page.goto(f"/migrations/{run_id}/verify")
+        added = page.evaluate("""() => [...document.querySelectorAll(
+                'select[name^="role."], input[type="hidden"][name^="role."]')]
+            .filter(f => !f.value).map(f => { f.value = "__new__"; return f.name; })""")
+        assert added, "every posting account was preselected"
+        page.locator(f"form[action='/migrations/{run_id}/finalize'] button[type='submit']").click()
+        page.wait_for_url(re.compile(rf"/migrations/{run_id}/finalize$"))
+        body = page.locator("body").inner_text()
+    finally:
+        page.context.clear_cookies(name="celerp_lang")
+    assert "Kontonummer darf höchstens 32 Zeichen lang sein." in body, body[:1500]
+    assert "must be 32 characters" not in body
+
+
 @pytest.fixture
 def fake_migration_api(ui_server, monkeypatch):
     """Route only the UI's migration API calls to the in-test fake."""

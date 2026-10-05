@@ -3676,5 +3676,16 @@
   "posting.two_accounts_chosen": "{role} a deux comptes choisis.",
   "posting.code_in_use": "Le numéro de compte {code} est déjà utilisé. Choisissez ce compte ou ajoutez-en un avec un autre numéro.",
   "posting.already_set": "{role} est déjà affecté au compte {code} ; modifiez-le dans les Paramètres une fois terminé.",
-  "posting.choose_accounts_for": "Choisissez le compte d'imputation pour : {roles}."
+  "posting.choose_accounts_for": "Choisissez le compte d'imputation pour : {roles}.",
+  "chart.field.code": "Code du compte",
+  "chart.field.name": "Nom du compte",
+  "chart.field.parent_code": "Code du compte parent",
+  "chart.not_text": "{field} doit être du texte.",
+  "chart.has_nul": "{field} ne peut pas contenir de caractère NUL.",
+  "chart.code_too_long": "{field} doit comporter {max} caractères au maximum.",
+  "chart.code_required": "Le code du compte est obligatoire.",
+  "chart.name_required": "Le nom du compte est obligatoire.",
+  "chart.type_unknown": "Le type de compte doit être l'un de : {choices}.",
+  "chart.code_exists": "Le code de compte {code} existe déjà.",
+  "chart.accounting_not_running": "La comptabilité n'est pas active, aucun compte ne peut donc être ajouté au plan comptable."
 }

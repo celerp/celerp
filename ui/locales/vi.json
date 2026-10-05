@@ -3676,5 +3676,16 @@
   "posting.two_accounts_chosen": "{role} có hai tài khoản được chọn.",
   "posting.code_in_use": "Mã tài khoản {code} đã được sử dụng. Hãy chọn tài khoản đó hoặc thêm tài khoản với mã khác.",
   "posting.already_set": "{role} đã được đặt cho tài khoản {code}; hãy thay đổi trong Cài đặt sau khi hoàn tất.",
-  "posting.choose_accounts_for": "Chọn tài khoản hạch toán cho: {roles}."
+  "posting.choose_accounts_for": "Chọn tài khoản hạch toán cho: {roles}.",
+  "chart.field.code": "Mã tài khoản",
+  "chart.field.name": "Tên tài khoản",
+  "chart.field.parent_code": "Mã tài khoản cha",
+  "chart.not_text": "{field} phải là văn bản.",
+  "chart.has_nul": "{field} không được chứa ký tự NUL.",
+  "chart.code_too_long": "{field} phải có tối đa {max} ký tự.",
+  "chart.code_required": "Mã tài khoản là bắt buộc.",
+  "chart.name_required": "Tên tài khoản là bắt buộc.",
+  "chart.type_unknown": "Loại tài khoản phải là một trong: {choices}.",
+  "chart.code_exists": "Mã tài khoản {code} đã tồn tại.",
+  "chart.accounting_not_running": "Kế toán không chạy, vì vậy không thể thêm tài khoản nào vào hệ thống tài khoản."
 }

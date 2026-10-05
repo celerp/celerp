@@ -22,16 +22,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.ai.files import XLSX_CONTENT_TYPE, load_file
 from celerp.db import get_session
 from celerp.events.engine import emit_event, write_period_lock
+from celerp.importers.results import failure_reason
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting import import_service
 from celerp_accounting.account_tree import account_tree_lines
 from celerp_accounting.chart_rules import (
-    ACCOUNT_CODE_MAX,
     change_account,
     checked_account_code,
     checked_account_name,
     checked_account_type,
+    checked_code_length,
     parent_problem,
     posting_targets,
     trimmed_text,
@@ -384,12 +385,7 @@ def _checked_parent_code(value: Any) -> str | None:
     """The parent account code, trimmed; missing or blank means no parent."""
     if value is None:
         return None
-    parent = trimmed_text(value, "Parent code")
-    if len(parent) > ACCOUNT_CODE_MAX:
-        raise HTTPException(
-            status_code=422, detail=f"Parent code must be {ACCOUNT_CODE_MAX} characters or fewer.",
-        )
-    return parent or None
+    return checked_code_length(trimmed_text(value, "parent_code"), "parent_code") or None
 
 
 
@@ -453,7 +449,7 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
         try:
             code = checked_account_code(raw_code)
         except HTTPException as exc:
-            row_errors[i] = f"{label(i, shown)}: {exc.detail}"
+            row_errors[i] = f"{label(i, shown)}: {failure_reason(exc)}"
             continue
         if code in existing:
             skipped_codes.append(code)
@@ -467,7 +463,7 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
                 "is_active": _parsed_is_active(rec.get("is_active")),
             }
         except HTTPException as exc:
-            row_errors[i] = f"{label(i, code)}: {exc.detail}"
+            row_errors[i] = f"{label(i, code)}: {failure_reason(exc)}"
 
     in_file: dict[str, list[int]] = {}
     for i, rec in enumerate(records):

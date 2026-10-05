@@ -58,3 +58,15 @@ async def test_finishing_with_an_added_account_missing_its_name_is_refused_in_ge
         {"code": "6950", "name": " ", "account_type": "expense", "role": "general_expense"}]})
     assert detail["message"] == "Each added account needs a name." == _in("en", detail)
     assert _in("de", detail) != detail["message"]
+
+
+@pytest.mark.parametrize(("account", "message"), [
+    ({"code": "K" * 33}, "Account code must be 32 characters or fewer."),
+    ({"account_type": "money"}, "Account type must be one of: asset, liability, equity, revenue, cogs, expense, other."),
+    ({"name": "General\x00expenses"}, "Account name cannot contain a NUL character."),
+])
+async def test_an_added_account_the_chart_refuses_is_refused_in_german(session, monkeypatch, account, message):
+    first, *rest = _CHOICES["add_accounts"]
+    detail = await _refused(session, monkeypatch, {**_CHOICES, "add_accounts": [{**first, **account}, *rest]})
+    assert detail["message"] == message == _in("en", detail)
+    assert _in("de", detail) != message, _in("de", detail)

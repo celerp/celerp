@@ -19,6 +19,17 @@ from test_chart_first_party_only import _register
 
 pytestmark = pytest.mark.asyncio
 
+
+def _in(lang: str, detail) -> str:
+    """A refusal as a reader in ``lang`` sees it."""
+    from ui import i18n
+
+    i18n.set_lang(lang)
+    try:
+        return i18n.refusal_text(detail)
+    finally:
+        i18n.set_lang("en")
+
 _KIOSK = '''
 import uuid
 
@@ -94,7 +105,9 @@ async def test_an_invalid_account_is_refused_with_a_plain_message(
     before = set((await session.execute(select(Account.code).where(Account.company_id == cid))).scalars())
     with pytest.raises(HTTPException) as exc:
         await add_account(session, cid, code, name, account_type)
-    assert exc.value.status_code in (409, 422) and exc.value.detail.startswith(message), exc.value.detail
+    detail = exc.value.detail
+    assert exc.value.status_code in (409, 422) and detail["message"].startswith(message), detail
+    assert _in("en", detail) == detail["message"] and _in("de", detail) != detail["message"], _in("de", detail)
     await session.rollback()
     after = set((await session.execute(select(Account.code).where(Account.company_id == cid))).scalars())
     assert after == before
@@ -107,5 +120,7 @@ async def test_no_account_is_added_while_accounting_is_not_running(client, sessi
     monkeypatch.setitem(loader._load_errors, "celerp-accounting", "UI setup failed")
     with pytest.raises(HTTPException) as exc:
         await add_account(session, cid, "KIOSK-3", "Float", "asset")
-    assert exc.value.detail == ("Accounting is not running, so no account can be added "
-                                "to the chart of accounts.")
+    detail = exc.value.detail
+    assert detail["message"] == ("Accounting is not running, so no account can be added "
+                                 "to the chart of accounts.") == _in("en", detail)
+    assert _in("de", detail) != detail["message"]

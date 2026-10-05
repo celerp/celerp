@@ -3676,5 +3676,16 @@
   "posting.two_accounts_chosen": "لـ {role} حسابان مختاران.",
   "posting.code_in_use": "رمز الحساب {code} مستخدم بالفعل. اختر ذلك الحساب أو أضف حسابًا برمز آخر.",
   "posting.already_set": "{role} مضبوط بالفعل على الحساب {code}؛ غيّره من الإعدادات بعد الانتهاء.",
-  "posting.choose_accounts_for": "اختر حساب الترحيل لـ: {roles}."
+  "posting.choose_accounts_for": "اختر حساب الترحيل لـ: {roles}.",
+  "chart.field.code": "رمز الحساب",
+  "chart.field.name": "اسم الحساب",
+  "chart.field.parent_code": "رمز الحساب الأصل",
+  "chart.not_text": "يجب أن يكون {field} نصًا.",
+  "chart.has_nul": "لا يمكن أن يحتوي {field} على حرف NUL.",
+  "chart.code_too_long": "يجب ألا يزيد {field} على {max} حرفًا.",
+  "chart.code_required": "رمز الحساب مطلوب.",
+  "chart.name_required": "اسم الحساب مطلوب.",
+  "chart.type_unknown": "يجب أن يكون نوع الحساب أحد الأنواع التالية: {choices}.",
+  "chart.code_exists": "رمز الحساب {code} موجود بالفعل.",
+  "chart.accounting_not_running": "المحاسبة لا تعمل، لذا لا يمكن إضافة أي حساب إلى دليل الحسابات."
 }

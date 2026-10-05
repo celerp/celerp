@@ -3676,5 +3676,16 @@
   "posting.two_accounts_chosen": "{role} に2つの勘定科目が選択されています。",
   "posting.code_in_use": "勘定科目コード {code} は既に使用されています。その勘定科目を選択するか、別のコードで追加してください。",
   "posting.already_set": "{role} は既に勘定科目 {code} に設定されています。完了後に設定で変更してください。",
-  "posting.choose_accounts_for": "次の転記勘定を選択してください: {roles}。"
+  "posting.choose_accounts_for": "次の転記勘定を選択してください: {roles}。",
+  "chart.field.code": "勘定科目コード",
+  "chart.field.name": "勘定科目名",
+  "chart.field.parent_code": "親勘定科目コード",
+  "chart.not_text": "{field} はテキストである必要があります。",
+  "chart.has_nul": "{field} に NUL 文字は使用できません。",
+  "chart.code_too_long": "{field} は {max} 文字以内にしてください。",
+  "chart.code_required": "勘定科目コードは必須です。",
+  "chart.name_required": "勘定科目名は必須です。",
+  "chart.type_unknown": "勘定科目の種類は次のいずれかにしてください: {choices}。",
+  "chart.code_exists": "勘定科目コード {code} は既に存在します。",
+  "chart.accounting_not_running": "会計が動作していないため、勘定科目表に勘定科目を追加できません。"
 }

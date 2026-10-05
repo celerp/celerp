@@ -3676,5 +3676,16 @@
   "posting.two_accounts_chosen": "{role} ሁለት መለያዎች ተመርጠውለታል።",
   "posting.code_in_use": "የመለያ ኮድ {code} አስቀድሞ ጥቅም ላይ ውሏል። ያንን መለያ ይምረጡ ወይም በሌላ ኮድ ያክሉ።",
   "posting.already_set": "{role} አስቀድሞ ወደ መለያ {code} ተቀናብሯል፤ ከጨረሱ በኋላ በቅንብሮች ውስጥ ይቀይሩት።",
-  "posting.choose_accounts_for": "የመመዝገቢያ መለያ ይምረጡ ለ፦ {roles}።"
+  "posting.choose_accounts_for": "የመመዝገቢያ መለያ ይምረጡ ለ፦ {roles}።",
+  "chart.field.code": "የሂሳብ ኮድ",
+  "chart.field.name": "የሂሳብ ስም",
+  "chart.field.parent_code": "የወላጅ ሂሳብ ኮድ",
+  "chart.not_text": "{field} ጽሑፍ መሆን አለበት።",
+  "chart.has_nul": "{field} የNUL ቁምፊ ሊይዝ አይችልም።",
+  "chart.code_too_long": "{field} ከ{max} ቁምፊዎች መብለጥ የለበትም።",
+  "chart.code_required": "የሂሳብ ኮድ ያስፈልጋል።",
+  "chart.name_required": "የሂሳብ ስም ያስፈልጋል።",
+  "chart.type_unknown": "የሂሳብ አይነት ከሚከተሉት አንዱ መሆን አለበት: {choices}።",
+  "chart.code_exists": "የሂሳብ ኮድ {code} አስቀድሞ አለ።",
+  "chart.accounting_not_running": "የሂሳብ አያያዝ እየሰራ አይደለም፣ ስለዚህ ወደ የሂሳብ ሰንጠረዡ ምንም ሂሳብ መጨመር አይቻልም።"
 }

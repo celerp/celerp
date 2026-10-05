@@ -228,7 +228,7 @@ async def test_create_account_applies_the_same_code_and_name_rules(client, paylo
     h = await _reg(client)
     r = await client.post("/accounting/accounts", headers=h, json=payload)
     assert r.status_code == 422, r.text
-    assert message in r.json()["detail"]
+    assert message in r.json()["detail"]["message"]
 
 
 @pytest.mark.asyncio
@@ -237,14 +237,14 @@ async def test_account_parent_code_is_trimmed_and_length_checked(client):
     r = await client.post("/accounting/accounts", headers=h, json={
         "code": "8610", "name": "Long Parent", "account_type": "asset", "parent_code": "8" * 40})
     assert r.status_code == 422, r.text
-    assert "Parent code must be 32 characters" in r.json()["detail"]
+    assert "Parent code must be 32 characters" in r.json()["detail"]["message"]
     r = await client.post("/accounting/accounts", headers=h, json={
         "code": "8611", "name": "Blank Parent", "account_type": "asset", "parent_code": "  "})
     assert r.status_code == 200, r.text
     assert r.json()["parent_code"] is None
     r = await client.patch("/accounting/accounts/8611", headers=h, json={"parent_code": "8" * 40})
     assert r.status_code == 422, r.text
-    assert "Parent code must be 32 characters" in r.json()["detail"]
+    assert "Parent code must be 32 characters" in r.json()["detail"]["message"]
     r = await client.patch("/accounting/accounts/8611", headers=h, json={"parent_code": " 1000 "})
     assert r.status_code == 200, r.text
     assert (await _chart(client, h))["8611"]["parent_code"] == "1000"
@@ -259,7 +259,7 @@ async def test_bank_account_code_follows_the_account_code_rules(client):
             "currency": "USD", "opening_balance": 0}
     r = await client.post("/accounting/bank-accounts", headers=h, json={**bank, "account_code": "Q" * 33})
     assert r.status_code == 422, r.text
-    assert "32 characters" in r.json()["detail"]
+    assert "32 characters" in r.json()["detail"]["message"]
     r = await client.post("/accounting/bank-accounts", headers=h, json={**bank, "account_code": " 8620 "})
     assert r.status_code == 200, r.text
     assert "8620" in await _chart(client, h)

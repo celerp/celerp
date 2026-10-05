@@ -3676,5 +3676,16 @@
   "posting.two_accounts_chosen": "{role} มีบัญชีที่เลือกไว้สองบัญชี",
   "posting.code_in_use": "รหัสบัญชี {code} ถูกใช้แล้ว เลือกบัญชีนั้นหรือเพิ่มบัญชีด้วยรหัสอื่น",
   "posting.already_set": "{role} ตั้งเป็นบัญชี {code} แล้ว เปลี่ยนได้ในการตั้งค่าหลังจากเสร็จสิ้น",
-  "posting.choose_accounts_for": "เลือกบัญชีบันทึกรายการสำหรับ: {roles}"
+  "posting.choose_accounts_for": "เลือกบัญชีบันทึกรายการสำหรับ: {roles}",
+  "chart.field.code": "รหัสบัญชี",
+  "chart.field.name": "ชื่อบัญชี",
+  "chart.field.parent_code": "รหัสบัญชีแม่",
+  "chart.not_text": "{field} ต้องเป็นข้อความ",
+  "chart.has_nul": "{field} ต้องไม่มีอักขระ NUL",
+  "chart.code_too_long": "{field} ต้องมีไม่เกิน {max} อักขระ",
+  "chart.code_required": "ต้องระบุรหัสบัญชี",
+  "chart.name_required": "ต้องระบุชื่อบัญชี",
+  "chart.type_unknown": "ประเภทบัญชีต้องเป็นหนึ่งใน: {choices}",
+  "chart.code_exists": "รหัสบัญชี {code} มีอยู่แล้ว",
+  "chart.accounting_not_running": "ระบบบัญชีไม่ได้ทำงาน จึงไม่สามารถเพิ่มบัญชีในผังบัญชีได้"
 }

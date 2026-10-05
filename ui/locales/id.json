@@ -3676,5 +3676,16 @@
   "posting.two_accounts_chosen": "{role} memiliki dua akun yang dipilih.",
   "posting.code_in_use": "Kode akun {code} sudah digunakan. Pilih akun tersebut atau tambahkan akun dengan kode lain.",
   "posting.already_set": "{role} sudah diatur ke akun {code}; ubah di Pengaturan setelah selesai.",
-  "posting.choose_accounts_for": "Pilih akun posting untuk: {roles}."
+  "posting.choose_accounts_for": "Pilih akun posting untuk: {roles}.",
+  "chart.field.code": "Kode akun",
+  "chart.field.name": "Nama akun",
+  "chart.field.parent_code": "Kode akun induk",
+  "chart.not_text": "{field} harus berupa teks.",
+  "chart.has_nul": "{field} tidak boleh berisi karakter NUL.",
+  "chart.code_too_long": "{field} paling banyak {max} karakter.",
+  "chart.code_required": "Kode akun wajib diisi.",
+  "chart.name_required": "Nama akun wajib diisi.",
+  "chart.type_unknown": "Jenis akun harus salah satu dari: {choices}.",
+  "chart.code_exists": "Kode akun {code} sudah ada.",
+  "chart.accounting_not_running": "Akuntansi tidak berjalan, jadi tidak ada akun yang dapat ditambahkan ke bagan akun."
 }
