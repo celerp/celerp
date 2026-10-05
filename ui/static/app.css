@@ -1113,7 +1113,7 @@ a:hover { text-decoration: underline; }
 .charts-section { margin-bottom: 24px; }
 .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } }
-.chart-card { background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 16px; }
+.chart-card { min-width: 0; background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 16px; }
 .chart-card--wide { margin-bottom: 20px; }
 .chart-line-wrap { position: relative; height: 230px; }
 .chart-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--c-text); }
@@ -1734,11 +1734,14 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .vert-cat-table .cell--action { width: 100px; text-align: right; }
 .vert-cat-table .th--action { width: 100px; text-align: right; }
 /* Your Categories table */
-.your-cats-table { table-layout: fixed; }
+/* Fills its card; the buttons take their own width in every language and the name
+   column the rest, ellipsized (max-width: 0 lets a nowrap cell shrink). */
+.your-cats-table { width: 100%; }
 .your-cats-table td, .your-cats-table th { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.your-cats-name { width: 100%; max-width: 0; }
 .your-cats-fields { width: 80px; text-align: center !important; }
-.your-cats-action { width: 90px; text-align: right !important; }
-.cat-add-form { display: flex; align-items: center; gap: 6px; }
+.your-cats-action { text-align: right !important; }
+.cat-add-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .cat-add-input { width: 200px !important; flex: 0 0 200px; }
 .cell--left { text-align: left; }
 .cell--center { text-align: center; }

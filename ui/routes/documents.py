@@ -279,7 +279,7 @@ def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kw
     return _shared_doc_files_section(entity_type, entity_id, files, **kwargs)
 from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
-from ui.i18n import t, get_lang
+from ui.i18n import t, get_lang, category_label
 from ui.routes.reports import _date_filter_bar, _parse_dates, _resolve_preset
 
 logger = logging.getLogger(__name__)
@@ -2217,13 +2217,16 @@ celerpUpdateBulkAlloc();
         except Exception:
             locations = []
 
-        item_categories: list[str] = []
+        item_categories: dict[str, str] = {}
         chart_accounts: list[dict] = []
         if doc_type in ("purchase_order", "bill", "consignment_in"):
             try:
-                item_categories = await api.list_item_categories(token)
+                _keys = await api.list_item_categories(token)
+                _names = await api.get_category_display_names(token)
+                item_categories = dict(sorted(((k, category_label(k, _names.get(k))) for k in _keys),
+                                              key=lambda kv: kv[1].lower()))
             except Exception:
-                item_categories = []
+                item_categories = {}
             try:
                 chart_accounts = (await api.get_chart(token)).get("items", [])
             except Exception:
@@ -5903,7 +5906,7 @@ async def doc_detail_connectors(company: dict) -> set[str]:
         str(company.get("id") or ""), required_connectors("doc_detail_actions", "doc_detail_badges"))
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
                 connected_connectors: set[str] | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
@@ -6740,12 +6743,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
             _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
             _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
-            _cats = item_categories or []
+            _cats = item_categories or {}
             if _show_category and is_draft:
                 _cat_val = li.get("category") or ""
                 _cat_options = [Option("", value="")]
-                for c in _cats:
-                    _cat_options.append(Option(c, value=c, selected=(c == _cat_val)))
+                for c, label in _cats.items():
+                    _cat_options.append(Option(label, value=c, selected=(c == _cat_val)))
                 _cat_options.append(Option(t("label._add_new"), value="__add_new__"))
                 category_cell = Td(Select(
                     *_cat_options,
@@ -6754,7 +6757,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     onchange="if(this.value==='__add_new__'){window.open('/settings/inventory?tab=category-library','_blank');this.value='';}else{celerpAutoSave();}",
                 ), cls="col-cat")
             elif _show_category:
-                category_cell = Td(li.get("category") or "--", cls="col-cat")
+                _cat_val = li.get("category") or ""
+                category_cell = Td(category_label(_cat_val, _cats.get(_cat_val)) if _cat_val else "--", cls="col-cat")
             else:
                 category_cell = None
 
@@ -6917,11 +6921,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         def _li_empty_row() -> FT:
             _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
             _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
-            _cats = item_categories or []
+            _cats = item_categories or {}
             if _show_category:
                 _cat_options = [Option("", value="")]
-                for c in _cats:
-                    _cat_options.append(Option(c, value=c))
+                for c, label in _cats.items():
+                    _cat_options.append(Option(label, value=c))
                 _cat_options.append(Option(t("label._add_new"), value="__add_new__"))
                 _cat_cell = Td(Select(
                     *_cat_options,

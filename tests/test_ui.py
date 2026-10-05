@@ -15366,7 +15366,7 @@ class TestVendorDocCategoryColumn:
         from ui.routes.documents import _doc_detail
         from fasthtml.common import to_xml
         doc = self._make_bill(status="draft")
-        html = to_xml(_doc_detail(doc, item_categories=["Electronics", "Tools"]))
+        html = to_xml(_doc_detail(doc, item_categories={"electronics": "Electronics", "tools": "Tools"}))
         desc_pos = html.find("th.description") if "th.description" in html else html.find(">Description<")
         cat_pos = html.find(">Category<")
         sku_pos = html.find(">SKU") if ">SKU" in html else html.find("th.skuitem")
@@ -15379,7 +15379,7 @@ class TestVendorDocCategoryColumn:
         from ui.routes.documents import _doc_detail
         from fasthtml.common import to_xml
         doc = self._make_bill(status="draft")
-        html = to_xml(_doc_detail(doc, item_categories=["Electronics", "Tools"]))
+        html = to_xml(_doc_detail(doc, item_categories={"electronics": "Electronics", "tools": "Tools"}))
         assert "Electronics" in html
         assert "Tools" in html
 
@@ -15395,7 +15395,7 @@ class TestVendorDocCategoryColumn:
                  "sell_by": "piece", "category": "Electronics", "tax_rate": 0, "line_total": 100}
             ],
         }
-        html = to_xml(_doc_detail(doc, item_categories=["Electronics"]))
+        html = to_xml(_doc_detail(doc, item_categories={"electronics": "Electronics"}))
         assert ">Category<" not in html
 
     def test_catalog_lookup_returns_category(self):
@@ -15410,7 +15410,7 @@ class TestVendorDocCategoryColumn:
         # Ensure _doc_detail accepts item_categories kwarg without error
         doc = self._make_bill()
         from fasthtml.common import to_xml
-        html = to_xml(_doc_detail(doc, item_categories=["Electronics"]))
+        html = to_xml(_doc_detail(doc, item_categories={"electronics": "Electronics"}))
         assert html  # Must not raise
 
     @pytest.mark.asyncio
@@ -15446,7 +15446,7 @@ class TestVendorDocReceiveAsColumn:
         from ui.routes.documents import _doc_detail
         from fasthtml.common import to_xml
         doc = self._make_bill(status="draft")
-        html = to_xml(_doc_detail(doc, item_categories=[]))
+        html = to_xml(_doc_detail(doc, item_categories={}))
         assert ">Type<" in html, "Type header must be present in bill draft"
         assert 'data-name="receive_as"' in html, "receive_as select must be present"
 
@@ -15462,7 +15462,7 @@ class TestVendorDocReceiveAsColumn:
                  "sell_by": "piece", "tax_rate": 0, "line_total": 100}
             ],
         }
-        html = to_xml(_doc_detail(doc, item_categories=[]))
+        html = to_xml(_doc_detail(doc, item_categories={}))
         assert ">Type<" not in html, "Type header must not appear for invoices"
         # The JS includes data-name="receive_as" as code text, so check for the select element specifically
         assert '<select' not in html or 'data-name="receive_as"' not in html.split('<script')[0], \

@@ -26,7 +26,7 @@ _VERTICAL_TAGS: tuple[str, ...] = (
 )
 _TAG_LABELS: dict[str, str] = {tag: f"enum.vertical_tag.{tag}" for tag in _VERTICAL_TAGS}
 from ui.config import COOKIE_NAME
-from ui.i18n import t, get_lang
+from ui.i18n import t, get_lang, category_label, category_labels
 
 from ui.routes.settings import (
     _token,
@@ -238,6 +238,7 @@ def _categories_tab(
                   cls="btn btn--secondary"),
                 cls="settings-card",
             )
+        cat_name = (cat_display_names or {}).get(cat) or category_label(cat)
 
         enc = _q(cat, safe="")
         sorted_fields = _load_cat_schema_sorted(cat_schemas[cat])
@@ -278,8 +279,8 @@ def _categories_tab(
                   cls="btn btn--secondary btn--xs"),
                 cls="mb-md",
             ),
-            H3(t("settings_inventory.category_fields_heading", cat=cat), cls="settings-section-title"),
-            P(t("settings_inventory.category_fields_hint", cat=cat), cls="settings-hint"),
+            H3(t("settings_inventory.category_fields_heading", cat=cat_name), cls="settings-section-title"),
+            P(t("settings_inventory.category_fields_hint", cat=cat_name), cls="settings-hint"),
             Table(
                 Thead(Tr(Th("#"), Th(t("th.label")), Th(t("th.doc_type")),
                          Th(t("th.required")), Th(t("th.editable")), Th(t("th.show_in_table")),
@@ -351,7 +352,7 @@ def _categories_tab(
     # ── Section C: Browse & Add Categories ───────────────────────────
     if vert_categories:
         groups: dict[str, list[dict]] = _dd(list)
-        for vc in sorted(vert_categories, key=lambda c: c.get("display_name", "")):
+        for vc in sorted(vert_categories, key=lambda c: category_label(c.get("name", ""), c.get("display_name"))):
             tag = (vc.get("vertical_tags") or ["other"])[0]
             groups[tag].append(vc)
 
@@ -374,8 +375,9 @@ def _categories_tab(
                 cname = vc.get("name", "")
                 cdisplay = vc.get("display_name", cname)
                 already = cdisplay in applied_names or cname in applied_names
+                clabel = category_label(cname, cdisplay)
                 rows.append(Tr(
-                    Td(cdisplay, cls="cell"),
+                    Td(clabel, cls="cell"),
                     Td(
                         Span(t("settings._applied"), cls="badge badge--active") if already else
                         Form(
@@ -389,7 +391,7 @@ def _categories_tab(
                         cls="cell cell--action",
                     ),
                     cls="data-row vert-cat-row",
-                    data_name=cdisplay.lower(),
+                    data_name=clabel.lower(),
                 ))
             group_sections.append(
                 Details(
@@ -479,7 +481,7 @@ def setup_routes(app):
             cat_schemas = await api.get_all_category_schemas(token)
             if tab == "categories":
                 cat_schemas_company = await api.get_company_category_schemas(token)
-                cat_display_names = await api.get_category_display_names(token)
+                cat_display_names = category_labels(await api.get_category_display_names(token))
                 if not cat:
                     vert_categories = await api.list_verticals_categories(token)
                     vert_presets = await api.list_verticals_presets(token)

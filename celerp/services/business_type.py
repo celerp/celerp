@@ -87,9 +87,9 @@ async def set_business_type(
         "modules": modules,
         "restart_required": any(not is_running(n) and restart_would_load(n) for n in modules),
         "changes": {
-            "categories_added": [
-                labels.get(k, k) for k in with_categories["category_schemas"] if k not in old_schemas
-            ],
+            "categories_added": {
+                k: labels.get(k, k) for k in with_categories["category_schemas"] if k not in old_schemas
+            },
             "modules_enabled": [module_label(n) for n in modules if n not in enabled_before],
             "settings_updated": _changed_keys(with_categories, with_presets),
             "defaults_updated": _changed_keys(with_presets, with_defaults),

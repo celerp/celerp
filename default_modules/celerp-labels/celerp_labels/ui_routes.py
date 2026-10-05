@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import httpx
 import logging
-from ui.i18n import t, get_lang
+from ui.i18n import t, get_lang, category_label
 
 try:
     from starlette.requests import Request
@@ -1315,8 +1315,11 @@ def setup_ui_routes(app) -> None:
                 r2 = await c.get(f"{base}/companies/me/category-schemas", headers=headers)
                 if r2.status_code == 200:
                     cat_data = r2.json()
+                    r_names = await c.get(f"{base}/companies/me/category-display-names", headers=headers)
+                    cat_names = r_names.json() if r_names.status_code == 200 else {}
                     if isinstance(cat_data, dict):
-                        for cat_name, fields in cat_data.items():
+                        for cat_key, fields in cat_data.items():
+                            cat_name = category_label(cat_key, cat_names.get(cat_key))
                             if not isinstance(fields, list):
                                 continue
                             for f in fields:

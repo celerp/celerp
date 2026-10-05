@@ -147,6 +147,23 @@ def price_list_label(name: str, lang: str | None = None) -> str:
     return t(key, lang) if key else name
 
 
+def category_label(key: str, stored: str | None = None, lang: str | None = None) -> str:
+    """Display name for an item category: a library category in the user's language
+    while it keeps its library name, a renamed or company-made one exactly as named.
+    The English catalog mirrors the library's display names (tests hold them in
+    lockstep). Falls back to the key so a category never renders blank."""
+    tkey = f"category.{key}"
+    default = _cached_load("en").get(tkey)
+    if default is not None and (not stored or stored == default):
+        return t(tkey, lang)
+    return stored or key
+
+
+def category_labels(names: dict) -> dict:
+    """``category_label`` over a company's stored {key: name} map."""
+    return {k: category_label(k, v) for k, v in (names or {}).items()}
+
+
 def field_label(f: dict) -> str:
     """Display label for an item-schema field, resolved through t() at render time.
 

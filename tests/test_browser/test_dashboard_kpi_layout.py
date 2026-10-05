@@ -33,3 +33,20 @@ def test_kpi_rows_fill_evenly(page: Page, width):
                 right = max(b["x"] + b["width"] for b in r)
                 assert abs(right - (gbox["x"] + gbox["width"])) <= 1, f"group {g} row {len(r)} cards stops short"
     assert len(widths) == 1, f"KPI groups use different columns: {widths}"
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_chart_cards_fit_the_screen(page: Page, fresh_company, width):
+    """A chart's canvas never pushes its card past the screen edge on a phone."""
+    for i in range(3):
+        r = fresh_company.post("/items", json={"sku": f"CH-{i}", "name": "Chart stone", "quantity": 1,
+                                               "sell_by": "piece", "category": "colored_stone"})
+        assert r.status_code in (200, 201), r.text
+    page.set_viewport_size({"width": width, "height": 900})
+    page.goto("/dashboard")
+    page.wait_for_selector("#chart-inventory-cat")
+    grid = page.locator(".charts-grid").bounding_box()
+    for card in page.locator(".charts-grid > .chart-card").all():
+        box = card.bounding_box()
+        assert box["x"] + box["width"] <= grid["x"] + grid["width"] + 1, \
+            f"a chart card runs past the screen at {width}px: {box} vs {grid}"

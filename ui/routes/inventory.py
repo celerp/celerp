@@ -40,7 +40,7 @@ from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBAC
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from celerp.importers.tabular import known_headers
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
-from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label
+from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels
 from celerp.services.units import is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import splitting_allowed
 from celerp_inventory.services import (
@@ -1047,7 +1047,7 @@ async def _inventory_content(
     # not a per-render round-trip.
     unit_names: list[str] = [u["name"] for u in units if u.get("name")]
     units_map: dict[str, dict] = {u["name"]: u for u in units if u.get("name")}
-    category_label_map: dict = category_display_names or {}
+    category_label_map: dict = category_labels(category_display_names)
 
     from celerp.modules.slots import get as get_slot
     _settings = company.get("settings") or {}
@@ -1806,13 +1806,14 @@ def setup_routes(app):
         if denied:
             return denied
         try:
-            schema, item, company, cat_schemas, price_lists, units_resp = await asyncio.gather(
+            schema, item, company, cat_schemas, price_lists, units_resp, category_names = await asyncio.gather(
                 api.get_item_schema(token),
                 api.get_item(token, entity_id),
                 api.get_company(token),
                 api.get_all_category_schemas(token),
                 api.get_price_lists(token),
                 api.get_units(token),
+                _category_names(token),
             )
             ledger = (await api.list_ledger(token, {"entity_id": entity_id, "limit": 10})).get("items", [])
             locations = (await api.get_locations(token)).get("items", [])
@@ -1870,7 +1871,7 @@ def setup_routes(app):
         units_map = {u["name"]: u for u in units_list}
         # Attach reorder velocity-suggestion hints (grey placeholder for empty reorder fields).
         await _inject_reorder_hints(token, item)
-        detail_renderers = _inventory_cell_renderers(schema, unit_names, units_map, currency=currency)
+        detail_renderers = _inventory_cell_renderers(schema, unit_names, units_map, category_names, currency=currency)
 
         _item_role = _get_role(request)
         _item_settings = company.get("settings") or {}
@@ -2312,8 +2313,10 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
         items = (await api.list_items(token, {"limit": 1000, "status": "all"})).get("items", [])
+        cat = item.get("category") or ""
+        category = category_label(cat, (await _category_names(token)).get(cat)) if cat else ""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, items, today)))
+        return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, items, today, category)))
 
     @app.post("/api/items/{entity_id}/gallery-hero/{file_id}")
     async def gallery_set_hero(request: Request, entity_id: str, file_id: str):
@@ -2395,10 +2398,7 @@ function celerpPrintLabel(entityId, templateId) {
             cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names, weight_unit_names)
         label_map: dict | None = None
         if field == "category":
-            try:
-                label_map = await api.get_category_display_names(token)
-            except Exception:
-                label_map = None
+            label_map = await _category_names(token)
         elif field == "inventory_type":
             label_map = _inventory_type_labels()
         # location_name: render a select cell with locations + "Add new" as last option
@@ -2464,10 +2464,7 @@ function celerpPrintLabel(entityId, templateId) {
         from ui.components.table import display_cell
         label_map: dict | None = None
         if field == "category":
-            try:
-                label_map = await api.get_category_display_names(token)
-            except Exception:
-                label_map = None
+            label_map = await _category_names(token)
         elif field == "inventory_type":
             label_map = _inventory_type_labels()
         # Virtual total fields store no value in item state; derive from primitives
@@ -2761,10 +2758,7 @@ function celerpPrintLabel(entityId, templateId) {
             current_url = request.headers.get("hx-current-url", "")
             if "/inventory/item:" in current_url:
                 # Detail page: return display cell + OOB reload of attributes section
-                try:
-                    label_map = await api.get_category_display_names(token)
-                except Exception:
-                    label_map = {}
+                label_map = await _category_names(token)
                 f_def2, cell_type2, options2, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
                 from ui.components.table import display_cell
                 cat_cell = display_cell(
@@ -2951,10 +2945,7 @@ function celerpPrintLabel(entityId, templateId) {
         from ui.components.table import display_cell
         label_map = _inventory_type_labels() if field == "inventory_type" else None
         if field == "category":
-            try:
-                label_map = await api.get_category_display_names(token)
-            except Exception:
-                label_map = None
+            label_map = await _category_names(token)
         # Reorder fields: if saved empty, re-show the grey suggestion immediately.
         _placeholder = await _reorder_placeholder(token, entity_id, field, item.get(field))
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
@@ -3047,10 +3038,7 @@ function celerpPrintLabel(entityId, templateId) {
             return Response(str(e.detail), status_code=500)
         unit_names = [u["name"] for u in units_resp if u.get("name")]
         units_map = {u["name"]: u for u in units_resp if u.get("name")}
-        try:
-            category_label_map = await api.get_category_display_names(token)
-        except Exception:
-            category_label_map = {}
+        category_label_map = await _category_names(token)
         try:
             company = await api.get_company(token)
             currency = (company.get("currency") or "").strip() or None
@@ -3734,6 +3722,7 @@ function celerpPrintLabel(entityId, templateId) {
             categories = await api.list_item_categories(token)
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--warning"))
+        category_names = await _category_names(token)
 
         child_sku = await _next_transform_sku(token, item.get("sku", ""))
 
@@ -3746,7 +3735,8 @@ function celerpPrintLabel(entityId, templateId) {
             onchange="transformUnitChanged(this)",
         )
         cat_select = Select(
-            *[Option(c, value=c, selected=(c == parent_category)) for c in categories],
+            *[Option(category_label(c, category_names.get(c)), value=c, selected=(c == parent_category))
+              for c in categories],
             name="child_category",
             cls="form-input form-input--sm",
             style="min-width:160px",
@@ -5394,6 +5384,15 @@ def _status_tabs(p: dict, vertical: str = "") -> FT:
 _INVENTORY_TYPE_SLUGS: tuple[str, ...] = ("stocked", "component", "service", "non_stocked", "freight")
 
 
+async def _category_names(token: str) -> dict:
+    """The company's category names as the user reads them, keyed by category; empty
+    when they cannot be fetched, so cells fall back to the key."""
+    try:
+        return category_labels(await api.get_category_display_names(token))
+    except Exception:
+        return {}
+
+
 def _inventory_type_labels() -> dict[str, str]:
     """Raw inventory_type slug -> translated display label, built per request."""
     return {raw: display_enum(raw, domain="inventory_type") for raw in _INVENTORY_TYPE_SLUGS}
@@ -5666,9 +5665,10 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
     # Category renderer: shows display name instead of slug
     if category_label_map:
         _clm = category_label_map
-        def _cat_renderer(entity_id: str, row: dict, _lm=_clm) -> FT:
+        _cat_def = next((f for f in schema if f["key"] == "category"), {})
+        def _cat_renderer(entity_id: str, row: dict, _lm=_clm, _f=_cat_def) -> FT:
             return display_cell(entity_id=entity_id, field="category", value=row.get("category", ""),
-                                cell_type="select", editable=True, label_map=_lm)
+                                cell_type="select", editable=_f.get("editable", True), label_map=_lm)
         renderers["category"] = _cat_renderer
 
     # Price column renderers: show currency symbol + "/ sell_unit" annotation
@@ -6667,7 +6667,7 @@ def _component_label(c: dict, by_id: dict[str, dict]) -> str:
     return f"{sku} - {name}".strip(" -") or EMPTY
 
 
-def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: str) -> FT:
+def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: str, category: str = "") -> FT:
     """Standalone printable production worksheet: product info + images + materials + workflow.
     Costs never appear here — this is a shop-floor build sheet, not a costing document. Mirrors
     the document print view (auto window.print(); the browser saves it as one PDF)."""
@@ -6750,7 +6750,7 @@ def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: 
             Div(
                 Div(
                     Div(name, cls="ws-title"),
-                    Div(t("inventory.ws_sku", sku=sku) + (f"  ·  {item.get('category')}" if item.get("category") else ""), cls="ws-sub"),
+                    Div(t("inventory.ws_sku", sku=sku) + (f"  ·  {category}" if category else ""), cls="ws-sub"),
                     cls="ws-headl",
                 ),
                 Div(

@@ -25,7 +25,7 @@ from ui.config import get_token as _token
 from ui.config import get_role as _get_role
 from celerp.services.auth import MIN_PASSWORD_LENGTH
 from celerp.services.pricing import ROUNDING_CHOICES
-from ui.i18n import t, get_lang, tier_label
+from ui.i18n import t, get_lang, tier_label, category_label
 from ui.routes.documents import _action_error
 from ui.routes.setup import business_type_label, business_type_options
 
@@ -68,6 +68,22 @@ async def _check_permission(
     return None
 
 
+async def _category_name(token: str, key: str) -> str:
+    """The name a category shows the user, from the company's stored names."""
+    try:
+        names = await api.get_category_display_names(token)
+    except Exception:
+        names = {}
+    return category_label(key, names.get(key))
+
+
+async def _category_field_count(token: str, key: str) -> int:
+    try:
+        return len((await api.get_company_category_schemas(token)).get(key, []))
+    except Exception:
+        return 0
+
+
 def _category_row(key: str, display_name: str, field_count: int) -> FT:
     """Single category Tr for the Your Categories table."""
     from urllib.parse import quote as _q
@@ -77,7 +93,7 @@ def _category_row(key: str, display_name: str, field_count: int) -> FT:
                  hx_get=f"/settings/categories/{_q(key, safe='')}/edit",
                  hx_target="closest tr",
                  hx_swap="outerHTML"),
-            cls="cell",
+            cls="cell your-cats-name",
         ),
         Td(str(field_count), cls="cell cell--center your-cats-fields"),
         Td(
@@ -2220,7 +2236,7 @@ def setup_routes(app):
         except APIError as e:
             return P(str(e.detail), cls="error-banner")
         return Div(
-            Span(t("settings.category_added", name=result.get("display_name", name)),
+            Span(t("settings.category_added", name=category_label(name, result.get("display_name"))),
                  cls="flash flash--success"),
             id="verticals-apply-result",
         )
@@ -2266,7 +2282,7 @@ def setup_routes(app):
             else:
                 msg = str(detail)
             return Tr(
-                Td(category_key, cls="cell"),
+                Td(await _category_name(token, category_key), cls="cell"),
                 Td(
                     A(t("settings.edit"), href=f"/settings/inventory?tab=category-library&cat={category_key}", cls="auth-link"),
                     cls="cell",
@@ -2291,8 +2307,8 @@ def setup_routes(app):
         return Tr(
             Td(
                 Form(
-                    Input(type="text", name="new_name", value=category_key,
-                          cls="form-input form-input--sm",
+                    Input(type="text", name="new_name", value=await _category_name(token, category_key),
+                          cls="form-input form-input--sm cat-add-input",
                           autofocus=True),
                     Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
                     Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--xs",
@@ -2302,31 +2318,20 @@ def setup_routes(app):
                     hx_patch=f"/settings/categories/{category_key}",
                     hx_target="closest tr",
                     hx_swap="outerHTML",
+                    cls="cat-add-form",
                 ),
-                cls="cell",
+                colspan="3", cls="cell",
             ),
-            Td("", cls="cell"),
-            Td("", cls="cell"),
             cls="data-row",
         )
 
     @app.get("/settings/categories/{category_key}/cancel")
     async def settings_category_rename_cancel(request: Request, category_key: str):
         token = _token(request)
-        display_name = category_key
-        if token:
-            try:
-                dn_map = await api.get_category_display_names(token)
-                display_name = dn_map.get(category_key, category_key)
-            except Exception:
-                pass
-        schemas: dict = {}
-        if token:
-            try:
-                schemas = await api.get_company_category_schemas(token)
-            except Exception:
-                pass
-        return _category_row(category_key, display_name, len(schemas.get(category_key, [])))
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        return _category_row(category_key, await _category_name(token, category_key),
+                             await _category_field_count(token, category_key))
 
     @app.patch("/settings/categories/{category_key}")
     async def settings_category_rename(request: Request, category_key: str):
@@ -2337,18 +2342,17 @@ def setup_routes(app):
         new_name = str(form.get("new_name", "")).strip()
         if not new_name:
             return P(t("settings.field_is_required", label=t("settings.new_category_name")), cls="error-banner")
+        # Saving the name as shown (a library category reads in the user's language) is
+        # no rename: the category keeps its library name and keeps translating.
+        if new_name == await _category_name(token, category_key):
+            return _category_row(category_key, new_name, await _category_field_count(token, category_key))
         try:
             await api.rename_category(token, category_key, new_name)
         except APIError as e:
             return P(str(e.detail), cls="error-banner")
         import re as _re
         new_key = _re.sub(r"[^a-z0-9]+", "_", new_name.lower()).strip("_")
-        schemas: dict = {}
-        try:
-            schemas = await api.get_company_category_schemas(token)
-        except Exception:
-            pass
-        return _category_row(new_key, new_name, len(schemas.get(new_key, [])))
+        return _category_row(new_key, category_label(new_key, new_name), await _category_field_count(token, new_key))
 
     @app.post("/settings/company/reset")
     async def company_reset_ui(request: Request):
@@ -2719,7 +2723,8 @@ def _business_type_change_lines(changes: dict) -> list[str]:
     settings_changed = [t(_BUSINESS_TYPE_SETTING_LABELS[k]) if k in _BUSINESS_TYPE_SETTING_LABELS else k
                         for k in setting_keys]
     lines = []
-    for key, names in (("categories", changes.get("categories_added")),
+    categories = [category_label(k, v) for k, v in (changes.get("categories_added") or {}).items()]
+    for key, names in (("categories", categories),
                        ("modules", changes.get("modules_enabled")),
                        ("settings", settings_changed)):
         if names:

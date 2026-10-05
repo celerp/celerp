@@ -14,7 +14,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 
 from fasthtml.common import *
-from ui.i18n import t, get_lang
+from ui.i18n import t, get_lang, category_label
 from ui.components.table import EMPTY, fmt_money, fmt_rate
 
 # Known ledger event types. The label for each is resolved at render time via
@@ -318,7 +318,7 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         if child_sku:
             parts.append(f"→ {child_sku}")
         if child_category:
-            parts.append(f"({child_category})")
+            parts.append(f"({category_label(child_category)})")
         return " ".join(parts) if parts else ""
     if event_type == "item.merged":
         sources = data.get("source_entity_ids", [])
@@ -481,6 +481,8 @@ def _fmt_field_value(key: str, value, currency: str | None) -> str:
         return fmt_price(value, key, currency)
     if key in _DATE_FIELD_KEYS or key.endswith("_date"):
         return str(value)[:10]
+    if key == "category":
+        return category_label(str(value))
     s = str(value)
     return s[:40] + "…" if len(s) > 40 else s
 
@@ -862,7 +864,7 @@ def _origin_detail(data: dict, with_category: bool = False) -> str:
     if data.get("weight") is not None:
         parts.append(f"{t('activity.m_wt')}: 0 → {fmt_qty(data.get('weight'))}")
     if with_category and data.get("category"):
-        parts.append(f"{t('activity.m_cat')}: {data.get('category')}")
+        parts.append(f"{t('activity.m_cat')}: {category_label(data['category'])}")
     return ", ".join(parts)
 
 

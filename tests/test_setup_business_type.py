@@ -256,7 +256,7 @@ class TestSetupRestart:
         assert r.headers["location"].endswith("/setup/activating")
 
 
-_CHANGES = {"categories_added": ["Diamond", "Ruby"], "modules_enabled": ["Manufacturing"],
+_CHANGES = {"categories_added": {"diamond": "Diamond", "ruby": "Ruby"}, "modules_enabled": ["Manufacturing"],
             "settings_updated": ["inventory_method"], "defaults_updated": ["payment_terms", "terms_conditions"],
             "demo_items_replaced": 9, "demo_items_kept": 1}
 
@@ -283,7 +283,7 @@ class TestCompanyDetailsSummary:
 
     @pytest.mark.asyncio
     async def test_nothing_changed_is_a_plain_confirmation(self, ui_client):
-        empty = {k: ([] if isinstance(v, list) else 0) for k, v in _CHANGES.items()}
+        empty = {k: (type(v)() if isinstance(v, (list, dict)) else 0) for k, v in _CHANGES.items()}
         set_type = AsyncMock(return_value={"vertical": "fashion", "restart_required": False, "changes": empty})
         with patch("ui.api_client.set_business_type", new=set_type):
             r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"}, cookies=_authed())

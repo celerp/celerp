@@ -18,7 +18,7 @@ from ui.components.shell import base_shell, page_header, star_supporter_card, pa
 from ui.components.start_options import start_options, supported_sources
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
-from ui.i18n import t, get_lang
+from ui.i18n import t, get_lang, category_labels
 from celerp.services.doc_balance import awaiting_status_param
 from celerp.services.permissions import role_has_permission as _role_has_permission
 from ui.routes.company_backup import SETTINGS as _RESTORE
@@ -747,7 +747,7 @@ def setup_routes(app):
 
         # The category names the inventory tabs show, so the chart reads the same.
         try:
-            category_names = await api.get_category_display_names(token)
+            category_names = category_labels(await api.get_category_display_names(token))
         except Exception:
             category_names = {}
 
