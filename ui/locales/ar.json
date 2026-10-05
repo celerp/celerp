@@ -3658,6 +3658,7 @@
   "event.mfg.order.wip_unresolved": "الإنتاج قيد التشغيل يحتاج إلى تسوية",
   "financial.unclosed_net_income": "صافي الدخل غير المقفل بعد",
   "posting.choose_account": "اختر حسابًا.",
+  "reconciliation.split.account_required": "اختر حسابًا لكل جزء من التقسيم.",
   "posting.needs_accounting": "تتطلب حسابات الترحيل وحدة المحاسبة.",
   "posting.older_stock.never_inventory": "لم يحمل الحساب {code} مخزونًا قط، لذا لا يمكن أن يكون المخزون الأقدم فيه.",
   "posting.older_stock.not_in_chart": "الحساب {code} غير موجود في دليل الحسابات.",

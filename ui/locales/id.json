@@ -3658,6 +3658,7 @@
   "event.mfg.order.wip_unresolved": "Barang dalam proses perlu direkonsiliasi",
   "financial.unclosed_net_income": "Laba bersih belum ditutup",
   "posting.choose_account": "Pilih akun.",
+  "reconciliation.split.account_required": "Pilih akun untuk setiap pemisahan.",
   "posting.needs_accounting": "Akun posting memerlukan modul akuntansi.",
   "posting.older_stock.never_inventory": "Akun {code} tidak pernah menampung persediaan, jadi stok lama tidak mungkin ada di sana.",
   "posting.older_stock.not_in_chart": "Akun {code} tidak ada di bagan akun.",

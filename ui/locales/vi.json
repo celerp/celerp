@@ -3658,6 +3658,7 @@
   "event.mfg.order.wip_unresolved": "Sản phẩm dở dang cần đối chiếu",
   "financial.unclosed_net_income": "Lợi nhuận chưa kết chuyển",
   "posting.choose_account": "Chọn một tài khoản.",
+  "reconciliation.split.account_required": "Chọn một tài khoản cho mỗi phần chia.",
   "posting.needs_accounting": "Tài khoản hạch toán cần mô-đun kế toán.",
   "posting.older_stock.never_inventory": "Tài khoản {code} chưa từng ghi hàng tồn kho, nên hàng tồn cũ không thể nằm ở đó.",
   "posting.older_stock.not_in_chart": "Tài khoản {code} không có trong hệ thống tài khoản.",

@@ -3658,6 +3658,7 @@
   "event.mfg.order.wip_unresolved": "El trabajo en curso necesita conciliación",
   "financial.unclosed_net_income": "Resultado aún no cerrado",
   "posting.choose_account": "Elija una cuenta.",
+  "reconciliation.split.account_required": "Elija una cuenta para cada división.",
   "posting.needs_accounting": "Las cuentas de contabilización requieren el módulo de contabilidad.",
   "posting.older_stock.never_inventory": "La cuenta {code} nunca ha registrado inventario, así que el stock anterior no puede estar en ella.",
   "posting.older_stock.not_in_chart": "La cuenta {code} no está en el plan de cuentas.",

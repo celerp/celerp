@@ -3658,6 +3658,7 @@
   "event.mfg.order.wip_unresolved": "Work in progress needs reconciling",
   "financial.unclosed_net_income": "Net income not yet closed",
   "posting.choose_account": "Choose an account.",
+  "reconciliation.split.account_required": "Choose an account for every split.",
   "posting.needs_accounting": "Posting accounts need the accounting module.",
   "posting.older_stock.never_inventory": "Account {code} has never held inventory, so older stock cannot be in it.",
   "posting.older_stock.not_in_chart": "Account {code} is not in the chart of accounts.",

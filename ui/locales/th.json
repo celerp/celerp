@@ -3658,6 +3658,7 @@
   "event.mfg.order.wip_unresolved": "งานระหว่างทำต้องกระทบยอด",
   "financial.unclosed_net_income": "กำไรสุทธิที่ยังไม่ปิดบัญชี",
   "posting.choose_account": "เลือกบัญชี",
+  "reconciliation.split.account_required": "เลือกบัญชีสำหรับทุกรายการแยก",
   "posting.needs_accounting": "บัญชีบันทึกรายการต้องใช้โมดูลบัญชี",
   "posting.older_stock.never_inventory": "บัญชี {code} ไม่เคยบันทึกสินค้าคงคลัง สต็อกเก่าจึงไม่อาจอยู่ในบัญชีนี้",
   "posting.older_stock.not_in_chart": "บัญชี {code} ไม่อยู่ในผังบัญชี",

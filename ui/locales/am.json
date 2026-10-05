@@ -3658,6 +3658,7 @@
   "event.mfg.order.wip_unresolved": "በሂደት ላይ ያለ ሥራ ማስታረቅ ያስፈልገዋል",
   "financial.unclosed_net_income": "ገና ያልተዘጋ የተጣራ ገቢ",
   "posting.choose_account": "መለያ ይምረጡ።",
+  "reconciliation.split.account_required": "ለእያንዳንዱ ክፍፍል መለያ ይምረጡ።",
   "posting.needs_accounting": "የመመዝገቢያ መለያዎች የሂሳብ ሞጁሉን ይፈልጋሉ።",
   "posting.older_stock.never_inventory": "መለያ {code} ክምችት ይዞ አያውቅም፣ ስለዚህ የቀድሞ ክምችት በውስጡ ሊሆን አይችልም።",
   "posting.older_stock.not_in_chart": "መለያ {code} በመለያዎች ሰንጠረዥ ውስጥ የለም።",

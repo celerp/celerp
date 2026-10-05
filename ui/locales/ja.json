@@ -3658,6 +3658,7 @@
   "event.mfg.order.wip_unresolved": "仕掛品の照合が必要です",
   "financial.unclosed_net_income": "未締めの当期純利益",
   "posting.choose_account": "勘定科目を選択してください。",
+  "reconciliation.split.account_required": "分割ごとに勘定科目を選択してください。",
   "posting.needs_accounting": "転記勘定には会計モジュールが必要です。",
   "posting.older_stock.never_inventory": "勘定科目 {code} は在庫を計上したことがないため、旧在庫がこの科目にあることはありません。",
   "posting.older_stock.not_in_chart": "勘定科目 {code} は勘定科目表にありません。",

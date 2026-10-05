@@ -3658,6 +3658,7 @@
   "event.mfg.order.wip_unresolved": "A produção em andamento precisa de conciliação",
   "financial.unclosed_net_income": "Resultado ainda não encerrado",
   "posting.choose_account": "Escolha uma conta.",
+  "reconciliation.split.account_required": "Escolha uma conta para cada divisão.",
   "posting.needs_accounting": "As contas de lançamento exigem o módulo de contabilidade.",
   "posting.older_stock.never_inventory": "A conta {code} nunca registrou estoque, então o estoque anterior não pode estar nela.",
   "posting.older_stock.not_in_chart": "A conta {code} não está no plano de contas.",

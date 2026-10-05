@@ -3658,6 +3658,7 @@
   "event.mfg.order.wip_unresolved": "L'en-cours de production doit être rapproché",
   "financial.unclosed_net_income": "Résultat non encore clôturé",
   "posting.choose_account": "Choisissez un compte.",
+  "reconciliation.split.account_required": "Choisissez un compte pour chaque ventilation.",
   "posting.needs_accounting": "Les comptes d'imputation nécessitent le module de comptabilité.",
   "posting.older_stock.never_inventory": "Le compte {code} n'a jamais porté de stock, l'ancien stock ne peut donc pas y figurer.",
   "posting.older_stock.not_in_chart": "Le compte {code} ne figure pas dans le plan comptable.",

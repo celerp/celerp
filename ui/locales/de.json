@@ -3658,6 +3658,7 @@
   "event.mfg.order.wip_unresolved": "Unfertige Erzeugnisse müssen abgestimmt werden",
   "financial.unclosed_net_income": "Noch nicht abgeschlossenes Jahresergebnis",
   "posting.choose_account": "Wählen Sie ein Konto.",
+  "reconciliation.split.account_required": "Wählen Sie für jede Aufteilung ein Konto.",
   "posting.needs_accounting": "Buchungskonten erfordern das Buchhaltungsmodul.",
   "posting.older_stock.never_inventory": "Konto {code} hat nie Vorräte geführt, daher kann älterer Bestand nicht darauf stehen.",
   "posting.older_stock.not_in_chart": "Konto {code} ist nicht im Kontenplan.",

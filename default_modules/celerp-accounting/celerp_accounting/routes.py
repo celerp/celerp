@@ -40,7 +40,7 @@ from celerp_accounting.chart_rules import (
 from celerp_accounting.import_service import AccImportRecord
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
-from celerp.accounting_roles import AccountRole
+from celerp.accounting_roles import AccountRole, refusal
 from celerp.services.account_roles import current_settings, line_roles, resolve, resolve_many, role_map
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import lock_chart, locked_company
@@ -3553,6 +3553,9 @@ async def split_stmt_line(
 
     if not payload.splits:
         raise HTTPException(status_code=422, detail="At least one split entry required")
+    if any(not s.get("account_code") for s in payload.splits):
+        raise HTTPException(status_code=422, detail=refusal(
+            "reconciliation.split.account_required", "Choose an account for every split."))
     await require_destinations(db, company_id, {s["account_code"] for s in payload.splits})
 
     je_id = await _next_reconciliation_je_id(db, company_id, f"je:recon:split:{sl.id}")

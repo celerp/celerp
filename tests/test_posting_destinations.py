@@ -166,6 +166,27 @@ async def test_a_picked_account_that_cannot_take_a_posting_is_refused(session, c
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("splits", [
+    [{"amount": 50}],
+    [{"account_code": "6100", "amount": 20}, {"account_code": "", "amount": 30}],
+])
+async def test_a_split_with_no_account_chosen_is_refused(client, auth, splits):
+    headers = auth["headers"]
+    sid, line = await _statement_line(client, headers)
+
+    r = await client.post(f"/accounting/reconciliation/{sid}/lines/{line}/split", headers=headers,
+                          json={"splits": splits})
+
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "reconciliation.split.account_required", detail
+    assert detail["message"] == "Choose an account for every split."
+    assert in_language("de", detail) != detail["message"]
+    [stmt] = (await client.get(f"/accounting/reconciliation/{sid}/statement-lines", headers=headers)).json()["items"]
+    assert stmt["status"] != "matched"
+
+
+@pytest.mark.asyncio
 async def test_a_stock_write_off_whose_account_was_switched_off_since_it_was_picked_is_refused(client, auth):
     headers = auth["headers"]
     await _account(client, headers, "6990")

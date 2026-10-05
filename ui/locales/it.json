@@ -3658,6 +3658,7 @@
   "event.mfg.order.wip_unresolved": "I semilavorati devono essere riconciliati",
   "financial.unclosed_net_income": "Utile non ancora chiuso",
   "posting.choose_account": "Scegli un conto.",
+  "reconciliation.split.account_required": "Scegli un conto per ogni suddivisione.",
   "posting.needs_accounting": "I conti di registrazione richiedono il modulo di contabilità.",
   "posting.older_stock.never_inventory": "Il conto {code} non ha mai contenuto magazzino, quindi la giacenza precedente non può trovarsi lì.",
   "posting.older_stock.not_in_chart": "Il conto {code} non è nel piano dei conti.",
