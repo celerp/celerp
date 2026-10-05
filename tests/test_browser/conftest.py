@@ -145,7 +145,11 @@ def ui_server(api_server):
     _enabled = {m.strip() for m in os.environ.get("ENABLED_MODULES", "").split(",") if m.strip()}
     if _abs_module_dirs and _enabled:
         _loaded = load_all(_abs_module_dirs, _enabled)
-        register_ui_routes(ui_app, _loaded)
+        # The root conftest already wired some modules' UI routes straight onto
+        # this app (importing their ui_routes module to do it); the loader refuses
+        # a route that is already registered, so it registers only the rest.
+        import sys as _sys
+        register_ui_routes(ui_app, [m for m in _loaded if m.get("ui_routes") not in _sys.modules])
 
     config = uvicorn.Config(ui_app, host="127.0.0.1", port=_UI_PORT, log_level="error")
     server = uvicorn.Server(config)
@@ -307,6 +311,20 @@ def api(api_server, seeded_user):
     with httpx.Client(base_url=api_server, headers=headers, timeout=10,
                       limits=_API_LIMITS) as client:
         yield client
+
+
+def clear_session_registry() -> None:
+    """Wipe session_registry rows so a second user can log in (the direct
+    connection limit allows one active session; nonces stay valid)."""
+    import psycopg2
+    from urllib.parse import urlsplit
+    parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
+    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
+                            password=parts.password, dbname=parts.path.lstrip("/"))
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM session_registry;")
+    conn.close()
 
 
 def _set_auth_cookie(browser_context, token: str) -> None:
