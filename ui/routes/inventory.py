@@ -1841,7 +1841,7 @@ def setup_routes(app):
                 api.get_all_category_schemas(token),
                 api.get_price_lists(token),
                 api.get_units(token),
-                _category_names(token),
+                api.get_category_labels(token),
             )
             ledger = (await api.list_ledger(token, {"entity_id": entity_id, "limit": 10})).get("items", [])
             locations = (await api.get_locations(token)).get("items", [])
@@ -1934,7 +1934,7 @@ def setup_routes(app):
             Span("", id="item-header-error"),
             Script(_SPLIT_DELTA_JS),
             Script(_BULK_SPLIT_JS),
-            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview, role=_item_role, settings=_item_settings, connected_connectors=_item_connectors),
+            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, category_names, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview, role=_item_role, settings=_item_settings, connected_connectors=_item_connectors),
             title=page_title("page.item_detail"),
             nav_active="inventory",
             request=request,
@@ -1954,12 +1954,13 @@ def setup_routes(app):
         per_page = 50
         offset = (page - 1) * per_page
         try:
-            item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
+            item, company, category_names = await asyncio.gather(
+                api.get_item(token, entity_id), api.get_company(token), api.get_category_labels(token))
             resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": per_page, "offset": offset})
         except (APIError, Exception) as e:
             if isinstance(e, APIError) and e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            item, company, resp = {}, {}, {"items": [], "total": 0}
+            item, company, category_names, resp = {}, {}, {}, {"items": [], "total": 0}
 
         currency = company.get("currency")
         activities = resp.get("items", [])
@@ -1967,8 +1968,8 @@ def setup_routes(app):
         name = item.get("name") or item.get("sku") or entity_id
 
         from ui.components.activity import activity_table
-        table = activity_table(activities, title="", section_cls="",
-                               subject_entity_id=entity_id, currency=currency, resizable=True)
+        table = activity_table(activities, title="", section_cls="", subject_entity_id=entity_id,
+                               currency=currency, category_names=category_names, resizable=True)
         pages = max(1, (total + per_page - 1) // per_page)
         pager = pagination(page, total, per_page, f"/inventory/{entity_id}/history") if pages > 1 else ""
 
@@ -2342,7 +2343,7 @@ function celerpPrintLabel(entityId, templateId) {
             return P(str(e.detail), cls="cell-error")
         items = (await api.list_items(token, {"limit": 1000, "status": "all"})).get("items", [])
         cat = item.get("category") or ""
-        category = category_label(cat, (await _category_names(token)).get(cat)) if cat else ""
+        category = category_label(cat, (await api.get_category_labels(token)).get(cat)) if cat else ""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, items, today, category)))
 
@@ -2426,7 +2427,7 @@ function celerpPrintLabel(entityId, templateId) {
             cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names, weight_unit_names)
         label_map: dict | None = None
         if field == "category":
-            label_map = await _category_names(token)
+            label_map = await api.get_category_labels(token)
         elif field == "inventory_type":
             label_map = _inventory_type_labels()
         # location_name: render a select cell with locations + "Add new" as last option
@@ -2492,7 +2493,7 @@ function celerpPrintLabel(entityId, templateId) {
         from ui.components.table import display_cell
         label_map: dict | None = None
         if field == "category":
-            label_map = await _category_names(token)
+            label_map = await api.get_category_labels(token)
         elif field == "inventory_type":
             label_map = _inventory_type_labels()
         # Virtual total fields store no value in item state; derive from primitives
@@ -2786,7 +2787,7 @@ function celerpPrintLabel(entityId, templateId) {
             current_url = request.headers.get("hx-current-url", "")
             if "/inventory/item:" in current_url:
                 # Detail page: return display cell + OOB reload of attributes section
-                label_map = await _category_names(token)
+                label_map = await api.get_category_labels(token)
                 f_def2, cell_type2, options2, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
                 from ui.components.table import display_cell
                 cat_cell = display_cell(
@@ -2973,7 +2974,7 @@ function celerpPrintLabel(entityId, templateId) {
         from ui.components.table import display_cell
         label_map = _inventory_type_labels() if field == "inventory_type" else None
         if field == "category":
-            label_map = await _category_names(token)
+            label_map = await api.get_category_labels(token)
         # Reorder fields: if saved empty, re-show the grey suggestion immediately.
         _placeholder = await _reorder_placeholder(token, entity_id, field, item.get(field))
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
@@ -3066,7 +3067,7 @@ function celerpPrintLabel(entityId, templateId) {
             return Response(str(e.detail), status_code=500)
         unit_names = [u["name"] for u in units_resp if u.get("name")]
         units_map = {u["name"]: u for u in units_resp if u.get("name")}
-        category_label_map = await _category_names(token)
+        category_label_map = await api.get_category_labels(token)
         try:
             company = await api.get_company(token)
             currency = (company.get("currency") or "").strip() or None
@@ -3759,7 +3760,7 @@ function celerpPrintLabel(entityId, templateId) {
             categories = await api.list_item_categories(token)
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--warning"))
-        category_names = await _category_names(token)
+        category_names = await api.get_category_labels(token)
 
         child_sku = await _next_transform_sku(token, item.get("sku", ""))
 
@@ -5421,15 +5422,6 @@ def _status_tabs(p: dict, vertical: str = "") -> FT:
 # request language is honoured (i18n). "Inventory" is spelled out on stocked/non-stocked
 # so they aren't confused with the Component type (added with the manufacturing module).
 _INVENTORY_TYPE_SLUGS: tuple[str, ...] = ("stocked", "component", "service", "non_stocked", "freight")
-
-
-async def _category_names(token: str) -> dict:
-    """The company's category names as the user reads them, keyed by category; empty
-    when they cannot be fetched, so cells fall back to the key."""
-    try:
-        return category_labels(await api.get_category_display_names(token))
-    except Exception:
-        return {}
 
 
 def _inventory_type_labels() -> dict[str, str]:
@@ -7238,6 +7230,7 @@ def _item_detail_tabs(
     ledger: list[dict],
     currency: str | None,
     active_tab: str,
+    category_names: dict,
     price_lists: list[dict] | None = None,
     cell_renderers: dict | None = None,
     base_price_list: str = "",
@@ -7291,7 +7284,7 @@ def _item_detail_tabs(
         )
     elif active_tab == "activity":
         panel = Div(
-            _ledger_table(ledger, entity_id=entity_id, currency=currency),
+            _ledger_table(ledger, entity_id=entity_id, currency=currency, category_names=category_names),
             cls="detail-grid detail-grid--single",
         )
     else:
@@ -7586,11 +7579,12 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str | N
     )
 
 
-def _ledger_table(ledger: list[dict], entity_id: str | None = None, currency: str | None = None) -> FT:
+def _ledger_table(ledger: list[dict], entity_id: str | None = None, currency: str | None = None,
+                  category_names: dict | None = None) -> FT:
     from ui.components.activity import activity_table
     history_url = f"/inventory/{entity_id}/history" if entity_id else None
-    return activity_table(ledger, max_display=10, subject_entity_id=entity_id,
-                          currency=currency, history_url=history_url, resizable=True)
+    return activity_table(ledger, max_display=10, subject_entity_id=entity_id, currency=currency,
+                          category_names=category_names, history_url=history_url, resizable=True)
 
 
 # ---------------------------------------------------------------------------
