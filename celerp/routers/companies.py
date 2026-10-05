@@ -1745,9 +1745,13 @@ async def enable_module(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Turn a module on for this company, with the modules it needs."""
+    """Turn a module on for this company, with the modules it needs. Refused
+    for a name that is not an installed module."""
+    from celerp.modules.loader import is_running, module_search_path, resolve_module_path
     from celerp.modules.registry import enable_for_company, get_enabled, restart_needed, sync_load_set
 
+    if not is_running(module_name) and resolve_module_path(module_name, module_search_path()) is None:
+        raise HTTPException(status_code=404, detail="Module not found.")
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")

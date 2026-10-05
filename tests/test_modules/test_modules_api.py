@@ -64,7 +64,7 @@ class TestModulesAPIEndpoints:
 
     @pytest.mark.asyncio
     async def test_enable_module_unauthenticated(self, client):
-        r = await client.post("/companies/me/modules/gemstones/enable")
+        r = await client.post("/companies/me/modules/celerp-labels/enable")
         assert r.status_code == 401
 
     @pytest.mark.asyncio
@@ -76,32 +76,43 @@ class TestModulesAPIEndpoints:
     async def test_enable_module_persists_to_settings(self, client):
         """Enabling a module adds it to company.settings enabled_modules."""
         token = await _register(client)
-        r = await client.post("/companies/me/modules/gemstones/enable", headers=_h(token))
+        r = await client.post("/companies/me/modules/celerp-labels/enable", headers=_h(token))
         assert r.status_code == 200
-        assert "gemstones" in r.json().get("enabled_modules", [])
+        assert "celerp-labels" in r.json().get("enabled_modules", [])
+
+    @pytest.mark.asyncio
+    async def test_enable_module_that_is_not_installed_is_refused(self, client):
+        """A name that is not in the module directory is not a module: nothing is
+        turned on, and the company's choice is left as it was."""
+        token = await _register(client)
+        before = (await client.get("/companies/me", headers=_h(token))).json()["settings"]
+        r = await client.post("/companies/me/modules/never-imported-module/enable", headers=_h(token))
+        assert r.status_code == 404
+        after = (await client.get("/companies/me", headers=_h(token))).json()["settings"]
+        assert after.get("enabled_modules") == before.get("enabled_modules")
 
     @pytest.mark.asyncio
     async def test_disable_module_removes_from_settings(self, client):
         """Disabling a module removes it from company.settings enabled_modules."""
         token = await _register(client)
         # First enable it
-        await client.post("/companies/me/modules/gemstones/enable", headers=_h(token))
+        await client.post("/companies/me/modules/celerp-labels/enable", headers=_h(token))
         # Then disable
-        r = await client.post("/companies/me/modules/gemstones/disable", headers=_h(token))
+        r = await client.post("/companies/me/modules/celerp-labels/disable", headers=_h(token))
         assert r.status_code == 200
         data = r.json()
-        assert "gemstones" not in data.get("enabled_modules", [])
+        assert "celerp-labels" not in data.get("enabled_modules", [])
 
     @pytest.mark.asyncio
     async def test_enable_then_disable_is_idempotent(self, client):
         """Double enable is safe; enabled set is a set (no duplicates)."""
         token = await _register(client)
-        await client.post("/companies/me/modules/gemstones/enable", headers=_h(token))
-        r = await client.post("/companies/me/modules/gemstones/enable", headers=_h(token))
+        await client.post("/companies/me/modules/celerp-labels/enable", headers=_h(token))
+        r = await client.post("/companies/me/modules/celerp-labels/enable", headers=_h(token))
         assert r.status_code == 200
         data = r.json()
         enabled = data.get("enabled_modules", [])
-        assert enabled.count("gemstones") == 1  # No duplicate
+        assert enabled.count("celerp-labels") == 1  # No duplicate
 
     @pytest.mark.asyncio
     async def test_disable_not_enabled_module_is_safe(self, client):
@@ -134,7 +145,7 @@ class TestModulesAPIEndpoints:
     async def test_company_isolation_module_settings(self, client):
         """Module settings are per-company, not global.
         
-        Company A enables gemstones. Company B (created via POST /companies)
+        Company A enables celerp-labels. Company B (created via POST /companies)
         should start with default enabled set, not A's settings.
         """
         # Register company A (bootstrap)
@@ -148,20 +159,24 @@ class TestModulesAPIEndpoints:
         assert r_b.status_code == 200, r_b.text
         token_b = r_b.json()["access_token"]
 
-        # Company A enables gemstones
-        await client.post("/companies/me/modules/gemstones/enable", headers=_h(token_a))
+        # Company A enables celerp-labels
+        r_a = await client.post("/companies/me/modules/celerp-labels/enable", headers=_h(token_a))
+        assert r_a.status_code == 200, r_a.text
 
-        # Company B should NOT see gemstones in its settings (it has its own settings)
+        # Company B should NOT see celerp-labels in its settings (it has its own settings)
         r_b_list = await client.get("/companies/me/modules", headers=_h(token_b))
         assert r_b_list.status_code == 200
         # Verify companies have separate settings by checking enabled state
         r_b_disable = await client.post(
-            "/companies/me/modules/gemstones/disable", headers=_h(token_b)
+            "/companies/me/modules/celerp-labels/disable", headers=_h(token_b)
         )
         assert r_b_disable.status_code == 200
         data_b = r_b_disable.json()
-        # B's disable call should NOT return gemstones in the enabled list
-        assert "gemstones" not in data_b.get("enabled_modules", [])
+        # B's disable call should NOT return celerp-labels in the enabled list
+        assert "celerp-labels" not in data_b.get("enabled_modules", [])
+        # ...and B turning it off leaves A's choice alone.
+        settings_a = (await client.get("/companies/me", headers=_h(token_a))).json()["settings"]
+        assert "celerp-labels" in settings_a["enabled_modules"]
 
     @pytest.mark.asyncio
     async def test_list_modules_with_installed_module(self, client, tmp_path):
