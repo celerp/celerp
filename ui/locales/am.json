@@ -3541,5 +3541,11 @@
   "notif.update_failed.title": "Celerp ወደ {to} ማዘመን አልተቻለም",
   "notif.update_failed.body": "Celerp አሁንም በስሪት {from} ላይ ነው፦ {reason}። ውሂብዎ አልተቀየረም።",
   "notif.update_rollback_failed.title": "Celerp ወደ {to} ማዘመን አልተቻለም",
-  "notif.update_rollback_failed.body": "ወደ {to} የተደረገው ዝማኔ አልተሳካም ({reason}) እና የውሂብ ጎታው ወደነበረበት ሊመለስ አልቻለም። ከዝማኔው በፊት የተወሰደው ምትኬ ተቀምጧል፤ ለመመለስ የዝማኔ መመሪያዎችን ይመልከቱ።"
+  "notif.update_rollback_failed.body": "ወደ {to} የተደረገው ዝማኔ አልተሳካም ({reason}) እና የውሂብ ጎታው ወደነበረበት ሊመለስ አልቻለም። ከዝማኔው በፊት የተወሰደው ምትኬ ተቀምጧል፤ ለመመለስ የዝማኔ መመሪያዎችን ይመልከቱ።",
+  "update.reason.backup_failed": "ከማዘመኑ በፊት የተወሰደው የውሂብ ጎታ ምትኬ አልተሳካም",
+  "update.reason.install_failed": "አዲሱን ስሪት መጫን አልተቻለም",
+  "update.reason.migrate_failed": "የውሂብ ጎታ ማዘመን አልተሳካም",
+  "update.reason.verify_failed": "አዲሱ ስሪት አልጀመረም",
+  "update.reason.interrupted": "ማዘመኑ ተቋርጧል",
+  "update.reason.unknown": "ማዘመኑ አልተጠናቀቀም"
 }

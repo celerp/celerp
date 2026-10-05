@@ -60,17 +60,17 @@ ROLLBACK_FAILED = "rollback_failed"  # the database could not be restored; Celer
 
 # Why an attempt did not install, as recorded in last_result["reason"]. Error
 # detail goes to the log only; everything recorded here can be shown to anyone.
-REASONS = {
-    "backup_failed": "the database backup taken before updating failed",
-    "install_failed": "the new version could not be installed",
-    "migrate_failed": "the database update failed",
-    "verify_failed": "the new version did not start",
-    "interrupted": "the update was interrupted",
-}
+# Why an update did not go ahead; each code is the message ``update.reason.<code>``.
+REASON_CODES = ("backup_failed", "install_failed", "migrate_failed", "verify_failed", "interrupted")
+
+
+def reason_key(code: str) -> str:
+    return f"update.reason.{code if code in REASON_CODES else 'unknown'}"
 
 
 def reason_text(code: str) -> str:
-    return REASONS.get(code, "the update did not complete")
+    from ui.i18n import t
+    return t(reason_key(code), "en")
 
 
 class UpdateError(RuntimeError):
@@ -396,7 +396,7 @@ def result_message(result: dict) -> tuple[str, dict]:
     if result.get("ok"):
         return "notif.update_ok", {"to": result["to"]}
     params = {"to": result["to"], "from": result["from"],
-              "reason": reason_text(result.get("reason", ""))}
+              "reason": {"key": reason_key(result.get("reason", ""))}}
     if result.get("outcome") == ROLLBACK_FAILED:
         return "notif.update_rollback_failed", params
     return "notif.update_failed", params

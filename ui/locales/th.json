@@ -3541,5 +3541,11 @@
   "notif.update_failed.title": "ไม่สามารถอัปเดต Celerp เป็น {to}",
   "notif.update_failed.body": "Celerp ยังคงเป็นเวอร์ชัน {from}: {reason} ข้อมูลของคุณไม่มีการเปลี่ยนแปลง",
   "notif.update_rollback_failed.title": "ไม่สามารถอัปเดต Celerp เป็น {to}",
-  "notif.update_rollback_failed.body": "การอัปเดตเป็น {to} ล้มเหลว ({reason}) และไม่สามารถกู้คืนฐานข้อมูลได้ ข้อมูลสำรองที่สร้างไว้ก่อนการอัปเดตยังคงอยู่ ดูวิธีกู้คืนในคำแนะนำการอัปเดต"
+  "notif.update_rollback_failed.body": "การอัปเดตเป็น {to} ล้มเหลว ({reason}) และไม่สามารถกู้คืนฐานข้อมูลได้ ข้อมูลสำรองที่สร้างไว้ก่อนการอัปเดตยังคงอยู่ ดูวิธีกู้คืนในคำแนะนำการอัปเดต",
+  "update.reason.backup_failed": "การสำรองฐานข้อมูลก่อนอัปเดตล้มเหลว",
+  "update.reason.install_failed": "ไม่สามารถติดตั้งเวอร์ชันใหม่ได้",
+  "update.reason.migrate_failed": "การอัปเดตฐานข้อมูลล้มเหลว",
+  "update.reason.verify_failed": "เวอร์ชันใหม่ไม่เริ่มทำงาน",
+  "update.reason.interrupted": "การอัปเดตถูกขัดจังหวะ",
+  "update.reason.unknown": "การอัปเดตไม่เสร็จสมบูรณ์"
 }

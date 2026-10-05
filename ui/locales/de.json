@@ -3541,5 +3541,11 @@
   "notif.update_failed.title": "Celerp konnte nicht auf {to} aktualisiert werden",
   "notif.update_failed.body": "Celerp läuft weiterhin in Version {from}: {reason}. Ihre Daten wurden nicht geändert.",
   "notif.update_rollback_failed.title": "Celerp konnte nicht auf {to} aktualisiert werden",
-  "notif.update_rollback_failed.body": "Die Aktualisierung auf {to} ist fehlgeschlagen ({reason}) und die Datenbank konnte nicht wiederhergestellt werden. Die vor der Aktualisierung erstellte Sicherung bleibt erhalten; die Anleitung zur Aktualisierung beschreibt die Wiederherstellung."
+  "notif.update_rollback_failed.body": "Die Aktualisierung auf {to} ist fehlgeschlagen ({reason}) und die Datenbank konnte nicht wiederhergestellt werden. Die vor der Aktualisierung erstellte Sicherung bleibt erhalten; die Anleitung zur Aktualisierung beschreibt die Wiederherstellung.",
+  "update.reason.backup_failed": "die Datenbanksicherung vor der Aktualisierung ist fehlgeschlagen",
+  "update.reason.install_failed": "die neue Version konnte nicht installiert werden",
+  "update.reason.migrate_failed": "die Aktualisierung der Datenbank ist fehlgeschlagen",
+  "update.reason.verify_failed": "die neue Version ist nicht gestartet",
+  "update.reason.interrupted": "die Aktualisierung wurde unterbrochen",
+  "update.reason.unknown": "die Aktualisierung wurde nicht abgeschlossen"
 }

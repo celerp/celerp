@@ -201,13 +201,14 @@ async def test_handover_tells_the_new_owner_and_the_users_list_names_the_owner(c
     assert await owners() == ["heir@example.test"]
 
     told = (await client.get("/notifications", headers=next_h)).json()["items"]
-    assert [n["title"] for n in told] == ["notif.install_owner.title"]
-    shown = localize_notification(told[0], "en")
-    assert shown["title"] == "You are now the installation owner"
-    assert "hand ownership on" in shown["body"]
+    # The API carries readable text and the message key the UI translates from.
+    assert [n["title"] for n in told] == ["You are now the installation owner"]
+    assert "hand ownership on" in told[0]["body"]
+    assert told[0]["message_key"] == "notif.install_owner"
+    assert set(told[0]["message_params"]) == {"name"}
     german = localize_notification(told[0], "de")
     assert german["title"] == "Sie sind jetzt der Installationsinhaber"
     assert "Einstellungen > Benutzer" in german["body"]
     assert told[0]["action_url"] == "/settings/general?tab=users"
     others = (await client.get("/notifications", headers=admin_h)).json()["items"]
-    assert "notif.install_owner.title" not in [n["title"] for n in others]
+    assert "notif.install_owner" not in [n["message_key"] for n in others]

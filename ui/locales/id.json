@@ -3541,5 +3541,11 @@
   "notif.update_failed.title": "Celerp tidak dapat diperbarui ke {to}",
   "notif.update_failed.body": "Celerp masih versi {from}: {reason}. Data Anda tidak diubah.",
   "notif.update_rollback_failed.title": "Celerp tidak dapat diperbarui ke {to}",
-  "notif.update_rollback_failed.body": "Pembaruan ke {to} gagal ({reason}) dan basis data tidak dapat dipulihkan. Cadangan yang dibuat sebelum pembaruan disimpan; lihat petunjuk pembaruan untuk memulihkannya."
+  "notif.update_rollback_failed.body": "Pembaruan ke {to} gagal ({reason}) dan basis data tidak dapat dipulihkan. Cadangan yang dibuat sebelum pembaruan disimpan; lihat petunjuk pembaruan untuk memulihkannya.",
+  "update.reason.backup_failed": "cadangan basis data sebelum pembaruan gagal",
+  "update.reason.install_failed": "versi baru tidak dapat dipasang",
+  "update.reason.migrate_failed": "pembaruan basis data gagal",
+  "update.reason.verify_failed": "versi baru tidak berjalan",
+  "update.reason.interrupted": "pembaruan terputus",
+  "update.reason.unknown": "pembaruan tidak selesai"
 }

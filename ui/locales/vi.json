@@ -3541,5 +3541,11 @@
   "notif.update_failed.title": "Không thể cập nhật Celerp lên {to}",
   "notif.update_failed.body": "Celerp vẫn ở phiên bản {from}: {reason}. Dữ liệu của bạn không bị thay đổi.",
   "notif.update_rollback_failed.title": "Không thể cập nhật Celerp lên {to}",
-  "notif.update_rollback_failed.body": "Cập nhật lên {to} thất bại ({reason}) và không thể khôi phục cơ sở dữ liệu. Bản sao lưu tạo trước khi cập nhật vẫn được giữ; xem hướng dẫn cập nhật để khôi phục."
+  "notif.update_rollback_failed.body": "Cập nhật lên {to} thất bại ({reason}) và không thể khôi phục cơ sở dữ liệu. Bản sao lưu tạo trước khi cập nhật vẫn được giữ; xem hướng dẫn cập nhật để khôi phục.",
+  "update.reason.backup_failed": "sao lưu cơ sở dữ liệu trước khi cập nhật không thành công",
+  "update.reason.install_failed": "không thể cài đặt phiên bản mới",
+  "update.reason.migrate_failed": "cập nhật cơ sở dữ liệu không thành công",
+  "update.reason.verify_failed": "phiên bản mới không khởi động được",
+  "update.reason.interrupted": "quá trình cập nhật bị gián đoạn",
+  "update.reason.unknown": "quá trình cập nhật chưa hoàn tất"
 }

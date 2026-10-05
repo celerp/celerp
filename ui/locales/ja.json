@@ -3541,5 +3541,11 @@
   "notif.update_failed.title": "Celerp を {to} に更新できませんでした",
   "notif.update_failed.body": "Celerp はバージョン {from} のままです: {reason}。データは変更されていません。",
   "notif.update_rollback_failed.title": "Celerp を {to} に更新できませんでした",
-  "notif.update_rollback_failed.body": "{to} への更新に失敗し ({reason})、データベースを復元できませんでした。更新前に作成したバックアップは保持されています。復元方法は更新手順を参照してください。"
+  "notif.update_rollback_failed.body": "{to} への更新に失敗し ({reason})、データベースを復元できませんでした。更新前に作成したバックアップは保持されています。復元方法は更新手順を参照してください。",
+  "update.reason.backup_failed": "更新前のデータベースのバックアップに失敗しました",
+  "update.reason.install_failed": "新しいバージョンをインストールできませんでした",
+  "update.reason.migrate_failed": "データベースの更新に失敗しました",
+  "update.reason.verify_failed": "新しいバージョンが起動しませんでした",
+  "update.reason.interrupted": "更新が中断されました",
+  "update.reason.unknown": "更新が完了しませんでした"
 }

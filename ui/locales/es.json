@@ -3541,5 +3541,11 @@
   "notif.update_failed.title": "Celerp no pudo actualizarse a {to}",
   "notif.update_failed.body": "Celerp sigue en la versión {from}: {reason}. Sus datos no se modificaron.",
   "notif.update_rollback_failed.title": "Celerp no pudo actualizarse a {to}",
-  "notif.update_rollback_failed.body": "La actualización a {to} falló ({reason}) y no se pudo restaurar la base de datos. Se conserva la copia de seguridad tomada antes de la actualización; consulte las instrucciones de actualización para restaurarla."
+  "notif.update_rollback_failed.body": "La actualización a {to} falló ({reason}) y no se pudo restaurar la base de datos. Se conserva la copia de seguridad tomada antes de la actualización; consulte las instrucciones de actualización para restaurarla.",
+  "update.reason.backup_failed": "la copia de seguridad de la base de datos previa a la actualización falló",
+  "update.reason.install_failed": "no se pudo instalar la nueva versión",
+  "update.reason.migrate_failed": "la actualización de la base de datos falló",
+  "update.reason.verify_failed": "la nueva versión no se inició",
+  "update.reason.interrupted": "la actualización se interrumpió",
+  "update.reason.unknown": "la actualización no se completó"
 }

@@ -127,16 +127,15 @@ def t(key: str, lang: str | None = None, **kwargs) -> str:
 
 
 def localize_notification(item: dict, lang: str | None = None) -> dict:
-    """Render a keyed notification (celerp.notifications.service.create_keyed) in
-    *lang*. A notification with a plain-text body is returned unchanged."""
-    try:
-        keyed = json.loads(item.get("body") or "")
-    except ValueError:
+    """*item* with its title and body in *lang* when it carries a ``message_key``
+    (celerp.notifications.service.create_keyed); a param given as ``{"key": k}`` is
+    itself translated. A plain-text notification is returned unchanged."""
+    key = item.get("message_key")
+    if not key:
         return item
-    if not isinstance(keyed, dict) or "key" not in keyed:
-        return item
-    params = keyed.get("params") or {}
-    return {**item, "title": t(item["title"], lang, **params), "body": t(keyed["key"], lang, **params)}
+    params = {k: t(v["key"], lang) if isinstance(v, dict) else v
+              for k, v in (item.get("message_params") or {}).items()}
+    return {**item, "title": t(f"{key}.title", lang, **params), "body": t(f"{key}.body", lang, **params)}
 
 
 def field_label(f: dict) -> str:

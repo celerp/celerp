@@ -3541,5 +3541,11 @@
   "notif.update_failed.title": "Celerp could not update to {to}",
   "notif.update_failed.body": "Celerp is still on {from}: {reason}. Your data was not changed.",
   "notif.update_rollback_failed.title": "Celerp could not update to {to}",
-  "notif.update_rollback_failed.body": "The update to {to} failed ({reason}) and the database could not be restored. The backup taken before the update is kept; see the update instructions to restore it."
+  "notif.update_rollback_failed.body": "The update to {to} failed ({reason}) and the database could not be restored. The backup taken before the update is kept; see the update instructions to restore it.",
+  "update.reason.backup_failed": "the database backup taken before updating failed",
+  "update.reason.install_failed": "the new version could not be installed",
+  "update.reason.migrate_failed": "the database update failed",
+  "update.reason.verify_failed": "the new version did not start",
+  "update.reason.interrupted": "the update was interrupted",
+  "update.reason.unknown": "the update did not complete"
 }

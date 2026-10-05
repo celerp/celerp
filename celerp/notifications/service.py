@@ -34,11 +34,25 @@ async def create_keyed(
     params: dict[str, Any],
     **kwargs: Any,
 ) -> Notification:
-    """Create a notification the UI renders in the reader's language: the title holds
-    the message key and the body holds the key plus its parameters as JSON
-    (see ui.i18n.localize_notification)."""
-    body = json.dumps({"key": f"{key}.body", "params": params})
-    return await create(session, company_id, category, f"{key}.title", body, **kwargs)
+    """Create a notification readers see in their own language: it is stored as the
+    message *key* (``<key>.title`` / ``<key>.body`` in the catalogs) plus *params*.
+    A param given as ``{"key": k}`` is itself the message *k*. See ``readable``."""
+    body = json.dumps({"message_key": key, "params": params})
+    return await create(session, company_id, category, key, body, **kwargs)
+
+
+def readable(title: str, body: str) -> dict[str, Any]:
+    """The title and body to show for a stored notification, with the message key
+    and params a client translates from (None for a plain-text notification)."""
+    try:
+        keyed = json.loads(body)
+    except ValueError:
+        keyed = None
+    if not isinstance(keyed, dict) or "message_key" not in keyed:
+        return {"title": title, "body": body, "message_key": None, "message_params": None}
+    from ui.i18n import localize_notification
+    return localize_notification({"message_key": keyed["message_key"],
+                                  "message_params": keyed.get("params") or {}}, "en")
 
 
 async def create(
@@ -93,8 +107,7 @@ async def create(
                 "type": "notification",
                 "id": str(notif.id),
                 "category": category,
-                "title": title,
-                "body": body,
+                **readable(title, body),
                 "action_url": action_url,
                 "priority": priority,
             },

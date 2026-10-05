@@ -3541,5 +3541,11 @@
   "notif.update_failed.title": "Não foi possível atualizar o Celerp para {to}",
   "notif.update_failed.body": "O Celerp continua na versão {from}: {reason}. Seus dados não foram alterados.",
   "notif.update_rollback_failed.title": "Não foi possível atualizar o Celerp para {to}",
-  "notif.update_rollback_failed.body": "A atualização para {to} falhou ({reason}) e o banco de dados não pôde ser restaurado. O backup feito antes da atualização foi mantido; consulte as instruções de atualização para restaurá-lo."
+  "notif.update_rollback_failed.body": "A atualização para {to} falhou ({reason}) e o banco de dados não pôde ser restaurado. O backup feito antes da atualização foi mantido; consulte as instruções de atualização para restaurá-lo.",
+  "update.reason.backup_failed": "a cópia de segurança da base de dados antes da atualização falhou",
+  "update.reason.install_failed": "não foi possível instalar a nova versão",
+  "update.reason.migrate_failed": "a atualização da base de dados falhou",
+  "update.reason.verify_failed": "a nova versão não iniciou",
+  "update.reason.interrupted": "a atualização foi interrompida",
+  "update.reason.unknown": "a atualização não foi concluída"
 }

@@ -3541,5 +3541,11 @@
   "notif.update_failed.title": "تعذر تحديث Celerp إلى {to}",
   "notif.update_failed.body": "لا يزال Celerp على الإصدار {from}: {reason}. لم تتغير بياناتك.",
   "notif.update_rollback_failed.title": "تعذر تحديث Celerp إلى {to}",
-  "notif.update_rollback_failed.body": "فشل التحديث إلى {to} ({reason}) وتعذرت استعادة قاعدة البيانات. تم الاحتفاظ بالنسخة الاحتياطية المأخوذة قبل التحديث؛ راجع تعليمات التحديث لاستعادتها."
+  "notif.update_rollback_failed.body": "فشل التحديث إلى {to} ({reason}) وتعذرت استعادة قاعدة البيانات. تم الاحتفاظ بالنسخة الاحتياطية المأخوذة قبل التحديث؛ راجع تعليمات التحديث لاستعادتها.",
+  "update.reason.backup_failed": "فشل النسخ الاحتياطي لقاعدة البيانات قبل التحديث",
+  "update.reason.install_failed": "تعذر تثبيت الإصدار الجديد",
+  "update.reason.migrate_failed": "فشل تحديث قاعدة البيانات",
+  "update.reason.verify_failed": "لم يبدأ الإصدار الجديد",
+  "update.reason.interrupted": "تمت مقاطعة التحديث",
+  "update.reason.unknown": "لم يكتمل التحديث"
 }

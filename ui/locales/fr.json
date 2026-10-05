@@ -3541,5 +3541,11 @@
   "notif.update_failed.title": "Celerp n'a pas pu être mis à jour vers {to}",
   "notif.update_failed.body": "Celerp reste en version {from} : {reason}. Vos données n'ont pas été modifiées.",
   "notif.update_rollback_failed.title": "Celerp n'a pas pu être mis à jour vers {to}",
-  "notif.update_rollback_failed.body": "La mise à jour vers {to} a échoué ({reason}) et la base de données n'a pas pu être restaurée. La sauvegarde prise avant la mise à jour est conservée ; consultez les instructions de mise à jour pour la restaurer."
+  "notif.update_rollback_failed.body": "La mise à jour vers {to} a échoué ({reason}) et la base de données n'a pas pu être restaurée. La sauvegarde prise avant la mise à jour est conservée ; consultez les instructions de mise à jour pour la restaurer.",
+  "update.reason.backup_failed": "la sauvegarde de la base de données avant la mise à jour a échoué",
+  "update.reason.install_failed": "la nouvelle version n'a pas pu être installée",
+  "update.reason.migrate_failed": "la mise à jour de la base de données a échoué",
+  "update.reason.verify_failed": "la nouvelle version n'a pas démarré",
+  "update.reason.interrupted": "la mise à jour a été interrompue",
+  "update.reason.unknown": "la mise à jour ne s'est pas terminée"
 }
