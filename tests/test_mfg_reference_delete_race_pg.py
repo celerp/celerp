@@ -125,7 +125,7 @@ async def test_delete_first_refuses_the_waiting_run(committed_engine):
 
     deleted, created = await _race(committed_engine, factory, company_id, user, _delete, _create)
 
-    assert deleted == {"deleted": 1}
+    assert deleted == {"deleted": 1, "kept": 0}
     assert isinstance(created, HTTPException) and created.status_code == 422, created
     assert _PART in created.detail
     part, runs, run_events = await _state(factory, company_id)
@@ -139,7 +139,7 @@ async def test_run_first_is_saved_and_the_delete_waits_for_it(committed_engine):
     created, deleted = await _race(committed_engine, factory, company_id, user, _create, _delete)
 
     assert not isinstance(created, HTTPException), created
-    assert deleted == {"deleted": 1}
+    assert deleted == {"deleted": 1, "kept": 0}
     part, runs, _ = await _state(factory, company_id)
     assert part is None
     assert [r.state["inputs"][0]["item_id"] for r in runs] == [_PART]
@@ -166,7 +166,7 @@ async def test_delete_first_refuses_a_waiting_issue(committed_engine):
 
     deleted, issued = await _race(committed_engine, factory, company_id, user, _delete, _issue)
 
-    assert deleted == {"deleted": 1}
+    assert deleted == {"deleted": 1, "kept": 0}
     assert isinstance(issued, HTTPException) and issued.status_code == 404, issued
     async with factory() as s:
         run = await s.get(Projection, {"company_id": company_id, "entity_id": run_id})
