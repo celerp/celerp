@@ -68,3 +68,53 @@ async def test_demo_filter_lists_only_untouched_samples_and_delete_keeps_the_res
     assert left["DEMO-AGR-001"]["quantity"] == 999
     assert not {"DEMO-AGR-003", "DEMO-AGR-004"} & set(left)
     assert await _skus(client, h, filter=DEMO_ITEMS_FILTER) == {}
+
+
+async def _demo_list_delete(owner_ui, ids: list[str], page: str) -> str:
+    """Delete from an inventory list page, the way its bulk Delete posts (htmx names the
+    page it came from)."""
+    r = await owner_ui.post("/api/items/bulk/delete", data={"selected": ids},
+                            headers={"HX-Request": "true", "HX-Current-URL": f"http://ui{page}"})
+    assert r.status_code == 200, r.text
+    return r.text
+
+
+async def _agricultural_samples(owner_ui) -> list[dict]:
+    r = await owner_ui.api.post("/companies/me/business-type", json={"vertical": "agricultural"})
+    assert r.status_code == 200, r.text
+    r = await owner_ui.api.get("/items", params={"filter": DEMO_ITEMS_FILTER, "limit": 500})
+    assert r.status_code == 200, r.text
+    return r.json()["items"]
+
+
+@pytest.mark.asyncio
+async def test_demo_list_delete_keeps_a_sample_edited_after_the_list_was_shown(owner_ui):
+    """A stale demo list (or a second tab) posts a sample edited since it was shown: it is
+    no longer a sample, so the list's Delete keeps it and says so. Red statement: before
+    the change bulk delete removed every posted id, so the edited sample was hard-deleted
+    and the message read "Deleted: 5."."""
+    from ui.i18n import t
+    listed = await _agricultural_samples(owner_ui)
+    assert len(listed) == 5, [i["sku"] for i in listed]
+    edited = listed[0]
+    r = await owner_ui.api.patch(f"/items/{edited['id']}", json={
+        "fields_changed": {"name": {"old": edited["name"], "new": "Kept: edited in another tab"}}})
+    assert r.status_code == 200, r.text
+    html = await _demo_list_delete(owner_ui, [i["id"] for i in listed], "/inventory?filter=demo")
+    left = (await owner_ui.api.get("/items", params={"status": "all", "limit": 500})).json()["items"]
+    assert [i["name"] for i in left] == ["Kept: edited in another tab"]
+    assert t("inventory.bulk_deleted", n=4) in html
+    assert t("settings.business_type_changes.demo_kept", count=1) in html
+
+
+@pytest.mark.asyncio
+async def test_inventory_list_delete_still_deletes_an_edited_sample(owner_ui):
+    """Outside the demo list Delete is the owner's own choice and removes what was ticked."""
+    listed = await _agricultural_samples(owner_ui)
+    edited = listed[0]
+    r = await owner_ui.api.patch(f"/items/{edited['id']}", json={
+        "fields_changed": {"name": {"old": edited["name"], "new": "Edited"}}})
+    assert r.status_code == 200, r.text
+    await _demo_list_delete(owner_ui, [edited["id"]], "/inventory")
+    left = (await owner_ui.api.get("/items", params={"status": "all", "limit": 500})).json()["items"]
+    assert edited["id"] not in {i["id"] for i in left}

@@ -3267,6 +3267,10 @@ function celerpPrintLabel(entityId, templateId) {
 
     # ── Bulk actions (list-level) ─────────────────────────────────────────────
 
+    def _current_list_query(request: Request) -> dict:
+        """The list the owner is on (search, tab, filters), from the page htmx names."""
+        return _parse_query(QueryParams(urlsplit(request.headers.get("hx-current-url", "")).query))
+
     def _bulk_destructive_success(request: Request, message: str, redirect_qs: str = "",
                                   cls: str = "flash--success") -> Response:
         """Return a bulk-action result response that clears the client-side selection.
@@ -3279,7 +3283,7 @@ function celerpPrintLabel(entityId, templateId) {
         from starlette.responses import HTMLResponse
         # Without a result filter of its own the table reloads the list the owner is on
         # (search, tab, filters), never the unfiltered default.
-        state = _base_state(_parse_query(QueryParams(urlsplit(request.headers.get("hx-current-url", "")).query)))
+        state = _base_state(_current_list_query(request))
         content_qs = redirect_qs or (f"?{urlencode(state)}" if state else "")
         content = Div(
             P(message, cls=f"flash {cls}"),
@@ -3440,12 +3444,17 @@ function celerpPrintLabel(entityId, templateId) {
         entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
         if not entity_ids:
             return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="bulk-action-result")
+        # The demo list deletes only what is still an untouched sample at delete time;
+        # a sample edited or used since the list was shown is kept and reported.
+        on_demo_list = _current_list_query(request).get("filter") == DEMO_ITEMS_FILTER
         try:
-            result = await api.bulk_delete(token, entity_ids)
+            result = await api.bulk_delete(token, entity_ids, untouched_samples_only=on_demo_list)
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
-        deleted = result.get("deleted", len(entity_ids))
-        return _bulk_destructive_success(request, t("inventory.bulk_deleted", n=deleted))
+        message = t("inventory.bulk_deleted", n=result["deleted"])
+        if result["kept"]:
+            message += " " + t("settings.business_type_changes.demo_kept", count=result["kept"])
+        return _bulk_destructive_success(request, message, cls="flash--warning" if result["kept"] else "flash--success")
 
     # ── Bulk expire ──────────────────────────────────────────────────────
 
