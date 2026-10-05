@@ -3618,6 +3618,8 @@
   "dashboard.finish_setup": "Finish setup: choose your business type",
   "dashboard.getting_started_forever": "Don't show this again",
   "dashboard.demo_note": "Items marked [DEMO] are samples and are counted in these figures. Your first product import removes them unless you have changed them.",
+  "dashboard.remove_demo_items": "Remove demo items",
   "dashboard.getting_started_from_spreadsheet": "Import from a spreadsheet:",
-  "shell.import_hint": "Click Import to upload your file"
+  "shell.import_hint": "Click Import to upload your file",
+  "shell.demo_hint": "Tick the box to select them all, then choose Delete."
 }

@@ -6744,8 +6744,8 @@ class TestBulkActionsPhase1to5:
         assert b"Merge" in r.content
         assert b"Archive" in r.content
         assert b"Expire" in r.content
-        # Delete only visible when viewing archived/expired items
-        assert b"Delete" not in r.content
+        # Delete only offered when viewing archived/expired items
+        assert b'value="delete"' not in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_toolbar_module_action_in_dropdown(self, ui_client):

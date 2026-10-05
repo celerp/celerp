@@ -3618,6 +3618,8 @@
   "dashboard.finish_setup": "Conclua a configuração: escolha seu tipo de negócio",
   "dashboard.getting_started_forever": "Não mostrar novamente",
   "dashboard.demo_note": "Itens marcados [DEMO] são exemplos e estão incluídos nestes números. Sua primeira importação de produtos os remove, a menos que você os tenha alterado.",
+  "dashboard.remove_demo_items": "Remover itens de demonstração",
   "dashboard.getting_started_from_spreadsheet": "Importar de uma planilha:",
-  "shell.import_hint": "Clique em Importar para enviar seu arquivo"
+  "shell.import_hint": "Clique em Importar para enviar seu arquivo",
+  "shell.demo_hint": "Marque a caixa para selecionar todos e depois escolha Excluir."
 }

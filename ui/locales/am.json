@@ -3618,6 +3618,8 @@
   "dashboard.finish_setup": "ማዋቀሩን ይጨርሱ፦ የንግድ አይነት ይምረጡ",
   "dashboard.getting_started_forever": "ዳግም አታሳይ",
   "dashboard.demo_note": "[DEMO] የተደረገባቸው ዕቃዎች ናሙናዎች ናቸው፣ በእነዚህ አሃዞችም ውስጥ ተቆጥረዋል። የመጀመሪያው የምርት ማስገባትዎ ያስወግዳቸዋል፣ ካልቀየሯቸው በስተቀር።",
+  "dashboard.remove_demo_items": "የማሳያ ዕቃዎችን አስወግድ",
   "dashboard.getting_started_from_spreadsheet": "ከተመን ሉህ አስገባ:",
-  "shell.import_hint": "ፋይልዎን ለመስቀል አስገባን ጠቅ ያድርጉ"
+  "shell.import_hint": "ፋይልዎን ለመስቀል አስገባን ጠቅ ያድርጉ",
+  "shell.demo_hint": "ሁሉንም ለመምረጥ ሳጥኑን ምልክት ያድርጉ፣ ከዚያ አጥፋን ይምረጡ።"
 }

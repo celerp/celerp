@@ -3618,6 +3618,8 @@
   "dashboard.finish_setup": "Selesaikan penyiapan: pilih jenis bisnis Anda",
   "dashboard.getting_started_forever": "Jangan tampilkan lagi",
   "dashboard.demo_note": "Item bertanda [DEMO] adalah contoh dan ikut dihitung dalam angka ini. Impor produk pertama Anda menghapusnya, kecuali Anda telah mengubahnya.",
+  "dashboard.remove_demo_items": "Hapus item demo",
   "dashboard.getting_started_from_spreadsheet": "Impor dari spreadsheet:",
-  "shell.import_hint": "Klik Impor untuk mengunggah file Anda"
+  "shell.import_hint": "Klik Impor untuk mengunggah file Anda",
+  "shell.demo_hint": "Centang kotak untuk memilih semuanya, lalu pilih Menghapus."
 }
