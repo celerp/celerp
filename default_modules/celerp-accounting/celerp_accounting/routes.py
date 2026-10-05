@@ -31,7 +31,7 @@ from celerp_accounting.import_service import AccImportRecord
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole
-from celerp.services.account_roles import current_settings, line_roles, resolve, resolve_many, role_map, scope_codes
+from celerp.services.account_roles import current_settings, line_roles, resolve, resolve_many, role_map
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import lock_chart, locked_company
 from celerp.services.doc_balance import canonical_doc_type
@@ -3980,15 +3980,15 @@ async def _get_recon_and_line(
 
 def _cash_codes(accounts, banks, settings: dict) -> set[str]:
     """The accounts that hold cash: every bank account, and every account at any
-    depth under an account that has served as the company's cash and cash
-    equivalents header, the header included. Cycle-safe."""
+    depth under the company's current cash and cash equivalents header, the header
+    included. A former header is not cash once the header has moved. Cycle-safe."""
     codes = {b.chart_account_code for b in banks}
     children: dict[str, list[str]] = {}
     for a in accounts:
         if a.parent_code:
             children.setdefault(a.parent_code, []).append(a.code)
-    role = AccountRole.CASH_AND_EQUIVALENTS.value
-    stack = sorted(scope_codes(settings, role) | ({role_map(settings)[role]} if role_map(settings).get(role) else set()))
+    header = role_map(settings).get(AccountRole.CASH_AND_EQUIVALENTS.value)
+    stack = [header] if header else []
     seen: set[str] = set()
     while stack:
         code = stack.pop()

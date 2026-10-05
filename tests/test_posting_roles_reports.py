@@ -165,3 +165,15 @@ async def test_a_cash_header_moved_to_another_account_moves_what_counts_as_cash(
     data = await _cash_flow(client, auth)
     assert data["direct"]["operating"]["total"] == pytest.approx(60.0)
     assert data["balanced"] is True
+
+
+@pytest.mark.asyncio
+async def test_accounts_under_a_former_cash_header_stop_counting_as_cash(session, client, auth):
+    await _account(client, auth, "1115", "asset", "1110")
+    await _account(client, auth, "1180", "asset", "1100")
+    await _remap(session, auth, "cash_and_equivalents", "1180")
+    await _je(client, auth, [{"account": "1115", "debit": 25.0, "credit": 0.0},
+                             {"account": "4100", "debit": 0.0, "credit": 25.0}])
+    data = await _cash_flow(client, auth)
+    assert "1115" not in data["cash_accounts"]
+    assert data["net_change"] == pytest.approx(0.0)
