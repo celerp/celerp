@@ -361,3 +361,24 @@ async def test_a_bill_created_with_a_line_account_keeps_it(client, auth):
 
     [line] = (await client.get(f"/docs/{r.json()['id']}", headers=headers)).json()["line_items"]
     assert line["account_code"] == "6100"
+
+
+@pytest.mark.asyncio
+async def test_seeding_the_chart_lists_a_bank_account_its_parent_cannot_take(session, client, auth):
+    """The default bank account 1111 is missing and its parent 1110 is switched off.
+    Seeding still adds the rest of the default chart and lists 1111 as not added."""
+    from sqlalchemy import text
+
+    headers, cid = auth["headers"], auth["company_id"]
+    await session.execute(text("DELETE FROM bank_accounts WHERE company_id = :c"), {"c": cid})
+    await session.execute(text("DELETE FROM accounts WHERE company_id = :c AND code IN ('1111', '6970')"), {"c": cid})
+    await session.execute(text("UPDATE accounts SET is_active = false WHERE company_id = :c AND code = '1110'"),
+                          {"c": cid})
+    await session.commit()
+
+    r = await client.post("/accounting/chart/seed", headers=headers)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["added"] == 1 and r.json()["not_added"] == ["1111"]
+    codes = {a["code"] for a in (await client.get("/accounting/chart", headers=headers)).json()["items"]}
+    assert "6970" in codes and "1111" not in codes

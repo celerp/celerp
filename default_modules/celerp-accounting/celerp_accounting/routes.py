@@ -205,6 +205,9 @@ async def seed_chart_of_accounts(session: AsyncSession, company_id: uuid.UUID) -
         session.add(_seeded_account(company_id, entry))
 
 
+_DEFAULT_BANK_CODE = "1111"
+
+
 async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUID) -> None:
     """Create a default bank account so reconciliation is never empty. Idempotent."""
     from celerp.models.company import Company
@@ -213,7 +216,7 @@ async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUI
     company = await session.get(Company, company_id)
     currency = (company.settings or {}).get("currency", "THB") if company else "THB"
 
-    code = "1111"
+    code = _DEFAULT_BANK_CODE
     existing = (await session.execute(
         _select(Account.id).where(Account.company_id == company_id, Account.code == code)
     )).scalar_one_or_none()
@@ -554,19 +557,23 @@ async def seed_chart_endpoint(
     )
     added = 0
     not_added: list[str] = []
-    for entry in THAI_CHART_OF_ACCOUNTS:
-        if entry["code"] in existing_codes:
-            continue
+
+    async def seeded(code: str, create) -> bool:
+        """Run ``create``; an account the chart refuses now is listed instead."""
         try:
-            await import_service.create_chart_account(
-                session, company_id, code=entry["code"], name=entry["name"], account_type=entry["account_type"],
-                parent_code=entry["parent_code"], cash_flow_category=entry.get("cash_flow_category"))
+            await create
         except HTTPException as exc:
             if exc.status_code != 422:
                 raise
-            not_added.append(entry["code"])
-            continue
-        added += 1
+            not_added.append(code)
+            return False
+        return True
+
+    for entry in THAI_CHART_OF_ACCOUNTS:
+        if entry["code"] not in existing_codes:
+            added += await seeded(entry["code"], import_service.create_chart_account(
+                session, company_id, code=entry["code"], name=entry["name"], account_type=entry["account_type"],
+                parent_code=entry["parent_code"], cash_flow_category=entry.get("cash_flow_category")))
     # Ensure at least one bank account exists (backfill for existing companies)
     existing_bank = (
         await session.execute(
@@ -574,7 +581,7 @@ async def seed_chart_endpoint(
         )
     ).scalar_one_or_none()
     if not existing_bank:
-        await _seed_default_bank_account(session, company_id)
+        await seeded(_DEFAULT_BANK_CODE, _seed_default_bank_account(session, company_id))
 
     await session.commit()
     return {"added": added, "already_existed": len(existing_codes), "not_added": not_added}
