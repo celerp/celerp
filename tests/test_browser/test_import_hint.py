@@ -129,7 +129,7 @@ def test_arrow_respects_reduced_motion(page: Page, fresh_company):
 _LOCALE_DIR = Path(__file__).resolve().parents[2] / "ui" / "locales"
 _CARD_KEYS = ("dashboard.getting_started_title", "dashboard.getting_started_products",
               "dashboard.getting_started_contacts", "dashboard.getting_started_documents",
-              "dashboard.getting_started_where", "dashboard.getting_started_demo",
+              "dashboard.getting_started_where",
               "setup.option_restore_title", "setup.option_move_title")
 
 

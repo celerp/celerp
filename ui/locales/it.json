@@ -3615,8 +3615,8 @@
   "dashboard.getting_started_contacts": "Clienti e fornitori",
   "dashboard.getting_started_documents": "Documenti",
   "dashboard.getting_started_where": "Importa si trova sempre in cima alla pagina.",
-  "dashboard.getting_started_demo": "Gli articoli contrassegnati [DEMO] sono esempi. La prima importazione di prodotti li rimuove, a meno che tu non li abbia modificati.",
   "dashboard.finish_setup": "Completa la configurazione: scegli il tipo di attività",
   "dashboard.getting_started_forever": "Non mostrare più",
+  "dashboard.demo_note": "Gli articoli contrassegnati [DEMO] sono esempi e sono inclusi in queste cifre. La prima importazione di prodotti li rimuove, a meno che tu non li abbia modificati.",
   "shell.import_hint": "Fai clic su Importa per caricare il tuo file"
 }

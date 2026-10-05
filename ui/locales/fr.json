@@ -3615,8 +3615,8 @@
   "dashboard.getting_started_contacts": "Clients et fournisseurs",
   "dashboard.getting_started_documents": "Documents",
   "dashboard.getting_started_where": "Importer se trouve toujours en haut de la page.",
-  "dashboard.getting_started_demo": "Les articles marqués [DEMO] sont des exemples. Votre premier import de produits les supprime, sauf si vous les avez modifiés.",
   "dashboard.finish_setup": "Terminez la configuration : choisissez votre type d'entreprise",
   "dashboard.getting_started_forever": "Ne plus afficher",
+  "dashboard.demo_note": "Les articles marqués [DEMO] sont des exemples et sont inclus dans ces chiffres. Votre premier import de produits les supprime, sauf si vous les avez modifiés.",
   "shell.import_hint": "Cliquez sur Importer pour envoyer votre fichier"
 }

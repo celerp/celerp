@@ -774,6 +774,7 @@ def setup_routes(app):
             Script("window.celerpUseDays && window.celerpUseDays(true);"),
             _finish_setup_banner(company, settings, role),
             welcome or "",
+            await _demo_note(token),
             _kpi_grid(cfg, values, role=role, settings=settings),
             _secondary_kpi_grid(cfg, values, role=role, settings=settings),
             _charts_section(cfg, valuation, ar_aging,
@@ -883,9 +884,27 @@ def setup_routes(app):
 
 # The list pages the card links to: label key, page, who sees its Import button, and
 # how the page's own list is read to tell real records from the samples setup adds.
+def _is_demo(item: dict) -> bool:
+    return str(item.get("sku") or "").startswith("DEMO-")
+
+
 def _real_items(page: dict) -> bool:
-    demo = sum(1 for i in page.get("items") or [] if str(i.get("sku") or "").startswith("DEMO-"))
+    demo = sum(1 for i in page.get("items") or [] if _is_demo(i))
     return (page.get("total") or 0) > demo
+
+
+async def _demo_note(token: str) -> FT | str:
+    """The figures below count setup's [DEMO] samples while any are left, so say so
+    next to them, for everyone who sees the figures. Nothing when the items cannot be
+    read: the note never claims samples it has not seen."""
+    try:
+        page = await api.list_items(token, {"status": "all", "q": "DEMO-", "limit": 50})
+    except APIError:
+        return ""
+    if not any(_is_demo(i) for i in page.get("items") or []):
+        return ""
+    return Div(Span("ℹ️", cls="info-banner-icon"), t("dashboard.demo_note"),
+               cls="info-banner", id="demo-note")
 
 
 def _real_contacts(page: dict) -> bool:
@@ -956,7 +975,6 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
         Div(*links, cls="getting-started-links"),
         P(t("dashboard.getting_started_where"), cls="getting-started-note"),
         options,
-        P(t("dashboard.getting_started_demo"), cls="getting-started-note"),
         NotStr("<!-- /getting-started-card -->"),
         id="getting-started-card",
         cls="getting-started-card",

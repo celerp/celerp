@@ -91,8 +91,6 @@ async def test_card_shows_for_new_company_with_permitted_links(ui):
     for href in ("/inventory?hint=import", "/contacts/customers?hint=import", "/docs?hint=import"):
         assert f'href="{href}"' in card
     assert "Import is always at the top of the page." in card
-    assert ("Items marked [DEMO] are samples. Your first product import removes them unless you "
-            "have changed them.") in card
 
 
 async def test_card_links_follow_import_permissions(ui):
@@ -230,3 +228,40 @@ async def test_card_offers_the_dont_show_again_checkbox(ui):
     card = _card(await _dashboard(ui))
     assert 'type="checkbox"' in card and 'name="forever"' in card
     assert t("dashboard.getting_started_forever") in card
+
+
+_DEMO_NOTE = ("Items marked [DEMO] are samples and are counted in these figures. Your first "
+              "product import removes them unless you have changed them.")
+
+
+def _demo_note(html: str) -> str:
+    m = re.search(r'<div[^>]*id="demo-note".*?</div>', html, re.S)
+    return m.group(0) if m else ""
+
+
+async def test_demo_note_shows_above_the_figures_outside_the_card(ui):
+    """The KPIs count the [DEMO] samples, so the note says so next to the figures, once,
+    and not inside the card the owner can close."""
+    html = await _dashboard(ui)
+    assert _DEMO_NOTE in _demo_note(html)
+    assert html.count(_DEMO_NOTE) == 1
+    assert _DEMO_NOTE not in _card(html)
+    assert html.index('id="demo-note"') < html.index('class="kpi-grid')
+
+
+async def test_demo_note_stays_after_the_card_is_closed_for_good(ui):
+    html = await _dashboard(ui, settings={"getting_started_dismissed": True})
+    assert _card(html) == ""
+    assert _DEMO_NOTE in _demo_note(html)
+
+
+async def test_demo_note_shows_to_roles_without_the_card(ui):
+    html = await _dashboard(ui, role="viewer")
+    assert _card(html) == ""
+    assert _DEMO_NOTE in _demo_note(html)
+
+
+async def test_no_demo_note_without_demo_items(ui):
+    html = await _dashboard(ui, items={"items": [{"id": "item:1", "sku": "R-1", "name": "Ring"}], "total": 1})
+    assert _demo_note(html) == ""
+    assert "[DEMO]" not in html

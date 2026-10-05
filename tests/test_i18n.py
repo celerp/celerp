@@ -832,7 +832,7 @@ def test_the_stripe_payment_states_are_worded_in_every_locale():
 _GETTING_STARTED_KEYS = (
     "dashboard.getting_started_title", "dashboard.getting_started_products",
     "dashboard.getting_started_contacts", "dashboard.getting_started_documents",
-    "dashboard.getting_started_where", "dashboard.getting_started_demo",
+    "dashboard.getting_started_where", "dashboard.demo_note",
     "dashboard.finish_setup", "shell.import_hint",
 )
 

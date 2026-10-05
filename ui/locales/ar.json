@@ -3615,8 +3615,8 @@
   "dashboard.getting_started_contacts": "العملاء والموردون",
   "dashboard.getting_started_documents": "المستندات",
   "dashboard.getting_started_where": "زر استيراد موجود دائمًا في أعلى الصفحة.",
-  "dashboard.getting_started_demo": "العناصر المميزة بـ [DEMO] هي أمثلة. يحذفها أول استيراد للمنتجات، ما لم تكن قد عدّلتها.",
   "dashboard.finish_setup": "أكمل الإعداد: اختر نوع العمل",
   "dashboard.getting_started_forever": "عدم الإظهار مرة أخرى",
+  "dashboard.demo_note": "العناصر المميزة بـ [DEMO] هي أمثلة وهي محسوبة في هذه الأرقام. يحذفها أول استيراد للمنتجات، ما لم تكن قد عدّلتها.",
   "shell.import_hint": "انقر على استيراد لرفع ملفك"
 }
