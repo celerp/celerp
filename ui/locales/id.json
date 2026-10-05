@@ -3521,5 +3521,16 @@
   "system_recovery.signed_out": "Semua orang telah dikeluarkan. Silakan masuk dengan akun dari instalasi yang dipulihkan.",
   "system_recovery.safety_saved": "Salinan pengaman dari instalasi sebelumnya disimpan di {path}.",
   "system_recovery.safety_failed_confirm": "Tidak ada yang diubah. Anda dapat memulihkan tanpa salinan pengaman, dan ini tidak dapat dibatalkan.",
-  "system_recovery.continue_without_safety": "Pulihkan tanpa salinan pengaman"
+  "system_recovery.continue_without_safety": "Pulihkan tanpa salinan pengaman",
+  "pay.unmatched_refused_gone": "Pembayaran ini tidak lagi ada di pembayaran yang belum dicocokkan.",
+  "pay.unmatched_refused_other_company": "Pembayaran ini dibuat ke perusahaan lain. Beralih ke perusahaan itu untuk mencatatnya di sana.",
+  "pay.unmatched_refused_missing": "Faktur ini sudah tidak ada.",
+  "pay.unmatched_refused_not_invoice": "Hanya faktur yang dapat menerima pembayaran ini.",
+  "pay.unmatched_refused_status": "Faktur ini tidak dapat menerima pembayaran dalam statusnya saat ini.",
+  "pay.unmatched_refused_currency": "Faktur ini dalam mata uang yang berbeda dari pembayaran.",
+  "pay.unmatched_refused_paid": "Faktur ini sudah dibayar.",
+  "pay.unmatched_refused_too_small": "Sisa tagihan faktur ini lebih kecil dari pembayaran.",
+  "pay.unmatched_refused_refused": "Faktur ini tidak dapat menerima pembayaran ini.",
+  "documents.return_to_unmatched": "Lepas pembayaran ini dari faktur dan kembalikan ke pembayaran yang belum dicocokkan",
+  "btn.confirm_return_to_unmatched": "Kembalikan ke pembayaran belum dicocokkan"
 }

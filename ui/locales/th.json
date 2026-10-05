@@ -3521,5 +3521,16 @@
   "system_recovery.signed_out": "ทุกคนออกจากระบบแล้ว กรุณาเข้าสู่ระบบด้วยบัญชีจากการติดตั้งที่กู้คืนแล้ว",
   "system_recovery.safety_saved": "บันทึกสำเนาสำรองเพื่อความปลอดภัยของการติดตั้งก่อนหน้าไว้ที่ {path} แล้ว",
   "system_recovery.safety_failed_confirm": "ยังไม่มีการเปลี่ยนแปลงใดๆ คุณสามารถกู้คืนโดยไม่มีสำเนาสำรองเพื่อความปลอดภัยได้ ซึ่งไม่สามารถยกเลิกได้",
-  "system_recovery.continue_without_safety": "กู้คืนโดยไม่มีสำเนาสำรอง"
+  "system_recovery.continue_without_safety": "กู้คืนโดยไม่มีสำเนาสำรอง",
+  "pay.unmatched_refused_gone": "การชำระเงินนี้ไม่อยู่ในรายการการชำระเงินที่ยังไม่จับคู่แล้ว",
+  "pay.unmatched_refused_other_company": "การชำระเงินนี้เป็นของบริษัทอื่น สลับไปที่บริษัทนั้นเพื่อบันทึก",
+  "pay.unmatched_refused_missing": "ใบแจ้งหนี้นี้ไม่มีอยู่แล้ว",
+  "pay.unmatched_refused_not_invoice": "มีเพียงใบแจ้งหนี้เท่านั้นที่รับการชำระเงินนี้ได้",
+  "pay.unmatched_refused_status": "ใบแจ้งหนี้นี้รับการชำระเงินในสถานะปัจจุบันไม่ได้",
+  "pay.unmatched_refused_currency": "ใบแจ้งหนี้นี้ใช้สกุลเงินต่างจากการชำระเงิน",
+  "pay.unmatched_refused_paid": "ใบแจ้งหนี้นี้ชำระแล้ว",
+  "pay.unmatched_refused_too_small": "ยอดค้างของใบแจ้งหนี้นี้น้อยกว่าการชำระเงิน",
+  "pay.unmatched_refused_refused": "ใบแจ้งหนี้นี้รับการชำระเงินนี้ไม่ได้",
+  "documents.return_to_unmatched": "นำการชำระเงินนี้ออกจากใบแจ้งหนี้และคืนไปยังการชำระเงินที่ยังไม่จับคู่",
+  "btn.confirm_return_to_unmatched": "คืนไปยังการชำระเงินที่ยังไม่จับคู่"
 }

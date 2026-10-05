@@ -986,7 +986,10 @@ def test_the_unmatched_table_shows_names_and_marks_what_was_deleted():
 
     assert row["company_id"] not in html and row["document_id"] not in html
     assert html.count("<td>Acme Ltd</td>") == 2
-    assert html.count("(deleted)") == 2
+    # The payment's invoice cell is "--", click-to-edit to record it on an invoice; the
+    # refund's stays marked deleted.
+    assert html.count("(deleted)") == 1
+    assert 'hx-get="/settings/payments/unmatched/pi_1/invoice/edit"' in html
 
 
 @pytest.mark.asyncio

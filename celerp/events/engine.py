@@ -84,10 +84,16 @@ async def refuse_stripe_payment_removal(session, company_id, entity_id, payments
                                         index, event_type: str) -> None:
     """422 when *event_type* would take the payment at *index* off the document while
     Stripe holds its money (``stripe_payment_indexes``), or would delete a payment
-    received through Stripe (``stripe_receipt_references``)."""
+    received through Stripe (``stripe_receipt_references``). A payment a person
+    recorded on the document from the unmatched payments, and that was never
+    refunded, may be deleted: that puts it back with them (``payments.return_unmatched``)."""
+    payment = next((p for p in payments if p.get("index") == index), None)
+    if event_type == "doc.payment.deleted" and payment is not None and not payment.get("refunded"):
+        from celerp.services.payments import recorded_unmatched
+        if payment.get("reference") in await recorded_unmatched(session, company_id, entity_id):
+            return
     if index in await stripe_payment_indexes(session, company_id, entity_id, payments):
         raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
-    payment = next((p for p in payments if p.get("index") == index), None)
     if (event_type == "doc.payment.deleted" and payment is not None
             and is_stripe_receipt(payment, await stripe_receipt_references(session, company_id, entity_id))):
         raise HTTPException(status_code=422, detail=STRIPE_RECEIPT_KEPT)

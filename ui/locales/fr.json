@@ -3521,5 +3521,16 @@
   "system_recovery.signed_out": "Tout le monde a été déconnecté. Connectez-vous avec un compte de l'installation restaurée.",
   "system_recovery.safety_saved": "Une copie de sécurité de l'installation précédente a été enregistrée dans {path}.",
   "system_recovery.safety_failed_confirm": "Rien n'a été modifié. Vous pouvez restaurer sans copie de sécurité, ce qui est irréversible.",
-  "system_recovery.continue_without_safety": "Restaurer sans copie de sécurité"
+  "system_recovery.continue_without_safety": "Restaurer sans copie de sécurité",
+  "pay.unmatched_refused_gone": "Ce paiement ne figure plus parmi les paiements non rapprochés.",
+  "pay.unmatched_refused_other_company": "Ce paiement a été fait à une autre société. Passez à cette société pour l'enregistrer.",
+  "pay.unmatched_refused_missing": "Cette facture n'existe plus.",
+  "pay.unmatched_refused_not_invoice": "Seule une facture peut recevoir ce paiement.",
+  "pay.unmatched_refused_status": "Cette facture ne peut pas recevoir de paiement dans son statut actuel.",
+  "pay.unmatched_refused_currency": "Cette facture est dans une autre devise que le paiement.",
+  "pay.unmatched_refused_paid": "Cette facture est déjà payée.",
+  "pay.unmatched_refused_too_small": "Cette facture doit moins que le paiement.",
+  "pay.unmatched_refused_refused": "Cette facture ne peut pas recevoir ce paiement.",
+  "documents.return_to_unmatched": "Retirer ce paiement de la facture et le remettre parmi les paiements non rapprochés",
+  "btn.confirm_return_to_unmatched": "Remettre parmi les paiements non rapprochés"
 }

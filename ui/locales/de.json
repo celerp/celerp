@@ -3521,5 +3521,16 @@
   "system_recovery.signed_out": "Alle wurden abgemeldet. Melden Sie sich mit einem Konto aus der wiederhergestellten Installation an.",
   "system_recovery.safety_saved": "Eine Sicherheitskopie der vorherigen Installation wurde unter {path} gespeichert.",
   "system_recovery.safety_failed_confirm": "Es wurde nichts geändert. Sie können ohne Sicherheitskopie wiederherstellen, dies kann nicht rückgängig gemacht werden.",
-  "system_recovery.continue_without_safety": "Ohne Sicherheitskopie wiederherstellen"
+  "system_recovery.continue_without_safety": "Ohne Sicherheitskopie wiederherstellen",
+  "pay.unmatched_refused_gone": "Diese Zahlung ist nicht mehr bei den nicht zugeordneten Zahlungen.",
+  "pay.unmatched_refused_other_company": "Diese Zahlung ging an eine andere Firma. Wechseln Sie zu dieser Firma, um sie dort zu erfassen.",
+  "pay.unmatched_refused_missing": "Diese Rechnung gibt es nicht mehr.",
+  "pay.unmatched_refused_not_invoice": "Nur eine Rechnung kann diese Zahlung aufnehmen.",
+  "pay.unmatched_refused_status": "Diese Rechnung kann in ihrem aktuellen Status keine Zahlung aufnehmen.",
+  "pay.unmatched_refused_currency": "Diese Rechnung ist in einer anderen Währung als die Zahlung.",
+  "pay.unmatched_refused_paid": "Diese Rechnung ist bereits bezahlt.",
+  "pay.unmatched_refused_too_small": "Auf dieser Rechnung ist weniger offen als die Zahlung.",
+  "pay.unmatched_refused_refused": "Diese Rechnung kann diese Zahlung nicht aufnehmen.",
+  "documents.return_to_unmatched": "Diese Zahlung von der Rechnung nehmen und zurück zu den nicht zugeordneten Zahlungen legen",
+  "btn.confirm_return_to_unmatched": "Zurück zu den nicht zugeordneten Zahlungen"
 }

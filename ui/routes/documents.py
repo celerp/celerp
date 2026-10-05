@@ -3227,6 +3227,22 @@ celerpUpdateBulkAlloc();
             return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
+    @app.post("/docs/{entity_id}/delete-payment")
+    async def delete_payment_route(request: Request, entity_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            form = await request.form()
+            payment_index = int(form.get("payment_index", -1))
+            await api.delete_payment(token, entity_id, payment_index, **submitted_operation_key(form))
+        except APIError as e:
+            if e.status == 401:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return _action_error(str(e.detail))
+        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+
     @app.post("/docs/{entity_id}/apply-credit")
     async def apply_credit_route(request: Request, entity_id: str):
         from starlette.responses import Response as _R
@@ -5346,6 +5362,19 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         if voided:
             void_reason = p.get("void_reason") or ""
             void_cell = Td(Span(t("doc.voided"), cls="badge badge--void", title=void_reason))
+        elif p.get("unmatched") and is_operator:
+            # Recorded here from the unmatched payments: taking it off puts it back on that list.
+            void_cell = Td(Details(
+                Summary("🗑", cls="btn btn--ghost btn--xs", title=t("documents.return_to_unmatched")),
+                Form(
+                    Input(type="hidden", name="payment_index", value=str(p.get("index", 0))),
+                    operation_key_input(),
+                    Button(t("btn.confirm_return_to_unmatched"), type="submit", cls="btn btn--danger btn--xs"),
+                    hx_post=f"/docs/{entity_id}/delete-payment", hx_swap="none",
+                    cls="inline-form inline-form--compact",
+                ),
+                cls="void-inline",
+            ))
         elif p.get("held_by") == "stripe":
             void_cell = Td(Span(t("documents.refund_in_stripe"), cls="text-muted small"))
         elif not voided and is_operator:

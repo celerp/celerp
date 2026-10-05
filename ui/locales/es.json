@@ -3521,5 +3521,16 @@
   "system_recovery.signed_out": "Se ha cerrado la sesión de todos. Inicia sesión con una cuenta de la instalación restaurada.",
   "system_recovery.safety_saved": "Se guardó una copia de seguridad de la instalación anterior en {path}.",
   "system_recovery.safety_failed_confirm": "No se ha cambiado nada. Puedes restaurar sin una copia de seguridad, lo cual no se puede deshacer.",
-  "system_recovery.continue_without_safety": "Restaurar sin copia de seguridad"
+  "system_recovery.continue_without_safety": "Restaurar sin copia de seguridad",
+  "pay.unmatched_refused_gone": "Este pago ya no está entre los pagos sin asignar.",
+  "pay.unmatched_refused_other_company": "Este pago se hizo a otra empresa. Cambie a esa empresa para registrarlo allí.",
+  "pay.unmatched_refused_missing": "Esta factura ya no existe.",
+  "pay.unmatched_refused_not_invoice": "Solo una factura puede recibir este pago.",
+  "pay.unmatched_refused_status": "Esta factura no puede recibir un pago en su estado actual.",
+  "pay.unmatched_refused_currency": "Esta factura está en otra moneda que el pago.",
+  "pay.unmatched_refused_paid": "Esta factura ya está pagada.",
+  "pay.unmatched_refused_too_small": "Esta factura debe menos que el pago.",
+  "pay.unmatched_refused_refused": "Esta factura no puede recibir este pago.",
+  "documents.return_to_unmatched": "Quitar este pago de la factura y devolverlo a los pagos sin asignar",
+  "btn.confirm_return_to_unmatched": "Devolver a pagos sin asignar"
 }

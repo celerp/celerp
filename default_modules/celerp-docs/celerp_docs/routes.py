@@ -33,6 +33,7 @@ from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import lock_item_code_namespace
+from celerp.services.payments import recorded_unmatched, return_unmatched
 from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
@@ -1035,6 +1036,11 @@ def _doc_base_amounts(state: dict, fields: tuple[str, ...], base_currency: str) 
     return {f: round_money(a * rate, base_currency) for f, a in amounts.items()}
 
 
+# The statuses in which a document takes a payment (apply_doc_payment).
+PAYABLE_STATUSES = frozenset({"sent", "final", "partial", "paid", "received", "partially_received",
+                              "awaiting_payment"})
+
+
 def _payable_balance(state: dict) -> Decimal:
     """What a document still owes (``outstanding_balance``) at its currency's precision, for a
     payment, credit or refund to be checked against; 409 when the recorded balance is not a
@@ -1406,6 +1412,10 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
     # Payments Stripe reported are refunded or reversed in Stripe, never here.
     if held := await stripe_payment_indexes(session, company_id, entity_id, doc.get("payments") or []):
         doc["payments"] = [p | {"held_by": "stripe"} if p.get("index") in held else p for p in doc["payments"]]
+    # Recorded by a person from the unmatched payments: deleting it puts it back there.
+    if recorded := await recorded_unmatched(session, company_id, entity_id):
+        doc["payments"] = [p | {"unmatched": True} if p.get("reference") in recorded and p.get("status") == "active"
+                           and not p.get("refunded") else p for p in doc.get("payments") or []]
     if doc.get("doc_type") == "memo":
         try:
             labels = await _derive_shipped_labels(session, company_id, entity_id, doc.get("line_items") or [])
@@ -2682,7 +2692,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     doc_state = dict(row.state)
     if doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
         raise HTTPException(status_code=409, detail="This document type carries no money and cannot take a payment")
-    if doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
+    if doc_state.get("status") not in PAYABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Cannot record payment in current status")
     # Replay guard for referenced (online) payments: the same Stripe intent
     # delivered twice records exactly once.
@@ -3316,6 +3326,7 @@ async def delete_payment(
             metadata_={"trigger": "doc.payment.deleted", "doc_id": entity_id},
         )
 
+    await return_unmatched(session, company_id, entity_id, payment.get("reference"))
     await session.commit()
     return {"event_id": entry.id}
 

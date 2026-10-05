@@ -3521,5 +3521,16 @@
   "system_recovery.signed_out": "全員がサインアウトされました。復元されたインストールのアカウントでサインインしてください。",
   "system_recovery.safety_saved": "以前のインストールの安全コピーを {path} に保存しました。",
   "system_recovery.safety_failed_confirm": "何も変更されていません。安全コピーなしで復元できますが、元に戻すことはできません。",
-  "system_recovery.continue_without_safety": "安全コピーなしで復元"
+  "system_recovery.continue_without_safety": "安全コピーなしで復元",
+  "pay.unmatched_refused_gone": "この支払いは未照合の支払いにはもうありません。",
+  "pay.unmatched_refused_other_company": "この支払いは別の会社宛てです。その会社に切り替えて記録してください。",
+  "pay.unmatched_refused_missing": "この請求書はもう存在しません。",
+  "pay.unmatched_refused_not_invoice": "この支払いを受けられるのは請求書だけです。",
+  "pay.unmatched_refused_status": "この請求書は現在のステータスでは支払いを受けられません。",
+  "pay.unmatched_refused_currency": "この請求書は支払いと通貨が異なります。",
+  "pay.unmatched_refused_paid": "この請求書は支払い済みです。",
+  "pay.unmatched_refused_too_small": "この請求書の未払額は支払額より少ないです。",
+  "pay.unmatched_refused_refused": "この請求書はこの支払いを受けられません。",
+  "documents.return_to_unmatched": "この支払いを請求書から外し、未照合の支払いに戻す",
+  "btn.confirm_return_to_unmatched": "未照合の支払いに戻す"
 }

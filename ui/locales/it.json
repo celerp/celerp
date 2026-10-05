@@ -3521,5 +3521,16 @@
   "system_recovery.signed_out": "Tutti sono stati disconnessi. Accedi con un account dell'installazione ripristinata.",
   "system_recovery.safety_saved": "Una copia di sicurezza dell'installazione precedente è stata salvata in {path}.",
   "system_recovery.safety_failed_confirm": "Non è stato modificato nulla. Puoi ripristinare senza una copia di sicurezza, operazione che non può essere annullata.",
-  "system_recovery.continue_without_safety": "Ripristina senza copia di sicurezza"
+  "system_recovery.continue_without_safety": "Ripristina senza copia di sicurezza",
+  "pay.unmatched_refused_gone": "Questo pagamento non è più tra i pagamenti non abbinati.",
+  "pay.unmatched_refused_other_company": "Questo pagamento è stato fatto a un'altra azienda. Passa a quell'azienda per registrarlo lì.",
+  "pay.unmatched_refused_missing": "Questa fattura non esiste più.",
+  "pay.unmatched_refused_not_invoice": "Solo una fattura può ricevere questo pagamento.",
+  "pay.unmatched_refused_status": "Questa fattura non può ricevere un pagamento nel suo stato attuale.",
+  "pay.unmatched_refused_currency": "Questa fattura è in una valuta diversa dal pagamento.",
+  "pay.unmatched_refused_paid": "Questa fattura è già pagata.",
+  "pay.unmatched_refused_too_small": "Questa fattura ha un residuo inferiore al pagamento.",
+  "pay.unmatched_refused_refused": "Questa fattura non può ricevere questo pagamento.",
+  "documents.return_to_unmatched": "Togliere questo pagamento dalla fattura e rimetterlo tra i pagamenti non abbinati",
+  "btn.confirm_return_to_unmatched": "Rimetti tra i pagamenti non abbinati"
 }

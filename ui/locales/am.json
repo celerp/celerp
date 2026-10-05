@@ -3521,5 +3521,16 @@
   "system_recovery.signed_out": "ሁሉም ሰው ከመለያ ወጥቷል። ከተመለሰው መጫኛ በሆነ መለያ ይግቡ።",
   "system_recovery.safety_saved": "የቀደመው መጫኛ የደህንነት ቅጂ በ {path} ተቀምጧል።",
   "system_recovery.safety_failed_confirm": "ምንም አልተቀየረም። ያለ የደህንነት ቅጂ መመለስ ይችላሉ፣ ይህ ሊቀለበስ አይችልም።",
-  "system_recovery.continue_without_safety": "ያለ የደህንነት ቅጂ መልስ"
+  "system_recovery.continue_without_safety": "ያለ የደህንነት ቅጂ መልስ",
+  "pay.unmatched_refused_gone": "ይህ ክፍያ ከአልተዛመዱ ክፍያዎች ጋር የለም።",
+  "pay.unmatched_refused_other_company": "ይህ ክፍያ ለሌላ ኩባንያ ነው። እዚያ ለመመዝገብ ወደዚያ ኩባንያ ይቀይሩ።",
+  "pay.unmatched_refused_missing": "ይህ ደረሰኝ ከእንግዲህ የለም።",
+  "pay.unmatched_refused_not_invoice": "ይህን ክፍያ መቀበል የሚችለው ደረሰኝ ብቻ ነው።",
+  "pay.unmatched_refused_status": "ይህ ደረሰኝ አሁን ባለበት ሁኔታ ክፍያ መቀበል አይችልም።",
+  "pay.unmatched_refused_currency": "ይህ ደረሰኝ ከክፍያው በተለየ ምንዛሪ ነው።",
+  "pay.unmatched_refused_paid": "ይህ ደረሰኝ አስቀድሞ ተከፍሏል።",
+  "pay.unmatched_refused_too_small": "የዚህ ደረሰኝ ቀሪ ዕዳ ከክፍያው ያነሰ ነው።",
+  "pay.unmatched_refused_refused": "ይህ ደረሰኝ ይህን ክፍያ መቀበል አይችልም።",
+  "documents.return_to_unmatched": "ይህን ክፍያ ከደረሰኙ አውጥተው ወደ አልተዛመዱ ክፍያዎች ይመልሱ",
+  "btn.confirm_return_to_unmatched": "ወደ አልተዛመዱ ክፍያዎች ይመልሱ"
 }

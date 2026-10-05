@@ -3521,5 +3521,16 @@
   "system_recovery.signed_out": "تم تسجيل خروج الجميع. قم بتسجيل الدخول بحساب من التثبيت المستعاد.",
   "system_recovery.safety_saved": "تم حفظ نسخة أمان من التثبيت السابق في {path}.",
   "system_recovery.safety_failed_confirm": "لم يتم تغيير أي شيء. يمكنك الاستعادة بدون نسخة أمان، ولا يمكن التراجع عن ذلك.",
-  "system_recovery.continue_without_safety": "الاستعادة بدون نسخة أمان"
+  "system_recovery.continue_without_safety": "الاستعادة بدون نسخة أمان",
+  "pay.unmatched_refused_gone": "لم تعد هذه الدفعة ضمن الدفعات غير المطابقة.",
+  "pay.unmatched_refused_other_company": "تمت هذه الدفعة لشركة أخرى. انتقل إلى تلك الشركة لتسجيلها هناك.",
+  "pay.unmatched_refused_missing": "هذه الفاتورة لم تعد موجودة.",
+  "pay.unmatched_refused_not_invoice": "لا يمكن تسجيل هذه الدفعة إلا على فاتورة.",
+  "pay.unmatched_refused_status": "لا يمكن تسجيل دفعة على هذه الفاتورة في حالتها الحالية.",
+  "pay.unmatched_refused_currency": "هذه الفاتورة بعملة غير عملة الدفعة.",
+  "pay.unmatched_refused_paid": "هذه الفاتورة مدفوعة بالفعل.",
+  "pay.unmatched_refused_too_small": "المبلغ المستحق على هذه الفاتورة أقل من الدفعة.",
+  "pay.unmatched_refused_refused": "لا يمكن تسجيل هذه الدفعة على هذه الفاتورة.",
+  "documents.return_to_unmatched": "إزالة هذه الدفعة من الفاتورة وإعادتها إلى الدفعات غير المطابقة",
+  "btn.confirm_return_to_unmatched": "إعادة إلى الدفعات غير المطابقة"
 }

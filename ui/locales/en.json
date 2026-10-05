@@ -3521,5 +3521,16 @@
   "system_recovery.signed_out": "Everyone has been signed out. Sign in with an account from the restored installation.",
   "system_recovery.safety_saved": "A safety copy of the previous installation was saved to {path}.",
   "system_recovery.safety_failed_confirm": "Nothing has been changed. You can restore without a safety copy, which cannot be undone.",
-  "system_recovery.continue_without_safety": "Restore without safety copy"
+  "system_recovery.continue_without_safety": "Restore without safety copy",
+  "pay.unmatched_refused_gone": "This payment is no longer with the unmatched payments.",
+  "pay.unmatched_refused_other_company": "This payment was made to another company. Switch to that company to record it there.",
+  "pay.unmatched_refused_missing": "This invoice no longer exists.",
+  "pay.unmatched_refused_not_invoice": "Only an invoice can take this payment.",
+  "pay.unmatched_refused_status": "This invoice cannot take a payment in its current status.",
+  "pay.unmatched_refused_currency": "This invoice is in another currency than the payment.",
+  "pay.unmatched_refused_paid": "This invoice is already paid.",
+  "pay.unmatched_refused_too_small": "This invoice owes less than the payment.",
+  "pay.unmatched_refused_refused": "This invoice cannot take this payment.",
+  "documents.return_to_unmatched": "Take this payment off the invoice and put it back with the unmatched payments",
+  "btn.confirm_return_to_unmatched": "Put back with unmatched payments"
 }

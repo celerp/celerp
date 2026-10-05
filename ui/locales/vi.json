@@ -3521,5 +3521,16 @@
   "system_recovery.signed_out": "Tất cả mọi người đã bị đăng xuất. Vui lòng đăng nhập bằng một tài khoản từ bản cài đặt đã khôi phục.",
   "system_recovery.safety_saved": "Bản sao an toàn của bản cài đặt trước đã được lưu tại {path}.",
   "system_recovery.safety_failed_confirm": "Chưa có gì thay đổi. Bạn có thể khôi phục mà không có bản sao an toàn, thao tác này không thể hoàn tác.",
-  "system_recovery.continue_without_safety": "Khôi phục không có bản sao an toàn"
+  "system_recovery.continue_without_safety": "Khôi phục không có bản sao an toàn",
+  "pay.unmatched_refused_gone": "Khoản thanh toán này không còn trong danh sách thanh toán chưa khớp.",
+  "pay.unmatched_refused_other_company": "Khoản thanh toán này thuộc về công ty khác. Chuyển sang công ty đó để ghi nhận.",
+  "pay.unmatched_refused_missing": "Hóa đơn này không còn tồn tại.",
+  "pay.unmatched_refused_not_invoice": "Chỉ hóa đơn mới có thể nhận khoản thanh toán này.",
+  "pay.unmatched_refused_status": "Hóa đơn này không thể nhận thanh toán ở trạng thái hiện tại.",
+  "pay.unmatched_refused_currency": "Hóa đơn này dùng loại tiền khác với khoản thanh toán.",
+  "pay.unmatched_refused_paid": "Hóa đơn này đã được thanh toán.",
+  "pay.unmatched_refused_too_small": "Số còn nợ của hóa đơn này nhỏ hơn khoản thanh toán.",
+  "pay.unmatched_refused_refused": "Hóa đơn này không thể nhận khoản thanh toán này.",
+  "documents.return_to_unmatched": "Gỡ khoản thanh toán này khỏi hóa đơn và đưa lại vào thanh toán chưa khớp",
+  "btn.confirm_return_to_unmatched": "Đưa lại vào thanh toán chưa khớp"
 }
