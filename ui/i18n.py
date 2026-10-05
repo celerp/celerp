@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+import re
 from contextvars import ContextVar
 from pathlib import Path
 from functools import lru_cache
@@ -174,17 +175,23 @@ def refusal_text(detail) -> str:
     return t_or(str(key), message, **params)
 
 
+_ICON = re.compile(r"^\W+")
+
+
 def _refusal_param(name: str, value):
-    """A refusal param as the user reads it: a nested refusal, or a list of them, in
-    the user's language; a ``role`` as its label and ``roles`` as their labels;
-    ``type``/``types`` as account types; ``status`` as an item status; ``reason`` as why
-    a production run waits for reconciling."""
+    """A refusal param as the user reads it: a nested refusal (a sidebar item's ``nav.``
+    label without its icon), or a list of them (``steps`` joined by semicolons, others as
+    sentences), in the user's language; a ``role`` as its label and ``roles`` as their
+    labels; ``type``/``types`` as account types; ``status`` as an item status; ``reason``
+    as why a production run waits for reconciling."""
     from ui.components.table import display_enum
 
     if isinstance(value, dict) and "message" in value:
-        return refusal_text(value)
+        text = refusal_text(value)
+        # A sidebar item named in a sentence reads as its label, without its icon.
+        return _ICON.sub("", text) if str(value.get("message_key") or "").startswith("nav.") else text
     if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
-        return " ".join(refusal_text(v) for v in value)
+        return ("; " if name == "steps" else " ").join(refusal_text(v) for v in value)
     if name == "role":
         return role_label(str(value), str(value).replace("_", " "))
     if name == "roles" and isinstance(value, list):

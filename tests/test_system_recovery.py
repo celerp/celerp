@@ -557,3 +557,19 @@ async def test_system_recovery_sign_in_button_is_labelled():
     body = _restore_flash(_result(), "Restored.").body.decode()
     assert re.search(r'<a href="/login"[^>]*>Sign in</a>', body), body
     assert "system_recovery." not in body
+
+
+async def test_restore_refused_while_changes_are_paused_reads_as_a_sentence(ui, real_engine, monkeypatch):
+    """A restore refused because the last start held the records back shows the refusal's
+    sentence in the flash, never the keyed refusal's raw fields."""
+    import celerp.main
+    from celerp.held_back import UNKNOWN
+    monkeypatch.setattr(celerp.main.app.state, "data_current", False, raising=False)
+    monkeypatch.setattr(celerp.main.app.state, "held_back", UNKNOWN, raising=False)
+    _, _, tok = await _install_owner(real_engine)
+    ui.cookies.set("celerp_token", tok)
+
+    r = await ui.post("/backup/restore/snap-1")
+    page = _page(r)
+    assert UNKNOWN.refusal()["message"] in page
+    assert "message_key" not in page

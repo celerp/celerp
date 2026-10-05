@@ -145,13 +145,15 @@ async def notify_every_company(
     body: str,
     *,
     action_url: str | None = None,
+    i18n: dict | None = None,
 ) -> int:
     """An instance-wide condition, told to every company as a high-priority notice.
 
     Deduped on the unread notice: at most one stands per company per title, so a
     condition that persists re-notifies only after the prior notice was read. A notice
     that still stands is brought up to date with this body, so it never describes an
-    earlier cause. Caller commits. Returns the number of notifications created."""
+    earlier cause. ``action_url`` and ``i18n`` as for ``create``. Caller commits. Returns
+    the number of notifications created."""
     from celerp.models.company import Company
 
     created = 0
@@ -168,9 +170,9 @@ async def notify_every_company(
         )).first()
         if already:
             await session.execute(update(Notification).where(Notification.id == already[0])
-                                  .values(body=body, action_url=action_url))
+                                  .values(body=body, action_url=action_url, i18n=i18n))
             continue
-        await create(session, cid, category, title, body, action_url=action_url, priority="high")
+        await create(session, cid, category, title, body, action_url=action_url, priority="high", i18n=i18n)
         created += 1
     return created
 

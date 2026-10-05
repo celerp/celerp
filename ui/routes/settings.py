@@ -24,7 +24,7 @@ from ui.config import get_token as _token
 from ui.config import get_role as _get_role
 from celerp.services.auth import MIN_PASSWORD_LENGTH
 from celerp.services.pricing import ROUNDING_CHOICES
-from ui.i18n import t, get_lang, tier_label
+from ui.i18n import get_lang, refusal_text, t, tier_label
 from ui.routes.documents import _action_error
 from ui.routes.setup import business_type_label, business_type_options
 
@@ -2601,7 +2601,7 @@ def setup_routes(app):
         if r.status_code >= 400:
             detail = r.text[:200]
             if r.headers.get("content-type", "").startswith("application/json"):
-                detail = str(r.json().get("detail") or detail)
+                detail = refusal_text(r.json().get("detail")) or detail
             return Response(
                 content=to_xml(Div(detail, cls="flash flash--error", id="backup-flash")),
                 media_type="text/html",

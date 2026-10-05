@@ -13,21 +13,13 @@ import uuid
 import pytest
 
 from celerp.services.auto_je import _emit_auto_posted_je
+from test_helpers import in_language
 from test_posting_accounts_panel import _account, _put
 from test_posting_roles_lots import _forget_origin, _lot
 from test_posting_roles_older_stock import _accounts, _choose, _older_release, _restored
 from test_posting_roles_rollout import _startup
-from ui import i18n
 
 pytestmark = pytest.mark.asyncio
-
-
-def _in(lang: str, detail) -> str:
-    i18n.set_lang(lang)
-    try:
-        return i18n.refusal_text(detail)
-    finally:
-        i18n.set_lang("en")
 
 
 async def test_every_older_stock_refusal_reads_in_the_readers_language(session, client, auth):
@@ -48,9 +40,9 @@ async def test_every_older_stock_refusal_reads_in_the_readers_language(session, 
         detail = r.json()["detail"]
         if not (isinstance(detail, dict) and detail.get("message_key")):
             bad.append((label, detail))
-        elif _in("en", detail) != detail["message"]:
-            bad.append((label, "English text differs from the server's", _in("en", detail), detail["message"]))
-        elif _in("de", detail) == detail["message"]:
+        elif in_language("en", detail) != detail["message"]:
+            bad.append((label, "English text differs from the server's", in_language("en", detail), detail["message"]))
+        elif in_language("de", detail) == detail["message"]:
             bad.append((label, "German text equals English", detail))
     assert not bad, bad
 
@@ -67,8 +59,8 @@ async def test_stock_no_account_holds_is_refused_naming_the_entry_that_places_it
     detail = r.json()["detail"]
     entry = "post a journal entry Dr 1130-OB 30.00 / Cr 3200 30.00, then choose 1130-OB again."
     assert entry in detail["message"], detail
-    assert entry in _in("en", detail)
-    german = _in("de", detail)
+    assert entry in in_language("en", detail)
+    german = in_language("de", detail)
     assert "Soll 1130-OB 30.00 / Haben 3200 30.00" in german and "books need reconciling" not in german, german
 
     cid, je = auth["company_id"], f"je:{uuid.uuid4()}"

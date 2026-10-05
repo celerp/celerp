@@ -16,19 +16,10 @@ from sqlalchemy import select
 
 from celerp.modules import loader
 from test_chart_first_party_only import _register
+from test_helpers import in_language
 
 pytestmark = pytest.mark.asyncio
 
-
-def _in(lang: str, detail) -> str:
-    """A refusal as a reader in ``lang`` sees it."""
-    from ui import i18n
-
-    i18n.set_lang(lang)
-    try:
-        return i18n.refusal_text(detail)
-    finally:
-        i18n.set_lang("en")
 
 _KIOSK = '''
 import uuid
@@ -107,7 +98,7 @@ async def test_an_invalid_account_is_refused_with_a_plain_message(
         await add_account(session, cid, code, name, account_type)
     detail = exc.value.detail
     assert exc.value.status_code in (409, 422) and detail["message"].startswith(message), detail
-    assert _in("en", detail) == detail["message"] and _in("de", detail) != detail["message"], _in("de", detail)
+    assert in_language("en", detail) == detail["message"] and in_language("de", detail) != detail["message"], in_language("de", detail)
     await session.rollback()
     after = set((await session.execute(select(Account.code).where(Account.company_id == cid))).scalars())
     assert after == before
@@ -122,5 +113,5 @@ async def test_no_account_is_added_while_accounting_is_not_running(client, sessi
         await add_account(session, cid, "KIOSK-3", "Float", "asset")
     detail = exc.value.detail
     assert detail["message"] == ("Accounting is not running, so no account can be added "
-                                 "to the chart of accounts.") == _in("en", detail)
-    assert _in("de", detail) != detail["message"]
+                                 "to the chart of accounts.") == in_language("en", detail)
+    assert in_language("de", detail) != detail["message"]

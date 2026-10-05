@@ -301,6 +301,26 @@ def _bundled_pluggable_names() -> set[str]:
     }
 
 
+def in_language(lang: str, detail) -> str:
+    """A refusal as a reader in ``lang`` sees it."""
+    from ui import i18n
+
+    i18n.set_lang(lang)
+    try:
+        return i18n.refusal_text(detail)
+    finally:
+        i18n.set_lang("en")
+
+
+def sidebar_label(item: str, lang: str) -> str:
+    """A sidebar item's label as a sentence names it: without its icon."""
+    import re
+
+    from ui import i18n
+
+    return re.sub(r"^\W+", "", i18n.t(item, lang))
+
+
 def real_agent_app() -> FastAPI:
     """The real Celerp API surface with every first-party module enabled.
 

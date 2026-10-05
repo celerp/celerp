@@ -19,19 +19,11 @@ from sqlalchemy import func, select
 from celerp.models.ledger import LedgerEntry
 from celerp.services.auto_je import _emit_auto_posted_je
 from stock_books import older_release_lot
+from test_helpers import in_language
 from test_migration_sinks import _PROVENANCE, _no_attachments, _persist_mappings, _sink_context
 from test_receipt_accounting import _doc, _finalize, _receive
-from ui import i18n
 
 pytestmark = pytest.mark.asyncio
-
-
-def _in(lang: str, detail) -> str:
-    i18n.set_lang(lang)
-    try:
-        return i18n.refusal_text(detail)
-    finally:
-        i18n.set_lang("en")
 
 
 async def _events(session, company_id) -> int:
@@ -120,7 +112,7 @@ async def test_a_receipt_on_a_draft_bill_is_refused(client, session, auth):
     detail = r.json()["detail"]
     assert "Finalize the bill" in detail["message"]
     assert detail["message_key"] == "docs.receive_draft_bill"
-    assert _in("de", detail) == "Diese Rechnung ist noch ein Entwurf und hat diese Waren nicht gebucht. " \
+    assert in_language("de", detail) == "Diese Rechnung ist noch ein Entwurf und hat diese Waren nicht gebucht. " \
         "Schließen Sie die Rechnung zuerst ab und nehmen Sie die Waren dann an."
     session.expire_all()
     assert await _events(session, auth["company_id"]) == before

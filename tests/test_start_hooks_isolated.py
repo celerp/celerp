@@ -79,7 +79,7 @@ async def test_the_doctor_reports_but_does_not_repair_while_the_records_are_held
     before = await events()
     r = await client.post("/admin/doctor?fix=true", headers=auth["headers"])
     assert r.status_code == 503, r.text
-    assert r.json()["detail"].startswith("Changes are paused because an update step failed")
+    assert r.json()["detail"]["message"].startswith("Changes are paused because an update step failed")
     session.expire_all()
     assert await events() == before
     r = await client.post("/admin/doctor", headers=auth["headers"])

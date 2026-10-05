@@ -31,7 +31,17 @@ assert_secure_jwt()
 _FIRST_BOOT = not settings.gateway_instance_id
 _BOOT_ID = uuid.uuid4().hex
 ensure_instance_id()
-from celerp.held_back import TITLE as HELD_BACK_TITLE, Failure, HeldBack
+from celerp.held_back import (
+    NOT_CURRENT,
+    SAVING_STEP,
+    TITLE as HELD_BACK_TITLE,
+    UNOWNED_STEP,
+    UPDATE_STEP,
+    Failure,
+    HeldBack,
+    module_start_step,
+    unowned_error,
+)
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from celerp.models.base import Base
 
@@ -193,8 +203,8 @@ async def _hold_back(app: FastAPI, cause: HeldBack) -> bool:
         from celerp.db import LifecycleSessionLocal as _NoticeSession
         from celerp.notifications.service import notify_every_company
         async with _NoticeSession() as _sess:
-            await notify_every_company(_sess, "system", HELD_BACK_TITLE, cause.notice(),
-                                       action_url=cause.action_url)
+            await notify_every_company(_sess, "system", HELD_BACK_TITLE, cause.notice()["message"],
+                                       action_url=cause.action_url, i18n=cause.notice_keys())
             await _sess.commit()
     except Exception:
         logging.getLogger(__name__).exception("Could not post the held-back notice")
@@ -218,7 +228,6 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
     # registered). Gated by markers so it runs once per change. A failure must not
     # block boot: the markers stay as they were and the next boot retries.
     app.state.data_current = False
-    _update = "Updating the stored records to this release"
     try:
         from celerp.db import LifecycleSessionLocal as _GuardSession
         from celerp.modules.loader import event_owners
@@ -228,15 +237,14 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
             await _guard_sess.commit()
     except Exception as exc:
         logging.getLogger(__name__).exception("Projection upgrade failed; the next start retries")
-        return await _hold_back(app, HeldBack((Failure(_update, f"{type(exc).__name__}: {exc}"),)))
+        return await _hold_back(app, HeldBack((Failure(UPDATE_STEP, f"{type(exc).__name__}: {exc}"),)))
     if not guard["current"]:
         disabled, unowned = event_owners(set(guard.get("unknown_event_types") or ()))
         failures: tuple[Failure, ...] = ()
         if unowned:
-            failures = (Failure("Reading records written by a module that is not installed",
-                                f"No installed module handles these records: {', '.join(unowned)}"),)
+            failures = (Failure(UNOWNED_STEP, unowned_error(unowned)),)
         elif not disabled:
-            failures = (Failure(_update, "The stored records were not brought up to date"),)
+            failures = (Failure(UPDATE_STEP, NOT_CURRENT),)
         return await _hold_back(app, HeldBack(failures, tuple(disabled)))
 
     if modules_ready:
@@ -254,14 +262,13 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
         # timeout-bounded request pool.
         async with _LifecycleSession() as _sess:
             try:
-                failed = [Failure(f"Starting the {module_label(module)} module", error)
+                failed = [Failure(module_start_step(module_label(module)), error)
                           for module, error in await _fire("on_modules_ready", session=_sess)]
                 await _sess.commit()
             except Exception as exc:
                 await _sess.rollback()
                 logging.getLogger(__name__).exception("on_modules_ready hooks could not be saved")
-                failed = [Failure("Saving the start-up work of the enabled modules",
-                                  f"{type(exc).__name__}: {exc}")]
+                failed = [Failure(SAVING_STEP, f"{type(exc).__name__}: {exc}")]
         if failed:
             return await _hold_back(app, HeldBack(tuple(failed)))
 

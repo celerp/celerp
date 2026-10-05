@@ -13,6 +13,8 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.notification import Notification
+from test_helpers import in_language, sidebar_label
+from ui import i18n
 
 pytestmark = pytest.mark.asyncio
 
@@ -104,7 +106,7 @@ async def test_the_held_back_notice_and_refusal_name_the_cause_in_plain_words(
     r = await client.post("/items", json={"sku": "HB-1", "name": "Held", "sell_by": "piece"},
                           headers=auth["headers"])
     assert r.status_code == 503, r.text
-    refusal = r.json()["detail"]
+    refusal = r.json()["detail"]["message"]
     assert refusal.startswith("Changes are paused because"), refusal
     assert "You can still view records" in refusal
     for word in words:
@@ -123,9 +125,9 @@ async def test_doctor_shows_the_failed_step_and_its_error(client, session, auth,
     r = await client.post("/admin/doctor", headers=auth["headers"])
     assert r.status_code == 200, r.text
     report = r.json()["held_back"]
-    assert report["failures"] == [{"step": "Starting the Manufacturing module",
-                                   "error": "ZeroDivisionError: division by zero"}]
-    assert report["what_to_do"].startswith("Restart Celerp.")
+    assert [(f["step"]["message"], f["error"]) for f in report["failures"]] == [
+        ("Starting the Manufacturing module", "ZeroDivisionError: division by zero")]
+    assert report["what_to_do"]["message"].startswith("Restart Celerp.")
 
     r = await client.get("/system/start-report", headers=auth["headers"])
     assert r.status_code == 200, r.text
@@ -133,7 +135,7 @@ async def test_doctor_shows_the_failed_step_and_its_error(client, session, auth,
 
     r = await client.post("/admin/doctor?fix=true", headers=auth["headers"])
     assert r.status_code == 503, r.text
-    assert "Starting the Manufacturing module" in r.json()["detail"]
+    assert "Starting the Manufacturing module" in r.json()["detail"]["message"]
 
 
 async def test_doctor_reports_no_failed_step_once_the_records_are_current(
@@ -185,3 +187,51 @@ async def test_the_notice_is_cleared_once_a_later_start_brings_the_records_curre
         Notification.company_id == auth["company_id"], Notification.title == _TITLE,
         Notification.read == False))).scalars().all()  # noqa: E712
     assert len(unread) == 1
+
+
+@pytest.mark.parametrize("cause", list(_CAUSES))
+async def test_the_held_back_notice_and_refusal_read_in_the_readers_language(
+        client, session, auth, monkeypatch, cause):
+    """A German reader gets the notice and a refused change in German, naming the sidebar
+    item to open by the label the German sidebar shows, and telling anyone who is not an
+    admin to ask one."""
+    guard, hooks, _, enable = _CAUSES[cause]
+    await _start(monkeypatch, guard, hooks)
+
+    notice = await _notice(session, auth["company_id"])
+    assert notice.i18n, "the held-back notice carries no message keys"
+    assert "If you are not an admin, ask an admin to do this." in notice.body, notice.body
+
+    def shown(lang, part):
+        return in_language(lang, {"message": getattr(notice, part), "message_key": notice.i18n[part],
+                                  "params": notice.i18n.get("params") or {}})
+
+    assert shown("de", "title") == i18n.t("held_back.title", lang="de") != _TITLE
+    sidebar = sidebar_label("nav.modules" if enable else "nav.doctor", "de")
+    german = shown("de", "body")
+    assert sidebar in german, german
+    for english in ("You can still view", "Restart Celerp", "in Modules", "open Doctor", "ask an admin"):
+        assert english not in german, (english, german)
+
+    r = await client.post("/items", json={"sku": "HB-DE", "name": "Held", "sell_by": "piece"},
+                          headers=auth["headers"])
+    assert r.status_code == 503, r.text
+    refusal = r.json()["detail"]
+    assert refusal["message"].startswith("Changes are paused because"), refusal
+    german = in_language("de", refusal)
+    assert sidebar in german and "Changes are paused" not in german, german
+
+
+async def test_doctors_report_reads_in_the_readers_language(client, session, auth, monkeypatch):
+    guard, hooks, _, _ = _CAUSES["module_start_failed"]
+    await _start(monkeypatch, guard, hooks)
+
+    report = (await client.get("/system/start-report", headers=auth["headers"])).json()["held_back"]
+    assert in_language("de", report["title"]) == i18n.t("held_back.title", lang="de")
+    [failure] = report["failures"]
+    assert in_language("en", failure["step"]) == "Starting the Manufacturing module"
+    assert in_language("de", failure["step"]) == i18n.t("held_back.step.module_start", lang="de",
+                                                         module="Manufacturing")
+    assert failure["error"] == "ZeroDivisionError: division by zero"
+    what_to_do = in_language("de", report["what_to_do"])
+    assert sidebar_label("nav.doctor", "de") in what_to_do and "Restart Celerp" not in what_to_do, what_to_do

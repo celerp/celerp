@@ -255,7 +255,7 @@ async def test_a_held_back_start_refuses_changes_until_a_start_brings_the_record
 
     r = await client.post(f"/manufacturing/{run}/receive", json={}, headers=old["headers"])
     assert r.status_code == 503, r.text
-    detail = r.json()["detail"]
+    detail = r.json()["detail"]["message"]
     assert "a module that is not installed" in detail and "open Doctor" in detail, detail
     assert await _stored(session, old["company_id"]) == before
     assert before[2] == {STATUS_DOC_BACKFILL_KEY: None, COGS_BACKFILL_KEY: None}
