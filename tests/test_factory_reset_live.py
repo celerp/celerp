@@ -6,6 +6,8 @@ transaction, and a user goes with it only when no other company still has them."
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from migration_support import OWNER_EMAIL, OWNER_PASSWORD, auth, count, real_client, real_engine  # noqa: F401 - fixtures
@@ -398,6 +400,66 @@ async def test_a_reset_is_refused_while_a_row_hangs_off_both_companies(
     finally:
         async with real_engine.begin() as conn:
             await conn.execute(text("DROP TABLE IF EXISTS ext_pairs, ext_items"))
+
+
+async def test_a_row_another_company_adds_during_the_reset_is_never_lost(
+        real_client, real_engine, monkeypatch):  # noqa: F811
+    """Beta adds a row naming Alpha's item after the reset has checked for such rows and
+    before it deletes. Beta's write waits for the reset and then fails on the missing
+    item; it never commits only to be deleted with Alpha."""
+    import threading
+    import uuid
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from celerp.routers import system
+    from migration_support import DATABASE_URL
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    item = uuid.uuid4()
+    async with real_engine.begin() as conn:
+        await conn.execute(text(_ITEMS))
+        await conn.execute(text(
+            "CREATE TABLE ext_links (id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES companies(id), "
+            "item_id uuid REFERENCES ext_items(id) ON DELETE CASCADE, label text NOT NULL)"))
+        await conn.execute(text("INSERT INTO ext_items VALUES (:i, :c, 'alpha item')"), {"i": item, "c": alpha})
+    beta_write: dict = {}
+
+    def add_beta_link():
+        async def go():
+            engine = create_async_engine(DATABASE_URL)
+            try:
+                async with engine.begin() as conn:
+                    await conn.execute(text("INSERT INTO ext_links VALUES (:i, :c, :t, 'beta link')"),
+                                       {"i": uuid.uuid4(), "c": beta, "t": item})
+                beta_write["committed"] = True
+            except Exception as exc:  # noqa: BLE001 - the outcome under test
+                beta_write["error"] = exc
+            finally:
+                await engine.dispose()
+        asyncio.run(go())
+
+    writer = threading.Thread(target=add_beta_link)
+    deletes = system._company_deletes
+
+    def after_the_check(schema):
+        writer.start()
+        writer.join(timeout=3)
+        return deletes(schema)
+
+    monkeypatch.setattr(system, "_company_deletes", after_the_check)
+    try:
+        r = await _reset(real_client, ta, "Alpha Co")
+        writer.join()
+
+        assert r.status_code == 200, r.text
+        assert "committed" not in beta_write and "ext_links_item_id_fkey" in str(beta_write["error"])
+        assert await count(real_engine, "ext_links") == 0
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_links, ext_items"))
 
 
 async def test_a_reset_is_refused_when_tables_refer_to_each_other_in_a_loop(real_client, real_engine):  # noqa: F811

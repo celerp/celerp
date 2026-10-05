@@ -105,6 +105,18 @@ def _company_rows(schema: dict) -> dict[str, str]:
     return {name: rows(name) for name in owned}
 
 
+def _lock_writers(schema: dict) -> str:
+    """A lock on every table whose rows can name a company's rows or a user, held until
+    the reset commits. Nothing written between the checks and the deletes can then be
+    deleted with the company: such a write waits, and fails on the row that is gone.
+    Concurrent resets take it in the same order, one after the other."""
+    from celerp.db_catalog import company_tables, ident
+
+    named = company_tables(schema, held=True) | {"users"}
+    writers = sorted(name for name, table in schema.items() if any(fk.target in named for fk in table.fks))
+    return f"LOCK TABLE {', '.join(map(ident, writers))} IN SHARE ROW EXCLUSIVE MODE"
+
+
 def _held_elsewhere(schema: dict) -> str:
     """A query naming a table whose rows the reset of the company bound as ``:c`` would
     delete, change or trip over though they are not only that company's: a row outside
@@ -169,9 +181,10 @@ async def factory_reset(
     # Signing in has already read on this session, so the wipe runs in the request's own
     # transaction and is committed in one step.
     await lock_connector_maintenance(session)
+    schema = await db_catalog.read(session)
+    await session.execute(text(_lock_writers(schema)))
     members = list((await session.execute(
         select(UserCompany.user_id).where(UserCompany.company_id == company_id))).scalars())
-    schema = await db_catalog.read(session)
     held = await session.scalar(text(_held_elsewhere(schema)), {"c": str(company_id)})
     if held:
         raise HTTPException(status_code=409, detail=refusal(
