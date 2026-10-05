@@ -247,3 +247,22 @@ def test_back_to_the_demo_list_drops_a_selection_made_elsewhere(page: Page, fres
     assert _ticked(page) == 0
     _select_all_and_delete(page)
     assert sorted(i["name"] for i in _items(fresh_company)) == _KEPT
+
+
+def test_hint_is_one_line_at_phone_width_in_every_language(page: Page, fresh_company):
+    """Red statement: at 390 wide the German, French, Spanish, Italian, Portuguese,
+    Indonesian, Amharic and Japanese hints wrapped to two lines."""
+    _seed(fresh_company)
+    page.set_viewport_size({"width": 390, "height": 800})
+    page.goto("/dashboard")
+    origin = page.url.split("/dashboard")[0]
+    heights = {}
+    for path in sorted(_LOCALES.glob("*.json")):
+        lang = path.stem
+        page.context.add_cookies([{"name": "celerp_lang", "value": lang, "url": origin}])
+        page.goto(_DEMO_URL)
+        tip = page.locator(".import-arrow")
+        expect(tip).to_contain_text(json.loads(path.read_text(encoding="utf-8"))["shell.demo_hint"])
+        page.wait_for_load_state("load")
+        heights[lang] = round(tip.bounding_box()["height"])
+    assert {lang for lang, h in heights.items() if h > heights["en"]} == set(), heights

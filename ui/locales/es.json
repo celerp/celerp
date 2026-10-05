@@ -3628,7 +3628,7 @@
   "dashboard.remove_demo_items": "Eliminar artículos de demostración",
   "dashboard.getting_started_from_spreadsheet": "Importar desde una hoja de cálculo:",
   "shell.import_hint": "Haga clic en Importar para subir un archivo CSV o Excel (.xlsx). La página siguiente tiene una plantilla para descargar.",
-  "shell.demo_hint": "Marque la casilla para seleccionarlos todos y luego elija Borrar.",
+  "shell.demo_hint": "Marque la casilla para elegir todo y luego Borrar.",
   "shell.claim_badge_note": "Abre GitHub para comprobar tu estrella. Al reclamarla, apareces en el muro público de fundadores.",
   "category.accessory_fashion": "Accesorio de moda",
   "category.activewear": "Ropa deportiva",

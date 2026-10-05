@@ -3628,7 +3628,7 @@
   "dashboard.remove_demo_items": "Demo-Artikel entfernen",
   "dashboard.getting_started_from_spreadsheet": "Aus einer Tabelle importieren:",
   "shell.import_hint": "Klicken Sie auf Importieren, um eine CSV- oder Excel-Datei (.xlsx) hochzuladen. Auf der nächsten Seite gibt es eine Vorlage zum Herunterladen.",
-  "shell.demo_hint": "Setzen Sie das Häkchen, um alle auszuwählen, und wählen Sie dann unter Aktion die Option Löschen.",
+  "shell.demo_hint": "Alle ankreuzen, dann unter Aktion Löschen wählen.",
   "shell.claim_badge_note": "Öffnet GitHub, um Ihren Stern zu prüfen. Mit dem Abholen erscheinen Sie auf der öffentlichen Gründerwand.",
   "category.accessory_fashion": "Modeaccessoire",
   "category.activewear": "Sportbekleidung",

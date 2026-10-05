@@ -3628,7 +3628,7 @@
   "dashboard.remove_demo_items": "Supprimer les articles de démonstration",
   "dashboard.getting_started_from_spreadsheet": "Importer depuis un tableur :",
   "shell.import_hint": "Cliquez sur Importer pour envoyer un fichier CSV ou Excel (.xlsx). La page suivante propose un modèle à télécharger.",
-  "shell.demo_hint": "Cochez la case pour tous les sélectionner, puis choisissez Supprimer.",
+  "shell.demo_hint": "Cochez tout, puis choisissez Supprimer.",
   "shell.claim_badge_note": "Ouvre GitHub pour vérifier votre étoile. Obtenir le badge vous ajoute au mur public des fondateurs.",
   "category.accessory_fashion": "Accessoire de mode",
   "category.activewear": "Vêtements de sport",

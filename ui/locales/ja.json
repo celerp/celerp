@@ -3628,7 +3628,7 @@
   "dashboard.remove_demo_items": "デモ品目を削除",
   "dashboard.getting_started_from_spreadsheet": "スプレッドシートからインポート:",
   "shell.import_hint": "インポートをクリックして CSV または Excel (.xlsx) ファイルをアップロードします。次のページでテンプレートをダウンロードできます。",
-  "shell.demo_hint": "ボックスにチェックを入れてすべて選択し、「消去」を選んでください。",
+  "shell.demo_hint": "ボックスで全選択し、「消去」を選んでください。",
   "shell.claim_badge_note": "GitHub を開いてスターを確認します。受け取ると、公開の創設者ウォールに掲載されます。",
   "category.accessory_fashion": "ファッション小物",
   "category.activewear": "スポーツウェア",
