@@ -16,8 +16,8 @@ send_to_targets    Document type offered by the inventory bulk "send to" action
 catalog_channel    Compact external-channel state in the inventory catalog
 item_action        Button in the item detail actions panel
 pricing_action     Button on rows of an item's Pricing tab. Keys: label or label_key,
-                   href_template, permission, show_on, presentation; any other key
-                   is refused. href_template must be an app-local path (one leading
+                   href_template, permission, show_on, presentation,
+                   requires_connector; any other key is refused. href_template must be an app-local path (one leading
                    /, never //, no backslash, no control character) and may use
                    {entity_id}, {price_list} and {field_name} (filled URL-encoded);
                    any other brace is refused. Optional show_on lists row traits a
