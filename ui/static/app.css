@@ -2140,7 +2140,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .tab.active { border-bottom-color: var(--c-primary); font-weight: 600; }
 .financial-cards { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
 .financial-card { flex: 1; min-width: 140px; border: 1px solid var(--c-border); border-radius: var(--radius); padding: 0.75rem 1rem; text-align: center; }
-.financial-card-label { font-size: 0.8rem; color: var(--c-text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.financial-card-label { font-size: 0.8rem; color: var(--c-text-muted); text-transform: uppercase; letter-spacing: 0.05em; overflow-wrap: anywhere; }
 .financial-card-sublabel { display: block; font-size: 0.65em; font-weight: 400; opacity: 0.7; }
 .financial-card--link { text-decoration: none; color: inherit; cursor: pointer; }
 .financial-card--link:hover { background: var(--c-bg-hover, #f0f0f0); }
