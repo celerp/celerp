@@ -912,6 +912,13 @@ def result_aggregates(
     }
 
 
+def _in_categories(result: list[dict], category: str | None) -> list[dict]:
+    """The rows in ``category``, a comma-separated set (column-filter multi-select);
+    every row when it is empty."""
+    cats = {c.strip() for c in (category or "").split(",") if c.strip()}
+    return [r for r in result if str(r.get("category") or "") in cats] if cats else result
+
+
 async def query_items(
     session: AsyncSession, company_id, role: str, f: ItemListFilters, attr_filters: list[tuple[str, set[str]]],
 ) -> dict:
@@ -1059,9 +1066,7 @@ async def query_items(
     # they filter over the visibility-stripped dicts: a denied role sees the key absent
     # (None), the value never matches, and membership cannot disclose the hidden value -
     # the same oracle closure applied to q, attr.*, and low_stock above.
-    if f.category:
-        cats = {c.strip() for c in f.category.split(",") if c.strip()}
-        result = [r for r in result if str(r.get("category") or "") in cats]
+    result = _in_categories(result, f.category)
     if f.inventory_type:
         types = {it.strip() for it in f.inventory_type.split(",") if it.strip()}
         result = [r for r in result if "inventory_type" in r and r.get("inventory_type") in types]
@@ -1236,128 +1241,55 @@ async def get_valuation(
 ) -> dict:
     """Aggregate inventory valuation from projections.
 
-    Takes the item list's filters. ?category= and ?status= scope totals + count_by_status
-    to that slice; category_counts (the category tab bar) follows the status filter only.
-    on_memo_to: customer contact_id. Scope counts to items currently out on memo to that customer.
-    consigned_from: supplier contact_id. Scope counts to items currently held on consignment.
-    Every other list filter (the search q, SKUs, location, attribute columns, ...) narrows
-    the counted items to exactly the rows the list returns for it, via query_items.
+    Takes the item list's filters and counts exactly the rows the list returns for them
+    (query_items): total_scoped_count and count_by_status over those rows, and
+    category_counts (the category tab bar) over the same rows before ?category=.
+    The value totals and active_item_count cover the owned, stocked, non-draft rows
+    among them.
     """
-    category, status = filters.category, filters.status
-    on_memo_to, consigned_from = filters.on_memo_to, filters.consigned_from
+    # Counts come from the list's own query builder, so the tabs and cards always
+    # describe the rows the list shows for the same filters. The category tabs leave
+    # out the category filter itself, so every tab keeps its count while one is open.
+    unscoped = replace(filters, category=None, sort=None, dir="desc")
+    listed = (await query_items(session, company_id, role, unscoped, attr_filters))["items"]
+    category_counts: dict[str, int] = {}
+    for r in listed:
+        row_cat = str(r.get("category") or "")
+        if row_cat:
+            category_counts[row_cat] = category_counts.get(row_cat, 0) + 1
+    shown = _in_categories(listed, filters.category)
+    count_by_status: dict[str, int] = {}
+    for r in shown:
+        row_status = str(r.get("status") or "").lower()
+        count_by_status[row_status] = count_by_status.get(row_status, 0) + 1
+
+    # Money: of the rows shown, only owned stocked goods past draft carry stock value.
+    shown_ids = {r.get("id") for r in shown}
     rows = (
         await session.execute(
             select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
         )
     ).scalars().all()
-    # The row filters the tabs and cards do not split by: matched by the list's own
-    # query builder, so a count never disagrees with the rows the list shows.
-    row_filters = replace(filters, status="all", category=None, on_memo_to=None, consigned_from=None,
-                          sort=None, dir="desc")
-    if row_filters != ItemListFilters(status="all") or attr_filters:
-        matched = await query_items(session, company_id, role, row_filters, attr_filters)
-        matched_ids = {r.get("id") for r in matched["items"]}
-        rows = [r for r in rows if r.entity_id in matched_ids]
-
+    holding_scoped = bool(filters.on_memo_to or filters.consigned_from)
     currency = settings.get("currency") or "USD"
-    holding_scope: set[str] | None = None
-    if on_memo_to or consigned_from:
-        assert_role_permission(settings, role, "view_documents")
-        from celerp.services.holdings import consignment_holdings, memo_holdings
-        items_state = [(r.entity_id, r.state) for r in rows]
-        scope_doc_type = "memo" if on_memo_to else "consignment_in"
-        scope_contact = on_memo_to or consigned_from
-        scope_docs = (
-            await session.execute(
-                select(Projection).where(
-                    Projection.company_id == company_id,
-                    Projection.entity_type == "doc",
-                    Projection.state["doc_type"].as_string() == scope_doc_type,
-                    Projection.state["contact_id"].as_string() == scope_contact,
-                )
-            )
-        ).scalars().all()
-        issued = [
-            (d.entity_id, d.state) for d in scope_docs
-            if str((d.state or {}).get("status") or "").lower() not in ("draft", "void")
-        ]
-        scope_value = (
-            memo_holdings(items_state, issued, currency) if on_memo_to
-            else consignment_holdings(items_state, issued, currency)
-        )
-        holding_scope = set(scope_value.keys())
-
-    # Compute price totals dynamically per price list
     _price_config = await get_price_config(session, company_id)
     _price_lists: list[dict] = _price_config[0]
-
-    price_totals: dict[str, Decimal] = {}
-    for pl in _price_lists:
-        price_totals[pl.get("name", "")] = Decimal(0)
+    price_totals: dict[str, Decimal] = {pl.get("name", ""): Decimal(0) for pl in _price_lists}
     active_item_count = 0
-    draft_count = 0
-    category_counts: dict[str, int] = {}
-    count_by_status: dict[str, int] = {}
-
     for row in rows:
+        if row.entity_id not in shown_ids:
+            continue
         state = row.state
-        row_status = str(state.get("status") or "").lower()
-        row_cat = str(state.get("category") or state.get("item_type") or "").strip()
-
-        # Consigned-in goods are borrowed, not owned, so they stay out of stock value. Under a
-        # holdings scope the scope alone decides membership, so the cards count what the list shows.
-        if holding_scope is None and (row.consignment_flag == "in" or state.get("consignment_flag") == "in"):
+        # Consigned-in goods are borrowed, not owned, so they stay out of stock value,
+        # except under a holdings scope, which is about exactly those goods.
+        if not holding_scoped and (row.consignment_flag == "in" or state.get("consignment_flag") == "in"):
             continue
-
-        # Exclude non-stocked and service items from valuation (only stocked items have physical value)
-        inv_type = state.get("inventory_type") or "stocked"
-        if inv_type != "stocked":
+        # Non-stocked and service items have no physical stock to value.
+        if (state.get("inventory_type") or "stocked") != "stocked":
             continue
-
-        # Holdings scope: when filtering by on_memo_to or consigned_from, include only matching items
-        if holding_scope is not None and row.entity_id not in holding_scope:
+        # Drafts are not stock yet: listed and counted above, valued once available.
+        if str(state.get("status") or "").lower() == "draft":
             continue
-
-        # category_counts: scoped to the active status filter (or global non-hidden when no filter)
-        if status == "all":
-            if row_cat:
-                category_counts[row_cat] = category_counts.get(row_cat, 0) + 1
-        elif status == "archived":
-            if row_status in _ARCHIVED_GROUP and row_cat:
-                category_counts[row_cat] = category_counts.get(row_cat, 0) + 1
-        elif status:
-            if row_status == status.lower() and row_cat:
-                category_counts[row_cat] = category_counts.get(row_cat, 0) + 1
-        else:
-            if row_status not in _HIDDEN_STATUSES and row_cat:
-                category_counts[row_cat] = category_counts.get(row_cat, 0) + 1
-
-        # Apply category filter for scoped metrics
-        if category and row_cat != category:
-            continue
-
-        # Totals and count_by_status: scoped to category + status filters (mirrors list_items logic)
-        if status == "all":
-            pass
-        elif status == "archived":
-            if row_status not in _ARCHIVED_GROUP:
-                continue
-        elif status:
-            if row_status != status.lower():
-                continue
-        else:
-            if row_status in _HIDDEN_STATUSES:
-                continue
-
-        # count_by_status: scoped to the same category+status slice as active_item_count
-        count_by_status[row_status] = count_by_status.get(row_status, 0) + 1
-
-        # Drafts are not stock yet: counted for the status card above, excluded
-        # from the active count and every value total until committed to available.
-        if row_status == "draft":
-            draft_count += 1
-            continue
-
         active_item_count += 1
         # Value from the flattened item so cost (recipe standard / lot total) and derived
         # lists price identically to every other consumer of item state.
@@ -1383,10 +1315,9 @@ async def get_valuation(
         "wholesale_total": to_stored_float(price_totals.get("Wholesale", Decimal(0))),
         "retail_total": to_stored_float(price_totals.get("Retail", Decimal(0))),
         "category_counts": dict(sorted(category_counts.items(), key=lambda x: -x[1])),
-        # total_scoped_count backs the "All" tab: everything the scoped list shows,
-        # which includes drafts even though they carry no stock value yet
-        # (some items may have no category and won't appear in category_counts)
-        "total_scoped_count": active_item_count + draft_count,
+        # total_scoped_count backs the "All" tab: every row the list shows, valued or
+        # not (some items may have no category and won't appear in category_counts)
+        "total_scoped_count": len(shown),
         "count_by_status": count_by_status,
     }
     if show_cost:
