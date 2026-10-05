@@ -10774,7 +10774,7 @@ class TestCompanyDetailsPage:
             ok = await ui_client.get("/finance/company-details", cookies=_authed(role="admin"), follow_redirects=False)
             low = await ui_client.get("/finance/company-details", cookies=_authed(role="operator"), follow_redirects=False)
         assert ok.status_code == 200
-        assert low.status_code == 302 and low.headers.get("location", "").endswith("/dashboard")
+        assert low.status_code == 302 and low.headers.get("location", "").endswith("/dashboard?notice=not_permitted")
 
 
 class TestFilesExcelFunnels:

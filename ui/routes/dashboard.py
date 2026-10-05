@@ -9,10 +9,11 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header, star_supporter_card, page_title
+from ui.components.shell import base_shell, flash, page_header, star_supporter_card, page_title
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
+from ui.security import NOT_PERMITTED
 from celerp.services.doc_balance import awaiting_status_param
 from celerp.services.permissions import role_has_permission as _role_has_permission
 from urllib.parse import urlencode as _urlencode
@@ -716,9 +717,13 @@ def setup_routes(app):
         settings = company.get("settings") or {}
         role = _get_role(request)
         lang = get_lang(request)
+        # Set by a page the caller's role may not open (ui.security.not_permitted_redirect).
+        notice = ([flash(t("perm.redirected_no_access", lang))]
+                  if request.query_params.get("notice") == NOT_PERMITTED else [])
         if not _role_has_permission(settings, role, "view_dashboards"):
             return await base_shell(
                 page_header(t("page.dashboard", lang)),
+                *notice,
                 Div(t("perm.page_no_access", lang), cls="error-banner"),
                 title=page_title("nav.dashboard"),
                 nav_active="dashboard",
@@ -751,6 +756,7 @@ def setup_routes(app):
             values.pop("margin_pct_sub", None)
         return await base_shell(
             page_header(t("page.dashboard", lang)),
+            *notice,
             # Stargazer/supporter ask shown where setup actually lands (company-settings
             # managers only; hidden in neutral/dismissed). Self-hides once dismissed install-wide.
             *([star_supporter_card("dashboard")] if _role_has_permission(settings, role, "manage_company_settings") else []),

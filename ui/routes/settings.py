@@ -21,7 +21,7 @@ from ui.components.currency import currency_combobox_td
 from ui.components.phone import phone_input_td as _phone_input_td, phone_head_items as _phone_head_items
 from ui.config import PRIVACY_POLICY_URL
 from ui.config import get_token as _token
-from ui.security import owner_refusal
+from ui.security import not_permitted_redirect, owner_refusal
 from ui.config import get_role as _get_role
 from celerp.services.auth import MIN_PASSWORD_LENGTH
 from celerp.services.pricing import ROUNDING_CHOICES
@@ -64,7 +64,7 @@ async def _check_permission(
     role = api.role_from_company(company)
     settings = company.get("settings") or {}
     if not role_has_permission(settings, role, key):
-        return RedirectResponse("/dashboard", status_code=302)
+        return not_permitted_redirect()
     return None
 
 

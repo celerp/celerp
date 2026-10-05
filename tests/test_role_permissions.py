@@ -1375,7 +1375,7 @@ async def test_payments_page_requires_permission(ui):
     with patch("ui.api_client.get_company", AsyncMock(return_value=company)):
         r = await ui.get("/payments", cookies={"celerp_token": make_test_token(role="operator")})
     assert r.status_code == 302
-    assert r.headers["location"] == "/dashboard"
+    assert r.headers["location"] == "/dashboard?notice=not_permitted"
 
 
 async def test_raised_view_inventory_redirects_viewer(ui):
@@ -1410,7 +1410,7 @@ async def test_raised_view_inventory_redirects_viewer(ui):
         for p in patches:
             p.stop()
     assert r.status_code == 302
-    assert r.headers["location"] == "/dashboard"
+    assert r.headers["location"] == "/dashboard?notice=not_permitted"
 
 
 async def _assert_page_redirects_when_revoked(ui, path: str, perm_key: str):
@@ -1425,7 +1425,7 @@ async def _assert_page_redirects_when_revoked(ui, path: str, perm_key: str):
     with patch("ui.api_client.get_company", AsyncMock(return_value=company)):
         r = await ui.get(path, cookies={"celerp_token": make_test_token(role="viewer")})
     assert r.status_code == 302, (path, r.status_code)
-    assert r.headers["location"] == "/dashboard", path
+    assert r.headers["location"] == "/dashboard?notice=not_permitted", path
 
 
 async def test_dashboard_page_requires_view_dashboards(ui):

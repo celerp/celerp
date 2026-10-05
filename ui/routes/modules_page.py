@@ -45,7 +45,7 @@ from ui.routes.account import (
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
-from ui.security import owner_refusal
+from ui.security import not_permitted_redirect, owner_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +73,13 @@ def _build_card(lang: str) -> FT:
     )
 
 
+def manages_modules(role: str) -> bool:
+    """Whether *role* may open the Modules page."""
+    return _ROLE_LEVELS.get(role, 0) >= _ROLE_LEVELS["admin"]
+
+
 def _is_admin(request: Request) -> bool:
-    return _ROLE_LEVELS.get(_get_role(request), 0) >= _ROLE_LEVELS["admin"]
+    return manages_modules(_get_role(request))
 
 
 def _modules_dir_display() -> str:
@@ -1072,7 +1077,7 @@ def setup_routes(app):
         if not token:
             return None, RedirectResponse("/login", status_code=302)
         if not _is_admin(request):
-            return None, RedirectResponse("/dashboard", status_code=302)
+            return None, not_permitted_redirect()
         return token, None
 
     @app.get("/modules")

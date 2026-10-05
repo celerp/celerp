@@ -259,7 +259,7 @@ async def test_revoked_view_inventory_denied_even_when_metadata_fails(ui_client,
     monkeypatch.setattr(inv, "role_has_permission", lambda settings, role, perm: False)
     r = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
     assert r.status_code == 302
-    assert r.headers["location"] == "/dashboard"
+    assert r.headers["location"] == "/dashboard?notice=not_permitted"
 
 
 @pytest.mark.asyncio

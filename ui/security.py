@@ -27,6 +27,15 @@ def is_safe_authorize_url(url: str) -> bool:
     )
 
 
+NOT_PERMITTED = "not_permitted"
+
+
+def not_permitted_redirect() -> RedirectResponse:
+    """Where a page the caller's role may not open sends them: the dashboard,
+    which says why (a silent bounce reads as a broken link)."""
+    return RedirectResponse(f"/dashboard?notice={NOT_PERMITTED}", status_code=302)
+
+
 async def owner_refusal(request: Request) -> Response | None:
     """Pages that act on the whole installation (modules, backups, updates, the
     Celerp account) answer the installation owner only. Each such handler calls

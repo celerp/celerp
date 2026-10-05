@@ -78,7 +78,7 @@ async def test_forged_cookie_role_ignored_authoritative_role_denies():
     with patch("ui.api_client.get_company", new=_company("staff")):
         r = await _check_permission(_req(forged), "manage_integrations")
     assert isinstance(r, RedirectResponse)
-    assert r.headers["location"] == "/dashboard"
+    assert r.headers["location"] == "/dashboard?notice=not_permitted"
 
 
 @pytest.mark.asyncio

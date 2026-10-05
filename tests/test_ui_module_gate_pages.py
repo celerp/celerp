@@ -4,7 +4,8 @@
 
 - A module turned off for the company: refused with a sidebar built for this
   user and company (the module that is off is not listed, nor links the role
-  may not use), and a link to the Modules page, which always answers.
+  may not use), and a link to the Modules page for a role that may open it;
+  any other role is told to ask an administrator.
 - The API cannot be reached: the page says so with the real status, never that
   the module is turned off.
 - The 404 and 500 pages build their sidebar for the user who asked, not for an
@@ -27,6 +28,10 @@ _NAV = [
      "permission": "manage_company_settings", "order": 2},
 ]
 _OFF = {"id": "c1", "name": "B", "settings": {"enabled_modules": ["celerp-contacts"]}}
+
+
+def _off(role: str) -> dict:
+    return {**_OFF, "current_role": role}
 
 
 @pytest_asyncio.fixture
@@ -84,12 +89,30 @@ async def test_refusal_page_links_to_the_modules_page(ui_client):
     no module's page, so it answers even when the dashboard is the module that is
     off (/ lands on /dashboard, which would refuse again)."""
     from celerp.modules.loader import route_module
-    r = await _get(ui_client, "admin", AsyncMock(return_value=_OFF))
+    r = await _get(ui_client, "admin", AsyncMock(return_value=_off("admin")))
     content = r.text.split('class="content-area"', 1)[1]
     assert 'href="/modules" class="btn btn--primary"' in content
     assert 'href="/"' not in content and 'href="/dashboard"' not in content
     assert route_module({"type": "http", "method": "GET", "path": "/modules", "root_path": "",
                          "query_string": b"", "headers": []}) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["viewer", "operator", "manager"])
+async def test_refusal_page_asks_a_role_that_cannot_open_modules_to_ask_an_administrator(ui_client, role):
+    """The Modules page would send this role away, so the refusal offers no link to it.
+    The role on the page is the one Celerp holds, not the one in the cookie."""
+    r = await _get(ui_client, "admin", AsyncMock(return_value=_off(role)))
+    assert r.status_code == 403
+    content = r.text.split('class="content-area"', 1)[1]
+    assert 'href="/modules"' not in content
+    assert "Ask an administrator to turn it on in Modules." in content
+
+
+@pytest.mark.asyncio
+async def test_refusal_message_sits_in_the_shell_content_area_once(ui_client):
+    r = await _get(ui_client, "admin", AsyncMock(return_value=_off("admin")))
+    assert r.text.count('class="content-area"') == 1
 
 
 def _request(role: str) -> Request:

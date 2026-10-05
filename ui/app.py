@@ -347,7 +347,7 @@ async def _module_refusal(request: Request, module: str) -> Response | None:
     from ui.components.shell import base_shell, minimal_shell, page_header
     from ui.i18n import t
     try:
-        settings = (await api.get_company(token)).get("settings")
+        company = await api.get_company(token)
     except _APIError as exc:
         if exc.status == 401:
             return _401_redirect(str(exc.detail or ""), request)
@@ -362,13 +362,15 @@ async def _module_refusal(request: Request, module: str) -> Response | None:
             request=request,
         )
         return HTMLResponse(to_xml(page), status_code=exc.status)
+    settings = company.get("settings")
     if uses_module(settings, module):
         return None
+    from ui.routes.modules_page import manages_modules
+    way_on = (A(t("nav.modules"), href="/modules", cls="btn btn--primary")
+              if manages_modules(api.role_from_company(company)) else P(t("modules.ask_admin_to_turn_on")))
     page = await base_shell(
         page_header(t("modules.off_for_company_title")),
-        Div(P(t("modules.off_for_company"), cls="flash flash--error"),
-            A(t("nav.modules"), href="/modules", cls="btn btn--primary"),
-            cls="content-area"),
+        Div(P(t("modules.off_for_company"), cls="flash flash--error"), way_on),
         title=t("modules.off_for_company_title"),
         request=request,
         company_settings=settings or {},
