@@ -151,6 +151,16 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
     if connected:
         raise ResetRefused(409, f"Disconnect {', '.join(connected)} before resetting this company. "
                                 "Nothing was deleted.")
+    # A connector set up before companies had their own is adopted by the only company left
+    # at the next startup, so a reset must never be what leaves one company standing beside it.
+    from celerp.config import ensure_instance_id
+    unassigned = sorted(set((await session.scalars(
+        select(ConnectorConfig.connector).where(ConnectorConfig.company_id == ensure_instance_id()))).all()))
+    if unassigned and len((await session.scalars(
+            select(Company.id).where(Company.id != company.id).limit(2))).all()) <= 1:
+        raise ResetRefused(409, f"{', '.join(unassigned)} was set up before companies had their own "
+                                "connectors and belongs to no company yet. Connect it in the company it "
+                                "belongs to before resetting this one. Nothing was deleted.")
     # A batch is created under the company's key lock, so none can start once this check passed.
     reading = await session.scalar(select(AIBatchJob.id).where(
         AIBatchJob.company_id == company.id, AIBatchJob.status.in_(("pending", "running"))).limit(1))
