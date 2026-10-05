@@ -865,6 +865,7 @@ async def patch_user(
 from celerp.services.field_schema import COST_SCHEMA_KEYS  # noqa: F401 re-export
 from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA  # noqa: F401 re-export
 from celerp.services.field_schema import get_effective_field_schema  # noqa: F401 re-export
+from celerp.services.field_schema import reject_system_item_fields
 
 
 @router.get("/me/item-schema")
@@ -885,6 +886,7 @@ async def patch_item_schema(
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
+    reject_system_item_fields(dict.fromkeys(f.key for f in payload.fields))
     settings = dict(company.settings)
     settings["item_schema"] = [f.model_dump() for f in payload.fields]
     company.settings = settings
@@ -924,6 +926,7 @@ async def patch_category_schema(
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
+    reject_system_item_fields(dict.fromkeys(f.key for f in payload.fields))
     settings = dict(company.settings)
     cat_schemas = dict(settings.get("category_schemas") or {})
     cat_schemas[category] = [f.model_dump() for f in payload.fields]

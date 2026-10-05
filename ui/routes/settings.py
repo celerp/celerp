@@ -17,6 +17,7 @@ from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
 from ui.components.table import EMPTY, unwrap_address
 from celerp.services.currencies import CURRENCY_CODES, currency_label
+from celerp.services.field_schema import SYSTEM_ITEM_KEYS
 from ui.components.currency import currency_combobox_td
 from ui.components.phone import phone_input_td as _phone_input_td, phone_head_items as _phone_head_items
 from ui.config import PRIVACY_POLICY_URL
@@ -2843,14 +2844,15 @@ def _derive_key(label: str, existing_keys: set[str], exclude_idx: int | None = N
     """Derive a unique snake_case key from a label.
 
     Lowercases, replaces spaces and hyphens with underscores, strips non-alphanumeric chars.
-    Appends _2, _3 etc. to resolve collisions with existing_keys.
+    Appends _2, _3 etc. to resolve collisions with existing_keys and with the item keys only the
+    app writes (a field keyed like one could never be filled).
     exclude_idx is unused (collision check is against the passed set, caller excludes self).
     """
     import re
     base = re.sub(r"[^a-z0-9_]", "", label.lower().replace(" ", "_").replace("-", "_")).strip("_") or "field"
     key = base
     n = 2
-    while key in existing_keys:
+    while key in existing_keys or key in SYSTEM_ITEM_KEYS:
         key = f"{base}_{n}"
         n += 1
     return key
