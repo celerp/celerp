@@ -126,10 +126,12 @@ def test_link_lists_only_demo_items_with_hint_and_nothing_ticked(page: Page, fre
     assert _ticked(page) == 0
     page.wait_for_load_state("load")
     assert page.evaluate(_OVERLAPS_JS) == [], width
-    box = page.locator("#select-all-rows").bounding_box()
-    t = tip.bounding_box()
-    assert t["y"] + t["height"] <= box["y"], (width, "the hint sits above the box")
-    assert t["x"] < box["x"] + box["width"] and box["x"] < t["x"] + t["width"], (width, t, box)
+    # Both rects in one read: late shell layout (the company switcher row at phone
+    # width) moves the hint and the box together, never one without the other.
+    t, box = page.evaluate("""() => [document.querySelector('.import-arrow'),
+        document.querySelector('#select-all-rows')].map(e => e.getBoundingClientRect().toJSON())""")
+    assert t["bottom"] <= box["top"], (width, "the hint sits above the box", t, box)
+    assert t["left"] < box["right"] and box["left"] < t["right"], (width, t, box)
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
 
 
