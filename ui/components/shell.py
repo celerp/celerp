@@ -1364,6 +1364,63 @@ window.celerpStarFetch = window.celerpStarFetch || (function(){
 })();
 """
 
+_IMPORT_HINT_JS = """
+// A list page opened with ?hint=import (from the dashboard's import card) points an
+// arrow at its Import button. The parameter is dropped from the address straight
+// away, so a refresh or a shared link never shows the arrow again. The arrow goes on
+// any click, on Esc, or once the button scrolls out of view.
+(function(){
+  var params = new URLSearchParams(location.search);
+  if (params.get('hint') !== 'import') return;
+  params.delete('hint');
+  var qs = params.toString();
+  history.replaceState(history.state, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+  function start(){
+    var btn = document.querySelector('[data-import-hint]');
+    if (!btn) return;
+    var tip = document.createElement('div');
+    tip.className = 'import-arrow';
+    tip.setAttribute('role', 'status');
+    tip.textContent = window.__shellI18n.importHint;
+    document.body.appendChild(tip);
+    btn.classList.add('import-arrow-pulse');
+    function place(){
+      var b = btn.getBoundingClientRect();
+      if (b.bottom < 0 || b.top > window.innerHeight) { close(); return; }
+      var vw = document.documentElement.clientWidth;
+      var w = tip.offsetWidth;
+      var mid = b.left + b.width / 2;
+      var left = Math.max(8, Math.min(mid - w / 2, vw - w - 8));
+      tip.style.left = left + 'px';
+      tip.style.top = (b.bottom + 12) + 'px';
+      tip.style.setProperty('--arrow-x', Math.max(12, Math.min(mid - left, w - 12)) + 'px');
+    }
+    function close(){
+      tip.remove();
+      btn.classList.remove('import-arrow-pulse');
+      document.removeEventListener('click', close, true);
+      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+      window.removeEventListener('load', place);
+      if (watch) watch.disconnect();
+    }
+    function onKey(e){ if (e.key === 'Escape') close(); }
+    document.addEventListener('click', close, true);
+    document.addEventListener('keydown', onKey, true);
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    // Late layout (fonts, the sticky header) can still move the button after load.
+    window.addEventListener('load', place);
+    var watch = window.ResizeObserver ? new ResizeObserver(place) : null;
+    if (watch) watch.observe(document.body);
+    place();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
+})();
+"""
+
 
 def star_supporter_card() -> FT:
     """The GitHub-star ask: a gold-bordered, dismissable card. The COPY (header + body
@@ -1662,8 +1719,8 @@ def page_title(label_key: str) -> str:
 def _shell_js_i18n(lang: str = "en") -> dict:
     """Translated strings the static JS bundle needs (R2): resolved here at render
     time and handed to the client as a single config object, never spliced into
-    the JS source. Read by _CLIENT_JS, _NOTIFICATION_JS and _STAR_CTA_JS; the config
-    is injected by client_scripts, before any of them."""
+    the JS source. Read by _CLIENT_JS, _NOTIFICATION_JS, _STAR_CTA_JS and
+    _IMPORT_HINT_JS; the config is injected by client_scripts, before any of them."""
     return {
         "copied": t("shell.copied", lang),
         "copyLabel": t("btn.copy", lang),
@@ -1691,6 +1748,7 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "updateBlocked": {code: t(f"shell.update_blocked_{code}", lang) for code in CARD_REASONS},
         "starOnGithub": t("shell.star_on_github", lang),
         "appreciateSupport": t("shell.appreciate_support", lang),
+        "importHint": t("shell.import_hint", lang),
     }
 
 
@@ -1768,6 +1826,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         Script(_USER_MENU_JS),
         Script(_BUG_LINK_JS),
         Script(_STAR_CTA_JS),
+        Script(_IMPORT_HINT_JS),
         Script(_STICKY_HEADER_JS),
         Script(_INFO_TIP_JS),
     ]

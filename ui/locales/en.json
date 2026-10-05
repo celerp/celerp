@@ -3580,5 +3580,6 @@
   "dashboard.getting_started_documents": "Documents",
   "dashboard.getting_started_where": "Import is always at the top right of the page.",
   "dashboard.getting_started_demo": "Items marked [DEMO] are samples. Your first product import removes them unless you have changed them.",
-  "dashboard.finish_setup": "Finish setup: choose your business type"
+  "dashboard.finish_setup": "Finish setup: choose your business type",
+  "shell.import_hint": "Click Import to upload your file"
 }

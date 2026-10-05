@@ -3580,5 +3580,6 @@
   "dashboard.getting_started_documents": "Documentos",
   "dashboard.getting_started_where": "Importar está siempre arriba a la derecha de la página.",
   "dashboard.getting_started_demo": "Los artículos marcados [DEMO] son ejemplos. Su primera importación de productos los elimina, salvo que los haya modificado.",
-  "dashboard.finish_setup": "Termine la configuración: elija su tipo de negocio"
+  "dashboard.finish_setup": "Termine la configuración: elija su tipo de negocio",
+  "shell.import_hint": "Haga clic en Importar para subir su archivo"
 }

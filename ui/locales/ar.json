@@ -3580,5 +3580,6 @@
   "dashboard.getting_started_documents": "المستندات",
   "dashboard.getting_started_where": "زر استيراد موجود دائمًا في أعلى يسار الصفحة.",
   "dashboard.getting_started_demo": "العناصر المميزة بـ [DEMO] هي أمثلة. يحذفها أول استيراد للمنتجات، ما لم تكن قد عدّلتها.",
-  "dashboard.finish_setup": "أكمل الإعداد: اختر نوع العمل"
+  "dashboard.finish_setup": "أكمل الإعداد: اختر نوع العمل",
+  "shell.import_hint": "انقر على استيراد لرفع ملفك"
 }

@@ -734,7 +734,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
                        label=t("contacts.search_scope", scope=label.lower())),
             Button(t("contacts.new_type", type=label[:-1]), hx_post=create_url, hx_swap="none", cls="btn btn--primary") if _can_edit else "",
             A(t("btn.export_csv"), href=f"{base_url}/export/csv", cls="btn btn--secondary") if _can_import_export else "",
-            A(t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary") if _can_import_export else "",
+            A(t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary", data_import_hint=True) if _can_import_export else "",
         ),
         Div(column_manager(schema, et), cls="column-manager-row"),
         _contacts_bulk_toolbar(contact_type),

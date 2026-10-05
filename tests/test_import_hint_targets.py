@@ -46,16 +46,29 @@ async def owner_ui(client):
             yield ui
 
 
+def _hint_count(html: str) -> int:
+    """data-import-hint attributes in the markup (the shell's script names the selector)."""
+    return re.sub(r"<script\b.*?</script>", "", html, flags=re.S).count("data-import-hint")
+
+
 def _header_actions(html: str) -> str:
-    m = re.search(r'<div class="page-actions">(.*?)</div>\s*</div>', html, re.S)
-    return m.group(1) if m else ""
+    """The page header's action bar, nested divs (the search bar) included."""
+    start = html.find('<div class="page-actions">')
+    if start < 0:
+        return ""
+    depth = 0
+    for tag in re.finditer(r"<(/?)div\b[^>]*>", html[start:]):
+        depth += -1 if tag.group(1) else 1
+        if depth == 0:
+            return html[start:start + tag.end()]
+    return ""
 
 
 @pytest.mark.parametrize("path", _LIST_PAGES)
 async def test_every_list_page_has_exactly_one_import_hint(owner_ui, path):
     r = await owner_ui.get(path)
     assert r.status_code == 200, (path, r.status_code)
-    assert r.text.count("data-import-hint") == 1, path
+    assert _hint_count(r.text) == 1, path
     actions = _header_actions(r.text)
     hinted = re.search(r'<a[^>]*data-import-hint[^>]*>', actions)
     assert hinted, f"{path}: the hinted Import button sits in the header action bar"
@@ -66,7 +79,7 @@ async def test_inventory_empty_state_import_link_is_not_a_second_target(owner_ui
     # A search with no match shows the empty state; the arrow still has one target.
     r = await owner_ui.get("/inventory?q=no-such-item-anywhere")
     assert r.status_code == 200
-    assert r.text.count("data-import-hint") == 1
+    assert _hint_count(r.text) == 1
 
 
 @pytest.mark.parametrize("path, home", [

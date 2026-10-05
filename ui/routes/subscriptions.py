@@ -256,6 +256,7 @@ def setup_routes(app) -> None:
         page_items = filtered[(page - 1) * per_page: page * per_page]
         title = t("nav.subscriptions_sales") if direction == "sales" else t("nav.subscriptions_purchasing")
         extra = urlencode({k: v for k, v in {"direction": direction, "status": status, "q": q}.items() if v})
+        can_import = await _check_permission(request, "import_export_data") is None
 
         content = Div(
             page_header(
@@ -265,6 +266,8 @@ def setup_routes(app) -> None:
                            label=t("contacts.search_scope", scope=title.lower())),
                 Button(t("page.new_subscription"), hx_post=f"/subscriptions/new?direction={direction}",
                        hx_swap="none", cls="btn btn--primary"),
+                A(t("btn.import"), href="/subscriptions/import", cls="btn btn--secondary",
+                  data_import_hint=True) if can_import else "",
             ),
             _sub_status_cards(all_items, status, direction),
             _sub_table(page_items, direction),

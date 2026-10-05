@@ -3580,5 +3580,6 @@
   "dashboard.getting_started_documents": "書類",
   "dashboard.getting_started_where": "インポートは常にページの右上にあります。",
   "dashboard.getting_started_demo": "[DEMO] の付いた品目はサンプルです。最初の商品インポートで削除されます（変更したものは残ります）。",
-  "dashboard.finish_setup": "設定を完了してください: 業種を選択"
+  "dashboard.finish_setup": "設定を完了してください: 業種を選択",
+  "shell.import_hint": "インポートをクリックしてファイルをアップロード"
 }

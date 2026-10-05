@@ -1316,7 +1316,7 @@ def setup_routes(app):
                     help=search_help(lang, panel_id="page-search-help-panel"),
                     label=t("inventory.search_label", status=display_enum(p.get('status') or 'available', domain='item_status').lower()),
                 ),
-                A(t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary") if _can_import_export else "",
+                A(t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary", data_import_hint=True) if _can_import_export else "",
                 Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _can_edit_inventory else "",
                 A(t("btn.export_csv", lang), href="/inventory/export/csv?" + urlencode(_base_state(p)), cls="btn btn--secondary") if _can_import_export else "",
                 A(t("inv.customize_fields"), href="/settings/inventory?tab=category-library", cls="btn btn--ghost btn--sm") if _can_import_export else "",

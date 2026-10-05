@@ -37,7 +37,7 @@ def _clear_session_registry() -> None:
 
 def _boxes(page: Page):
     btn = page.locator("[data-import-hint]")
-    tip = page.locator(".import-hint")
+    tip = page.locator(".import-arrow")
     expect(tip).to_be_visible()
     expect(tip).to_contain_text(_HINT_TEXT)
     return btn.bounding_box(), tip.bounding_box()
@@ -69,34 +69,34 @@ def test_card_link_shows_arrow_at_import_button(page: Page, fresh_company, width
 
 def test_arrow_dismissed_by_click_and_esc(page: Page, fresh_company):
     page.goto("/inventory?hint=import")
-    expect(page.locator(".import-hint")).to_be_visible()
+    expect(page.locator(".import-arrow")).to_be_visible()
     page.keyboard.press("Escape")
-    expect(page.locator(".import-hint")).to_have_count(0)
-    expect(page.locator("[data-import-hint]")).not_to_have_class("import-hint-pulse")
+    expect(page.locator(".import-arrow")).to_have_count(0)
+    expect(page.locator("[data-import-hint]")).not_to_have_class("import-arrow-pulse")
 
     page.goto("/docs?hint=import")
-    expect(page.locator(".import-hint")).to_be_visible()
+    expect(page.locator(".import-arrow")).to_be_visible()
     page.locator("h1.page-title").click()
-    expect(page.locator(".import-hint")).to_have_count(0)
+    expect(page.locator(".import-arrow")).to_have_count(0)
 
 
 def test_arrow_goes_when_the_button_scrolls_away(page: Page, fresh_company):
     page.set_viewport_size({"width": 390, "height": 500})
     page.goto("/inventory?hint=import")
-    expect(page.locator(".import-hint")).to_be_visible()
+    expect(page.locator(".import-arrow")).to_be_visible()
     page.evaluate("document.body.style.minHeight = '3000px'")
     page.mouse.wheel(0, 1200)
-    expect(page.locator(".import-hint")).to_have_count(0)
+    expect(page.locator(".import-arrow")).to_have_count(0)
 
 
 def test_arrow_not_shown_again_after_refresh(page: Page, fresh_company):
     page.goto("/contacts/customers?hint=import&q=")
-    expect(page.locator(".import-hint")).to_be_visible()
+    expect(page.locator(".import-arrow")).to_be_visible()
     assert "hint=import" not in page.url
     assert "q=" in page.url, "other query parameters are kept"
     page.reload()
     page.wait_for_load_state("load")
-    expect(page.locator(".import-hint")).to_have_count(0)
+    expect(page.locator(".import-arrow")).to_have_count(0)
 
 
 def test_no_arrow_without_import_button(page: Page, fresh_company, api_server):
@@ -115,7 +115,7 @@ def test_no_arrow_without_import_button(page: Page, fresh_company, api_server):
     page.goto("/inventory?hint=import")
     page.wait_for_load_state("load")
     expect(page.locator("[data-import-hint]")).to_have_count(0)
-    expect(page.locator(".import-hint")).to_have_count(0)
+    expect(page.locator(".import-arrow")).to_have_count(0)
     expect(page.locator("h1.page-title")).to_be_visible()
     assert not [e for e in errors if "import" in e.lower() or "hint" in e.lower()], errors
 
@@ -123,14 +123,14 @@ def test_no_arrow_without_import_button(page: Page, fresh_company, api_server):
 def test_arrow_respects_reduced_motion(page: Page, fresh_company):
     page.emulate_media(reduced_motion="reduce")
     page.goto("/inventory?hint=import")
-    expect(page.locator(".import-hint")).to_be_visible()
+    expect(page.locator(".import-arrow")).to_be_visible()
     anim = page.evaluate("""() => [
         getComputedStyle(document.querySelector('[data-import-hint]')).animationName,
-        getComputedStyle(document.querySelector('.import-hint')).animationName]""")
+        getComputedStyle(document.querySelector('.import-arrow')).animationName]""")
     assert anim == ["none", "none"], anim
     page.emulate_media(reduced_motion="no-preference")
     page.goto("/inventory?hint=import")
-    expect(page.locator(".import-hint")).to_be_visible()
+    expect(page.locator(".import-arrow")).to_be_visible()
     moving = page.evaluate("getComputedStyle(document.querySelector('[data-import-hint]')).animationName")
     assert moving != "none"
 
@@ -161,7 +161,7 @@ def test_card_and_arrow_in_german(page: Page, fresh_company, width):
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
     card.get_by_role("link", name=de["dashboard.getting_started_products"], exact=True).click()
     page.wait_for_url("**/inventory*")
-    tip = page.locator(".import-hint")
+    tip = page.locator(".import-arrow")
     expect(tip).to_contain_text(de["shell.import_hint"])
     assert en["shell.import_hint"] not in tip.inner_text()
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
