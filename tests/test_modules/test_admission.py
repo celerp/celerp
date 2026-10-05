@@ -249,6 +249,11 @@ def _case_nav_order_text(base, marker, monkeypatch):
         "nav": [{"key": "acme", "label": "Acme", "href": "/acme", "order": "1"}]}), "order"
 
 
+def _case_unknown_slot(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker, slots={
+        "settings_tab": [{"label": "Acme"}]}), "unknown slot 'settings_tab'"
+
+
 def _case_category_fields_not_list(base, marker, monkeypatch):
     return _migrating_module(base, f"acme-{_uid()}", marker, slots={
         "category_schema": [{"category": "Rings", "fields": {"key": "size"}}]}), "fields"
@@ -467,6 +472,7 @@ async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
     _case_nav_order_text,
     _case_category_fields_not_list,
     _case_connector_not_text,
+    _case_unknown_slot,
     _case_pricing_show_on_entry,
     _case_item_action_link_out,
     _case_lineage_guard_not_async,

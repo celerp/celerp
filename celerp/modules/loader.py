@@ -1244,10 +1244,6 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
     for slot_name, contribution in slots_manifest.items():
         if slot_name == _SEARCH_PROVIDER_SLOT:
             continue
-        if slot_name not in SLOT_NAMES:
-            log.warning("Module %r fills unknown slot %r; Celerp does not read it, so it "
-                        "is ignored.", pkg_name, slot_name)
-            continue
         for item in contribution if isinstance(contribution, list) else [contribution]:
             register_slot(slot_name, {**item, **_runtime_keys(pkg_name, trusted)})
 
@@ -2155,14 +2151,18 @@ def _check_search_provider_descriptor(contribution) -> None:
 
 def _check_slot_contracts(pkg_path: Path, slots_manifest: dict) -> None:
     """Every slot rule the manifest and the module's source decide, checked
-    before any of the module's code runs: the search_provider descriptor, the
-    entry rules (_validate_slot_entry), each slot's own validator, and for a
+    before any of the module's code runs: the slot is one Celerp reads
+    (SLOT_NAMES), the search_provider descriptor, the entry rules (_validate_slot_entry), each slot's own validator, and for a
     callable slot an in-module "module.path:function" whose source shows it
     async exactly where core awaits it (_check_source_call_style). Load proves
     the object importing actually returns (_resolve_slot_callables). Raises :class:`ModuleLoadError`.
     ``slots_manifest`` is already a dict (:func:`_validated_manifest`).
     """
     for slot_name, contribution in slots_manifest.items():
+        if slot_name not in SLOT_NAMES:
+            raise ModuleLoadError(
+                f"The manifest fills unknown slot {slot_name!r}; Celerp reads only "
+                f"{', '.join(sorted(SLOT_NAMES))}.")
         if slot_name == _SEARCH_PROVIDER_SLOT:
             _check_search_provider_descriptor(contribution)
         for item in contribution if isinstance(contribution, list) else [contribution]:

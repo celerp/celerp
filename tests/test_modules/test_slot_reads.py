@@ -12,7 +12,6 @@ provide it.
 from __future__ import annotations
 
 import ast
-import logging
 import sys
 import uuid
 from pathlib import Path
@@ -121,7 +120,10 @@ def module_dir(tmp_path, monkeypatch):
         sys.modules.pop(key, None)
 
 
-def test_a_name_celerp_does_not_read_is_reported_unknown_and_not_registered(module_dir, caplog):
+def test_a_name_celerp_does_not_read_refuses_the_module(module_dir):
+    """A slot Celerp never reads is a manifest mistake (a misspelt or retired
+    name), so the module is refused with the reason rather than run with part
+    of its manifest silently ignored."""
     name, inner = f"acme-{uuid.uuid4().hex[:8]}", f"acme_{uuid.uuid4().hex[:8]}"
     pkg = module_dir / name
     (pkg / inner).mkdir(parents=True)
@@ -133,11 +135,9 @@ def test_a_name_celerp_does_not_read_is_reported_unknown_and_not_registered(modu
     (pkg / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
 
     admission = loader.admit_modules(str(module_dir), {name})
-    with caplog.at_level(logging.WARNING, logger="celerp.modules.loader"):
-        loader.load_all(str(module_dir), {name}, admission=admission)
+    loader.load_all(str(module_dir), {name}, admission=admission)
 
-    assert loader.is_running(name), loader.load_errors()
+    assert not loader.is_running(name)
+    assert "unknown slot 'journal_accounts'" in admission.refused[name]
     assert slots.get("journal_accounts") == []
-    assert [e["key"] for e in slots.get("nav")] == ["acme"]
-    assert any("journal_accounts" in r.getMessage() and "unknown" in r.getMessage()
-               for r in caplog.records)
+    assert slots.get("nav") == []
