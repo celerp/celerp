@@ -3138,7 +3138,7 @@
   "modules.src_sideloaded": "Cài đặt bên ngoài",
   "modules.unavailable_retry": "Danh sách mô-đun hiện không khả dụng. Đang thử lại...",
   "modules.also_enabled": "Cũng đã bật, vì cần đến: {names}",
-  "modules.off_for_company": "Mô-đun này đã tắt cho công ty của bạn.",
+  "modules.off_for_company": "Mô-đun {module} đã tắt cho công ty của bạn.",
   "modules.off_for_company_title": "Mô-đun đã tắt",
   "modules.ask_admin_to_turn_on": "Hãy nhờ quản trị viên bật nó trong Mô-đun.",
   "msg.line_item_identifier_hint": "Cách các mục hàng xác định sản phẩm cụ thể mà chúng đề cập đến. Áp dụng cho hóa đơn, biên bản, chứng từ mua hàng, danh sách và các bản in hoặc bản sao được chia sẻ. Mã vạch xác định chính xác sản phẩm vật lý; SKU là loại sản phẩm.",

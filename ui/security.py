@@ -28,12 +28,53 @@ def is_safe_authorize_url(url: str) -> bool:
 
 
 NOT_PERMITTED = "not_permitted"
+NOTICE_COOKIE = "celerp_notice"
 
 
 def not_permitted_redirect() -> RedirectResponse:
     """Where a page the caller's role may not open sends them: the dashboard,
-    which says why (a silent bounce reads as a broken link)."""
-    return RedirectResponse(f"/dashboard?notice={NOT_PERMITTED}", status_code=302)
+    which says why (a silent bounce reads as a broken link). The reason travels
+    in a one-shot cookie, never the URL, so only a real refusal shows it and the
+    page that shows it clears it (NoticeMiddleware)."""
+    response = RedirectResponse("/dashboard", status_code=302)
+    response.set_cookie(NOTICE_COOKIE, NOT_PERMITTED, max_age=60, httponly=True, samesite="lax")
+    return response
+
+
+def not_permitted_pending(request: Request | None) -> bool:
+    """Whether this request arrives from a refusal whose notice is not yet shown."""
+    return request is not None and request.cookies.get(NOTICE_COOKIE) == NOT_PERMITTED
+
+
+def take_not_permitted(request: Request | None) -> bool:
+    """Whether to show the one-shot notice; marks it shown so NoticeMiddleware
+    clears it in this same response."""
+    if not not_permitted_pending(request):
+        return False
+    request.state.notice_shown = True
+    return True
+
+
+class NoticeMiddleware:
+    """Pure ASGI middleware: clears the one-shot notice cookie on the response of
+    the page that displayed it, so a reload shows nothing."""
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        state = scope.setdefault("state", {})
+
+        async def send_clearing(message):
+            if message["type"] == "http.response.start" and state.get("notice_shown"):
+                clear = f"{NOTICE_COOKIE}=; Max-Age=0; Path=/; HttpOnly; SameSite=lax"
+                message = {**message, "headers": [*message.get("headers", []), (b"set-cookie", clear.encode())]}
+            await send(message)
+
+        await self._app(scope, receive, send_clearing)
 
 
 async def owner_refusal(request: Request) -> Response | None:

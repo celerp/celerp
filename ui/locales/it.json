@@ -3139,7 +3139,7 @@
   "modules.src_sideloaded": "Installato tramite sideload",
   "modules.unavailable_retry": "L’elenco dei moduli non è disponibile al momento. Si sta riprovando...",
   "modules.also_enabled": "Attivati anche questi, perché necessari: {names}",
-  "modules.off_for_company": "Questo modulo è disattivato per la tua azienda.",
+  "modules.off_for_company": "Il modulo {module} è disattivato per la tua azienda.",
   "modules.off_for_company_title": "Modulo disattivato",
   "modules.ask_admin_to_turn_on": "Chiedi a un amministratore di attivarlo in Moduli.",
   "msg.line_item_identifier_hint": "Come le righe identificano l'articolo a cui si riferiscono. Si applica a fatture, note, documenti di acquisto, elenchi e copie stampate o condivise. Il codice a barre identifica l'articolo fisico esatto; lo SKU è il tipo di prodotto.",

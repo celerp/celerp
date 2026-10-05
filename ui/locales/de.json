@@ -3139,7 +3139,7 @@
   "modules.src_sideloaded": "Per Sideload installiert",
   "modules.unavailable_retry": "Die Modulliste ist derzeit nicht verfügbar. Es wird erneut versucht...",
   "modules.also_enabled": "Ebenfalls aktiviert, weil sie benötigt werden: {names}",
-  "modules.off_for_company": "Dieses Modul ist für Ihr Unternehmen deaktiviert.",
+  "modules.off_for_company": "Das Modul {module} ist für Ihr Unternehmen deaktiviert.",
   "modules.off_for_company_title": "Modul deaktiviert",
   "modules.ask_admin_to_turn_on": "Bitten Sie einen Administrator, es unter Module zu aktivieren.",
   "msg.line_item_identifier_hint": "Wie Einzelposten das Stück identifizieren, auf das sie sich beziehen. Gilt für Rechnungen, Memos, Einkaufsbelege, Listen sowie gedruckte oder weitergegebene Kopien. Der Barcode identifiziert das genaue physische Stück; die SKU ist die Produktart.",

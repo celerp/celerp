@@ -145,7 +145,8 @@ async def test_module_page_follows_the_company_choice(module_dir, uses, status):
             r = await c.get(f"/{inner}/page", cookies={"celerp_token": make_test_token()})
     assert r.status_code == status
     if status == 403:
-        assert "This module is turned off for your company." in r.text
+        from celerp.modules.loader import module_label
+        assert f"The {module_label(name)} module is turned off for your company." in r.text
     else:
         assert r.text == "module page"
 

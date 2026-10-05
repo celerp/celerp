@@ -1017,7 +1017,7 @@
   "modules.title": "ሞጁሎች",
   "modules.unavailable_retry": "የሞጁሎች ዝርዝር በአሁኑ ጊዜ አይገኝም። እንደገና በመሞከር ላይ...",
   "modules.also_enabled": "ስለሚያስፈልጉት እነዚህም ተከፍተዋል፦ {names}",
-  "modules.off_for_company": "ይህ ሞጁል ለድርጅትዎ ተዘግቷል።",
+  "modules.off_for_company": "የ{module} ሞጁል ለድርጅትዎ ተዘግቷል።",
   "modules.off_for_company_title": "ሞጁሉ ተዘግቷል",
   "modules.ask_admin_to_turn_on": "በሞጁሎች ገጽ ላይ እንዲያበራው አስተዳዳሪን ይጠይቁ።",
   "msg.100_lifetime_ai_queries_included": "100 የዕድሜ ልክ የAI ጥያቄዎች ተካትተዋል",

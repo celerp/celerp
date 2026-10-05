@@ -3138,7 +3138,7 @@
   "modules.src_sideloaded": "Instalado manualmente",
   "modules.unavailable_retry": "La lista de módulos no está disponible en este momento. Volviendo a intentarlo...",
   "modules.also_enabled": "También activados, porque los necesita: {names}",
-  "modules.off_for_company": "Este módulo está desactivado para su empresa.",
+  "modules.off_for_company": "El módulo {module} está desactivado para su empresa.",
   "modules.off_for_company_title": "Módulo desactivado",
   "modules.ask_admin_to_turn_on": "Pida a un administrador que lo active en Módulos.",
   "msg.line_item_identifier_hint": "Cómo identifican las partidas individuales la unidad a la que hacen referencia. Se aplica a facturas, notas, documentos de compra, listas y copias impresas o compartidas. El código de barras identifica la unidad física exacta; el SKU es el tipo de producto.",

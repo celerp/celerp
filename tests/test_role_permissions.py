@@ -1369,13 +1369,12 @@ async def test_payments_page_requires_permission(ui):
     the dashboard rather than rendering the payments list."""
     from unittest.mock import AsyncMock, patch
 
-    from test_helpers import make_test_token
+    from test_helpers import assert_not_permitted_redirect, make_test_token
 
     company = {"currency": "THB", "settings": {}}
     with patch("ui.api_client.get_company", AsyncMock(return_value=company)):
         r = await ui.get("/payments", cookies={"celerp_token": make_test_token(role="operator")})
-    assert r.status_code == 302
-    assert r.headers["location"] == "/dashboard?notice=not_permitted"
+    assert_not_permitted_redirect(r)
 
 
 async def test_raised_view_inventory_redirects_viewer(ui):
@@ -1384,7 +1383,7 @@ async def test_raised_view_inventory_redirects_viewer(ui):
     raised override is enough to close the page to the viewer."""
     from unittest.mock import AsyncMock, patch
 
-    from test_helpers import make_test_token
+    from test_helpers import assert_not_permitted_redirect, make_test_token
     from ui import api_client
 
     # The page reads its company settings through the cached metadata snapshot;
@@ -1409,8 +1408,7 @@ async def test_raised_view_inventory_redirects_viewer(ui):
     finally:
         for p in patches:
             p.stop()
-    assert r.status_code == 302
-    assert r.headers["location"] == "/dashboard?notice=not_permitted"
+    assert_not_permitted_redirect(r)
 
 
 async def _assert_page_redirects_when_revoked(ui, path: str, perm_key: str):
@@ -1418,14 +1416,13 @@ async def _assert_page_redirects_when_revoked(ui, path: str, perm_key: str):
     to the dashboard by the page-level gate, before the handler loads any data."""
     from unittest.mock import AsyncMock, patch
 
-    from test_helpers import make_test_token
+    from test_helpers import assert_not_permitted_redirect, make_test_token
 
     company = {"currency": "THB",
                "settings": {"role_grants": {perm_key: _roles_from("operator")}}}
     with patch("ui.api_client.get_company", AsyncMock(return_value=company)):
         r = await ui.get(path, cookies={"celerp_token": make_test_token(role="viewer")})
-    assert r.status_code == 302, (path, r.status_code)
-    assert r.headers["location"] == "/dashboard?notice=not_permitted", path
+    assert_not_permitted_redirect(r)
 
 
 async def test_dashboard_page_requires_view_dashboards(ui):

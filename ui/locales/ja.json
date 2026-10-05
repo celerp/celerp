@@ -3138,7 +3138,7 @@
   "modules.src_sideloaded": "サイドロード",
   "modules.unavailable_retry": "現在、モジュール一覧は利用できません。再試行中...",
   "modules.also_enabled": "必要なため、次も有効にしました: {names}",
-  "modules.off_for_company": "このモジュールはあなたの会社では無効になっています。",
+  "modules.off_for_company": "{module} モジュールはあなたの会社では無効になっています。",
   "modules.off_for_company_title": "モジュールは無効です",
   "modules.ask_admin_to_turn_on": "管理者に「モジュール」で有効にするよう依頼してください。",
   "msg.line_item_identifier_hint": "明細行が参照する品目を識別する方法。請求書、メモ、購入伝票、リスト、および印刷または共有されたコピーに適用されます。バーコードは正確な物理的な品目を識別し、SKU は商品タイプを表します。",

@@ -24,7 +24,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 from unittest.mock import AsyncMock, patch
 
-from test_helpers import make_test_token
+from test_helpers import assert_not_permitted_redirect, make_test_token
 from ui.api_client import APIError
 from ui.routes.settings import _check_permission
 from ui.routes.account import _account_allowed
@@ -78,7 +78,7 @@ async def test_forged_cookie_role_ignored_authoritative_role_denies():
     with patch("ui.api_client.get_company", new=_company("staff")):
         r = await _check_permission(_req(forged), "manage_integrations")
     assert isinstance(r, RedirectResponse)
-    assert r.headers["location"] == "/dashboard?notice=not_permitted"
+    assert_not_permitted_redirect(r)
 
 
 @pytest.mark.asyncio

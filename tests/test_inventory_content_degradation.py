@@ -22,7 +22,7 @@ from httpx import ASGITransport, AsyncClient
 
 import ui.routes.inventory as inv
 from ui.api_client import APIError
-from test_helpers import make_test_token
+from test_helpers import assert_not_permitted_redirect, make_test_token
 
 
 @pytest_asyncio.fixture
@@ -258,8 +258,7 @@ async def test_revoked_view_inventory_denied_even_when_metadata_fails(ui_client,
     _install_inventory_getters(monkeypatch, metadata_error=APIError(503, "down"))
     monkeypatch.setattr(inv, "role_has_permission", lambda settings, role, perm: False)
     r = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
-    assert r.status_code == 302
-    assert r.headers["location"] == "/dashboard?notice=not_permitted"
+    assert_not_permitted_redirect(r)
 
 
 @pytest.mark.asyncio

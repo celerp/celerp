@@ -36,7 +36,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from celerp.services.import_stage import read_stage, write_stage
 from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
-from test_helpers import make_test_token, authed_cookies
+from test_helpers import assert_not_permitted_redirect, make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
 
 
@@ -10774,7 +10774,7 @@ class TestCompanyDetailsPage:
             ok = await ui_client.get("/finance/company-details", cookies=_authed(role="admin"), follow_redirects=False)
             low = await ui_client.get("/finance/company-details", cookies=_authed(role="operator"), follow_redirects=False)
         assert ok.status_code == 200
-        assert low.status_code == 302 and low.headers.get("location", "").endswith("/dashboard?notice=not_permitted")
+        assert_not_permitted_redirect(low)
 
 
 class TestFilesExcelFunnels:

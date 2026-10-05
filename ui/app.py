@@ -51,6 +51,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, clear_session_cookies, cookie_domain, is_stale_cookie
+from ui.security import NoticeMiddleware
 from ui.routes import (
     auth, setup, search, settings, settings_import,
     settings_general, settings_cloud, settings_connectors, settings_payments, notifications, events, stars,
@@ -365,12 +366,20 @@ async def _module_refusal(request: Request, module: str) -> Response | None:
     settings = company.get("settings")
     if uses_module(settings, module):
         return None
+    from celerp.modules.loader import module_label
     from ui.routes.modules_page import manages_modules
-    way_on = (A(t("nav.modules"), href="/modules", cls="btn btn--primary")
-              if manages_modules(api.role_from_company(company)) else P(t("modules.ask_admin_to_turn_on")))
+    from ui.security import not_permitted_pending
+    if not_permitted_pending(request):
+        # Sent here by a refusal: the caller never asked for this module, so the
+        # shell's no-access notice is the whole answer.
+        body = ()
+    else:
+        way_on = (A(t("nav.modules"), href="/modules", cls="btn btn--primary")
+                  if manages_modules(api.role_from_company(company)) else P(t("modules.ask_admin_to_turn_on")))
+        body = (page_header(t("modules.off_for_company_title")),
+                Div(P(t("modules.off_for_company", module=module_label(module)), cls="flash flash--error"), way_on))
     page = await base_shell(
-        page_header(t("modules.off_for_company_title")),
-        Div(P(t("modules.off_for_company"), cls="flash flash--error"), way_on),
+        *body,
         title=t("modules.off_for_company_title"),
         request=request,
         company_settings=settings or {},
@@ -379,6 +388,7 @@ async def _module_refusal(request: Request, module: str) -> Response | None:
 
 
 app.add_middleware(ModuleGateMiddleware)
+app.add_middleware(NoticeMiddleware)
 app.add_middleware(TokenRefreshMiddleware)
 
 

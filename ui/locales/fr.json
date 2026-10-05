@@ -3139,7 +3139,7 @@
   "modules.src_sideloaded": "Installé manuellement",
   "modules.unavailable_retry": "La liste des modules n'est pas disponible pour le moment. Nouvelle tentative...",
   "modules.also_enabled": "Également activés, car il en a besoin : {names}",
-  "modules.off_for_company": "Ce module est désactivé pour votre entreprise.",
+  "modules.off_for_company": "Le module {module} est désactivé pour votre entreprise.",
   "modules.off_for_company_title": "Module désactivé",
   "modules.ask_admin_to_turn_on": "Demandez à un administrateur de l'activer dans Modules.",
   "msg.line_item_identifier_hint": "Comment les lignes d'article identifient l'article auquel elles se réfèrent. S'applique aux factures, aux notes, aux documents d'achat, aux listes et aux copies imprimées ou partagées. Le code-barres identifie l'article physique exact ; la référence (SKU) correspond au type de produit.",

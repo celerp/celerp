@@ -1087,7 +1087,7 @@
   "modules.title": "Modules",
   "modules.unavailable_retry": "The modules list is not available right now. Retrying...",
   "modules.also_enabled": "Also turned on, because it needs them: {names}",
-  "modules.off_for_company": "This module is turned off for your company.",
+  "modules.off_for_company": "The {module} module is turned off for your company.",
   "modules.off_for_company_title": "Module turned off",
   "modules.ask_admin_to_turn_on": "Ask an administrator to turn it on in Modules.",
   "msg.100_lifetime_ai_queries_included": "100 lifetime AI credits included",

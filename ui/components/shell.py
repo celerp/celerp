@@ -1727,8 +1727,8 @@ def _redirect_notice(request, lang: str) -> list:
     """Why the caller was sent here, on whichever page answers the redirect: the
     dashboard, or the page standing in for it where the company turned it off
     (ui.security.not_permitted_redirect)."""
-    from ui.security import NOT_PERMITTED
-    if request is None or request.query_params.get("notice") != NOT_PERMITTED:
+    from ui.security import take_not_permitted
+    if not take_not_permitted(request):
         return []
     return [flash(t("perm.redirected_no_access", lang))]
 

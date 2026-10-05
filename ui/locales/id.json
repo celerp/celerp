@@ -3138,7 +3138,7 @@
   "modules.src_sideloaded": "Diinstal secara manual",
   "modules.unavailable_retry": "Daftar modul saat ini tidak tersedia. Mencoba lagi...",
   "modules.also_enabled": "Ikut diaktifkan karena dibutuhkan: {names}",
-  "modules.off_for_company": "Modul ini dinonaktifkan untuk perusahaan Anda.",
+  "modules.off_for_company": "Modul {module} dinonaktifkan untuk perusahaan Anda.",
   "modules.off_for_company_title": "Modul dinonaktifkan",
   "modules.ask_admin_to_turn_on": "Minta administrator untuk mengaktifkannya di Modul.",
   "msg.line_item_identifier_hint": "Cara item baris mengidentifikasi barang yang dimaksud. Berlaku untuk faktur, memo, dokumen pembelian, daftar, serta salinan yang dicetak atau dibagikan. Kode batang mengidentifikasi barang fisik yang tepat; SKU adalah jenis produk.",
