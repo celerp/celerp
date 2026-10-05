@@ -1395,9 +1395,8 @@ _LIST_HINT_JS = """
     // Under the whole header row, pointing up at the button.
     import: {target: '[data-import-hint]', text: 'importHint',
              row: function(el){ return el.closest('.page-header') || el.parentElement; }},
-    // Right above the table, pointing down at the box. The list starts with nothing
-    // selected, so a row ticked earlier elsewhere never rides along into Delete.
-    demo: {target: '#select-all-rows', text: 'demoHint', above: true, clearSelection: true,
+    // Right above the table, pointing down at the box.
+    demo: {target: '#select-all-rows', text: 'demoHint', above: true,
            row: function(el){ return el.closest('.table-scroll-wrap') || el.closest('table'); }}
   };
   var params = new URLSearchParams(location.search);
@@ -1410,7 +1409,6 @@ _LIST_HINT_JS = """
   function start(){
     var btn = document.querySelector(hint.target);
     if (!btn) return;
-    if (hint.clearSelection) document.body.dispatchEvent(new CustomEvent('celerpSelectionClear'));
     var row = hint.row(btn);
     var tip = document.createElement('div');
     tip.className = 'import-arrow' + (hint.above ? ' import-arrow--down' : '');

@@ -37,12 +37,14 @@ async def ui():
 
 
 def _items_api(page: dict):
-    """list_items as the API answers it: the [DEMO] search keeps only items whose name
-    carries the marker; every other call returns the page as given."""
+    """list_items as the API answers it: the demo filter keeps only setup's untouched
+    samples (here, DEMO- items not marked "edited"; the API's own selection is tested
+    in test_demo_items_filter.py); every other call returns the page as given."""
     async def _list(token, params=None):
-        from ui.components.demo_items import DEMO_ITEMS_QUERY
-        if (params or {}).get("q") == DEMO_ITEMS_QUERY:
-            hits = [i for i in page.get("items") or [] if "[DEMO]" in (i.get("name") or "")]
+        from ui.components.demo_items import DEMO_ITEMS_FILTER
+        if (params or {}).get("filter") == DEMO_ITEMS_FILTER:
+            hits = [i for i in page.get("items") or []
+                    if str(i.get("sku")).startswith("DEMO-") and not i.get("edited")]
             return {"items": hits, "total": len(hits)}
         return page
     return _list
@@ -286,24 +288,22 @@ def _demo_link(html: str) -> str:
 
 
 async def test_demo_note_links_to_the_demo_items(ui):
-    """The note carries a small "Remove demo items" link to the inventory list searched
-    for [DEMO] by name, with the hint that points at the select-all box."""
+    """The note carries a small "Remove demo items" link to the inventory list filtered
+    to the untouched samples, with the hint that points at the select-all box."""
     from html import unescape
     from urllib.parse import parse_qs, urlsplit
-    from ui.components.demo_items import DEMO_ITEMS_QUERY
     link = _demo_link(await _dashboard(ui))
     assert "Remove demo items" in link
     href = urlsplit(unescape(re.search(r'href="([^"]+)"', link).group(1)))
     assert href.path == "/inventory"
-    assert parse_qs(href.query) == {"q": [DEMO_ITEMS_QUERY], "hint": ["demo"]}
-    assert DEMO_ITEMS_QUERY == "name:[DEMO]"
+    assert parse_qs(href.query) == {"filter": ["demo"], "hint": ["demo"]}
 
 
-async def test_demo_note_and_link_follow_the_marked_items(ui):
-    """Demo samples renamed by the owner no longer carry [DEMO]: the note and its link
-    go once no item is marked, so the link never opens an empty list."""
-    renamed = {"items": [{"id": "item:d1", "sku": "DEMO-001", "name": "House rice"}], "total": 1}
-    html = await _dashboard(ui, items=renamed)
+async def test_demo_note_and_link_follow_the_untouched_samples(ui):
+    """Samples the owner edited are theirs now and leave the demo list: the note and
+    its link go once that list is empty, so the link never opens an empty list."""
+    edited = {"items": [{"id": "item:d1", "sku": "DEMO-001", "name": "House rice", "edited": True}], "total": 1}
+    html = await _dashboard(ui, items=edited)
     assert _demo_note(html) == ""
     assert 'id="remove-demo-items"' not in html
 
