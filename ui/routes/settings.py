@@ -3160,9 +3160,10 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
 
 def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en", is_owner: bool = False,
                install_owner_id: str = "", notice: FT | str = "") -> FT:
-    """The users table and role matrix. ``install_owner_id`` is the viewer's own
-    user id when the viewer owns the installation: only then does each other
-    active user carry the control that hands installation ownership to them."""
+    """The users table and role matrix. The user who owns the installation carries
+    a badge for every viewer. ``install_owner_id`` is the viewer's own user id when
+    the viewer owns the installation: only then does each other active user carry
+    the control that hands installation ownership to them."""
     def _handover_cell(u: dict) -> FT:
         uid = u.get("id", "")
         if uid == install_owner_id or not u.get("is_active", True):
@@ -3178,8 +3179,11 @@ def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en"
 
     def _row(u: dict) -> FT:
         uid = u.get("id", "")
+        name = _user_display_cell(uid, "name", u.get("name"))
+        if u.get("is_install_owner"):
+            name = name(Span(t("settings.install_owner_badge", lang), cls="badge badge--neutral ml-sm"))
         return Tr(
-            _user_display_cell(uid, "name", u.get("name")),
+            name,
             _user_display_cell(uid, "email", u.get("email")),
             _user_display_cell(uid, "role", u.get("role")),
             _user_display_cell(uid, "is_active", u.get("is_active", True)),

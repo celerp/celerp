@@ -654,7 +654,8 @@ async def list_users(company_id=Depends(get_current_company_id), session: AsyncS
         )
     ).all()
     items = [
-        {"id": str(u.id), "email": u.email, "name": u.name, "role": normalize_role(role), "is_active": uc_active}
+        {"id": str(u.id), "email": u.email, "name": u.name, "role": normalize_role(role), "is_active": uc_active,
+         "is_install_owner": bool(u.is_install_owner)}
         for u, role, uc_active in rows
     ]
     return {"items": items, "total": len(items)}
@@ -692,6 +693,13 @@ async def transfer_install_owner(
     current.is_install_owner = False
     await session.flush()
     target.is_install_owner = True
+    from celerp.notifications import service as notif_service
+    await notif_service.create(
+        session, company_id, "system", "You are now the installation owner",
+        f"{current.name or current.email} made you the installation owner. You can install modules, "
+        "manage backups and Celerp Cloud, and hand ownership on to another user from Settings > Users.",
+        user_id=target.id, action_url="/settings/general?tab=users", priority="high",
+    )
     await session.commit()
     return {"ok": True}
 

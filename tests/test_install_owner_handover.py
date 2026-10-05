@@ -96,3 +96,27 @@ async def test_refused_handover_says_why_and_changes_nothing(ui_client):
     assert "Installation owner access required" in r.text
     assert "flash--error" in r.text
     assert "is now the installation owner" not in r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("install_owner,role", [(True, "owner"), (False, "admin")])
+async def test_users_table_shows_who_owns_the_installation(ui_client, install_owner, role):
+    """Every viewer of the Users tab sees which user holds the installation owner
+    rights, and only that user carries the mark."""
+    users = {"items": [{**u, "is_install_owner": u["id"] == _ME} for u in _USERS["items"]]}
+    a, b, c, d = _api(install_owner)
+    with a, b, c, d, patch("ui.api_client.get_users", new=AsyncMock(return_value=users)):
+        r = await ui_client.get("/settings/general?tab=users", cookies=_cookies(role))
+    rows = r.text.split('class="data-row"')[1:]
+    owner_row = next(row for row in rows if "me@example.com" in row)
+    assert 'class="badge badge--neutral ml-sm">Installation owner</span>' in owner_row
+    assert all("Installation owner</span>" not in row for row in rows if row is not owner_row)
+
+
+@pytest.mark.asyncio
+async def test_handover_confirm_says_the_new_owner_holds_the_rights_and_can_hand_them_on(ui_client):
+    html = await _users_tab(ui_client, install_owner=True)
+    confirm = html.split('hx-confirm="', 1)[1].split('"', 1)[0]
+    assert confirm == ("Make Heir the installation owner? Heir will hold the owner rights: installing modules, "
+                       "managing backups and Celerp Cloud, and handing ownership on to another user. You keep your "
+                       "role in the company, but not these rights.")
