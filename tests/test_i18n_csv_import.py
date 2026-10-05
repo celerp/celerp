@@ -37,8 +37,7 @@ _XX = {
     "import.js_search_placeholder": "XX_SEARCH",
     "import.showing_rows": "XX_SHOWING {n} OF {total}",
     "import.import_all_rows": "XX_IMPORTALL {n}",
-    "import.cells_count": "XX_CELLS {n}",
-    "import.need_fixing_across": " XX_NEEDFIX {rows}/{total}",
+    "import.cells_need_fixing_many": "XX_CELLS {n} XX_NEEDFIX {rows}/{total}",
     "import.err_duplicate_target": "XX_DUPTARGET {cols} {target}",
 }
 
@@ -112,8 +111,7 @@ def test_validation_result_errors_translates_summary():
         revalidate_action="/import/revalidate",
         back_href="/items",
     ))
-    assert "XX_CELLS 2" in html
-    assert "XX_NEEDFIX 2/2" in html
+    assert "XX_CELLS <strong>2</strong> XX_NEEDFIX 2/2" in html
 
 
 def test_validate_column_mapping_translates_error():

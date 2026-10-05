@@ -1142,8 +1142,9 @@ def _fix_errors_panel(
         _step_indicator(review_step, has_mapping=has_mapping),
         Div(
             P(
-                Strong(t("import.cells_count", n=total_errors)),
-                t("import.need_fixing_across", rows=len(error_row_indices), total=len(rows)),
+                # The count is bolded inside the one translated sentence.
+                NotStr(t("import.cells_need_fixing_one" if total_errors == 1 else "import.cells_need_fixing_many",
+                         n=f"<strong>{total_errors}</strong>", rows=len(error_row_indices), total=len(rows))),
                 cls="csv-fix-summary",
             ),
             Div(
