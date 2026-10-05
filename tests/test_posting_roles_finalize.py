@@ -210,6 +210,8 @@ async def test_an_account_set_before_finishing_is_kept(session, monkeypatch):
     context = await _staged_context(session)
     await _import_chart(context, [*_SOURCE_CHART, ("other", "410", "Other sales", "revenue", None)])
     await set_role(session, context.company_id, "sales_revenue", "410")
+    row = (await _readiness(context))["sales_revenue"]
+    assert (row["current"], row["current_name"]) == ("410", "Other sales")
     await _ready_run(context, monkeypatch)
     with pytest.raises(MigrationError) as exc:
         await _finalize(context, monkeypatch, _CHOICES)
@@ -268,3 +270,21 @@ async def test_a_migrated_draft_records_the_opening_account_chosen_at_finish_whe
     row = await session.get(Projection, (context.company_id, draft), populate_existing=True)
     assert row.state["inventory_account_code"] == "1135"
     assert await _account_net(session, context.company_id, "1135") == 40.0
+
+
+@pytest.mark.asyncio
+async def test_an_account_the_source_gave_no_code_is_offered_by_its_name(session):
+    """The code Celerp gives such an account is internal: finishing lists the account,
+    and shows it once set, by its name."""
+    from celerp.accounting_roles import account_label
+    from celerp.services.account_roles import set_role
+
+    context = await _staged_context(session)
+    await _import_chart(context, [*_SOURCE_CHART, ("charges", None, "Bank charges", "expense", None)])
+    [code] = await _codes(context) - {code for _, code, *_ in _SOURCE_CHART}
+    [offered] = [c for c in (await _readiness(context))["general_expense"]["candidates"] if c["code"] == code]
+    assert account_label(offered["code"], offered["name"]) == "Bank charges"
+
+    await set_role(session, context.company_id, "general_expense", code)
+    row = (await _readiness(context))["general_expense"]
+    assert account_label(row["current"], row["current_name"]) == "Bank charges"

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fasthtml.common import *
 
+from celerp.accounting_roles import account_label
 from ui.components.table import _SEARCHABLE_THRESHOLD, display_enum, searchable_select
 from ui.i18n import t
 
@@ -30,7 +31,7 @@ def account_picker(name: str, candidates: list[dict], value: str = "", proposal:
                    aria_label: str = "", **attrs) -> FT:
     """A picker submitting the chosen account code under ``name``, or NEW_ACCOUNT when
     the user chooses to add ``proposal``."""
-    options = [(c["code"], f"{c['code']} {c['name']}") for c in candidates]
+    options = [(c["code"], account_label(c["code"], c["name"])) for c in candidates]
     if proposal:
         options.append((NEW_ACCOUNT, proposal_label(proposal)))
     if len(options) > _SEARCHABLE_THRESHOLD:

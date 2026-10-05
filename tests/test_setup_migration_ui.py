@@ -762,9 +762,10 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
 
 
 def _posting_row(role: str, label: str, *, required: bool = True, current: str | None = None,
-                 preselect: str | None = None, candidates: tuple = (), proposal: dict | None = None) -> dict:
+                 current_name: str | None = None, preselect: str | None = None, candidates: tuple = (),
+                 proposal: dict | None = None) -> dict:
     return {"role": role, "label": label, "group": "core", "required": required, "current": current,
-            "controls": [], "preselect": preselect,
+            "current_name": current_name, "controls": [], "preselect": preselect,
             "candidates": [{"code": c, "name": n, "account_type": ty} for c, n, ty in candidates],
             "proposal": proposal or {"code": "9999", "name": label, "account_type": "expense"}}
 
@@ -817,6 +818,29 @@ async def test_finishing_asks_for_each_posting_account_the_company_needs(ui, rou
         "roles": {"payable": "211", "sales_revenue": "405"},
         "add_accounts": [{**_EXPENSE_PROPOSAL, "role": "general_expense"}],
     }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lang", ["en", "de"])
+async def test_finishing_names_accounts_the_source_gave_no_code_by_their_name(ui, router, fake_api, lang):
+    """Manager books carry accounts without a code; Celerp gives each an internal code
+    (M and eight hex digits). The posting accounts show such an account by its name alone,
+    while the picker still submits the code."""
+    _owner(ui)
+    ui.cookies.set("celerp_lang", lang)
+    run_id = fake_api.add_run("ready_to_finalize")
+    fake_api.posting[run_id] = [
+        _posting_row("receivable", "Accounts receivable", current="M73d6d4fc", current_name="Debtors"),
+        _posting_row("payable", "Accounts payable", preselect="M0a1b2c3d-1",
+                     candidates=(("M0a1b2c3d-1", "Creditors", "liability"), ("211", "Other creditors", "liability"))),
+    ]
+    verify = _visible(await ui.get(f"/migrations/{run_id}/verify"))
+
+    assert re.search(r"<td>Debtors</td>", verify)
+    assert re.search(r'<option value="M0a1b2c3d-1" selected>Creditors</option>', verify)
+    assert re.search(r'<option value="211">211 Other creditors</option>', verify)
+    shown = re.sub(r"<[^>]*>", " ", verify)
+    assert "M73d6d4fc" not in shown and "M0a1b2c3d" not in shown
 
 
 @pytest.mark.asyncio

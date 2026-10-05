@@ -27,6 +27,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
+from celerp.accounting_roles import account_label
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.posting_accounts import NEW_ACCOUNT, account_picker
@@ -1066,7 +1067,7 @@ def _posting_accounts(roles: list[dict], chosen: dict[str, str]) -> FT:
             Thead(Tr(Th(t("posting.col_role")), Th(t("posting.col_account")))),
             Tbody(*[
                 Tr(Td(role_label(row["role"], row["label"])),
-                   Td(row["current"] if row["current"] else account_picker(
+                   Td(account_label(row["current"], row.get("current_name")) if row["current"] else account_picker(
                        f"{_ROLE_FIELD}{row['role']}", row["candidates"],
                        value=chosen.get(row["role"]) or row["preselect"] or "",
                        proposal=row["proposal"], aria_label=role_label(row["role"], row["label"]))))

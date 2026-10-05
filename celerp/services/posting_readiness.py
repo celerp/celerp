@@ -216,7 +216,7 @@ async def readiness(session: AsyncSession, company_id) -> list[dict] | None:
     None when accounting is not running.
 
     Each row: role, label, group, required (a workflow the company uses needs it),
-    current (the account already set), controls (the source books' control accounts),
+    current and current_name (the account already set), controls (the source books' control accounts),
     preselect (the single suitable control, when there is exactly one), candidates
     (suitable chart accounts, ranked) and proposal (the account to add instead)."""
     chart = await _chart(session, company_id)
@@ -230,9 +230,11 @@ async def readiness(session: AsyncSession, company_id) -> list[dict] | None:
     for role in AccountRole:
         controls = source_controls(settings, role.value)
         fitting = [c for c in controls if c in chart and _fits(role.value, chart[c])]
+        code = current.get(role.value) or None
         rows.append({
             "role": role.value, "label": ROLE_LABELS[role], "group": _GROUP_OF[role.value],
-            "required": role.value in needed, "current": current.get(role.value) or None,
+            "required": role.value in needed, "current": code,
+            "current_name": (chart.get(code) or {}).get("name") if code else None,
             "controls": controls, "preselect": fitting[0] if len(controls) == 1 and fitting else None,
             "candidates": _ranked(role.value, chart, controls), "proposal": proposals[role.value],
         })

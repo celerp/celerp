@@ -15,6 +15,7 @@ from urllib.parse import quote_plus, urlencode
 
 import ui.api_client as api
 from ui.api_client import APIError
+from celerp.accounting_roles import account_label
 from celerp.services.units import default_receive_as
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
@@ -1249,7 +1250,6 @@ _ICON_GLOBE = (
 
 async def _doc_notes_section_response(token: str, entity_id: str, is_list: bool):
     """Fetch notes and return the rendered notes section (innerHTML target)."""
-    from starlette.responses import Response as _Res
     tz = "UTC"
     try:
         _co = await api.get_company(token)
@@ -2689,7 +2689,7 @@ celerpUpdateBulkAlloc();
                 accts = acct_resp.get("items", [])
             except Exception:
                 accts = []
-            acct_opts = [(a.get("code", ""), f"{a.get('code','')} – {a.get('name','')}") for a in accts if a.get("code")]
+            acct_opts = [(a.get("code", ""), account_label(a.get("code"), a.get("name"))) for a in accts if a.get("code")]
             input_el = Div(
                 searchable_select(
                     name="value",
@@ -2752,7 +2752,7 @@ celerpUpdateBulkAlloc();
             try:
                 acct_resp = await api.get_chart(token)
                 accts = acct_resp.get("items", [])
-                acct_map = {a.get("code", ""): f"{a.get('code','')} – {a.get('name','')}" for a in accts if a.get("code")}
+                acct_map = {a.get("code", ""): account_label(a.get("code"), a.get("name")) for a in accts if a.get("code")}
                 display_value = acct_map.get(value) or value
             except Exception:
                 pass
@@ -4715,7 +4715,6 @@ celerpUpdateBulkAlloc();
     @app.get("/lists/{entity_id}/line/{item_id}/counted/edit")
     async def list_audit_counted_edit(request: Request, entity_id: str, item_id: str):
         """Return an inline edit input for the Counted cell (standard editable-cell idiom)."""
-        from ui.components.table import EMPTY as _EMPTY
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
@@ -6689,7 +6688,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             account_cell = None
             if doc_type in ("purchase_order", "bill"):
                 _acct_list = chart_accounts or []
-                _acct_opts = [(a.get("code", ""), f"{a.get('code','')} – {a.get('name','')}") for a in _acct_list if a.get("code")]
+                _acct_opts = [(a.get("code", ""), account_label(a.get("code"), a.get("name"))) for a in _acct_list if a.get("code")]
                 # Blank posts the line to the company's account for its kind (stock or expense).
                 account_cell = Td(
                     searchable_select(
@@ -6957,7 +6956,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(_tax_select(), cls="col-tax"),
             ])
             if doc_type in ("purchase_order", "bill"):
-                _acct_opts = [(a.get("code", ""), f"{a.get('code','')} – {a.get('name','')}") for a in (chart_accounts or []) if a.get("code")]
+                _acct_opts = [(a.get("code", ""), account_label(a.get("code"), a.get("name"))) for a in (chart_accounts or []) if a.get("code")]
                 cells.append(Td(
                     searchable_select(name="account_code", options=_acct_opts, value="",
                                       placeholder=t("documents.line_account_default"), cls_extra="cell-input cell-input--xs", allow_custom=True),
@@ -8799,9 +8798,9 @@ async function celerpCsvImport(input, entityId) {{
             "Sold": "enum.item_status.sold",
         }
 
-        # Build account code -> "CODE – Name" lookup for finalized line display
+        # Account code -> its label (account_label), for finalized line display
         _acct_map: dict[str, str] = {
-            a["code"]: f"{a['code']} \u2013 {a['name']}"
+            a["code"]: account_label(a["code"], a["name"])
             for a in (chart_accounts or [])
             if a.get("code") and a.get("name")
         }

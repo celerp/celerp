@@ -28,7 +28,7 @@ from celerp.importers.schema import (
     ReconciliationExpectations,
     ReconciliationMeasure,
 )
-from celerp.accounting_roles import AccountRole
+from celerp.accounting_roles import AccountRole, generated_account_code
 from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, SinkContext
 from celerp.services.account_roles import current_settings, record_source_control, source_controls
 from celerp.services.migration_core_sink import (
@@ -206,7 +206,7 @@ async def _write_account(
         taken.add(code)
         return code
 
-    code = _free_code(account.code or f"M{deterministic_id(context, ACCOUNT, account.source_external_id).hex[:8]}", taken)
+    code = _free_code(account.code or generated_account_code(deterministic_id(context, ACCOUNT, account.source_external_id)), taken)
     existing[code] = await import_service.create_chart_account(
         session, company_id, code=code, name=account.name, account_type=account.account_type.value,
         parent_code=parent_code, is_active=account.is_active,

@@ -12,7 +12,7 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, flash, page_header, page_title
-from ui.config import COOKIE_NAME
+from celerp.accounting_roles import account_label
 from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
 from ui.components.table import EMPTY, add_new_option, searchable_select, display_enum, fmt_money
 
@@ -305,7 +305,7 @@ _POSTING_BADGE = {"ready": "active", "unused": "inactive"}
 
 
 def _posting_account_text(code: str | None, name: str | None) -> str:
-    return f"{code} {name}" if code and name else (code or EMPTY)
+    return account_label(code, name) or EMPTY
 
 
 def _posting_display_cell(key: str, code: str | None, name: str | None, error: str | None = None) -> FT:
