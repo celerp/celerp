@@ -367,7 +367,7 @@ async def _module_refusal(request: Request, module: str) -> Response | None:
     page = await base_shell(
         page_header(t("modules.off_for_company_title")),
         Div(P(t("modules.off_for_company"), cls="flash flash--error"),
-            A(t("error.back_to_dashboard"), href="/", cls="btn btn--primary"),
+            A(t("nav.modules"), href="/modules", cls="btn btn--primary"),
             cls="content-area"),
         title=t("modules.off_for_company_title"),
         request=request,

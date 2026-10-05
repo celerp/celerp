@@ -4,7 +4,7 @@
 
 - A module turned off for the company: refused with a sidebar built for this
   user and company (the module that is off is not listed, nor links the role
-  may not use), and a way back that always exists.
+  may not use), and a link to the Modules page, which always answers.
 - The API cannot be reached: the page says so with the real status, never that
   the module is turned off.
 - The 404 and 500 pages build their sidebar for the user who asked, not for an
@@ -79,11 +79,17 @@ async def test_refusal_page_sidebar_follows_the_role(ui_client):
 
 
 @pytest.mark.asyncio
-async def test_refusal_page_links_back_to_the_home_page(ui_client):
-    """/dashboard is itself a module page; / always answers."""
+async def test_refusal_page_links_to_the_modules_page(ui_client):
+    """The way on is the Modules page, where the module is turned back on. It is
+    no module's page, so it answers even when the dashboard is the module that is
+    off (/ lands on /dashboard, which would refuse again)."""
+    from celerp.modules.loader import route_module
     r = await _get(ui_client, "admin", AsyncMock(return_value=_OFF))
-    assert 'href="/dashboard"' not in r.text.split('class="content-area"', 1)[1]
-    assert 'href="/" class="btn btn--primary"' in r.text
+    content = r.text.split('class="content-area"', 1)[1]
+    assert 'href="/modules" class="btn btn--primary"' in content
+    assert 'href="/"' not in content and 'href="/dashboard"' not in content
+    assert route_module({"type": "http", "method": "GET", "path": "/modules", "root_path": "",
+                         "query_string": b"", "headers": []}) is None
 
 
 def _request(role: str) -> Request:
