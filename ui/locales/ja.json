@@ -879,6 +879,7 @@
   "label.your_name": "あなたの名前",
   "label.zip_archive": "ZIP アーカイブ",
   "lists.shipping_intro": "出荷用の書類です。出荷書類を1件作成し、受取人向けの納品書または税関向けのコマーシャルインボイスを印刷します。",
+  "lists.empty_hint": "リストでは、見積、在庫移動、棚卸、評価減、出荷書類のために品目をまとめます。",
   "marketplace.buy_note": "このコンピューター用の一度きりまたは月額の購入です。Celerp Connect は含まれません。",
   "marketplace.could_not_load": "カタログを読み込めませんでした。接続を確認して再試行してください。",
   "marketplace.data_access": "データアクセス",

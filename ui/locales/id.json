@@ -879,6 +879,7 @@
   "label.your_name": "Namamu",
   "label.zip_archive": "Arsip ZIP",
   "lists.shipping_intro": "Dokumen untuk pengiriman keluar. Siapkan satu dokumen pengiriman, lalu cetak surat jalan untuk penerima atau faktur komersial untuk bea cukai.",
+  "lists.empty_hint": "Gunakan daftar untuk mengumpulkan barang bagi penawaran harga, transfer stok, audit stok, penghapusan, atau dokumen pengiriman.",
   "marketplace.buy_note": "Pembelian satu kali atau bulanan, dilisensikan untuk komputer ini. Tidak termasuk Celerp Connect.",
   "marketplace.could_not_load": "Katalog tidak dapat dimuat. Periksa koneksi Anda dan coba lagi.",
   "marketplace.data_access": "Akses data",

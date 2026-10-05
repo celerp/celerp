@@ -879,6 +879,7 @@
   "label.your_name": "Votre nom",
   "label.zip_archive": "Archives ZIP",
   "lists.shipping_intro": "Documents pour les livraisons sortantes. Préparez un document d'expédition, puis imprimez un bon de livraison pour le destinataire ou une facture commerciale pour la douane.",
+  "lists.empty_hint": "Une liste regroupe des articles pour un devis, un transfert de stock, un inventaire, une mise au rebut ou un document d'expédition.",
   "marketplace.buy_note": "Un achat unique ou mensuel, sous licence pour cet ordinateur. Celerp Connect n'est pas inclus.",
   "marketplace.could_not_load": "Le catalogue n'a pas pu être chargé. Vérifiez votre connexion et réessayez.",
   "marketplace.data_access": "Accès aux données",

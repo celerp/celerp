@@ -879,6 +879,7 @@
   "label.your_name": "Il tuo nome",
   "label.zip_archive": "Archivio ZIP",
   "lists.shipping_intro": "Documenti per le consegne in uscita. Prepara un documento di spedizione, poi stampa un documento di trasporto per il destinatario o una fattura commerciale per la dogana.",
+  "lists.empty_hint": "Una lista raccoglie articoli per un preventivo, un trasferimento di magazzino, un inventario, una svalutazione o un documento di spedizione.",
   "marketplace.buy_note": "Un acquisto una tantum o mensile, con licenza per questo computer. Non include Celerp Connect.",
   "marketplace.could_not_load": "Impossibile caricare il catalogo. Controlla la connessione e riprova.",
   "marketplace.data_access": "Accesso ai dati",
