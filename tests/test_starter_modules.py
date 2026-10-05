@@ -216,7 +216,9 @@ async def test_starter_records_never_turn_on_a_module_that_holds_other_records(
     assert _STARTERS <= _enabled(cfg)
     r = await client.post("/items", json={"sku": "NEW-1", "name": "New", "sell_by": "piece"}, headers=old["headers"])
     assert r.status_code == 503, r.text
-    assert "Manufacturing" in r.json()["detail"] or "Modules" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "held_back.refused.modules_off.one", detail
+    assert detail["params"]["modules"] == "Manufacturing", detail
 
 
 async def test_registration_writes_no_record_a_loaded_module_cannot_apply(session, monkeypatch):
