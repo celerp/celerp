@@ -296,31 +296,24 @@ def _categories_tab(
     # Shared result div targeted by Browse Library
     result_div = Div(id="verticals-apply-result")
 
-    # Build preset lookup: preset name → preset object (preset name == vertical tag)
-    # (kept for potential future use; actual tag→preset mapping is built in Section C)
-
     # ── Section A: Your Categories ────────────────────────────────────
     _dn = cat_display_names or {}
+    add_form = Form(
+        Input(type="text", name="new_category_name",
+              placeholder=t("settings.new_category_name"),
+              cls="form-input form-input--sm cat-add-input"),
+        Button(t("settings.add_category"), type="submit", cls="btn btn--secondary btn--sm"),
+        hx_post="/settings/categories",
+        hx_target="#your-cats-section",
+        hx_swap="outerHTML",
+        cls="cat-add-form",
+    )
     if applied_names:
         applied_rows = [
             _category_row(name, _dn.get(name, name), len(cat_schemas.get(name, [])))
             for name in sorted(applied_names)
         ]
-        add_row = Tr(
-            Td(
-                Form(
-                    Input(type="text", name="new_category_name",
-                          placeholder=t("settings.new_category_name"),
-                          cls="form-input form-input--sm cat-add-input"),
-                    Button(t("settings.add_category"), type="submit", cls="btn btn--secondary btn--sm"),
-                    hx_post="/settings/categories",
-                    hx_target="#your-cats-section",
-                    hx_swap="outerHTML",
-                    cls="cat-add-form",
-                ),
-                colspan="3", cls="cell",
-            ),
-        )
+        add_row = Tr(Td(add_form, colspan="3", cls="cell"))
         your_cats_body = Table(
             Thead(Tr(Th(t("th.category")), Th(t("page.fields"), cls="th--center your-cats-fields"), Th("", cls="th--action your-cats-action"))),
             Tbody(*applied_rows, add_row),
@@ -329,16 +322,7 @@ def _categories_tab(
     else:
         your_cats_body = Div(
             P(t("settings.no_categories_applied"), cls="settings-hint"),
-            Form(
-                Input(type="text", name="new_category_name",
-                      placeholder=t("settings.new_category_name"),
-                      cls="form-input form-input--sm cat-add-input"),
-                Button(t("settings.add_category"), type="submit", cls="btn btn--secondary btn--sm"),
-                hx_post="/settings/categories",
-                hx_target="#your-cats-section",
-                hx_swap="outerHTML",
-                cls="cat-add-form",
-            ),
+            add_form,
         )
 
     section_a = Div(
