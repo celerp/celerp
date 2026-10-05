@@ -48,7 +48,7 @@ from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
-from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
+from celerp_docs.sequences import next_doc_ref, require_doc_type, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
@@ -340,6 +340,7 @@ class DocCreatePayload(BaseModel):
 
     _contact_fields = model_validator(mode="before")(_canonical_contact_payload)
     _no_lifecycle_state = model_validator(mode="before")(_reject_lifecycle_fields)
+    _known_doc_type = field_validator("doc_type")(require_doc_type)
     _draft_only = field_validator("status", mode="before")(_created_as_draft)
 
     @field_validator("conversion_rate")
