@@ -3711,5 +3711,6 @@
   "held_back.refused.modules_off.one": "Changes are paused because {modules} is turned off and your records include its records. You can still view records. {enable} If you are not an admin, ask an admin to do this.",
   "held_back.refused.modules_off.many": "Changes are paused because {modules} are turned off and your records include their records. You can still view records. {enable} If you are not an admin, ask an admin to do this.",
   "held_back.refused": "Changes are paused because an update step failed while Celerp started. {what_failed} You can still view records. {what_to_do}",
-  "doctor.ask_admin": "The record checks are for admins. Ask an admin to open Doctor and run them."
+  "doctor.ask_admin": "The record checks are for admins. Ask an admin to open Doctor and run them.",
+  "doctor.start_ask_admin": "The report on the last start is for admins. Ask an admin to open this page."
 }

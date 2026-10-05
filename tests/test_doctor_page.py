@@ -48,6 +48,9 @@ async def test_the_failed_start_reads_in_german(ui_client):
 
 
 async def test_someone_who_may_not_run_the_checks_is_told_to_ask_an_admin(ui_client):
-    page = await _doctor_page(ui_client, "viewer", checks=AsyncMock(side_effect=APIError(403, _PERMISSION)))
+    """Both reports are for admins: a viewer reads, for each, who to ask, never the permission."""
+    page = await _doctor_page(ui_client, "viewer", start=AsyncMock(side_effect=APIError(403, _PERMISSION)),
+                              checks=AsyncMock(side_effect=APIError(403, _PERMISSION)))
+    assert i18n.t("doctor.start_ask_admin", lang="de") in page
     assert i18n.t("doctor.ask_admin", lang="de") in page
     assert _PERMISSION not in page

@@ -3711,5 +3711,6 @@
   "held_back.refused.modules_off.one": "Les modifications sont suspendues car {modules} est désactivé et vos enregistrements contiennent ses enregistrements. Vous pouvez toujours consulter les enregistrements. {enable} Si vous n'êtes pas administrateur, demandez à un administrateur de le faire.",
   "held_back.refused.modules_off.many": "Les modifications sont suspendues car {modules} sont désactivés et vos enregistrements contiennent leurs enregistrements. Vous pouvez toujours consulter les enregistrements. {enable} Si vous n'êtes pas administrateur, demandez à un administrateur de le faire.",
   "held_back.refused": "Les modifications sont suspendues car une étape de mise à jour a échoué au démarrage de Celerp. {what_failed} Vous pouvez toujours consulter les enregistrements. {what_to_do}",
-  "doctor.ask_admin": "Les vérifications des enregistrements sont réservées aux administrateurs. Demandez à un administrateur d'ouvrir Diagnostic et de les lancer."
+  "doctor.ask_admin": "Les vérifications des enregistrements sont réservées aux administrateurs. Demandez à un administrateur d'ouvrir Diagnostic et de les lancer.",
+  "doctor.start_ask_admin": "Le rapport sur le dernier démarrage est réservé aux administrateurs. Demandez à un administrateur d'ouvrir cette page."
 }

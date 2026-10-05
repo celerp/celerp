@@ -3711,5 +3711,6 @@
   "held_back.refused.modules_off.one": "Änderungen sind angehalten, weil {modules} ausgeschaltet ist und Ihre Datensätze dessen Datensätze enthalten. Sie können Datensätze weiterhin ansehen. {enable} Wenn Sie kein Admin sind, bitten Sie einen Admin darum.",
   "held_back.refused.modules_off.many": "Änderungen sind angehalten, weil {modules} ausgeschaltet sind und Ihre Datensätze deren Datensätze enthalten. Sie können Datensätze weiterhin ansehen. {enable} Wenn Sie kein Admin sind, bitten Sie einen Admin darum.",
   "held_back.refused": "Änderungen sind angehalten, weil ein Aktualisierungsschritt beim Start von Celerp fehlgeschlagen ist. {what_failed} Sie können Datensätze weiterhin ansehen. {what_to_do}",
-  "doctor.ask_admin": "Die Datensatzprüfungen sind Admins vorbehalten. Bitten Sie einen Admin, Diagnose zu öffnen und sie auszuführen."
+  "doctor.ask_admin": "Die Datensatzprüfungen sind Admins vorbehalten. Bitten Sie einen Admin, Diagnose zu öffnen und sie auszuführen.",
+  "doctor.start_ask_admin": "Der Bericht zum letzten Start ist für Admins. Bitten Sie einen Admin, diese Seite zu öffnen."
 }

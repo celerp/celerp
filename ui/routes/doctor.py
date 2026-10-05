@@ -57,7 +57,9 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            start_section = Div(P(e.detail), cls="settings-card", id="doctor-start")
+            # The last start's report is for admins, like the record checks.
+            start_section = Div(P(t("doctor.start_ask_admin", lang) if e.status == 403 else e.detail),
+                                cls="settings-card", id="doctor-start")
         else:
             start_section = _start_section(start, lang)
         checks, unavailable = None, ""

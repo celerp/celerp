@@ -3711,5 +3711,6 @@
   "held_back.refused.modules_off.one": "Perubahan dijeda karena {modules} dimatikan dan catatan Anda mencakup catatannya. Anda masih dapat melihat catatan. {enable} Jika Anda bukan admin, minta admin untuk melakukannya.",
   "held_back.refused.modules_off.many": "Perubahan dijeda karena {modules} dimatikan dan catatan Anda mencakup catatannya. Anda masih dapat melihat catatan. {enable} Jika Anda bukan admin, minta admin untuk melakukannya.",
   "held_back.refused": "Perubahan dijeda karena satu langkah pembaruan gagal saat Celerp dimulai. {what_failed} Anda masih dapat melihat catatan. {what_to_do}",
-  "doctor.ask_admin": "Pemeriksaan catatan hanya untuk admin. Minta admin membuka Diagnosis dan menjalankannya."
+  "doctor.ask_admin": "Pemeriksaan catatan hanya untuk admin. Minta admin membuka Diagnosis dan menjalankannya.",
+  "doctor.start_ask_admin": "Laporan awal terakhir hanya untuk admin. Minta admin membuka halaman ini."
 }

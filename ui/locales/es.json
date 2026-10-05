@@ -3711,5 +3711,6 @@
   "held_back.refused.modules_off.one": "Los cambios están en pausa porque {modules} está desactivado y sus registros incluyen registros suyos. Puede seguir viendo los registros. {enable} Si no es administrador, pida a un administrador que lo haga.",
   "held_back.refused.modules_off.many": "Los cambios están en pausa porque {modules} están desactivados y sus registros incluyen registros suyos. Puede seguir viendo los registros. {enable} Si no es administrador, pida a un administrador que lo haga.",
   "held_back.refused": "Los cambios están en pausa porque un paso de actualización falló al iniciar Celerp. {what_failed} Puede seguir viendo los registros. {what_to_do}",
-  "doctor.ask_admin": "Las comprobaciones de registros son para administradores. Pida a un administrador que abra Diagnóstico y las ejecute."
+  "doctor.ask_admin": "Las comprobaciones de registros son para administradores. Pida a un administrador que abra Diagnóstico y las ejecute.",
+  "doctor.start_ask_admin": "El informe del último inicio es para administradores. Pida a un administrador que abra esta página."
 }
