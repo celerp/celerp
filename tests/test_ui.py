@@ -9522,51 +9522,6 @@ class TestModulesUI:
         assert b"/modules/restart" in r.content
 
     @pytest.mark.asyncio
-    async def test_restart_banner_shows_after_disable(self, ui_client):
-        """A just-disabled module still runs until restart (enabled=False,
-        running=True): the row must visibly register the press - restart
-        control in the status, Disable greyed out and inert - not look
-        identical to a plain running row."""
-        pending = [{**_MODULES_LIST[1], "enabled": False, "running": True,
-                    "is_default": False}]
-        from contextlib import ExitStack
-        mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=pending)}
-        with ExitStack() as stack:
-            for k, v in mocks.items():
-                stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
-        assert r.status_code == 200
-        body = r.content.decode()
-        assert "/modules/restart" in body
-        # The Disable button is greyed and inert, with the pending state named.
-        assert "btn--disabled" in body
-        assert "Disabled. Takes effect when Celerp restarts." in body
-        # No live disable action and no delete X while the unload is pending.
-        assert "/modules/celerp-verticals/disable" not in body
-        assert "/modules/celerp-verticals/delete" not in body
-
-    @pytest.mark.asyncio
-    async def test_no_restart_banner_for_core_folded_disable(self, ui_client):
-        """A core-folded default module reports running=True regardless of the
-        enabled flag; it must NOT pin a false restart banner, a pending badge,
-        or a greyed Disable button."""
-        core = [{**_MODULES_LIST[1], "enabled": False, "running": True,
-                 "is_default": True}]
-        from contextlib import ExitStack
-        mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=core)}
-        with ExitStack() as stack:
-            for k, v in mocks.items():
-                stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
-        assert r.status_code == 200
-        body = r.content.decode()
-        assert "/modules/restart" not in body
-        # The row keeps the plain running badge and a live Disable button.
-        assert "badge--active" in body
-        assert "btn--disabled" not in body
-        assert "/modules/celerp-verticals/disable" in body
-
-    @pytest.mark.asyncio
     async def test_module_enable_htmx_returns_panel(self, ui_client):
         refreshed = [
             {**_MODULES_LIST[0], "enabled": True, "running": False},

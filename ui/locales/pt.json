@@ -3124,7 +3124,6 @@
   "marketplace.import_failed": "Não foi possível importar o módulo. Veja a mensagem para obter detalhes e tente novamente.",
   "marketplace.view_page": "Exibir página",
   "modules.badge_not_verified": "não verificado",
-  "modules.disable_pending": "Desativado. Entra em vigor quando o Celerp for reiniciado.",
   "modules.not_verified_tip": "Este módulo integrado foi alterado neste computador, portanto, agora é executado como um módulo de terceiros não confiável. Ele continua funcionando. Se você não o alterou, reinstale o Celerp para restaurar a versão original.",
   "modules.restart_confirm": "Reiniciar o Celerp agora para aplicar as alterações no módulo? O aplicativo será recarregado.",
   "modules.source_default": "Módulo padrão, incluído no Celerp",

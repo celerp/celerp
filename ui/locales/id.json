@@ -3124,7 +3124,6 @@
   "marketplace.import_failed": "Modul tidak dapat diimpor. Lihat pesan untuk detailnya, lalu coba lagi.",
   "marketplace.view_page": "Lihat halaman",
   "modules.badge_not_verified": "Belum diverifikasi",
-  "modules.disable_pending": "Dinonaktifkan. Berlaku setelah Celerp dimulai ulang.",
   "modules.not_verified_tip": "Modul yang disertakan ini telah diubah di komputer ini, sehingga kini berjalan sebagai modul pihak ketiga yang tidak tepercaya. Modul ini tetap berfungsi. Jika Anda tidak mengubahnya, instal ulang Celerp untuk mengembalikan ke versi aslinya.",
   "modules.restart_confirm": "Mulai ulang Celerp sekarang untuk menerapkan perubahan modul? Aplikasi akan dimuat ulang.",
   "modules.source_default": "Modul default, disertakan dalam paket Celerp",

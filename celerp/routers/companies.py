@@ -1648,7 +1648,7 @@ async def list_modules(
     from datetime import datetime, timezone
     from pathlib import Path
     from celerp.modules.loader import (
-        first_party_names, is_first_party, is_running, load_errors,
+        first_party_names, is_core_folded, is_first_party, is_running, load_errors,
         loaded_modules, read_manifest_metadata,
     )
     from celerp.modules.meta import read_meta
@@ -1716,7 +1716,8 @@ async def list_modules(
                     # gate the irreversible Purge action on a module that owns
                     # tables. None when the manifest declares none.
                     "table_prefix": manifest_source.get("table_prefix") or None,
-                    "enabled": pkg_name in enabled_names,
+                    # A module built into Celerp is on for every company.
+                    "enabled": pkg_name in enabled_names or is_core_folded(pkg_name),
                     # Core-folded modules (ai/backup/connectors) are wired at app
                     # construction, never in loaded_by_name - is_running() counts them.
                     "running": is_running(pkg_name),
@@ -1772,8 +1773,14 @@ async def disable_module(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Turn a module off for this company. Other companies keep using it."""
+    """Turn a module off for this company. Other companies keep using it. Refused for a
+    module built into Celerp, which is always on."""
+    from celerp.modules.loader import is_core_folded, module_label
     from celerp.modules.registry import ModuleStillNeeded, disable_for_company, get_enabled, sync_load_set
+
+    if is_core_folded(module_name):
+        raise HTTPException(status_code=409, detail=(
+            f"{module_label(module_name)} is part of Celerp and is always on."))
 
     company = await locked_company(session, company_id)
     if not company:
@@ -1781,7 +1788,6 @@ async def disable_module(
     try:
         company.settings = disable_for_company(company.settings, module_name)
     except ModuleStillNeeded as exc:
-        from celerp.modules.loader import module_label
         raise HTTPException(status_code=409, detail=(
             f"{', '.join(module_label(n) for n in exc.needed_by)} needs this module. "
             "Turn that off first."))

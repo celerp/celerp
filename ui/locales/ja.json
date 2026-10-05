@@ -3124,7 +3124,6 @@
   "marketplace.import_failed": "モジュールをインポートできませんでした。詳細についてはメッセージを確認し、再試行してください。",
   "marketplace.view_page": "ページを表示",
   "modules.badge_not_verified": "未確認",
-  "modules.disable_pending": "無効化されています。Celerpの再起動時に有効になります。",
   "modules.not_verified_tip": "このバンドルされたモジュールはこのコンピュータ上で変更されたため、現在は信頼されていないサードパーティ製モジュールとして実行されています。機能自体は維持されます。変更していない場合は、Celerpを再インストールして元の状態に戻してください。",
   "modules.restart_confirm": "モジュールの変更を適用するために、今すぐ Celerp を再起動しますか？ アプリが再読み込みされます。",
   "modules.source_default": "Celerp にバンドルされているデフォルトのモジュール",

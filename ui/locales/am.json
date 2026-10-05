@@ -986,7 +986,6 @@
   "modules.delete_purge": "አጥፋ እና መረጃውን ሙሉ በሙሉ አስወግድ",
   "modules.delete_purge_hint": "ሞጁሉን ያስወግዳል እና የተከማቸውን ሁሉንም መረጃ በቋሚነት ይሰርዛል። ይህ ወደ ኋላ ሊመለስ አይችልም።",
   "modules.purge_success": "የ'{name}' መረጃ ሙሉ በሙሉ ተወግዷል።",
-  "modules.disable_pending": "ተሰናክሏል። Celerp እንደገና ሲጀምር ተግባራዊ ይሆናል።",
   "modules.build_docs_link": "የሞጁል ሰነዶች",
   "modules.build_template_link": "ከአብነት ይጀምሩ",
   "modules.build_title": "የራስዎን ይገንቡ",

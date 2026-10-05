@@ -3124,7 +3124,6 @@
   "marketplace.import_failed": "Không thể nhập mô-đun. Xem thông báo để biết chi tiết, sau đó thử lại.",
   "marketplace.view_page": "Xem trang",
   "modules.badge_not_verified": "Chưa được xác minh",
-  "modules.disable_pending": "Đã tắt. Sẽ có hiệu lực khi Celerp khởi động lại.",
   "modules.not_verified_tip": "Mô-đun đi kèm này đã bị thay đổi trên máy tính này, do đó hiện nó đang chạy dưới dạng mô-đun của bên thứ ba không đáng tin cậy. Mô-đun vẫn hoạt động bình thường. Nếu bạn không thay đổi nó, hãy cài đặt lại Celerp để khôi phục bản gốc.",
   "modules.restart_confirm": "Khởi động lại Celerp ngay bây giờ để áp dụng các thay đổi của mô-đun? Ứng dụng sẽ được tải lại.",
   "modules.source_default": "Mô-đun mặc định, đi kèm với Celerp",

@@ -237,3 +237,54 @@ def test_category_defaults_come_only_from_modules_the_company_uses():
                                        "_module": "acme-gems"})
     assert "Gems" not in all_category_schemas({"enabled_modules": []})
     assert all_category_schemas({"enabled_modules": ["acme-gems"]})["Gems"] == [{"key": "carat"}]
+
+
+# ── The Modules page follows the company's own choice ─────────────────────────
+
+def _row(name, *, enabled, running, is_default=False, load_error=None):
+    return {"name": name, "label": name, "version": "1.0", "author": "", "depends_on": [],
+            "enabled": enabled, "running": running, "load_error": load_error,
+            "is_default": is_default, "source": "default" if is_default else "sideloaded",
+            "installed_at": None, "demoted": False}
+
+
+@pytest.mark.parametrize("is_default", [True, False])
+def test_module_the_company_turned_off_offers_enable_while_others_keep_it_running(is_default):
+    """Turning a module off for a company takes effect at once, even though it stays
+    loaded for the other companies: the row says it is off and offers Enable, never a
+    Running badge with only Disable, and no restart is asked for."""
+    from fasthtml.common import to_xml
+    from ui.i18n import t
+    from ui.routes import modules_page as mp
+    body = to_xml(mp._local_panel([_row("celerp-labels", enabled=False, running=True,
+                                        is_default=is_default)], owner=True))
+    assert 'hx-post="/modules/celerp-labels/enable"' in body
+    assert "/modules/celerp-labels/disable" not in body
+    assert f'>{t("modules.badge_disabled", "en")}<' in body
+    assert f'>{t("modules.badge_running", "en")}<' not in body
+    assert t("settings.restart_needed", "en") not in body
+    assert t("settings._a_restart_is_required_for_module_changes_to_take", "en") not in body
+
+
+def test_refused_module_does_not_ask_for_a_restart():
+    """A restart does not fix a module Celerp refused, so it never raises the banner."""
+    from fasthtml.common import to_xml
+    from ui.i18n import t
+    from ui.routes import modules_page as mp
+    banner = t("settings._a_restart_is_required_for_module_changes_to_take", "en")
+    refused = _row("acme-bad", enabled=True, running=False, load_error="Refused: not allowed")
+    assert banner not in to_xml(mp._local_panel([refused], owner=True))
+    waiting = _row("acme-new", enabled=True, running=False)
+    assert banner in to_xml(mp._local_panel([waiting], owner=True))
+
+
+@pytest.mark.asyncio
+async def test_a_module_built_into_celerp_is_always_on_and_cannot_be_turned_off(client, module_dir):
+    folded = sorted(loader.CORE_FOLDED)[0]
+    _write_module(module_dir, {"name": folded, "version": "1.0.0"}, {})
+    a, _b = await _two_companies(client)
+    r = await client.post(f"/companies/me/modules/{folded}/disable", headers=a)
+    assert r.status_code == 409, r.text
+    assert "always on" in r.json()["detail"]
+    listed = {m["name"]: m for m in (await client.get("/companies/me/modules", headers=a)).json()}
+    assert listed[folded]["enabled"] is True and listed[folded]["running"] is True

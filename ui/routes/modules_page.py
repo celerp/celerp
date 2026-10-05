@@ -99,19 +99,11 @@ def _license_upsell(lang: str) -> FT:
 
 
 def _restart_pending(modules: list[dict]) -> bool:
-    """Derived, not transient: a restart is pending whenever a module's desired
-    state (enabled) differs from its actual state (running). This covers both
-    directions - a newly enabled module not yet running, AND a just-disabled
-    module still loaded until the next restart (the disable case the old
-    enabled-and-not-running check missed).
-
-    Core-folded default modules (ai/backup/connectors) report running=True
-    regardless of the enabled flag, so an admin toggling one would otherwise
-    pin a false banner forever; they are excluded."""
-    return any(
-        not m.get("is_default") and bool(m.get("enabled")) != bool(m.get("running"))
-        for m in modules
-    )
+    """Derived, not transient: a restart is pending while a module the company turned
+    on is not running yet. Turning one off needs no restart (it is off for the company
+    at once), and a module Celerp refused stays refused whatever a restart does."""
+    return any(m.get("enabled") and not m.get("running") and not m.get("load_error")
+               for m in modules)
 
 
 def _restart_badge(lang: str, owner: bool) -> FT:
@@ -176,10 +168,9 @@ def _owner_note(lang: str) -> FT:
 def _local_panel(modules: list[dict], lang: str = "en",
                  flash_text: str | None = None, flash_error: bool = False,
                  owner: bool = False) -> FT:
-    enabled_names = {m["name"] for m in modules if m.get("enabled") or m.get("running")}
     required_by: dict[str, list[str]] = {}
     for m in modules:
-        if not (m.get("enabled") or m.get("running")):
+        if not m.get("enabled"):
             continue
         for dep in (m.get("depends_on") or []):
             required_by.setdefault(dep, []).append(m.get("label") or m["name"])
@@ -188,7 +179,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
     # below, live ones before off ones. Built with three stable passes, least
     # significant first (Python's sort is stable, so each pass preserves the
     # previous order among ties):
-    #   A. enabled/running first - the primary order among defaults and the
+    #   A. enabled first - the primary order among defaults and the
     #      tiebreaker among imports that share (or lack) an install time.
     #   B. newest installed_at first - ISO 8601 strings sort chronologically, so
     #      reverse gives newest first; defaults have no install time and tie here,
@@ -196,7 +187,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
     #   C. imports (non-default) before defaults - defaults re-seed on every
     #      desktop version bump, so their folder times are meaningless for "newest".
     # The shared table JS keeps this order until a header is clicked to sort.
-    modules = sorted(modules, key=lambda m: 0 if (m.get("enabled") or m.get("running")) else 1)
+    modules = sorted(modules, key=lambda m: 0 if m.get("enabled") else 1)
     modules = sorted(modules, key=lambda m: m.get("installed_at") or "", reverse=True)
     modules = sorted(modules, key=lambda m: 1 if m.get("is_default") else 0)
     name_to_label = {m["name"]: (m.get("label") or m["name"]) for m in modules}
@@ -212,31 +203,24 @@ def _local_panel(modules: list[dict], lang: str = "en",
         enabled = bool(m.get("enabled"))
         running = bool(m.get("running"))
         load_error = m.get("load_error")
-        effectively_enabled = enabled or running
 
+        # The row follows the company's own choice: a module it turned off is off for
+        # it at once, though it stays loaded for any other company that uses it.
         status_parts = []
-        if running and (enabled or m.get("is_default")):
-            # Defaults keep the plain running badge even when toggled off:
-            # core-folded ones (ai/backup/connectors) report running=True
-            # regardless of the enabled flag, so a pending state would pin
-            # forever (same exclusion as _restart_pending).
+        if not enabled:
+            status_filter = t("modules.badge_disabled", lang)
+            status_parts.append(Span(status_filter, cls="badge badge--inactive"))
+        elif running:
             status_filter = t("modules.badge_running", lang)
             status_parts.append(Span(status_filter, cls="badge badge--active"))
-        elif running:
-            # Disable pressed, but the module stays loaded until the next
-            # restart: the status carries the restart control (same one as the
-            # enable-pending state), so the row shows the press took and names
-            # the next step.
-            status_filter = t("settings.restart_needed", lang)
-            status_parts.append(_restart_badge(lang, owner))
-        elif enabled and load_error and "license" in load_error.lower():
+        elif load_error and "license" in load_error.lower():
             # A paid module present but not licensed on THIS computer (e.g. moved
             # from another machine): reframe the failure as the Connect upsell
             # rather than a dead red error - the moment-of-need conversion point.
             status_filter = t("settings.restart_needed", lang)
             status_parts.append(Span(status_filter, cls="badge badge--warning"))
             status_parts.append(_license_upsell(lang))
-        elif enabled and load_error:
+        elif load_error:
             # A broken module fails loudly, not silently: the row keeps the Failed
             # badge and the reason is surfaced as a corner toast, so a long error
             # (a migration traceback, say) never stretches the status column and
@@ -244,14 +228,11 @@ def _local_panel(modules: list[dict], lang: str = "en",
             status_filter = t("modules.badge_failed", lang)
             status_parts.append(Span(status_filter, cls="badge badge--danger"))
             load_error_toasts.append((name, label, load_error))
-        elif enabled:
+        else:
             # Enabled but not yet loaded: surface the restart as a control, not
             # a passive label, so the change can be applied from the row itself.
             status_filter = t("settings.restart_needed", lang)
             status_parts.append(_restart_badge(lang, owner))
-        else:
-            status_filter = t("modules.badge_disabled", lang)
-            status_parts.append(Span(status_filter, cls="badge badge--inactive"))
 
         # A demoted default (named in the committed first-party lock, but its
         # content no longer matches, so it runs untrusted) carries the state on
@@ -266,18 +247,8 @@ def _local_panel(modules: list[dict], lang: str = "en",
             ))
 
         dependents = required_by.get(name, [])
-        if effectively_enabled:
-            if not enabled and not m.get("is_default"):
-                # Disable already pressed; it applies at the next restart. The
-                # button greys out so the press is visibly registered - pressing
-                # it again would change nothing. (Defaults are excluded for the
-                # same core-folded reason as the status branch above.)
-                toggle_btn = Button(t("btn.disable", lang),
-                    title=t("modules.disable_pending", lang),
-                    disabled=True,
-                    cls="btn btn--sm btn--disabled",
-                )
-            elif dependents:
+        if enabled:
+            if dependents:
                 toggle_btn = Button(t("btn.disable", lang),
                     title=t("modules.required_by", lang, names=", ".join(dependents)),
                     disabled=True,
@@ -312,7 +283,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
         # sits to the RIGHT of Enable (destructive control on the right) and only
         # appears once the module is off, so nothing that depends on it is live.
         action_parts = [toggle_btn]
-        if owner and not effectively_enabled and not m.get("is_default"):
+        if owner and not enabled and not m.get("is_default"):
             # The X opens the delete dialog rather than deleting on a one-line
             # confirm. Deletion has two paths - keep the data or drop it too - and
             # the dialog is where that choice and its warning live, so the
@@ -339,7 +310,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
             Td(*status_parts, data_filter_value=status_filter),
             Td(*action_parts),
             # Disabled rows are shaded so their off state reads at a glance.
-            cls="data-row" if effectively_enabled else "data-row module-row--disabled",
+            cls="data-row" if enabled else "data-row module-row--disabled",
         ))
 
     # Derived restart banner, with a button that actually restarts.

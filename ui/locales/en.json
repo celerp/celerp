@@ -1056,7 +1056,6 @@
   "modules.delete_purge": "Delete and purge data",
   "modules.delete_purge_hint": "Removes the module and permanently deletes all of its stored data. This cannot be undone.",
   "modules.purge_success": "Purged data for '{name}'.",
-  "modules.disable_pending": "Disabled. Takes effect when Celerp restarts.",
   "modules.build_docs_link": "Module docs",
   "modules.build_template_link": "Start from the template",
   "modules.build_title": "Build your own",
