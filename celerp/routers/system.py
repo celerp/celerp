@@ -84,12 +84,9 @@ def _company_rows(schema: dict) -> dict[str, str]:
     picks them: its company column, or else a foreign key to rows already picked (a
     conversation's messages, a run's entity maps). ``schema`` is the database catalog,
     so a switched-off module's tables are included."""
-    from celerp.db_catalog import ident
+    from celerp.db_catalog import company_tables, ident
 
-    owned = {"companies"}
-    while grown := {name for name, table in schema.items() if name not in owned
-                    and ("company_id" in table.columns or any(fk.target in owned for fk in table.fks))}:
-        owned |= grown
+    owned = company_tables(schema)
     where: dict[str, str] = {"companies": "id = CAST(:c AS uuid)"}
 
     def rows(name: str) -> str:
@@ -116,18 +113,6 @@ def _company_deletes(schema: dict) -> list[str]:
     order, _ = db_catalog.fk_order(list(rows), schema)
     return [f"DELETE FROM {db_catalog.ident(name)} WHERE {rows[name]}"
             for name in [*sorted(set(rows) - set(order)), *reversed(order)]]
-
-
-def _users_left_without_a_company(schema: dict) -> str:
-    """Of the users bound as ``:members``, delete those no company has any more and no
-    remaining row points to."""
-    from celerp import db_catalog
-
-    ident = db_catalog.ident
-    refs = [f"NOT EXISTS (SELECT 1 FROM {ident(name)} WHERE {ident(col)} = users.id)"
-            for name, table in schema.items()
-            for fk in table.fks if fk.target == "users" and not fk.cascades for col in fk.cols]
-    return " AND ".join(["DELETE FROM users WHERE id = ANY(:members)", *refs])
 
 
 @router.post("/factory-reset")
@@ -159,7 +144,7 @@ async def factory_reset(
     schema = await db_catalog.read(session)
     for delete in _company_deletes(schema):
         await session.execute(text(delete), {"c": str(company_id)})
-    await session.execute(text(_users_left_without_a_company(schema)), {"members": members})
+    await session.execute(text(db_catalog.delete_users_left_without_a_company(schema)), {"members": members})
     await session.commit()
 
     # Bust the in-process nonce cache: a deleted user's stale token must not auto-create rows

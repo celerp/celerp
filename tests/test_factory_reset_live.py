@@ -152,6 +152,94 @@ async def test_a_reset_clears_the_tables_of_a_module_that_is_not_loaded(real_cli
             await conn.execute(text("DROP TABLE IF EXISTS ext_parcel_scans, ext_parcels"))
 
 
+async def _rows(engine, table: str) -> list:
+    from sqlalchemy import text
+
+    async with engine.connect() as conn:
+        return [tuple(r) for r in (await conn.execute(text(f"SELECT * FROM {table} ORDER BY id"))).all()]
+
+
+_ACTIONS = ("CASCADE", "SET NULL", "SET DEFAULT", "RESTRICT", "NO ACTION")
+
+
+@pytest.mark.parametrize("table, action", [
+    *(("ext_notes", a) for a in _ACTIONS),
+    ("ext_note_reads", "CASCADE"), ("ext_note_reads", "SET NULL")])
+async def test_a_user_another_company_still_names_stays_whatever_the_key_does(
+        real_client, real_engine, table, action):  # noqa: F811
+    """The clerk belongs to Alpha only. One row of Beta still names the clerk: in a module
+    table with a company column, or in one hanging off it with none. Resetting Alpha
+    keeps the clerk and leaves Beta's rows exactly as they were, whatever the key would
+    do on delete."""
+    import uuid
+
+    from sqlalchemy import text
+
+    def on_delete(name: str) -> str:
+        return action if name == table else "RESTRICT"
+
+    ta, tb = await _two_companies(real_client)
+    beta = await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        clerk = (await conn.execute(text("SELECT id FROM users WHERE email = 'clerk@example.com'"))).scalar_one()
+        await conn.execute(text(
+            "CREATE TABLE ext_notes (id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES companies(id), "
+            f"author uuid REFERENCES users(id) ON DELETE {on_delete('ext_notes')}, body text NOT NULL)"))
+        await conn.execute(text(
+            "CREATE TABLE ext_note_reads (id uuid PRIMARY KEY, note_id uuid NOT NULL REFERENCES ext_notes(id), "
+            f"reader uuid REFERENCES users(id) ON DELETE {on_delete('ext_note_reads')}, at text NOT NULL)"))
+    try:
+        async with real_engine.begin() as conn:
+            note = uuid.uuid4()
+            await conn.execute(text("INSERT INTO ext_notes VALUES (:i, :c, :u, 'beta note')"),
+                               {"i": note, "c": beta, "u": clerk if table == "ext_notes" else None})
+            await conn.execute(text("INSERT INTO ext_note_reads VALUES (:i, :n, :u, 'today')"),
+                               {"i": uuid.uuid4(), "n": note, "u": clerk if table == "ext_note_reads" else None})
+        before = {t: await _rows(real_engine, t) for t in ("ext_notes", "ext_note_reads")}
+
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "users", "id = :i", i=clerk) == 1
+        assert {t: await _rows(real_engine, t) for t in before} == before
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_note_reads, ext_notes"))
+
+
+async def test_a_user_only_the_reset_company_names_goes_with_their_sessions(real_client, real_engine):  # noqa: F811
+    """Named only by Alpha's own rows, the clerk goes with Alpha, and their sign-in
+    records, which hold no company's data, cascade away with them."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, _ = await _two_companies(real_client)
+    alpha = await _id(real_client, ta)
+    async with real_engine.begin() as conn:
+        clerk = (await conn.execute(text("SELECT id FROM users WHERE email = 'clerk@example.com'"))).scalar_one()
+        await conn.execute(text(
+            "CREATE TABLE ext_notes (id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES companies(id), "
+            "author uuid REFERENCES users(id) ON DELETE CASCADE, body text NOT NULL)"))
+        await conn.execute(text("INSERT INTO ext_notes VALUES (:i, :c, :u, 'alpha note')"),
+                           {"i": uuid.uuid4(), "c": alpha, "u": clerk})
+        await conn.execute(text("INSERT INTO session_registry (jti, user_id, expiry) VALUES ('clerk-jti', :u, now())"),
+                           {"u": clerk})
+        await conn.execute(text("INSERT INTO user_auth_state (user_id, nonce) VALUES (:u, 'n') "
+                                "ON CONFLICT (user_id) DO NOTHING"), {"u": clerk})
+    try:
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "users", "id = :i", i=clerk) == 0
+        assert await count(real_engine, "ext_notes") == 0
+        assert await count(real_engine, "session_registry", "user_id = :i", i=clerk) == 0
+        assert await count(real_engine, "user_auth_state", "user_id = :i", i=clerk) == 0
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_notes"))
+
+
 @pytest.mark.parametrize("typed", [None, "", "RESET", "alpha co", "Alpha Co "])
 async def test_reset_needs_the_exact_company_name(real_client, real_engine, typed):  # noqa: F811
     token = await _register(real_client, "Alpha Co")

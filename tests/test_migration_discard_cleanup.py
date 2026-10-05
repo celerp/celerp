@@ -181,6 +181,43 @@ async def test_bootstrap_discard_with_a_storage_failure_returns_to_setup(real_cl
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_discard_keeps_an_owner_another_company_still_names(real_client, real_engine, migration_env):
+    """Discarding a first-run migration deletes its owner only when no other company's
+    row names them, whatever that row's key does on delete: here a module row of another
+    company would otherwise cascade away with the owner."""
+    from sqlalchemy import text
+
+    r = await scan_upload(real_client, fake_bytes())
+    scan_token = r.json()["scan_token"]
+    assert (await save_decisions(real_client, scan_token)).status_code == 200
+    r = await real_client.post("/migrations/bootstrap/start", json={
+        "scan_token": scan_token, "company_name": "Moved Co", "name": "Owner",
+        "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
+    assert r.status_code == 201, r.text
+    token, run_id = r.json()["access_token"], r.json()["run_id"]
+    other = uuid.uuid4()
+    async with real_engine.begin() as conn:
+        owner = (await conn.execute(text("SELECT id FROM users"))).scalar_one()
+        # A company the owner is no member of, with a row that still names them.
+        await conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                                "VALUES (:c, 'Other Co', 'other-co', '{}', true, now())"), {"c": other})
+        await conn.execute(text(
+            "CREATE TABLE ext_notes (id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES companies(id), "
+            "author uuid REFERENCES users(id) ON DELETE CASCADE, body text NOT NULL)"))
+        await conn.execute(text("INSERT INTO ext_notes VALUES (:i, :c, :u, 'other note')"),
+                           {"i": uuid.uuid4(), "c": other, "u": owner})
+    try:
+        r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+
+        assert r.status_code == 200 and r.json() == {"redirect": "/"}, r.text
+        assert await count(real_engine, "users", "id = :i", i=owner) == 1
+        assert await count(real_engine, "ext_notes", "company_id = :c AND author = :u", c=other, u=owner) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_notes"))
+
+
+@pytest.mark.asyncio
 async def test_additional_company_discard_with_a_storage_failure_keeps_the_active_company(
         real_client, real_engine, migration_env, monkeypatch):
     token, run_id, _ = await _staged(real_client, real_engine, migration_env)

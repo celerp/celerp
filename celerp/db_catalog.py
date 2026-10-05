@@ -100,3 +100,28 @@ def fk_order(tables: list[str], schema: dict[str, Table]) -> tuple[list[str], se
         for t in behind:
             del parents[t]
     return order, unordered | set(parents)
+
+
+def company_tables(schema: dict[str, Table]) -> set[str]:
+    """Every table holding a company's rows: ``companies``, each table with a company
+    column, and each table with a foreign key to one of those (a conversation's
+    messages, a run's entity maps)."""
+    owned = {"companies"}
+    while grown := {name for name, table in schema.items() if name not in owned
+                    and ("company_id" in table.columns or any(fk.target in owned for fk in table.fks))}:
+        owned |= grown
+    return owned
+
+
+def delete_users_left_without_a_company(schema: dict[str, Table]) -> str:
+    """Of the users bound as ``:members``, delete those no remaining row still names.
+
+    A row of a company, or one hanging off it, keeps its user whatever its foreign key
+    does on delete: a cascade or a set-null would change that company's data. Elsewhere
+    (a session, a badge) a cascading reference goes with the user."""
+    company = company_tables(schema)
+    refs = [f"NOT EXISTS (SELECT 1 FROM {ident(name)} WHERE {ident(col)} = users.id)"
+            for name, table in schema.items()
+            for fk in table.fks if fk.target == "users" and (name in company or not fk.cascades)
+            for col in fk.cols]
+    return " AND ".join(["DELETE FROM users WHERE id = ANY(:members)", *refs])

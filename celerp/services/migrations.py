@@ -35,6 +35,7 @@ from sqlalchemy import cast, delete, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp import db_catalog
 from celerp.importers.adapters.base import (
     Artifact,
     MigrationDecisions,
@@ -971,9 +972,9 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     await session.execute(text("DELETE FROM companies WHERE id = :c"), {"c": str(company.id)})
     redirect = "/"
     if bootstrap:
-        others = await session.scalar(select(UserCompany.id).where(UserCompany.user_id == owner_id).limit(1))
-        if others is None:
-            await session.execute(text("DELETE FROM users WHERE id = :u"), {"u": str(owner_id)})
+        gone = await session.execute(text(db_catalog.delete_users_left_without_a_company(
+            await db_catalog.read(session))), {"members": [owner_id]})
+        if gone.rowcount:
             redirect = "/setup"
     await session.commit()
     task_id = task.id
