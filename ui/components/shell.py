@@ -1384,8 +1384,9 @@ window.celerpUseDays = function(record){
 _IMPORT_HINT_JS = """
 // A list page opened with ?hint=import (from the dashboard's import card) points an
 // arrow at its Import button. The parameter is dropped from the address straight
-// away, so a refresh or a shared link never shows the arrow again. The arrow goes on
-// any click, on Esc, or once the button scrolls out of view.
+// away, so a refresh or a shared link never shows the arrow again. The arrow sits in
+// the page flow under the whole header row, so it never covers another control, and
+// goes on any click or on Esc.
 (function(){
   var params = new URLSearchParams(location.search);
   if (params.get('hint') !== 'import') return;
@@ -1395,21 +1396,21 @@ _IMPORT_HINT_JS = """
   function start(){
     var btn = document.querySelector('[data-import-hint]');
     if (!btn) return;
+    var row = btn.closest('.page-header') || btn.parentElement;
     var tip = document.createElement('div');
     tip.className = 'import-arrow';
     tip.setAttribute('role', 'status');
     tip.textContent = window.__shellI18n.importHint;
-    document.body.appendChild(tip);
+    row.after(tip);
     btn.classList.add('import-arrow-pulse');
+    // Slide the arrow along its own row so its pointer sits under the button.
     function place(){
       var b = btn.getBoundingClientRect();
-      if (b.bottom < 0 || b.top > window.innerHeight) { close(); return; }
-      var vw = document.documentElement.clientWidth;
+      var r = tip.parentElement.getBoundingClientRect();
       var w = tip.offsetWidth;
-      var mid = b.left + b.width / 2;
-      var left = Math.max(8, Math.min(mid - w / 2, vw - w - 8));
-      tip.style.left = left + 'px';
-      tip.style.top = (b.bottom + 12) + 'px';
+      var mid = b.left + b.width / 2 - r.left;
+      var left = Math.max(0, Math.min(mid - w / 2, r.width - w));
+      tip.style.marginLeft = left + 'px';
       tip.style.setProperty('--arrow-x', Math.max(12, Math.min(mid - left, w - 12)) + 'px');
     }
     function close(){
@@ -1417,20 +1418,15 @@ _IMPORT_HINT_JS = """
       btn.classList.remove('import-arrow-pulse');
       document.removeEventListener('click', close, true);
       document.removeEventListener('keydown', onKey, true);
-      window.removeEventListener('scroll', place, true);
       window.removeEventListener('resize', place);
       window.removeEventListener('load', place);
-      if (watch) watch.disconnect();
     }
     function onKey(e){ if (e.key === 'Escape') close(); }
     document.addEventListener('click', close, true);
     document.addEventListener('keydown', onKey, true);
-    window.addEventListener('scroll', place, true);
     window.addEventListener('resize', place);
-    // Late layout (fonts, the sticky header) can still move the button after load.
+    // Late layout (fonts) can still move the button after load.
     window.addEventListener('load', place);
-    var watch = window.ResizeObserver ? new ResizeObserver(place) : null;
-    if (watch) watch.observe(document.body);
     place();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);

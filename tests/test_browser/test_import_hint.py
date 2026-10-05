@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """The dashboard card's links open a list page with ?hint=import, and the page shows
 an arrow on its Import button: "Click Import to upload your file". The arrow goes on
-any click, on Esc, or when the button scrolls away, and never comes back on refresh.
+any click or on Esc, never covers another control, and never comes back on refresh.
 """
 from __future__ import annotations
 
@@ -60,8 +60,8 @@ def test_card_link_shows_arrow_at_import_button(page: Page, fresh_company, width
         btn, tip = _boxes(page)
         assert _in_viewport(page, btn), (path, width, btn)
         assert _in_viewport(page, tip), (path, width, tip)
-        # The arrow sits right under the button and overlaps it horizontally.
-        assert 0 <= tip["y"] - (btn["y"] + btn["height"]) <= 16, (path, width, btn, tip)
+        # The arrow sits under the header row and overlaps the button horizontally.
+        assert tip["y"] >= btn["y"] + btn["height"], (path, width, btn, tip)
         assert tip["x"] < btn["x"] + btn["width"] and btn["x"] < tip["x"] + tip["width"], (path, width)
         # No sideways scroll on the page.
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), (path, width)
@@ -77,15 +77,6 @@ def test_arrow_dismissed_by_click_and_esc(page: Page, fresh_company):
     page.goto("/docs?hint=import")
     expect(page.locator(".import-arrow")).to_be_visible()
     page.locator("h1.page-title").click()
-    expect(page.locator(".import-arrow")).to_have_count(0)
-
-
-def test_arrow_goes_when_the_button_scrolls_away(page: Page, fresh_company):
-    page.set_viewport_size({"width": 390, "height": 500})
-    page.goto("/inventory?hint=import")
-    expect(page.locator(".import-arrow")).to_be_visible()
-    page.evaluate("document.body.style.minHeight = '3000px'")
-    page.mouse.wheel(0, 1200)
     expect(page.locator(".import-arrow")).to_have_count(0)
 
 
@@ -165,3 +156,47 @@ def test_card_and_arrow_in_german(page: Page, fresh_company, width):
     expect(tip).to_contain_text(de["shell.import_hint"])
     assert en["shell.import_hint"] not in tip.inner_text()
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+
+
+_HINT_PAGES = ["/inventory", "/contacts/customers", "/contacts/vendors", "/docs", "/lists",
+               "/subscriptions?direction=sales", "/subscriptions?direction=purchasing"]
+
+# Every visible control on the page except the arrow itself: buttons, links, tabs and
+# fields. The arrow may never sit on top of any of them.
+_OVERLAPS_JS = """() => {
+  const tip = document.querySelector('.import-arrow').getBoundingClientRect();
+  const hits = [];
+  for (const el of document.querySelectorAll(
+      'button, a, input:not([type=hidden]), select, textarea, [role=tab], .category-tab')) {
+    if (el.closest('.import-arrow') || !el.checkVisibility()) continue;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    if (r.left < tip.right && tip.left < r.right && r.top < tip.bottom && tip.top < r.bottom)
+      hits.push((el.innerText || el.getAttribute('aria-label') || el.name || el.tagName).trim().slice(0, 40));
+  }
+  return hits;
+}"""
+
+
+@pytest.mark.parametrize("lang", ["en", "de"])
+@pytest.mark.parametrize("width", [390, 1280])
+def test_arrow_covers_no_control(page: Page, fresh_company, width, lang):
+    """The arrow never covers another button, tab or field, on any list page that has
+    an Import button, at phone and desktop width, in English and German. A gemstone
+    company with demo items gives inventory its category tabs."""
+    assert fresh_company.post("/companies/me/business-type", json={"vertical": "gemstones"}).status_code == 200
+    assert fresh_company.post("/companies/me/demo/reseed").status_code == 200
+    if lang == "de":
+        page.set_extra_http_headers({"Accept-Language": "de-DE,de;q=0.9"})
+    page.set_viewport_size({"width": width, "height": 800})
+    for path in _HINT_PAGES:
+        page.goto(path + ("&" if "?" in path else "?") + "hint=import")
+        tip_el = page.locator(".import-arrow")
+        expect(tip_el).to_be_visible()
+        page.wait_for_load_state("load")
+        assert page.evaluate(_OVERLAPS_JS) == [], (path, width, lang)
+        b = page.locator("[data-import-hint]").bounding_box()
+        t = tip_el.bounding_box()
+        assert t["y"] >= b["y"] + b["height"], (path, width, lang, "arrow is below the button")
+        assert t["x"] < b["x"] + b["width"] and b["x"] < t["x"] + t["width"], (path, width, lang)
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), (path, width)

@@ -3391,9 +3391,9 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
   border-radius: var(--radius); background: var(--c-bg3); color: var(--c-text); text-decoration: none; font-weight: 500; }
 .getting-started-link:hover { border-color: var(--c-accent); color: var(--c-accent); }
 .getting-started-note { font-size: 13px; color: var(--c-text2); margin: 8px 0; }
-.import-arrow { position: fixed; z-index: 1000; max-width: calc(100vw - 16px); box-sizing: border-box;
-  padding: 8px 12px; border-radius: 6px; background: var(--c-accent); color: #fff; font-size: 13px; font-weight: 500;
-  line-height: 1.4; box-shadow: 0 4px 14px rgba(0,0,0,.2); pointer-events: none; animation: import-arrow-in .2s ease-out; }
+.import-arrow { position: relative; width: fit-content; max-width: 100%; box-sizing: border-box;
+  margin: -4px 0 16px; padding: 8px 12px; border-radius: 6px; background: var(--c-accent); color: #fff; font-size: 13px; font-weight: 500;
+  line-height: 1.4; box-shadow: 0 4px 14px rgba(0,0,0,.2); animation: import-arrow-in .2s ease-out; }
 .import-arrow::before { content: ""; position: absolute; top: -6px; left: var(--arrow-x, 50%); margin-left: -6px;
   border: 6px solid transparent; border-top: 0; border-bottom-color: var(--c-accent); }
 .import-arrow-pulse { animation: import-arrow-pulse 1.4s ease-in-out infinite; }
