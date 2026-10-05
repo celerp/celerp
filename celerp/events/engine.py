@@ -27,6 +27,7 @@ STRIPE_OWNED_PAYMENT = (
 STRIPE_RECEIPT_KEPT = (
     "This payment was received through Stripe, so it was real and cannot be deleted. Void or refund it instead."
 )
+PAYMENT_NOT_NAMED = "A payment can be taken off a document only by naming it, and a deletion keeps its place."
 # Every event that takes a received payment back off a document.
 PAYMENT_REMOVAL_EVENTS = frozenset({"doc.payment.voided", "doc.payment.deleted", "doc.payment.refunded"})
 
@@ -100,9 +101,16 @@ async def _refuse_stripe_payment_removal(session, kwargs: dict) -> None:
     row = await session.get(Projection, (kwargs.get("company_id"), kwargs.get("entity_id")))
     if row is None or row.entity_type != "doc":
         return
+    # A refund naming no payment, or a deletion by list position (the shape deletions
+    # had before they kept their place), cannot be checked against the payment it
+    # takes off; no writer may emit either.
+    data = kwargs.get("data") or {}
+    if data.get("payment_index") is None or (kwargs["event_type"] == "doc.payment.deleted"
+                                             and data.get("tombstone") is not True):
+        raise HTTPException(status_code=422, detail=PAYMENT_NOT_NAMED)
     await refuse_stripe_payment_removal(session, kwargs["company_id"], kwargs["entity_id"],
                                         (row.state or {}).get("payments", []),
-                                        (kwargs.get("data") or {}).get("payment_index"), kwargs["event_type"])
+                                        data["payment_index"], kwargs["event_type"])
 
 
 async def find_event_by_idempotency(session, company_id, idempotency_key: str | None) -> LedgerEntry | None:
