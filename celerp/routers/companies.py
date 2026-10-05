@@ -1180,8 +1180,6 @@ async def import_taxes_batch(
     - Key: name
     - If name exists (case-insensitive): skipped
     - Else: created
-
-    NOTE: This remains the legacy settings-import format (records are raw dicts).
     """
     await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
     company = await session.get(Company, company_id)

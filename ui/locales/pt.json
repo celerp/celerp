@@ -2705,9 +2705,6 @@
   "import.n_rows_paren": "(linhas {n}):",
   "import.tooltip_name": "Obrigatório. O nome de exibição do item.",
   "import.tooltip_sell_by": "Obrigatório. A unidade na qual este item é comprado e vendido (por exemplo, peça, kg, quilate).",
-  "import.n_errors_paren": "(erros em {n})",
-  "import.cells_count": "Células de {n}",
-  "import.need_fixing_across": "precisam ser corrigidas em {rows} das {total} linhas.",
   "import.rows_valid": "{ok} das {total} linhas são válidas",
   "import.err_pos_fmt": "{pos} de {total}",
   "import.update_existing_records": "Atualizar registros existentes",
@@ -3498,6 +3495,10 @@
   "import.col_row": "Linha",
   "import.col_problem": "Problema",
   "import.upload_corrected_file": "Enviar um arquivo corrigido",
+  "import.cells_need_fixing_one": "{n} célula precisa de correção, em {rows} de {total} linhas.",
+  "import.cells_need_fixing_many": "{n} células precisam de correção, em {rows} de {total} linhas.",
+  "import.n_errors_paren_one": "({n} erro)",
+  "import.n_errors_paren_many": "({n} erros)",
   "inventory.import_review_changed": "As linhas mudaram desde a revisão. Confira o resumo abaixo e importe novamente.",
   "inventory.import_draft_changed": "Esta importação foi alterada noutro separador. É mostrada a versão mais recente; repita a alteração se ainda for necessária.",
   "inventory.import_undo": "Anular esta importação",
@@ -3620,6 +3621,6 @@
   "dashboard.demo_note": "Itens marcados [DEMO] são exemplos e estão incluídos nestes números. Sua primeira importação de produtos os remove, a menos que você os tenha alterado.",
   "dashboard.remove_demo_items": "Remover itens de demonstração",
   "dashboard.getting_started_from_spreadsheet": "Importar de uma planilha:",
-  "shell.import_hint": "Clique em Importar para enviar seu arquivo",
+  "shell.import_hint": "Clique em Importar para enviar um arquivo CSV ou Excel (.xlsx). A próxima página tem um modelo para baixar.",
   "shell.demo_hint": "Marque a caixa para selecionar todos e depois escolha Excluir."
 }

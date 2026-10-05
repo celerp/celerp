@@ -71,6 +71,17 @@ def _terms_validate(col: str, value: str, row: dict | None = None) -> bool:
     return validate_cell(_TERMS_SPEC, col, value)
 
 
+def _settings_records(kind: str, rows: list[dict]) -> list[dict]:
+    """Wrap each CSV row in the record envelope the settings batch-import API takes."""
+    return [{
+        "entity_id": "company",
+        "event_type": f"{kind}.import",
+        "source": "csv_import",
+        "idempotency_key": f"csv:{kind}:{i}:{r['name'].lower()}",
+        "data": r,
+    } for i, r in enumerate(rows)]
+
+
 def setup_routes(app):
 
     # ── Locations ───────────────────────────────────────────────
@@ -446,7 +457,8 @@ def setup_routes(app):
             "description": (r.get("description") or "").strip(),
         } for r in rows]
         try:
-            result = await api.batch_import(token, "/companies/me/taxes/import/batch", records)
+            result = await api.batch_import(token, "/companies/me/taxes/import/batch",
+                                          _settings_records("taxes", records))
         except APIError as e:
             return import_result_panel(
                 created=0, skipped=0, errors=[e.detail],
@@ -643,12 +655,13 @@ def setup_routes(app):
             "description": (r.get("description") or "").strip(),
         } for r in rows]
         try:
-            result = await api.batch_import(token, "/companies/me/payment-terms/import/batch", records)
+            result = await api.batch_import(token, "/companies/me/payment-terms/import/batch",
+                                          _settings_records("payment_terms", records))
         except APIError as e:
             return import_result_panel(
                 created=0, skipped=0, errors=[e.detail],
                 entity_label=t("settings.tab_terms"),
-                back_href="/settings/sales?tab=terms",
+                back_href="/settings/contacts?tab=payment-terms",
                 import_more_href="/settings/import/payment-terms",
                 has_mapping=True,
             )
@@ -659,7 +672,7 @@ def setup_routes(app):
         return import_result_panel(
             created=created, skipped=skipped, errors=errors,
             entity_label=t("settings.tab_terms"),
-            back_href="/settings/sales?tab=terms",
+            back_href="/settings/contacts?tab=payment-terms",
             import_more_href="/settings/import/payment-terms",
             has_mapping=True,
         )

@@ -2706,9 +2706,6 @@
   "import.n_rows_paren": "(lignes {n}) :",
   "import.tooltip_name": "Obligatoire. Nom d’affichage de l’article.",
   "import.tooltip_sell_by": "Obligatoire. Unité dans laquelle cet article est acheté et vendu (par exemple : pièce, kg, carat).",
-  "import.n_errors_paren": "(erreurs dans {n})",
-  "import.cells_count": "Les cellules {n}",
-  "import.need_fixing_across": "doivent être corrigées dans les {rows} des {total} lignes.",
   "import.rows_valid": "Les {ok} des {total} lignes sont valides",
   "import.err_pos_fmt": "{pos} de {total}",
   "import.update_existing_records": "Mettre à jour les enregistrements existants",
@@ -3498,6 +3495,10 @@
   "import.col_row": "Ligne",
   "import.col_problem": "Problème",
   "import.upload_corrected_file": "Téléverser un fichier corrigé",
+  "import.cells_need_fixing_one": "{n} cellule à corriger, dans {rows} ligne sur {total}.",
+  "import.cells_need_fixing_many": "{n} cellules à corriger, dans {rows} lignes sur {total}.",
+  "import.n_errors_paren_one": "({n} erreur)",
+  "import.n_errors_paren_many": "({n} erreurs)",
   "inventory.import_review_changed": "Les lignes ont changé depuis leur vérification. Consultez le récapitulatif ci-dessous et importez à nouveau.",
   "inventory.import_draft_changed": "Cette importation a été modifiée dans un autre onglet. La dernière version est affichée ; refaites votre modification si elle est encore nécessaire.",
   "inventory.import_undo": "Annuler cette importation",
@@ -3620,6 +3621,6 @@
   "dashboard.demo_note": "Les articles marqués [DEMO] sont des exemples et sont inclus dans ces chiffres. Votre premier import de produits les supprime, sauf si vous les avez modifiés.",
   "dashboard.remove_demo_items": "Supprimer les articles de démonstration",
   "dashboard.getting_started_from_spreadsheet": "Importer depuis un tableur :",
-  "shell.import_hint": "Cliquez sur Importer pour envoyer votre fichier",
+  "shell.import_hint": "Cliquez sur Importer pour envoyer un fichier CSV ou Excel (.xlsx). La page suivante propose un modèle à télécharger.",
   "shell.demo_hint": "Cochez la case pour tous les sélectionner, puis choisissez Supprimer."
 }

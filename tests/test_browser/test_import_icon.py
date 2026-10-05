@@ -34,6 +34,7 @@ _PAGES = [
     ("/subscriptions?direction=sales", "a[href='/subscriptions/import']"),
     ("/subscriptions?direction=purchasing", "a[href='/subscriptions/import']"),
     ("/settings/sales?tab=taxes", "a[href='/settings/import/taxes']"),
+    ("/settings/contacts?tab=payment-terms", "a[href='/settings/import/payment-terms']"),
     ("/settings/inventory?tab=locations", "a[href='/settings/import/locations']"),
     ("/settings/accounting?tab=chart", "a[href='/accounting/import/chart']"),
 ]
@@ -48,8 +49,8 @@ def _icon(page: Page, locator) -> dict:
     return got
 
 
-def _upload_locations(page: Page, csv: bytes) -> None:
-    page.goto("/settings/import/locations")
+def _upload(page: Page, kind: str, csv: bytes) -> None:
+    page.goto(f"/settings/import/{kind}")
     page.locator("input[type='file']").first.set_input_files(
         {"name": "locations.csv", "mimeType": "text/csv", "buffer": csv})
     page.locator("#csv-preview-btn").click()
@@ -89,9 +90,9 @@ def test_every_import_button_has_the_spreadsheet_icon(page: Page, fresh_company)
     seen.add(_icon(page, page.locator("form[hx-post$='/import'] button[type='submit']"))["markup"])
 
     # The shared CSV import steps: fix-and-import, import-all, import-more.
-    _upload_locations(page, b"name,type\nIcon Warehouse,warehouse\n,warehouse\n")
+    _upload(page, "locations", b"name,type\nIcon Warehouse,warehouse\n,warehouse\n")
     seen.add(_icon(page, page.locator("button", has_text="Fix & Import"))["markup"])
-    _upload_locations(page, b"name,type\nIcon Warehouse,warehouse\n")
+    _upload(page, "locations", b"name,type\nIcon Warehouse,warehouse\n")
     import_all = page.locator("button", has_text="Import All 1 Rows")
     seen.add(_icon(page, import_all)["markup"])
     import_all.click()
@@ -119,3 +120,4 @@ def test_card_says_import_from_a_spreadsheet_over_one_icon(page: Page, fresh_com
         marks.add(_icon(page, link)["markup"])
     assert len(marks) == 1, "the three buttons share one icon"
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+

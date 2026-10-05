@@ -2705,9 +2705,6 @@
   "import.n_rows_paren": "(các hàng {n}):",
   "import.tooltip_name": "Bắt buộc. Tên hiển thị của mặt hàng.",
   "import.tooltip_sell_by": "Bắt buộc. Đơn vị mua và bán mặt hàng này (ví dụ: chiếc, kg, carat).",
-  "import.n_errors_paren": "(Lỗi {n})",
-  "import.cells_count": "Ô {n}",
-  "import.need_fixing_across": "cần sửa lỗi trên {rows} trong số {total} hàng.",
   "import.rows_valid": "{ok} trong số {total} hàng là hợp lệ",
   "import.err_pos_fmt": "{pos} trong số {total}",
   "import.update_existing_records": "Cập nhật các bản ghi hiện có",
@@ -3498,6 +3495,10 @@
   "import.col_row": "Hàng",
   "import.col_problem": "Vấn đề",
   "import.upload_corrected_file": "Tải lên tệp đã sửa",
+  "import.cells_need_fixing_one": "{n} ô cần sửa, trên {rows} trong số {total} hàng.",
+  "import.cells_need_fixing_many": "{n} ô cần sửa, trên {rows} trong số {total} hàng.",
+  "import.n_errors_paren_one": "({n} lỗi)",
+  "import.n_errors_paren_many": "({n} lỗi)",
   "inventory.import_review_changed": "Các hàng đã thay đổi kể từ khi được xem lại. Hãy kiểm tra bên dưới và nhập lại.",
   "inventory.import_draft_changed": "Lần nhập này đã được thay đổi ở tab khác. Phiên bản mới nhất đang hiển thị; hãy thực hiện lại thay đổi nếu vẫn cần.",
   "inventory.import_undo": "Hoàn tác lần nhập này",
@@ -3620,6 +3621,6 @@
   "dashboard.demo_note": "Các mục có đánh dấu [DEMO] là mẫu và được tính trong các số liệu này. Lần nhập sản phẩm đầu tiên sẽ xóa chúng, trừ khi bạn đã thay đổi chúng.",
   "dashboard.remove_demo_items": "Xóa các mục demo",
   "dashboard.getting_started_from_spreadsheet": "Nhập từ bảng tính:",
-  "shell.import_hint": "Bấm Nhập để tải tệp của bạn lên",
+  "shell.import_hint": "Bấm Nhập để tải lên tệp CSV hoặc Excel (.xlsx). Trang tiếp theo có mẫu để tải xuống.",
   "shell.demo_hint": "Đánh dấu ô để chọn tất cả, rồi chọn Xóa bỏ."
 }

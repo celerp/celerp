@@ -2705,9 +2705,6 @@
   "import.n_rows_paren": "({n} แถว):",
   "import.tooltip_name": "จำเป็นต้องกรอก ชื่อที่ใช้แสดงของสินค้า.",
   "import.tooltip_sell_by": "จำเป็นต้องกรอก หน่วยที่ใช้ซื้อและขายสินค้านี้ (เช่น ชิ้น, กก., กะรัต).",
-  "import.n_errors_paren": " ({n} ข้อผิดพลาด)",
-  "import.cells_count": "{n} เซลล์",
-  "import.need_fixing_across": " ต้องแก้ไขใน {rows} จาก {total} แถว.",
   "import.rows_valid": "{ok} จาก {total} แถวถูกต้อง",
   "import.err_pos_fmt": "{pos} จาก {total}",
   "import.update_existing_records": "อัปเดตข้อมูลที่มีอยู่",
@@ -3498,6 +3495,10 @@
   "import.col_row": "แถว",
   "import.col_problem": "ปัญหา",
   "import.upload_corrected_file": "อัปโหลดไฟล์ที่แก้ไขแล้ว",
+  "import.cells_need_fixing_one": "มี {n} เซลล์ที่ต้องแก้ไข ใน {rows} จาก {total} แถว",
+  "import.cells_need_fixing_many": "มี {n} เซลล์ที่ต้องแก้ไข ใน {rows} จาก {total} แถว",
+  "import.n_errors_paren_one": "({n} ข้อผิดพลาด)",
+  "import.n_errors_paren_many": "({n} ข้อผิดพลาด)",
   "inventory.import_review_changed": "แถวมีการเปลี่ยนแปลงหลังจากตรวจทาน ตรวจสอบด้านล่างแล้วนำเข้าอีกครั้ง",
   "inventory.import_draft_changed": "การนำเข้านี้ถูกเปลี่ยนในแท็บอื่น ระบบแสดงเวอร์ชันล่าสุด หากยังต้องการ โปรดทำการเปลี่ยนแปลงอีกครั้ง",
   "inventory.import_undo": "ยกเลิกการนำเข้านี้",
@@ -3620,6 +3621,6 @@
   "dashboard.demo_note": "รายการที่มีเครื่องหมาย [DEMO] เป็นตัวอย่างและรวมอยู่ในตัวเลขเหล่านี้ การนำเข้าสินค้าครั้งแรกจะลบรายการเหล่านี้ เว้นแต่คุณได้แก้ไขแล้ว",
   "dashboard.remove_demo_items": "ลบรายการตัวอย่าง",
   "dashboard.getting_started_from_spreadsheet": "นำเข้าจากสเปรดชีต:",
-  "shell.import_hint": "คลิกนำเข้าเพื่ออัปโหลดไฟล์ของคุณ",
+  "shell.import_hint": "คลิกนำเข้าเพื่ออัปโหลดไฟล์ CSV หรือ Excel (.xlsx) หน้าถัดไปมีเทมเพลตให้ดาวน์โหลด",
   "shell.demo_hint": "ทำเครื่องหมายในช่องเพื่อเลือกทั้งหมด แล้วเลือก ลบ"
 }

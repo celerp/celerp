@@ -1089,7 +1089,9 @@ def _fix_errors_panel(
     for col in visible_cols:
         label = column_label(col, col_labels)
         is_err_col = col in error_cols
-        badge = t("import.n_errors_paren", n=col_error_counts.get(col, 0)) if is_err_col else ""
+        n_err = col_error_counts.get(col, 0)
+        badge = (" " + t("import.n_errors_paren_one" if n_err == 1 else "import.n_errors_paren_many", n=n_err)
+                 if is_err_col else "")
         tooltip = _COL_TOOLTIPS.get(col)
         th_content: Any = (
             Span(
@@ -1142,8 +1144,9 @@ def _fix_errors_panel(
         _step_indicator(review_step, has_mapping=has_mapping),
         Div(
             P(
-                Strong(t("import.cells_count", n=total_errors)),
-                t("import.need_fixing_across", rows=len(error_row_indices), total=len(rows)),
+                # The count is bolded inside the one translated sentence.
+                NotStr(t("import.cells_need_fixing_one" if total_errors == 1 else "import.cells_need_fixing_many",
+                         n=f"<strong>{total_errors}</strong>", rows=len(error_row_indices), total=len(rows))),
                 cls="csv-fix-summary",
             ),
             Div(

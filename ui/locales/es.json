@@ -2705,9 +2705,6 @@
   "import.n_rows_paren": "(filas {n}):",
   "import.tooltip_name": "Obligatorio. El nombre que se muestra del elemento.",
   "import.tooltip_sell_by": "Obligatorio. La unidad en la que se compra y vende este artículo (p. ej., pieza, kg, quilate).",
-  "import.n_errors_paren": "(errores en {n})",
-  "import.cells_count": "celdas de {n}",
-  "import.need_fixing_across": "hay que corregir en {rows} de las {total} filas.",
   "import.rows_valid": "{ok} de {total} filas son válidas",
   "import.err_pos_fmt": "{pos} de {total}",
   "import.update_existing_records": "Actualizar registros existentes",
@@ -3498,6 +3495,10 @@
   "import.col_row": "Fila",
   "import.col_problem": "Problema",
   "import.upload_corrected_file": "Subir un archivo corregido",
+  "import.cells_need_fixing_one": "{n} celda necesita corrección, en {rows} de {total} filas.",
+  "import.cells_need_fixing_many": "{n} celdas necesitan corrección, en {rows} de {total} filas.",
+  "import.n_errors_paren_one": "({n} error)",
+  "import.n_errors_paren_many": "({n} errores)",
   "inventory.import_review_changed": "Las filas cambiaron desde que se revisaron. Revise el resumen de abajo e importe de nuevo.",
   "inventory.import_draft_changed": "Esta importación se cambió en otra pestaña. Se muestra la versión más reciente; repita su cambio si aún es necesario.",
   "inventory.import_undo": "Deshacer esta importación",
@@ -3620,6 +3621,6 @@
   "dashboard.demo_note": "Los artículos marcados [DEMO] son ejemplos y se incluyen en estas cifras. Su primera importación de productos los elimina, salvo que los haya modificado.",
   "dashboard.remove_demo_items": "Eliminar artículos de demostración",
   "dashboard.getting_started_from_spreadsheet": "Importar desde una hoja de cálculo:",
-  "shell.import_hint": "Haga clic en Importar para subir su archivo",
+  "shell.import_hint": "Haga clic en Importar para subir un archivo CSV o Excel (.xlsx). La página siguiente tiene una plantilla para descargar.",
   "shell.demo_hint": "Marque la casilla para seleccionarlos todos y luego elija Borrar."
 }

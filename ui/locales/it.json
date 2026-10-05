@@ -2706,9 +2706,6 @@
   "import.n_rows_paren": "(righe {n}):",
   "import.tooltip_name": "Obbligatorio. Nome visualizzato dell'articolo.",
   "import.tooltip_sell_by": "Obbligatorio. Unità di misura in cui l'articolo viene acquistato e venduto (ad es. pezzo, kg, carato).",
-  "import.n_errors_paren": "(errori {n})",
-  "import.cells_count": "{n} celle",
-  "import.need_fixing_across": "da correggere in {rows} delle {total} righe.",
   "import.rows_valid": "{ok} delle {total} righe sono valide",
   "import.err_pos_fmt": "{pos} di {total}",
   "import.update_existing_records": "Aggiorna i record esistenti",
@@ -3498,6 +3495,10 @@
   "import.col_row": "Riga",
   "import.col_problem": "Problema",
   "import.upload_corrected_file": "Carica un file corretto",
+  "import.cells_need_fixing_one": "{n} cella da correggere, in {rows} riga su {total}.",
+  "import.cells_need_fixing_many": "{n} celle da correggere, in {rows} righe su {total}.",
+  "import.n_errors_paren_one": "({n} errore)",
+  "import.n_errors_paren_many": "({n} errori)",
   "inventory.import_review_changed": "Le righe sono cambiate dopo la verifica. Controlla il riepilogo qui sotto e importa di nuovo.",
   "inventory.import_draft_changed": "Questa importazione è stata modificata in un'altra scheda. Viene mostrata la versione più recente; ripeti la modifica se serve ancora.",
   "inventory.import_undo": "Annulla questa importazione",
@@ -3620,6 +3621,6 @@
   "dashboard.demo_note": "Gli articoli contrassegnati [DEMO] sono esempi e sono inclusi in queste cifre. La prima importazione di prodotti li rimuove, a meno che tu non li abbia modificati.",
   "dashboard.remove_demo_items": "Rimuovi gli articoli demo",
   "dashboard.getting_started_from_spreadsheet": "Importa da un foglio di calcolo:",
-  "shell.import_hint": "Fai clic su Importa per caricare il tuo file",
+  "shell.import_hint": "Fai clic su Importa per caricare un file CSV o Excel (.xlsx). La pagina successiva ha un modello da scaricare.",
   "shell.demo_hint": "Spunta la casella per selezionarli tutti, poi scegli Elimina."
 }

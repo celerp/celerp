@@ -2705,9 +2705,6 @@
   "import.n_rows_paren": "({n} 行):",
   "import.tooltip_name": "必須。項目の表示名。",
   "import.tooltip_sell_by": "必須。この項目の売買単位（例：個、kg、カラット）。",
-  "import.n_errors_paren": "({n}件のエラー)",
-  "import.cells_count": "{n}個のセル",
-  "import.need_fixing_across": "{total}行のうち{rows}行にわたって修正が必要です。",
   "import.rows_valid": "{ok} 行中 {total} 行が有効です",
   "import.err_pos_fmt": "{pos} の {total}",
   "import.update_existing_records": "既存のレコードを更新",
@@ -3498,6 +3495,10 @@
   "import.col_row": "行",
   "import.col_problem": "問題",
   "import.upload_corrected_file": "修正したファイルをアップロード",
+  "import.cells_need_fixing_one": "{total}行のうち{rows}行で、{n}個のセルの修正が必要です。",
+  "import.cells_need_fixing_many": "{total}行のうち{rows}行で、{n}個のセルの修正が必要です。",
+  "import.n_errors_paren_one": "(エラー{n}件)",
+  "import.n_errors_paren_many": "(エラー{n}件)",
   "inventory.import_review_changed": "確認後に行が変更されました。下の内容を確認して、もう一度インポートしてください。",
   "inventory.import_draft_changed": "この取り込みは別のタブで変更されました。最新の内容を表示しています。必要であれば変更をもう一度行ってください。",
   "inventory.import_undo": "この取り込みを元に戻す",
@@ -3620,6 +3621,6 @@
   "dashboard.demo_note": "[DEMO] の付いた品目はサンプルで、これらの数値に含まれています。最初の商品インポートで削除されます（変更したものは残ります）。",
   "dashboard.remove_demo_items": "デモ品目を削除",
   "dashboard.getting_started_from_spreadsheet": "スプレッドシートからインポート:",
-  "shell.import_hint": "インポートをクリックしてファイルをアップロード",
+  "shell.import_hint": "インポートをクリックして CSV または Excel (.xlsx) ファイルをアップロードします。次のページでテンプレートをダウンロードできます。",
   "shell.demo_hint": "ボックスにチェックを入れてすべて選択し、「消去」を選んでください。"
 }

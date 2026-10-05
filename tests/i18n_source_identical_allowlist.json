@@ -163,6 +163,7 @@
     "field.sku",
     "field.total",
     "file_tag.legal",
+    "import.n_errors_paren_one",
     "inv.u0001f4c1",
     "inventory.bulk_verb_count",
     "inventory.dur_days",
