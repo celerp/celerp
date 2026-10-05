@@ -7,6 +7,7 @@ an edited sample, a renamed one, one used on a document and the owner's own item
 named "[DEMO] ..." must never be on it."""
 from __future__ import annotations
 
+import re
 import uuid
 
 import pytest
@@ -118,3 +119,14 @@ async def test_inventory_list_delete_still_deletes_an_edited_sample(owner_ui):
     await _demo_list_delete(owner_ui, [edited["id"]], "/inventory")
     left = (await owner_ui.api.get("/items", params={"status": "all", "limit": 500})).json()["items"]
     assert edited["id"] not in {i["id"] for i in left}
+
+
+@pytest.mark.asyncio
+async def test_searching_the_demo_list_stays_on_the_demo_list(owner_ui):
+    """A search typed on the demo list searches the samples, keeping its hint and Delete.
+    Red statement: the search box asked for /inventory/content with no filter, so a search
+    left the demo list."""
+    await _agricultural_samples(owner_ui)
+    page = (await owner_ui.get(f"/inventory?filter={DEMO_ITEMS_FILTER}")).text
+    box = re.search(r'<input[^>]*id="search-input"[^>]*>', page)
+    assert box and f"filter={DEMO_ITEMS_FILTER}" in box.group(0), box and box.group(0)
