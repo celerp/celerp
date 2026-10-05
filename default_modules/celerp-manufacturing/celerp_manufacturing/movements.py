@@ -1377,6 +1377,16 @@ def _inventory_codes(settings: dict) -> set[str]:
     return {code for role in INVENTORY_VALUE_ROLES for code in scope_codes(settings, role.value)}
 
 
+async def reconcile_rooms(session: AsyncSession, company_id) -> dict[str, str]:
+    """What each inventory account holds beyond its stock on hand, for the user choosing the
+    account a reconciled value comes off. Empty when the books are not kept."""
+    settings = await current_settings(session, company_id)
+    if SCHEMA_KEY not in settings:
+        return {}
+    return {code: str(room) for code, room in sorted(
+        (await account_rooms(session, company_id, _inventory_codes(settings))).items())}
+
+
 async def _awaiting_reconciliation(session: AsyncSession, company_id, order_id: str) -> bool:
     """Whether another open run's value is still unknown: the books may hold it anywhere."""
     return any(r.entity_id != order_id and (r.state.get("wip_unresolved") or r.state.get("wip_untracked"))
@@ -1479,10 +1489,11 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
                          "Choose the account this value comes off: an inventory account that holds it beyond its "
                          "stock on hand, or retained earnings for value the books never carried.",
                          total=str(amount), account=account)
-        if not amount or retained:
+        if retained or (not amount and account not in inventory):
             # Value from nowhere the books show: only while no inventory account holds more than
             # its stock, for an account that does is where this run's value (or its lots' excess)
             # already sits. One holding less (goods invoiced before they are on hand) holds none of it.
+            # Nothing taken off a named inventory account is judged by what that account holds, below.
             holding = sorted(c for c, v in (await account_rooms(session, company_id, inventory)).items() if v > 0)
             if amount < 0:
                 # The lots already carry more than the value stated: that is stock value the
@@ -1508,7 +1519,7 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
                              f"{account} holds {room} beyond its stock on hand; taking {amount} off it would leave "
                              f"{left}, so the books would still disagree with the stock. Give the value it holds.",
                              total=str(amount), account=account, room=str(room), left=str(left))
-            lots = {account: -amount}
+            lots = {account: -amount} if amount else {}
         if (amount or transferred != carried or total) and not await period_open(session, company_id, op.day):
             raise refuse(422, "period_locked", f"The books are locked for {op.day}, so this run cannot be "
                          "reconciled until that period is open.", day=op.day)

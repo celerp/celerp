@@ -3575,6 +3575,7 @@
   "manufacturing.reconcile_reason_elsewhere": "الدفاتر جاءت من نظام آخر ولا تُظهر موادها",
   "manufacturing.reconcile_account": "يُخصم من الحساب",
   "manufacturing.reconcile_account_hint": "حساب مخزون يحمل هذه القيمة زيادةً على مخزونه الفعلي، أو الأرباح المحتجزة لقيمة لم تحملها الدفاتر قط.",
+  "manufacturing.reconcile_room": "يحمل {account} مبلغ {room} زيادة على مخزونه المتوفر.",
   "manufacturing.reconcile_nothing_held": "لا تحتوي هذه الدورة على مواد. تسجّل التسوية أنها لا تحتوي على شيء.",
   "manufacturing.reconcile_received": "الناتج الذي استلمه هذا الأمر بالفعل: {lots}. أدخل القيمة الكاملة التي صُرفت؛ وتأخذ كل دفعة منها حصتها.",
   "manufacturing.reconcile_submit": "تسوية",

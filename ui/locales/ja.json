@@ -3575,6 +3575,7 @@
   "manufacturing.reconcile_reason_elsewhere": "帳簿が他のシステムから移行されており、材料が記録されていません",
   "manufacturing.reconcile_account": "振替元の勘定",
   "manufacturing.reconcile_account_hint": "手持ち在庫を超えてこの価額を保有する棚卸資産勘定、または帳簿に一度も計上されなかった価額については利益剰余金。",
+  "manufacturing.reconcile_room": "{account}は手持ち在庫を{room}上回っています。",
   "manufacturing.reconcile_nothing_held": "この生産ロットに材料はありません。照合すると何も保有していないことが記録されます。",
   "manufacturing.reconcile_received": "この製造指図がすでに受け入れた出来高：{lots}。払い出した価額の総額を入力してください。各ロットにはその按分額が付きます。",
   "manufacturing.reconcile_submit": "照合",

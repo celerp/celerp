@@ -3575,6 +3575,7 @@
   "manufacturing.reconcile_reason_elsewhere": "የሂሳብ መዝገቡ ከሌላ ሥርዓት የመጣ ሲሆን ዕቃዎቹን አያሳይም",
   "manufacturing.reconcile_account": "የሚቀነስበት ሒሳብ",
   "manufacturing.reconcile_account_hint": "ከያዘው ክምችት በላይ ይህን ዋጋ የያዘ የክምችት ሒሳብ፣ ወይም የሂሳብ መዝገቡ ፈጽሞ ላልያዘው ዋጋ የተያዘ ትርፍ።",
+  "manufacturing.reconcile_room": "{account} ካለው ክምችት በላይ {room} ይይዛል።",
   "manufacturing.reconcile_nothing_held": "ይህ ዙር ምንም ዕቃ የለውም። ማስታረቁ ምንም እንዳልያዘ ይመዘግባል።",
   "manufacturing.reconcile_received": "ይህ ትዕዛዝ አስቀድሞ የተቀበለው ውጤት፦ {lots}። የወጣውን ሙሉ ዋጋ ያስገቡ፤ እያንዳንዱ ሎት ድርሻውን ይወስዳል።",
   "manufacturing.reconcile_submit": "አስታርቅ",

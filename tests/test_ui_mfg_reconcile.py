@@ -177,3 +177,11 @@ async def test_a_refused_discard_says_why_and_keeps_the_offer(ui_client):
 
     assert r.status_code == 200, r.text
     assert refused["message"] in r.text and "repair-output" in r.text
+
+
+async def test_the_page_shows_what_each_inventory_account_holds_beyond_its_stock(ui_client):
+    r = await _page(ui_client, needs={**NEEDS, "rooms": {"1120": "60.00", "1121": "0.00"}})
+
+    assert r.status_code == 200, r.text
+    assert "1120 holds 60.00 beyond its stock on hand." in r.text
+    assert "1121 holds" not in r.text  # an account matching its stock is not worth a line

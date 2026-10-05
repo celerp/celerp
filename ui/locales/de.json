@@ -3575,6 +3575,7 @@
   "manufacturing.reconcile_reason_elsewhere": "die Bücher stammen aus einem anderen System und zeigen sein Material nicht",
   "manufacturing.reconcile_account": "Geht ab von Konto",
   "manufacturing.reconcile_account_hint": "Ein Bestandskonto, das diesen Wert über seinen Lagerbestand hinaus hält, oder Gewinnvortrag für einen Wert, den die Bücher nie geführt haben.",
+  "manufacturing.reconcile_room": "{account} hält {room} über seinen Lagerbestand hinaus.",
   "manufacturing.reconcile_nothing_held": "Dieser Lauf enthält kein Material. Die Abstimmung hält fest, dass er nichts enthält.",
   "manufacturing.reconcile_received": "Bereits aus diesem Auftrag eingebuchter Ausstoß: {lots}. Geben Sie den gesamten entnommenen Wert an; jede dieser Chargen erhält ihren Anteil daran.",
   "manufacturing.reconcile_submit": "Abstimmen",

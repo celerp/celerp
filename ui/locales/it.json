@@ -3575,6 +3575,7 @@
   "manufacturing.reconcile_reason_elsewhere": "la contabilità proviene da un altro sistema e non mostra i suoi materiali",
   "manufacturing.reconcile_account": "Proviene dal conto",
   "manufacturing.reconcile_account_hint": "Un conto di magazzino che detiene questo valore oltre alle sue giacenze, oppure utili portati a nuovo per un valore mai registrato in contabilità.",
+  "manufacturing.reconcile_room": "{account} contiene {room} oltre le sue giacenze disponibili.",
   "manufacturing.reconcile_nothing_held": "Questa produzione non contiene materiali. La riconciliazione registra che non contiene nulla.",
   "manufacturing.reconcile_received": "Produzione già ricevuta da questo ordine: {lots}. Indica l'intero valore prelevato; ciascuno di quei lotti ne riceve la sua quota.",
   "manufacturing.reconcile_submit": "Riconcilia",

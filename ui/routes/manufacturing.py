@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from decimal import Decimal
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -415,6 +416,8 @@ def _reconcile_panel(run_id: str, needs: dict, accounts: list[dict], *, key: str
         Label(t("manufacturing.reconcile_account")),
         account_picker("account", accounts, value=account, aria_label=t("manufacturing.reconcile_account")),
         P(t("manufacturing.reconcile_account_hint"), cls="hint"),
+        *[P(t("manufacturing.reconcile_room", account=code, room=room), cls="hint")
+          for code, room in (needs.get("rooms") or {}).items() if Decimal(room)],
         cls="form-field",
     ) if accounts else ""
     return Div(

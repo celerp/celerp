@@ -244,7 +244,7 @@ async def test_reconciling_refuses_values_or_accounts_it_cannot_book(client, ses
             ([(raw, 40.0)], ob, 422, "reconcile_left"),              # more than the account holds
             ([(raw, 20.0)], ob, 422, "reconcile_left"),              # less: the books would still disagree
             ([(raw, 30.0)], re, 422, "reconcile_held"),              # the books carry it: not from nowhere
-            ([(raw, 0.0)], ob, 422, "reconcile_held"),               # nothing cannot hide what the books hold
+            ([(raw, 0.0)], ob, 422, "reconcile_left"),               # nothing cannot hide what the account holds
             ([(raw, 0.0)], None, 422, "reconcile_held")):
         refusal(await reconcile(client, auth, order, values, account, key=str(uuid.uuid4())), status, key)
 

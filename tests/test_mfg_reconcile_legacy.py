@@ -225,3 +225,46 @@ async def test_a_value_too_large_to_record_is_refused(client, session, auth):
     refusal(await reconcile(client, auth, order, [(raw, 1e300)], p, key="huge"), 422, "reconcile_value_too_large")
 
     assert await snapshot(session, auth, raw, order, lot) == before
+
+
+async def test_a_run_its_lots_fully_carry_reconciles_onto_an_account_holding_another_runs_value(
+        client, session, auth):
+    """The first run's lot carries everything it was issued, so reconciling it takes nothing off
+    the account the user names; that account still holds the 60.00 the second run was issued
+    after its receipt, which waits to be reconciled. Nothing moves for the first run, and the
+    second then takes its value off."""
+    await _older_release(session, auth)
+    raw = await _older_stock(session, auth, 100.0, 10)
+    order = await run(client, auth, await product(client, auth, [(raw, 5)]), 2)
+    await _older_issue(session, auth, order, raw, 10)
+    lot = await _older_receive(session, auth, order, 2)
+    other_raw = await _older_stock(session, auth, 100.0, 10)
+    other = await run(client, auth, await product(client, auth, [(other_raw, 5)]), 2)
+    await _older_issue(session, auth, other, other_raw, 4)
+    await _older_receive(session, auth, other, 1)  # carries the 40.00 issued so far
+    await _older_issue(session, auth, other, other_raw, 6)  # 60.00 still on the account
+    await _upgrade(session)
+    p = await role(session, auth, PURCHASED)
+
+    r = await reconcile(client, auth, order, [(raw, 100.0)], p, key="carried")
+
+    assert r.status_code == 200, r.text
+    assert await _cost(session, auth, lot) == 100.0
+    r = await reconcile(client, auth, other, [(other_raw, 100.0)], p, key="other")
+    assert r.status_code == 200, r.text
+    await assert_settled(client, session, auth)
+
+
+async def test_reconciling_shows_what_each_inventory_account_holds(client, session, auth):
+    raw, order, _ = await _older_run(client, session, auth, 1)
+    p = await role(session, auth, PURCHASED)
+    await _emit_auto_posted_je(
+        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id=f"je:auto:x{order}",
+        idem_create=f"x{order}:c", idem_posted=f"x{order}:p", memo="Purchase",
+        entries=[{"account": p, "debit": 25.0, "credit": 0.0}, {"account": "2110", "debit": 0.0, "credit": 25.0}],
+        metadata_={})
+    await session.commit()
+
+    rooms = (await client.get(f"/manufacturing/{order}/reconcile", headers=auth["headers"])).json()["rooms"]
+
+    assert rooms[p] == "25.00"

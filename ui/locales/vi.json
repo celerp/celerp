@@ -3575,6 +3575,7 @@
   "manufacturing.reconcile_reason_elsewhere": "sổ sách được đưa từ hệ thống khác sang và không thể hiện nguyên vật liệu của nó",
   "manufacturing.reconcile_account": "Ghi giảm tài khoản",
   "manufacturing.reconcile_account_hint": "Một tài khoản hàng tồn kho đang giữ giá trị này ngoài số hàng hiện có, hoặc lợi nhuận giữ lại cho giá trị mà sổ sách chưa từng ghi nhận.",
+  "manufacturing.reconcile_room": "{account} ghi nhận {room} vượt quá hàng tồn kho hiện có.",
   "manufacturing.reconcile_nothing_held": "Đợt này không có nguyên vật liệu. Việc đối chiếu ghi nhận rằng nó không giữ gì.",
   "manufacturing.reconcile_received": "Thành phẩm lệnh này đã nhận: {lots}. Hãy nhập toàn bộ giá trị đã xuất; mỗi lô đó nhận phần của mình.",
   "manufacturing.reconcile_submit": "Đối chiếu",

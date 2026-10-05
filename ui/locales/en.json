@@ -3575,6 +3575,7 @@
   "manufacturing.reconcile_reason_elsewhere": "the books came from elsewhere and do not show its materials",
   "manufacturing.reconcile_account": "Comes off account",
   "manufacturing.reconcile_account_hint": "An inventory account that holds this value beyond its stock on hand, or retained earnings for value the books never carried.",
+  "manufacturing.reconcile_room": "{account} holds {room} beyond its stock on hand.",
   "manufacturing.reconcile_nothing_held": "This run holds no materials. Reconciling records that it holds nothing.",
   "manufacturing.reconcile_received": "Output this run already received: {lots}. Enter the full value that was issued; each of those lots takes its share of it.",
   "manufacturing.reconcile_submit": "Reconcile",

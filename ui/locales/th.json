@@ -3575,6 +3575,7 @@
   "manufacturing.reconcile_reason_elsewhere": "บัญชีนำมาจากระบบอื่นและไม่แสดงวัตถุดิบของใบสั่งผลิตนี้",
   "manufacturing.reconcile_account": "ตัดจากบัญชี",
   "manufacturing.reconcile_account_hint": "บัญชีสินค้าคงคลังที่มีมูลค่านี้เกินกว่าสต๊อกคงเหลือ หรือกำไรสะสมสำหรับมูลค่าที่บัญชีไม่เคยบันทึก",
+  "manufacturing.reconcile_room": "{account} มียอดเกินสต๊อกคงเหลือ {room}",
   "manufacturing.reconcile_nothing_held": "ใบสั่งผลิตนี้ไม่มีวัตถุดิบ การกระทบยอดจะบันทึกว่าไม่มีสิ่งใดอยู่",
   "manufacturing.reconcile_received": "ผลผลิตที่ใบสั่งผลิตนี้รับไปแล้ว: {lots} ให้ระบุมูลค่าที่เบิกทั้งหมด แต่ละล็อตจะได้รับส่วนของมูลค่านั้น",
   "manufacturing.reconcile_submit": "กระทบยอด",

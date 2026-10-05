@@ -3575,6 +3575,7 @@
   "manufacturing.reconcile_reason_elsewhere": "a contabilidade veio de outro sistema e não mostra os seus materiais",
   "manufacturing.reconcile_account": "Sai da conta",
   "manufacturing.reconcile_account_hint": "Uma conta de estoque que detém este valor além do seu estoque disponível, ou lucros acumulados para um valor que a contabilidade nunca registrou.",
+  "manufacturing.reconcile_room": "{account} tem {room} além do seu estoque disponível.",
   "manufacturing.reconcile_nothing_held": "Este ciclo não tem materiais. A conciliação registra que não tem nada.",
   "manufacturing.reconcile_received": "Produção que esta ordem já recebeu: {lots}. Informe o valor total requisitado; cada um desses lotes recebe sua parte.",
   "manufacturing.reconcile_submit": "Conciliar",

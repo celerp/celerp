@@ -3575,6 +3575,7 @@
   "manufacturing.reconcile_reason_elsewhere": "la comptabilité provient d'un autre système et ne montre pas ses matières",
   "manufacturing.reconcile_account": "Provient du compte",
   "manufacturing.reconcile_account_hint": "Un compte de stock qui détient cette valeur au-delà de son stock disponible, ou les résultats reportés pour une valeur que la comptabilité n'a jamais portée.",
+  "manufacturing.reconcile_room": "{account} porte {room} de plus que son stock disponible.",
   "manufacturing.reconcile_nothing_held": "Ce cycle ne contient aucune matière. Le rapprochement enregistre qu'il ne contient rien.",
   "manufacturing.reconcile_received": "Production déjà reçue par cet ordre : {lots}. Indiquez la valeur totale sortie ; chacun de ces lots en reçoit sa part.",
   "manufacturing.reconcile_submit": "Rapprocher",
