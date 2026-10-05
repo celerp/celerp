@@ -2430,7 +2430,7 @@ def setup_routes(app):
             created=created,
             skipped=skipped,
             errors=errors,
-            entity_label="contacts",
+            entity_label=t("dashboard.contacts"),
             back_href="/contacts/customers",
             import_more_href="/crm/import/contacts",
             has_mapping=True,
