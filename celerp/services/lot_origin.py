@@ -47,6 +47,7 @@ from celerp.accounting_roles import (
     INVENTORY_ORIGIN_SCHEMA,
     LOT_ACCOUNT_FIELD,
     ON_BOOKS_FIELD,
+    POSTING_ACCOUNTS_PATH,
     SCHEMA_KEY,
     SOURCE_CONTROLS_KEY,
     AccountRole,
@@ -303,12 +304,26 @@ async def _locked(session: AsyncSession, company_id, roles: list[str]) -> tuple[
 
 
 async def _mark(session: AsyncSession, company_id) -> None:
-    """Mark the company upgraded."""
+    """Mark the company upgraded. Older stock on hand still recording no inventory account
+    waits for the user, who is told where to place it."""
     from celerp.services.company_lock import locked_company
 
     company = await locked_company(session, company_id)
     company.settings = {**(company.settings or {}), INVENTORY_ORIGIN_KEY: INVENTORY_ORIGIN_SCHEMA}
     await session.flush()
+    waiting = unrecorded(await _items(session, company_id))
+    if waiting:
+        await _notify_unplaced(session, company_id, len(waiting))
+
+
+async def _notify_unplaced(session: AsyncSession, company_id, count: int) -> None:
+    from celerp.notifications import service as notification_service
+
+    await notification_service.create(
+        session, company_id, "accounting", "Older stock needs an inventory account",
+        f"The books could not vouch for {count} older lot(s) in stock, so they record no inventory account "
+        "yet. Choose the account each one sits on under Settings > Accounting > Posting accounts.",
+        action_url=POSTING_ACCOUNTS_PATH, priority="high")
 
 
 async def period_open(session: AsyncSession, company_id, day: str) -> bool:

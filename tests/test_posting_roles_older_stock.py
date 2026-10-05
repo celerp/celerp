@@ -168,6 +168,20 @@ async def _marked(session, auth) -> bool:
     return marked
 
 
+async def _placement_notices(session, auth) -> list:
+    from celerp.models.notification import Notification
+
+    return list((await session.execute(select(Notification).where(
+        Notification.company_id == auth["company_id"],
+        Notification.title == "Older stock needs an inventory account"))).scalars().all())
+
+
+async def _told_to_place(session, auth) -> None:
+    (notice,) = await _placement_notices(session, auth)
+    assert notice.action_url == "/settings/accounting?tab=posting-accounts"
+    assert "older lot(s) in stock" in notice.body
+
+
 async def _events(session, auth) -> int:
     return await session.scalar(select(func.count()).select_from(LedgerEntry).where(
         LedgerEntry.company_id == auth["company_id"]))
@@ -193,6 +207,7 @@ async def test_all_old_purchased_stock_records_purchased_inventory_with_no_entry
     assert await _reclassification(session, auth) is None
     assert await _net(session, auth, "1130-P", "1130-OB") == (80.0, 0.0)
     assert await _marked(session, auth)
+    assert await _placement_notices(session, auth) == []  # every lot placed: nothing to tell
 
 
 async def test_all_old_opening_stock_moves_into_purchased_inventory(session, client, auth):
@@ -429,6 +444,7 @@ async def test_accounts_that_do_not_add_up_to_the_stock_are_left_for_the_user(se
     assert await _accounts(session, auth, lot) == [None]
     assert await _net(session, auth, "1130-P", "1130-OB") == (40.0, 0.0)
     assert await _marked(session, auth)
+    await _told_to_place(session, auth)
 
 
 async def test_an_opening_entry_short_of_the_stock_is_brought_current_then_moved(session, client, auth):
@@ -500,6 +516,7 @@ async def test_a_company_the_books_cannot_vouch_for_is_left_alone(session, clien
     assert await _accounts(session, auth, lot) == [None]
     assert await _net(session, auth, "1130-P", "1130-OB") == (0.0, 30.0)
     assert await _marked(session, auth)
+    await _told_to_place(session, auth)
 
 
 async def test_stock_already_on_a_third_inventory_account_leaves_the_company_alone(session, client, auth):
