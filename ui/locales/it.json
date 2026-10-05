@@ -2173,7 +2173,7 @@
   "documents.confirm_set_reserved": "Impostare {n} righe come riservate?",
   "documents.confirm_undo_adjust": "Stornare la rettifica di magazzino di questa verifica?",
   "documents.confirm_undo_writeoff": "Stornare questa cancellazione? Le scorte smaltite tornano allo stato \"disponibili\" e la relativa registrazione contabile viene annullata.",
-  "documents.contact_placeholder": "Contatta...",
+  "documents.contact_placeholder": "Contatto...",
   "documents.conversion_note": "≈ {amount} a {rate} {base}/{currency}",
   "documents.could_not_set_available": "Impossibile impostare le righe selezionate come disponibili.",
   "documents.could_not_set_reserved": "Impossibile impostare le righe selezionate come riservate.",

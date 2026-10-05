@@ -2173,7 +2173,7 @@
   "documents.confirm_set_reserved": "{n}-Zeilen als reserviert kennzeichnen?",
   "documents.confirm_undo_adjust": "Die Bestandsanpassung dieser Prüfung stornieren?",
   "documents.confirm_undo_writeoff": "Diese Ausbuchung stornieren? Der entnommene Bestand wird wieder als verfügbar gekennzeichnet und der zugehörige Journalbuchungseintrag wird storniert.",
-  "documents.contact_placeholder": "Kontaktieren...",
+  "documents.contact_placeholder": "Kontakt...",
   "documents.conversion_note": "≈ {amount} bei {rate} {base}/{currency}",
   "documents.could_not_set_available": "Die ausgewählten Zeilen konnten nicht als verfügbar markiert werden.",
   "documents.could_not_set_reserved": "Die ausgewählten Zeilen konnten nicht als reserviert markiert werden.",
