@@ -3903,6 +3903,7 @@ _MERGE_ID_NAMESPACE = uuid.UUID("6f1d3c52-9a1e-4c55-9d1e-2a7f5b0e8c41")
 
 _STALE_MERGE = "The merge or its items changed since it was reviewed. Review the merge again."
 _UNREVIEWED_MERGE = "Preview this merge first, then confirm it with the plan_fingerprint the preview returned."
+_UNDONE_MERGE = "This merge was undone. Review the merge again."
 
 
 def _merge_result_id(company_id, idempotency_key: str | None) -> str:
@@ -4369,6 +4370,8 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             meta = replay.metadata_ or {}
             if replay.event_type != "item.created" or meta.get("merge_request") != request_digest:
                 raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            if await _merge_undone(session, company_id, replay.entity_id):
+                raise HTTPException(status_code=409, detail=_UNDONE_MERGE)
             return {"id": replay.entity_id, "inventory_reclassification": meta.get("inventory_reclassification")}
 
     # Plan again under the locks, from the settings as last committed, and refuse if
@@ -4519,6 +4522,13 @@ async def _latest_item_event(session: AsyncSession, company_id, entity_id: str):
         select(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id)
         .order_by(LedgerEntry.id.desc()).limit(1)
     )).scalar_one_or_none()
+
+
+async def _merge_undone(session: AsyncSession, company_id, entity_id: str) -> bool:
+    from celerp.models.ledger import LedgerEntry
+    return (await session.execute(select(LedgerEntry.id).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id,
+        LedgerEntry.event_type == "item.merge_undone").limit(1))).first() is not None
 
 
 @router.post("/{entity_id}/undo-merge")
