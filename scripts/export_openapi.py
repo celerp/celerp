@@ -39,7 +39,8 @@ def _register_default_modules() -> None:
     routers; it touches no database (the startup migration phase is a
     Postgres-only step that does not shape the schema)."""
     default_dir = Path(celerp.main.__file__).resolve().parent.parent / "default_modules"
-    module_dir = os.environ.get("MODULE_DIR") or str(default_dir)
+    # celerp.main has resolved MODULE_DIR: unset is the bundled trees, empty is none.
+    module_dir = os.environ["MODULE_DIR"]
     lock = default_dir / "first_party.lock.json"
     enabled = set(json.loads(lock.read_text(encoding="utf-8")).keys())
 
