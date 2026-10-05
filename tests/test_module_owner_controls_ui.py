@@ -145,3 +145,17 @@ def test_infrastructure_tab_offers_the_settings_to_the_owner_only():
     assert "Only the installation owner can change the database and file storage." in company_admin
     with patch.object(sc, "_packaged_infra_or_none", return_value=None):
         assert "/settings/cloud/save-infra" in to_xml(sc._infrastructure_tab(owner=True))
+
+
+@pytest.mark.asyncio
+async def test_a_module_that_failed_to_load_is_explained_in_plain_words_before_the_reason(ui_client):
+    """The loader's reason is written for the module's author; the toast leads
+    with what it means for the user and keeps that reason after it."""
+    reason = "api_routes 'celerp.routers.health' does not resolve to source inside the module."
+    broken = [{"name": "bad-mod", "label": "Bad Mod", "version": "1.0", "author": "A",
+               "enabled": True, "running": False, "load_error": reason}]
+    with _owner(True), patch("ui.api_client.get_modules", new=AsyncMock(return_value=broken)), \
+            patch("ui.routes.modules_page._modules_dir_display", return_value="/data/modules"):
+        r = await ui_client.get("/modules", cookies=_cookies())
+    lead = "Bad Mod could not start, so it is not running. Ask the module's author to fix it."
+    assert f"{lead} Their detail: {reason}" in r.text

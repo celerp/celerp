@@ -930,6 +930,7 @@
   "modules.owner_only": "Chỉ chủ sở hữu bản cài đặt mới có thể cài đặt, gỡ bỏ hoặc khởi động lại mô-đun. Hãy nhờ họ thực hiện các thay đổi này.",
   "modules.license_move_body": "Mô-đun này chạy trên máy tính bạn đã mua. Thêm Celerp Connect để dùng trên bất kỳ máy tính nào bạn đăng nhập, mà không phải mua lại.",
   "modules.license_move_title": "Dùng mô-đun này trên máy tính này",
+  "modules.load_failed_toast": "{name} không thể khởi động nên không chạy. Hãy nhờ tác giả mô-đun sửa lỗi. Chi tiết kỹ thuật: {detail}",
   "modules.loading_catalog": "Đang tải danh mục...",
   "modules.required_by": "Được yêu cầu bởi: {names}",
   "modules.restart_timeout": "Việc khởi động lại mất nhiều thời gian hơn dự kiến. Hãy tải lại trang thủ công khi Celerp hoạt động trở lại.",

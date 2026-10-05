@@ -1067,6 +1067,7 @@
   "modules.owner_only": "Only the installation owner can install, remove or restart modules. Ask them to make these changes.",
   "modules.license_move_body": "This module runs on the computer you bought it on. Add Celerp Connect to use it on any computer you sign in on, without buying it again.",
   "modules.license_move_title": "Use this module on this computer",
+  "modules.load_failed_toast": "{name} could not start, so it is not running. Ask the module's author to fix it. Their detail: {detail}",
   "modules.loading_catalog": "Loading catalog...",
   "modules.not_verified_tip": "This bundled module was changed on this computer, so it now runs as an untrusted third-party module. It keeps working. If you did not change it, reinstall Celerp to restore the original.",
   "modules.required_by": "Required by: {names}",

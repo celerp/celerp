@@ -930,6 +930,7 @@
   "modules.owner_only": "Nur der Installationsinhaber kann Module installieren, entfernen oder neu starten. Bitten Sie ihn, diese Änderungen vorzunehmen.",
   "modules.license_move_body": "Dieses Modul läuft auf dem Computer, auf dem Sie es gekauft haben. Fügen Sie Celerp Connect hinzu, um es auf jedem Computer zu verwenden, an dem Sie sich anmelden, ohne es erneut zu kaufen.",
   "modules.license_move_title": "Dieses Modul auf diesem Computer verwenden",
+  "modules.load_failed_toast": "{name} konnte nicht starten und läuft daher nicht. Bitten Sie den Autor des Moduls, es zu beheben. Technischer Hinweis: {detail}",
   "modules.loading_catalog": "Katalog wird geladen...",
   "modules.required_by": "Benötigt von: {names}",
   "modules.restart_timeout": "Der Neustart dauert länger als erwartet. Laden Sie die Seite manuell neu, sobald Celerp wieder da ist.",

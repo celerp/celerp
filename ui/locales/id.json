@@ -930,6 +930,7 @@
   "modules.owner_only": "Hanya pemilik instalasi yang dapat memasang, menghapus, atau memulai ulang modul. Mintalah mereka untuk melakukan perubahan ini.",
   "modules.license_move_body": "Modul ini berjalan di komputer tempat Anda membelinya. Tambahkan Celerp Connect untuk memakainya di komputer mana pun tempat Anda masuk, tanpa membeli lagi.",
   "modules.license_move_title": "Gunakan modul ini di komputer ini",
+  "modules.load_failed_toast": "{name} tidak dapat dimulai, jadi tidak berjalan. Minta pembuat modul untuk memperbaikinya. Detail teknis: {detail}",
   "modules.loading_catalog": "Memuat katalog...",
   "modules.required_by": "Dibutuhkan oleh: {names}",
   "modules.restart_timeout": "Mulai ulang memakan waktu lebih lama dari perkiraan. Muat ulang halaman secara manual setelah Celerp kembali.",

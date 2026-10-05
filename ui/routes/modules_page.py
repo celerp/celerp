@@ -448,7 +448,9 @@ def _local_panel(modules: list[dict], lang: str = "en",
     # column. Deduped per page so a panel swap does not re-announce a standing
     # failure; a full reload starts fresh and re-announces.
     if load_error_toasts:
-        payload = [{"key": f"{n}|{e}", "msg": f"{lbl}: {e}"}
+        # The loader's reason is written for the module's author, so the toast
+        # leads with what it means for the user and keeps the reason after it.
+        payload = [{"key": f"{n}|{e}", "msg": t("modules.load_failed_toast", lang, name=lbl, detail=e)}
                    for n, lbl, e in load_error_toasts]
         errors_json = json.dumps(payload).replace("</", "<\\/")
         load_error_js = Script(

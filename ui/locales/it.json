@@ -930,6 +930,7 @@
   "modules.owner_only": "Solo il proprietario dell'installazione può installare, rimuovere o riavviare i moduli. Chiedigli di apportare queste modifiche.",
   "modules.license_move_body": "Questo modulo funziona sul computer su cui l'hai acquistato. Aggiungi Celerp Connect per usarlo su qualsiasi computer da cui accedi, senza ricomprarlo.",
   "modules.license_move_title": "Usa questo modulo su questo computer",
+  "modules.load_failed_toast": "{name} non si è avviato, quindi non è in esecuzione. Chiedi all'autore del modulo di correggerlo. Dettaglio tecnico: {detail}",
   "modules.loading_catalog": "Caricamento del catalogo...",
   "modules.required_by": "Richiesto da: {names}",
   "modules.restart_timeout": "Il riavvio sta richiedendo più tempo del previsto. Ricarica la pagina manualmente quando Celerp torna disponibile.",
