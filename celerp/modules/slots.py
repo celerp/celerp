@@ -23,7 +23,7 @@ inventory_in_production
                    `async def handler(*, session, company_id) -> Decimal`, called with
                    exactly those keyword arguments: stock value an older release issued
                    to work still open, which its books still carry on the inventory
-                   accounts (lot_origin.in_production)
+                   accounts (lot_origin.in_production). First-party modules only.
 item_lineage_guard {"handler": "module.path:function"} naming
                    `async def handler(*, session, entry, transition) -> None`, called
                    with exactly those keyword arguments on every live item event, after
@@ -69,11 +69,31 @@ def resolve_handler(dotted: str) -> Callable:
     return getattr(mod, func_name)
 
 
+# Slots whose handler core calls on every item write or upgrade: a contribution without a
+# "module.path:function" handler would fail every such call, so it is refused here.
+_HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard"})
+# Slots whose answer the books are judged by: taken from first-party modules only, as the
+# chart of accounts is (the loader sets "_first_party" from the module's content identity).
+_FIRST_PARTY_SLOTS = frozenset({"inventory_in_production"})
+
+
+def check(slot: str, contribution: dict) -> None:
+    """Raise ValueError, naming the reason, when ``contribution`` cannot fill ``slot``."""
+    if slot in _HANDLER_SLOTS:
+        handler = contribution.get("handler")
+        if not isinstance(handler, str) or ":" not in handler:
+            raise ValueError(f"Slot {slot!r} needs a \"handler\" naming \"module.path:function\".")
+    if slot in _FIRST_PARTY_SLOTS and contribution.get("_first_party") is not True:
+        raise ValueError(f"Slot {slot!r} is filled by Celerp's own modules only.")
+
+
 def register(slot: str, contribution: dict) -> None:
     """Register a module contribution into a named slot.
 
-    Called by the loader for each slot declared in PLUGIN_MANIFEST["slots"].
+    Called by the loader for each slot declared in PLUGIN_MANIFEST["slots"]. A
+    contribution that cannot fill the slot is refused (``check``).
     """
+    check(slot, contribution)
     _slots.setdefault(slot, []).append(contribution)
 
 

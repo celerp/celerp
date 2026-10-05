@@ -46,7 +46,7 @@ from pathlib import Path
 from celerp.modules.importer import PREMIUM_MARKER
 from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
 from celerp.modules.meta import META_FILENAME
-from celerp.modules.slots import register as register_slot, resolve_handler
+from celerp.modules.slots import check as check_slot, register as register_slot, resolve_handler
 from celerp.services.permissions import is_permission_key
 
 log = logging.getLogger(__name__)
@@ -960,15 +960,26 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
             raise
 
     # Register extension slots (search_provider is registered from its prepared
-    # descriptor below, never through the generic path).
-    for slot_name, contribution in slots_manifest.items():
-        if slot_name == _SEARCH_PROVIDER_SLOT:
-            continue
-        if isinstance(contribution, dict):
-            register_slot(slot_name, {**contribution, "_module": pkg_name})
-        elif isinstance(contribution, list):
-            for item in contribution:
-                register_slot(slot_name, {**item, "_module": pkg_name})
+    # descriptor below, never through the generic path). Every contribution is checked
+    # first, so a module one slot refuses registers none. The runtime keys come last,
+    # so a manifest cannot claim them.
+    generic = [
+        (slot_name, {**item, "_module": pkg_name, "_first_party": trusted})
+        for slot_name, contribution in slots_manifest.items() if slot_name != _SEARCH_PROVIDER_SLOT
+        for item in (contribution if isinstance(contribution, list) else [contribution])
+        if isinstance(item, dict)
+    ]
+    for slot_name, item in generic:
+        try:
+            check_slot(slot_name, item)
+        except ValueError as exc:
+            log.error("Module %r rejected: %s", pkg_name, exc)
+            for key in list(sys.modules.keys()):
+                if key == pkg_name or key.startswith(pkg_name + "."):
+                    sys.modules.pop(key, None)
+            raise ModuleLoadError(str(exc))
+    for slot_name, item in generic:
+        register_slot(slot_name, item)
 
     if prepared_search_provider is not None:
         register_slot(_SEARCH_PROVIDER_SLOT, prepared_search_provider)

@@ -143,7 +143,7 @@ def startup_hooks():
         for slot in _START_SLOTS:
             contribs = manifest_slots.get(slot) or []
             for c in contribs if isinstance(contribs, list) else [contribs]:
-                slots.register(slot, {**c, "_module": pkg.name})
+                slots.register(slot, {**c, "_module": pkg.name, "_first_party": True})
     try:
         yield
     finally:
