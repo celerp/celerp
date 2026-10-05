@@ -31,7 +31,6 @@ faithfully."""
 from __future__ import annotations
 
 import asyncio
-import time
 import types
 import uuid
 
@@ -71,6 +70,19 @@ def _is_deadlock(exc: BaseException) -> bool:
     return False
 
 
+async def _backend_pid(session) -> int:
+    return (await session.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+
+
+async def _someone_waits_on(engine, pid: int) -> bool:
+    """True once another backend is blocked on a lock the backend ``pid`` holds. Asks about
+    that one backend, so unrelated waiters elsewhere in the database never count."""
+    async with engine.connect() as conn:
+        return bool((await conn.execute(text(
+            "SELECT count(*) FROM pg_stat_activity WHERE :pid = ANY(pg_blocking_pids(pid))"
+        ), {"pid": pid})).scalar_one())
+
+
 async def _cleanup(factory, company_id, user_id) -> None:
     async with factory() as s:
         await s.execute(delete(Projection).where(Projection.company_id == company_id))
@@ -108,7 +120,8 @@ async def test_company_lock_upgrade_serializes_without_deadlock(_db_engine):
     company_id, user_id, user = await _seed_company(factory)
     both_hold_key_share = asyncio.Barrier(2)
     outcome: dict[int, BaseException | None] = {0: None, 1: None}
-    window: dict[int, tuple[float, float]] = {}
+    acquired: list[int] = []
+    held_while_peer_waited: dict[int, bool] = {}
 
     async def _hold_and_lock(idx: int) -> None:
         s = factory()
@@ -124,14 +137,18 @@ async def test_company_lock_upgrade_serializes_without_deadlock(_db_engine):
             # now, before the barrier - the emit alone would not touch the DB until the next
             # execute or commit, and the whole point is that both hold KEY SHARE first.
             await s.flush()
+            pid = await _backend_pid(s)
             await both_hold_key_share.wait()
             await lock_item_code_namespace(s, company_id)
-            acquired = time.monotonic()
-            # Hold the lock briefly so the two holders' windows are measurable: under a lock
-            # that serializes, the second cannot acquire until the first has committed.
-            await asyncio.sleep(0.15)
+            acquired.append(idx)
+            # The first holder keeps the lock until the peer is seen blocked on THIS backend:
+            # proof the lock serializes, observed from Postgres rather than timed. A peer that
+            # failed instead (a deadlock) never waits, so the failure is reported below.
+            if len(acquired) == 1:
+                while outcome[1 - idx] is None and not await _someone_waits_on(_db_engine, pid):
+                    await asyncio.sleep(0.02)
+                held_while_peer_waited[idx] = outcome[1 - idx] is None
             await s.commit()
-            window[idx] = (acquired, time.monotonic())
         except Exception as exc:  # noqa: BLE001 - captured for the race assertion, not swallowed
             outcome[idx] = exc
             await s.rollback()
@@ -144,13 +161,10 @@ async def test_company_lock_upgrade_serializes_without_deadlock(_db_engine):
         deadlocks = {i: str(e) for i, e in outcome.items() if e is not None and _is_deadlock(e)}
         assert not deadlocks, f"company-lock upgrade deadlocked (40P01): {deadlocks}"
         assert not failures, f"lock attempt failed for a non-deadlock reason: {failures}"
-        # Serialization: exactly one holder at a time. Ordered by acquisition, the earlier
-        # holder must have committed (released the lock) no later than the later one acquired
-        # it - the windows do not overlap.
-        first, second = sorted(window.values(), key=lambda w: w[0])
-        assert second[0] >= first[1] - 0.01, (
-            f"the two lock holders overlapped ({first} vs {second}); the namespace lock did "
-            f"not serialize them"
+        # Serialization: the first holder saw the second blocked on its own backend, and the
+        # second acquired only after the first committed.
+        assert held_while_peer_waited == {acquired[0]: True}, (
+            "the namespace lock did not make the second holder wait for the first"
         )
     finally:
         await _cleanup(factory, company_id, user_id)
@@ -205,22 +219,17 @@ async def test_concurrent_one_tap_builds_no_deadlock(_db_engine):
     # acquisition per session until both builds hold KEY SHARE before either takes the lock,
     # making the upgrade contention deterministic instead of a matter of scheduling luck. This
     # wraps the real lock (never delays it beyond that point).
-    # The wait also ends when the other build is already waiting on a lock this one holds,
-    # since that build can never arrive while this one waits for it.
+    # The wait also ends when the other build is already blocked on a lock this session holds
+    # (asked of Postgres for this backend alone), since that build can never arrive while this
+    # one waits for it.
     orig_lock = movements.lock_company
     synced: set[int] = set()
-
-    async def _other_is_waiting() -> bool:
-        async with _db_engine.connect() as conn:
-            return bool((await conn.execute(text(
-                "SELECT count(*) FROM pg_stat_activity "
-                "WHERE datname = current_database() AND wait_event_type = 'Lock'"
-            ))).scalar_one())
 
     async def _barrier_then_lock(session, cid):
         if cid == company_id and id(session) not in synced:
             synced.add(id(session))
-            while len(synced) < 2 and not await _other_is_waiting():
+            pid = await _backend_pid(session)
+            while len(synced) < 2 and not await _someone_waits_on(_db_engine, pid):
                 await asyncio.sleep(0.02)
         return await orig_lock(session, cid)
 
