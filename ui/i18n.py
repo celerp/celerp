@@ -8,6 +8,8 @@ from contextvars import ContextVar
 from pathlib import Path
 from functools import lru_cache
 
+from celerp.services.pricing import PRICE_LISTS_FALLBACK, price_key
+
 _log = logging.getLogger(__name__)
 
 _LOCALES_DIR = Path(__file__).parent / "locales"
@@ -126,18 +128,43 @@ def t(key: str, lang: str | None = None, **kwargs) -> str:
     return text.format(**kwargs) if kwargs else text
 
 
+# The system price lists every company starts with (they cannot be deleted) are UI
+# labels and translate; any other price list name is user data. One source: the
+# names come from PRICE_LISTS_FALLBACK, each keyed chip.<name>.
+_SYSTEM_PRICE_LIST_KEYS: dict[str, str] = {pl["name"]: f"chip.{pl['name'].lower()}" for pl in PRICE_LISTS_FALLBACK}
+# Item-schema price columns of the system lists, keyed by field key: the label the
+# column carries when nobody renamed it, and the price list name it shows.
+_SYSTEM_PRICE_COLUMNS: dict[str, tuple[str, str]] = {
+    **{price_key(n): (n, n) for n in _SYSTEM_PRICE_LIST_KEYS},
+    **{f"{price_key(n)}_total": (f"{n} (Total)", n) for n in _SYSTEM_PRICE_LIST_KEYS},
+}
+
+
+def price_list_label(name: str, lang: str | None = None) -> str:
+    """Display name for a price list: a system list (Retail, Wholesale, Cost) in the
+    user's language, any other list exactly as the user named it."""
+    key = _SYSTEM_PRICE_LIST_KEYS.get(name)
+    return t(key, lang) if key else name
+
+
 def field_label(f: dict) -> str:
     """Display label for an item-schema field, resolved through t() at render time.
 
     Built-in fields carry a ``label_key`` (mirroring ``tooltip_key``); a request
     in another language renders the translated label. Stored custom fields and
     dynamic price columns have no ``label_key`` and render their raw ``label`` -
-    a user-defined label is data, never translated. Falls back to the field key
+    a user-defined label is data, never translated - except the columns of the
+    system price lists, which translate while they keep their default label. Falls back to the field key
     so a malformed field never renders blank."""
     key = f.get("label_key")
     if key:
         return t(key)
-    return f.get("label", f.get("key", ""))
+    label = f.get("label", f.get("key", ""))
+    system = _SYSTEM_PRICE_COLUMNS.get(f.get("key", ""))
+    if system and label == system[0]:
+        name = price_list_label(system[1])
+        return t("inventory.import_col_total", name=name) if label != system[1] else name
+    return label
 
 
 def tier_label(tier: str) -> str:

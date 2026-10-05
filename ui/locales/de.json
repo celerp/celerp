@@ -2258,7 +2258,7 @@
   "documents.outstanding_amount": "Ausstehend: {amount}",
   "documents.outstanding_label": "Ausstehend:",
   "documents.page_receipts": "Belege",
-  "documents.page_stock_orders": "Bestellungen aus dem Lager",
+  "documents.page_stock_orders": "Lagerbestellungen",
   "documents.page_subscription_po_templates": "Vorlagen für Abonnement-Bestellungen",
   "documents.page_subscription_templates": "Vorlagen für Abonnements",
   "documents.paid_in_full": "Vollständig bezahlt",

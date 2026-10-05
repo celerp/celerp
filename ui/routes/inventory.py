@@ -37,7 +37,7 @@ from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBAC
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from celerp.importers.tabular import known_headers
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
-from ui.i18n import t, get_lang, is_rtl, field_label
+from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label
 from celerp.services.units import is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import splitting_allowed
 from celerp_inventory.services import (
@@ -5339,7 +5339,7 @@ def _valuation_bar(aggregates: dict, currency: str | None = None, lang: str = "e
         chips.append(Span(f"{t('inventory.th_pieces', lang)}: {fmt_qty(aggregates['pieces_total'])}", cls="val-chip"))
     missing = aggregates.get("price_missing") or {}
     for name, total in (aggregates.get("price_totals") or {}).items():
-        label = f"{name}: {fmt_money(total, currency)}"
+        label = f"{price_list_label(name, lang)}: {fmt_money(total, currency)}"
         if missing.get(name):
             label += " (" + t("inventory.sold_without_price", lang, n=missing[name]) + ")"
         chips.append(Span(label, cls="val-chip"))
@@ -7436,10 +7436,10 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     if sell_lists:
         derived_lists = [pl for pl in sell_lists if is_derived(pl)]
         if derived_lists:
-            base_label = base_price_list or t("inventory.the_base_price_list")
+            base_label = price_list_label(base_price_list) if base_price_list else t("inventory.the_base_price_list")
             sentences = []
             for pl in derived_lists:
-                s = t("inventory.derived_price_sentence", name=pl.get('name', ''), base=base_label, mult=f"{float(pl['multiplier']):g}")
+                s = t("inventory.derived_price_sentence", name=price_list_label(pl.get('name', '')), base=base_label, mult=f"{float(pl['multiplier']):g}")
                 if pl.get("rounding") is not None:
                     s += t("inventory.rounded_to_nearest", value=f"{float(pl['rounding']):g}")
                 sentences.append(s)
