@@ -237,6 +237,16 @@ async def test_a_raw_batch_books_its_local_creates_and_leaves_snapshots_unplaced
     await assert_books_carry_stock(session, auth["company_id"], unplaced={snapshot["entity_id"]})
 
 
+async def test_a_snapshot_followed_by_a_refused_create_of_the_same_item_books_nothing(session, client, auth):
+    snapshot = _raw_record("item.snapshot", 70.0, source="import:bundle")
+    create = {**_raw_record("item.created", 70.0), "entity_id": snapshot["entity_id"]}
+    r = await _raw(client, auth, snapshot, create)
+    assert r.status_code == 200, r.text
+    assert (r.json()["created"], len(r.json()["errors"])) == (1, 1), r.text
+    assert (await _state(session, auth, snapshot["entity_id"])).get(_FIELD) is None
+    assert await _opening_entries(session, auth["company_id"]) == []
+
+
 async def test_a_raw_snapshot_alone_books_nothing_and_records_no_account(session, client, auth):
     snapshot = _raw_record("item.snapshot", 5.0, source="import:bundle")
     r = await _raw(client, auth, snapshot)

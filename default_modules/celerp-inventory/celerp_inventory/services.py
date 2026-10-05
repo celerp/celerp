@@ -3418,9 +3418,12 @@ async def commit_import_batch(
     outcome, batch_id = await write_import_batch(
         session, company_id, user, role, settings, body, operation_key=operation_key,
     )
-    local = {r.entity_id for r in body.records if r.event_type == "item.created" and r.source != "migration"}
+    # One outcome per record, in input order: each record is judged by its own outcome, so
+    # a refused create of an item a snapshot in the same batch brought in books nothing.
     await recognize_opening_lots(
-        session, company_id, [r.entity_id for r in outcome.records if r.status == "created" and r.entity_id in local],
+        session, company_id,
+        [done.entity_id for rec, done in zip(body.records, outcome.records, strict=True)
+         if done.status == "created" and rec.event_type == "item.created" and rec.source != "migration"],
         user.id, batch_id)
     await session.commit()
     return BatchImportResult(**outcome.route_counts(cap_rejections=False), batch_id=batch_id)
