@@ -835,7 +835,7 @@ async def test_an_unresolved_lot_moves_its_cost_once_an_account_that_holds_it_is
 
     r = await _choose(client, auth, lot, "1130-P")
     assert r.status_code == 422, r.text
-    assert "Account 1130-OB holds it: choose 1130-OB." in r.json()["detail"]
+    assert "Account 1130-OB holds it: choose 1130-OB." in r.json()["detail"]["message"]
     r = await _choose(client, auth, lot, "1210")
     assert r.status_code == 422, r.text
     r = await _choose(client, auth, lot, "1130-OB")
@@ -859,8 +859,8 @@ async def test_a_lot_split_across_inventory_accounts_is_refused_naming_the_trans
 
     r = await _choose(client, auth, lot, "1130-OB")
     assert r.status_code == 422, r.text
-    assert "Move 20.00 from 1130-P to 1130-OB with a journal entry" in r.json()["detail"], r.text
-    assert "books need reconciling" not in r.json()["detail"]
+    assert "Move 20.00 from 1130-P to 1130-OB with a journal entry" in r.json()["detail"]["message"], r.text
+    assert "books need reconciling" not in r.json()["detail"]["message"]
 
     cid, je = auth["company_id"], f"je:{uuid.uuid4()}"
     await _emit_auto_posted_je(

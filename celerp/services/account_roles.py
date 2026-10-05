@@ -29,6 +29,8 @@ from celerp.accounting_roles import (
     UNGUESSED_ROLES,
     AccountRole,
     is_role,
+    needs_accounting,
+    no_account_chosen,
     refusal,
     target_problem,
 )
@@ -323,7 +325,7 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str) -> d
         raise HTTPException(status_code=422, detail=f"Unknown posting role: {role}.")
     code = (code or "").strip()
     if not code:
-        raise HTTPException(status_code=422, detail="Choose an account.")
+        raise HTTPException(status_code=422, detail=no_account_chosen())
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found.")
@@ -337,7 +339,7 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str) -> d
     checked = [role, *(r for r in fx_pair if role in fx_pair and r != role and new_map.get(r))]
     accounts = await lock_accounts(session, company_id, {new_map[r] for r in checked})
     if accounts is None:
-        raise HTTPException(status_code=409, detail="Posting accounts need the accounting module.")
+        raise HTTPException(status_code=409, detail=needs_accounting())
     for checked_role in checked:
         problem = target_problem(checked_role, new_map, accounts.get(new_map[checked_role]))
         if problem:

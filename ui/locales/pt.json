@@ -3653,5 +3653,15 @@
   "event.item.inventory_on_books.recorded": "Estoque registrado nos livros",
   "event.mfg.order.wip_opened": "Produção em andamento aberta",
   "event.mfg.order.wip_unresolved": "A produção em andamento precisa de conciliação",
-  "financial.unclosed_net_income": "Resultado ainda não encerrado"
+  "financial.unclosed_net_income": "Resultado ainda não encerrado",
+  "posting.choose_account": "Escolha uma conta.",
+  "posting.needs_accounting": "As contas de lançamento exigem o módulo de contabilidade.",
+  "posting.older_stock.never_inventory": "A conta {code} nunca registrou estoque, então o estoque anterior não pode estar nela.",
+  "posting.older_stock.not_in_chart": "A conta {code} não está no plano de contas.",
+  "posting.older_stock.no_item": "Item não encontrado.",
+  "posting.older_stock.already_recorded": "Este estoque já registra a sua conta de estoque.",
+  "posting.older_stock.short": "A conta {code} não tem o valor deste estoque, {value}: além do estoque já registrado nela, tem {held}. {fix}",
+  "posting.older_stock.fix_holder": "A conta {holder} o tem: escolha {holder}.",
+  "posting.older_stock.fix_move": "Transfira {amount} de {source} para {code} com um lançamento contábil e escolha {code} novamente.",
+  "posting.older_stock.fix_reconcile": "Nenhuma conta de estoque o tem, então os livros precisam ser conciliados: faça um lançamento Débito {code} {amount} / Crédito {equity} {amount} e escolha {code} novamente."
 }

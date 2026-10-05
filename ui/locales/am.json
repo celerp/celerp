@@ -3653,5 +3653,15 @@
   "event.item.inventory_on_books.recorded": "ክምችት በመዝገብ ላይ ተመዝግቧል",
   "event.mfg.order.wip_opened": "በሂደት ላይ ያለ ሥራ ተከፍቷል",
   "event.mfg.order.wip_unresolved": "በሂደት ላይ ያለ ሥራ ማስታረቅ ያስፈልገዋል",
-  "financial.unclosed_net_income": "ገና ያልተዘጋ የተጣራ ገቢ"
+  "financial.unclosed_net_income": "ገና ያልተዘጋ የተጣራ ገቢ",
+  "posting.choose_account": "መለያ ይምረጡ።",
+  "posting.needs_accounting": "የመመዝገቢያ መለያዎች የሂሳብ ሞጁሉን ይፈልጋሉ።",
+  "posting.older_stock.never_inventory": "መለያ {code} ክምችት ይዞ አያውቅም፣ ስለዚህ የቀድሞ ክምችት በውስጡ ሊሆን አይችልም።",
+  "posting.older_stock.not_in_chart": "መለያ {code} በመለያዎች ሰንጠረዥ ውስጥ የለም።",
+  "posting.older_stock.no_item": "ዕቃው አልተገኘም።",
+  "posting.older_stock.already_recorded": "ይህ ክምችት የክምችት መለያውን አስቀድሞ መዝግቧል።",
+  "posting.older_stock.short": "መለያ {code} የዚህን ክምችት ዋጋ {value} አይይዝም፤ ቀድሞ ከተመዘገበው ክምችት ውጭ {held} ይይዛል። {fix}",
+  "posting.older_stock.fix_holder": "መለያ {holder} ይይዘዋል፤ {holder}ን ይምረጡ።",
+  "posting.older_stock.fix_move": "{amount}ን ከ{source} ወደ {code} በጆርናል ግቤት ያዛውሩ፣ ከዚያ {code}ን እንደገና ይምረጡ።",
+  "posting.older_stock.fix_reconcile": "ምንም የክምችት መለያ አይይዘውም፣ ስለዚህ መዛግብቱ መታረቅ አለባቸው፤ የጆርናል ግቤት ዴቢት {code} {amount} / ክሬዲት {equity} {amount} ይመዝግቡ፣ ከዚያ {code}ን እንደገና ይምረጡ።"
 }

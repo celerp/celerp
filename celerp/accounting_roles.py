@@ -237,6 +237,16 @@ def refusal(key: str, message: str, /, **params) -> dict:
     return {"message": message, "message_key": key, "params": params}
 
 
+def no_account_chosen() -> dict:
+    """The refusal for setting a posting account with none chosen."""
+    return refusal("posting.choose_account", "Choose an account.")
+
+
+def needs_accounting() -> dict:
+    """The refusal for setting a posting account while the accounting module is off."""
+    return refusal("posting.needs_accounting", "Posting accounts need the accounting module.")
+
+
 def type_list(types) -> str:
     return " or ".join(sorted(types))
 

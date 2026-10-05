@@ -3653,5 +3653,15 @@
   "event.item.inventory_on_books.recorded": "Đã ghi nhận tồn kho vào sổ sách",
   "event.mfg.order.wip_opened": "Đã mở sản phẩm dở dang",
   "event.mfg.order.wip_unresolved": "Sản phẩm dở dang cần đối chiếu",
-  "financial.unclosed_net_income": "Lợi nhuận chưa kết chuyển"
+  "financial.unclosed_net_income": "Lợi nhuận chưa kết chuyển",
+  "posting.choose_account": "Chọn một tài khoản.",
+  "posting.needs_accounting": "Tài khoản hạch toán cần mô-đun kế toán.",
+  "posting.older_stock.never_inventory": "Tài khoản {code} chưa từng ghi hàng tồn kho, nên hàng tồn cũ không thể nằm ở đó.",
+  "posting.older_stock.not_in_chart": "Tài khoản {code} không có trong hệ thống tài khoản.",
+  "posting.older_stock.no_item": "Không tìm thấy mặt hàng.",
+  "posting.older_stock.already_recorded": "Lô hàng này đã ghi nhận tài khoản tồn kho.",
+  "posting.older_stock.short": "Tài khoản {code} không giữ giá trị {value} của lô hàng này: ngoài phần hàng đã ghi nhận trên đó, tài khoản giữ {held}. {fix}",
+  "posting.older_stock.fix_holder": "Tài khoản {holder} giữ giá trị này: hãy chọn {holder}.",
+  "posting.older_stock.fix_move": "Chuyển {amount} từ {source} sang {code} bằng bút toán nhật ký, rồi chọn lại {code}.",
+  "posting.older_stock.fix_reconcile": "Không tài khoản tồn kho nào giữ giá trị này, nên sổ sách cần được đối chiếu: ghi bút toán Nợ {code} {amount} / Có {equity} {amount}, rồi chọn lại {code}."
 }

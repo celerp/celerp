@@ -287,7 +287,7 @@ async def test_an_older_lot_waits_for_its_account_and_only_one_that_holds_it_can
         r = await client.put(f"/accounting/posting-accounts/older-stock/{lot}", headers=auth["headers"],
                              json={"code": code})
         assert r.status_code == 422, r.text
-        assert "does not hold" in r.json()["detail"]
+        assert "does not hold" in r.json()["detail"]["message"]
     r = await client.put(f"/accounting/posting-accounts/older-stock/{lot}", headers=auth["headers"],
                          json={"code": "1130-OB"})
     assert r.status_code == 200, r.text

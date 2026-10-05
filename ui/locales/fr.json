@@ -3653,5 +3653,15 @@
   "event.item.inventory_on_books.recorded": "Stock enregistré dans les comptes",
   "event.mfg.order.wip_opened": "En-cours de production ouvert",
   "event.mfg.order.wip_unresolved": "L'en-cours de production doit être rapproché",
-  "financial.unclosed_net_income": "Résultat non encore clôturé"
+  "financial.unclosed_net_income": "Résultat non encore clôturé",
+  "posting.choose_account": "Choisissez un compte.",
+  "posting.needs_accounting": "Les comptes d'imputation nécessitent le module de comptabilité.",
+  "posting.older_stock.never_inventory": "Le compte {code} n'a jamais porté de stock, l'ancien stock ne peut donc pas y figurer.",
+  "posting.older_stock.not_in_chart": "Le compte {code} ne figure pas dans le plan comptable.",
+  "posting.older_stock.no_item": "Article introuvable.",
+  "posting.older_stock.already_recorded": "Ce stock enregistre déjà son compte de stock.",
+  "posting.older_stock.short": "Le compte {code} ne porte pas la valeur de ce stock, {value} : au-delà du stock déjà enregistré dessus, il porte {held}. {fix}",
+  "posting.older_stock.fix_holder": "Le compte {holder} la porte : choisissez {holder}.",
+  "posting.older_stock.fix_move": "Transférez {amount} de {source} vers {code} par une écriture de journal, puis choisissez de nouveau {code}.",
+  "posting.older_stock.fix_reconcile": "Aucun compte de stock ne la porte, les comptes doivent donc être rapprochés : passez une écriture de journal Débit {code} {amount} / Crédit {equity} {amount}, puis choisissez de nouveau {code}."
 }

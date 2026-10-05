@@ -3653,5 +3653,15 @@
   "event.item.inventory_on_books.recorded": "Persediaan dicatat di pembukuan",
   "event.mfg.order.wip_opened": "Barang dalam proses dibuka",
   "event.mfg.order.wip_unresolved": "Barang dalam proses perlu direkonsiliasi",
-  "financial.unclosed_net_income": "Laba bersih belum ditutup"
+  "financial.unclosed_net_income": "Laba bersih belum ditutup",
+  "posting.choose_account": "Pilih akun.",
+  "posting.needs_accounting": "Akun posting memerlukan modul akuntansi.",
+  "posting.older_stock.never_inventory": "Akun {code} tidak pernah menampung persediaan, jadi stok lama tidak mungkin ada di sana.",
+  "posting.older_stock.not_in_chart": "Akun {code} tidak ada di bagan akun.",
+  "posting.older_stock.no_item": "Barang tidak ditemukan.",
+  "posting.older_stock.already_recorded": "Stok ini sudah mencatat akun persediaannya.",
+  "posting.older_stock.short": "Akun {code} tidak menampung nilai stok ini sebesar {value}: di luar stok yang sudah tercatat di sana, akun ini menampung {held}. {fix}",
+  "posting.older_stock.fix_holder": "Akun {holder} menampungnya: pilih {holder}.",
+  "posting.older_stock.fix_move": "Pindahkan {amount} dari {source} ke {code} dengan jurnal, lalu pilih {code} lagi.",
+  "posting.older_stock.fix_reconcile": "Tidak ada akun persediaan yang menampungnya, jadi pembukuan perlu direkonsiliasi: catat jurnal Debit {code} {amount} / Kredit {equity} {amount}, lalu pilih {code} lagi."
 }

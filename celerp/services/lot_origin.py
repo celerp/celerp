@@ -51,6 +51,8 @@ from celerp.accounting_roles import (
     SCHEMA_KEY,
     SOURCE_CONTROLS_KEY,
     AccountRole,
+    needs_accounting,
+    no_account_chosen,
     refusal,
 )
 from celerp.models.ledger import LedgerEntry
@@ -932,26 +934,29 @@ async def choose_lot_account(session: AsyncSession, company_id, item_id: str, co
 
     code = (code or "").strip()
     if not code:
-        raise HTTPException(status_code=422, detail="Choose an account.")
+        raise HTTPException(status_code=422, detail=no_account_chosen())
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found.")
     await lock_chart(session, company_id)
     settings = dict(company.settings or {})
     if not any(code in scope_codes(settings, role) for role in _INVENTORY):
-        raise HTTPException(status_code=422, detail=(
-            f"Account {code} has never held inventory, so older stock cannot be in it."))
+        raise HTTPException(status_code=422, detail=refusal(
+            "posting.older_stock.never_inventory",
+            f"Account {code} has never held inventory, so older stock cannot be in it.", code=code))
     accounts = await lock_accounts(session, company_id, {code})
     if accounts is None:
-        raise HTTPException(status_code=409, detail="Posting accounts need the accounting module.")
+        raise HTTPException(status_code=409, detail=needs_accounting())
     if code not in accounts:
-        raise HTTPException(status_code=422, detail=f"Account {code} is not in the chart of accounts.")
+        raise HTTPException(status_code=422, detail=refusal(
+            "posting.older_stock.not_in_chart", f"Account {code} is not in the chart of accounts.", code=code))
     row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id},
                             with_for_update=True, populate_existing=True)
     if row is None or row.entity_type != "item":
-        raise HTTPException(status_code=404, detail="Item not found.")
+        raise HTTPException(status_code=404, detail=refusal("posting.older_stock.no_item", "Item not found."))
     if (row.state or {}).get(LOT_ACCOUNT_FIELD):
-        raise HTTPException(status_code=409, detail="This stock already records its inventory account.")
+        raise HTTPException(status_code=409, detail=refusal(
+            "posting.older_stock.already_recorded", "This stock already records its inventory account."))
     currency = settings.get("currency", "USD")
     value = booked_value(row, currency)
     inventory = sorted({c for role in _INVENTORY for c in scope_codes(settings, role)} | {code})
@@ -964,12 +969,24 @@ async def choose_lot_account(session: AsyncSession, company_id, item_id: str, co
         holder = next((c for c in others if rooms[c] >= value), None)
         source = next((c for c in others if rooms[c] >= shortfall), None)
         if holder:
-            fix = f"Account {holder} holds it: choose {holder}."
+            fix = refusal("posting.older_stock.fix_holder", f"Account {holder} holds it: choose {holder}.",
+                          holder=holder)
         elif source:
-            fix = f"Move {shortfall} from {source} to {code} with a journal entry, then choose {code} again."
+            fix = refusal("posting.older_stock.fix_move",
+                          f"Move {shortfall} from {source} to {code} with a journal entry, then choose {code} again.",
+                          amount=str(shortfall), source=source, code=code)
         else:
-            fix = "No inventory account holds it, so the books need reconciling before this stock can be placed."
-        raise HTTPException(status_code=422, detail=(
+            # The stock was never recognised on any inventory account, so the entry that
+            # recognises it is the one the opening-stock path posts: inventory against
+            # retained earnings.
+            equity = role_map(settings).get(AccountRole.RETAINED_EARNINGS.value) or ""
+            fix = refusal("posting.older_stock.fix_reconcile",
+                          f"No inventory account holds it, so the books need reconciling: post a journal entry "
+                          f"Dr {code} {shortfall} / Cr {equity} {shortfall}, then choose {code} again.",
+                          amount=str(shortfall), code=code, equity=equity)
+        raise HTTPException(status_code=422, detail=refusal(
+            "posting.older_stock.short",
             f"Account {code} does not hold this stock's value of {value}: beyond the stock already "
-            f"recorded on it, it holds {held}. {fix}"))
+            f"recorded on it, it holds {held}. {fix['message']}",
+            code=code, value=str(value), held=str(held), fix=fix))
     await _record(session, company_id, item_id, code, "chosen", actor_id)

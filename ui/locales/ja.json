@@ -3653,5 +3653,15 @@
   "event.item.inventory_on_books.recorded": "在庫を帳簿に記録しました",
   "event.mfg.order.wip_opened": "仕掛品を開始しました",
   "event.mfg.order.wip_unresolved": "仕掛品の照合が必要です",
-  "financial.unclosed_net_income": "未締めの当期純利益"
+  "financial.unclosed_net_income": "未締めの当期純利益",
+  "posting.choose_account": "勘定科目を選択してください。",
+  "posting.needs_accounting": "転記勘定には会計モジュールが必要です。",
+  "posting.older_stock.never_inventory": "勘定科目 {code} は在庫を計上したことがないため、旧在庫がこの科目にあることはありません。",
+  "posting.older_stock.not_in_chart": "勘定科目 {code} は勘定科目表にありません。",
+  "posting.older_stock.no_item": "品目が見つかりません。",
+  "posting.older_stock.already_recorded": "この在庫には既に在庫勘定が記録されています。",
+  "posting.older_stock.short": "勘定科目 {code} にはこの在庫の価額 {value} がありません。既に記録された在庫を除くと、残高は {held} です。{fix}",
+  "posting.older_stock.fix_holder": "勘定科目 {holder} にあります。{holder} を選択してください。",
+  "posting.older_stock.fix_move": "仕訳で {amount} を {source} から {code} へ振り替えてから、もう一度 {code} を選択してください。",
+  "posting.older_stock.fix_reconcile": "どの在庫勘定にもないため、帳簿の照合が必要です。仕訳 借方 {code} {amount} / 貸方 {equity} {amount} を記帳してから、もう一度 {code} を選択してください。"
 }

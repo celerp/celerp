@@ -3653,5 +3653,15 @@
   "event.item.inventory_on_books.recorded": "تم تسجيل المخزون في الدفاتر",
   "event.mfg.order.wip_opened": "تم فتح الإنتاج قيد التشغيل",
   "event.mfg.order.wip_unresolved": "الإنتاج قيد التشغيل يحتاج إلى تسوية",
-  "financial.unclosed_net_income": "صافي الدخل غير المقفل بعد"
+  "financial.unclosed_net_income": "صافي الدخل غير المقفل بعد",
+  "posting.choose_account": "اختر حسابًا.",
+  "posting.needs_accounting": "تتطلب حسابات الترحيل وحدة المحاسبة.",
+  "posting.older_stock.never_inventory": "لم يحمل الحساب {code} مخزونًا قط، لذا لا يمكن أن يكون المخزون الأقدم فيه.",
+  "posting.older_stock.not_in_chart": "الحساب {code} غير موجود في دليل الحسابات.",
+  "posting.older_stock.no_item": "الصنف غير موجود.",
+  "posting.older_stock.already_recorded": "هذا المخزون يسجل حساب المخزون الخاص به بالفعل.",
+  "posting.older_stock.short": "الحساب {code} لا يحمل قيمة هذا المخزون البالغة {value}: بخلاف المخزون المسجل عليه بالفعل، يحمل {held}. {fix}",
+  "posting.older_stock.fix_holder": "الحساب {holder} يحملها: اختر {holder}.",
+  "posting.older_stock.fix_move": "انقل {amount} من {source} إلى {code} بقيد يومية، ثم اختر {code} مرة أخرى.",
+  "posting.older_stock.fix_reconcile": "لا يحملها أي حساب مخزون، لذا يجب تسوية الدفاتر: سجّل قيد يومية مدين {code} {amount} / دائن {equity} {amount}، ثم اختر {code} مرة أخرى."
 }

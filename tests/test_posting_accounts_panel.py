@@ -169,7 +169,7 @@ async def test_older_stock_lists_each_lot_and_the_accounts_that_held_inventory(s
     r = await client.put(f"/accounting/posting-accounts/older-stock/{lot}", headers=auth["headers"],
                          json={"code": "1120"})
     assert r.status_code == 422
-    assert "has never held inventory" in r.json()["detail"]
+    assert "has never held inventory" in r.json()["detail"]["message"]
     r = await client.put("/accounting/posting-accounts/older-stock/item:missing", headers=auth["headers"],
                          json={"code": "1130-OB"})
     assert r.status_code == 404

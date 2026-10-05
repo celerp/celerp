@@ -3653,5 +3653,15 @@
   "event.item.inventory_on_books.recorded": "Magazzino registrato a libro",
   "event.mfg.order.wip_opened": "Semilavorati aperti",
   "event.mfg.order.wip_unresolved": "I semilavorati devono essere riconciliati",
-  "financial.unclosed_net_income": "Utile non ancora chiuso"
+  "financial.unclosed_net_income": "Utile non ancora chiuso",
+  "posting.choose_account": "Scegli un conto.",
+  "posting.needs_accounting": "I conti di registrazione richiedono il modulo di contabilità.",
+  "posting.older_stock.never_inventory": "Il conto {code} non ha mai contenuto magazzino, quindi la giacenza precedente non può trovarsi lì.",
+  "posting.older_stock.not_in_chart": "Il conto {code} non è nel piano dei conti.",
+  "posting.older_stock.no_item": "Articolo non trovato.",
+  "posting.older_stock.already_recorded": "Questa giacenza registra già il suo conto di magazzino.",
+  "posting.older_stock.short": "Il conto {code} non contiene il valore di questa giacenza, {value}: oltre alla giacenza già registrata, contiene {held}. {fix}",
+  "posting.older_stock.fix_holder": "Il conto {holder} lo contiene: scegli {holder}.",
+  "posting.older_stock.fix_move": "Sposta {amount} da {source} a {code} con una scrittura contabile, poi scegli di nuovo {code}.",
+  "posting.older_stock.fix_reconcile": "Nessun conto di magazzino lo contiene, quindi i libri vanno riconciliati: registra una scrittura Dare {code} {amount} / Avere {equity} {amount}, poi scegli di nuovo {code}."
 }

@@ -92,6 +92,34 @@ def test_older_stock_reads_cleanly_at_laptop_width_and_asks_before_the_final_cho
         .to_have_text("Valued at $260.00")
 
 
+def test_a_refused_older_stock_choice_reads_in_german(page, ui_server, fresh_company):
+    from playwright.sync_api import expect
+
+    tag = uuid.uuid4().hex[:6].upper()
+    _older_lot(fresh_company, f"OLD-{tag}", 260.0)
+    host = ui_server.split("//", 1)[1].split(":", 1)[0]
+    page.context.add_cookies([{"name": "celerp_lang", "value": "de", "domain": host, "path": "/"}])
+    try:
+        page.set_viewport_size({"width": 1280, "height": 800})
+        page.goto(f"{ui_server}/settings/accounting?tab=posting-accounts", wait_until="domcontentloaded")
+        row = page.locator("table.posting-accounts tr", has_text=f"OLD-{tag}")
+        expect(row).to_have_count(1)
+        page.on("dialog", lambda dialog: dialog.accept())
+        row.locator("td").nth(1).click()
+        picker = row.locator("[hx-patch]")
+        expect(picker).to_have_count(1)
+        picker.evaluate("""el => {
+            el.value = '1130-P';
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+        }""")
+        refusal = page.locator("table.posting-accounts tr", has_text=f"OLD-{tag}")
+        expect(refusal).to_contain_text("Konto 1130-P hält den Wert dieses Bestands")
+        expect(refusal).to_contain_text("Wählen Sie 1130-OB.")
+        assert "does not hold" not in refusal.inner_text()
+    finally:
+        page.context.clear_cookies()
+
+
 def test_a_notice_asking_for_action_leads_the_bell_and_stands_out(page, ui_server, fresh_company):
     from playwright.sync_api import expect
 

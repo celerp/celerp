@@ -3653,5 +3653,15 @@
   "event.item.inventory_on_books.recorded": "Stock recorded on the books",
   "event.mfg.order.wip_opened": "Work in progress opened",
   "event.mfg.order.wip_unresolved": "Work in progress needs reconciling",
-  "financial.unclosed_net_income": "Net income not yet closed"
+  "financial.unclosed_net_income": "Net income not yet closed",
+  "posting.choose_account": "Choose an account.",
+  "posting.needs_accounting": "Posting accounts need the accounting module.",
+  "posting.older_stock.never_inventory": "Account {code} has never held inventory, so older stock cannot be in it.",
+  "posting.older_stock.not_in_chart": "Account {code} is not in the chart of accounts.",
+  "posting.older_stock.no_item": "Item not found.",
+  "posting.older_stock.already_recorded": "This stock already records its inventory account.",
+  "posting.older_stock.short": "Account {code} does not hold this stock's value of {value}: beyond the stock already recorded on it, it holds {held}. {fix}",
+  "posting.older_stock.fix_holder": "Account {holder} holds it: choose {holder}.",
+  "posting.older_stock.fix_move": "Move {amount} from {source} to {code} with a journal entry, then choose {code} again.",
+  "posting.older_stock.fix_reconcile": "No inventory account holds it, so the books need reconciling: post a journal entry Dr {code} {amount} / Cr {equity} {amount}, then choose {code} again."
 }

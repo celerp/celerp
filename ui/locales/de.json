@@ -3653,5 +3653,15 @@
   "event.item.inventory_on_books.recorded": "Bestand in den Büchern erfasst",
   "event.mfg.order.wip_opened": "Unfertige Erzeugnisse eröffnet",
   "event.mfg.order.wip_unresolved": "Unfertige Erzeugnisse müssen abgestimmt werden",
-  "financial.unclosed_net_income": "Noch nicht abgeschlossenes Jahresergebnis"
+  "financial.unclosed_net_income": "Noch nicht abgeschlossenes Jahresergebnis",
+  "posting.choose_account": "Wählen Sie ein Konto.",
+  "posting.needs_accounting": "Buchungskonten erfordern das Buchhaltungsmodul.",
+  "posting.older_stock.never_inventory": "Konto {code} hat nie Vorräte geführt, daher kann älterer Bestand nicht darauf stehen.",
+  "posting.older_stock.not_in_chart": "Konto {code} ist nicht im Kontenplan.",
+  "posting.older_stock.no_item": "Artikel nicht gefunden.",
+  "posting.older_stock.already_recorded": "Für diesen Bestand ist das Lagerkonto bereits erfasst.",
+  "posting.older_stock.short": "Konto {code} hält den Wert dieses Bestands von {value} nicht: Über den bereits darauf erfassten Bestand hinaus hält es {held}. {fix}",
+  "posting.older_stock.fix_holder": "Konto {holder} hält ihn: Wählen Sie {holder}.",
+  "posting.older_stock.fix_move": "Buchen Sie {amount} per Journalbuchung von {source} auf {code} um und wählen Sie dann erneut {code}.",
+  "posting.older_stock.fix_reconcile": "Kein Lagerkonto hält ihn, daher müssen die Bücher abgestimmt werden: Buchen Sie eine Journalbuchung Soll {code} {amount} / Haben {equity} {amount} und wählen Sie dann erneut {code}."
 }
