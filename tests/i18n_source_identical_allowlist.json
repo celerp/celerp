@@ -302,6 +302,8 @@
     "documents.bcc",
     "documents.cc",
     "documents.sku_placeholder",
+    "enum.list_type.audit",
+    "enum.list_type.transfer",
     "enum.mfg_priority.normal",
     "enum.vertical_tag.saas",
     "field.label.sku",
