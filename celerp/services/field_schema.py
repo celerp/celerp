@@ -137,10 +137,11 @@ def _rehydrate_category_label_keys(fields: list[dict]) -> list[dict]:
     """Reattach the label_key of each category field whose label is still a library
     label (the category PATCH model drops it, as it does for built-ins), so the field
     reads in the user's language; a renamed field keeps its literal label."""
-    return [
-        {**f, "label_key": key} if "label_key" not in f and (key := field_label_key(f.get("label") or "")) else f
-        for f in fields
-    ]
+    out = []
+    for f in fields:
+        key = None if "label_key" in f else field_label_key(f.get("label") or "")
+        out.append({**f, "label_key": key} if key else f)
+    return out
 
 
 def _inject_price_columns(base: list[dict], price_lists: list[dict]) -> list[dict]:
