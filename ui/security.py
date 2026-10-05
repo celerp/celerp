@@ -31,12 +31,20 @@ NOT_PERMITTED = "not_permitted"
 NOTICE_COOKIE = "celerp_notice"
 
 
-def not_permitted_redirect() -> RedirectResponse:
+def hx_redirect(url: str) -> Response:
+    """Send an HTMX request to ``url`` as a real navigation. A 302 or an error page
+    would be swapped into the fragment that fired the request, or end as a toast."""
+    return Response(status_code=200, headers={"HX-Redirect": url})
+
+
+def not_permitted_redirect(request: Request) -> Response:
     """Where a page the caller's role may not open sends them: the dashboard,
-    which says why (a silent bounce reads as a broken link). The reason travels
-    in a one-shot cookie, never the URL, so only a real refusal shows it and the
-    page that shows it clears it (NoticeMiddleware)."""
-    response = RedirectResponse("/dashboard", status_code=302)
+    which says why (a silent bounce reads as a broken link). An HTMX request
+    navigates the whole page there. The reason travels in a one-shot cookie,
+    never the URL, so only a real refusal shows it and the page that shows it
+    clears it (NoticeMiddleware)."""
+    response = (hx_redirect("/dashboard") if request.headers.get("hx-request")
+                else RedirectResponse("/dashboard", status_code=302))
     response.set_cookie(NOTICE_COOKIE, NOT_PERMITTED, max_age=60, httponly=True, samesite="lax")
     return response
 

@@ -147,7 +147,7 @@ def setup_ui_routes(app) -> None:
                 title="AI Assistant - Celerp", nav_active="ai", request=request,
             )
         if not role_has_permission(settings, get_role(request), "use_ai_assistant"):
-            return not_permitted_redirect()
+            return not_permitted_redirect(request)
 
         try:
             status = await api.ai_quota_status(token)

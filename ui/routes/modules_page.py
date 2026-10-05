@@ -1079,7 +1079,7 @@ def setup_routes(app):
         if not token:
             return None, RedirectResponse("/login", status_code=302)
         if not _is_admin(request):
-            return None, not_permitted_redirect()
+            return None, not_permitted_redirect(request)
         return token, None
 
     @app.get("/modules")

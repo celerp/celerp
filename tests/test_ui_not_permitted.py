@@ -72,6 +72,19 @@ async def test_a_page_the_role_may_not_open_sends_it_to_the_dashboard_with_a_rea
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/modules", "/settings/payments"])
+async def test_an_htmx_request_the_role_may_not_make_navigates_to_the_dashboard(ui_client, path):
+    """A refusal reached from inside a page (a tab, an edit, a toggle) navigates the
+    whole page to the dashboard and its reason, rather than swapping the dashboard
+    into the fragment that fired the request."""
+    with patch("ui.api_client.get_company", new=AsyncMock(return_value=_MANAGER)):
+        r = await ui_client.get(path, headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert r.headers["HX-Redirect"] == "/dashboard"
+    assert "celerp_notice=not_permitted" in r.headers.get("set-cookie", "")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("lang", ["en", "de"])
 async def test_the_notice_shows_once_after_a_refusal_and_not_on_reload(lang):
     notice = _text("perm.redirected_no_access", lang)

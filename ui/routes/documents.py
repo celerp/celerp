@@ -3371,7 +3371,7 @@ celerpUpdateBulkAlloc();
             company = {}
         currency = company.get("currency") or None
         if not role_has_permission(company.get("settings") or {}, _get_role(request), "view_payments"):
-            return not_permitted_redirect()
+            return not_permitted_redirect(request)
 
         # Fetch all docs and extract payments
         try:

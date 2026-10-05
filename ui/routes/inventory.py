@@ -1253,7 +1253,7 @@ def setup_routes(app):
         _settings = company.get("settings") or {}
         _role = _get_role(request)
         if not role_has_permission(_settings, _role, "view_inventory"):
-            return not_permitted_redirect()
+            return not_permitted_redirect(request)
 
         # Company is fresh and valid here; a static-metadata or list/valuation
         # failure degrades to an honest content error inside the normal shell,

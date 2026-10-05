@@ -32,7 +32,7 @@ from ui.routes.setup import business_type_label, business_type_options
 
 async def _check_permission(
     request: Request, key: str, *, page_view: bool = False
-) -> RedirectResponse | None:
+) -> Response | None:
     """Return None if the caller holds the named permission, else a redirect.
 
     The role and its permission overrides are read from authenticated API state
@@ -64,7 +64,7 @@ async def _check_permission(
     role = api.role_from_company(company)
     settings = company.get("settings") or {}
     if not role_has_permission(settings, role, key):
-        return not_permitted_redirect()
+        return not_permitted_redirect(request)
     return None
 
 
