@@ -434,21 +434,31 @@ async def payments_disconnect() -> dict:
 
 
 @router.get("/payments/unmatched", dependencies=[Depends(require_install_owner)])
-async def payments_unmatched(session: AsyncSession = Depends(get_session)) -> dict:
+async def payments_unmatched(company_id=Depends(get_current_company_id),
+                             session: AsyncSession = Depends(get_session)) -> dict:
     """Online payments received for a company or invoice that no longer exists, or
     that the invoice refused, and the refunds of online payments kept until their
-    payment is on its invoice, each newest first."""
+    payment is on its invoice, each newest first. Dates are business days in this
+    company's timezone, the one recording a payment from here books it on; none
+    when that timezone is not usable."""
     payments, refunds = await pay.unmatched_payments(session), await pay.unmatched_refunds(session)
     names = await _names_still_here(session, [*payments, *refunds])
+    company = await session.get(Company, company_id)
+    try:
+        timezone = business_timezone(((company.settings or {}) if company else {}).get("timezone")).key
+    except ValueError:
+        timezone = None
+
+    def day(instant: datetime.datetime | None) -> str | None:
+        return business_date_at(instant, timezone) if instant and timezone else None
+
     return {"items": [{
         "reference": p.reference, "amount": float(pay.stripe_amount(p.amount_minor, p.currency)),
-        "currency": p.currency, **names(p), "received_at": p.received_at.isoformat(),
-        "paid_at": p.paid_at.isoformat() if p.paid_at else None,
+        "currency": p.currency, **names(p), "received_on": day(p.received_at), "paid_on": day(p.paid_at),
     } for p in payments], "refunds": [{
         "refund_id": r.refund_id, "cycle": r.cycle, "transition": r.transition, "reference": r.reference,
         "amount": float(pay.stripe_amount(r.amount_minor, r.currency)), "currency": r.currency,
-        **names(r), "received_at": r.received_at.isoformat(),
-        "occurred_at": r.occurred_at.isoformat() if r.occurred_at else None,
+        **names(r), "received_on": day(r.received_at), "refunded_on": day(r.occurred_at),
     } for r in refunds]}
 
 

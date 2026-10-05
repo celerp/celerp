@@ -157,7 +157,7 @@ def _unmatched_payments(payments: list[dict]) -> FT | str:
         Div(Table(
             Thead(Tr(Th(t("pay.unmatched_received")), Th(t("pay.unmatched_paid_on")), Th(t("label.reference")),
                      Th(t("label.amount"), cls="cell--number"), Th(t("th.company")), Th(t("th.document")))),
-            Tbody(*[Tr(Td(p["received_at"][:10]), Td((p.get("paid_at") or "")[:10] or EMPTY), Td(p["reference"]),
+            Tbody(*[Tr(Td(p.get("received_on") or EMPTY), Td(p.get("paid_on") or EMPTY), Td(p["reference"]),
                        Td(fmt_money(p["amount"], p["currency"]), cls="cell--money"),
                        _where(p)[0], _invoice_cell(p["reference"], p.get("document_ref")))
                     for p in payments]),
@@ -177,7 +177,7 @@ def _unmatched_refunds(refunds: list[dict]) -> FT | str:
             Thead(Tr(Th(t("pay.unmatched_received")), Th(t("pay.unmatched_refunded_on")), Th(t("label.reference")),
                      Th(t("label.amount"), cls="cell--number"), Th(t("th.type")), Th(t("th.company")),
                      Th(t("th.document")))),
-            Tbody(*[Tr(Td(r["received_at"][:10]), Td((r.get("occurred_at") or "")[:10] or EMPTY), Td(r["reference"]),
+            Tbody(*[Tr(Td(r.get("received_on") or EMPTY), Td(r.get("refunded_on") or EMPTY), Td(r["reference"]),
                        Td(fmt_money(r["amount"], r["currency"]), cls="cell--money"),
                        Td(t(f"pay.refund_{r['transition']}")), *_where(r))
                     for r in refunds]),

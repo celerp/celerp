@@ -954,10 +954,10 @@ async def test_the_installation_owner_sees_the_refunds_kept_for_later(real_engin
     r = await real_client.get("/payments/unmatched", headers=auth(await token(real_engine, boss, a)))
 
     assert r.status_code == 200, r.text
-    assert [{k: v for k, v in item.items() if k != "received_at"} for item in r.json()["refunds"]] == [{
+    assert [{k: v for k, v in item.items() if k != "received_on"} for item in r.json()["refunds"]] == [{
         "refund_id": "re_1", "cycle": 1, "transition": "applied", "reference": "pi_1", "amount": 200.0, "currency": "USD",
         "company_id": str(b), "company_name": "Hillside Supply Co", "document_id": "doc:gone", "document_ref": None,
-        "occurred_at": _at(1).isoformat()}]
+        "refunded_on": _at(1).date().isoformat()}]
 
 
 # ── Hardening: the seams refunds open ────────────────────────────────────────

@@ -11064,10 +11064,10 @@ class TestPaymentsSettingsPage:
     _UNMATCHED = [
         {"reference": "pi_new", "amount": 5000, "currency": "JPY", "company_id": "c-new",
          "company_name": None, "document_id": "doc:2", "document_ref": None,
-         "received_at": "2026-09-29T09:00:00+00:00", "paid_at": None},
+         "received_on": "2026-09-29", "paid_on": None},
         {"reference": "pi_old", "amount": 1070.0, "currency": "USD", "company_id": "c-old",
          "company_name": "Old Co", "document_id": "doc:1", "document_ref": "INV-0001",
-         "received_at": "2026-09-28T09:00:00+00:00", "paid_at": "2026-09-25T09:00:00+00:00"},
+         "received_on": "2026-09-28", "paid_on": "2026-09-25"},
     ]
 
     @pytest.mark.asyncio
@@ -11099,11 +11099,11 @@ class TestPaymentsSettingsPage:
         refunds = [
             {"refund_id": "re_2", "transition": "reversed", "reference": "pi_new", "amount": 50.0,
              "currency": "USD", "company_id": "c-new", "company_name": None, "document_id": "doc:2",
-             "document_ref": None, "received_at": "2026-09-29T09:00:00+00:00", "occurred_at": None},
+             "document_ref": None, "received_on": "2026-09-29", "refunded_on": None},
             {"refund_id": "re_1", "transition": "applied", "reference": "pi_old", "amount": 200.0,
              "currency": "USD", "company_id": "c-old", "company_name": "Old Co", "document_id": "doc:1",
-             "document_ref": "INV-0001", "received_at": "2026-09-28T09:00:00+00:00",
-             "occurred_at": "2026-09-27T09:00:00+00:00"}]
+             "document_ref": "INV-0001", "received_on": "2026-09-28",
+             "refunded_on": "2026-09-27"}]
         with self._mocks(relay=True, enabled=True, refunds=refunds):
             r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
         assert r.status_code == 200

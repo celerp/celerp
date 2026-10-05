@@ -935,11 +935,50 @@ async def test_unmatched_payments_are_listed_newest_first(client, session):
     assert r.status_code == 200
     assert r.json() == {"items": [
         {"reference": "pi_new", "amount": 5000, "currency": "JPY", "company_id": "c-new", "company_name": None,
-         "document_id": "doc:2", "document_ref": None, "received_at": "2026-09-29T09:00:00+00:00", "paid_at": None},
+         "document_id": "doc:2", "document_ref": None, "received_on": "2026-09-29", "paid_on": None},
         {"reference": "pi_old", "amount": 1070.0, "currency": "USD", "company_id": "c-old", "company_name": None,
-         "document_id": "doc:1", "document_ref": None, "received_at": "2026-09-28T09:00:00+00:00",
-         "paid_at": "2026-09-25T09:00:00+00:00"},
+         "document_id": "doc:1", "document_ref": None, "received_on": "2026-09-28", "paid_on": "2026-09-25"},
     ], "refunds": []}
+
+
+# 20:30 UTC on Oct 4 is 03:30 on Oct 5 in Bangkok (UTC+7).
+_PAID_LATE = datetime.datetime(2026, 10, 4, 20, 30, tzinfo=datetime.timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_unmatched_dates_are_the_company_business_day(client, session, payments_on):
+    """The unmatched tables date a payment and a refund on the company's calendar,
+    the day the same payment is booked on, never the UTC day."""
+    import re
+    from fasthtml.common import to_xml
+    from celerp.models.payment_closure import UnmatchedRefund
+    from celerp.services.payments import receive_payment
+    from ui.routes.settings_payments import _unmatched
+    tok = await _register(client)
+    assert (await client.patch("/companies/me", json={"settings": {"timezone": "Asia/Bangkok"}},
+                               headers=_h(tok))).status_code == 200
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    bkk = dict(BOOKS, timezone="Asia/Bangkok")
+    for entity, reference in ((eid, "pi_booked"), ("doc:gone", "pi_unmatched")):
+        assert await receive_payment({"company_id": cid, "entity_id": entity, "reference": reference,
+                                      "amount_minor": 100, "currency": "usd", "paid_at": _PAID_LATE.isoformat(),
+                                      "context": bkk, "managed": True})
+    session.add(UnmatchedRefund(refund_id="re_late", cycle=1, transition="applied", reference="pi_x",
+                                amount_minor=100, currency="USD", former_company=cid, document="doc:gone",
+                                received_at=_PAID_LATE, occurred_at=_PAID_LATE))
+    await session.commit()
+    booked_day = (await _doc_state(client, tok, eid))["payments"][0]["payment_date"]
+
+    body = (await client.get("/payments/unmatched", headers=_h(tok))).json()
+
+    assert booked_day == "2026-10-05"
+    [payment] = body["items"]
+    [refund] = body["refunds"]
+    assert (payment["received_on"], payment["paid_on"]) == (booked_day, booked_day)
+    assert (refund["received_on"], refund["refunded_on"]) == (booked_day, booked_day)
+    cells = re.findall(r"<td[^>]*>([^<]*)</td>", to_xml(_unmatched(body)))
+    assert cells.count(booked_day) == 4 and "2026-10-04" not in cells
 
 
 @pytest.mark.asyncio
@@ -978,11 +1017,11 @@ async def test_unmatched_payments_name_their_company_and_invoice_while_they_exis
 def test_the_unmatched_table_shows_names_and_marks_what_was_deleted():
     from fasthtml.common import to_xml
     from ui.routes.settings_payments import _unmatched
-    row = {"received_at": "2026-10-04T09:00:00", "paid_at": None, "reference": "pi_1", "amount": 10.0,
+    row = {"received_on": "2026-10-04", "paid_on": None, "reference": "pi_1", "amount": 10.0,
            "currency": "USD", "company_id": "0b9c2e7a-1111-4c1e-9f00-aaaaaaaaaaaa", "company_name": "Acme Ltd",
            "document_id": "6f1d2c3b-2222-4d2e-8e11-bbbbbbbbbbbb", "document_ref": None}
 
-    html = to_xml(_unmatched({"items": [row], "refunds": [{**row, "transition": "applied", "occurred_at": None}]}))
+    html = to_xml(_unmatched({"items": [row], "refunds": [{**row, "transition": "applied", "refunded_on": None}]}))
 
     assert row["company_id"] not in html and row["document_id"] not in html
     assert html.count("<td>Acme Ltd</td>") == 2

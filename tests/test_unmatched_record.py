@@ -222,7 +222,7 @@ def test_the_list_hint_says_how_to_record_one_here():
     from fasthtml.common import to_xml
     from ui.i18n import set_lang
     from ui.routes.settings_payments import _unmatched_payments
-    row = [{"reference": "pi_1", "received_at": "2026-10-01T00:00:00", "amount": 10, "currency": "USD"}]
+    row = [{"reference": "pi_1", "received_on": "2026-10-01", "amount": 10, "currency": "USD"}]
     set_lang("de")
     try:
         assert "doppelklicken Sie auf die Zelle Dokument" in to_xml(_unmatched_payments(row))
