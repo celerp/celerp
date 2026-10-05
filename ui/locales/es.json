@@ -3749,5 +3749,8 @@
   "enum.unit.carat": "quilate",
   "enum.unit.gram": "gramo",
   "enum.unit.liter": "litro",
-  "enum.unit.meter": "metro"
+  "enum.unit.meter": "metro",
+  "mfg.recipe_cycle": "{product} se usa en su propia receta, directamente o a través de un subensamblaje",
+  "mfg.recipe_too_deep": "Los subensamblajes están anidados a más de {depth} niveles de profundidad",
+  "mfg.component_quantity_unnamed": "La cantidad de un componente debe ser mayor que cero"
 }

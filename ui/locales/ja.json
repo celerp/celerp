@@ -3749,5 +3749,8 @@
   "enum.unit.carat": "カラット",
   "enum.unit.gram": "グラム",
   "enum.unit.liter": "リットル",
-  "enum.unit.meter": "メートル"
+  "enum.unit.meter": "メートル",
+  "mfg.recipe_cycle": "{product} は、直接またはサブアセンブリを通じて、自身のレシピに使われています",
+  "mfg.recipe_too_deep": "サブアセンブリの入れ子が {depth} 階層を超えています",
+  "mfg.component_quantity_unnamed": "構成品の数量は0より大きくなければなりません"
 }

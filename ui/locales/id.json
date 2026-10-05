@@ -3749,5 +3749,8 @@
   "enum.unit.carat": "karat",
   "enum.unit.gram": "gram",
   "enum.unit.liter": "liter",
-  "enum.unit.meter": "meter"
+  "enum.unit.meter": "meter",
+  "mfg.recipe_cycle": "{product} dipakai dalam resepnya sendiri, langsung atau melalui sub-rakitan",
+  "mfg.recipe_too_deep": "Sub-rakitan bertingkat lebih dari {depth} tingkat",
+  "mfg.component_quantity_unnamed": "Jumlah komponen harus lebih besar dari nol"
 }

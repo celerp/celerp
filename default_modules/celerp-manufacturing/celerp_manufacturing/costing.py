@@ -30,6 +30,29 @@ class RecipeError(ValueError):
                        if key else message)
 
 
+THIS_PRODUCT = {"message": "This product", "message_key": "mfg.this_product", "params": {}}
+
+
+def product_name(item_state: dict | None) -> str | dict:
+    """A product as the user knows it in a refusal: its SKU, or "This product" when it has none."""
+    return (item_state or {}).get("sku") or THIS_PRODUCT
+
+
+def english_name(name: str | dict) -> str:
+    return name["message"] if isinstance(name, dict) else name
+
+
+def too_deep() -> RecipeError:
+    return RecipeError(f"Sub-assemblies are nested more than {MAX_RECIPE_DEPTH} levels deep", "recipe_too_deep",
+                       depth=MAX_RECIPE_DEPTH)
+
+
+def used_in_itself(item_state: dict | None) -> RecipeError:
+    name = product_name(item_state)
+    return RecipeError(f"{english_name(name)} is used in its own recipe, directly or through a sub-assembly",
+                       "recipe_cycle", product=name)
+
+
 def output_quantity(recipe: dict) -> float:
     """Units one batch of ``recipe`` yields; 1 when it does not say.
 
@@ -48,7 +71,9 @@ def component_quantity(comp: dict, lookup: ItemLookup) -> float:
     its SKU, from ``lookup`` when an older recipe did not store it."""
     qty = float(comp.get("quantity") or 0)
     if not qty > 0:
-        sku = comp.get("sku") or (lookup(comp.get("item_id")) or {}).get("sku") or comp.get("item_id")
+        sku = comp.get("sku") or (lookup(comp.get("item_id")) or {}).get("sku")
+        if not sku:
+            raise RecipeError("A component's quantity must be greater than zero", "component_quantity_unnamed")
         raise RecipeError(f"Component {sku} quantity must be greater than zero", "component_quantity", sku=sku)
     return qty
 
@@ -92,13 +117,13 @@ def roll_up_cost(recipe: dict, lookup: ItemLookup, *, currency: str = "USD", _pa
     (round-once). Raises RecipeError on a cycle or nesting beyond MAX_RECIPE_DEPTH.
     """
     if _depth > MAX_RECIPE_DEPTH:
-        raise RecipeError("recipe nesting exceeds max depth")
+        raise too_deep()
 
     materials = 0.0
     for comp in recipe.get("components", []):
         cid = comp["item_id"]
         if cid in _path:
-            raise RecipeError(f"recipe cycle detected at {cid}")
+            raise used_in_itself(lookup(cid))
         child_cost = unit_cost(lookup(cid), lookup, currency=currency, _path=_path | {cid}, _depth=_depth + 1)
         line = component_quantity(comp, lookup) * child_cost
         # Annotate the line in-place so the UI can show each component's catalog unit cost (a rate)

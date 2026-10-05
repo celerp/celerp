@@ -3749,5 +3749,8 @@
   "enum.unit.carat": "กะรัต",
   "enum.unit.gram": "กรัม",
   "enum.unit.liter": "ลิตร",
-  "enum.unit.meter": "เมตร"
+  "enum.unit.meter": "เมตร",
+  "mfg.recipe_cycle": "{product} ถูกใช้ในสูตรของตัวเอง โดยตรงหรือผ่านชิ้นส่วนประกอบย่อย",
+  "mfg.recipe_too_deep": "ชิ้นส่วนประกอบย่อยซ้อนกันลึกเกิน {depth} ระดับ",
+  "mfg.component_quantity_unnamed": "จำนวนของส่วนประกอบต้องมากกว่าศูนย์"
 }

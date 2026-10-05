@@ -3749,5 +3749,8 @@
   "enum.unit.carat": "carat",
   "enum.unit.gram": "gam",
   "enum.unit.liter": "lít",
-  "enum.unit.meter": "mét"
+  "enum.unit.meter": "mét",
+  "mfg.recipe_cycle": "{product} được dùng trong chính công thức của nó, trực tiếp hoặc qua một cụm lắp ráp con",
+  "mfg.recipe_too_deep": "Các cụm lắp ráp con lồng nhau sâu hơn {depth} cấp",
+  "mfg.component_quantity_unnamed": "Số lượng của một thành phần phải lớn hơn 0"
 }

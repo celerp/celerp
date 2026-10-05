@@ -3749,5 +3749,8 @@
   "enum.unit.carat": "قيراط",
   "enum.unit.gram": "غرام",
   "enum.unit.liter": "لتر",
-  "enum.unit.meter": "متر"
+  "enum.unit.meter": "متر",
+  "mfg.recipe_cycle": "يُستخدم {product} في وصفته نفسها، مباشرةً أو من خلال تجميع فرعي",
+  "mfg.recipe_too_deep": "التجميعات الفرعية متداخلة لأكثر من {depth} مستويات",
+  "mfg.component_quantity_unnamed": "يجب أن تكون كمية المكوّن أكبر من صفر"
 }

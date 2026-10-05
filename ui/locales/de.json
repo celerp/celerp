@@ -3749,5 +3749,8 @@
   "enum.unit.carat": "Karat",
   "enum.unit.gram": "Gramm",
   "enum.unit.liter": "Liter",
-  "enum.unit.meter": "Meter"
+  "enum.unit.meter": "Meter",
+  "mfg.recipe_cycle": "{product} wird in seinem eigenen Rezept verwendet, direkt oder über eine Unterbaugruppe",
+  "mfg.recipe_too_deep": "Unterbaugruppen sind mehr als {depth} Ebenen tief verschachtelt",
+  "mfg.component_quantity_unnamed": "Die Menge einer Komponente muss größer als null sein"
 }

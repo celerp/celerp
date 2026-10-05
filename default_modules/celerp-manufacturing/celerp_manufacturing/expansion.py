@@ -15,16 +15,24 @@ from typing import Callable
 
 from celerp_inventory.projections import is_manufacturable
 
-from .costing import MAX_RECIPE_DEPTH, RecipeError, component_quantity, output_quantity
+from . import costing
+from .costing import (
+    RecipeError,
+    component_quantity,
+    english_name,
+    output_quantity,
+    product_name,
+    too_deep,
+    used_in_itself,
+)
 
 ItemLookup = Callable[[str], dict | None]
 
 
 def for_product(item_state: dict | None, exc: RecipeError) -> RecipeError:
     """A recipe refusal naming the product whose recipe it is, as the user knows it (its SKU)."""
-    sku = (item_state or {}).get("sku")
-    product = sku or {"message": "This product", "message_key": "mfg.this_product", "params": {}}
-    return RecipeError(f"{sku or 'This product'}: {exc}", "product_recipe", product=product, refusal=exc.detail)
+    product = product_name(item_state)
+    return RecipeError(f"{english_name(product)}: {exc}", "product_recipe", product=product, refusal=exc.detail)
 
 
 def mfg_idem_key(source_doc_id: str, item_id: str, operation: str) -> str:
@@ -84,8 +92,8 @@ def explode_demand(lines: list[tuple[str, float]], lookup: ItemLookup) -> dict:
     raw: dict[str, float] = {}
 
     def _walk(item_id: str, qty: float, path: frozenset[str], depth: int) -> None:
-        if depth > MAX_RECIPE_DEPTH:
-            raise RecipeError("recipe nesting exceeds max depth")
+        if depth > costing.MAX_RECIPE_DEPTH:
+            raise too_deep()
         state = lookup(item_id)
         recipe = (state or {}).get("recipe") or {}
         components = recipe.get("components") or []
@@ -99,7 +107,7 @@ def explode_demand(lines: list[tuple[str, float]], lookup: ItemLookup) -> dict:
             if not cid:
                 continue
             if cid in path:
-                raise RecipeError(f"recipe cycle detected at {cid}")
+                raise used_in_itself(lookup(cid))
             _walk(cid, component_quantity(c, lookup) * factor, path | {cid}, depth + 1)
 
     for item_id, qty in lines:

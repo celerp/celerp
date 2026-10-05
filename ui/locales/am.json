@@ -3749,5 +3749,8 @@
   "enum.unit.carat": "ካራት",
   "enum.unit.gram": "ግራም",
   "enum.unit.liter": "ሊትር",
-  "enum.unit.meter": "ሜትር"
+  "enum.unit.meter": "ሜትር",
+  "mfg.recipe_cycle": "{product} በራሱ አዘገጃጀት ውስጥ በቀጥታ ወይም በንዑስ ስብሰባ በኩል ጥቅም ላይ ውሏል",
+  "mfg.recipe_too_deep": "ንዑስ ስብሰባዎች ከ{depth} ደረጃዎች በላይ ተደራርበዋል",
+  "mfg.component_quantity_unnamed": "የአካል መጠን ከዜሮ በላይ መሆን አለበት"
 }
