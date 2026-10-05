@@ -306,10 +306,18 @@ function initCombobox(wrap) {
 
   function positionList() {
     var r = input.getBoundingClientRect();
-    list.style.top = (r.bottom + 2) + 'px';
     list.style.left = r.left + 'px';
     list.style.minWidth = r.width + 'px';
     list.style.width = 'auto';
+    // Opens upward when the list would run off the bottom of the screen and there is
+    // more room above, so every option can be reached without scrolling the page.
+    var shown = list.classList.contains('open');
+    if (!shown) list.classList.add('open');
+    var h = list.offsetHeight;
+    if (!shown) list.classList.remove('open');
+    var below = window.innerHeight - r.bottom - 4;
+    var up = h > below && r.top - 4 > below;
+    list.style.top = (up ? Math.max(r.top - 4 - h, 0) : r.bottom + 2) + 'px';
   }
 
   // Lazy — always queries the live DOM so HTMX-swapped options are included.
@@ -417,7 +425,7 @@ function initCombobox(wrap) {
     }
   }
 
-  input.addEventListener('focus', function() {
+  function openList() {
     // Restore original static options so user sees full list on re-focus after a search
     if (isServerSearch && originalListHTML) {
       list.innerHTML = originalListHTML;
@@ -428,7 +436,10 @@ function initCombobox(wrap) {
     filterOpts('');
     positionList();
     list.classList.add('open');
-  });
+  }
+  input.addEventListener('focus', openList);
+  // A click on the field after Esc closed it opens it again; focus alone would not.
+  input.addEventListener('click', function() { if (!list.classList.contains('open')) openList(); });
   input.addEventListener('input', function() {
     if (isServerSearch) {
       if (!input.value) {

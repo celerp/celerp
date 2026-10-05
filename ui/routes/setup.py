@@ -146,6 +146,7 @@ def company_choice_script() -> FT:
 (function () {
   var tz = '';
   try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) {}
+  if (window.celerpCurrentZone) tz = window.celerpCurrentZone(tz);
   document.querySelectorAll('input[name="timezone"]').forEach(function (el) { el.value = tz; });
   var hidden = document.querySelector('input[type="hidden"][name="currency"]');
   if (!hidden || hidden.value || !window.celerpGuessCurrency) return;
