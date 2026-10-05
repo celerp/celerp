@@ -181,6 +181,28 @@ async def test_a_payment_of_a_hundredth_of_an_idr_invoice_does_not_mark_it_paid(
     assert doc["amount_outstanding"] == 99000
 
 
+@pytest.mark.parametrize("change", [{"amount_minor": 107000.9}, {"amount_minor": True}, {"amount_minor": "107000"},
+                                    {"amount_minor": -107000}, {"amount_minor": 0}, {"amount_minor": None},
+                                    {"currency": None}, {"currency": ""}, {"currency": 840}],
+                         ids=lambda c: repr(c))
+@pytest.mark.asyncio
+async def test_a_delivery_without_a_whole_amount_and_a_currency_records_nothing(client, session, payments_on,
+                                                                               change):
+    """Like a refund, a payment is recorded only from a whole positive amount in a named
+    currency, as Stripe reports it: never read as some other amount or as dollars."""
+    from celerp.services.payments import receive_payment
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_malformed",
+                "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                "context": dict(BOOKS), "managed": True, **change}
+
+    assert await receive_payment(delivery) is False
+
+    assert not (await _doc_state(client, tok, eid)).get("payments")
+    assert (await client.get("/payments/unmatched", headers=_h(tok))).json()["items"] == []
+
+
 @pytest.mark.asyncio
 async def test_a_stripe_amount_the_books_cannot_hold_is_kept_among_the_unmatched(client, session, payments_on):
     """100,000.50 IDR cannot be recorded on books that keep IDR in whole rupiah: the

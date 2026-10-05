@@ -222,7 +222,7 @@ async def receive_payment(payload: dict) -> bool:
     or the invoice no longer exists, the invoice is already paid, it owes less than
     the charge, or it refuses it, as it does a delivery without usable books). True once recorded
     either way (Cloud is then told it arrived), False for a delivery that names no
-    payment. Raises when nothing could be recorded, so Cloud delivers it again.
+    payment, or no whole positive amount in a named currency (``_counted``). Raises when nothing could be recorded, so Cloud delivers it again.
     Recording the same payment twice changes nothing.
 
     Every delivery tries the invoice again, even for a payment already among the
@@ -236,11 +236,12 @@ async def receive_payment(payload: dict) -> bool:
     from celerp.services.company_lock import hold_company
     from celerp_docs.routes_payments import record_stripe_payment
     company_id, entity_id, reference = (str(payload.get(k) or "") for k in ("company_id", "entity_id", "reference"))
-    if not (company_id and entity_id and reference):
+    amount_minor, currency = payload.get("amount_minor"), payload.get("currency")
+    if not (company_id and entity_id and reference and _counted(amount_minor)
+            and isinstance(currency, str) and currency.strip()):
         return False
     managed = payload.get("managed") is True
-    amount_minor = int(payload.get("amount_minor") or 0)
-    currency = str(payload.get("currency") or "USD").upper()
+    currency = currency.strip().upper()
     try:
         paid_at = datetime.fromisoformat(str(payload.get("paid_at")))
     except ValueError:
