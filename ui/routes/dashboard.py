@@ -145,7 +145,8 @@ _DASH_LABEL_KEYS: dict[str, str] = {
     "All parts/vehicles": "dashboard.all_parts_vehicles",
     "View and manage stock": "dashboard.view_and_manage_stock",
     "CRM contacts": "dashboard.crm_contacts",
-    "Chart of accounts": "dashboard.chart_of_accounts",
+    "Accounting": "page.accounting",
+    "Journal": "acct.tab_journal",
 }
 
 
@@ -568,7 +569,7 @@ _DEFAULT_CONFIG: dict = {
         ("/docs?type=purchase_order", "Purchase Orders", "Supplier orders"),
         ("/crm",                      "Customers",       "CRM contacts"),
         ("/reports/ar-aging",         "AR Aging",        "Outstanding receivables"),
-        ("/accounting",               "Accounts",        "Chart of accounts"),
+        ("/accounting",               "Accounting",      "Journal"),
     ],
     "charts": ["inventory_cat", "ar_aging"],
     "show_activity": True,
