@@ -234,6 +234,15 @@ a:hover { text-decoration: underline; }
   .topbar .user-menu__trigger, .topbar .company-switcher-select { max-width: 4.5rem; }
   .topbar .notif-wrap, .topbar .user-menu { flex-shrink: 0; }
 }
+/* Phones: two rows. Menu, language, bell and user on the first; search and company
+   share the second, so the search box keeps room to type and names show whole. */
+@media (max-width: 480px) {
+  .topbar { flex-wrap: wrap; height: auto; row-gap: 6px; }
+  .topbar .global-search-wrap { order: 1; flex: 1 1 12rem; }
+  .topbar .company-switcher-select { order: 1; max-width: 50%; }
+  .topbar .lang-switcher-wrap { flex-shrink: 0; }
+  .topbar .lang-switcher-wrap .combobox-input { max-width: 8rem; }
+}
 
 /* ─── Main content ────────────────────────────────────────────────────── */
 .main-content { flex: 1; min-width: 0; padding: 24px 28px; overflow-x: auto; }
