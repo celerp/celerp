@@ -1737,21 +1737,23 @@ def _scan_protected_imports(pkg_path: Path, entry: Path | None) -> set[str]:
 
 
 # Names whose use writes a module's namespace in a way its source cannot show:
-# the namespace mappings, code built from strings, and attribute writers reached
-# through an attribute (builtins.setattr, object.__setattr__) or by name
-# (getattr(builtins, 'exec')). Writes to sys.modules, which replace a whole
-# module, are refused alongside them.
+# the namespace mappings (also reached through a function's __globals__, a
+# frame, or the garbage collector), code built from strings, and attribute
+# writers reached through an attribute (builtins.setattr, object.__setattr__) or
+# by name (getattr(builtins, 'exec')). Writes to sys.modules, which replace a
+# whole module, are refused alongside them.
 _NAMESPACE_WRITERS = frozenset({"globals", "vars", "exec", "eval", "__builtins__"})
 _MAPPING_WRITERS = frozenset({
     "update", "setdefault", "pop", "popitem", "clear", "__setitem__", "__delitem__"})
 _NAMESPACE_WRITER_ATTRS = _NAMESPACE_WRITERS | {
-    "__dict__", "setattr", "delattr", "__setattr__", "__delattr__", "__getattribute__"}
+    "__dict__", "setattr", "delattr", "__setattr__", "__delattr__", "__getattribute__",
+    "__globals__", "f_globals", "f_locals", "get_referrers", "get_referents", "get_objects"}
 # Attribute access by a name held in a value: the call, and where its name
 # sits among the call's arguments (None: every argument is a name).
 _ATTR_BY_NAME = {"setattr": 1, "delattr": 1, "getattr": 1,
                  "attrgetter": None, "methodcaller": 0}
-# Function attributes that change what an existing def runs or is called with.
-_FUNCTION_INTERNALS = frozenset({"__code__", "__defaults__", "__kwdefaults__"})
+# Attributes that change what an existing def, or the module holding it, runs.
+_FUNCTION_INTERNALS = frozenset({"__code__", "__defaults__", "__kwdefaults__", "__class__"})
 
 
 def _module_values(tree: ast.Module) -> set[str]:
@@ -1794,9 +1796,13 @@ def _dynamic_write(tree: ast.Module, handlers: set[str]) -> str | None:
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
     called = {id(n.func) for n in calls}
     guarded = handlers | _FUNCTION_INTERNALS
+    in_function = {id(n) for f in ast.walk(tree) if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+                   for n in ast.walk(f) if n is not f}
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id in _NAMESPACE_WRITERS:
             return node.id
+        if isinstance(node, ast.Name) and node.id == "locals" and id(node) not in in_function:
+            return "locals outside a function"
         if (isinstance(node, ast.Name) and node.id in _ATTR_BY_NAME
                 and id(node) not in called):
             return f"{node.id} used as a value"
