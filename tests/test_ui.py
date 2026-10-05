@@ -16899,9 +16899,9 @@ class TestItemRowColumnParity:
 
     When /api/items/{id}/row is used to replace a list-page row (via HX-Retarget),
     the returned <tr> must contain exactly the same <td data-col=...> columns that
-    data_table renders - including hidden-but-present columns (those not in show_cols
-    are rendered with style="display:none"). Missing or extra columns cause a visual
-    column shift for that row.
+    data_table renders, in the same order - including columns the table's script hides
+    (it re-applies their visibility after the row is swapped in). Missing, extra or
+    reordered columns cause a visual column shift for that row.
     """
 
     _SCHEMA = [
@@ -16951,6 +16951,7 @@ class TestItemRowColumnParity:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
@@ -16966,7 +16967,7 @@ class TestItemRowColumnParity:
         assert tr is not None, "item_row must return a <tr>"
         row_data_cols = [td["data-col"] for td in tr.find_all("td") if td.get("data-col")]
 
-        assert sorted(row_data_cols) == sorted(table_data_cols), (
+        assert row_data_cols == table_data_cols, (
             f"item_row columns {row_data_cols} != data_table columns {table_data_cols}. "
             f"Missing from row: {set(table_data_cols) - set(row_data_cols)}. "
             f"Extra in row: {set(row_data_cols) - set(table_data_cols)}."

@@ -24,7 +24,7 @@ from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
-from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
+from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from celerp.services.cost_visibility import COST_ITEM_KEYS
@@ -709,7 +709,11 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
 
 
 def _parse_params(request: Request) -> dict:
-    q = request.query_params
+    return _page_state(request.query_params)
+
+
+def _page_state(q) -> dict:
+    """The inventory list state carried by query params ``q``."""
     try:
         per_page = int(q.get("per_page", _DEFAULT_PER_PAGE))
     except (ValueError, TypeError):
@@ -958,6 +962,110 @@ def _inventory_page_error(request: Request, lang: str) -> FT:
     )
 
 
+async def _catalog_channels(company: dict, role: str) -> tuple[set, list[dict]]:
+    """The company's connected connectors, and the catalog channels the role sees."""
+    from celerp.modules.slots import get as get_slot
+
+    connected = await _connected_connector_ids(str(company.get("id") or ""))
+    settings = company.get("settings") or {}
+    return connected, [ch for ch in get_slot("catalog_channel")
+                       if _module_contribution_visible(ch, settings, role, connected)]
+
+
+def _inventory_table(
+    p: dict,
+    items: list[dict],
+    schema: list[dict],
+    cat_schemas: dict,
+    col_prefs: dict,
+    company: dict,
+    locations: list[dict],
+    units: list[dict],
+    category_label_map: dict,
+    *,
+    role: str,
+    catalog_channels: list[dict],
+) -> tuple[list[dict], list[str], dict]:
+    """The inventory table for page state ``p``: its effective schema, its visible columns,
+    and the ``data_table`` arguments that draw it. The list page draws the table from these
+    arguments and the single-row reload draws its row from the same ones (``data_row``), so
+    a reloaded row always has the page's cells and row menu. Marks the draft rows of
+    ``items`` whose locked amount fields stay authorable."""
+    active_cat = p.get("category", "")
+    eff_schema = _effective_schema(schema, cat_schemas, active_cat)
+    # Patch location_name in eff_schema to be editable with resolved options
+    loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
+    eff_schema = [
+        {**f, "type": "select", "options": loc_names, "editable": True} if f.get("key") == "location_name"
+        else f
+        for f in eff_schema
+    ]
+    _cs = company.get("settings") or {}
+    _draft_unlocked = sorted(
+        _locked_edit_keys(eff_schema, role, _cs) - _locked_edit_keys(eff_schema, role, _cs, is_draft=True)
+    )
+    eff_schema = _apply_edit_permission(eff_schema, role, _cs)
+    if catalog_channels and any(f.get("key") == "name" for f in eff_schema):
+        eff_schema = eff_schema + [{
+            "key": "_channels", "label": "Channels", "type": "text",
+            "editable": False, "required": False, "options": [],
+            "visible_to_roles": [], "position": 2.5, "show_in_table": True,
+            "virtual": True, "paired_with": "name", "sortable": False,
+        }]
+    # Draft rows stay authorable: when the transform above locked the amount or cost
+    # fields for this role, mark each DRAFT row so the table renders those cells
+    # click-to-edit anyway - the edit endpoints re-check status + permission
+    # server-side, so this is presentation only.
+    if _draft_unlocked:
+        for _it in items:
+            if _is_draft(_it):
+                _it["_row_editable_keys"] = _draft_unlocked
+    # Derived read-only money columns, appended to the schema whenever their scope is active
+    # (the same rule as _export_columns), so the column set follows from the page state alone
+    # and a single re-rendered row lines up with the header the page drew:
+    # - Under a contact holdings scope the meaningful per-row value is the scope value the
+    #   total is summed from (quoted memo price / consignment cost), not the catalog
+    #   price; surfacing it makes the rows visibly add up to the banner figure.
+    # - On the sold view, each row's realized per-unit sale price sits alongside the
+    #   wholesale/retail prices for direct comparison (derived server-side, list_items).
+    derived_money_cols = []
+    if p.get("on_memo_to"):
+        derived_money_cols.append(("holding_value", t("inventory.col_quoted"), 99))
+    elif p.get("consigned_from"):
+        derived_money_cols.append(("holding_value", t("th.cost"), 99))
+    if "sold" in {s.strip().lower() for s in str(p.get("status") or "").split(",") if s.strip()}:
+        derived_money_cols.append(("sold_price", t("chip.sold"), 98))
+    for _key, _label, _position in derived_money_cols:
+        eff_schema = eff_schema + [{
+            "key": _key, "label": _label, "type": "money",
+            "editable": False, "required": False, "options": [], "visible_to_roles": [],
+            "position": _position, "show_in_table": True,
+        }]
+
+    visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
+    for _key, _label, _position in derived_money_cols:
+        if _key not in visible_cols:
+            # Saved column prefs predate this derived column, so force it visible.
+            visible_cols = visible_cols + [_key]
+    unit_names = [u["name"] for u in units if u.get("name")]
+    units_map = {u["name"]: u for u in units if u.get("name")}
+    currency = company.get("currency")
+    table_args = dict(
+        schema=_label_price_cols(eff_schema),
+        entity_type="inventory",
+        show_cols=visible_cols or None,
+        currency=currency,
+        cell_renderers=_inventory_cell_renderers(
+            eff_schema, unit_names, units_map, category_label_map, currency=currency,
+            can_edit_images=role_has_permission(_cs, role, "edit_inventory"),
+            catalog_channels=catalog_channels,
+            channel_query=urlencode(_base_state({**p, "cols": visible_cols})), settings=_cs, role=role,
+        ),
+        hidden_fields=set(_PAIRED_TABLE.values()),
+    )
+    return eff_schema, visible_cols, table_args
+
+
 async def _inventory_content(
     token: str,
     p: dict,
@@ -1038,17 +1146,9 @@ async def _inventory_content(
         return _inventory_content_error(p, lang)
     # Units and category display names come from the shared metadata snapshot,
     # not a per-render round-trip.
-    unit_names: list[str] = [u["name"] for u in units if u.get("name")]
-    units_map: dict[str, dict] = {u["name"]: u for u in units if u.get("name")}
     category_label_map: dict = category_display_names or {}
-
-    from celerp.modules.slots import get as get_slot
     _settings = company.get("settings") or {}
-    connected_connectors = await _connected_connector_ids(str(company.get("id") or ""))
-    catalog_channels = [
-        ch for ch in get_slot("catalog_channel")
-        if _module_contribution_visible(ch, _settings, role, connected_connectors)
-    ]
+    connected_connectors, catalog_channels = await _catalog_channels(company, role)
 
     currency = company.get("currency")
     vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
@@ -1057,66 +1157,10 @@ async def _inventory_content(
     total_scoped = valuation.get("total_scoped_count", sum(category_counts.values()))
     count_by_status = valuation.get("count_by_status", {})
     active_cat = p.get("category", "")
-    eff_schema = _effective_schema(schema, cat_schemas, active_cat)
-    # Patch location_name in eff_schema to be editable with resolved options
-    loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
-    eff_schema = [
-        {**f, "type": "select", "options": loc_names, "editable": True} if f.get("key") == "location_name"
-        else f
-        for f in eff_schema
-    ]
-    _cs = company.get("settings") or {}
-    _draft_unlocked = sorted(
-        _locked_edit_keys(eff_schema, role, _cs) - _locked_edit_keys(eff_schema, role, _cs, is_draft=True)
+    eff_schema, visible_cols, table_args = _inventory_table(
+        p, items, schema, cat_schemas, col_prefs, company, locations, units,
+        category_label_map, role=role, catalog_channels=catalog_channels,
     )
-    eff_schema = _apply_edit_permission(eff_schema, role, _cs)
-    if catalog_channels and any(f.get("key") == "name" for f in eff_schema):
-        eff_schema = eff_schema + [{
-            "key": "_channels", "label": "Channels", "type": "text",
-            "editable": False, "required": False, "options": [],
-            "visible_to_roles": [], "position": 2.5, "show_in_table": True,
-            "virtual": True, "paired_with": "name", "sortable": False,
-        }]
-    # Draft rows stay authorable: when the transform above locked the amount or cost
-    # fields for this role, mark each DRAFT row so the table renders those cells
-    # click-to-edit anyway - the edit endpoints re-check status + permission
-    # server-side, so this is presentation only.
-    if _draft_unlocked:
-        for _it in items:
-            if _is_draft(_it):
-                _it["_row_editable_keys"] = _draft_unlocked
-    # Derived read-only money columns, appended to the schema when their values exist:
-    # - Under a contact holdings scope the meaningful per-row value is the scope value the
-    #   total is summed from (quoted memo price / consignment cost), not the catalog
-    #   price; surfacing it makes the rows visibly add up to the banner figure.
-    # - On the sold view, each row's realized per-unit sale price sits alongside the
-    #   wholesale/retail prices for direct comparison (derived server-side, list_items).
-    scope_value_label = ""
-    if p.get("on_memo_to"):
-        scope_value_label = t("inventory.col_quoted")
-    elif p.get("consigned_from"):
-        scope_value_label = t("th.cost")
-    if not (scope_value_label and any(i.get("holding_value") is not None for i in items)):
-        scope_value_label = ""
-    sold_view = "sold" in {s.strip().lower() for s in str(p.get("status") or "").split(",") if s.strip()}
-    show_sold_price = sold_view and any(i.get("sold_price") is not None for i in items)
-    derived_money_cols = []
-    if scope_value_label:
-        derived_money_cols.append(("holding_value", scope_value_label, 99))
-    if show_sold_price:
-        derived_money_cols.append(("sold_price", t("chip.sold"), 98))
-    for _key, _label, _position in derived_money_cols:
-        eff_schema = eff_schema + [{
-            "key": _key, "label": _label, "type": "money",
-            "editable": False, "required": False, "options": [], "visible_to_roles": [],
-            "position": _position, "show_in_table": True,
-        }]
-
-    visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
-    for _key, _label, _position in derived_money_cols:
-        if _key not in visible_cols:
-            # Saved column prefs predate this derived column, so force it visible.
-            visible_cols = visible_cols + [_key]
     # Inject resolved cols into URL state so sort links and pagination always carry
     # the exact column set being rendered, even when it came from col_prefs not URL params.
     p_with_cols = {**p, "cols": visible_cols}
@@ -1138,25 +1182,15 @@ async def _inventory_content(
             cls="column-manager-row",
         ),
         data_table(
-            _label_price_cols(eff_schema),
-            items,
-            entity_type="inventory",
-            show_cols=visible_cols or None,
+            rows=items,
             sort_key=p["sort"],
             sort_dir=p["dir"],
             sort_url="/inventory/content",
             extra_params=_base_state(p_with_cols),
-            currency=currency,
             sort_target="#inventory-content",
             auto_hide_empty=False,
-            cell_renderers=_inventory_cell_renderers(
-                eff_schema, unit_names, units_map, category_label_map, currency=currency,
-                can_edit_images=role_has_permission(_cs, role, "edit_inventory"),
-                catalog_channels=catalog_channels,
-                channel_query=urlencode(_base_state(p_with_cols)), settings=_settings, role=role,
-            ),
-            hidden_fields=set(_PAIRED_TABLE.values()),
             column_filters=_inventory_column_filters(eff_schema, schema, locations, attribute_facets, p),
+            **table_args,
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], list_total, p["per_page"], "/inventory", extra_params),
         Script(SERVER_FILTER_JS),
@@ -2967,101 +3001,35 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.get("/api/items/{entity_id}/row")
     async def item_row(request: Request, entity_id: str):
-        """Return the full <tr> for one item. Used after category change to reload attribute columns."""
+        """Return the full <tr> for one item, as the list page it sits on draws it (the
+        page state comes from the page's URL). Used after category change to reload
+        attribute columns."""
         token = _token(request)
         if not token:
             return Response("", status_code=401)
+        from urllib.parse import urlsplit
+        from starlette.datastructures import QueryParams
+        from ui.components.table import data_row, table_columns
+
+        p = _page_state(QueryParams(urlsplit(request.headers.get("hx-current-url", "")).query))
         try:
-            schema, item, cat_schemas, loc_resp, units_resp = await asyncio.gather(
-                api.get_item_schema(token),
-                api.get_item(token, entity_id),
-                api.get_all_category_schemas(token),
-                api.get_locations(token),
-                api.get_units(token),
-            )
+            (schema, cat_schemas, col_prefs, company, locations, units, cat_labels), item = (
+                await asyncio.gather(_load_inventory_view_metadata(token), api.get_item(token, entity_id)))
+            # The row as the list endpoint returns it in this page's scope (its holding or
+            # sold value included), falling back to the item itself outside any scope.
+            scoped = await api.list_items(token, {
+                "skus": item.get("sku", ""), "limit": 50,
+                **{k: p[k] for k in ("status", "on_memo_to", "consigned_from") if p.get(k)}})
         except APIError as e:
             return Response(str(e.detail), status_code=500)
-        unit_names = [u["name"] for u in units_resp if u.get("name")]
-        units_map = {u["name"]: u for u in units_resp if u.get("name")}
-        try:
-            category_label_map = await api.get_category_display_names(token)
-        except Exception:
-            category_label_map = {}
-        try:
-            company = await api.get_company(token)
-            currency = (company.get("currency") or "").strip() or None
-        except Exception:
-            company, currency = {}, None
-        active_cat = item.get("category", "")
-        eff_schema = _effective_schema(schema, cat_schemas, active_cat)
-        eff_schema = _apply_edit_permission(eff_schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item))
-        col_prefs: dict = {}
-        try:
-            col_prefs = await api.get_column_prefs(token)
-        except Exception:
-            pass
-        visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, [])
-        visible_cols_set = set(visible_cols) if visible_cols else None
-        cell_renderers = _inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency)
-        from ui.components.table import display_cell
-        safe_id = entity_id.replace(":", "-")
-        flat = _flatten_item_attrs(item)
-        # Render ALL schema columns (minus paired secondaries), matching data_table behaviour.
-        # Columns not in visible_cols are still rendered but hidden via style="display:none" so
-        # that the td count matches the header and JS column toggling works correctly.
-        all_cols = [f for f in eff_schema if f["key"] not in _PAIRED_SECONDARY_KEYS]
-        data_cells = []
-        for f in all_cols:
-            col_hidden = visible_cols_set is not None and f["key"] not in visible_cols_set
-            if f["key"] in cell_renderers:
-                td = cell_renderers[f["key"]](entity_id, flat)
-            else:
-                td = display_cell(
-                    entity_id=entity_id,
-                    field=f["key"],
-                    value=flat.get(f["key"], ""),
-                    cell_type=f.get("type", "text"),
-                    options=f.get("options"),
-                    editable=f.get("editable", True),
-                    currency=currency,
-                )
-            if col_hidden:
-                # Inject display:none to match what data_table JS would apply
-                td.attrs["style"] = "display:none"
-            data_cells.append(td)
-        # Checkbox cell (matches data_table output)
-        checkbox_td = Td(
-            Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
-                  data_entity_id=entity_id,
-                  data_sku=flat.get("sku", ""),
-                  data_name=flat.get("name", ""),
-                  data_qty=str(flat.get("quantity", 0)),
-                  data_weight=str(flat.get("weight", "") or ""),
-                  data_weight_unit=flat.get("weight_unit", ""),
-                  data_sell_by=flat.get("sell_by", ""),
-                  data_status=str(flat.get("status", "") or "").lower(),
-            ),
-            cls="col-checkbox",
-        )
-        # Action cell (matches data_table output)
-        action_td = Td(
-            Div(
-                Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
-                Div(
-                    A(t("btn.edit"), href=f"/inventory/{entity_id}", cls="row-menu-item"),
-                    Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
-                           onclick=f"if(!confirm('Delete this item? This cannot be undone.'))return;"
-                                   f"htmx.ajax('DELETE','/api/items/{entity_id}',"
-                                   f"{{target:'#row-{safe_id}',swap:'outerHTML'}})"),
-                    cls="row-menu-dropdown", id=f"menu-{safe_id}",
-                ),
-                cls="row-menu",
-            ),
-            cls="col-actions",
-        )
-        status_val = str(flat.get("status", "") or "").lower()
-        row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
-        return Tr(checkbox_td, *data_cells, action_td, id=f"row-{safe_id}", cls=row_cls)
+        row = next((r for r in scoped.get("items", []) if r.get("id") == entity_id), None) \
+            or _flatten_item_attrs(item)
+        role = _get_role(request)
+        _, catalog_channels = await _catalog_channels(company, role)
+        _, _, args = _inventory_table(p, [row], schema, cat_schemas, col_prefs, company, locations,
+                                      units, cat_labels or {}, role=role, catalog_channels=catalog_channels)
+        columns = table_columns(args.pop("schema"), args.pop("show_cols"), args.pop("hidden_fields"))
+        return data_row(row, columns, **args)
 
     async def _paired_display(token: str, entity_id: str, field: str, role: str = "owner", settings: dict | None = None):
         """Return a display cell TD for the pair/triple containing `field`."""

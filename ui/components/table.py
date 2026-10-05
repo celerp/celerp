@@ -1261,6 +1261,111 @@ def display_cell(
     )
 
 
+def table_columns(schema: list[dict], show_cols: list[str] | None = None,
+                  hidden_fields: set | None = None) -> list[dict]:
+    """The columns ``data_table`` renders, in order.
+
+    Every schema column is rendered server-side; show_cols only controls the INITIAL JS
+    visibility state, and puts those columns first (in declared order), extras following.
+    This ensures the column manager can show any column without a round-trip, and page 2 /
+    HTMX navigation retains all columns. Fields rendered inside another cell (paired
+    secondaries etc.) are dropped."""
+    visible = list(schema)
+    if show_cols:
+        ordered = [f for key in show_cols for f in schema if f["key"] == key]
+        rest = [f for f in schema if f["key"] not in show_cols]
+        visible = ordered + rest
+    if hidden_fields:
+        visible = [f for f in visible if f["key"] not in hidden_fields]
+    return visible
+
+
+def data_row(
+    row: dict,
+    columns: list[dict],
+    *,
+    entity_type: str = "item",
+    currency: str | None = None,
+    show_row_menu: bool = True,
+    show_checkboxes: bool = True,
+    link_fn: dict[str, str] | None = None,
+    edit_url_tpl: str | None = None,
+    delete_url_tpl: str | None = None,
+    cell_renderers: dict | None = None,
+) -> FT:
+    """One body row of ``data_table``: checkbox, a cell per column of ``table_columns``,
+    and the row menu. Every path that renders or re-renders a row calls this, so a row
+    never differs from the one the table drew. Arguments as for ``data_table``."""
+    entity_id = row.get("id") or row.get("entity_id", "")
+    safe_id = entity_id.replace(":", "-")
+    _delete_url = (delete_url_tpl or "/api/items/{entity_id}").format(entity_id=entity_id)
+    # Single-quoted JS string literal so the inline onclick stays all single
+    # quotes: a double quote here (e.g. from json.dumps) forces the whole
+    # attribute to escape its single quotes, mangling the htmx.ajax URL.
+    _confirm_delete_row = (
+        "'" + t("table.confirm_delete_row").replace("\\", "\\\\").replace("'", "\\'") + "'"
+    )
+    action_cell = [] if not show_row_menu else [
+        Td(
+            Div(
+                Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
+                Div(
+                    A(t("btn.edit"), href=f"/{entity_type}/{entity_id}", cls="row-menu-item"),
+                    # Only a draft can be deleted (the bulk bar's rule); stock is written off.
+                    *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
+                              onclick=f"if(!confirm({_confirm_delete_row}))return;"
+                                      f"htmx.ajax('DELETE','{_delete_url}',"
+                                      f"{{target:'#row-{safe_id}',swap:'outerHTML'}})")]
+                      if str(row.get("status", "") or "").lower() == "draft" else []),
+                    cls="row-menu-dropdown", id=f"menu-{safe_id}",
+                ),
+                cls="row-menu",
+            ),
+            cls="col-actions",
+        )
+    ]
+    status_val = str(row.get("status", "") or "").lower()
+    checkbox_td = [Td(Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
+                 data_entity_id=entity_id,
+                 data_sku=row.get("sku", ""),
+                 data_name=row.get("name", ""),
+                 data_qty=str(row.get("quantity", 0)),
+                 data_weight=str(row.get("weight", "") or ""),
+                 data_weight_unit=row.get("weight_unit", ""),
+                 data_sell_by=row.get("sell_by", ""),
+                 data_status=status_val,
+           ), cls="col-checkbox")] if show_checkboxes else []
+    row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
+    if str(row.get("inventory_type") or "") == "component":
+        row_cls += " data-row--component"  # visual cue for component (raw-material) items
+    # Per-row editability escape: a row may carry _row_editable_keys naming fields
+    # that render click-to-edit even when the schema marked them read-only
+    # (used for draft items, whose amount fields stay authorable until commit).
+    row_editable = set(row.get("_row_editable_keys") or ())
+    return Tr(
+        *checkbox_td,
+        *[
+            cell_renderers[f["key"]](entity_id, row) if cell_renderers and f["key"] in cell_renderers
+            else display_cell(
+                entity_id=entity_id,
+                field=f["key"],
+                value=row.get(f["key"], ""),
+                cell_type=f.get("type", "text"),
+                options=f.get("options"),
+                editable=f.get("editable", True) or f["key"] in row_editable,
+                currency=currency,
+                link_href=(link_fn[f["key"]].format(id=entity_id) if link_fn and f["key"] in link_fn else None),
+                edit_url=(edit_url_tpl.format(id=entity_id, field=f["key"]) if edit_url_tpl else None),
+                domain=(f"{entity_type}_status" if f.get("type", "text") == "status" else None),
+            )
+            for f in columns
+        ],
+        *action_cell,
+        id=f"row-{safe_id}",
+        cls=row_cls,
+    )
+
+
 def data_table(
     schema: list[dict],
     rows: list[dict],
@@ -1302,19 +1407,7 @@ def data_table(
     delete_url_tpl: URL template for row-menu delete, with ``{entity_id}`` placeholder
                     (e.g. ``"/api/items/{entity_id}"``). Defaults to ``/api/items/{entity_id}``.
     """
-    # Render ALL schema columns server-side.
-    # show_cols only controls the INITIAL JS visibility state (not what HTML is rendered).
-    # This ensures the column manager can show any column without a round-trip,
-    # and page 2 / HTMX navigation retains all columns.
-    visible = list(schema)
-    # If show_cols provided, put those first (in declared order), extras follow
-    if show_cols:
-        ordered = [f for key in show_cols for f in schema if f["key"] == key]
-        rest = [f for f in schema if f["key"] not in show_cols]
-        visible = ordered + rest
-    # Drop fields that are rendered inside another cell (paired secondaries etc.)
-    if hidden_fields:
-        visible = [f for f in visible if f["key"] not in hidden_fields]
+    visible = table_columns(schema, show_cols, hidden_fields)
     if not rows:
         if q and q.strip():
             return Div(
@@ -1367,75 +1460,10 @@ def data_table(
     ))
 
     def _row(row: dict) -> FT:
-        import json as _json
-        entity_id = row.get("id") or row.get("entity_id", "")
-        safe_id = entity_id.replace(":", "-")
-        _delete_url = (delete_url_tpl or "/api/items/{entity_id}").format(entity_id=entity_id)
-        # Single-quoted JS string literal so the inline onclick stays all single
-        # quotes: a double quote here (e.g. from json.dumps) forces the whole
-        # attribute to escape its single quotes, mangling the htmx.ajax URL.
-        _confirm_delete_row = (
-            "'" + t("table.confirm_delete_row").replace("\\", "\\\\").replace("'", "\\'") + "'"
-        )
-        action_cell = [] if not show_row_menu else [
-            Td(
-                Div(
-                    Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
-                    Div(
-                        A(t("btn.edit"), href=f"/{entity_type}/{entity_id}", cls="row-menu-item"),
-                        # Only a draft can be deleted (the bulk bar's rule); stock is written off.
-                        *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
-                                  onclick=f"if(!confirm({_confirm_delete_row}))return;"
-                                          f"htmx.ajax('DELETE','{_delete_url}',"
-                                          f"{{target:'#row-{safe_id}',swap:'outerHTML'}})")]
-                          if str(row.get("status", "") or "").lower() == "draft" else []),
-                        cls="row-menu-dropdown", id=f"menu-{safe_id}",
-                    ),
-                    cls="row-menu",
-                ),
-                cls="col-actions",
-            )
-        ]
-        status_val = str(row.get("status", "") or "").lower()
-        checkbox_td = [Td(Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
-                     data_entity_id=entity_id,
-                     data_sku=row.get("sku", ""),
-                     data_name=row.get("name", ""),
-                     data_qty=str(row.get("quantity", 0)),
-                     data_weight=str(row.get("weight", "") or ""),
-                     data_weight_unit=row.get("weight_unit", ""),
-                     data_sell_by=row.get("sell_by", ""),
-                     data_status=status_val,
-               ), cls="col-checkbox")] if show_checkboxes else []
-        row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
-        if str(row.get("inventory_type") or "") == "component":
-            row_cls += " data-row--component"  # visual cue for component (raw-material) items
-        # Per-row editability escape: a row may carry _row_editable_keys naming fields
-        # that render click-to-edit even when the schema marked them read-only
-        # (used for draft items, whose amount fields stay authorable until commit).
-        row_editable = set(row.get("_row_editable_keys") or ())
-        return Tr(
-            *checkbox_td,
-            *[
-                cell_renderers[f["key"]](entity_id, row) if cell_renderers and f["key"] in cell_renderers
-                else display_cell(
-                    entity_id=entity_id,
-                    field=f["key"],
-                    value=row.get(f["key"], ""),
-                    cell_type=f.get("type", "text"),
-                    options=f.get("options"),
-                    editable=f.get("editable", True) or f["key"] in row_editable,
-                    currency=currency,
-                    link_href=(link_fn[f["key"]].format(id=entity_id) if link_fn and f["key"] in link_fn else None),
-                    edit_url=(edit_url_tpl.format(id=entity_id, field=f["key"]) if edit_url_tpl else None),
-                    domain=(f"{entity_type}_status" if f.get("type", "text") == "status" else None),
-                )
-                for f in visible
-            ],
-            *action_cell,
-            id=f"row-{safe_id}",
-            cls=row_cls,
-        )
+        return data_row(row, visible, entity_type=entity_type, currency=currency,
+                        show_row_menu=show_row_menu, show_checkboxes=show_checkboxes,
+                        link_fn=link_fn, edit_url_tpl=edit_url_tpl, delete_url_tpl=delete_url_tpl,
+                        cell_renderers=cell_renderers)
 
     # JS: smart column defaults + localStorage persistence + drag-to-resize
     import json as _json
@@ -1544,7 +1572,9 @@ def data_table(
   if (!window[_VIS_SETTLE_KEY]) {{
     window[_VIS_SETTLE_KEY] = true;
     document.body.addEventListener('htmx:afterSettle', function(e) {{
-      if (e.detail && e.detail.target && e.detail.target.id === 'inventory-content') {{
+      var tid = e.detail && e.detail.target ? e.detail.target.id || '' : '';
+      // The whole content, or one row re-rendered in place (data_row draws every column).
+      if (tid === 'inventory-content' || tid.indexOf('row-') === 0) {{
         // Re-query the live table after each settle - the old `table` ref may be detached
         var liveTable = document.getElementById('data-table');
         if (liveTable) applyVis(liveTable);
