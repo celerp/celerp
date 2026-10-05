@@ -219,14 +219,32 @@ async def mark_read(
     return True
 
 
+async def mark_done(
+    session: AsyncSession,
+    company_id: uuid.UUID,
+    action_url: str,
+) -> int:
+    """The action a notice asks for has been taken: every unread notice of the company
+    linking to it is marked read, so the bell never asks for it again. Caller commits.
+    Returns count updated."""
+    result = await session.execute(
+        update(Notification)
+        .where(
+            Notification.company_id == company_id,
+            Notification.action_url == action_url,
+            Notification.read == False,  # noqa: E712
+        )
+        .values(read=True)
+    )
+    return result.rowcount
+
+
 async def mark_all_read(
     session: AsyncSession,
     company_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> int:
     """Mark all notifications as read for a user. Returns count updated."""
-    from sqlalchemy import update
-
     stmt = (
         update(Notification)
         .where(

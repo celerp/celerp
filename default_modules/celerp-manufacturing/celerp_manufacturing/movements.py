@@ -42,6 +42,7 @@ from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.notifications import service as notification_service
 from celerp.services import auto_je
 from celerp.services.account_roles import (
     PostingRoleError,
@@ -84,6 +85,7 @@ _ORDER_MARK = "manufacturing_order_id"
 _DISAGREE = "books disagree"
 # The production queue, where every open run is listed.
 PRODUCTION_PATH = "/manufacturing/production"
+RECONCILE_PATH = "/manufacturing/runs/{order}/reconcile"
 
 
 def refuse(http_status: int, key: str, message: str, /, **params) -> HTTPException:
@@ -1174,7 +1176,6 @@ async def settle_open_runs(session: AsyncSession, company_id) -> None:
 
 
 async def _settle(session: AsyncSession, company_id) -> None:
-    from celerp.notifications import service as notification_service
 
     await lock_company(session, company_id)
     settings = await current_settings(session, company_id)
@@ -1274,7 +1275,7 @@ async def _settle(session: AsyncSession, company_id) -> None:
             body=(f"The value of the materials in the production run for {run} cannot be worked out from its "
                   f"history ({reason}). It cannot issue, return, receive or complete until it is reconciled: "
                   "open it from here and record what its materials are worth."),
-            action_url=f"/manufacturing/runs/{order}/reconcile", priority="high",
+            action_url=RECONCILE_PATH.format(order=order), priority="high",
             i18n={"title": "notice.mfg_reconcile_needed.title", "body": "notice.mfg_reconcile_needed.body",
                   "params": {"run": run, "reason": reason}})
     booked = sorted([*(o for o, per in plans.items() if sum(per.values(), _ZERO)), *(r.entity_id for r in unbooked)])
@@ -1590,4 +1591,5 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
     if op.books and amount:
         data["account"] = account
     await op.emit_run("mfg.order.wip_reconciled", data, f"mfg:{order_id}:reconcile:{rk}")
+    await notification_service.mark_done(session, company_id, RECONCILE_PATH.format(order=order_id))
     return {"reconciled": str(total), "issued": str(total), "components": recorded, "receipts": receipts}
