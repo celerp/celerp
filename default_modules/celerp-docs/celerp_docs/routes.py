@@ -109,6 +109,8 @@ class LineItem(BaseModel):
     weight: FiniteFloat | None = None
     # Purchasing: what the received lot records about the goods.
     attributes: dict | None = None
+    # Purchasing: the chart account the line posts to; checked when the bill is finalized.
+    account_code: str | None = None
 
     @model_validator(mode="after")
     def _resolve_entity_id(self) -> "LineItem":

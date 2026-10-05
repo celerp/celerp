@@ -134,6 +134,14 @@ async def _bill_line(client, headers, code: str):
                              headers=headers)
 
 
+async def _bill_created_with_line(client, headers, code: str):
+    """A bill whose line names its account from the start, as an API client creates one."""
+    r = await client.post("/docs", headers=headers, json={
+        "doc_type": "bill", "contact_id": "supplier:1", "line_items": [{**_LINE, "account_code": code}]})
+    assert r.status_code == 200, r.text
+    return await client.post(f"/docs/{r.json()['id']}/finalize", headers=headers)
+
+
 def _bill_snapshot(code: str) -> dict:
     return {"doc_type": "bill", "status": "awaiting_payment", "contact_id": "supplier:1", "currency": "USD",
             "line_items": [{**_LINE, "line_total": 40.0, "account_code": code}], "subtotal": 40.0, "total": 40.0}
@@ -145,7 +153,8 @@ async def _bill_import(client, headers, code: str):
         "source": "import", "idempotency_key": "imp-1"})
 
 
-_PATHS = {"stock write-off": _stock_write_off_line, "bill line": _bill_line, "bill import": _bill_import, "reconciliation entry": _recon_create,
+_PATHS = {"stock write-off": _stock_write_off_line, "bill line": _bill_line,
+          "bill created with its line account": _bill_created_with_line, "bill import": _bill_import, "reconciliation entry": _recon_create,
           "reconciliation split": _recon_split, "reconciliation write-off": _recon_write_off,
           "manual journal": _manual_journal}
 
@@ -341,3 +350,14 @@ async def test_a_posting_waiting_on_the_default_chart_putting_an_account_under_i
 
     assert seeded.status_code == 200 and seeded.json()["added"] == 1, seeded.text
     _refused(posted, "header", "2200")
+
+
+@pytest.mark.asyncio
+async def test_a_bill_created_with_a_line_account_keeps_it(client, auth):
+    headers = auth["headers"]
+    r = await client.post("/docs", headers=headers, json={
+        "doc_type": "bill", "contact_id": "supplier:1", "line_items": [{**_LINE, "account_code": "6100"}]})
+    assert r.status_code == 200, r.text
+
+    [line] = (await client.get(f"/docs/{r.json()['id']}", headers=headers)).json()["line_items"]
+    assert line["account_code"] == "6100"
