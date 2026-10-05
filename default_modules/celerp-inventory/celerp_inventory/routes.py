@@ -372,9 +372,19 @@ class PriceBody(BaseModel):
     idempotency_key: str | None = None
 
 
+def status_value(value) -> str:
+    """An item status as it is stored and compared: lower case, whatever case it was typed in."""
+    return str(value or "").lower()
+
+
 class StatusBody(BaseModel):
     new_status: str
     idempotency_key: str | None = None
+
+    @field_validator("new_status")
+    @classmethod
+    def _stored(cls, value: str) -> str:
+        return status_value(value)
 
 
 class ReserveBody(BaseModel):
@@ -2520,7 +2530,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     if not _is_draft and not role_has_permission(settings, role, "edit_inventory_amounts"):
         restricted |= AMOUNT_EDIT_GATED_KEYS
     if "status" in changed_keys:
-        _new_status = (payload.fields_changed["status"] or {}).get("new")
+        _new_status = status_value((payload.fields_changed["status"] or {}).get("new"))
+        payload.fields_changed["status"] = {**(payload.fields_changed["status"] or {}), "new": _new_status}
         await reject_draft_status_change_via_generic_path(session, company_id, entity_id, _new_status)
         await assert_status_change_allowed(session, company_id, entity_id, _new_status, role, settings)
     blocked = changed_keys & restricted
@@ -2705,6 +2716,11 @@ async def _restate_cost_or_409(session: AsyncSession, company_id, **event):
 class BulkStatusBody(BaseModel):
     entity_ids: list[str]
     status: str
+
+    @field_validator("status")
+    @classmethod
+    def _stored(cls, value: str) -> str:
+        return status_value(value)
 
 
 class BulkTransferBody(BaseModel):
