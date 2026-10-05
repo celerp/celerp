@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""The account picker for a posting role, shared by finishing a migration and settings.
+"""The account picker for a posting role, shared by finishing a migration and settings, and
+the item label the posting and reconcile pages share.
 
 Offers the chart accounts that can serve the role and, where one is proposed, adding
 a new account. More than ten options become a searchable picker (rule i).
@@ -13,6 +14,11 @@ from ui.components.table import _SEARCHABLE_THRESHOLD, display_enum, searchable_
 from ui.i18n import t
 
 NEW_ACCOUNT = "__new__"
+
+
+def distinct_name(sku: str | None, name: str | None) -> str:
+    """An item's name when it says something its SKU does not, else empty."""
+    return name if name and name != sku else ""
 
 
 def proposal_label(proposal: dict) -> str:

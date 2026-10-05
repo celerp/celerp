@@ -16,7 +16,7 @@ from ui.config import COOKIE_NAME
 from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
 from ui.components.table import EMPTY, add_new_option, searchable_select, display_enum, fmt_money
 
-from ui.components.posting_accounts import account_picker
+from ui.components.posting_accounts import account_picker, distinct_name
 from ui.routes.accounting_import import ACCOUNT_TYPES
 
 # The cash flow sections an account may be pinned to. The accounting API owns this
@@ -360,8 +360,7 @@ def _older_lot(data: dict, key: str) -> dict | None:
 
 def _older_lot_label(lot: dict) -> str:
     """An older lot by its SKU, and its name when that says something more."""
-    name = lot["name"] if lot["name"] != lot["sku"] else ""
-    return t("posting.older_stock", sku=lot["sku"], name=name).strip()
+    return t("posting.older_stock", sku=lot["sku"], name=distinct_name(lot["sku"], lot["name"])).strip()
 
 
 def _older_stock_row(lot: dict, currency: str, error: str | None = None, recorded: dict | None = None) -> FT:

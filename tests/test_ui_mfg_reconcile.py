@@ -222,3 +222,10 @@ async def test_a_discard_refused_for_a_spent_key_brings_a_new_one(ui_client):
 
     keys = _form_keys(r.text)
     assert keys and "k2" not in keys and all(keys), keys
+
+
+async def test_a_component_named_as_its_sku_is_labelled_once(ui_client):
+    needs = {**NEEDS, "components": [{"item_id": "item:c1", "quantity": 4.0, "sku": "W-C1", "name": "W-C1"}]}
+    body = (await _page(ui_client, needs=needs)).text
+
+    assert "<td>W-C1</td>" in body and "W-C1 W-C1" not in body

@@ -18,7 +18,7 @@ import uuid
 from ui.components.operation_key import (
     kept_operation_key, operation_key_attrs, operation_key_vals, required_operation_key,
 )
-from ui.components.posting_accounts import account_picker
+from ui.components.posting_accounts import account_picker, distinct_name
 from ui.components.shell import base_shell, page_header, page_title, toast_header
 from ui.components.table import (EMPTY, status_cards, empty_state_cta, format_value, search_bar,
                                  bulk_toolbar, filter_th, display_enum, breadcrumbs, COLUMN_FILTER_JS)
@@ -379,7 +379,7 @@ def _reconcile_panel(run_id: str, needs: dict, accounts: list[dict], *, key: str
     values = values or {}
     reason = needs["reason"]
     rows = [
-        Tr(Td(" ".join(x for x in (c.get("sku"), c.get("name")) if x) or c["item_id"]),
+        Tr(Td(" ".join(x for x in (c.get("sku"), distinct_name(c.get("sku"), c.get("name"))) if x) or c["item_id"]),
            Td(f"{c['quantity']:g}", cls="cell--number"),
            Td(Input(type="hidden", name="item_id", value=c["item_id"]),
               Input(type="number", name="value", value=values.get(c["item_id"], ""), step="any", min="0",
