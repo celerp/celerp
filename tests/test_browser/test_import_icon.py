@@ -62,6 +62,9 @@ def test_every_import_button_has_the_spreadsheet_icon(page: Page, fresh_company)
     for path, sel in _PAGES:
         page.goto(path)
         seen.add(_icon(page, page.locator(sel).first)["markup"])
+    # An empty inventory offers "Import from CSV" in the middle of the page too.
+    page.goto("/inventory")
+    seen.add(_icon(page, page.locator("a.empty-state-cta-btn[href='/inventory/import']"))["markup"])
 
     # A draft document's line-item CSV import (an icon-only button).
     r = fresh_company.post("/docs", json={"doc_type": "invoice", "status": "draft", "line_items": [

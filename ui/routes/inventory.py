@@ -5287,7 +5287,8 @@ def _inventory_empty_state(p: dict) -> FT:
         return Div(P(t("inventory.no_status_items", status=label.lower()), cls="empty-state-msg"), cls="empty-state", id="data-table")
     if active_q:
         return Div(P(t("inventory.no_results_for", q=active_q), cls="search-empty--table"), cls="empty-state", id="data-table")
-    return empty_state_cta(t("msg.no_items_inventory"), t("inventory.import_from_csv"), "/inventory/import")
+    return empty_state_cta(t("msg.no_items_inventory"), t("inventory.import_from_csv"), "/inventory/import",
+                           icon=import_icon())
 
 
 def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = None,

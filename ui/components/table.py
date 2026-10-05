@@ -629,16 +629,19 @@ def empty_state_cta(
     action_label: str | None = None,
     action_url: str | None = None,
     hx_post: bool = False,
+    icon: FT | None = None,
 ) -> FT:
-    """Centered card with message + optional action button for empty pages."""
+    """Centered card with message + optional action button for empty pages. ``icon``
+    goes on the button's left (an import action passes the spreadsheet icon)."""
+    label = (icon, action_label) if icon else (action_label,)
     inner: list[FT] = [P(message, cls="empty-state-cta-msg")]
     if action_label:
         if hx_post and action_url:
             inner.append(
-                Button(action_label, hx_post=action_url, hx_swap="none", cls="empty-state-cta-btn")
+                Button(*label, hx_post=action_url, hx_swap="none", cls="empty-state-cta-btn")
             )
         elif action_url:
-            inner.append(A(action_label, href=action_url, cls="empty-state-cta-btn"))
+            inner.append(A(*label, href=action_url, cls="empty-state-cta-btn"))
     return Div(*inner, cls="empty-state-cta")
 
 
