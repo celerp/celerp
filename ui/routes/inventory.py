@@ -1779,7 +1779,7 @@ def setup_routes(app):
             skipped=int(result.get("skipped", 0) or 0) - already,
             updated=updated,
             errors=list(result.get("errors", []) or []),
-            entity_label="inventory",
+            entity_label=t("nav.inventory"),
             back_href="/inventory",
             import_more_href="/inventory/import",
             has_mapping=True,

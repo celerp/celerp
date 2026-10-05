@@ -108,3 +108,15 @@ def test_four_confirm_routes_use_the_one_helper():
             assert "import_result_errors" in _calls(node), f"{routes} builds its own result errors"
             assert "records_failed" not in ast.unparse(node), f"{routes} formats the failed count itself"
     assert seen == wanted
+
+
+def test_every_result_panel_names_its_records_in_the_users_language():
+    """The result's "View ..." button names the imported records through the catalog
+    ("Lager anzeigen" in German), never an English literal."""
+    callers = []
+    for path in sorted((_REPO / "ui" / "routes").glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and "import_result_panel" in ast.unparse(node.func):
+                label = next(k.value for k in node.keywords if k.arg == "entity_label")
+                callers.append((path.name, node.lineno, isinstance(label, ast.Constant)))
+    assert callers and not [c for c in callers if c[2]], callers
