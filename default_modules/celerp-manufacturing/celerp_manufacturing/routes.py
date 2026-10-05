@@ -1096,7 +1096,8 @@ async def _bulk_run_action(session: AsyncSession, company_id, user_id, run_ids: 
         try:
             await _get_order(session, company_id, run_id)
         except HTTPException:
-            skipped.append({"id": run_id, "reason": "not found"})
+            skipped.append({"id": run_id, "reason": f"Production run {run_id} was not found.",
+                            "message_key": "mfg.run_not_found", "params": {"order": run_id}})
             continue
         try:
             # Each run commits or rolls back on its own, so a run that cannot take the action

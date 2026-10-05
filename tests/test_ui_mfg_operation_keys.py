@@ -401,3 +401,45 @@ async def test_make_selected_kept_key_with_another_selection_is_refused_and_repl
 
     assert _toast(refused)["type"] == "error" and _table_key(refused.text) != "p1"
     assert await _count(session, auth, entity_type="mfg_order") == 1
+
+
+async def test_a_bulk_cancel_of_a_run_holding_materials_says_why_and_books_nothing(client, session, auth):
+    """The run is skipped for the reason the run gives, not counted as 'not in a valid state',
+    in the user's language, and nothing is written but the record of the action itself."""
+    from urllib.parse import urlencode
+
+    from sqlalchemy import func, select
+
+    from celerp.models.ledger import LedgerEntry
+    from ui.app import app as ui_app
+
+    made, order = await _issued(client, auth)
+    session.expire_all()
+    kept = select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.company_id == auth["company_id"], LedgerEntry.event_type != "mfg.operation.recorded")
+    before = await session.scalar(kept)
+    with _app():
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+            r = await c.post("/manufacturing/runs/bulk/cancel?status=active",
+                             content=urlencode([("selected", order), ("idempotency_key", "page-1")]).encode(),
+                             cookies={"celerp_token": _token(auth), "celerp_lang": "de"},
+                             headers={"content-type": "application/x-www-form-urlencoded"})
+    assert r.status_code == 200, r.text
+    message = json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
+    de = json.loads((__import__("pathlib").Path(__file__).resolve().parents[1] / "ui/locales/de.json").read_text())
+    assert message == ". ".join([de["manufacturing.bulk_cancelled"].format(n=0),
+                                 de["manufacturing.bulk_skipped"].format(n=1),
+                                 de["mfg.cancel_moved"].rstrip(".")]) + "."
+    assert "Status" not in de["manufacturing.bulk_skipped"]
+    session.expire_all()
+    assert (await _state(session, auth, order))["status"] == "in_progress"
+    assert await session.scalar(kept) == before
+
+
+async def test_a_bulk_action_naming_a_run_that_does_not_exist_skips_it_with_a_keyed_reason(client, auth):
+    r = await client.post("/manufacturing/bulk-action", headers=auth["headers"],
+                          json={"run_ids": ["mfg:gone"], "action": "hold", "idempotency_key": "k"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"done": [], "skipped": [{
+        "id": "mfg:gone", "reason": "Production run mfg:gone was not found.",
+        "message_key": "mfg.run_not_found", "params": {"order": "mfg:gone"}}]}

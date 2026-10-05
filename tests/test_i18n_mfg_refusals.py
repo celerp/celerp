@@ -130,7 +130,8 @@ async def test_cancelling_a_run_that_holds_materials_says_why_in_the_users_langu
 async def test_a_bulk_action_says_why_each_run_was_skipped(ui_client):
     result = {"done": ["mfg:2"], "skipped": [
         {"id": "mfg:1", "reason": SHORT["message"], "message_key": SHORT["message_key"], "params": SHORT["params"]},
-        {"id": "mfg:3", "reason": "not found"}]}
+        {"id": "mfg:3", "reason": "Production run mfg:3 was not found.", "message_key": "mfg.run_not_found",
+         "params": {"order": "mfg:3"}}]}
     with (
         patch("ui.api_client.manufacturing_bulk_run_action", new=AsyncMock(return_value=result)),
         patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": []})),
@@ -141,7 +142,7 @@ async def test_a_bulk_action_says_why_each_run_was_skipped(ui_client):
                                  cookies={**_authed(), "celerp_lang": "th"})
     assert r.status_code == 200, r.text
     message = json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
-    assert _TH_SHORT in message and "not found" in message
+    assert _TH_SHORT in message and _catalog("th")["mfg.run_not_found"].format(order="mfg:3") in message
 
 
 @pytest.mark.asyncio
@@ -157,7 +158,7 @@ async def test_a_bulk_toast_reads_as_whole_sentences(ui_client):
                                  headers={"content-type": "application/x-www-form-urlencoded"},
                                  cookies={**_authed(), "celerp_lang": "en"})
     assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == (
-        "Components issued for runs: 1. Skipped (not in a valid state): 1. " + SHORT["message"])
+        "Components issued for runs: 1. Skipped: 1. " + SHORT["message"])
 
 
 @pytest.mark.parametrize("lang", LOCALES)
