@@ -25,7 +25,6 @@ _VERTICAL_TAGS: tuple[str, ...] = (
     "property_rental", "saas", "watches_accessories", "wine_spirits", "other",
 )
 _TAG_LABELS: dict[str, str] = {tag: f"enum.vertical_tag.{tag}" for tag in _VERTICAL_TAGS}
-from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang, category_label, category_labels
 
 from ui.routes.settings import (
