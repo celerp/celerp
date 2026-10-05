@@ -160,3 +160,22 @@ def test_install_owner_migration_prefers_usable_owner_over_oldest_user(monkeypat
             "SELECT id FROM users WHERE is_install_owner IS TRUE"
         )).scalars().all()
     assert selected == ["owner"]
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_a_user_not_active_in_this_company_says_so(client, session):
+    """A user whose account is active but who is off in this company is refused with
+    the reason that applies: they are not an active user of this company."""
+    admin_token = await register_admin(client)
+    admin_h = {"Authorization": f"Bearer {admin_token}"}
+    await invite_user(client, session, admin_h, "elsewhere@example.test", "owner")
+    users = (await client.get("/companies/me/users", headers=admin_h)).json()["items"]
+    target = next(u for u in users if u["email"] == "elsewhere@example.test")
+    off = await client.patch(
+        f"/companies/me/users/{target['id']}", headers=admin_h, json={"is_active": False})
+    assert off.status_code == 200, off.text
+
+    r = await client.post(
+        f"/companies/me/users/{target['id']}/installation-owner", headers=admin_h)
+    assert r.status_code == 400
+    assert r.json()["detail"] == "Installation owner must be an active user in this company"

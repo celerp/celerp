@@ -687,7 +687,7 @@ async def transfer_install_owner(
         ).with_for_update()
     )).scalar_one_or_none()
     if target is None or not target.is_active or membership is None:
-        raise HTTPException(status_code=400, detail="Installation owner must be an active user")
+        raise HTTPException(status_code=400, detail="Installation owner must be an active user in this company")
 
     current.is_install_owner = False
     await session.flush()
