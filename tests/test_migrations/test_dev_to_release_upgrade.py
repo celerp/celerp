@@ -217,7 +217,7 @@ async def test_golden_dev_to_release_end_to_end(fresh_db):
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from sqlalchemy.pool import NullPool
 
-    from celerp.routers.doctor import _check_stale_projections
+    from celerp_admin.routes import _check_stale_projections
     from celerp.services.dev_release_guard import run_upgrade_guard
 
     async_url, sync_url = fresh_db

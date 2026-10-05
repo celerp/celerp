@@ -5179,15 +5179,11 @@ def _li_field_display_cell(entity_id: str, li_index: str, field: str, value: str
 _WRITEOFF_FIELDS: frozenset[str] = frozenset({"qty_out", "account", "comment"})
 _WRITEOFF_CELL_TYPES: dict[str, str] = {"qty_out": "number", "account": "select", "comment": "text"}
 _WRITEOFF_COL_CLASS: dict[str, str] = {"qty_out": "col-qtyout", "account": "col-account", "comment": "col-comment"}
-# A write-off destination is an expense/cogs/equity account (spoilage/samples -> expense or cogs;
-# owner drawings / family use -> equity). Single source of the picker filter, mirroring the API's
-# _WRITEOFF_ACCOUNT_TYPES so the dropdown and the function-level validation never diverge.
-_WRITEOFF_ACCOUNT_TYPES: frozenset[str] = frozenset({"expense", "cogs", "equity"})
-
-
 def _writeoff_account_choices(chart_items: list | None) -> tuple[list[str], dict[str, str]]:
     """(codes, {code: 'CODE Name'}) for the chart accounts a write-off may post to."""
-    accts = [a for a in (chart_items or []) if a.get("account_type") in _WRITEOFF_ACCOUNT_TYPES]
+    from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES
+
+    accts = [a for a in (chart_items or []) if a.get("account_type") in WRITEOFF_ACCOUNT_TYPES]
     options = [a.get("code", "") for a in accts if a.get("code")]
     labels = {a.get("code", ""): f"{a.get('code','')} {a.get('name','')}".strip() for a in accts if a.get("code")}
     return options, labels
@@ -5894,7 +5890,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     pol = _list_column_policy(doc_type, list_type, status)
     # Write-off entry columns (qty_out / account / comment). Built once for every render path (draft
     # editable, finalized static) so the finalized _li_row - shared with non-list docs - always sees a
-    # bound helper. The account picker options are the expense/cogs/equity chart codes.
+    # bound helper. The account picker options are the expense and equity chart codes.
     _wo_acct_options, _wo_acct_labels = _writeoff_account_choices(chart_accounts)
 
     def _writeoff_cells(li: dict) -> list:

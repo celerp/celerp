@@ -1376,8 +1376,8 @@ async def test_fulfill_re_fulfill_after_revert(client, auth, _setup_ids):
 
     item_state = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
     assert item_state["status"] == "available", f"Expected available after revert, got {item_state['status']}"
-    # Un-fulfilling (revert-lines) does not void the finalize COGS.
-    assert (await _je_net(client, auth["headers"])).get("5100", 0.0) == 100.0, "revert-lines must not void finalize COGS"
+    # The goods are back in stock, so revert-lines gives their cost of sales back.
+    assert (await _je_net(client, auth["headers"])).get("5100", 0.0) == 0.0, "revert-lines must take the COGS back"
 
     # Re-fulfill — must succeed without idempotency key collision
     r2 = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
@@ -1387,8 +1387,8 @@ async def test_fulfill_re_fulfill_after_revert(client, auth, _setup_ids):
 
     item_state = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
     assert item_state["status"] == "sold", f"Expected sold after re-fulfill, got {item_state['status']}"
-    # Re-fulfill posts no new COGS either.
-    assert (await _je_net(client, auth["headers"])).get("5100", 0.0) == 100.0, "re-fulfill must not double-post COGS"
+    # Re-fulfill recognizes the cost once more, never twice.
+    assert (await _je_net(client, auth["headers"])).get("5100", 0.0) == 100.0, "re-fulfill must recognize COGS once"
 
 
 @pytest.mark.asyncio
@@ -3517,7 +3517,8 @@ async def test_invoice_cross_lot_revert_trues_back_and_refulfill_posts_new_cycle
     assert adj0.state.get("status") == "posted"
     back = await session.get(Projection, {"company_id": cid, "entity_id": f"je:auto:{doc1}:cogs-adj:reverse-0:l0"})
     assert back is not None and back.state.get("status") == "posted"
-    assert (await _je_net(client, auth["headers"])).get("5100") == 200.0
+    # Every lot doc1 shipped is back in stock: only doc2's 90 stays recognized.
+    assert (await _je_net(client, auth["headers"])).get("5100") == 90.0
 
     rf = await client.post(f"/docs/{doc1}/fulfill-lines", headers=auth["headers"],
                            json={"line_entity_ids": [lot_a]})

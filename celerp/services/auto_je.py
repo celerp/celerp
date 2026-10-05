@@ -1671,29 +1671,35 @@ async def _recorded_repricings(session, company_id, doc_id: str, cycle: str) -> 
     return by_line
 
 
-async def _lots_out_on_doc(session, company_id, doc_id: str) -> list[Projection]:
-    """The lots whose latest fulfillment event for this doc ships them (not reversed)."""
+async def _lots_by_fulfillment_on_doc(session, company_id, doc_id: str) -> tuple[list[Projection], list[tuple[Projection, float]]]:
+    """The lots this doc ships (latest fulfillment event for the doc not reversed), and the
+    lots it took back into stock and no longer holds, each with the quantity that came back.
+    A lot reversed and then reserved to the doc again is still held for it, so it is in
+    neither list."""
     from celerp.models.ledger import LedgerEntry
 
     rows = (await session.execute(
-        _select(LedgerEntry.entity_id, LedgerEntry.event_type).where(
+        _select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_type == "item",
             LedgerEntry.event_type.in_(("item.fulfilled", "item.fulfillment_reversed")),
             LedgerEntry.data["source_doc_id"].as_string() == doc_id,
         ).order_by(LedgerEntry.id)
     )).all()
-    last: dict[str, str] = {}
-    for entity_id, event_type in rows:
-        last[entity_id] = event_type
-    lots = []
-    for entity_id, event_type in sorted(last.items()):
-        if event_type != "item.fulfilled":
-            continue
+    last: dict[str, tuple[str, dict]] = {}
+    for entity_id, event_type, data in rows:
+        last[entity_id] = (event_type, data or {})
+    out: list[Projection] = []
+    back: list[tuple[Projection, float]] = []
+    for entity_id, (event_type, data) in sorted(last.items()):
         row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-        if row is not None:
-            lots.append(row)
-    return lots
+        if row is None:
+            continue
+        if event_type == "item.fulfilled":
+            out.append(row)
+        elif not ((row.state or {}).get("status") == "reserved" and (row.state or {}).get("status_doc_id") == doc_id):
+            back.append((row, float(data.get("quantity_restored") or 0)))
+    return out, back
 
 
 async def reconcile_doc_cogs(
@@ -1705,7 +1711,9 @@ async def reconcile_doc_cogs(
     A shipped line recognizes the actual cost of the lots it shipped, plus its
     allocation's share for any quantity it has not shipped (an imported invoice can
     deliver part of a line). A line not shipped recognizes its finalize allocation plus
-    every cost correction since recorded against that allocation. The difference from
+    every cost correction since recorded against that allocation. Goods the invoice took
+    back into stock and no longer holds (Set as available after shipping) take their share
+    of the allocation with them, so a lot sold again elsewhere is costed once. The difference from
     the cost of sales the invoice's live entries already book, measured as their net
     relief of inventory, whichever account carries the expense, is rounded once, for
     the whole invoice, and posted
@@ -1726,7 +1734,9 @@ async def reconcile_doc_cogs(
             truth[code] = truth.get(code, 0.0) + amount
 
     shipped_qty: dict[int, float] = {}
-    for lot in await _lots_out_on_doc(session, company_id, doc_id):
+    back_qty: dict[int, float] = {}
+    out, back = await _lots_by_fulfillment_on_doc(session, company_id, doc_id)
+    for lot in out:
         idx = await doc_line_of_lot(session, company_id, doc_id, doc_state, lot.entity_id, lot.state or {})
         if idx is None:
             raise ValueError("cannot safely identify the invoice line of every shipped lot")
@@ -1734,16 +1744,23 @@ async def reconcile_doc_cogs(
         if cost:
             _add({lot_account(lot.state or {}): cost})
         shipped_qty[idx] = shipped_qty.get(idx, 0.0) + float((lot.state or {}).get("quantity") or 0)
+    for lot, qty in back:
+        idx = await doc_line_of_lot(session, company_id, doc_id, doc_state, lot.entity_id, lot.state or {})
+        if idx is None:
+            raise ValueError("cannot safely identify the invoice line of every lot taken back")
+        back_qty[idx] = back_qty.get(idx, 0.0) + qty
     repriced = await _recorded_repricings(session, company_id, doc_id, recognized.cycle)
     for idx, alloc in recognized.allocations.items():
         amount = float(alloc.get("amount") or 0)
-        if int(idx) not in shipped_qty:
+        if int(idx) not in shipped_qty and int(idx) not in back_qty:
             _add(await _allocation_by_account(session, company_id, alloc,
                                               amount + repriced.get(int(idx), 0.0)))
             continue
+        if int(idx) not in shipped_qty:
+            amount += repriced.get(int(idx), 0.0)
         allocated = sum(float(lot.get("qty") or 0) for lot in alloc.get("lots", [])) + float(
             alloc.get("provisional_qty") or 0)
-        unshipped = allocated - shipped_qty[int(idx)]
+        unshipped = allocated - shipped_qty.get(int(idx), 0.0) - back_qty.get(int(idx), 0.0)
         if allocated > 0 and unshipped > 1e-9:
             _add(await _allocation_by_account(session, company_id, alloc, amount * unshipped / allocated))
     booked: dict[str, float] = {}

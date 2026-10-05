@@ -453,9 +453,9 @@ async def test_imported_invoice_cogs_corrected_like_a_native_invoice(real_engine
     cost of INV-P's sold lot failed outright.
 
     INV-E recognized 10.00 for 2 widgets, the cost of the lot its delivery became: its
-    delivery is reverted (the goods come back at 10.00 and nothing is corrected, since
-    10.00 is recognized for goods not shipped), then shipped again from the same lot, and
-    still nothing is corrected.
+    delivery is reverted (the goods come back at 10.00 and the invoice gives that cost of
+    sales back to the inventory books), then shipped again from the same lot, which
+    recognizes the 10.00 again.
 
     INV-P recognized 25.00 for 5 widgets, 15.00 of it for the 3 delivered from a lot
     costing 15.00. Correcting that lot to 15.25 leaves 15.25 for what was shipped and the
@@ -468,11 +468,11 @@ async def test_imported_invoice_cogs_corrected_like_a_native_invoice(real_engine
     r = await real_client.post(f"/docs/{invoice}/revert-lines", headers=books.headers, json={"line_entity_ids": [lot]})
     assert r.status_code == 200, r.text
     reverted = await _position(books)
-    assert _moved(start, reverted) == ((D("2"), D("10.00")), D("0.00"))
+    assert _moved(start, reverted) == ((D("2"), D("10.00")), D("10.00"))
     r = await real_client.post(f"/docs/{invoice}/fulfill-lines", headers=books.headers, json={"line_entity_ids": [lot]})
     assert r.status_code == 200, r.text
     shipped = await _position(books)
-    assert _moved(reverted, shipped) == ((D("-2"), D("-10.00")), D("0.00"))
+    assert _moved(reverted, shipped) == ((D("-2"), D("-10.00")), D("-10.00"))
 
     partial = await _sold_lot(books, "INVP")
     r = await real_client.patch(f"/items/{partial}", headers=books.headers,

@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
 """Inventory write-off / disposal on the unified list lifecycle (list_type=writeoff): a draft list is
-seeded from an inventory selection, each line carries a quantity to remove, a destination expense/cogs/
+seeded from an inventory selection, each line carries a quantity to remove, a destination expense or
 equity account and a free-text reason, then the Write off stock terminal removes the stock (whole row or
 a carved child lot) and posts one balanced journal entry (Dr chosen account / Cr Inventory). Every
 written-off portion ends as a hidden `disposed` item row - the permanent disposal record. Undo voids the
@@ -621,6 +621,22 @@ async def test_writeoff_line_account_override(client):
     je = await _je_for(client, t, wo)
     debit = {x["account"] for x in je["data"]["entries"] if float(x.get("debit", 0) or 0)}
     assert debit == {EXP_A}  # overridden account, not the 6970 default
+
+
+@pytest.mark.asyncio
+async def test_writeoff_to_cost_of_sales_is_refused(client):
+    """Cost of sales belongs to sold stock alone, so a write-off naming the cost of sales account is
+    refused by name and class, and nothing leaves stock."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-COGS", loc=loc, qty=4, cost_total=40)
+    wo = (await _writeoff(client, t, [a]))["id"]
+    r = await _set_line(client, t, wo, line_id=await _line_id(client, t, wo, a), qty_out=4, account="5100")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == ("Account '5100' is a cogs account; a write-off destination must be "
+                                  "an expense or equity account")
+    assert (await _terminal(client, t, wo)).status_code == 422
+    assert await _je_for(client, t, wo) is None
 
 
 @pytest.mark.asyncio

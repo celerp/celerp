@@ -256,7 +256,7 @@ async def test_sold_item_correction_is_dated_today_in_business_time(client, sess
 
 
 @pytest.mark.asyncio
-async def test_reversal_keeps_the_corrected_cost_recognized(client, session, auth):
+async def test_reshipping_after_a_reversal_recognizes_the_corrected_cost(client, session, auth):
     a, b = await _item(client, auth, 100.0), await _item(client, auth, 50.0)
     c = await _merge(client, auth, [a, b])
     doc = await _sell(client, session, auth, c)
@@ -266,9 +266,10 @@ async def test_reversal_keeps_the_corrected_cost_recognized(client, session, aut
     assert r.status_code == 200, r.text
     assert (await _state(session, auth, c))["status"] == "available"
     assert await _cost(session, auth, c) == 170.0
-    # The invoice still stands, so it still recognizes the corrected cost of its goods.
-    assert await _doc_cogs(session, auth, doc) == 170.0
+    # The goods are back in stock, so the invoice no longer recognizes their cost.
+    assert await _doc_cogs(session, auth, doc) == 0.0
 
+    # Shipped again, it recognizes the corrected cost.
     await _fulfil(client, doc, auth, c)
     assert await _doc_cogs(session, auth, doc) == 170.0
 
