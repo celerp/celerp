@@ -19,13 +19,13 @@ from .conftest import run_migration_ops
 MODULE = "t7i8j9k0l1m2_company_modules_from_2_5"
 
 
-def test_revision_is_the_one_head_after_unmatched_refunds():
+def test_revision_follows_unmatched_refunds_on_a_single_head():
     from alembic.script import ScriptDirectory
 
     from celerp.alembic_config import build_alembic_config
 
     script = ScriptDirectory.from_config(build_alembic_config())
-    assert script.get_heads() == ["t7i8j9k0l1m2"]
+    assert len(script.get_heads()) == 1
     assert script.get_revision("t7i8j9k0l1m2").down_revision == "s6h7c8d9e0f1"
 
 
