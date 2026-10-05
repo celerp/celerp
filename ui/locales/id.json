@@ -1264,7 +1264,7 @@
   "settings.deactivating_this_company_will_block_all_access_an": "Menonaktifkan perusahaan ini akan memblokir semua akses dan login. Tidak ada data yang dihapus. Anda dapat mengaktifkan kembali dari layar login.",
   "settings.default_price_list_cannot_be_deleted": "Tidak dapat menghapus '{name}' - ini adalah daftar harga default.",
   "settings.define_your_companys_price_tiers_these_names_are_u": "Tentukan tingkatan harga perusahaan Anda. Nama-nama ini digunakan pada item inventaris, kontak, dan dokumen.",
-  "settings.dismiss": "Membubarkan",
+  "settings.dismiss": "Tutup",
   "settings.document_labelled_cert_on_item_sku1234": "Dokumen berlabel 'sertifikat' pada item SKU1234",
   "settings.document_labelled_warranty_on_item_sku1234": "Dokumen berlabel 'garansi' pada item SKU1234",
   "settings.download_backup": "Unduh Cadangan",
@@ -3573,5 +3573,12 @@
   "setup.finish_failed": "Penyiapan tidak dapat diselesaikan. Pilih lagi jenis bisnis dan mata uang.",
   "setup.finish_later": "Selesaikan nanti",
   "setup.open_dashboard": "Buka dasbor",
-  "setup.activating_timed_out": "Modul tidak dimulai tepat waktu."
+  "setup.activating_timed_out": "Modul tidak dimulai tepat waktu.",
+  "dashboard.getting_started_title": "Masukkan data Anda",
+  "dashboard.getting_started_products": "Produk",
+  "dashboard.getting_started_contacts": "Pelanggan & pemasok",
+  "dashboard.getting_started_documents": "Dokumen",
+  "dashboard.getting_started_where": "Impor selalu ada di kanan atas halaman.",
+  "dashboard.getting_started_demo": "Item bertanda [DEMO] adalah contoh. Impor produk pertama Anda menghapusnya, kecuali Anda telah mengubahnya.",
+  "dashboard.finish_setup": "Selesaikan penyiapan: pilih jenis bisnis Anda"
 }

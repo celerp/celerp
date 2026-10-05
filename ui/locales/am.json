@@ -3573,5 +3573,12 @@
   "setup.finish_failed": "ማዋቀሩ ሊጠናቀቅ አልቻለም። የንግድ አይነትና ምንዛሬን እንደገና ይምረጡ።",
   "setup.finish_later": "በኋላ አጠናቅቅ",
   "setup.open_dashboard": "ዳሽቦርድ ክፈት",
-  "setup.activating_timed_out": "ሞጁሎቹ በጊዜ አልጀመሩም።"
+  "setup.activating_timed_out": "ሞጁሎቹ በጊዜ አልጀመሩም።",
+  "dashboard.getting_started_title": "ውሂብዎን ያስገቡ",
+  "dashboard.getting_started_products": "ምርቶች",
+  "dashboard.getting_started_contacts": "ደንበኞች እና አቅራቢዎች",
+  "dashboard.getting_started_documents": "ሰነዶች",
+  "dashboard.getting_started_where": "አስገባ ሁልጊዜ በገጹ ላይኛው ቀኝ ጥግ ላይ ነው።",
+  "dashboard.getting_started_demo": "[DEMO] የተደረገባቸው ዕቃዎች ናሙናዎች ናቸው። የመጀመሪያው የምርት ማስገባትዎ ያስወግዳቸዋል፣ ካልቀየሯቸው በስተቀር።",
+  "dashboard.finish_setup": "ማዋቀሩን ይጨርሱ፦ የንግድ አይነት ይምረጡ"
 }

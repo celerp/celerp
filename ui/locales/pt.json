@@ -1264,7 +1264,7 @@
   "settings.deactivating_this_company_will_block_all_access_an": "A desativação desta empresa bloqueará todos os acessos e logins. Nenhum dado é excluído. Você pode reativar na tela de login.",
   "settings.default_price_list_cannot_be_deleted": "Não é possível excluir '{name}' - é a lista de preços padrão.",
   "settings.define_your_companys_price_tiers_these_names_are_u": "Defina os níveis de preços da sua empresa. Esses nomes são usados ​​em itens de inventário, contatos e documentos.",
-  "settings.dismiss": "Liberar",
+  "settings.dismiss": "Fechar",
   "settings.document_labelled_cert_on_item_sku1234": "Documento rotulado como 'cert' no item SKU1234",
   "settings.document_labelled_warranty_on_item_sku1234": "Documento rotulado como 'garantia' no item SKU1234",
   "settings.download_backup": "Baixar cópia de segurança",
@@ -3573,5 +3573,12 @@
   "setup.finish_failed": "Não foi possível concluir a configuração. Escolha novamente o tipo de negócio e a moeda.",
   "setup.finish_later": "Concluir depois",
   "setup.open_dashboard": "Abrir o painel",
-  "setup.activating_timed_out": "Os módulos não iniciaram a tempo."
+  "setup.activating_timed_out": "Os módulos não iniciaram a tempo.",
+  "dashboard.getting_started_title": "Traga seus dados",
+  "dashboard.getting_started_products": "Produtos",
+  "dashboard.getting_started_contacts": "Clientes e fornecedores",
+  "dashboard.getting_started_documents": "Documentos",
+  "dashboard.getting_started_where": "Importar fica sempre no canto superior direito da página.",
+  "dashboard.getting_started_demo": "Itens marcados [DEMO] são exemplos. Sua primeira importação de produtos os remove, a menos que você os tenha alterado.",
+  "dashboard.finish_setup": "Conclua a configuração: escolha seu tipo de negócio"
 }

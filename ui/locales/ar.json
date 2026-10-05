@@ -1264,7 +1264,7 @@
   "settings.deactivating_this_company_will_block_all_access_an": "سيؤدي إلغاء تنشيط هذه الشركة إلى حظر جميع عمليات الوصول وتسجيلات الدخول. لا يتم حذف أية بيانات. يمكنك إعادة التنشيط من شاشة تسجيل الدخول.",
   "settings.default_price_list_cannot_be_deleted": "لا يمكن حذف '{name}' - إنها قائمة الأسعار الافتراضية.",
   "settings.define_your_companys_price_tiers_these_names_are_u": "تحديد مستويات الأسعار لشركتك. يتم استخدام هذه الأسماء في عناصر المخزون وجهات الاتصال والمستندات.",
-  "settings.dismiss": "رفض",
+  "settings.dismiss": "إغلاق",
   "settings.document_labelled_cert_on_item_sku1234": "المستند المسمى \"شهادة\" في العنصر SKU1234",
   "settings.document_labelled_warranty_on_item_sku1234": "المستند المسمى \"الضمان\" في البند SKU1234",
   "settings.download_backup": "تحميل النسخ الاحتياطي",
@@ -3573,5 +3573,12 @@
   "setup.finish_failed": "تعذر إكمال الإعداد. اختر نوع العمل والعملة مرة أخرى.",
   "setup.finish_later": "الإكمال لاحقًا",
   "setup.open_dashboard": "فتح لوحة القيادة",
-  "setup.activating_timed_out": "لم تبدأ الوحدات في الوقت المحدد."
+  "setup.activating_timed_out": "لم تبدأ الوحدات في الوقت المحدد.",
+  "dashboard.getting_started_title": "أدخل بياناتك",
+  "dashboard.getting_started_products": "المنتجات",
+  "dashboard.getting_started_contacts": "العملاء والموردون",
+  "dashboard.getting_started_documents": "المستندات",
+  "dashboard.getting_started_where": "زر استيراد موجود دائمًا في أعلى يسار الصفحة.",
+  "dashboard.getting_started_demo": "العناصر المميزة بـ [DEMO] هي أمثلة. يحذفها أول استيراد للمنتجات، ما لم تكن قد عدّلتها.",
+  "dashboard.finish_setup": "أكمل الإعداد: اختر نوع العمل"
 }

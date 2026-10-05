@@ -1264,7 +1264,7 @@
   "settings.deactivating_this_company_will_block_all_access_an": "Việc vô hiệu hóa công ty này sẽ chặn tất cả quyền truy cập và đăng nhập. Không có dữ liệu bị xóa. Bạn có thể kích hoạt lại từ màn hình đăng nhập.",
   "settings.default_price_list_cannot_be_deleted": "Không thể xóa '{name}' - đây là bảng giá mặc định.",
   "settings.define_your_companys_price_tiers_these_names_are_u": "Xác định các mức giá của công ty bạn. Những tên này được sử dụng trên các mặt hàng tồn kho, danh bạ và tài liệu.",
-  "settings.dismiss": "Miễn nhiệm",
+  "settings.dismiss": "Đóng",
   "settings.document_labelled_cert_on_item_sku1234": "Tài liệu được gắn nhãn 'chứng chỉ' trên mục SKU1234",
   "settings.document_labelled_warranty_on_item_sku1234": "Tài liệu có nhãn 'bảo hành' cho mục SKU1234",
   "settings.download_backup": "Tải xuống bản sao lưu",
@@ -3573,5 +3573,12 @@
   "setup.finish_failed": "Không thể hoàn tất thiết lập. Hãy chọn lại loại hình kinh doanh và tiền tệ.",
   "setup.finish_later": "Hoàn tất sau",
   "setup.open_dashboard": "Mở trang tổng quan",
-  "setup.activating_timed_out": "Các mô-đun không khởi động kịp thời."
+  "setup.activating_timed_out": "Các mô-đun không khởi động kịp thời.",
+  "dashboard.getting_started_title": "Đưa dữ liệu của bạn vào",
+  "dashboard.getting_started_products": "Sản phẩm",
+  "dashboard.getting_started_contacts": "Khách hàng và nhà cung cấp",
+  "dashboard.getting_started_documents": "Chứng từ",
+  "dashboard.getting_started_where": "Nút Nhập luôn ở góc trên bên phải của trang.",
+  "dashboard.getting_started_demo": "Các mục có đánh dấu [DEMO] là mẫu. Lần nhập sản phẩm đầu tiên sẽ xóa chúng, trừ khi bạn đã thay đổi chúng.",
+  "dashboard.finish_setup": "Hoàn tất thiết lập: chọn loại hình kinh doanh"
 }

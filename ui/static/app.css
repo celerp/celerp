@@ -3378,3 +3378,16 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .module-build-card { margin-bottom: 24px; }
 /* Keep the file chooser clear of the installed-modules table below it. */
 .module-import { margin-bottom: 20px; }
+
+/* --- Dashboard "Bring in your data" card and the Import arrow it leads to --- */
+.getting-started-card { background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius);
+  padding: 16px 20px; margin-bottom: 20px; }
+.getting-started-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.getting-started-head .section-title { margin: 0 0 12px; }
+.getting-started-dismiss { background: none; border: none; font-size: 22px; line-height: 1; cursor: pointer;
+  color: var(--c-text2); padding: 0; }
+.getting-started-links { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.getting-started-link { display: inline-block; padding: 8px 14px; border: 1px solid var(--c-border);
+  border-radius: var(--radius); background: var(--c-bg3); color: var(--c-text); text-decoration: none; font-weight: 500; }
+.getting-started-link:hover { border-color: var(--c-accent); color: var(--c-accent); }
+.getting-started-note { font-size: 13px; color: var(--c-text2); margin: 8px 0; }

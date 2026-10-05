@@ -1264,7 +1264,7 @@
   "settings.deactivating_this_company_will_block_all_access_an": "การปิดใช้งานบริษัทนี้จะบล็อกการเข้าถึงและการเข้าสู่ระบบทั้งหมด ไม่มีข้อมูลถูกลบ คุณสามารถเปิดใช้งานใหม่ได้จากหน้าจอเข้าสู่ระบบ",
   "settings.default_price_list_cannot_be_deleted": "ไม่สามารถลบ '{name}' ได้ - เป็นรายการราคาเริ่มต้น",
   "settings.define_your_companys_price_tiers_these_names_are_u": "กำหนดระดับราคาของบริษัทของคุณ ชื่อเหล่านี้ใช้กับรายการสินค้าคงคลัง ผู้ติดต่อ และเอกสาร",
-  "settings.dismiss": "อนุญาตให้ออกไป",
+  "settings.dismiss": "ปิด",
   "settings.document_labelled_cert_on_item_sku1234": "เอกสารชื่อ 'ใบรับรอง' ในรายการ SKU1234",
   "settings.document_labelled_warranty_on_item_sku1234": "เอกสารที่มีป้ายกำกับว่า 'การรับประกัน' ในรายการ SKU1234",
   "settings.download_backup": "ดาวน์โหลดการสำรองข้อมูล",
@@ -3573,5 +3573,12 @@
   "setup.finish_failed": "ตั้งค่าไม่สำเร็จ โปรดเลือกประเภทธุรกิจและสกุลเงินอีกครั้ง",
   "setup.finish_later": "ตั้งค่าให้เสร็จภายหลัง",
   "setup.open_dashboard": "เปิดแดชบอร์ด",
-  "setup.activating_timed_out": "โมดูลเริ่มทำงานไม่ทันเวลา"
+  "setup.activating_timed_out": "โมดูลเริ่มทำงานไม่ทันเวลา",
+  "dashboard.getting_started_title": "นำข้อมูลของคุณเข้ามา",
+  "dashboard.getting_started_products": "สินค้า",
+  "dashboard.getting_started_contacts": "ลูกค้าและผู้ขาย",
+  "dashboard.getting_started_documents": "เอกสาร",
+  "dashboard.getting_started_where": "ปุ่มนำเข้าอยู่ที่มุมขวาบนของหน้าเสมอ",
+  "dashboard.getting_started_demo": "รายการที่มีเครื่องหมาย [DEMO] เป็นตัวอย่าง การนำเข้าสินค้าครั้งแรกจะลบรายการเหล่านี้ เว้นแต่คุณได้แก้ไขแล้ว",
+  "dashboard.finish_setup": "ตั้งค่าให้เสร็จ: เลือกประเภทธุรกิจ"
 }

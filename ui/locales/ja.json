@@ -1264,7 +1264,7 @@
   "settings.deactivating_this_company_will_block_all_access_an": "この会社を無効にすると、すべてのアクセスとログインがブロックされます。データは削除されません。ログイン画面から再アクティベートできます。",
   "settings.default_price_list_cannot_be_deleted": "'{name}' はデフォルトの価格リストのため削除できません。",
   "settings.define_your_companys_price_tiers_these_names_are_u": "会社の価格帯を定義します。これらの名前は、在庫品目、連絡先、ドキュメントで使用されます。",
-  "settings.dismiss": "却下する",
+  "settings.dismiss": "閉じる",
   "settings.document_labelled_cert_on_item_sku1234": "項目 SKU1234 に「証明書」というラベルが付いた文書",
   "settings.document_labelled_warranty_on_item_sku1234": "品目 SKU1234 に「保証」というラベルが付いた文書",
   "settings.download_backup": "バックアップをダウンロード",
@@ -3573,5 +3573,12 @@
   "setup.finish_failed": "設定を完了できませんでした。業種と通貨をもう一度選択してください。",
   "setup.finish_later": "後で完了する",
   "setup.open_dashboard": "ダッシュボードを開く",
-  "setup.activating_timed_out": "モジュールが時間内に起動しませんでした。"
+  "setup.activating_timed_out": "モジュールが時間内に起動しませんでした。",
+  "dashboard.getting_started_title": "データを取り込む",
+  "dashboard.getting_started_products": "商品",
+  "dashboard.getting_started_contacts": "顧客と仕入先",
+  "dashboard.getting_started_documents": "書類",
+  "dashboard.getting_started_where": "インポートは常にページの右上にあります。",
+  "dashboard.getting_started_demo": "[DEMO] の付いた品目はサンプルです。最初の商品インポートで削除されます（変更したものは残ります）。",
+  "dashboard.finish_setup": "設定を完了してください: 業種を選択"
 }

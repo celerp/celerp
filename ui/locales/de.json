@@ -3573,5 +3573,12 @@
   "setup.finish_failed": "Die Einrichtung konnte nicht abgeschlossen werden. Wählen Sie Unternehmenstyp und Währung erneut.",
   "setup.finish_later": "Später abschließen",
   "setup.open_dashboard": "Dashboard öffnen",
-  "setup.activating_timed_out": "Die Module wurden nicht rechtzeitig gestartet."
+  "setup.activating_timed_out": "Die Module wurden nicht rechtzeitig gestartet.",
+  "dashboard.getting_started_title": "Ihre Daten übernehmen",
+  "dashboard.getting_started_products": "Produkte",
+  "dashboard.getting_started_contacts": "Kunden & Lieferanten",
+  "dashboard.getting_started_documents": "Dokumente",
+  "dashboard.getting_started_where": "Importieren finden Sie immer oben rechts auf der Seite.",
+  "dashboard.getting_started_demo": "Mit [DEMO] markierte Artikel sind Beispiele. Ihr erster Produktimport entfernt sie, sofern Sie sie nicht geändert haben.",
+  "dashboard.finish_setup": "Einrichtung abschließen: Unternehmenstyp auswählen"
 }

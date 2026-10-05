@@ -24,6 +24,7 @@ from celerp.services.money import to_decimal, to_stored_float, round_money, curr
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import role_has_permission
+from ui.components.import_access import can_import_documents
 from ui.module_slots import connected_connector_ids, required_connectors, visible_slot_contributions
 from celerp.output.document_context import prepare_document_output
 from ui.components.activity import activity_table
@@ -1350,7 +1351,7 @@ def setup_routes(app):
                     cls="btn btn--primary",
                 ) if role_has_permission(_settings, _role, "edit_documents") else "",
                 export_link,
-                A(t("btn.import"), href="/docs/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") or role_has_permission(_settings, _role, "edit_documents") else "",
+                A(t("btn.import"), href="/docs/import", cls="btn btn--secondary", data_import_hint=True) if can_import_documents(_settings, _role) else "",
             ),
             _doc_type_intro(doc_type),
             date_bar,
@@ -3968,7 +3969,7 @@ celerpUpdateBulkAlloc();
                            label=t("documents.search_lists")),
                 _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
                 export_link,
-                A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
+                A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary", data_import_hint=True) if role_has_permission(_settings, _role, "import_export_data") else "",
             ),
             date_bar,
             _list_type_tabs(list_type, state),

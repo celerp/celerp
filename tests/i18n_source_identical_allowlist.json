@@ -215,6 +215,7 @@
     "dashboard.acquisitions",
     "dashboard.clients",
     "dashboard.contacts",
+    "dashboard.getting_started_documents",
     "dashboard.pipeline",
     "dashboard.prospects",
     "doc.action",

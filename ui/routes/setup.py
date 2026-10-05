@@ -101,7 +101,7 @@ async def apply_company_setup(token: str, currency: str, timezone: str, vertical
     return "/setup/activating"
 
 
-def _has_business_type(company: dict) -> bool:
+def has_business_type(company: dict) -> bool:
     return bool(company.get("vertical") or (company.get("settings") or {}).get("vertical"))
 
 
@@ -180,7 +180,7 @@ def setup_routes(app):
         except APIError:
             company = {}
         # Safe to reopen: a company that already has a business type is set up.
-        if _has_business_type(company):
+        if has_business_type(company):
             return RedirectResponse("/dashboard", status_code=302)
         error = t("setup.finish_failed") if request.query_params.get("failed") else None
         return _company_page(request, {"currency": company.get("currency") or ""}, error=error)
@@ -194,7 +194,7 @@ def setup_routes(app):
             company = await api.get_company(token)
         except APIError:
             company = {}
-        if _has_business_type(company):
+        if has_business_type(company):
             return RedirectResponse("/dashboard", status_code=302)
         form = await request.form()
         # Every failure rerenders from what the user submitted, so no choice is lost.

@@ -9,12 +9,19 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
+import asyncio
+
+from ui.components.import_access import can_import_documents
 from ui.components.shell import base_shell, page_header, star_supporter_card, page_title
+from ui.components.start_options import start_options, supported_sources
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
 from celerp.services.doc_balance import awaiting_status_param
 from celerp.services.permissions import role_has_permission as _role_has_permission
+from ui.routes.company_backup import SETTINGS as _RESTORE
+from ui.routes.migrations import COMPANY as _MIGRATE
+from ui.routes.setup import has_business_type
 from urllib.parse import urlencode as _urlencode
 
 # The invoice lists the receivables cards open: what is overdue, and what still awaits payment.
@@ -749,11 +756,16 @@ def setup_routes(app):
         # Strip margin sub-text unless the caller may see costs.
         if not _role_has_permission(settings, role, "view_inventory_costs"):
             values.pop("margin_pct_sub", None)
+        # The "Bring in your data" card and the star ask share one slot and never show
+        # together; the star also waits for 10 days of use (counted in the browser).
+        welcome = await _getting_started_card(token, settings, role)
+        if welcome is None and _role_has_permission(settings, role, "manage_company_settings"):
+            welcome = star_supporter_card()
         return await base_shell(
             page_header(t("page.dashboard", lang)),
-            # Stargazer/supporter ask shown where setup actually lands (company-settings
-            # managers only; hidden in neutral/dismissed). Self-hides once dismissed install-wide.
-            *([star_supporter_card()] if _role_has_permission(settings, role, "manage_company_settings") else []),
+            Script("window.celerpUseDays && window.celerpUseDays(true);"),
+            _finish_setup_banner(company, settings, role),
+            welcome or "",
             _kpi_grid(cfg, values, role=role, settings=settings),
             _secondary_kpi_grid(cfg, values, role=role, settings=settings),
             _charts_section(cfg, valuation, ar_aging,
@@ -766,6 +778,24 @@ def setup_routes(app):
             lang=lang,
             request=request,
         )
+
+    @app.post("/dashboard/getting-started/dismiss")
+    async def dismiss_getting_started(request: Request):
+        """Hide the card for this company. Undo is not offered: everything on it stays
+        one click away (each list page's Import button, Settings > Backup to restore,
+        Add company to move books in)."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            company = await api.get_company(token)
+            await api.patch_company(token, {"getting_started_dismissed": True})
+        except APIError as e:
+            return Div(e.detail, cls="error-banner", id="getting-started-card")
+        settings = company.get("settings") or {}
+        if _role_has_permission(settings, _get_role(request), "manage_company_settings"):
+            return star_supporter_card()
+        return ""
 
     @app.get("/history")
     async def history_page(request: Request):
@@ -837,6 +867,91 @@ def setup_routes(app):
             nav_active="dashboard",
             request=request,
         )
+
+
+# The list pages the card links to: label key, page, who sees its Import button, and
+# how the page's own list is read to tell real records from the samples setup adds.
+def _real_items(page: dict) -> bool:
+    demo = sum(1 for i in page.get("items") or [] if str(i.get("sku") or "").startswith("DEMO-"))
+    return (page.get("total") or 0) > demo
+
+
+def _real_contacts(page: dict) -> bool:
+    own = sum(1 for c in page.get("items") or [] if c.get("is_self"))
+    return (page.get("total") or 0) > own
+
+
+def _real_docs(page: dict) -> bool:
+    return (page.get("total") or 0) > 0
+
+
+_IMPORT_TARGETS = (
+    ("dashboard.getting_started_products", "/inventory",
+     lambda s, r: _role_has_permission(s, r, "import_export_data"),
+     lambda tok: api.list_items(tok, {"status": "all", "limit": 50}), _real_items),
+    ("dashboard.getting_started_contacts", "/contacts/customers",
+     lambda s, r: _role_has_permission(s, r, "import_export_data"),
+     lambda tok: api.list_contacts(tok, {"limit": 5}), _real_contacts),
+    ("dashboard.getting_started_documents", "/docs",
+     can_import_documents,
+     lambda tok: api.list_docs(tok, {"limit": 1}), _real_docs),
+)
+
+
+async def _getting_started_card(token: str, settings: dict, role: str) -> FT | None:
+    """Shown to people who manage the company, until it is dismissed or the company
+    holds a real product, contact or document (setup's [DEMO] items and the company's
+    own contact do not count). A list the API cannot serve (module off: 404, no view
+    right: 403) drops its link; any other failure hides the card rather than guess."""
+    if settings.get("getting_started_dismissed"):
+        return None
+    if not _role_has_permission(settings, role, "manage_company_settings"):
+        return None
+    pages = await asyncio.gather(*(load(token) for _, _, _, load, _ in _IMPORT_TARGETS),
+                                 return_exceptions=True)
+    links = []
+    for (label, href, allowed, _, is_real), page in zip(_IMPORT_TARGETS, pages):
+        if isinstance(page, APIError) and page.status in (403, 404):
+            continue
+        if isinstance(page, BaseException):
+            return None
+        if is_real(page):
+            return None
+        if allowed(settings, role):
+            links.append(A(t(label), href=f"{href}?hint=import", cls="getting-started-link"))
+    if not links:
+        return None
+    options = ""
+    if _role_has_permission(settings, role, "manage_company_lifecycle"):
+        options = start_options(restore_href=_RESTORE.base, move_href=_MIGRATE.base,
+                                sources=await supported_sources())
+    return Div(
+        Div(
+            H2(t("dashboard.getting_started_title"), cls="section-title"),
+            Button("×", id="getting-started-dismiss", type="button", cls="getting-started-dismiss",
+                   title=t("settings.dismiss"), aria_label=t("settings.dismiss"),
+                   hx_post="/dashboard/getting-started/dismiss", hx_target="#getting-started-card",
+                   hx_swap="outerHTML"),
+            cls="getting-started-head",
+        ),
+        Div(*links, cls="getting-started-links"),
+        P(t("dashboard.getting_started_where"), cls="getting-started-note"),
+        options,
+        P(t("dashboard.getting_started_demo"), cls="getting-started-note"),
+        NotStr("<!-- /getting-started-card -->"),
+        id="getting-started-card",
+        cls="getting-started-card",
+    )
+
+
+def _finish_setup_banner(company: dict, settings: dict, role: str) -> FT | str:
+    """A company left without a business type (setup stopped after the account was
+    made) points the one person who can set it at the retry page."""
+    if has_business_type(company) or not _role_has_permission(settings, role, "manage_company_lifecycle"):
+        return ""
+    return Div(Span("ℹ️", cls="info-banner-icon"),
+               A(t("dashboard.finish_setup"), href="/setup/company"),
+               cls="info-banner", id="finish-setup-banner")
 
 
 async def _load_dashboard(token: str):

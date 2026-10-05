@@ -1264,7 +1264,7 @@
   "settings.deactivating_this_company_will_block_all_access_an": "La désactivation de cette société bloquera tous les accès et connexions. Aucune donnée n'est supprimée. Vous pouvez réactiver à partir de l'écran de connexion.",
   "settings.default_price_list_cannot_be_deleted": "Impossible de supprimer '{name}' - c'est la liste de prix par défaut.",
   "settings.define_your_companys_price_tiers_these_names_are_u": "Définissez les niveaux de prix de votre entreprise. Ces noms sont utilisés sur les éléments d'inventaire, les contacts et les documents.",
-  "settings.dismiss": "Rejeter",
+  "settings.dismiss": "Fermer",
   "settings.document_labelled_cert_on_item_sku1234": "Document intitulé « cert » sur l'article SKU1234",
   "settings.document_labelled_warranty_on_item_sku1234": "Document intitulé « garantie » sur l'article SKU1234",
   "settings.download_backup": "Télécharger la sauvegarde",
@@ -3573,5 +3573,12 @@
   "setup.finish_failed": "La configuration n'a pas pu être terminée. Choisissez à nouveau le type d'entreprise et la devise.",
   "setup.finish_later": "Terminer plus tard",
   "setup.open_dashboard": "Ouvrir le tableau de bord",
-  "setup.activating_timed_out": "Les modules n'ont pas démarré à temps."
+  "setup.activating_timed_out": "Les modules n'ont pas démarré à temps.",
+  "dashboard.getting_started_title": "Importez vos données",
+  "dashboard.getting_started_products": "Produits",
+  "dashboard.getting_started_contacts": "Clients et fournisseurs",
+  "dashboard.getting_started_documents": "Documents",
+  "dashboard.getting_started_where": "Importer se trouve toujours en haut à droite de la page.",
+  "dashboard.getting_started_demo": "Les articles marqués [DEMO] sont des exemples. Votre premier import de produits les supprime, sauf si vous les avez modifiés.",
+  "dashboard.finish_setup": "Terminez la configuration : choisissez votre type d'entreprise"
 }

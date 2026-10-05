@@ -3573,5 +3573,12 @@
   "setup.finish_failed": "Non è stato possibile completare la configurazione. Scegli di nuovo tipo di attività e valuta.",
   "setup.finish_later": "Completa più tardi",
   "setup.open_dashboard": "Apri la dashboard",
-  "setup.activating_timed_out": "I moduli non si sono avviati in tempo."
+  "setup.activating_timed_out": "I moduli non si sono avviati in tempo.",
+  "dashboard.getting_started_title": "Porta i tuoi dati",
+  "dashboard.getting_started_products": "Prodotti",
+  "dashboard.getting_started_contacts": "Clienti e fornitori",
+  "dashboard.getting_started_documents": "Documenti",
+  "dashboard.getting_started_where": "Importa si trova sempre in alto a destra nella pagina.",
+  "dashboard.getting_started_demo": "Gli articoli contrassegnati [DEMO] sono esempi. La prima importazione di prodotti li rimuove, a meno che tu non li abbia modificati.",
+  "dashboard.finish_setup": "Completa la configurazione: scegli il tipo di attività"
 }

@@ -14,6 +14,7 @@ import re
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from test_helpers import authed_cookies
@@ -28,7 +29,6 @@ _EMPTY = {"items": [], "total": 0}
 
 @pytest.fixture()
 async def ui():
-    import httpx
     from ui.app import app as ui_app
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=ui_app),
                                  base_url="http://testserver", follow_redirects=False) as c:
@@ -145,12 +145,8 @@ async def test_dismiss_key_is_sent_as_a_company_setting():
 
     sent = []
 
-    class _Resp:
-        def __init__(self, body):
-            self.status_code, self._body = 200, body
-
-        def json(self):
-            return self._body
+    def _resp(method, url, body):
+        return httpx.Response(200, json=body, request=httpx.Request(method, f"http://api{url}"))
 
     class _Client:
         async def __aenter__(self):
@@ -161,10 +157,10 @@ async def test_dismiss_key_is_sent_as_a_company_setting():
 
         async def patch(self, url, json):
             sent.append((url, json))
-            return _Resp({})
+            return _resp("PATCH", url, {})
 
         async def get(self, url):
-            return _Resp({"settings": {}})
+            return _resp("GET", url, {"settings": {}})
 
     with patch.object(api, "_api_client", lambda *a, **k: _Client()):
         await api.patch_company("tok", {"getting_started_dismissed": True})
