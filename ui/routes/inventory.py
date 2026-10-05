@@ -1328,11 +1328,12 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             content = _inventory_content_error(p, lang)
 
-        # Search must carry the active filters (status/category/type/location), so searching inside
-        # e.g. Sold inventory stays scoped to sold instead of falling back to the default active set.
+        # Search must carry the active filters (status/category/type/location/demo list), so searching
+        # inside e.g. Sold inventory stays scoped to sold instead of falling back to the default active set.
         _search_filters = {k: v for k, v in (
             ("status", p.get("status")), ("category", p.get("category")),
             ("inventory_type", p.get("inventory_type")), ("location_id", p.get("location_id")),
+            ("filter", p.get("filter")),
         ) if v}
         _search_url = "/inventory/content" + (f"?{urlencode(_search_filters)}" if _search_filters else "")
 
