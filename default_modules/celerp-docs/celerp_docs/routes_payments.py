@@ -344,7 +344,7 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
         )
     except pay.CheckoutPaused:
         raise HTTPException(status_code=409, detail=pay.PAUSED)
-    if not result or not result.get("url"):
+    if not _stripe_url(result):
         raise HTTPException(status_code=502, detail="Could not start payment")
     return RedirectResponse(result["url"], status_code=303)
 
@@ -365,6 +365,12 @@ async def payments_enabled_flag(user=Depends(get_current_user)) -> dict:
     return {"enabled": pay.payments_enabled()}
 
 
+def _stripe_url(result) -> bool:
+    """Cloud answered with an https address to send the user to."""
+    url = result.get("url") if isinstance(result, dict) else None
+    return isinstance(url, str) and url.startswith("https://")
+
+
 @router.get("/payments/status")
 async def payments_status(user=Depends(get_current_user)) -> dict:
     return await pay.connect_status()
@@ -374,7 +380,7 @@ async def payments_status(user=Depends(get_current_user)) -> dict:
 async def payments_connect() -> dict:
     """Begin Connect OAuth via Cloud; returns {url} for the UI to redirect to."""
     result = await pay.connect_start()
-    if not result or not result.get("url"):
+    if not _stripe_url(result):
         raise HTTPException(status_code=502, detail="Could not start Stripe connection")
     return {"url": result["url"]}
 

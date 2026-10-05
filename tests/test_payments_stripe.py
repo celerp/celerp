@@ -858,6 +858,28 @@ async def test_connect_endpoint_returns_oauth_url(client, monkeypatch):
     assert r.json()["url"] == "https://connect.stripe.test/oauth"
 
 
+_NOT_HTTPS = ["javascript:alert(1)", "http://stripe.test/cs_1", "//evil.test/x", 7, ["https://stripe.test/cs_1"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", _NOT_HTTPS)
+async def test_a_checkout_address_that_is_not_https_is_never_followed(client, payments_on, monkeypatch, url):
+    monkeypatch.setattr("celerp.services.payments.create_checkout", lambda **kw: _async({"url": url}))
+    tok = await _register(client)
+    _, token = await _idr_invoice(client, tok)
+    r = await client.get(f"/pay/{token}", follow_redirects=False)
+    assert r.status_code == 502
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", _NOT_HTTPS)
+async def test_a_connect_address_that_is_not_https_is_never_returned(client, monkeypatch, url):
+    monkeypatch.setattr("celerp.services.payments.connect_start", lambda: _async({"url": url}))
+    tok = await _register(client)
+    r = await client.post("/payments/connect", headers=_h(tok))
+    assert r.status_code == 502
+
+
 @pytest.mark.asyncio
 async def test_connect_endpoint_502_when_cloud_unavailable(client, monkeypatch):
     monkeypatch.setattr("celerp.services.payments.connect_start", lambda: _async(None))
