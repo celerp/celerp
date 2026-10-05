@@ -94,10 +94,6 @@ async def admin_jwt(session: AsyncSession) -> str:
 def _mock_session():
     """Return a mock AsyncSession that no-ops all SQL (avoids SQLite/TRUNCATE issues)."""
     sess = AsyncMock(spec=AsyncSession)
-    cm = AsyncMock()
-    cm.__aenter__ = AsyncMock(return_value=None)
-    cm.__aexit__ = AsyncMock(return_value=None)
-    sess.begin.return_value = cm
     sess.execute = AsyncMock(return_value=MagicMock())
     sess.get = AsyncMock(return_value=None)
     return sess
@@ -109,11 +105,11 @@ def _reset_session(real):
     instead of run.
 
     Auth now loads the user, membership and company from the DB, so those reads
-    (``get``/``scalar``/``scalars``) must hit the real seeded session. The endpoint's
-    own ``session.begin()`` cannot open a second transaction on the already-active
-    rollback session and a real TRUNCATE ... CASCADE would fight the outer
-    transaction, so ``begin``/``execute``/``commit`` are captured no-ops. The
-    recorded SQL is exposed on ``recorded_sql`` for the wipe assertion.
+    (``get``/``scalar``/``scalars``) must hit the real seeded session. A real
+    TRUNCATE ... CASCADE and commit would fight the outer rollback transaction, so
+    ``execute``/``commit`` are captured no-ops (tests/test_factory_reset_live.py runs
+    the wipe for real). The recorded SQL is exposed on ``recorded_sql`` for the wipe
+    assertion.
     """
     class _CapturingSession:
         """Plain object (not an AsyncMock) so FastAPI never tries to deepcopy mock
@@ -146,12 +142,6 @@ def _reset_session(real):
 
         async def rollback(self):
             return None
-
-        def begin(self):
-            cm = AsyncMock()
-            cm.__aenter__ = AsyncMock(return_value=None)
-            cm.__aexit__ = AsyncMock(return_value=None)
-            return cm
 
     return _CapturingSession()
 

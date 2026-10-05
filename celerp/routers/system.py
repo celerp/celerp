@@ -94,23 +94,25 @@ async def factory_reset(
     from sqlalchemy import text
     from celerp.connectors.ownership import lock_connector_maintenance
 
-    async with session.begin():
-        await lock_connector_maintenance(session)
-        for table in _TRUNCATE_TABLES:
-            await session.execute(text(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE"))
-        await session.execute(
-            text("DELETE FROM user_companies WHERE company_id = :cid"),
-            {"cid": str(company_id)},
-        )
-        await session.execute(
-            text("DELETE FROM locations WHERE company_id = :cid"),
-            {"cid": str(company_id)},
-        )
-        await session.execute(text("DELETE FROM users"))
-        await session.execute(
-            text("DELETE FROM companies WHERE id = :cid"),
-            {"cid": str(company_id)},
-        )
+    # Signing in has already read on this session, so the wipe runs in the request's own
+    # transaction and is committed in one step.
+    await lock_connector_maintenance(session)
+    for table in _TRUNCATE_TABLES:
+        await session.execute(text(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE"))
+    await session.execute(
+        text("DELETE FROM user_companies WHERE company_id = :cid"),
+        {"cid": str(company_id)},
+    )
+    await session.execute(
+        text("DELETE FROM locations WHERE company_id = :cid"),
+        {"cid": str(company_id)},
+    )
+    await session.execute(text("DELETE FROM users"))
+    await session.execute(
+        text("DELETE FROM companies WHERE id = :cid"),
+        {"cid": str(company_id)},
+    )
+    await session.commit()
 
     # Bust in-process nonce cache — all users deleted, stale tokens must not auto-create rows
     from celerp.services.session_tracker import _nonce_cache_bust_all
