@@ -180,3 +180,20 @@ def test_module_reshaping_a_core_table_is_taken_out_and_the_table_restored(
     assert f"/{inner}/ping" not in _paths(app)
     assert Base.metadata.tables["users"] is users
     assert (list(users.columns), set(users.constraints), set(users.indexes)) == shape
+
+
+def test_a_table_renamed_after_it_is_defined_is_still_taken_out(module_dir):
+    """Removal goes by the key the table was added under: renaming the table
+    object afterwards does not keep it on the metadata to be created."""
+    tag = _tag()
+    name, inner = _module(module_dir, prefix=f"acme{tag}_", init_table=f"acme{tag}_x")
+    models = module_dir / name / inner / "models.py"
+    models.write_text(models.read_text().replace(
+        "sa.Table(", "t = sa.Table(") + f"t.name = 'other{tag}_renamed'\n")
+
+    _start(module_dir, name)
+
+    assert not loader.is_running(name)
+    assert f"other{tag}_renamed" in loader.load_errors()[name]
+    assert f"acme{tag}_x" not in Base.metadata.tables
+    assert not [t for t in Base.metadata.tables.values() if t.name == f"other{tag}_renamed"]

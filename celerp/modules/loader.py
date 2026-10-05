@@ -1192,9 +1192,9 @@ def _sweep_removed_tables() -> None:
                     ", ".join(sorted(referencing)))
         _removed_tables.update(referencing)
     for key in _removed_tables:
-        table = Base.metadata.tables.get(key)
-        if table is not None:
-            Base.metadata.remove(table)
+        # By the key it was added under: remove() recomputes the key from the
+        # table's current name, which the module's code can change.
+        Base.metadata._remove_table(key, None)
 
 
 def _evict_module(pkg_name: str) -> None:
@@ -1535,9 +1535,9 @@ def _stray_table_problem(manifest: dict) -> str | None:
         if table is None:
             continue
         if not prefix:
-            return f"Defines table {key!r} but declares no table_prefix."
+            return f"Defines table {table.name!r} but declares no table_prefix."
         if table.schema is not None or not table.name.startswith(prefix):
-            return f"Defines table {key!r} outside its table_prefix {prefix!r}."
+            return f"Defines table {table.name!r} outside its table_prefix {prefix!r}."
     return None
 
 
