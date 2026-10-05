@@ -256,14 +256,14 @@ async def test_saving_updates_the_row_in_place_and_shows_a_refusal(ui_client):
     assert put.await_args.args[1:] == ("general_expense", "6001")
     assert "6001 Expense 1" in r.content.decode() and ">Ready<" in r.content.decode()
 
-    refused = AsyncMock(side_effect=APIError(422, "General expenses is set to account 1120, a asset account; "
-                                                  "it must be expense."))
+    refused = AsyncMock(side_effect=APIError(422, "General expenses is set to account 1120, of type asset; "
+                                                  "it must be of type expense."))
     with patch("ui.api_client.set_posting_account", new=refused), \
          patch("ui.api_client.get_posting_accounts", new=AsyncMock(return_value=_PANEL)):
         r = await ui_client.patch("/settings/accounting/posting-accounts/general_expense", cookies=_cookies(),
                                   data={"value": "1120"})
     assert r.status_code == 200
-    assert "it must be expense." in r.content.decode()
+    assert "it must be of type expense." in r.content.decode()
     assert "<tr" in r.content.decode()
 
 

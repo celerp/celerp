@@ -262,7 +262,7 @@ async def test_reconciling_refuses_values_or_accounts_it_cannot_book(client, ses
             ([(raw, 30.0), (other, 1.0)], ob, 422, "reconcile_values"),  # not a component of the run
             ([(raw, 30.0)], None, 422, "reconcile_account"),         # no account for a value
             ([(raw, 30.0)], "5100", 422, "reconcile_account"),       # not inventory or retained earnings
-            ([(raw, 40.0)], ob, 422, "reconcile_left"),              # more than the account holds
+            ([(raw, 40.0)], ob, 422, "reconcile_short"),             # more than the account holds
             ([(raw, 20.0)], ob, 422, "reconcile_left"),              # less: the books would still disagree
             ([(raw, 30.0)], re, 422, "reconcile_held"),              # the books carry it: not from nowhere
             ([(raw, 0.0)], ob, 422, "reconcile_left"),               # nothing cannot hide what the account holds

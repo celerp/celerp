@@ -12,6 +12,7 @@ as after a live receipt, before and after the run completes.
 """
 from __future__ import annotations
 
+import re
 import uuid
 
 import pytest
@@ -173,6 +174,27 @@ async def test_a_reconciliation_states_the_value_that_was_issued_not_the_one_the
 
     assert await snapshot(session, auth, raw, order, lot) == before
     assert (await _facts(session, auth, order))["wip_unresolved"] == "received before tracking"
+
+
+async def test_a_refusal_names_components_by_sku_and_states_no_negative_amount(client, session, auth):
+    """Reconcile refusals are read by the user: a component is named by its SKU, never by its
+    record id, and a value the run would put back is not shown as a negative amount taken off."""
+    await _older_release(session, auth)
+    runs = []
+    for _ in range(2):
+        raw = await _older_stock(session, auth, 100.0, 10)
+        order = await run(client, auth, await product(client, auth, [(raw, 5)]), 2)
+        await _older_issue(session, auth, order, raw, 10)
+        runs.append((raw, order, await _older_receive(session, auth, order, 1)))
+    await _upgrade(session)
+    p = await role(session, auth, PURCHASED)
+    (raw, order, _), _ = runs
+    sku = (await _state(session, auth, raw))["sku"]
+
+    missing = refusal(await reconcile(client, auth, order, [], p), 422, "reconcile_missing")
+    assert sku in missing["message"] and "item:" not in missing["message"], missing
+    left = refusal(await reconcile(client, auth, order, [(raw, 0.0)], p, key="zero"), 422, "reconcile_left")
+    assert not re.search(r"-\d", left["message"]), left
 
 
 async def test_a_lot_whose_history_is_missing_is_refused(client, session, auth):

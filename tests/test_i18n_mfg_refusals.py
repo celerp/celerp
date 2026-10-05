@@ -30,7 +30,7 @@ REFUSALS = ["mfg.reconciliation_required", "mfg.insufficient_stock", "mfg.over_r
             "mfg.return_quantity", "mfg.return_after_receipt", "mfg.return_lot_unavailable", "mfg.return_value",
             "mfg.output_changed", "mfg.not_a_receipt", "mfg.reopen_first", "mfg.not_completed", "mfg.recost_conflict",
             "mfg.not_unresolved", "mfg.reconcile_values", "mfg.reconcile_missing", "mfg.reconcile_account",
-            "mfg.reconcile_held", "mfg.reconcile_left", "mfg.reconcile_excess", "mfg.output_unknown", "mfg.not_on_hold",
+            "mfg.reconcile_held", "mfg.reconcile_left", "mfg.reconcile_short", "mfg.reconcile_excess", "mfg.output_unknown", "mfg.not_on_hold",
             "mfg.not_planned", "mfg.already_on_hold", "mfg.period_locked", "mfg.output_memo_conversion",
             "mfg.output_cost_pending"]
 SHORT = {"message": "Only 2 of RAW-1 is in stock and not reserved; 4 is needed.",
@@ -142,6 +142,28 @@ async def test_a_bulk_action_says_why_each_run_was_skipped(ui_client):
     assert r.status_code == 200, r.text
     message = json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
     assert _TH_SHORT in message and "not found" in message
+
+
+@pytest.mark.asyncio
+async def test_a_bulk_toast_reads_as_whole_sentences(ui_client):
+    result = {"done": ["mfg:2"], "skipped": [
+        {"id": "mfg:1", "reason": SHORT["message"], "message_key": SHORT["message_key"], "params": SHORT["params"]}]}
+    with (
+        patch("ui.api_client.manufacturing_bulk_run_action", new=AsyncMock(return_value=result)),
+        patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": []})),
+    ):
+        r = await ui_client.post("/manufacturing/runs/bulk/issue?status=active",
+                                 content=b"selected=mfg%3A1&selected=mfg%3A2&idempotency_key=k",
+                                 headers={"content-type": "application/x-www-form-urlencoded"},
+                                 cookies={**_authed(), "celerp_lang": "en"})
+    assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == (
+        "Components issued for runs: 1. Skipped (not in a valid state): 1. " + SHORT["message"])
+
+
+@pytest.mark.parametrize("lang", LOCALES)
+def test_the_complete_action_is_a_verb_not_the_completed_status(lang):
+    catalog = _catalog(lang)
+    assert catalog["manufacturing.action_complete"] != catalog["enum.mfg_run_status.completed"]
 
 
 @pytest.mark.asyncio

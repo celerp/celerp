@@ -111,3 +111,18 @@ async def test_a_chart_file_cannot_add_an_account_under_a_role_target(client, au
     body = r.json()
     assert body["created"] == 1
     assert "posting account for Accounts receivable" in " ".join(body["errors"])
+
+
+async def test_a_refused_type_is_named_without_a_wrong_article(session, auth):
+    """'a asset account' and 'a expense account' read wrong; each refusal names the type plainly."""
+    cid = auth["company_id"]
+    with pytest.raises(HTTPException) as served:
+        await change_account(session, cid, "1120", account_type="expense")
+    assert served.value.detail.endswith("; an account of type expense cannot serve it.")
+    await _header(session, cid, "9300", "asset")
+    with pytest.raises(HTTPException) as child:
+        await change_account(session, cid, "9300", account_type="expense")
+    assert child.value.detail == "Account 9300-1 (asset) sits under 9300; it cannot sit under an account of type expense."
+    with pytest.raises(HTTPException) as parent:
+        await create_chart_account(session, cid, code="9301", name="Fees", account_type="expense", parent_code="9300")
+    assert parent.value.detail == "An account of type expense cannot sit under 9300, an account of type asset."

@@ -791,7 +791,8 @@ def setup_routes(app):
             msg = t(_BULK_RUN_MSG.get(action, "manufacturing.bulk_updated"), n=done)
             if skipped:
                 why = dict.fromkeys(refusal_text({**s, "message": s.get("reason")}) for s in result["skipped"])
-                msg += " " + t("manufacturing.bulk_skipped", n=skipped) + "".join(f". {w}" for w in why if w)
+                msg = ". ".join([msg, t("manufacturing.bulk_skipped", n=skipped),
+                                 *(w.rstrip(".") for w in why if w)]) + "."
             kind = "success" if done else "info"
         return HTMLResponse(
             to_xml(_order_table(_runs_for_status(orders, status), today=date.today().isoformat(), kept_key=kept)),

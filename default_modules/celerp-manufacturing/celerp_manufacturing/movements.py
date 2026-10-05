@@ -1435,31 +1435,38 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
         raise refuse(409, "not_unresolved", "This run does not need reconciling.")
 
     needed = await still_held(session, company_id, order_id, run.state)
+
+    async def sku(item_id) -> str:
+        """The SKU a refusal names the item by (its id when it has none or is unknown)."""
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": str(item_id)})
+        return ((row.state or {}) if row is not None else {}).get("sku") or str(item_id)
+
     values: dict[str, Decimal] = {}
     for line in components:
         item_id = line.get("item_id")
         try:
             value = op.round(_money(line.get("value")))
         except InvalidOperation:
-            raise refuse(422, "reconcile_value_too_large", f"The value given for {item_id} is too large to record.",
-                         item=item_id) from None
+            label = await sku(item_id)
+            raise refuse(422, "reconcile_value_too_large", f"The value given for {label} is too large to record.",
+                         item=label) from None
         if item_id not in needed or item_id in values or value < 0:
-            raise refuse(422, "reconcile_values", f"{item_id} is not a component still in this run, is named "
-                         "twice, or has a negative value.", item=item_id)
+            label = await sku(item_id)
+            raise refuse(422, "reconcile_values", f"{label} is not a component still in this run, is named "
+                         "twice, or has a negative value.", item=label)
         history = needed[item_id][1]
         if history is not None and value > history:
             # The value that left the lot for this run is on record: the run cannot hold more.
-            row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
-            sku = ((row.state or {}) if row is not None else {}).get("sku") or item_id
+            label = await sku(item_id)
             raise refuse(422, "reconcile_over_history",
-                         f"{sku} left the shelf with {history} when this run used it, so the run cannot hold "
-                         f"{value} of it. Give at most {history}.", item=sku, recorded=str(history),
+                         f"{label} left the shelf with {history} when this run used it, so the run cannot hold "
+                         f"{value} of it. Give at most {history}.", item=label, recorded=str(history),
                          value=str(value))
         values[item_id] = value
     if set(values) != set(needed):
-        missing = sorted(set(needed) - set(values))
+        missing = ", ".join([await sku(i) for i in sorted(set(needed) - set(values))])
         raise refuse(422, "reconcile_missing", f"Give the value of every component still in this run: "
-                     f"{', '.join(missing)} has none.", items=", ".join(missing))
+                     f"{missing} has none.", items=missing)
     total = sum(values.values(), _ZERO)
 
     legacy = await legacy_output(session, company_id, order_id, run.state)
@@ -1537,11 +1544,16 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
             # Value left over may belong to another run still waiting, but only value this run
             # takes off: lots re-costed below what they carry put value back, which no other
             # run explains, so then the account must come out exactly matching its stock.
-            if left < 0 or (left and (amount < 0 or not await _awaiting_reconciliation(session, company_id, order_id))):
+            if left < 0:
+                raise refuse(422, "reconcile_short",
+                             f"After this, {account} would hold {-left} less than its stock on hand, so the books "
+                             "would still disagree with the stock. Give the value it holds beyond its stock.",
+                             account=account, short=str(-left))
+            if left and (amount < 0 or not await _awaiting_reconciliation(session, company_id, order_id)):
                 raise refuse(422, "reconcile_left",
-                             f"{account} holds {room} beyond its stock on hand; taking {amount} off it would leave "
-                             f"{left}, so the books would still disagree with the stock. Give the value it holds.",
-                             total=str(amount), account=account, room=str(room), left=str(left))
+                             f"After this, {account} would still hold {left} more than its stock on hand, so the "
+                             "books would still disagree with the stock. Give the value it holds beyond its stock.",
+                             account=account, left=str(left))
             lots = {account: -amount} if amount else {}
         if (amount or transferred != carried or total) and not await period_open(session, company_id, op.day):
             raise refuse(422, "period_locked", f"The books are locked for {op.day}, so this run cannot be "

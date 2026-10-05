@@ -161,8 +161,8 @@ def parent_problem(
     if not get("is_active"):
         return f"Parent account {parent_code} is inactive."
     if get("account_type") not in PARENT_TYPES.get(account_type, frozenset()):
-        return (f"A {account_type} account cannot sit under {parent_code}, "
-                f"a {get('account_type')} account.")
+        return (f"An account of type {account_type} cannot sit under {parent_code}, "
+                f"an account of type {get('account_type')}.")
     return None
 
 
@@ -237,7 +237,7 @@ async def change_account(
                 raise HTTPException(
                     status_code=409,
                     detail=f"Account {code} is the posting account for {', '.join(bad)}; "
-                           f"a {account_type} account cannot serve it.",
+                           f"an account of type {account_type} cannot serve it.",
                 )
         if await has_journal_history(session, company_id, code):
             raise HTTPException(
@@ -255,7 +255,7 @@ async def change_account(
                 raise HTTPException(
                     status_code=422,
                     detail=f"Account {child_code} ({child_type}) sits under {code}; "
-                           f"it cannot sit under a {account_type} account.",
+                           f"it cannot sit under an account of type {account_type}.",
                 )
         acc.account_type = account_type
 
