@@ -1967,11 +1967,12 @@ def resolve_import_category(value: str, category_keys, display_names: dict) -> t
     """Resolve a source category to the company's canonical category key.
 
     Returns ``(category, error)``. An exact key wins, then a unique case-insensitive
-    key, then a unique case-insensitive display label in any UI language. Several
+    key, then a unique case-insensitive display label in any UI language. Names
+    compare in Unicode NFC, so a decomposed "ä" matches a composed one. Several
     candidates are an error rather than a guess; an unknown value is kept as a
     custom category.
     """
-    value = str(value or "").strip()
+    value = unicodedata.normalize("NFC", str(value or "")).strip()
     if not value:
         return "", None
     keys = set(category_keys) | set(display_names)
@@ -1981,7 +1982,7 @@ def resolve_import_category(value: str, category_keys, display_names: dict) -> t
     for candidates in (
         sorted(k for k in keys if k.casefold() == folded),
         sorted(k for k in keys if any(
-            label.strip().casefold() == folded for label in category_label_everywhere(k, display_names.get(k) or None)
+            unicodedata.normalize("NFC", label).strip().casefold() == folded for label in category_label_everywhere(k, display_names.get(k) or None)
         )),
     ):
         if len(candidates) == 1:

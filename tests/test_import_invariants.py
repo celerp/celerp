@@ -1098,6 +1098,19 @@ class TestCategoryInvariant:
         from celerp_inventory.services import resolve_import_category
         assert resolve_import_category("Farbedelstein", ["colored_stone"], {}) == ("colored_stone", None)
 
+    def test_a_decomposed_name_matches_its_category(self):
+        """A file can spell "ä" as "a" plus a combining mark (NFD); it is the same name.
+        Red statement: the decomposed name was kept as a new category."""
+        import unicodedata
+        from celerp_inventory.services import resolve_import_category
+        value = unicodedata.normalize("NFD", "Getränk (alkoholfrei)")
+        assert resolve_import_category(value, ["beverage_nonalc"], {}) == ("beverage_nonalc", None)
+
+    def test_an_unmatched_decomposed_name_is_kept_composed(self):
+        import unicodedata
+        from celerp_inventory.services import resolve_import_category
+        assert resolve_import_category(unicodedata.normalize("NFD", "Käse"), [], {}) == ("Käse", None)
+
     def test_renamed_category_matches_only_its_own_name(self):
         from celerp_inventory.services import resolve_import_category
         names = {"colored_stone": "Stones"}
