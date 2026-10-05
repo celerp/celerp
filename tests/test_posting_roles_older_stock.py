@@ -799,7 +799,7 @@ async def test_an_unresolved_lot_moves_its_cost_once_an_account_that_holds_it_is
 
     r = await _choose(client, auth, lot, "1130-P")
     assert r.status_code == 422, r.text
-    assert "books need reconciling" in r.json()["detail"]
+    assert "Account 1130-OB holds it: choose 1130-OB." in r.json()["detail"]
     r = await _choose(client, auth, lot, "1210")
     assert r.status_code == 422, r.text
     r = await _choose(client, auth, lot, "1130-OB")
@@ -809,6 +809,33 @@ async def test_an_unresolved_lot_moves_its_cost_once_an_account_that_holds_it_is
 
     await _sold(client, auth, (lot, 1))
     await _books(session, client, auth, purchased=0.0, opening=0.0)
+
+
+async def test_a_lot_split_across_inventory_accounts_is_refused_naming_the_transfer_that_places_it(
+        session, client, auth):
+    await _older_release(session, auth)
+    await _restored(session, client, auth)
+    lot = await _lot(client, auth, 50.0)
+    await _opening_entry(session, auth, 30.0)
+    await _books_over(session, client, auth)
+    await _startup(session)
+    assert await _accounts(session, auth, lot) == [None]
+
+    r = await _choose(client, auth, lot, "1130-OB")
+    assert r.status_code == 422, r.text
+    assert "Move 20.00 from 1130-P to 1130-OB with a journal entry" in r.json()["detail"], r.text
+    assert "books need reconciling" not in r.json()["detail"]
+
+    cid, je = auth["company_id"], f"je:{uuid.uuid4()}"
+    await _emit_auto_posted_je(
+        session, company_id=cid, user_id=auth["user_id"], je_id=je, idem_create=f"{je}:c",
+        idem_posted=f"{je}:p", memo="Move inventory value", metadata_={"trigger": "manual"},
+        entries=[{"account": "1130-OB", "debit": 20.0, "credit": 0.0},
+                 {"account": "1130-P", "debit": 0.0, "credit": 20.0}])
+    await session.commit()
+    r = await _choose(client, auth, lot, "1130-OB")
+    assert r.status_code == 200, r.text
+    assert await _accounts(session, auth, lot) == ["1130-OB"]
 
 
 # --- A draft from an older release has never held stock -------------------------------

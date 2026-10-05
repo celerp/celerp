@@ -897,10 +897,22 @@ async def choose_lot_account(session: AsyncSession, company_id, item_id: str, co
         raise HTTPException(status_code=409, detail="This stock already records its inventory account.")
     currency = settings.get("currency", "USD")
     value = round_money(held_value(row) or Decimal("0"), currency)
-    room = await account_room(session, company_id, code)
+    inventory = sorted({c for role in _INVENTORY for c in scope_codes(settings, role)} | {code})
+    rooms = await account_rooms(session, company_id, inventory)
+    room = rooms[code]
     if value > room:
+        held = max(room, Decimal("0"))
+        shortfall = value - held
+        others = [c for c in inventory if c != code]
+        holder = next((c for c in others if rooms[c] >= value), None)
+        source = next((c for c in others if rooms[c] >= shortfall), None)
+        if holder:
+            fix = f"Account {holder} holds it: choose {holder}."
+        elif source:
+            fix = f"Move {shortfall} from {source} to {code} with a journal entry, then choose {code} again."
+        else:
+            fix = "No inventory account holds it, so the books need reconciling before this stock can be placed."
         raise HTTPException(status_code=422, detail=(
             f"Account {code} does not hold this stock's value of {value}: beyond the stock already "
-            f"recorded on it, it holds {max(room, Decimal('0'))}. If no inventory account holds it, "
-            f"the books need reconciling before this stock can be placed."))
+            f"recorded on it, it holds {held}. {fix}"))
     await _record(session, company_id, item_id, code, "chosen", actor_id)
