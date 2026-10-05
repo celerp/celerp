@@ -1343,6 +1343,23 @@ window.celerpStarFetch = window.celerpStarFetch || (function(){
     return request;
   };
 })();
+// Distinct local calendar days the dashboard was opened on, newest 30 kept. The star
+// ask on the dashboard waits for the tenth. Storage that is blocked counts as day 0.
+window.celerpUseDays = function(record){
+  try {
+    var key = 'celerp.dashboardDays';
+    var days = JSON.parse(localStorage.getItem(key) || '[]');
+    if (!Array.isArray(days)) days = [];
+    if (record) {
+      var d = new Date();
+      var today = d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+      if (days.indexOf(today) === -1) days.push(today);
+      days = days.slice(-30);
+      localStorage.setItem(key, JSON.stringify(days));
+    }
+    return days.length;
+  } catch (e) { return 0; }
+};
 (function(){
   window.celerpStarFetch('/stars/cta?medium=footer').then(function(d){
     var el = document.getElementById('star-cta');
@@ -1431,8 +1448,13 @@ def star_supporter_card() -> FT:
     # the relay's thank-you copy ({badge} -> their label); otherwise show the ask. All
     # copy stays relay-sourced; the card is hidden in neutral (relay down) or dismissed.
     js = (
-        "(function(){"
+        # Deferred one tick: when htmx swaps this card in for the import card, the
+        # import card is still in the page while the swap runs.
+        "setTimeout(function(){"
         "if(!window.celerpStarFetch)return;"
+        # The ask waits for 10 days of use and for the import card to be gone.
+        "if(!window.celerpUseDays||window.celerpUseDays(false)<10"
+        "||document.getElementById('getting-started-card'))return;"
         "Promise.all(["
         "window.celerpStarFetch('/stars/cta?medium=dashboard').catch(function(){return null}),"
         "window.celerpStarFetch('/stars/badge').catch(function(){return null})"
@@ -1466,7 +1488,7 @@ def star_supporter_card() -> FT:
         "if(dz)dz.addEventListener('click',function(){"
         "fetch('/stars/dismiss',{method:'POST'}).then(function(){"
         "var c=document.getElementById('star-supporter-card');if(c)c.style.display='none';});});"
-        "})();"
+        "},0);"
     )
     gold = "color:#d4af37"
     # Static fallbacks for when the relay does not supply its own copy (R2): translated
