@@ -3640,6 +3640,8 @@
   "notice.historical_lots_no_product.body": "請求書 {number} は、移行前に納品された商品とともに移されましたが、その品目は製品を示していません: {skus}。需要計画では、これらの明細の未納分を製品ではなく各品目自身の SKU で数えます。",
   "notice.starter_modules_on.title": "在庫と連絡先をオンにしました",
   "notice.starter_modules_on.body": "この会社の登録時に作成された初期品目と自社の連絡先は在庫と連絡先で管理されるため、両方をオンにしました。モジュールページに表示されます。",
+  "notice.work_centers_moved.title": "1日あたりの作業時間を作業拠点に移しました",
+  "notice.work_centers_moved.body": "会社の「1日あたりの作業時間」の設定は、設定 > 製造業 > 作業拠点 にある新しい作業拠点 Default に移りました。製造予定の見積もりは変わっていません。",
   "item.draft": "{sku} は下書きで、まだ在庫ではありません。先に利用可能にしてください。",
   "item.reserve_not_available": "{sku} は {status} です。予約できるのは利用可能な在庫だけです。",
   "item.reserve_out_of_range": "{sku} の数量は {held}、予約済みは {reserved} です。予約を {change} 変更すると {result} になり、0 から {held} の範囲外です。",

@@ -3640,6 +3640,8 @@
   "notice.historical_lots_no_product.body": "La facture {number} a été reprise avec des marchandises livrées avant la migration dont l'article n'indique aucun produit : {skus}. La planification de la demande compte ce que ces lignes doivent encore sous le SKU propre de chaque article, et non sous un produit.",
   "notice.starter_modules_on.title": "Inventaire et Contacts ont été activés",
   "notice.starter_modules_on.body": "Les articles de départ de cette entreprise et son propre contact, créés lors de son inscription, sont gérés par Inventaire et Contacts, c'est pourquoi les deux ont été activés. Ils figurent sur la page Modules.",
+  "notice.work_centers_moved.title": "Les heures par jour sont passées aux postes de travail",
+  "notice.work_centers_moved.body": "Le réglage Heures par jour de votre entreprise se trouve désormais sur le nouveau poste de travail Default, sous Paramètres > Fabrication > Postes de travail. Vos estimations de fabrication n’ont pas changé.",
   "item.draft": "{sku} est un brouillon, pas encore du stock : rendez-le d'abord disponible.",
   "item.reserve_not_available": "{sku} est {status} : seul le stock disponible peut être réservé.",
   "item.reserve_out_of_range": "{sku} contient {held} dont {reserved} réservé : une modification de réservation de {change} laisserait {result}, hors de 0 à {held}.",

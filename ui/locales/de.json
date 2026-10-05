@@ -3640,6 +3640,8 @@
   "notice.historical_lots_no_product.body": "Rechnung {number} wurde mit Waren übernommen, die vor der Datenübernahme geliefert wurden und deren Artikel kein Produkt nennt: {skus}. Die Bedarfsplanung zählt, was diese Positionen noch schulden, unter der eigenen SKU jedes Artikels, nicht unter einem Produkt.",
   "notice.starter_modules_on.title": "Lager und Kontakte wurden eingeschaltet",
   "notice.starter_modules_on.body": "Die Startartikel dieses Unternehmens und sein eigener Kontakt, die bei der Registrierung angelegt wurden, werden von Lager und Kontakte geführt, daher wurden beide eingeschaltet. Sie stehen auf der Seite Module.",
+  "notice.work_centers_moved.title": "Stunden pro Tag jetzt bei den Arbeitsstellen",
+  "notice.work_centers_moved.body": "Die Einstellung „Stunden pro Tag“ Ihres Unternehmens liegt jetzt bei der neuen Arbeitsstelle „Default“ unter Einstellungen > Fertigung > Arbeitsstellen. An Ihren Schätzungen für zu Fertigendes hat sich nichts geändert.",
   "item.draft": "{sku} ist ein Entwurf und noch kein Bestand: Machen Sie es zuerst verfügbar.",
   "item.reserve_not_available": "{sku} ist {status}: Nur verfügbarer Bestand kann reserviert werden.",
   "item.reserve_out_of_range": "{sku} hat {held} Bestand, davon {reserved} reserviert: Eine Änderung der Reservierung um {change} ergäbe {result}, außerhalb von 0 bis {held}.",

@@ -3640,6 +3640,8 @@
   "notice.historical_lots_no_product.body": "Invoice {number} came over with goods delivered before the move whose item names no product: {skus}. Demand Planning counts what those lines still owe under each item's own SKU, not under a product.",
   "notice.starter_modules_on.title": "Inventory and Contacts were turned on",
   "notice.starter_modules_on.body": "This company's starter items and its own contact, created when it was registered, are kept by Inventory and Contacts, so both were turned on. They are listed on the Modules page.",
+  "notice.work_centers_moved.title": "Hours per day moved to work centers",
+  "notice.work_centers_moved.body": "Your company Hours per day setting now lives on the new Default work center under Settings > Manufacturing > Work centers. Nothing changed in your To-Make estimates.",
   "item.draft": "{sku} is a draft, not stock yet: make it available first.",
   "item.reserve_not_available": "{sku} is {status}: only available stock can be reserved.",
   "item.reserve_out_of_range": "{sku} holds {held} with {reserved} reserved: a reservation change of {change} would leave {result}, outside 0 to {held}.",

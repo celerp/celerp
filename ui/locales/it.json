@@ -3640,6 +3640,8 @@
   "notice.historical_lots_no_product.body": "La fattura {number} è stata trasferita con merce consegnata prima della migrazione il cui articolo non indica alcun prodotto: {skus}. La pianificazione della domanda conta ciò che quelle righe devono ancora sotto lo SKU proprio di ciascun articolo, non sotto un prodotto.",
   "notice.starter_modules_on.title": "Inventario e Contatti sono stati attivati",
   "notice.starter_modules_on.body": "Gli articoli iniziali di questa azienda e il suo contatto, creati al momento della registrazione, sono gestiti da Inventario e Contatti, per questo sono stati attivati entrambi. Sono elencati nella pagina Moduli.",
+  "notice.work_centers_moved.title": "Le ore giornaliere sono passate ai centri di lavoro",
+  "notice.work_centers_moved.body": "L’impostazione delle ore giornaliere della tua azienda si trova ora nel nuovo centro di lavoro Default, in Impostazioni > Produzione > Centri di lavoro. Le stime di produzione non sono cambiate.",
   "item.draft": "{sku} è una bozza, non ancora a magazzino: rendilo prima disponibile.",
   "item.reserve_not_available": "{sku} è {status}: si può riservare solo merce disponibile.",
   "item.reserve_out_of_range": "{sku} contiene {held} con {reserved} riservato: una variazione della riserva di {change} lascerebbe {result}, fuori da 0 a {held}.",

@@ -3640,6 +3640,8 @@
   "notice.historical_lots_no_product.body": "La factura {number} llegó con mercancía entregada antes de la migración cuyo artículo no indica ningún producto: {skus}. La planificación de la demanda cuenta lo que esas líneas aún deben bajo el SKU propio de cada artículo, no bajo un producto.",
   "notice.starter_modules_on.title": "Se activaron Inventario y Contactos",
   "notice.starter_modules_on.body": "Los artículos iniciales de esta empresa y su propio contacto, creados al registrarla, los gestionan Inventario y Contactos, por eso se activaron ambos. Aparecen en la página Módulos.",
+  "notice.work_centers_moved.title": "Las horas diarias pasaron a los centros de trabajo",
+  "notice.work_centers_moved.body": "La configuración de horas diarias de su empresa está ahora en el nuevo centro de trabajo Default, en Configuración > Fabricación > Centros de trabajo. Sus estimaciones de lo que hay que fabricar no cambiaron.",
   "item.draft": "{sku} es un borrador y aún no es existencia: primero póngalo disponible.",
   "item.reserve_not_available": "{sku} está {status}: solo se puede reservar existencia disponible.",
   "item.reserve_out_of_range": "{sku} tiene {held} con {reserved} reservado: un cambio de reserva de {change} dejaría {result}, fuera de 0 a {held}.",

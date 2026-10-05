@@ -3640,6 +3640,8 @@
   "notice.historical_lots_no_product.body": "Hóa đơn {number} được chuyển sang cùng hàng đã giao trước khi chuyển dữ liệu mà mặt hàng không ghi sản phẩm nào: {skus}. Hoạch định nhu cầu tính phần các dòng đó còn nợ theo SKU riêng của từng mặt hàng, không theo sản phẩm.",
   "notice.starter_modules_on.title": "Hàng tồn kho và Danh bạ đã được bật",
   "notice.starter_modules_on.body": "Các mặt hàng khởi đầu của công ty này và liên hệ của chính công ty, được tạo khi đăng ký, do Hàng tồn kho và Danh bạ quản lý, nên cả hai đã được bật. Chúng được liệt kê trên trang Mô-đun.",
+  "notice.work_centers_moved.title": "Số giờ mỗi ngày đã chuyển sang trung tâm làm việc",
+  "notice.work_centers_moved.body": "Thiết lập Số giờ mỗi ngày của công ty bạn hiện nằm ở trung tâm làm việc Default mới, trong Cài đặt > Chế tạo > Trung tâm làm việc. Các ước tính cần sản xuất của bạn không thay đổi.",
   "item.draft": "{sku} là bản nháp, chưa phải hàng tồn kho: hãy đặt thành có sẵn trước.",
   "item.reserve_not_available": "{sku} đang ở trạng thái {status}: chỉ có thể giữ chỗ hàng có sẵn.",
   "item.reserve_out_of_range": "{sku} có {held}, đã giữ chỗ {reserved}: thay đổi giữ chỗ {change} sẽ còn {result}, ngoài khoảng 0 đến {held}.",

@@ -32,7 +32,8 @@ KEYS = ["posting.problem.unset", "posting.problem.not_in_chart", "posting.proble
         "notice.mfg_reconcile_needed.title", "notice.mfg_reconcile_needed.body",
         "notice.mfg_wip_recorded.title", "notice.mfg_wip_recorded.body",
         "notice.historical_lots_no_product.title", "notice.historical_lots_no_product.body",
-        "notice.starter_modules_on.title", "notice.starter_modules_on.body"]
+        "notice.starter_modules_on.title", "notice.starter_modules_on.body",
+        "notice.work_centers_moved.title", "notice.work_centers_moved.body"]
 _ASSET = {"code": "1110", "account_type": "asset", "is_active": True, "has_children": False}
 
 
@@ -138,3 +139,28 @@ async def test_an_unmapped_posting_account_notice_is_shown_in_the_readers_langua
     assert shown["items"][0]["body"] == de["notice.posting_unmapped.body"].format(
         roles=de["posting.role.general_expense"])
     assert shown["items"][1] == {"id": "x", "title": "Stored as written", "body": "Kept"}
+
+
+@pytest.mark.asyncio
+async def test_the_work_center_notice_an_upgrade_stored_is_shown_in_the_readers_language(client, session, auth):
+    """The upgrade that moved Hours per day onto work centers stored its notice as English text
+    with no keys, the way that release wrote it. The bell still shows it in the reader's language."""
+    from sqlalchemy import text
+
+    from celerp.migrations.versions.f8a9b0c1d2e3_work_center_default_backfill import _NOTICE_BODY, _NOTICE_TITLE
+    from ui.routes.notifications import _in_reader_language
+
+    await session.execute(text("""
+        INSERT INTO notifications (id, company_id, user_id, category, title, body, action_url, priority, read, created_at)
+        VALUES (gen_random_uuid(), :cid, NULL, 'manufacturing', :title, :body, '/settings/manufacturing', 'high', false, NOW())
+    """), {"cid": auth["company_id"], "title": _NOTICE_TITLE, "body": _NOTICE_BODY})
+    await session.commit()
+
+    listed = await client.get("/notifications", headers=auth["headers"])
+    assert listed.status_code == 200, listed.text
+    i18n.set_lang("de")
+    [shown] = json.loads(_in_reader_language(listed.content))["items"]
+    de = _catalog("de")
+    assert (shown["title"], shown["body"]) == (de["notice.work_centers_moved.title"],
+                                               de["notice.work_centers_moved.body"])
+    assert shown["action_url"] == "/settings/manufacturing"

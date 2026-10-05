@@ -3640,6 +3640,8 @@
   "notice.historical_lots_no_product.body": "ደረሰኝ {number} ከፍልሰቱ በፊት የተረከቡ እቃዎችን ይዞ መጥቷል፣ የእነሱ ንጥል ምንም ምርት አይጠቅስም: {skus}። የፍላጎት እቅድ እነዚህ መስመሮች አሁንም ያለባቸውን በእያንዳንዱ ንጥል የራሱ SKU ስር ይቆጥራል እንጂ በምርት ስር አይደለም።",
   "notice.starter_modules_on.title": "ክምችት እና እውቂያዎች በርተዋል",
   "notice.starter_modules_on.body": "ይህ ኩባንያ ሲመዘገብ የተፈጠሩት የመነሻ እቃዎቹ እና የራሱ እውቂያ በክምችት እና እውቂያዎች ስለሚያዙ ሁለቱም በርተዋል። በሞጁሎች ገጽ ላይ ተዘርዝረዋል።",
+  "notice.work_centers_moved.title": "በቀን ሰዓታት ወደ የስራ ማዕከላት ተዛውረዋል",
+  "notice.work_centers_moved.body": "የኩባንያዎ በቀን ሰዓታት ቅንብር አሁን በአዲሱ Default የስራ ማዕከል ላይ ነው፣ በቅንብሮች > ማምረቻ > የስራ ማዕከላት ስር። በሚመረቱ ግምቶችዎ ላይ ምንም አልተለወጠም።",
   "item.draft": "{sku} ረቂቅ ነው፣ ገና ክምችት አይደለም፦ መጀመሪያ እንዲገኝ ያድርጉት።",
   "item.reserve_not_available": "{sku} {status} ነው፦ ሊያዝ የሚችለው የሚገኝ ክምችት ብቻ ነው።",
   "item.reserve_out_of_range": "{sku} {held} አለው፣ {reserved} ተይዟል፦ የ{change} የማስያዝ ለውጥ {result} ይተዋል፣ ይህም ከ0 እስከ {held} ውጭ ነው።",

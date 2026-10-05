@@ -24,6 +24,21 @@ log = logging.getLogger(__name__)
 
 MAX_PER_COMPANY = 100
 
+# Notices stored as English text before a notice could carry its message keys, by the
+# (category, title) they were stored with. The upgrade that wrote one cannot be changed,
+# so the keys are supplied when it is listed.
+STORED_NOTICE_KEYS = {
+    # migration f8a9b0c1d2e3 (Hours per day moved onto work centers)
+    ("manufacturing", "Hours per day moved to work centers"): {
+        "title": "notice.work_centers_moved.title", "body": "notice.work_centers_moved.body"},
+}
+
+
+def message_keys(notif: Notification) -> dict | None:
+    """The message keys a notice is shown from in the reader's language: its own, or those of
+    a notice an earlier release stored without them; none for a notice shown as stored."""
+    return notif.i18n or STORED_NOTICE_KEYS.get((notif.category, notif.title))
+
 
 async def create(
     session: AsyncSession,

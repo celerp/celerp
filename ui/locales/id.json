@@ -3640,6 +3640,8 @@
   "notice.historical_lots_no_product.body": "Faktur {number} terbawa dengan barang yang dikirim sebelum migrasi yang itemnya tidak menyebut produk: {skus}. Perencanaan Permintaan menghitung sisa yang masih terutang pada baris tersebut di bawah SKU masing-masing item, bukan di bawah produk.",
   "notice.starter_modules_on.title": "Inventaris dan Kontak telah diaktifkan",
   "notice.starter_modules_on.body": "Item awal perusahaan ini dan kontaknya sendiri, yang dibuat saat pendaftaran, dikelola oleh Inventaris dan Kontak, jadi keduanya diaktifkan. Keduanya tercantum di halaman Modul.",
+  "notice.work_centers_moved.title": "Jam per hari dipindahkan ke pusat kerja",
+  "notice.work_centers_moved.body": "Pengaturan Jam per hari perusahaan Anda kini berada di pusat kerja Default yang baru, di Pengaturan > Manufaktur > Pusat kerja. Perkiraan barang yang harus dibuat tidak berubah.",
   "item.draft": "{sku} adalah draf, belum menjadi stok: jadikan tersedia terlebih dahulu.",
   "item.reserve_not_available": "{sku} berstatus {status}: hanya stok yang tersedia yang dapat dipesan.",
   "item.reserve_out_of_range": "{sku} berisi {held} dengan {reserved} dipesan: perubahan pemesanan sebesar {change} akan menyisakan {result}, di luar 0 sampai {held}.",

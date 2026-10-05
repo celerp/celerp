@@ -65,7 +65,7 @@ async def list_notifications(
                 title=n.title,
                 body=n.body,
                 action_url=n.action_url,
-                i18n=n.i18n,
+                i18n=notif_svc.message_keys(n),
                 priority=n.priority,
                 read=n.read,
                 created_at=n.created_at.isoformat(),
