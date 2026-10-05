@@ -270,6 +270,82 @@ async def test_a_row_whose_key_clears_outlives_the_reset_company(real_client, re
             await conn.execute(text("DROP TABLE IF EXISTS ext_transfers"))
 
 
+_ITEMS = ("CREATE TABLE ext_items (id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES companies(id), "
+          "label text NOT NULL)")
+
+
+async def _refused_untouched(client, engine, token: str, company: str, tables: tuple[str, ...], table: str):
+    """Reset is refused naming ``table``, and nothing anywhere has changed."""
+    before = {t: await _rows(engine, t) for t in tables}
+    held = await _held(engine, company)
+
+    r = await _reset(client, token, "Alpha Co")
+
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert (detail["message_key"], detail["params"]) == ("system.factory_reset.held_elsewhere", {"table": table})
+    assert await count(engine, "companies", "id = :i", i=company) == 1
+    assert await _held(engine, company) == held
+    assert {t: await _rows(engine, t) for t in tables} == before
+
+
+@pytest.mark.parametrize("action", _ACTIONS)
+async def test_a_reset_is_refused_while_another_company_points_at_its_rows(
+        real_client, real_engine, action):  # noqa: F811
+    """Beta's row names one of Alpha's rows. Whatever that key does on delete, resetting
+    Alpha would delete, change or trip over Beta's row, so it is refused, naming the
+    table, and nothing is deleted."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        await conn.execute(text(_ITEMS))
+        await conn.execute(text(
+            "CREATE TABLE ext_links (id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES companies(id), "
+            f"item_id uuid REFERENCES ext_items(id) ON DELETE {action}, label text NOT NULL)"))
+        item = uuid.uuid4()
+        await conn.execute(text("INSERT INTO ext_items VALUES (:i, :c, 'alpha item')"), {"i": item, "c": alpha})
+        await conn.execute(text("INSERT INTO ext_links VALUES (:i, :c, :t, 'beta link')"),
+                           {"i": uuid.uuid4(), "c": beta, "t": item})
+    try:
+        await _refused_untouched(real_client, real_engine, ta, alpha, ("ext_items", "ext_links"), "ext_links")
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_links, ext_items"))
+
+
+@pytest.mark.parametrize("action", ["CASCADE", "NO ACTION"])
+async def test_a_reset_is_refused_while_a_row_hangs_off_both_companies(
+        real_client, real_engine, action):  # noqa: F811
+    """A row with no company column hangs off one of Alpha's rows and one of Beta's. It is
+    Beta's as much as Alpha's, so resetting Alpha is refused, naming its table."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        await conn.execute(text(_ITEMS))
+        await conn.execute(text(
+            "CREATE TABLE ext_pairs (id uuid PRIMARY KEY, "
+            f"left_item uuid NOT NULL REFERENCES ext_items(id) ON DELETE {action}, "
+            f"right_item uuid NOT NULL REFERENCES ext_items(id) ON DELETE {action})"))
+        mine, theirs = uuid.uuid4(), uuid.uuid4()
+        await conn.execute(text("INSERT INTO ext_items VALUES (:i, :c, 'alpha item'), (:j, :d, 'beta item')"),
+                           {"i": mine, "c": alpha, "j": theirs, "d": beta})
+        await conn.execute(text("INSERT INTO ext_pairs VALUES (:i, :a, :b)"),
+                           {"i": uuid.uuid4(), "a": mine, "b": theirs})
+    try:
+        await _refused_untouched(real_client, real_engine, ta, alpha, ("ext_items", "ext_pairs"), "ext_pairs")
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_pairs, ext_items"))
+
+
 @pytest.mark.parametrize("typed", [None, "", "RESET", "alpha co", "Alpha Co "])
 async def test_reset_needs_the_exact_company_name(real_client, real_engine, typed):  # noqa: F811
     token = await _register(real_client, "Alpha Co")

@@ -2579,6 +2579,7 @@
   "settings.type_reset_prefix": "Digite ",
   "settings.type_reset_suffix": " para confirmar. Esta ação não pode ser desfeita.",
   "settings.delete_everything": "Excluir tudo",
+  "system.factory_reset.held_elsewhere": "Registros em {table} que não são só desta empresa fazem referência aos dados dela, por isso ela não pode ser redefinida. Nada foi excluído.",
   "system.factory_reset.name_mismatch": "Digite o nome da empresa exatamente como mostrado para redefinir esta empresa.",
   "settings.click_to_edit": "Clique para editar",
   "settings.click_to_change": "Clique para alterar",

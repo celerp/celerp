@@ -2680,6 +2680,7 @@
   "settings.type_reset_prefix": "ይተይቡ ",
   "settings.type_reset_suffix": "። ይህ ሊቀለበስ አይችልም።",
   "settings.delete_everything": "ሁሉንም ነገር ሰርዝ",
+  "system.factory_reset.held_elsewhere": "በ{table} ውስጥ የዚህ ኩባንያ ብቻ ያልሆኑ መዝገቦች ውሂቡን ያመለክታሉ፣ ስለዚህ ዳግም ሊጀመር አይችልም። ምንም አልተሰረዘም።",
   "system.factory_reset.name_mismatch": "ይህን ኩባንያ ዳግም ለማስጀመር የኩባንያውን ስም ልክ እንደሚታየው ይተይቡ።",
   "settings.click_to_edit": "ለማርትዕ ጠቅ ያድርጉ",
   "settings.click_to_change": "ለመቀየር ጠቅ ያድርጉ",

@@ -2580,6 +2580,7 @@
   "settings.type_reset_prefix": "Tapez ",
   "settings.type_reset_suffix": " pour confirmer. Cette action ne peut pas être annulée.",
   "settings.delete_everything": "Tout supprimer",
+  "system.factory_reset.held_elsewhere": "Des enregistrements de {table} qui n'appartiennent pas qu'à cette entreprise font référence à ses données, elle ne peut donc pas être réinitialisée. Rien n'a été supprimé.",
   "system.factory_reset.name_mismatch": "Saisissez le nom de l'entreprise exactement comme indiqué pour réinitialiser cette entreprise.",
   "settings.click_to_edit": "Cliquer pour modifier",
   "settings.click_to_change": "Cliquer pour changer",

@@ -105,6 +105,29 @@ def _company_rows(schema: dict) -> dict[str, str]:
     return {name: rows(name) for name in owned}
 
 
+def _held_elsewhere(schema: dict) -> str:
+    """A query naming a table whose rows the reset of the company bound as ``:c`` would
+    delete, change or trip over though they are not only that company's: a row outside
+    the company naming one of its rows by any key, or a row hanging off the company that
+    also hangs off another one. Nothing when there is none."""
+    from celerp.db_catalog import ident
+
+    rows = _company_rows(schema)
+    checks = []
+    for name in sorted(rows):
+        for fk in schema[name].fks:
+            if fk.target not in rows:
+                continue
+            refs = f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} " \
+                   f"FROM {ident(fk.target)} WHERE ({rows[fk.target]})"
+            checks.append((name, f"({rows[name]}) IS NOT TRUE AND {refs})"))
+            if "company_id" not in schema[name].columns and not fk.clears:
+                checks.append((name, f"({rows[name]}) AND {refs} IS NOT TRUE)"))
+    return " UNION ALL ".join(
+        f"(SELECT '{name.replace(chr(39), chr(39) * 2)}' WHERE EXISTS "
+        f"(SELECT 1 FROM {ident(name)} WHERE {where}))" for name, where in checks) + " LIMIT 1"
+
+
 def _company_deletes(schema: dict) -> list[str]:
     """The deletes that remove the company bound as ``:c``, each table before any it
     references."""
@@ -143,6 +166,12 @@ async def factory_reset(
     members = list((await session.execute(
         select(UserCompany.user_id).where(UserCompany.company_id == company_id))).scalars())
     schema = await db_catalog.read(session)
+    held = await session.scalar(text(_held_elsewhere(schema)), {"c": str(company_id)})
+    if held:
+        raise HTTPException(status_code=409, detail=refusal(
+            "system.factory_reset.held_elsewhere",
+            f"Records in {held} that are not only this company's refer to its data, so it "
+            "cannot be reset. Nothing was deleted.", table=held))
     for delete in _company_deletes(schema):
         await session.execute(text(delete), {"c": str(company_id)})
     await session.execute(text(db_catalog.delete_users_left_without_a_company(schema)), {"members": members})
