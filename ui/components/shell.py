@@ -304,12 +304,20 @@ function initCombobox(wrap) {
   list.style.position = 'fixed';
   list.style.zIndex = '9999';
 
+  // The list is position:fixed, so keep it inside the viewport: open above the input
+  // when there is more room there, and never let it run past either side.
   function positionList() {
     var r = input.getBoundingClientRect();
-    list.style.top = (r.bottom + 2) + 'px';
-    list.style.left = r.left + 'px';
-    list.style.minWidth = r.width + 'px';
+    var gap = 8, vw = document.documentElement.clientWidth, vh = window.innerHeight;
+    list.style.maxWidth = Math.min(400, vw - 2 * gap) + 'px';
+    list.style.minWidth = Math.min(r.width, vw - 2 * gap) + 'px';
     list.style.width = 'auto';
+    var below = vh - r.bottom - gap, above = r.top - gap;
+    var up = below < Math.min(list.scrollHeight, 220) && above > below;
+    list.style.maxHeight = Math.min(220, Math.max(up ? above : below, 0) - 2) + 'px';
+    list.style.top = up ? 'auto' : (r.bottom + 2) + 'px';
+    list.style.bottom = up ? (vh - r.top + 2) + 'px' : 'auto';
+    list.style.left = Math.max(gap, Math.min(r.left, vw - gap - list.offsetWidth)) + 'px';
   }
 
   // Lazy — always queries the live DOM so HTMX-swapped options are included.

@@ -111,6 +111,21 @@ def test_search_and_enter_records_it_on_the_invoice(page, ui_server, unmatched):
     assert (payment["reference"], payment["amount"]) == (unmatched["reference"], 1070.0)
 
 
+def test_invoice_list_stays_inside_a_phone_screen(page, ui_server, unmatched):
+    page.set_viewport_size({"width": 390, "height": 844})
+    box = _open(page, ui_server, unmatched["reference"])
+    box.fill(unmatched["ref"])
+    option = _row(page, unmatched["reference"]).locator(".combobox-option", has_text=unmatched["ref"])
+    option.wait_for(state="visible", timeout=5000)
+
+    r = _row(page, unmatched["reference"]).locator(".combobox-list").bounding_box()
+    assert r["x"] >= 0 and r["x"] + r["width"] <= 390, r
+    assert r["y"] >= 0 and r["y"] + r["height"] <= 844, r
+    if SHOTS:
+        Path(SHOTS).mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=f"{SHOTS}/picker-open-390.png")
+
+
 @pytest.mark.skipif(not SHOTS, reason="screenshots only on request (UNMATCHED_SCREENSHOTS=<dir>)")
 @pytest.mark.parametrize("lang", ["en", "de"])
 @pytest.mark.parametrize("width", [390, 1440])
