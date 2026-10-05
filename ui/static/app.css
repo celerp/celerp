@@ -310,6 +310,11 @@ a:hover { text-decoration: underline; }
 /* Scroll wrapper enables horizontal scroll when many columns are visible.
    The inner table keeps overflow:visible so autocomplete dropdowns can escape. */
 .table-scroll-wrap { overflow-x: auto; width: 100%; }
+/* An empty table's message wraps within the width its scroll box shows, and stays in view,
+   rather than running on under the columns scrolled out of sight on a narrow screen. Only an
+   empty table's box measures itself (a filled table's box sizes from its rows as before). */
+.table-scroll-wrap:has(.empty-state-msg) { container-type: inline-size; }
+.table-scroll-wrap .empty-state-msg { position: sticky; left: 0; max-width: 100cqi; white-space: normal; }
 /* Phantom top scrollbar: mirrors .table-scroll-wrap, sits directly above the table body.
    overflow-x:auto on a zero-height div shows only the scrollbar track. */
 .table-top-scroll { overflow-x: auto; overflow-y: hidden; width: 100%; height: var(--top-scroll-h); }
