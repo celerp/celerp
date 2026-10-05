@@ -3730,5 +3730,13 @@
   "import.row.negative": "{field} は負の値にできません",
   "import.row.invalid_location": "location_id が無効です",
   "import.row.cost_not_number": "原価は数値でなければなりません",
-  "import.row.not_written": "品目を保存できませんでした"
+  "import.row.not_written": "品目を保存できませんでした",
+  "nav.group.sales_documents": "販売書類",
+  "nav.group.purchasing_documents": "購買書類",
+  "nav.group.finance": "財務",
+  "nav.group.ai": "AI",
+  "nav.group.inventory": "在庫",
+  "nav.group.manufacturing": "製造業",
+  "nav.group.subscriptions": "定期購入",
+  "nav.group.contacts": "連絡先"
 }

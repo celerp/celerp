@@ -3730,5 +3730,13 @@
   "import.row.negative": "{field} tidak boleh negatif",
   "import.row.invalid_location": "location_id tidak valid",
   "import.row.cost_not_number": "biaya harus berupa angka",
-  "import.row.not_written": "barang tidak dapat disimpan"
+  "import.row.not_written": "barang tidak dapat disimpan",
+  "nav.group.sales_documents": "Dokumen Penjualan",
+  "nav.group.purchasing_documents": "Dokumen Pembelian",
+  "nav.group.finance": "Keuangan",
+  "nav.group.ai": "AI",
+  "nav.group.inventory": "Inventaris",
+  "nav.group.manufacturing": "Manufaktur",
+  "nav.group.subscriptions": "Langganan",
+  "nav.group.contacts": "Kontak"
 }

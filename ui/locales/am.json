@@ -3730,5 +3730,13 @@
   "import.row.negative": "{field} አሉታዊ ሊሆን አይችልም",
   "import.row.invalid_location": "location_id ትክክል አይደለም",
   "import.row.cost_not_number": "ወጪው ቁጥር መሆን አለበት",
-  "import.row.not_written": "እቃው ሊቀመጥ አልቻለም"
+  "import.row.not_written": "እቃው ሊቀመጥ አልቻለም",
+  "nav.group.sales_documents": "የሽያጭ ሰነዶች",
+  "nav.group.purchasing_documents": "የግዢ ሰነዶች",
+  "nav.group.finance": "ፋይናንስ",
+  "nav.group.ai": "ሰው ሰራሽ አስተውሎት",
+  "nav.group.inventory": "ክምችት",
+  "nav.group.manufacturing": "ማምረቻ",
+  "nav.group.subscriptions": "ምዝገባዎች",
+  "nav.group.contacts": "እውቂያዎች"
 }

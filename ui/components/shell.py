@@ -2313,9 +2313,14 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
 
     sections: list[FT] = [_link(item) for item in top_level]
 
-    for group_label, items in grouped.items():
-        group_key = group_label.lower().replace(" ", "_")
-        is_active_group = group_label == active_group
+    for group, items in grouped.items():
+        group_key = group.lower().replace(" ", "_")
+        is_active_group = group == active_group
+        # A module's group is named by nav.group.<key>; a group no catalog names shows as declared.
+        label_key = f"nav.group.{group_key}"
+        group_label = t(label_key, lang)
+        if group_label == label_key:
+            group_label = group
         # Check if any item in the group declares a settings_href
         settings_href = next((i["settings_href"] for i in items if i.get("settings_href")), None)
         if settings_href:

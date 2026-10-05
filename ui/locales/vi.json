@@ -3730,5 +3730,13 @@
   "import.row.negative": "{field} không được âm",
   "import.row.invalid_location": "location_id không hợp lệ",
   "import.row.cost_not_number": "giá vốn phải là một số",
-  "import.row.not_written": "không thể lưu mặt hàng"
+  "import.row.not_written": "không thể lưu mặt hàng",
+  "nav.group.sales_documents": "Chứng từ bán hàng",
+  "nav.group.purchasing_documents": "Chứng từ mua hàng",
+  "nav.group.finance": "Tài chính",
+  "nav.group.ai": "AI",
+  "nav.group.inventory": "Hàng tồn kho",
+  "nav.group.manufacturing": "Chế tạo",
+  "nav.group.subscriptions": "Đăng ký",
+  "nav.group.contacts": "Danh bạ"
 }

@@ -3730,5 +3730,13 @@
   "import.row.negative": "{field} darf nicht negativ sein",
   "import.row.invalid_location": "ungültige location_id",
   "import.row.cost_not_number": "die Kosten müssen eine Zahl sein",
-  "import.row.not_written": "der Artikel konnte nicht gespeichert werden"
+  "import.row.not_written": "der Artikel konnte nicht gespeichert werden",
+  "nav.group.sales_documents": "Verkaufsdokumente",
+  "nav.group.purchasing_documents": "Einkaufsdokumente",
+  "nav.group.finance": "Finanzen",
+  "nav.group.ai": "KI",
+  "nav.group.inventory": "Lager",
+  "nav.group.manufacturing": "Fertigung",
+  "nav.group.subscriptions": "Abonnements",
+  "nav.group.contacts": "Kontakte"
 }

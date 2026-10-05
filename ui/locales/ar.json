@@ -3730,5 +3730,13 @@
   "import.row.negative": "لا يمكن أن يكون {field} سالبًا",
   "import.row.invalid_location": "location_id غير صالح",
   "import.row.cost_not_number": "يجب أن تكون التكلفة رقمًا",
-  "import.row.not_written": "تعذر حفظ الصنف"
+  "import.row.not_written": "تعذر حفظ الصنف",
+  "nav.group.sales_documents": "مستندات المبيعات",
+  "nav.group.purchasing_documents": "مستندات المشتريات",
+  "nav.group.finance": "المالية",
+  "nav.group.ai": "الذكاء الاصطناعي",
+  "nav.group.inventory": "جرد",
+  "nav.group.manufacturing": "تصنيع",
+  "nav.group.subscriptions": "الاشتراكات",
+  "nav.group.contacts": "جهات الاتصال"
 }

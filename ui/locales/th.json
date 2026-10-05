@@ -3730,5 +3730,13 @@
   "import.row.negative": "{field} ต้องไม่ติดลบ",
   "import.row.invalid_location": "location_id ไม่ถูกต้อง",
   "import.row.cost_not_number": "ต้นทุนต้องเป็นตัวเลข",
-  "import.row.not_written": "ไม่สามารถบันทึกสินค้าได้"
+  "import.row.not_written": "ไม่สามารถบันทึกสินค้าได้",
+  "nav.group.sales_documents": "เอกสารการขาย",
+  "nav.group.purchasing_documents": "เอกสารการจัดซื้อ",
+  "nav.group.finance": "การเงิน",
+  "nav.group.ai": "AI",
+  "nav.group.inventory": "รายการสิ่งของ",
+  "nav.group.manufacturing": "การผลิต",
+  "nav.group.subscriptions": "การสมัครรับข้อมูล",
+  "nav.group.contacts": "ผู้ติดต่อ"
 }
