@@ -560,6 +560,18 @@ async def test_the_online_deposit_setting_takes_cash_an_active_bank_or_the_defau
     assert r.status_code == 422
 
 
+@pytest.mark.parametrize("key", ["stripe_deposit_account", "woocommerce_deposit_account"])
+@pytest.mark.parametrize("value", [1110, 0, False, True, [], ["1110"], {}, {"code": "1110"}, 1110.0])
+@pytest.mark.asyncio
+async def test_the_online_deposit_setting_refuses_a_value_that_is_not_an_account_code(client, key, value):
+    tok = await _register(client)
+    r = await client.patch("/companies/me", json={"settings": {key: value}}, headers=_h(tok))
+    assert r.status_code == 422, (value, r.status_code, r.text)
+    assert "account code" in r.json()["detail"]
+    stored = (await client.get("/companies/me", headers=_h(tok))).json().get("settings", {})
+    assert key not in stored
+
+
 # ── the whole journey, end to end ─────────────────────────────────────────────
 
 @pytest.mark.asyncio

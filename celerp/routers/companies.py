@@ -354,8 +354,12 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
         from celerp_docs.routes_payments import (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY,
                                                  require_online_deposit_account)
         for key in (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY):
-            if payload.settings.get(key):  # empty: the default
-                await require_online_deposit_account(session, company_id, payload.settings[key])
+            value = payload.settings.get(key)
+            if value in (None, ""):  # empty: the default
+                continue
+            if not isinstance(value, str):
+                raise HTTPException(status_code=422, detail=f"{key} must be an account code or empty.")
+            await require_online_deposit_account(session, company_id, value)
         # Price config must pass the same gate as the dedicated endpoints: the read
         # path trusts stored config, so no door may store what the validator rejects.
         if "price_lists" in payload.settings or "base_price_list" in payload.settings:
