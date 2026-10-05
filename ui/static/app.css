@@ -630,10 +630,13 @@ a:hover { text-decoration: underline; }
 .wf-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .wf-thumb { display: inline-flex; border: 2px solid transparent; border-radius: 4px; overflow: hidden;
   padding: 0; background: none; cursor: pointer; }
-/* Item files table in the narrow Manufacturing right column: keep it within the column. */
-.recipe-right table.data-table { table-layout: fixed; width: 100%; }
-.recipe-right table.data-table td, .recipe-right table.data-table th { overflow: hidden; }
-.recipe-right table.data-table select { max-width: 100%; }
+/* Item files table in the narrow Manufacturing right column: keep it within the column. Below
+   1400px the column stacks full width and the table scrolls in its own box instead. */
+@media (min-width: 1401px) {
+  .recipe-right table.data-table { table-layout: fixed; width: 100%; }
+  .recipe-right table.data-table td, .recipe-right table.data-table th { overflow: hidden; }
+  .recipe-right table.data-table select { max-width: 100%; }
+}
 .files-name-cell { overflow: hidden; }
 .file-link--clip { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; vertical-align: bottom; }
