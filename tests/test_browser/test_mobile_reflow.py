@@ -166,3 +166,79 @@ def test_the_dashboard_fits_a_phone_screen(page, ui_server, fresh_company, width
     for selector in (".chart-card", "table.activity-table"):
         assert page.locator(selector).first.evaluate(
             f"e => !!e.closest('{_OWN_SCROLL}') || e.getBoundingClientRect().right <= {width} + 0.5")
+
+
+# Every main page, with each of its tabs. A tab list is read from the page itself, so a tab
+# added later is swept too.
+_MAIN_PAGES = ("/dashboard", "/inventory", "{item}", "/crm", "/contacts/{contact}", "/docs", "/docs/{doc}",
+               "/lists", "/lists/{list}", "/manufacturing", "/manufacturing/{order}", "/accounting",
+               "/settings/general", "/settings/inventory", "/settings/accounting", "/settings/contacts",
+               "/settings/sales", "/settings/purchasing", "/settings/manufacturing", "/settings/payments",
+               "/doctor")
+_TABS = "a.category-tab[href*='tab='], .settings-tabs a[href]"
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("width", [320, 390])
+def test_every_main_page_fits_a_phone_screen(page, ui_server, fresh_company, width):
+    api = fresh_company
+    tag = uuid.uuid4().hex[:6].upper()
+
+    def made(r) -> str:
+        assert r.status_code in (200, 201), r.text
+        return r.json()["id"]
+
+    part = made(api.post("/items", json={"status": "available", "sku": f"PH-{tag}-P", "sell_by": "piece",
+                                         "name": "Consignment_stock_held_at_the_riverside_showroom_warehouse",
+                                         "quantity": 5, "cost_total": 50.0}))
+    item = made(api.post("/items", json={"status": "available", "sku": f"PH-{tag}-I", "sell_by": "piece",
+                                         "name": "Finished ring", "quantity": 1, "cost_total": 10.0}))
+    contact = made(api.post("/crm/contacts", json={"name": "Riverside showroom", "contact_type": "customer"}))
+    doc = made(api.post("/docs", json={"doc_type": "invoice", "contact_id": contact, "line_items": [
+        {"description": "Polished stock lot", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}]}))
+    lst = made(api.post("/lists", json={"list_type": "quotation"}))
+    order = made(api.post("/manufacturing", json={
+        "description": "Ring run", "order_type": "assembly", "inputs": [{"item_id": part, "quantity": 1}],
+        "output_item_id": item, "quantity": 1}))
+    ids = {"item": f"/inventory/{item}", "contact": contact, "doc": doc, "list": lst, "order": order}
+
+    page.set_viewport_size({"width": width, "height": 740})
+    urls = [u.format(**ids) for u in _MAIN_PAGES]
+    seen, wide = set(), []
+    while urls:
+        url = urls.pop(0)
+        if url in seen:
+            continue
+        seen.add(url)
+        page.goto(f"{ui_server}{url}", wait_until="load")
+        page.wait_for_timeout(600)
+        doc_w, client_w = page.evaluate(
+            "[document.documentElement.scrollWidth, document.documentElement.clientWidth]")
+        if doc_w != client_w:
+            wide.append(f"{url}: {doc_w} > {client_w}")
+        if url.startswith(("/inventory/", "/settings/")):
+            for href in page.eval_on_selector_all(_TABS, "els => els.map(e => e.getAttribute('href'))"):
+                if href and href.startswith("/") and href not in seen:
+                    urls.append(href)
+    assert not wide, f"pages wider than a {width}px screen: {wide}"
+    assert len(seen) > len(_MAIN_PAGES), "no tab was swept"
+
+
+@pytest.mark.parametrize("lang", ["en", "de"])
+@pytest.mark.parametrize("width", [320, 390])
+def test_the_alerts_panel_opens_inside_a_phone_screen(page, ui_server, fresh_company, width, lang):
+    # With a second company the top bar carries the company switcher, and the top bar's
+    # first row wraps, so the bell sits anywhere along it (further left in German).
+    host = ui_server.split("//", 1)[1].split(":", 1)[0]
+    page.context.add_cookies([{"name": "celerp_lang", "value": lang, "domain": host, "path": "/"}])
+    try:
+        page.set_viewport_size({"width": width, "height": 740})
+        page.goto(f"{ui_server}/dashboard", wait_until="load")
+        page.wait_for_selector(".topbar select.company-switcher-select", state="attached", timeout=8000)
+        page.click(".notif-bell-btn")
+        page.wait_for_selector("#notif-panel", state="visible", timeout=5000)
+        box = page.locator("#notif-panel").bounding_box()
+    finally:
+        page.context.clear_cookies(name="celerp_lang")
+    assert box["x"] >= 0 and box["x"] + box["width"] <= width + 0.5, (
+        f"the alerts panel spans {box['x']:.0f}..{box['x'] + box['width']:.0f} on a {width}px screen")

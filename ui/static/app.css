@@ -245,6 +245,16 @@ a:hover { text-decoration: underline; }
   .user-menu { flex-shrink: 1; }
   .user-menu__trigger { max-width: 8rem; }
 }
+/* Up to tablet width the shared rule holds for every page: no box grows past the screen to
+   fit its content (a grid's 1fr track or a flex row otherwise widens to its widest child),
+   and a table wider than the screen scrolls sideways inside its own box (a .table-scroll-wrap
+   already is that box), and a form laid out as a row wraps its controls instead.
+   min-width only acts on grid and flex children, flex-wrap only on flex rows. */
+@media (max-width: 900px) {
+  .main-content :is(div, form, section, article, aside, fieldset, details) { min-width: 0; }
+  .main-content form { flex-wrap: wrap; }
+  .main-content .data-table:not(.table-scroll-wrap > .data-table) { display: block; max-width: 100%; overflow-x: auto; }
+}
 
 /* ─── Page header ─────────────────────────────────────────────────────── */
 .page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
@@ -2424,6 +2434,11 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   background: var(--c-bg); border: 1px solid var(--c-border); border-radius: var(--radius);
   box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; overflow: hidden;
   display: flex; flex-direction: column;
+}
+/* On a phone the top bar's first row wraps and the bell can sit anywhere along it, so the
+   panel opens across the screen under the top bar rather than hanging off the bell. */
+@media (max-width: 768px) {
+  .notif-panel { position: fixed; top: auto; left: 8px; right: 8px; width: auto; }
 }
 .notif-panel__header {
   padding: 0.75rem 1rem; font-weight: 600; border-bottom: 1px solid var(--c-border);
