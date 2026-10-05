@@ -709,39 +709,21 @@ def setup_routes(app):
             return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
         current = str(company.get(key, "") or "")
         lang = get_lang(request)
-        if key == "docs_default_preset":
-            options = [
-                ("last_12m", t("filter.last_12m", lang)),
-                ("this_year", t("settings.this_calendar_year", lang)),
-                ("all", t("filter.all_time", lang)),
-            ]
-            return Td(
-                Select(
-                    *[Option(label, value=val, selected=(val == current))
-                      for val, label in options],
-                    name="value",
-                    hx_patch=f"/settings/preferences/{key}",
-                    hx_target="closest td", hx_swap="outerHTML", hx_include="this",
-                    hx_trigger="change",
-                    cls="cell-input cell-input--select", autofocus=True,
-                ),
-                cls="cell cell--editing",
-            )
-        if key == "default_per_page":
-            options = [("25", "25"), ("50", "50"), ("100", "100"), ("250", "250"), ("500", "500")]
-            return Td(
-                Select(
-                    *[Option(label, value=val, selected=(val == current))
-                      for val, label in options],
-                    name="value",
-                    hx_patch=f"/settings/preferences/{key}",
-                    hx_target="closest td", hx_swap="outerHTML", hx_include="this",
-                    hx_trigger="change",
-                    cls="cell-input cell-input--select", autofocus=True,
-                ),
-                cls="cell cell--editing",
-            )
-        return P(t("msg.unknown_preference"), cls="cell-error")
+        options = _preference_choices(key, lang)
+        if not options:
+            return P(t("msg.unknown_preference"), cls="cell-error")
+        return Td(
+            Select(
+                *[Option(label, value=val, selected=(val == current))
+                  for val, label in options.items()],
+                name="value",
+                hx_patch=f"/settings/preferences/{key}",
+                hx_target="closest td", hx_swap="outerHTML", hx_include="this",
+                hx_trigger="change",
+                cls="cell-input cell-input--select", autofocus=True,
+            ),
+            cls="cell cell--editing",
+        )
 
     @app.patch("/settings/preferences/{key}")
     async def preference_patch(request: Request, key: str):
@@ -757,7 +739,7 @@ def setup_routes(app):
             await api.patch_company(token, {key: value})
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _preference_display_cell(key, value)
+        return _preference_display_cell(key, value, get_lang(request))
 
     # ── Password change (POST only - UI is in settings_general) ──────
     @app.post("/settings/password")
@@ -2683,21 +2665,25 @@ def setup_routes(app):
 
 # ── Display cell helpers (click-to-edit pattern) ─────────────────────────
 
-def _preference_display_cell(key: str, value, lang: str = "en") -> FT:
-    label_map = {
-        "docs_default_preset": {
+def _preference_choices(key: str, lang: str) -> dict[str, str]:
+    """The values a company preference can take, each with its label in ``lang``; empty
+    for a key that is not a preference."""
+    if key == "docs_default_preset":
+        return {
             "last_12m": t("filter.last_12m", lang),
             "this_year": t("settings.this_calendar_year", lang),
             "all": t("filter.all_time", lang),
-        },
-        "default_per_page": {
-            n: t("settings.per_page", lang, n=n) for n in ("25", "50", "100", "250", "500")
-        },
-    }.get(key, {})
-    display = label_map.get(str(value or ""), str(value) if value else EMPTY)
+        }
+    if key == "default_per_page":
+        return {n: t("settings.per_page", lang, n=n) for n in ("25", "50", "100", "250", "500")}
+    return {}
+
+
+def _preference_display_cell(key: str, value, lang: str) -> FT:
+    display = _preference_choices(key, lang).get(str(value or ""), str(value) if value else EMPTY)
     return Td(
         Span(display, cls="cell-text"),
-        title=t("settings.click_to_change"),
+        title=t("settings.click_to_change", lang),
         hx_get=f"/settings/preferences/{key}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
         cls="cell cell--clickable",
@@ -3060,7 +3046,7 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
         Table(
             *[Tr(
                 Td(label, cls="detail-label"),
-                _preference_display_cell(key, flat.get(key)),
+                _preference_display_cell(key, flat.get(key), lang),
             ) for key, label in prefs],
             cls="detail-table",
         ),
