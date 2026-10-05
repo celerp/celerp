@@ -1296,6 +1296,15 @@ def _start(cfg: dict) -> None:
     Before that, an update a previous supervisor did not live to finish is
     finished or undone. The update lock is held for the supervisor's lifetime.
     """
+    # Installed first, so a stop at any point before the servers exist (taking the
+    # lock, starting the database, finishing an update, migrating) exits normally:
+    # the lock is released below and the database this process started is stopped
+    # at exit. `_supervise` replaces it once there are servers to end as well.
+    def _stop(sig, frame):
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
     release_lock = _hold_update_lock("start")
     try:
         ensure_database(cfg, own=True)
@@ -1325,8 +1334,8 @@ def _supervise(cfg: dict, release_lock) -> None:
 
     api_proc = ui_proc = None
 
-    # Installed before the servers start, so a stop while they are still starting
-    # also ends them and lets this process stop the database it started on exit.
+    # Replaces `_start`'s handler before the servers start, so a stop while they
+    # are still starting also ends them.
     def _shutdown(sig, frame):
         click.echo("\nShutting down...")
         children = [p for p in (api_proc, ui_proc) if p is not None]
