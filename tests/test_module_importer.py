@@ -380,6 +380,35 @@ def test_remove_module_dir_removes_folder(module_dir):
     assert not (module_dir / "my-module").exists()
 
 
+def test_remove_module_dir_waits_for_an_install_in_progress(module_dir):
+    """An install checks names and prefixes against what is on disk; a removal
+    landing in the middle of it would change that under it."""
+    import threading
+
+    from celerp.modules.importer import _one_install_at_a_time, remove_module_dir
+    install_from_zip(_zip_bytes({"__init__.py": MANIFEST}))
+    held, release = threading.Event(), threading.Event()
+
+    def install_in_progress():
+        with _one_install_at_a_time():
+            held.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=install_in_progress)
+    holder.start()
+    assert held.wait(10)
+    remover = threading.Thread(target=remove_module_dir, args=("my-module",))
+    remover.start()
+    remover.join(0.5)
+    still_there = (module_dir / "my-module").exists()
+    release.set()
+    holder.join(10)
+    remover.join(10)
+
+    assert still_there
+    assert not (module_dir / "my-module").exists()
+
+
 def test_remove_module_dir_raises_if_absent(module_dir):
     from celerp.modules.importer import remove_module_dir
     with pytest.raises(ModuleImportError, match="not installed"):

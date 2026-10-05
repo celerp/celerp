@@ -402,29 +402,31 @@ def remove_module_dir(name: str) -> None:
     traversal reach the filesystem) and each target must sit directly under its
     search entry. Removal mirrors the install landing: rename to a hidden
     `.<name>.deleting-<uuid>` then rmtree, so a crash never leaves a half-deleted
-    tree under the live module name.
+    tree under the live module name. It waits for any install in progress
+    (_one_install_at_a_time), whose checks read what is on disk.
     """
     from celerp.modules.loader import is_first_party
 
     _validate_name_chars(name)
-    removed = False
-    for entry in os.environ.get("MODULE_DIR", "").split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        base = Path(entry)
-        target = base / name
-        if not target.is_dir() or target.resolve().parent != base.resolve():
-            continue
-        if is_first_party(target):
-            continue
-        grave = base / f".{name}.deleting-{uuid.uuid4().hex}"
-        try:
-            os.replace(target, grave)
-        except OSError as exc:
-            raise ModuleImportError(f"Could not remove the module: {exc}")
-        shutil.rmtree(grave, ignore_errors=True)
-        removed = True
+    with _one_install_at_a_time():
+        removed = False
+        for entry in os.environ.get("MODULE_DIR", "").split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            base = Path(entry)
+            target = base / name
+            if not target.is_dir() or target.resolve().parent != base.resolve():
+                continue
+            if is_first_party(target):
+                continue
+            grave = base / f".{name}.deleting-{uuid.uuid4().hex}"
+            try:
+                os.replace(target, grave)
+            except OSError as exc:
+                raise ModuleImportError(f"Could not remove the module: {exc}")
+            shutil.rmtree(grave, ignore_errors=True)
+            removed = True
     if not removed:
         raise ModuleImportError(f"Module '{name}' is not installed.")
 
