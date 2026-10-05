@@ -182,15 +182,19 @@ async def list_notifications(
     """List notifications for a user, newest first.
 
     unread_only powers the bell, which is an unread inbox: a read (dismissed)
-    notification must not reappear on the next fetch.
+    notification must not reappear on the next fetch, and the high-priority ones,
+    which ask the user to act, come first.
     """
+    order = [Notification.created_at.desc(), Notification.id.desc()]  # id tiebreaker → stable pagination
+    if unread_only:
+        order.insert(0, (Notification.priority == "high").desc())
     q = (
         select(Notification)
         .where(
             Notification.company_id == company_id,
             (Notification.user_id == user_id) | (Notification.user_id.is_(None)),
         )
-        .order_by(Notification.created_at.desc(), Notification.id.desc())  # id tiebreaker → stable pagination
+        .order_by(*order)
         .limit(limit)
         .offset(offset)
     )

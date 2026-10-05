@@ -28,7 +28,9 @@ KEYS = ["posting.problem.unset", "posting.problem.not_in_chart", "posting.proble
         "posting.continued_account_unusable", "posting.type_or",
         "notice.posting_unmapped.title", "notice.posting_unmapped.body",
         "notice.older_stock_unplaced.title", "notice.older_stock_unplaced.body",
-        "notice.older_stock_moved.title", "notice.older_stock_moved.body"]
+        "notice.older_stock_moved.title", "notice.older_stock_moved.body",
+        "notice.mfg_reconcile_needed.title", "notice.mfg_reconcile_needed.body",
+        "notice.mfg_wip_recorded.title", "notice.mfg_wip_recorded.body"]
 _ASSET = {"code": "1110", "account_type": "asset", "is_active": True, "has_children": False}
 
 

@@ -159,8 +159,11 @@ async def test_older_stock_lists_each_lot_and_the_accounts_that_held_inventory(s
     assert (await _panel(client, auth))["older_stock"]["lots"] == []
     lot = await _lot(client, auth, 30.0, sku="OLD-1")
     await _forget_origin(session, auth, lot)
+    used_up = await _lot(client, auth, 0.0, sku="OLD-0")
+    await _forget_origin(session, auth, used_up)
     older = (await _panel(client, auth))["older_stock"]
-    assert older["lots"] == [{"item_id": lot, "sku": "OLD-1", "name": "Lot", "value": 30.0}]
+    assert older["lots"] == [{"item_id": lot, "sku": "OLD-1", "name": "Lot", "value": 30.0}]  # OLD-0 holds nothing
+    assert older["currency"] == "USD"
     assert [c["code"] for c in older["candidates"]] == ["1130-OB", "1130-P", "1135"]
 
     r = await client.put(f"/accounting/posting-accounts/older-stock/{lot}", headers=auth["headers"],
@@ -188,7 +191,9 @@ _PANEL = {
          "code": None, "name": None, "status": "unused", "problem": None,
          "earlier": [], "candidates": []},
     ],
-    "older_stock": {"lots": [{"item_id": "item:old-1", "sku": "OLD-1", "name": "Older lot", "value": 30.0}],
+    "older_stock": {"lots": [{"item_id": "item:old-1", "sku": "OLD-1", "name": "Older lot", "value": 30.0},
+                             {"item_id": "item:old-2", "sku": "W-C1", "name": "W-C1", "value": 260.0}],
+                    "currency": "USD",
                     "candidates": [{"code": "1130-OB", "name": "Inventory opening", "account_type": "asset"}]},
 }
 
@@ -226,7 +231,9 @@ async def test_the_panel_lists_each_role_with_its_account_and_status(ui_client):
     assert ">1121<" in body
     assert ">--<" in body
     assert 'hx-get="/settings/accounting/posting-accounts/general_expense/edit"' in body
-    assert "Older stock OLD-1 Older lot" in body and "Valued at 30.0." in body
+    assert "Older stock OLD-1 Older lot" in body and "Valued at $30.00<" in body
+    assert "Older stock W-C1<" in body and "W-C1 W-C1" not in body and "Valued at $260.00<" in body
+    assert body.count("The books do not show which inventory account holds it") == 1  # said once, under the table
     assert 'hx-get="/settings/accounting/posting-accounts/older-stock:item:old-1/edit"' in body
 
 
@@ -276,6 +283,8 @@ async def test_choosing_an_older_lots_account_shows_it_recorded_or_the_refusal(u
         edit = await ui_client.get(f"/settings/accounting/posting-accounts/{key}/edit", cookies=_cookies())
     assert edit.status_code == 200
     assert f'hx-patch="/settings/accounting/posting-accounts/{key}"' in edit.content.decode()
+    assert ('hx-confirm="The account you choose for Older stock OLD-1 Older lot is final: its cost moves '
+            'through that account from now on. Record it?"') in edit.content.decode()
 
     put = AsyncMock(return_value={**_PANEL, "older_stock": {**_PANEL["older_stock"], "lots": []}})
     with patch("ui.api_client.get_posting_accounts", new=AsyncMock(return_value=_PANEL)), \
@@ -294,3 +303,13 @@ async def test_choosing_an_older_lots_account_shows_it_recorded_or_the_refusal(u
                                   data={"value": "1130-P"})
     body = r.content.decode()
     assert "does not hold this stock" in body and f"/settings/accounting/posting-accounts/{key}/edit" in body
+
+
+def test_the_cost_of_goods_account_type_is_named_in_words():
+    import json
+    from pathlib import Path
+
+    locales = Path(__file__).resolve().parents[1] / "ui" / "locales"
+    named = {lang: json.loads((locales / f"{lang}.json").read_text(encoding="utf-8"))["enum.account_type.cogs"]
+             for lang in ("en", "es", "de")}
+    assert named == {"en": "Cost of goods sold", "es": "Costo de ventas", "de": "Umsatzkosten"}

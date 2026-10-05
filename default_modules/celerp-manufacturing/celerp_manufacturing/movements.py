@@ -82,6 +82,8 @@ _ZERO = Decimal(0)
 _ORDER_MARK = "manufacturing_order_id"
 # Why an older run waits for reconciling when the books hold its value mixed with something else.
 _DISAGREE = "books disagree"
+# The production queue, where every open run is listed.
+PRODUCTION_PATH = "/manufacturing/production"
 
 
 def refuse(http_status: int, key: str, message: str, /, **params) -> HTTPException:
@@ -258,6 +260,12 @@ async def _require_executable_shape(op: _Op, state: dict) -> None:
                      "component, so this run cannot go ahead: production turns stock into stock. Return what was "
                      "issued to it and cancel it, then make it again, recording services and other costs as labor "
                      "or overhead.", items=names)
+
+
+def run_name(state: dict) -> str:
+    """A run as the user knows it: by the product it makes (the production queue's label)."""
+    out = (state.get("expected_outputs") or [{}])[0]
+    return out.get("sku") or out.get("name") or state.get("description") or "a production run"
 
 
 def _wip(state: dict) -> Decimal:
@@ -1260,18 +1268,25 @@ async def _settle(session: AsyncSession, company_id) -> None:
             continue  # already waiting for this, and the user already told
         await dataclasses.replace(base, order_id=order).emit_run(
             "mfg.order.wip_unresolved", {"reason": reason}, f"mfg:{order}:wip-unresolved:{reason}")
+        run = run_name(rows[order].state)
         await notification_service.create(
             session, company_id, category="manufacturing", title="Production run needs reconciling",
-            body=(f"The value of the materials in production run {order} cannot be worked out from its history "
-                  f"({reason}). It cannot issue, return, receive or complete until it is reconciled: "
+            body=(f"The value of the materials in the production run for {run} cannot be worked out from its "
+                  f"history ({reason}). It cannot issue, return, receive or complete until it is reconciled: "
                   "open it from here and record what its materials are worth."),
-            action_url=f"/manufacturing/runs/{order}/reconcile", priority="high")
+            action_url=f"/manufacturing/runs/{order}/reconcile", priority="high",
+            i18n={"title": "notice.mfg_reconcile_needed.title", "body": "notice.mfg_reconcile_needed.body",
+                  "params": {"run": run, "reason": reason}})
     booked = sorted([*(o for o, per in plans.items() if sum(per.values(), _ZERO)), *(r.entity_id for r in unbooked)])
     if books and booked:
+        runs = ", ".join(run_name(rows[o].state) for o in booked)
         await notification_service.create(
             session, company_id, category="accounting", title="Materials in production recorded",
-            body=(f"The materials in production run(s) {', '.join(booked)} now carry their value on work in "
-                  f"progress account {wip_code}, in entries dated {base.day}."))
+            body=(f"The materials in the production runs for {runs} now carry their value on work in "
+                  f"progress account {wip_code}, in entries dated {base.day}."),
+            action_url=PRODUCTION_PATH,
+            i18n={"title": "notice.mfg_wip_recorded.title", "body": "notice.mfg_wip_recorded.body",
+                  "params": {"runs": runs, "account": wip_code, "day": base.day}})
 
 
 # ---------------------------------------------------------------------------

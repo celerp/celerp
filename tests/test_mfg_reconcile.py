@@ -280,6 +280,35 @@ async def test_the_notification_links_to_the_run_that_needs_reconciling(client, 
         Notification.title == "Production run needs reconciling"))).scalar_one()
     assert notice.action_url == f"/manufacturing/runs/{order}/reconcile"
     assert "books disagree" in notice.body
+    assert order not in notice.body
     needs = (await client.get(f"/manufacturing/{order}/reconcile", headers=auth["headers"])).json()
     assert needs["reason"] == "books disagree"
     assert [(c["item_id"], c["sku"]) for c in needs["components"]] == [(raw, (await _state(session, auth, raw))["sku"])]
+
+
+async def test_the_notification_names_the_run_by_its_product_in_the_readers_language(client, session, auth):
+    """The notice names the run by the product it makes (never its internal id) and is
+    shown in the reader's language, the reason included."""
+    import json
+
+    from ui import i18n
+    from ui.routes.notifications import _in_reader_language
+
+    raw, order, ob = await _books_disagree(client, session, auth)
+    sku = (await _state(session, auth, order))["expected_outputs"][0]["sku"]
+    notice = (await session.execute(select(Notification).where(
+        Notification.company_id == auth["company_id"],
+        Notification.title == "Production run needs reconciling"))).scalar_one()
+    assert sku and f"production run for {sku} " in notice.body
+    assert notice.i18n == {"title": "notice.mfg_reconcile_needed.title", "body": "notice.mfg_reconcile_needed.body",
+                           "params": {"run": sku, "reason": "books disagree"}}
+    listed = {"items": [{"id": str(notice.id), "title": notice.title, "body": notice.body, "i18n": notice.i18n}]}
+    i18n.set_lang("de")
+    try:
+        shown = json.loads(_in_reader_language(json.dumps(listed).encode()))["items"][0]
+        assert shown["title"] == i18n.t("notice.mfg_reconcile_needed.title")
+        assert shown["body"] == i18n.t("notice.mfg_reconcile_needed.body", run=sku,
+                                       reason=i18n.t("manufacturing.reconcile_reason_books_disagree"))
+        assert "books disagree" not in shown["body"]
+    finally:
+        i18n.set_lang("en")

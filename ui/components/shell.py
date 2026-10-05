@@ -865,7 +865,8 @@ function _notifItemHtml(n) {
   var content = n.action_url
     ? '<a class="notif-item__link" href="' + _notifEsc(n.action_url) + '">' + inner + '</a>'
     : '<div class="notif-item__link">' + inner + '</div>';
-  return '<div class="notif-item' + (n.read ? '' : ' notif-item--unread') + '" data-id="' + _notifEsc(n.id) + '">'
+  return '<div class="notif-item' + (n.read ? '' : ' notif-item--unread')
+    + (n.priority === 'high' ? ' notif-item--high' : '') + '" data-id="' + _notifEsc(n.id) + '">'
     + content
     + '<button class="notif-item__dismiss" type="button" title="' + window.__shellI18n.markAsRead + '" aria-label="' + window.__shellI18n.markAsRead + '">&times;</button>'
     + '</div>';

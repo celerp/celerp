@@ -14,7 +14,7 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, flash, page_header, page_title
 from ui.config import COOKIE_NAME
 from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
-from ui.components.table import EMPTY, add_new_option, searchable_select, display_enum
+from ui.components.table import EMPTY, add_new_option, searchable_select, display_enum, fmt_money
 
 from ui.components.posting_accounts import account_picker
 from ui.routes.accounting_import import ACCOUNT_TYPES
@@ -319,9 +319,11 @@ def _posting_display_cell(key: str, code: str | None, name: str | None, error: s
     )
 
 
-def _posting_edit_cell(key: str, candidates: list[dict], code: str | None, label: str) -> FT:
+def _posting_edit_cell(key: str, candidates: list[dict], code: str | None, label: str,
+                       confirm: str | None = None) -> FT:
     """The picker in place of the account. A change saves and swaps in the updated
-    row; Escape puts the display cell back without saving."""
+    row, after ``confirm`` when the choice is final; Escape puts the display cell back
+    without saving."""
     restore_url = f"/settings/accounting/posting-accounts/{key}/display"
     esc_js = (
         f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',"
@@ -331,7 +333,8 @@ def _posting_edit_cell(key: str, candidates: list[dict], code: str | None, label
         Div(
             account_picker("value", candidates, value=code or "", aria_label=label,
                            hx_patch=f"/settings/accounting/posting-accounts/{key}",
-                           hx_target="closest tr", hx_swap="outerHTML", hx_trigger="change", autofocus=True),
+                           hx_target="closest tr", hx_swap="outerHTML", hx_trigger="change", autofocus=True,
+                           hx_confirm=confirm),
             cls="cell-input-wrap", onkeydown=esc_js,
         ),
         cls="cell cell--editing",
@@ -355,17 +358,23 @@ def _older_lot(data: dict, key: str) -> dict | None:
     return next((lot for lot in (data.get("older_stock") or {}).get("lots", []) if lot["item_id"] == item_id), None)
 
 
-def _older_stock_row(lot: dict, error: str | None = None, recorded: dict | None = None) -> FT:
+def _older_lot_label(lot: dict) -> str:
+    """An older lot by its SKU, and its name when that says something more."""
+    name = lot["name"] if lot["name"] != lot["sku"] else ""
+    return t("posting.older_stock", sku=lot["sku"], name=name).strip()
+
+
+def _older_stock_row(lot: dict, currency: str, error: str | None = None, recorded: dict | None = None) -> FT:
     """One older lot with no inventory account. Once its account is chosen the
     row shows it and is no longer editable: the lot's cost then moves through that
     account, and moving the lot to another account later would leave its value behind."""
     key = f"{_OLDER_STOCK}{lot['item_id']}"
     return Tr(
-        Td(t("posting.older_stock", sku=lot["sku"], name=lot["name"])),
+        Td(_older_lot_label(lot)),
         Td(Span(_posting_account_text(recorded.get("code"), recorded.get("name")))) if recorded
         else _posting_display_cell(key, None, None, error),
-        Td(P(t("posting.older_stock_recorded") if recorded else t("posting.older_stock_hint", value=lot["value"]),
-             cls="text-muted")),
+        Td(P(t("posting.older_stock_recorded") if recorded
+             else t("posting.older_stock_value", value=fmt_money(lot["value"], currency)), cls="text-muted")),
         Td(EMPTY),
     )
 
@@ -373,12 +382,14 @@ def _older_stock_row(lot: dict, error: str | None = None, recorded: dict | None 
 def _posting_row(data: dict, key: str, error: str | None = None) -> FT | None:
     if key.startswith(_OLDER_STOCK):
         lot = _older_lot(data, key)
-        return _older_stock_row(lot, error) if lot else None
+        return _older_stock_row(lot, (data.get("older_stock") or {}).get("currency"), error) if lot else None
     row = next((r for r in data.get("roles", []) if r["role"] == key), None)
     return _posting_role_row(row, error) if row else None
 
 
 def _posting_accounts_tab(data: dict) -> FT:
+    older = data.get("older_stock") or {}
+    lots = older.get("lots", [])
     return Div(
         H3(t("posting.tab"), cls="section-title"),
         P(t("posting.panel_hint"), cls="text-muted mb-md"),
@@ -386,9 +397,10 @@ def _posting_accounts_tab(data: dict) -> FT:
             Thead(Tr(Th(t("posting.col_role")), Th(t("posting.col_account")), Th(t("th.status")),
                      Th(t("posting.col_earlier")))),
             Tbody(*[_posting_role_row(r) for r in data.get("roles", [])],
-                  *[_older_stock_row(lot) for lot in (data.get("older_stock") or {}).get("lots", [])]),
+                  *[_older_stock_row(lot, older.get("currency")) for lot in lots]),
             cls="data-table posting-accounts",
         ), cls="table-scroll-wrap"),
+        P(t("posting.older_stock_hint"), cls="text-muted mt-sm", id="older-stock-hint") if lots else None,
         cls="settings-card",
     )
 
@@ -1040,8 +1052,9 @@ def setup_routes(app):
             lot = _older_lot(data, key)
             if lot is None:
                 return P(t("posting.unknown_role"), cls="cell-error")
-            return _posting_edit_cell(key, (data.get("older_stock") or {}).get("candidates", []), None,
-                                      t("posting.older_stock", sku=lot["sku"], name=lot["name"]))
+            label = _older_lot_label(lot)
+            return _posting_edit_cell(key, (data.get("older_stock") or {}).get("candidates", []), None, label,
+                                      confirm=t("posting.older_stock_confirm", lot=label))
         row = next((r for r in data.get("roles", []) if r["role"] == key), None)
         if row is None:
             return P(t("posting.unknown_role"), cls="cell-error")
@@ -1079,7 +1092,7 @@ def setup_routes(app):
                 if lot is not None:
                     chosen = next((c for c in (data.get("older_stock") or {}).get("candidates", [])
                                    if c["code"] == code), {"code": code})
-                    return _older_stock_row(lot, recorded=chosen)
+                    return _older_stock_row(lot, "", recorded=chosen)
             else:
                 data = await api.set_posting_account(token, key, code)
             error = None

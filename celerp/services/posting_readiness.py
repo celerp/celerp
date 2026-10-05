@@ -358,6 +358,7 @@ async def _older_stock(session: AsyncSession, company_id, settings: dict, chart:
     held = {c for role in (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
             for c in scope_list(settings, role)}
     return {"lots": await unrecorded_lots(session, company_id),
+            "currency": str(settings.get("currency") or "USD").upper(),
             "candidates": [{k: chart[c][k] for k in ("code", "name", "account_type")}
                            for c in sorted(held) if c in chart]}
 

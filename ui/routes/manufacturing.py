@@ -23,7 +23,7 @@ from ui.components.shell import base_shell, page_header, page_title, toast_heade
 from ui.components.table import (EMPTY, status_cards, empty_state_cta, format_value, search_bar,
                                  bulk_toolbar, filter_th, display_enum, breadcrumbs, COLUMN_FILTER_JS)
 from ui.config import get_token as _token
-from ui.i18n import refusal_text, t
+from ui.i18n import reconcile_reason, refusal_text, t
 
 logger = logging.getLogger(__name__)
 
@@ -357,15 +357,6 @@ def _wc_table(centers: list[dict], loc_names: dict) -> FT:
     )
 
 
-# Why a run needs reconciling, as the server records it, in the user's language.
-_RECONCILE_REASONS = {
-    "books disagree": "manufacturing.reconcile_reason_books_disagree",
-    "received before tracking": "manufacturing.reconcile_reason_received",
-    "component without an inventory account": "manufacturing.reconcile_reason_no_account",
-    "books from elsewhere": "manufacturing.reconcile_reason_elsewhere",
-}
-
-
 def _reconcile_accounts(posting: dict) -> list[dict]:
     """The accounts a reconciled value can come off: those that have held purchased or opening
     inventory, and retained earnings for value the books never carried."""
@@ -422,8 +413,7 @@ def _reconcile_panel(run_id: str, needs: dict, accounts: list[dict], *, key: str
     ) if accounts else ""
     return Div(
         flash_el,
-        P(t("manufacturing.reconcile_intro", reason=t(_RECONCILE_REASONS[reason]) if reason in _RECONCILE_REASONS
-            else reason), cls="hint"),
+        P(t("manufacturing.reconcile_intro", reason=reconcile_reason(reason)), cls="hint"),
         discard,
         output,
         Form(

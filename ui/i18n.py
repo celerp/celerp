@@ -144,6 +144,21 @@ def role_label(role: str, fallback: str) -> str:
     return t_or(f"posting.role.{role}", fallback)
 
 
+# Why a run needs reconciling, as the server records it, in the user's language.
+_RECONCILE_REASONS = {
+    "books disagree": "manufacturing.reconcile_reason_books_disagree",
+    "received before tracking": "manufacturing.reconcile_reason_received",
+    "component without an inventory account": "manufacturing.reconcile_reason_no_account",
+    "books from elsewhere": "manufacturing.reconcile_reason_elsewhere",
+}
+
+
+def reconcile_reason(reason: str) -> str:
+    """Why a production run waits for reconciling, in the user's language."""
+    key = _RECONCILE_REASONS.get(reason)
+    return t(key) if key else reason
+
+
 def refusal_text(detail) -> str:
     """An API refusal in the user's language. A structured refusal carries ``message``
     (English), ``message_key`` and ``params``; its ``message_key`` is translated with
@@ -162,7 +177,8 @@ def refusal_text(detail) -> str:
 def _refusal_param(name: str, value):
     """A refusal param as the user reads it: a nested refusal, or a list of them, in
     the user's language; a ``role`` as its label and ``roles`` as their labels;
-    ``type``/``types`` as account types; ``status`` as an item status."""
+    ``type``/``types`` as account types; ``status`` as an item status; ``reason`` as why
+    a production run waits for reconciling."""
     from ui.components.table import display_enum
 
     if isinstance(value, dict) and "message" in value:
@@ -175,6 +191,8 @@ def _refusal_param(name: str, value):
         return ", ".join(role_label(str(r), str(r).replace("_", " ")) for r in value)
     if name == "status":
         return display_enum(value, "item_status")
+    if name == "reason":
+        return reconcile_reason(str(value))
     if name == "type":
         return display_enum(value, "account_type")
     if name == "types" and isinstance(value, list):

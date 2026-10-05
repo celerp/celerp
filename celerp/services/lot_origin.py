@@ -178,8 +178,9 @@ async def account_rooms(session: AsyncSession, company_id, codes) -> dict[str, D
 
 
 def unrecorded(items: list[Projection]) -> list[Projection]:
-    """The lots on hand that record no inventory account."""
-    return [r for r in items if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and held_value(r) is not None]
+    """The lots on hand holding value that record no inventory account. A lot holding
+    nothing (an older lot used up in production) carries nothing to place."""
+    return [r for r in items if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and held_value(r)]
 
 
 async def stock_off_books(session: AsyncSession, company_id) -> list[dict]:
@@ -192,7 +193,7 @@ async def stock_off_books(session: AsyncSession, company_id) -> list[dict]:
     currency = settings.get("currency", "USD")
     entries, items = await _posted_entries(session, company_id), await _items(session, company_id)
     findings = [{"kind": "unplaced_lot", "entity_id": r.entity_id, "sku": (r.state or {}).get("sku")}
-                for r in sorted(unrecorded(items), key=lambda r: r.entity_id) if held_value(r)]
+                for r in sorted(unrecorded(items), key=lambda r: r.entity_id)]
     for code in sorted({code for role in _INVENTORY for code in scope_codes(settings, role)}):
         room = round_money(_room(entries, items, code, currency), currency)
         if room:

@@ -2443,6 +2443,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   border-bottom: 1px solid var(--c-border-light, var(--c-border));
 }
 .notif-item--unread { background: rgba(59,130,246,0.05); }
+.notif-item--high { border-left: 3px solid var(--c-red); }
+.notif-item--high .notif-item__title { color: var(--c-red-text); }
 .notif-item__link { flex: 1; min-width: 0; color: inherit; text-decoration: none; display: block; }
 a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .notif-item__title { font-weight: 600; font-size: 0.85rem; }

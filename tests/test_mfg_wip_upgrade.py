@@ -175,6 +175,13 @@ async def test_an_older_runs_issued_value_moves_off_its_component_account_onto_w
     assert await _facts(session, auth, order) == {"wip_issued": "40.00", "wip_account_code": wip,
                                                   "wip_untracked": None, "wip_unresolved": None}
     assert await _notices(session, auth, "Materials in production recorded") == 1
+    sku = (await _state(session, auth, order))["expected_outputs"][0]["sku"]
+    notice = (await session.execute(select(Notification).where(
+        Notification.company_id == auth["company_id"],
+        Notification.title == "Materials in production recorded"))).scalar_one()
+    assert order not in notice.body and f"production runs for {sku} now" in notice.body
+    assert notice.action_url == "/manufacturing/production"
+    assert notice.i18n["params"] == {"runs": sku, "account": wip, "day": notice.i18n["params"]["day"]}
     await assert_settled(client, session, auth)
     events = await _events(session, auth)
     await _upgrade(session)
