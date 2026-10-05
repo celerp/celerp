@@ -26,7 +26,16 @@ from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, rea
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting import import_service
 from celerp_accounting.account_tree import account_tree_lines
-from celerp_accounting.chart_rules import change_account, parent_problem, posting_targets
+from celerp_accounting.chart_rules import (
+    ACCOUNT_CODE_MAX,
+    change_account,
+    checked_account_code,
+    checked_account_name,
+    checked_account_type,
+    parent_problem,
+    posting_targets,
+    trimmed_text,
+)
 from celerp_accounting.import_service import AccImportRecord
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
@@ -117,10 +126,6 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
 # accounts screen holds the same list and a test keeps the two in lockstep.
 CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
 
-# The account types the reports know how to sign and classify. Same arrangement as
-# the list above: this module is authoritative, the chart of accounts screen holds a
-# copy for its dropdown, and a test keeps the two in lockstep.
-ACCOUNT_TYPES = ("asset", "liability", "equity", "revenue", "cogs", "expense", "other")
 
 
 class AccountCreate(BaseModel):
@@ -359,18 +364,6 @@ def _account_to_dict(acc: Account) -> dict:
     }
 
 
-def _checked_account_type(value: str) -> str:
-    """The account's type, which decides its sign on every report. A type outside
-    the known set has no honest sign convention, so it is refused rather than
-    guessed at."""
-    if value not in ACCOUNT_TYPES:
-        raise HTTPException(
-            status_code=422,
-            detail="Account type must be one of: " + ", ".join(ACCOUNT_TYPES) + ".",
-        )
-    return value
-
-
 def _checked_cash_flow_category(value: str | None) -> str | None:
     """The stored override, or None for "derive it". An empty value clears the
     override; anything else must name a section the statement actually has."""
@@ -384,51 +377,21 @@ def _checked_cash_flow_category(value: str | None) -> str | None:
     return value
 
 
-_ACCOUNT_CODE_MAX = 32  # Account.code column width
 _CHART_IMPORT_MAX = 2000  # accounts in one chart file
-
-
-def _trimmed_text(value: Any, what: str) -> str:
-    """A text field, trimmed. The database cannot store a NUL character, so one
-    is refused here with the field's name rather than failing the whole write."""
-    if not isinstance(value, str):
-        raise HTTPException(status_code=422, detail=f"{what} must be text.")
-    if "\x00" in value:
-        raise HTTPException(status_code=422, detail=f"{what} cannot contain a NUL character.")
-    return value.strip()
-
-
-def _checked_account_code(value: Any) -> str:
-    """The account code, trimmed. Postings and parents refer to accounts by code,
-    so a blank or over-long one is refused rather than stored or cut short."""
-    code = _trimmed_text(value, "Account code")
-    if not code:
-        raise HTTPException(status_code=422, detail="Account code is required.")
-    if len(code) > _ACCOUNT_CODE_MAX:
-        raise HTTPException(
-            status_code=422, detail=f"Account code must be {_ACCOUNT_CODE_MAX} characters or fewer.",
-        )
-    return code
 
 
 def _checked_parent_code(value: Any) -> str | None:
     """The parent account code, trimmed; missing or blank means no parent."""
     if value is None:
         return None
-    parent = _trimmed_text(value, "Parent code")
-    if len(parent) > _ACCOUNT_CODE_MAX:
+    parent = trimmed_text(value, "Parent code")
+    if len(parent) > ACCOUNT_CODE_MAX:
         raise HTTPException(
-            status_code=422, detail=f"Parent code must be {_ACCOUNT_CODE_MAX} characters or fewer.",
+            status_code=422, detail=f"Parent code must be {ACCOUNT_CODE_MAX} characters or fewer.",
         )
     return parent or None
 
 
-def _checked_account_name(value: Any) -> str:
-    """The account name, trimmed. Every report labels the account with it."""
-    name = _trimmed_text(value, "Account name")
-    if not name:
-        raise HTTPException(status_code=422, detail="Account name is required.")
-    return name
 
 
 _ACTIVE_WORDS = {"true": True, "1": True, "yes": True, "false": False, "0": False, "no": False}
@@ -488,7 +451,7 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
         raw_code = rec.get("code")
         shown = raw_code.strip() if isinstance(raw_code, str) else None
         try:
-            code = _checked_account_code(raw_code)
+            code = checked_account_code(raw_code)
         except HTTPException as exc:
             row_errors[i] = f"{label(i, shown)}: {exc.detail}"
             continue
@@ -498,8 +461,8 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
         try:
             valid[i] = {
                 "code": code,
-                "name": _checked_account_name(rec.get("name")),
-                "account_type": _checked_account_type(rec.get("account_type")),
+                "name": checked_account_name(rec.get("name")),
+                "account_type": checked_account_type(rec.get("account_type")),
                 "parent_code": _checked_parent_code(rec.get("parent_code")),
                 "is_active": _parsed_is_active(rec.get("is_active")),
             }
@@ -619,9 +582,9 @@ async def create_account(
 ) -> dict:
     acc = await import_service.create_chart_account(
         session, company_id,
-        code=_checked_account_code(payload.code),
-        name=_checked_account_name(payload.name),
-        account_type=_checked_account_type(payload.account_type),
+        code=checked_account_code(payload.code),
+        name=checked_account_name(payload.name),
+        account_type=checked_account_type(payload.account_type),
         parent_code=_checked_parent_code(payload.parent_code),
         cash_flow_category=_checked_cash_flow_category(payload.cash_flow_category),
     )
@@ -638,8 +601,8 @@ async def patch_account(
 ) -> dict:
     acc = await change_account(
         session, company_id, code,
-        name=None if payload.name is None else _checked_account_name(payload.name),
-        account_type=None if payload.account_type is None else _checked_account_type(payload.account_type),
+        name=None if payload.name is None else checked_account_name(payload.name),
+        account_type=None if payload.account_type is None else checked_account_type(payload.account_type),
         parent_code=... if payload.parent_code is None else _checked_parent_code(payload.parent_code),
         is_active=payload.is_active,
         cash_flow_category=(
@@ -2534,7 +2497,7 @@ async def create_bank_account(
     cash_header = targets[AccountRole.CASH_AND_EQUIVALENTS.value]
     # Resolve or auto-assign chart account code
     code = (
-        _checked_account_code(payload.account_code) if (payload.account_code or "").strip()
+        checked_account_code(payload.account_code) if (payload.account_code or "").strip()
         else await import_service.next_bank_account_code(session, company_id, cash_header)
     )
 

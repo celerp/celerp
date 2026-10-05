@@ -376,8 +376,8 @@ async def test_stock_sold_before_the_upgrade_comes_back_on_its_account_when_the_
     await _revert(client, auth, inv, lot)
     assert await _status(session, auth, lot) == "available"
     assert await _accounts(session, auth, lot) == ["1130-P"]
-    # The invoice still stands, so its cost of sales stays recognized until it is sold again.
-    assert await _net(session, auth, "1130-P", "1130-OB") == (0.0, 0.0)
+    # Back in stock, the lot takes its cost of sales off the invoice and sits on its account.
+    assert await _net(session, auth, "1130-P", "1130-OB") == (100.0, 0.0)
 
     r = await client.post(f"/docs/{inv}/fulfill-lines", headers=auth["headers"], json={"line_entity_ids": [lot]})
     assert r.status_code == 200, r.text

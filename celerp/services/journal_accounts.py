@@ -14,6 +14,9 @@ account rows, listing the chart, and adding an account. Core never touches its
 table. Only the bundled accounting module can register; with nothing registered,
 or the module stopped, accounting is not running and only the role snapshot is
 written.
+
+Any module may post journal entries, and adds the accounts they post to through
+``add_account``, which the registered chart checks as Settings does.
 """
 
 from __future__ import annotations
@@ -92,6 +95,21 @@ async def lock_accounts(session: AsyncSession, company_id, codes) -> dict[str, d
     if chart is None:
         return None
     return await chart.lock_accounts(session, company_id, set(codes))
+
+
+async def add_account(session: AsyncSession, company_id, code: str, name: str, account_type: str) -> None:
+    """Add a top-level account to the company's chart, for any module to post to.
+
+    The chart checks it as an account added in Settings: a blank or over-long code, a
+    blank name, a type the reports cannot sign, or a code already in use is refused
+    with an HTTPException carrying a plain message. Refused too while the accounting
+    module is not running, since there is no chart to add to. The caller commits.
+    """
+    chart = chart_access()
+    if chart is None:
+        raise HTTPException(status_code=409, detail=(
+            "Accounting is not running, so no account can be added to the chart of accounts."))
+    await chart.add_account(session, company_id, code=code, name=name, account_type=account_type)
 
 
 async def prepare_journal_entry(session: AsyncSession, company_id, data: dict) -> None:

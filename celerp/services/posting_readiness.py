@@ -266,7 +266,7 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
     needed role is left without an account or a choice cannot take it; the caller owns
     the transaction and rolls it back."""
     from celerp.services.company_lock import lock_chart, locked_company
-    from celerp.services.journal_accounts import chart_access, lock_accounts
+    from celerp.services.journal_accounts import add_account, lock_accounts
 
     choices = choices or {}
     if not isinstance(choices, dict):
@@ -308,12 +308,11 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
         problems.append(f"Choose the posting account for: {', '.join(unchosen)}.")
     if problems:
         raise ReadinessError(" ".join(problems))
-    add = chart_access().add_account
     for account in added:
         if account["code"] not in chart and final.get(account["role"]) == account["code"]:
             try:
-                await add(session, company_id, code=account["code"], name=account["name"],
-                          account_type=account["account_type"])
+                await add_account(session, company_id, account["code"], account["name"],
+                                  account["account_type"])
             except HTTPException as exc:
                 raise ReadinessError(str(exc.detail)) from None
             chart[account["code"]] = {**account, "is_active": True, "has_children": False}
