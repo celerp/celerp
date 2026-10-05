@@ -461,12 +461,12 @@ def _emit_db_error(kind: str, db_url: str) -> None:
         )
         click.echo(
             "\nInstall PostgreSQL and re-run, or use a supported platform "
-            "(Linux x86_64/arm64 — glibc or musl — or Windows x64).",
+            "(Linux x86_64/arm64 with glibc or musl, or Windows x64).",
             err=True,
         )
         if sys.platform == "darwin":
             click.echo(
-                "On macOS 26 or newer: pip install celerp-postgres — then re-run "
+                "On macOS 26 or newer: pip install celerp-postgres, then re-run "
                 "`celerp init` for the bundled database.",
                 err=True,
             )
@@ -482,8 +482,8 @@ def _emit_db_error(kind: str, db_url: str) -> None:
         return
     # no_server_no_provider — embedded unavailable AND no server.
     click.echo(
-        "\nInstall PostgreSQL and start it, then re-run `celerp init` — or use a "
-        "supported platform (Linux x86_64/arm64 — glibc or musl — or Windows x64) "
+        "\nInstall PostgreSQL and start it, then re-run `celerp init`, or use a "
+        "supported platform (Linux x86_64/arm64 with glibc or musl, or Windows x64) "
         "to get the bundled database automatically.",
         err=True,
     )
@@ -565,8 +565,8 @@ def _run_upgrade_with_auto_stamp(alembic_cfg, engine_url: str) -> None:
                         found = True
                 if next_rev:
                     click.echo(
-                        f"  · Schema already contains changes from {next_rev} "
-                        f"— stamping past it..."
+                        f"  · Schema already contains changes from {next_rev}: "
+                        f"stamping past it..."
                     )
                     command.stamp(alembic_cfg, next_rev)
                 else:
@@ -649,7 +649,7 @@ def _apply_migrations(db_url: str) -> None:
                 )
                 if safe != "base" and safe != stamped:
                     click.echo(
-                        f"  · Live schema matches revision {safe} — "
+                        f"  · Live schema matches revision {safe}: "
                         f"restamping (was {stamped or 'unstamped'})..."
                     )
                     command.stamp(alembic_cfg, safe, purge=True)
@@ -904,7 +904,7 @@ def _init_external(cfg: dict, *, force: bool, db_url: str | None, purge_dirs: li
         click.echo("  ✓ Database connection OK")
         return
     if _is_root():
-        click.echo("  · Could not connect — attempting to provision database...")
+        click.echo("  · Could not connect, attempting to provision database...")
         from celerp.migrations.compatibility import IncompatibleDatabase
         try:
             _provision_db(cfg["database"]["url"])

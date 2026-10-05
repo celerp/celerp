@@ -893,3 +893,20 @@ def test_output_sent_to_a_legacy_code_page_file_still_prints(monkeypatch):
     legacy.flush()
     assert raw.getvalue().decode("utf-8") == "✓ ready\n"
 
+
+
+def test_command_line_messages_have_no_em_dash():
+    """What the command line prints is user-facing copy, which never uses an em dash."""
+    import ast
+    import inspect
+
+    import celerp.cli as cli
+
+    found = []
+    for node in ast.walk(ast.parse(inspect.getsource(cli))):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", getattr(node.func, "id", "")) in (
+                "echo", "secho", "ClickException", "UsageError", "Abort", "print"):
+            for part in ast.walk(node):
+                if isinstance(part, ast.Constant) and isinstance(part.value, str) and "—" in part.value:
+                    found.append(f"line {part.lineno}: {part.value!r}")
+    assert found == []
