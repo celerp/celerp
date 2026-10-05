@@ -43,38 +43,6 @@ from celerp.models.auth import SessionRegistry, UserAuthState
 
 
 # ---------------------------------------------------------------------------
-# Retired nonce-cache compatibility seams
-# ---------------------------------------------------------------------------
-# Postgres is the sole nonce authority. A process-local cache can be repopulated
-# with an old value after a concurrent revocation commits, temporarily reviving
-# a revoked credential and making revocation inconsistent across workers. Keep
-# these helper names temporarily for current callers/tests, but never store or
-# return authentication state from them.
-# ---------------------------------------------------------------------------
-
-
-def _nonce_cache_set(user_id: str, nonce: str) -> None:
-    return None
-
-
-def _nonce_cache_get(user_id: str) -> str | None:
-    return None
-
-
-def _nonce_cache_bust(user_id: str) -> None:
-    return None
-
-
-def _nonce_cache_bust_all() -> None:
-    return None
-
-
-def get_nonce_from_cache(user_id: str) -> str | None:
-    """Always miss so session-watch falls through to the authoritative DB row."""
-    return None
-
-
-# ---------------------------------------------------------------------------
 # Public API  (all async, take an AsyncSession)
 # ---------------------------------------------------------------------------
 
@@ -206,7 +174,6 @@ async def invalidate_sessions(
     else:
         session.add(UserAuthState(user_id=uid, nonce=new_nonce, evicted_by_ip=evicting_ip))
     await session.commit()
-    _nonce_cache_bust(user_id)  # bust cache so next get_nonce reads fresh nonce
 
 
 async def _rotate_every_nonce(session: AsyncSession) -> list[UserAuthState]:

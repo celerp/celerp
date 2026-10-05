@@ -453,7 +453,6 @@ async def issue_token_pair(
     from celerp.services.session_tracker import (
         lock_auth_state as _lock,
         register_token as _register,
-        _nonce_cache_set,
     )
 
     role = (await lock_issuance_company(session, user.id, company_id)).role
@@ -471,6 +470,5 @@ async def issue_token_pair(
     expiry_dt = datetime.now(timezone.utc) + timedelta(minutes=capped_minutes)
     await _register(session, token_jti, user_id, company_id, expiry_dt, commit=False)
     await session.commit()
-    _nonce_cache_set(user_id, snonce)
     refresh_token = create_refresh_token(user_id, company_id, snonce=snonce)
     return {"access_token": access_token, "refresh_token": refresh_token}
