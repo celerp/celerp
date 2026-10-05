@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import uuid
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -297,7 +298,7 @@ async def record_stripe_release(session, company_id, row: Projection, *, referen
         actor_id=await _company_owner_id(session, company_id), location_id=None, source="stripe",
         idempotency_key=f"stripe-release:{reference}")
     if not getattr(entry, "was_deduped", False):
-        ref = row.state.get("ref_id") or row.state.get("doc_number") or row.entity_id
+        ref = _doc_ref(row.state) or row.entity_id
         await notif_service.create(
             session, company_id, "connector", "A payment is no longer linked to Stripe",
             f"Stripe is disconnected, so the online payment on {ref} is no longer linked to it. "
@@ -321,7 +322,7 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
     if state.get("doc_type") not in _PAYABLE_TYPES or _outstanding(state) <= 0:
         raise HTTPException(status_code=409, detail="This document is not payable")
     currency = state.get("currency", "USD")
-    ref = state.get("ref_id") or state.get("doc_number") or entity_id.split(":")[-1][:8]
+    ref = _doc_ref(state) or entity_id.split(":")[-1][:8]
     try:
         books = await payment_books(session, company_id, state)
     except ValueError:
@@ -399,14 +400,45 @@ async def payments_unmatched(session: AsyncSession = Depends(get_session)) -> di
     """Online payments received for a company or invoice that no longer exists, or
     that the invoice refused, and the refunds of online payments kept until their
     payment is on its invoice, each newest first."""
+    payments, refunds = await pay.unmatched_payments(session), await pay.unmatched_refunds(session)
+    names = await _names_still_here(session, [*payments, *refunds])
     return {"items": [{
         "reference": p.reference, "amount": float(pay.stripe_amount(p.amount_minor, p.currency)),
-        "currency": p.currency, "company_id": p.former_company, "document_id": p.document,
-        "received_at": p.received_at.isoformat(),
+        "currency": p.currency, **names(p), "received_at": p.received_at.isoformat(),
         "paid_at": p.paid_at.isoformat() if p.paid_at else None,
-    } for p in await pay.unmatched_payments(session)], "refunds": [{
+    } for p in payments], "refunds": [{
         "refund_id": r.refund_id, "cycle": r.cycle, "transition": r.transition, "reference": r.reference,
         "amount": float(pay.stripe_amount(r.amount_minor, r.currency)), "currency": r.currency,
-        "company_id": r.former_company, "document_id": r.document, "received_at": r.received_at.isoformat(),
+        **names(r), "received_at": r.received_at.isoformat(),
         "occurred_at": r.occurred_at.isoformat() if r.occurred_at else None,
-    } for r in await pay.unmatched_refunds(session)]}
+    } for r in refunds]}
+
+
+def _doc_ref(state: dict) -> str | None:
+    """The reference a person knows a document by, when it has one."""
+    return state.get("ref_id") or state.get("doc_number")
+
+
+async def _names_still_here(session: AsyncSession, rows: list):
+    """For unmatched *rows*: a function giving each row's company and document ids
+    with the company's name and the document's reference, each None once it no
+    longer exists here (the rows outlive both)."""
+    ids = {}
+    for row in rows:
+        try:
+            ids[row.former_company] = uuid.UUID(row.former_company)
+        except ValueError:
+            pass
+    companies, docs = {}, {}
+    if ids:
+        companies = {c.id: c.name for c in (await session.scalars(
+            select(Company).where(Company.id.in_(ids.values())))).all()}
+        docs = {(d.company_id, d.entity_id): _doc_ref(d.state) or d.entity_id for d in (await session.scalars(
+            select(Projection).where(Projection.company_id.in_(ids.values()),
+                                     Projection.entity_id.in_({row.document for row in rows})))).all()}
+
+    def names(row) -> dict:
+        cid = ids.get(row.former_company)
+        return {"company_id": row.former_company, "company_name": companies.get(cid),
+                "document_id": row.document, "document_ref": docs.get((cid, row.document))}
+    return names

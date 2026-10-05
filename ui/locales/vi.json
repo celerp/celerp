@@ -1202,6 +1202,7 @@
   "pay.reconnect_stripe": "Kết nối lại Stripe",
   "pay.unmatched_head": "Khoản thanh toán chưa khớp với hóa đơn",
   "pay.unmatched_hint": "Các khoản thanh toán trực tuyến này đến cho một công ty hoặc hóa đơn không còn tồn tại, hoặc không thể nhận khoản thanh toán. Hãy ghi nhận từng khoản vào đúng nơi, hoặc hoàn tiền từ bảng điều khiển Stripe của bạn.",
+  "pay.unmatched_deleted": "(đã xóa)",
   "pay.unmatched_paid_on": "Ngày thanh toán",
   "pay.unmatched_received": "Ngày ghi nhận",
   "pay.unmatched_refunds_head": "Khoản hoàn tiền chưa được áp dụng",

@@ -1364,6 +1364,7 @@
   "pay.reconnect_stripe": "Reconnect Stripe",
   "pay.unmatched_head": "Payments not matched to an invoice",
   "pay.unmatched_hint": "These online payments arrived for a company or invoice that no longer exists, or one that could not take the payment. Record each where it belongs, or refund it from your Stripe dashboard.",
+  "pay.unmatched_deleted": "(deleted)",
   "pay.unmatched_paid_on": "Paid on",
   "pay.unmatched_received": "Recorded on",
   "pay.unmatched_refunds_head": "Refunds not applied yet",

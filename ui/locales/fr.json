@@ -1202,6 +1202,7 @@
   "pay.reconnect_stripe": "Reconnecter Stripe",
   "pay.unmatched_head": "Paiements non rattachés à une facture",
   "pay.unmatched_hint": "Ces paiements en ligne sont arrivés pour une entreprise ou une facture qui n'existe plus, ou qui n'a pas pu accepter le paiement. Enregistrez chacun à sa place ou remboursez-le depuis votre tableau de bord Stripe.",
+  "pay.unmatched_deleted": "(supprimé)",
   "pay.unmatched_paid_on": "Payé le",
   "pay.unmatched_received": "Enregistré le",
   "pay.unmatched_refunds_head": "Remboursements pas encore appliqués",

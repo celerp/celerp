@@ -1202,6 +1202,7 @@
   "pay.reconnect_stripe": "Volver a conectar Stripe",
   "pay.unmatched_head": "Pagos sin factura asociada",
   "pay.unmatched_hint": "Estos pagos en línea llegaron para una empresa o factura que ya no existe, o que no pudo aceptar el pago. Registre cada uno donde corresponda o reembólselo desde su panel de Stripe.",
+  "pay.unmatched_deleted": "(eliminado)",
   "pay.unmatched_paid_on": "Pagado el",
   "pay.unmatched_received": "Registrado el",
   "pay.unmatched_refunds_head": "Reembolsos aún no aplicados",

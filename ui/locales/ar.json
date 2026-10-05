@@ -1202,6 +1202,7 @@
   "pay.reconnect_stripe": "إعادة ربط Stripe",
   "pay.unmatched_head": "مدفوعات غير مطابقة لفاتورة",
   "pay.unmatched_hint": "وصلت هذه المدفوعات الإلكترونية لشركة أو فاتورة لم تعد موجودة، أو لم تتمكن من قبول الدفعة. سجّل كل دفعة في مكانها الصحيح، أو استردها من لوحة تحكم Stripe.",
+  "pay.unmatched_deleted": "(محذوف)",
   "pay.unmatched_paid_on": "تاريخ الدفع",
   "pay.unmatched_received": "تاريخ التسجيل",
   "pay.unmatched_refunds_head": "مبالغ مستردة لم تُطبق بعد",

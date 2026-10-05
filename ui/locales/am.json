@@ -1291,6 +1291,7 @@
   "pay.reconnect_stripe": "Stripeን እንደገና ያገናኙ",
   "pay.unmatched_head": "ከደረሰኝ ጋር ያልተዛመዱ ክፍያዎች",
   "pay.unmatched_hint": "እነዚህ የመስመር ላይ ክፍያዎች ከአሁን በኋላ ለሌለ ኩባንያ ወይም ደረሰኝ፣ ወይም ክፍያውን መቀበል ላልቻለ ደረሰኝ ደርሰዋል። እያንዳንዱን በትክክለኛው ቦታ ይመዝግቡ፣ ወይም ከStripe ዳሽቦርድዎ ተመላሽ ያድርጉ።",
+  "pay.unmatched_deleted": "(ተሰርዟል)",
   "pay.unmatched_paid_on": "የተከፈለበት",
   "pay.unmatched_received": "የተመዘገበበት",
   "pay.unmatched_refunds_head": "ገና ያልተተገበሩ ተመላሾች",

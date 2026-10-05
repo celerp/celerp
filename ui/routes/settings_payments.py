@@ -107,6 +107,13 @@ def _unmatched(unmatched: dict) -> FT | str:
                _unmatched_refunds(unmatched.get("refunds", [])))
 
 
+def _where(row: dict) -> tuple:
+    """The company and document cells of an unmatched row: their names, or "--"
+    marked deleted once they no longer exist here."""
+    return tuple(Td(name) if name else Td(EMPTY, " ", Span(t("pay.unmatched_deleted"), cls="text-muted"))
+                 for name in (row.get("company_name"), row.get("document_ref")))
+
+
 def _unmatched_payments(payments: list[dict]) -> FT | str:
     if not payments:
         return ""
@@ -118,7 +125,7 @@ def _unmatched_payments(payments: list[dict]) -> FT | str:
                      Th(t("label.amount"), cls="cell--number"), Th(t("th.company")), Th(t("th.document")))),
             Tbody(*[Tr(Td(p["received_at"][:10]), Td((p.get("paid_at") or "")[:10] or EMPTY), Td(p["reference"]),
                        Td(fmt_money(p["amount"], p["currency"]), cls="cell--money"),
-                       Td(p["company_id"]), Td(p["document_id"])) for p in payments]),
+                       *_where(p)) for p in payments]),
             cls="data-table",
         ),
         cls="settings-card", style="margin-top:24px;",
@@ -137,7 +144,7 @@ def _unmatched_refunds(refunds: list[dict]) -> FT | str:
                      Th(t("th.document")))),
             Tbody(*[Tr(Td(r["received_at"][:10]), Td((r.get("occurred_at") or "")[:10] or EMPTY), Td(r["reference"]),
                        Td(fmt_money(r["amount"], r["currency"]), cls="cell--money"),
-                       Td(t(f"pay.refund_{r['transition']}")), Td(r["company_id"]), Td(r["document_id"]))
+                       Td(t(f"pay.refund_{r['transition']}")), *_where(r))
                     for r in refunds]),
             cls="data-table",
         ),

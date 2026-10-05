@@ -1202,6 +1202,7 @@
   "pay.reconnect_stripe": "Ricollega Stripe",
   "pay.unmatched_head": "Pagamenti non abbinati a una fattura",
   "pay.unmatched_hint": "Questi pagamenti online sono arrivati per un'azienda o una fattura che non esiste più, o che non ha potuto accettare il pagamento. Registra ciascuno dove deve stare oppure rimborsalo dalla dashboard di Stripe.",
+  "pay.unmatched_deleted": "(eliminato)",
   "pay.unmatched_paid_on": "Pagato il",
   "pay.unmatched_received": "Registrato il",
   "pay.unmatched_refunds_head": "Rimborsi non ancora applicati",
