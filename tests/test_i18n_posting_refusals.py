@@ -30,7 +30,9 @@ KEYS = ["posting.problem.unset", "posting.problem.not_in_chart", "posting.proble
         "notice.older_stock_unplaced.title", "notice.older_stock_unplaced.body",
         "notice.older_stock_moved.title", "notice.older_stock_moved.body",
         "notice.mfg_reconcile_needed.title", "notice.mfg_reconcile_needed.body",
-        "notice.mfg_wip_recorded.title", "notice.mfg_wip_recorded.body"]
+        "notice.mfg_wip_recorded.title", "notice.mfg_wip_recorded.body",
+        "notice.historical_lots_no_product.title", "notice.historical_lots_no_product.body",
+        "notice.starter_modules_on.title", "notice.starter_modules_on.body"]
 _ASSET = {"code": "1110", "account_type": "asset", "is_active": True, "has_children": False}
 
 
@@ -42,6 +44,19 @@ def _lang():
 
 def _catalog(lang: str) -> dict:
     return json.loads((ROOT / "ui" / "locales" / f"{lang}.json").read_text(encoding="utf-8"))
+
+
+def shown_in(lang: str, notice) -> dict:
+    """The notice as the bell lists it to a reader of ``lang``."""
+    from ui.routes.notifications import _in_reader_language
+
+    listed = {"items": [{"id": str(notice.id), "title": notice.title, "body": notice.body, "i18n": notice.i18n}]}
+    i18n.set_lang(lang)
+    try:
+        [item] = json.loads(_in_reader_language(json.dumps(listed).encode()))["items"]
+    finally:
+        i18n.set_lang("en")
+    return item
 
 
 @pytest.mark.parametrize("lang", LOCALES)

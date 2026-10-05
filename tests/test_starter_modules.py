@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import select, text
 
 import pre366
+from test_i18n_posting_refusals import _catalog, shown_in
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -188,6 +189,10 @@ async def test_an_install_that_registered_and_never_enabled_a_module_starts_curr
         Notification.company_id == old["company_id"], Notification.title == "Inventory and Contacts were turned on",
     ))).scalars().all()
     assert "starter" in notice.body and "Modules" in notice.body, notice.body
+    key = "notice.starter_modules_on"
+    assert notice.i18n == {"title": f"{key}.title", "body": f"{key}.body"}
+    de = _catalog("de")
+    assert shown_in("de", notice) == {"id": str(notice.id), "title": de[f"{key}.title"], "body": de[f"{key}.body"]}
 
     cfg.write_text('[modules]\nenabled = ["celerp-inventory"]\n')
     await _start(monkeypatch)

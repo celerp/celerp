@@ -49,5 +49,6 @@ async def enable_starter_modules(session: AsyncSession) -> None:
         if turned_on:
             for company_id in holders:
                 await notify(session, company_id, "system", NOTICE_TITLE, _NOTICE_BODY,
-                             action_url="/modules", priority="high")
+                             action_url="/modules", priority="high",
+                             i18n={"title": "notice.starter_modules_on.title", "body": "notice.starter_modules_on.body"})
     await conn.run_sync(lambda c: set_meta(c, STARTER_MODULES_KEY, "done"))

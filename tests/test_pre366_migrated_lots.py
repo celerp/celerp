@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 import pre366
 from celerp.models.ledger import LedgerEntry
 from celerp.models.notification import Notification
+from test_i18n_posting_refusals import _catalog, shown_in
 from test_pre366_runs import _row
 
 pytestmark = pytest.mark.asyncio
@@ -75,6 +76,12 @@ async def test_a_lot_its_line_names_no_product_of_is_reported_not_guessed(client
 
     (notice,) = await _notices(session, old)
     assert number in notice.body and "SPL-1" in notice.body and "FG-4" not in notice.body, notice.body
+    key = "notice.historical_lots_no_product"
+    assert notice.i18n == {"title": f"{key}.title", "body": f"{key}.body",
+                           "params": {"number": number, "skus": "SPL-1"}}
+    de = _catalog("de")
+    assert shown_in("de", notice) == {"id": str(notice.id), "title": de[f"{key}.title"],
+                                      "body": de[f"{key}.body"].format(number=number, skus="SPL-1")}
 
     # Told once: not again on the next start, read or not.
     await pre366.start()

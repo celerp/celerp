@@ -69,10 +69,13 @@ async def link_historical_lots(session: AsyncSession, company_id, lots: list[str
     for doc, skus in sorted(unlinked.items()):
         doc_state = rows.get(doc) or {}
         number = doc_state.get("ref_id") or doc_state.get("doc_number") or doc
+        listed = ", ".join(sorted(skus))
         await notify_once(session, company_id, "system", NO_PRODUCT_TITLE, (
             f"Invoice {number} came over with goods delivered before the move whose item names no "
-            f"product: {', '.join(sorted(skus))}. Demand Planning counts what those lines still owe "
-            "under each item's own SKU, not under a product."))
+            f"product: {listed}. Demand Planning counts what those lines still owe "
+            "under each item's own SKU, not under a product."),
+            i18n={"title": "notice.historical_lots_no_product.title", "body": "notice.historical_lots_no_product.body",
+                  "params": {"number": number, "skus": listed}})
     return {"linked": linked, "unlinked": sum(len(s) for s in unlinked.values())}
 
 
