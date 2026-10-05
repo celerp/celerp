@@ -3601,6 +3601,7 @@
   "mfg.reconcile_values": "{item} is not a component still in this run, is named twice, or has a negative value.",
   "mfg.reopen_unrecorded": "This run was completed by an older release or while Accounting was in another state, so what completion recorded cannot be reversed exactly. It cannot be reopened; start a new run for further work.",
   "mfg.reconcile_value_too_large": "The value given for {item} is too large to record.",
+  "mfg.reconcile_over_history": "{item} left the shelf with {recorded} when this run used it, so the run cannot hold {value} of it. Give at most {recorded}.",
   "mfg.reconcile_missing": "Give the value of every component still in this run: {items} has none.",
   "mfg.reconcile_account": "Choose the account this value comes off: an inventory account that holds at least {total} beyond its stock on hand, or retained earnings for value the books never carried.",
   "mfg.output_unknown": "Output was received from this run, but its history does not show which lots it went into or what they cost, so it cannot be reconciled.",

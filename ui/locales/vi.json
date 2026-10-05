@@ -3601,6 +3601,7 @@
   "mfg.reconcile_values": "{item} không còn là thành phần trong đợt này, bị nêu hai lần hoặc có giá trị âm.",
   "mfg.reopen_unrecorded": "Đợt này được hoàn tất bởi phiên bản cũ hoặc khi Kế toán ở trạng thái khác, nên không thể đảo ngược chính xác việc hoàn tất. Không thể mở lại đợt này; hãy tạo đợt mới để làm tiếp.",
   "mfg.reconcile_value_too_large": "Giá trị nhập cho {item} quá lớn để ghi nhận.",
+  "mfg.reconcile_over_history": "{item} rời kho với giá trị {recorded} khi lệnh sản xuất này sử dụng, nên lệnh không thể giữ {value}. Nhập tối đa {recorded}.",
   "mfg.reconcile_missing": "Hãy nhập giá trị của mọi thành phần còn trong đợt này: {items} chưa có giá trị.",
   "mfg.reconcile_account": "Chọn tài khoản mà giá trị này được ghi giảm: một tài khoản hàng tồn kho đang giữ ít nhất {total} ngoài số hàng hiện có, hoặc lợi nhuận giữ lại cho giá trị mà sổ sách chưa từng ghi nhận.",
   "mfg.output_unknown": "Lệnh này đã nhận thành phẩm, nhưng lịch sử không cho biết thành phẩm vào lô nào hoặc giá vốn bao nhiêu, nên không thể đối chiếu.",

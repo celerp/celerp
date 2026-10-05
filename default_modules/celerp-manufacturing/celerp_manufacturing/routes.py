@@ -1851,7 +1851,7 @@ async def reconcile_needs(
     return {"reason": row.state.get("wip_unresolved"),
             "rooms": await movements.reconcile_rooms(session, company_id),
             "unlotted": max(await movements.unlotted(session, company_id, order_id, row.state) or 0.0, 0.0),
-            "components": [{"item_id": i, "quantity": held[i], "sku": (r.state or {}).get("sku") if r else None,
+            "components": [{"item_id": i, "quantity": held[i][0], "sku": (r.state or {}).get("sku") if r else None,
                             "name": (r.state or {}).get("name") if r else None} for i, r in items.items()],
             "received": [{"lot_item_id": r["lot_item_id"], "quantity": r["quantity"], "value": str(r["value"]),
                           "sku": ((await session.get(Projection, {"company_id": company_id,

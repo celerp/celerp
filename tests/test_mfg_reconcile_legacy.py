@@ -162,12 +162,12 @@ async def test_lots_merged_since_are_restated_through_the_merge(client, session,
 async def test_a_reconciliation_states_the_value_that_was_issued_not_the_one_the_lot_was_given(
         client, session, auth):
     """A smaller value than the books carry would leave the account holding value no stock
-    explains; refused, nothing changes."""
+    explains, and a larger one is more than left the shelf; refused, nothing changes."""
     raw, order, [lot] = await _older_run(client, session, auth, 1)
     p, re = await role(session, auth, PURCHASED), await role(session, auth, RETAINED)
     before = await snapshot(session, auth, raw, order, lot)
 
-    for value, account, key in ((60.0, p, "reconcile_left"), (0.0, p, "reconcile_left"), (140.0, p, "reconcile_left"),
+    for value, account, key in ((60.0, p, "reconcile_left"), (0.0, p, "reconcile_left"), (140.0, p, "reconcile_over_history"),
                                 (0.0, re, "reconcile_excess"), (60.0, re, "reconcile_excess")):
         refusal(await reconcile(client, auth, order, [(raw, value)], account, key=str(uuid.uuid4())), 422, key)
 

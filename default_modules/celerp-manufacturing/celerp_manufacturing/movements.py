@@ -1268,18 +1268,20 @@ def _held_lines(held: dict[str, tuple[float, Decimal | None]]) -> list[dict]:
     return [{"item_id": i, "quantity": q, "value": str(v)} for i, (q, v) in sorted(held.items())]
 
 
-async def still_held(session: AsyncSession, company_id, order_id: str, state: dict) -> dict[str, float]:
-    """The components a run still holds and how many of each, whose value reconciling it
-    records: for a run an older release issued to, what its history consumed
-    (lot_origin.consumed_facts); otherwise what it recorded as issued."""
+async def still_held(session: AsyncSession, company_id, order_id: str,
+                     state: dict) -> dict[str, tuple[float, Decimal | None]]:
+    """The components a run still holds, each with how many and the value its history records
+    leaving the shelf (None when it records none), whose value reconciling it records: for a
+    run an older release issued to, what its history consumed (lot_origin.consumed_facts);
+    otherwise what it recorded as issued."""
     if state.get("wip_untracked"):
         facts = (await consumed_facts(session, company_id, _ORDER_MARK, {order_id}))[order_id]
-        return {i: q for i, (q, _) in facts.items() if q > _EPS}
+        return {i: (q, v or None) for i, (q, v) in facts.items() if q > _EPS}
     held: dict[str, float] = {}
     for i in state.get("inputs", []):
         if float(i.get("issued_qty") or 0) > _EPS:
             held[i["item_id"]] = held.get(i["item_id"], 0.0) + float(i["issued_qty"])
-    return held
+    return {i: (q, None) for i, q in held.items()}
 
 
 def _untracked_qty(state: dict) -> float:
@@ -1428,6 +1430,15 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
         if item_id not in needed or item_id in values or value < 0:
             raise refuse(422, "reconcile_values", f"{item_id} is not a component still in this run, is named "
                          "twice, or has a negative value.", item=item_id)
+        history = needed[item_id][1]
+        if history is not None and value > history:
+            # The value that left the lot for this run is on record: the run cannot hold more.
+            row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+            sku = ((row.state or {}) if row is not None else {}).get("sku") or item_id
+            raise refuse(422, "reconcile_over_history",
+                         f"{sku} left the shelf with {history} when this run used it, so the run cannot hold "
+                         f"{value} of it. Give at most {history}.", item=sku, recorded=str(history),
+                         value=str(value))
         values[item_id] = value
     if set(values) != set(needed):
         missing = sorted(set(needed) - set(values))
@@ -1530,7 +1541,7 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
                 lots[code] = lots.get(code, _ZERO) + delta
     await op.post(f"reconcile:{rk}", f"Materials in production run {order_id} reconciled", wip_code,
                   total - transferred, lots, equity=equity)
-    recorded = _held_lines({i: (needed[i], v) for i, v in values.items()})
+    recorded = _held_lines({i: (needed[i][0], v) for i, v in values.items()})
     data = {"issued": str(total), "transferred": str(transferred), "receipts": receipts, "components": recorded,
             "reconciled_by": str(op.user_id), "request": request, "wip_account_code": wip_code}
     if op.books and amount:

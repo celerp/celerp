@@ -125,6 +125,27 @@ async def test_a_run_with_a_component_without_an_account_is_reconciled_and_carri
     await assert_settled(client, session, auth)
 
 
+async def test_a_value_beyond_what_the_history_records_is_refused(client, session, auth):
+    """The used-up lot's own history records 40.00 leaving the shelf for this run. Retained
+    earnings would take any value; the run cannot hold more than its history records, so a
+    larger value is refused naming the lot and what it recorded, and nothing changes."""
+    used = await older_release_lot(session, auth["company_id"], auth["user_id"], 40.0, qty=4)
+    raw = await _item(client, auth, 100.0, qty=10)
+    _, order = await _job(client, auth, raw)
+    await _older_issue(session, auth, order, used, 4)
+    await _upgrade(session)
+    re = await role(session, auth, RETAINED)
+    before = await snapshot(session, auth, used, order)
+
+    r = await reconcile(client, auth, order, [(used, 1e9)], re, key="huge")
+
+    refusal(r, 422, "reconcile_over_history")
+    assert r.json()["detail"]["params"]["recorded"] == "40.00"
+    assert await snapshot(session, auth, used, order) == before
+    assert (await reconcile(client, auth, order, [(used, 40.0)], re)).status_code == 200
+    await assert_settled(client, session, auth)
+
+
 async def test_stock_sold_before_it_is_on_hand_does_not_stop_reconciling_from_retained_earnings(
         client, session, auth):
     """An invoice for goods not yet on hand books their cost ahead of them, so that inventory
