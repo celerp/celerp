@@ -272,13 +272,14 @@ async def _sale_job(engine, client, user, n: int, prep) -> dict:
 
 
 @pytest.mark.parametrize("name, prep, shipped", [
-    ("undo", ("issue", "receive"), "sale 200 200 422"), ("reopen", ("issue", "complete"), "sale 200 200 200")],
+    ("undo", ("issue", "receive"), "sale 200 409"), ("reopen", ("issue", "complete"), "sale 200 200 200")],
     ids=["undo-receipt", "reopen"])
 async def test_taking_output_back_while_it_is_being_sold_ends_as_if_one_ran_after_the_other(
         committed_engine, race, name, prep, shipped):
     """The run takes its lot back (Undo receipt, or Reopen) while an invoice for the same lot
     is being written: the invoice waits, and finds what the run left. An undone receipt has no
-    stock left to ship; a reopened run keeps its lot, which then sells normally."""
+    stock left, so the invoice is refused when posted; a reopened run keeps its lot, which then
+    sells normally."""
     client, hold = race
     user = await owner(committed_engine)
     raced, serial = [await _sale_job(committed_engine, client, user, n, prep) for n in (1, 2)]

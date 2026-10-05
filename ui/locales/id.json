@@ -3618,5 +3618,6 @@
   "notice.older_stock_moved.body": "Versi sebelumnya membukukan biaya stok awal yang terjual ke {p}, sehingga {p} dan {ob} hanya cocok dengan stok Anda jika digabung. Satu jurnal bertanggal {day} memindahkan {amount} {currency} dari {ob} ke {p}, dan stok lama Anda sekarang ada di {p}. Total persediaan dan laba ditahan tidak berubah.",
   "item.draft": "{sku} adalah draf, belum menjadi stok: jadikan tersedia terlebih dahulu.",
   "item.reserve_not_available": "{sku} berstatus {status}: hanya stok yang tersedia yang dapat dipesan.",
-  "item.reserve_out_of_range": "{sku} berisi {held} dengan {reserved} dipesan: perubahan pemesanan sebesar {change} akan menyisakan {result}, di luar 0 sampai {held}."
+  "item.reserve_out_of_range": "{sku} berisi {held} dengan {reserved} dipesan: perubahan pemesanan sebesar {change} akan menyisakan {result}, di luar 0 sampai {held}.",
+  "item.invoice_not_available": "{sku} berstatus {status}: hanya stok yang tersedia yang dapat ditagihkan."
 }

@@ -6,10 +6,10 @@ from __future__ import annotations
 import pytest
 
 from celerp_manufacturing.costing import RecipeError
+from celerp_inventory.projections import is_manufacturable
 from celerp_manufacturing.expansion import (
     expand_recipe,
     explode_demand,
-    is_manufacturable,
     mfg_idem_key,
     output_line,
 )

@@ -3618,5 +3618,6 @@
   "notice.older_stock_moved.body": "Các phiên bản trước đã ghi giá vốn của hàng tồn đầu kỳ đã bán vào {p}, nên {p} và {ob} chỉ khớp với hàng tồn kho khi gộp lại. Một bút toán ngày {day} đã chuyển {amount} {currency} từ {ob} sang {p}, và hàng tồn kho cũ hiện nằm trên {p}. Tổng hàng tồn kho và lợi nhuận giữ lại không thay đổi.",
   "item.draft": "{sku} là bản nháp, chưa phải hàng tồn kho: hãy đặt thành có sẵn trước.",
   "item.reserve_not_available": "{sku} đang ở trạng thái {status}: chỉ có thể giữ chỗ hàng có sẵn.",
-  "item.reserve_out_of_range": "{sku} có {held}, đã giữ chỗ {reserved}: thay đổi giữ chỗ {change} sẽ còn {result}, ngoài khoảng 0 đến {held}."
+  "item.reserve_out_of_range": "{sku} có {held}, đã giữ chỗ {reserved}: thay đổi giữ chỗ {change} sẽ còn {result}, ngoài khoảng 0 đến {held}.",
+  "item.invoice_not_available": "{sku} đang ở trạng thái {status}: chỉ có thể lập hóa đơn cho hàng có sẵn."
 }

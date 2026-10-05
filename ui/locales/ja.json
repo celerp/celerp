@@ -3618,5 +3618,6 @@
   "notice.older_stock_moved.body": "以前のリリースでは販売済みの期首在庫の原価を {p} に計上していたため、{p} と {ob} は合計でのみ在庫と一致していました。{day} 付の仕訳で {amount} {currency} を {ob} から {p} に振り替え、以前の在庫は {p} に計上されています。在庫総額と利益剰余金は変わりません。",
   "item.draft": "{sku} は下書きで、まだ在庫ではありません。先に利用可能にしてください。",
   "item.reserve_not_available": "{sku} は {status} です。予約できるのは利用可能な在庫だけです。",
-  "item.reserve_out_of_range": "{sku} の数量は {held}、予約済みは {reserved} です。予約を {change} 変更すると {result} になり、0 から {held} の範囲外です。"
+  "item.reserve_out_of_range": "{sku} の数量は {held}、予約済みは {reserved} です。予約を {change} 変更すると {result} になり、0 から {held} の範囲外です。",
+  "item.invoice_not_available": "{sku} は {status} です。請求できるのは利用可能な在庫だけです。"
 }
