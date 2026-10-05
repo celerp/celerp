@@ -177,16 +177,17 @@ def test_entry_a_slot_cannot_read_is_refused_before_module_code_runs(module_dir,
      "async def target(*, session):\n    return 0\n"),
 ])
 def test_handler_whose_signature_only_loading_shows_is_refused_at_load(module_dir, slot, shown, wrapped):
-    """The source shows the right signature but importing rebinds the name, so
-    admission cannot see it; loading refuses the wrong one before it is
+    """Admission read the right signature, but the source changed before load
+    to rebind the name; loading refuses the wrong one before it is
     registered."""
     name = _write(module_dir, {slot: [{"handler": "{inner}.wrapped:handler"}]})
     inner = next(p.name for p in (module_dir / name).iterdir() if p.is_dir())
-    (module_dir / name / inner / "wrapped.py").write_text(
-        shown + wrapped + "globals()['handler'] = target\n")
+    wrapped_file = module_dir / name / inner / "wrapped.py"
+    wrapped_file.write_text(shown)
 
     admission = loader.admit_modules(str(module_dir), {name})
     assert admission.refused == {}
+    wrapped_file.write_text(shown + wrapped + "handler = target\n")
     loader.load_all(str(module_dir), {name}, admission=admission)
 
     assert not loader.is_running(name)

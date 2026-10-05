@@ -172,13 +172,18 @@ class TestCallableSlots:
 
     @pytest.mark.parametrize("slot", list(CALLABLE))
     def test_not_callable_once_imported_refused(self, slot, tmp_path, monkeypatch):
-        """The source shows a def, but importing rebinds the name: load proves
-        the object import returns."""
+        """Load proves the object import returns, not the source admission read:
+        a handler file changed after admission to bind a non-callable is refused."""
         name = f"slotmod_rb_{slot}"
-        _write(tmp_path, name, {slot: [_entry(slot, f"{name}.hooks:fn")]},
-               {"hooks.py": _right_fn(slot) + "\nglobals()['fn'] = 'not a function'\n"})
-        msg = _refused(tmp_path, name, monkeypatch)
-        assert "not callable" in msg
+        pkg = _write(tmp_path, name, {slot: [_entry(slot, f"{name}.hooks:fn")]},
+                     {"hooks.py": _right_fn(slot)})
+        monkeypatch.setattr(loader, "_first_party_lock", lambda: {})
+        admission = loader.admit_modules(tmp_path, {name})
+        assert admission.refused == {}
+        (pkg / "hooks.py").write_text(_right_fn(slot) + "\nfn = 'not a function'\n")
+        load_all(tmp_path, {name}, admission=admission)
+        assert "not callable" in load_errors()[name]
+        assert slots.all_slots() == {}
 
     @pytest.mark.parametrize("slot", ["projection_handler", "doc_finalize_hook", "on_doc_payment"])
     def test_third_party_module_can_fill_core_event_slot(self, slot, tmp_path, monkeypatch):

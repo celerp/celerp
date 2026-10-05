@@ -331,8 +331,98 @@ def _case_api_setup_decorated(base, marker, monkeypatch):
                              ), "top-level def"
 
 
+_READY = "async def ready(session=None, **kw):\n    return None\n"
+_READY_SLOT = {"on_modules_ready": [{"handler": "{inner}.hooks:ready"}]}
+
+
+def _rebound_ready(name: str, reason: str, code: dict[str, str]):
+    """A module whose hooks.py shows a plain async ``ready``, while other code
+    the module runs rebinds that name at import: the source no longer shows
+    what core will call."""
+    def case(base, marker, monkeypatch):
+        return _migrating_module(base, f"acme-{_uid()}", marker, slots=_READY_SLOT,
+                                 code=code), reason
+    case.__name__ = f"_case_{name}"
+    return case
+
+
+_case_handler_rebound_through_globals = _rebound_ready(
+    "handler_rebound_through_globals", "dynamically",
+    {"hooks.py": _READY + "globals()['ready'] = print\n"})
+_case_handler_rebound_through_globals_alias = _rebound_ready(
+    "handler_rebound_through_globals_alias", "dynamically",
+    {"hooks.py": _READY + "ns = globals\nns()['ready'] = print\n"})
+_case_handler_rebound_through_vars = _rebound_ready(
+    "handler_rebound_through_vars", "dynamically",
+    {"hooks.py": "import sys\n" + _READY + "vars(sys.modules[__name__])['ready'] = print\n"})
+_case_handler_rebound_through_setattr = _rebound_ready(
+    "handler_rebound_through_setattr", "dynamically",
+    {"hooks.py": "import sys\n" + _READY + "setattr(sys.modules[__name__], 'ready', print)\n"})
+_case_handler_rebound_through_computed_setattr = _rebound_ready(
+    "handler_rebound_through_computed_setattr", "dynamically",
+    {"hooks.py": "import sys\n" + _READY + "me = sys.modules[__name__]\nsetattr(me, 'rea' + 'dy', print)\n"})
+_case_handler_rebound_through_exec = _rebound_ready(
+    "handler_rebound_through_exec", "dynamically",
+    {"hooks.py": _READY + "exec('ready = print')\n"})
+_case_handler_rebound_from_package_init = _rebound_ready(
+    "handler_rebound_from_package_init", "dynamically",
+    {"hooks.py": _READY, "__init__.py": "from . import hooks as _h\n_h.ready = print\n"})
+_case_handler_rebound_by_star_import = _rebound_ready(
+    "handler_rebound_by_star_import", "top-level def",
+    {"hooks.py": _READY + "from .other import *\n",
+     "other.py": "def ready(session=None, **kw):\n    return None\n"})
+_case_handler_module_replaced = _rebound_ready(
+    "handler_module_replaced", "dynamically",
+    {"hooks.py": "import sys, types\n" + _READY
+                 + "sys.modules[__name__] = types.SimpleNamespace(ready=print)\n"})
+_case_handler_module_replaced_by_update = _rebound_ready(
+    "handler_module_replaced_by_update", "dynamically",
+    {"hooks.py": "import sys, types\n" + _READY
+                 + "sys.modules.update({__name__: types.SimpleNamespace(ready=print)})\n"})
+_case_handler_deleted = _rebound_ready(
+    "handler_deleted", "top-level def",
+    {"hooks.py": _READY + "del ready\n"})
+
+
+def _case_route_setup_rebound_through_globals(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker, api_routes="{inner}.api",
+                             code={"api.py": "def setup_api_routes(app):\n    pass\n"
+                                             "async def _a(app):\n    pass\n"
+                                             "globals()['setup_api_routes'] = _a\n"}
+                             ), "dynamically"
+
+
+async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
+        _db_engine, _modules, tmp_path):
+    """Control: setattr on data objects, attribute writes of other names and a
+    star import placed before the handler do not change what core calls."""
+    marker = tmp_path / "ran.txt"
+    pkg = _migrating_module(_modules, f"acme-{_uid()}", marker, slots=_READY_SLOT, code={
+        "hooks.py": "from json import *\n" + _READY
+                    + "def apply(row, changes):\n    for k, v in changes.items():\n"
+                    "        setattr(row, k, v)\n    row.status = 'done'\n"})
+
+    admission, loaded = await _admit_and_migrate(_db_engine, _modules, {pkg.name})
+
+    assert admission.refused == {}
+    assert marker.exists()
+    assert [m["name"] for m in loaded] == [pkg.name]
+
+
 @pytest.mark.parametrize("case", [
     _case_async_api_setup,
+    _case_handler_rebound_through_globals,
+    _case_handler_rebound_through_globals_alias,
+    _case_handler_rebound_through_vars,
+    _case_handler_rebound_through_setattr,
+    _case_handler_rebound_through_computed_setattr,
+    _case_handler_rebound_through_exec,
+    _case_handler_rebound_from_package_init,
+    _case_handler_rebound_by_star_import,
+    _case_handler_deleted,
+    _case_handler_module_replaced,
+    _case_handler_module_replaced_by_update,
+    _case_route_setup_rebound_through_globals,
     _case_async_ui_setup_imported,
     _case_hook_not_async,
     _case_render_async,

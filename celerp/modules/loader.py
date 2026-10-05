@@ -662,6 +662,19 @@ def _module_entry_files(pkg_path: Path, manifest: dict) -> list[Path]:
     return files
 
 
+def _handler_names(manifest: dict) -> set[str]:
+    """The names of every callable core will call in the module: its route
+    setup functions and each callable slot's function."""
+    names = {f"setup_{kind}_routes" for kind in ("api", "ui") if manifest.get(f"{kind}_routes")}
+    for slot_name, contribution in manifest["slots"].items():
+        if slot_name in _CALLABLE_SLOTS:
+            key = _CALLABLE_SLOTS[slot_name][0]
+            names |= {item[key].split(":")[1] for item in (
+                contribution if isinstance(contribution, list) else [contribution])
+                if isinstance(item, dict) and isinstance(item.get(key), str) and ":" in item[key]}
+    return names
+
+
 # Top-level package names Celerp itself ships, and the prefix of the packages
 # inside official modules (celerp_inventory, ...): no other module answers to them.
 _RESERVED_IMPORT_NAMES = frozenset({"celerp", "ui", "default_modules", "premium_modules"})
@@ -756,6 +769,7 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
     _check_slot_contracts(pkg_path, manifest["slots"])
     _check_import_names(name, pkg_path, official=official)
     entry_files = _module_entry_files(pkg_path, manifest)
+    _check_dynamic_writes(pkg_path, entry_files, _handler_names(manifest))
     first_party = is_first_party(pkg_path)
     if not first_party:
         violations: set[str] = set()
@@ -831,7 +845,9 @@ def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
     that validates; its name matches the folder; the importer's name rules
     (reserved prefix); the Celerp version it needs; the table prefix contract;
     that no package name it answers to is already taken; that every route
-    source lies inside the module and provides its setup function; that the migrations package resolves inside the module; for a
+    source lies inside the module and provides its setup function; that no
+    code it would execute rebinds a callable core calls (_check_dynamic_writes);
+    that the migrations package resolves inside the module; for a
     module that is not first-party, that nothing it would execute imports a
     protected internal; and for a premium module, a valid license. Survivors are
     then put in dependency order, a module whose dependency is missing or
@@ -1560,49 +1576,164 @@ def _resolve_local_import(
     return None
 
 
+def _local_imports(pkg_path: Path, current: Path, node) -> list[Path]:
+    """The module's own source files an import statement in ``current`` loads."""
+    if isinstance(node, ast.Import):
+        targets = [(alias.name, 0) for alias in node.names]
+    elif isinstance(node, ast.ImportFrom):
+        module = node.module or ""
+        targets = [(t or None, node.level) for t in [module] + [
+            f"{module}.{alias.name}" if module else alias.name for alias in node.names]]
+    else:
+        return []
+    found = (_resolve_local_import(pkg_path, current, t, level) for t, level in targets)
+    return [f for f in found if f]
+
+
+def _reachable_sources(pkg_path: Path, entries: list[Path | None]) -> dict[Path, ast.Module]:
+    """Every source file of the module's own code that importing ``entries``
+    executes, parsed: each entry, the module's files they import, transitively,
+    and the package ``__init__.py`` files on the way to each of them. Fails
+    closed: a missing entry, or a reachable file that cannot be parsed, raises
+    :class:`ModuleLoadError`."""
+    if any(entry is None or not entry.is_file() for entry in entries):
+        raise ModuleLoadError("A module entry point has no source file to check.")
+    trees: dict[Path, ast.Module] = {}
+    queue: list[Path] = list(entries)
+    while queue:
+        f = queue.pop()
+        if f in trees:
+            continue
+        trees[f] = _parse_source(f)
+        parent = f.parent if f.name != "__init__.py" else f.parent.parent
+        if parent != pkg_path.parent and _inside(parent, pkg_path) and (parent / "__init__.py").is_file():
+            queue.append(parent / "__init__.py")
+        for node in ast.walk(trees[f]):
+            queue.extend(_local_imports(pkg_path, f, node))
+    return trees
+
+
 def _scan_protected_imports(pkg_path: Path, entry: Path | None) -> set[str]:
     """Protected internals reachable from ``entry`` by import.
 
-    Follows the module's own imports transitively and flags static imports of a
-    protected internal (including ``from celerp.ai import quota``) and dynamic
-    importlib.import_module / __import__ calls whose literal argument names one.
-    Static analysis is best-effort; the authoritative enforcement of paid
-    capabilities is server-side. Fails closed: a missing entry, or a reachable
-    file that cannot be parsed, raises :class:`ModuleLoadError`.
+    Follows the module's own imports transitively (_reachable_sources) and flags
+    static imports of a protected internal (including ``from celerp.ai import
+    quota``) and dynamic importlib.import_module / __import__ calls whose literal
+    argument names one. Static analysis is best-effort; the authoritative
+    enforcement of paid capabilities is server-side. Fails closed like
+    _reachable_sources.
     """
-    if entry is None or not entry.is_file():
-        raise ModuleLoadError("A module entry point has no source file to check.")
     violations: set[str] = set()
-    seen: set[Path] = set()
-    queue: list[Path] = [entry]
-    while queue:
-        f = queue.pop()
-        if f in seen:
-            continue
-        seen.add(f)
-        for node in ast.walk(_parse_source(f)):
+    for tree in _reachable_sources(pkg_path, [entry]).values():
+        for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                for alias in node.names:
-                    hit = _protected_hit(alias.name)
-                    if hit:
-                        violations.add(hit)
-                    local = _resolve_local_import(pkg_path, f, alias.name, 0)
-                    if local:
-                        queue.append(local)
-            elif isinstance(node, ast.ImportFrom):
+                targets = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and not node.level:
                 module = node.module or ""
-                for target in [module] + [
-                        f"{module}.{alias.name}" if module else alias.name
-                        for alias in node.names]:
-                    hit = _protected_hit(target) if not node.level else None
-                    if hit:
-                        violations.add(hit)
-                    local = _resolve_local_import(pkg_path, f, target or None, node.level)
-                    if local:
-                        queue.append(local)
-            elif isinstance(node, ast.Call):
-                _flag_dynamic_import(node, violations)
+                targets = [module] + [f"{module}.{alias.name}" if module else alias.name
+                                      for alias in node.names]
+            else:
+                if isinstance(node, ast.Call):
+                    _flag_dynamic_import(node, violations)
+                continue
+            violations |= {hit for hit in map(_protected_hit, targets) if hit}
     return violations
+
+
+# Names whose use writes a module's namespace in a way its source cannot show:
+# the namespace mappings, code built from strings, and attribute writers reached
+# through an attribute (builtins.setattr, object.__setattr__). Writes to
+# sys.modules, which replace a whole module, are refused alongside them.
+_NAMESPACE_WRITERS = frozenset({"globals", "vars", "exec", "eval", "__builtins__"})
+_MAPPING_WRITERS = frozenset({
+    "update", "setdefault", "pop", "popitem", "clear", "__setitem__", "__delitem__"})
+_NAMESPACE_WRITER_ATTRS = _NAMESPACE_WRITERS | {
+    "__dict__", "setattr", "delattr", "__setattr__", "__delattr__"}
+
+
+def _module_values(tree: ast.Module) -> set[str]:
+    """Names in a source file that may hold a module object: every imported name
+    and every name assigned from sys.modules[...] or an import call."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names |= {(a.asname or a.name).split(".")[0] for a in node.names}
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign) and _is_module_value(node.value, names)
+                    and any(isinstance(t, ast.Name) and t.id not in names for t in node.targets)):
+                names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+                changed = True
+    return names
+
+
+def _is_module_value(node, names: set[str]) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in names
+    if isinstance(node, ast.Attribute):
+        return _is_module_value(node.value, names)
+    if isinstance(node, ast.Subscript):
+        return isinstance(node.value, ast.Attribute) and node.value.attr == "modules"
+    if isinstance(node, ast.Call):
+        fn = node.func
+        return (fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", None)) in (
+            "import_module", "__import__", "reload")
+    return False
+
+
+def _dynamic_write(tree: ast.Module, handlers: set[str]) -> str | None:
+    """The first construct in ``tree`` that may write one of ``handlers`` into a
+    module's namespace where the source cannot show it, or None."""
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    called = {id(n.func) for n in calls}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in _NAMESPACE_WRITERS:
+            return node.id
+        if isinstance(node, ast.Name) and node.id in ("setattr", "delattr") and id(node) not in called:
+            return f"{node.id} used as a value"
+        if isinstance(node, ast.Attribute):
+            if node.attr in _NAMESPACE_WRITER_ATTRS:
+                return node.attr
+            if isinstance(node.ctx, (ast.Store, ast.Del)) and node.attr in handlers:
+                return f"an assignment to .{node.attr}"
+            if (isinstance(node.value, ast.Attribute) and node.value.attr == "modules"
+                    and node.attr in _MAPPING_WRITERS):
+                return f"modules.{node.attr}"
+        if (isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del))
+                and isinstance(node.value, ast.Attribute) and node.value.attr == "modules"):
+            return "a write to sys.modules"
+    modules = None
+    for node in calls:
+        if not (isinstance(node.func, ast.Name) and node.func.id in ("setattr", "delattr")):
+            continue
+        if any(isinstance(a, ast.Starred) for a in node.args) or node.keywords:
+            return f"{node.func.id} with unpacked arguments"
+        target, attr = (node.args + [None, None])[:2]
+        if isinstance(attr, ast.Constant) and attr.value not in handlers:
+            continue
+        if isinstance(attr, ast.Constant):
+            return f"{node.func.id} of {attr.value!r}"
+        modules = _module_values(tree) if modules is None else modules
+        if target is None or attr is None or _is_module_value(target, modules):
+            return f"{node.func.id} of a computed name on a module"
+    return None
+
+
+def _check_dynamic_writes(pkg_path: Path, entries: list[Path], handlers: set[str]) -> None:
+    """Refuse a module whose own code may rebind a callable core will call
+    (``handlers``) at import, through globals(), vars(), __dict__, setattr,
+    exec or an attribute write: admission proves the call style from the source
+    (_check_source_call_style), so a name the source does not bind for good
+    would only be refused at load, after the module's migrations ran.
+    Raises :class:`ModuleLoadError`."""
+    for path, tree in _reachable_sources(pkg_path, entries).items():
+        found = _dynamic_write(tree, handlers)
+        if found:
+            raise ModuleLoadError(
+                f"{path.name!r} writes names dynamically ({found}), so the module's "
+                "source does not show what core will call.")
 
 
 def _bsl_violation_message(pkg_name: str, violations: set[str]) -> str:
@@ -2090,14 +2221,15 @@ def _check_call_style(subject: str, dotted: str, is_async: bool, *, awaited: boo
 
 def _top_level_binding(tree: ast.Module, name: str):
     """The one statement that binds ``name`` in a module, when that is the only
-    place the source binds it at all and it sits at the top level; else None."""
+    place the source binds (or deletes) it at all, it sits at the top level and
+    no later star import can rebind it; else None."""
     bindings = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             bound = [node.name]
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             bound = [(a.asname or a.name).split(".")[0] for a in node.names]
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
             bound = [node.id]
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
             bound = node.names
@@ -2108,6 +2240,9 @@ def _top_level_binding(tree: ast.Module, name: str):
     if len(bindings) != 1:
         return None
     (binding,) = bindings
+    if any(isinstance(n, ast.ImportFrom) and any(a.name == "*" for a in n.names)
+           and n.lineno > binding.lineno for n in tree.body):
+        return None  # a later star import may rebind it
     if binding in tree.body:
         return binding
     owner = next((n for n in tree.body if isinstance(n, (ast.Assign, ast.AnnAssign))
