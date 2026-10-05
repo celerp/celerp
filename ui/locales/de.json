@@ -2582,6 +2582,7 @@
   "settings.delete_everything": "Alles löschen",
   "system.factory_reset.held_elsewhere": "Datensätze in {table}, die nicht nur zu dieser Firma gehören, verweisen auf ihre Daten. Daher kann sie nicht zurückgesetzt werden. Es wurde nichts gelöscht.",
   "system.factory_reset.name_mismatch": "Geben Sie den Firmennamen genau wie angezeigt ein, um diese Firma zurückzusetzen.",
+  "system.factory_reset.reference_cycle": "Die Tabellen {tables} verweisen in einer Schleife aufeinander. Daher kann diese Firma nicht zurückgesetzt werden. Es wurde nichts gelöscht.",
   "settings.click_to_edit": "Zum Bearbeiten anklicken",
   "settings.click_to_change": "Zum Ändern anklicken",
   "settings.options_only_apply": "Optionen gelten nur für Auswahl-/Statusfelder",

@@ -2581,6 +2581,7 @@
   "settings.delete_everything": "すべて削除",
   "system.factory_reset.held_elsewhere": "{table} に、この会社だけのものではないレコードがあり、この会社のデータを参照しているため、リセットできません。何も削除されていません。",
   "system.factory_reset.name_mismatch": "この会社をリセットするには、表示どおりに会社名を正確に入力してください。",
+  "system.factory_reset.reference_cycle": "テーブル {tables} が互いに循環して参照しているため、この会社はリセットできません。何も削除されていません。",
   "settings.click_to_edit": "編集するにはクリック",
   "settings.click_to_change": "変更するにはクリック",
   "settings.options_only_apply": "オプションは選択/ステータスフィールドにのみ適用されます",

@@ -2581,6 +2581,7 @@
   "settings.delete_everything": "Eliminar todo",
   "system.factory_reset.held_elsewhere": "Hay registros en {table} que no son solo de esta empresa y hacen referencia a sus datos, por lo que no se puede restablecer. No se eliminó nada.",
   "system.factory_reset.name_mismatch": "Escriba el nombre de la empresa exactamente como se muestra para restablecer esta empresa.",
+  "system.factory_reset.reference_cycle": "Las tablas {tables} se hacen referencia entre sí en un ciclo, por lo que esta empresa no se puede restablecer. No se eliminó nada.",
   "settings.click_to_edit": "Haz clic para editar",
   "settings.click_to_change": "Haz clic para cambiar",
   "settings.options_only_apply": "Las opciones solo se aplican a los campos de selección/estado",

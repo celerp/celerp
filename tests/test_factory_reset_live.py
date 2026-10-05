@@ -346,6 +346,44 @@ async def test_a_reset_is_refused_while_a_row_hangs_off_both_companies(
             await conn.execute(text("DROP TABLE IF EXISTS ext_pairs, ext_items"))
 
 
+async def test_a_reset_is_refused_when_tables_refer_to_each_other_in_a_loop(real_client, real_engine):  # noqa: F811
+    """Two module tables name each other, so no delete order exists. The reset is refused
+    naming both, and nothing is deleted."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, _ = await _two_companies(real_client)
+    alpha = await _id(real_client, ta)
+    async with real_engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE ext_a (id uuid PRIMARY KEY, "
+                                "company_id uuid NOT NULL REFERENCES companies(id), b_id uuid)"))
+        await conn.execute(text("CREATE TABLE ext_b (id uuid PRIMARY KEY, "
+                                "company_id uuid NOT NULL REFERENCES companies(id), a_id uuid REFERENCES ext_a(id))"))
+        await conn.execute(text("ALTER TABLE ext_a ADD FOREIGN KEY (b_id) REFERENCES ext_b(id)"))
+        a, b = uuid.uuid4(), uuid.uuid4()
+        await conn.execute(text("INSERT INTO ext_a VALUES (:a, :c, NULL)"), {"a": a, "c": alpha})
+        await conn.execute(text("INSERT INTO ext_b VALUES (:b, :c, :a)"), {"b": b, "c": alpha, "a": a})
+        await conn.execute(text("UPDATE ext_a SET b_id = :b"), {"b": b})
+    try:
+        before = {t: await _rows(real_engine, t) for t in ("ext_a", "ext_b")}
+        held = await _held(real_engine, alpha)
+
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == (
+            "system.factory_reset.reference_cycle", {"tables": "ext_a, ext_b"})
+        assert await count(real_engine, "companies", "id = :i", i=alpha) == 1
+        assert await _held(real_engine, alpha) == held
+        assert {t: await _rows(real_engine, t) for t in before} == before
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE IF EXISTS ext_a DROP COLUMN IF EXISTS b_id"))
+            await conn.execute(text("DROP TABLE IF EXISTS ext_b, ext_a"))
+
+
 @pytest.mark.parametrize("typed", [None, "", "RESET", "alpha co", "Alpha Co "])
 async def test_reset_needs_the_exact_company_name(real_client, real_engine, typed):  # noqa: F811
     token = await _register(real_client, "Alpha Co")

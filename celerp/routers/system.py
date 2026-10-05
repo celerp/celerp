@@ -130,13 +130,19 @@ def _held_elsewhere(schema: dict) -> str:
 
 def _company_deletes(schema: dict) -> list[str]:
     """The deletes that remove the company bound as ``:c``, each table before any it
-    references."""
+    references. Tables that refer to each other in a loop have no such order, so the
+    reset is refused naming them."""
     from celerp import db_catalog
+    from celerp.accounting_roles import refusal
 
     rows = _company_rows(schema)
-    order, _ = db_catalog.fk_order(list(rows), schema)
-    return [f"DELETE FROM {db_catalog.ident(name)} WHERE {rows[name]}"
-            for name in [*sorted(set(rows) - set(order)), *reversed(order)]]
+    order, unordered = db_catalog.fk_order(list(rows), schema)
+    if looped := ", ".join(sorted(unordered - set(order))):
+        raise HTTPException(status_code=409, detail=refusal(
+            "system.factory_reset.reference_cycle",
+            f"The tables {looped} refer to each other in a loop, so this company cannot be "
+            "reset. Nothing was deleted.", tables=looped))
+    return [f"DELETE FROM {db_catalog.ident(name)} WHERE {rows[name]}" for name in reversed(order)]
 
 
 @router.post("/factory-reset")

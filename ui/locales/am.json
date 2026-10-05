@@ -2682,6 +2682,7 @@
   "settings.delete_everything": "ሁሉንም ነገር ሰርዝ",
   "system.factory_reset.held_elsewhere": "በ{table} ውስጥ የዚህ ኩባንያ ብቻ ያልሆኑ መዝገቦች ውሂቡን ያመለክታሉ፣ ስለዚህ ዳግም ሊጀመር አይችልም። ምንም አልተሰረዘም።",
   "system.factory_reset.name_mismatch": "ይህን ኩባንያ ዳግም ለማስጀመር የኩባንያውን ስም ልክ እንደሚታየው ይተይቡ።",
+  "system.factory_reset.reference_cycle": "ሰንጠረዦቹ {tables} እርስ በርሳቸው በዙር ይጠቃቀሳሉ፣ ስለዚህ ይህ ኩባንያ ዳግም ሊጀመር አይችልም። ምንም አልተሰረዘም።",
   "settings.click_to_edit": "ለማርትዕ ጠቅ ያድርጉ",
   "settings.click_to_change": "ለመቀየር ጠቅ ያድርጉ",
   "settings.options_only_apply": "አማራጮች የሚተገበሩት ለመምረጥ/ሁኔታ መስኮች ብቻ ነው",

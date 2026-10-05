@@ -2582,6 +2582,7 @@
   "settings.delete_everything": "Elimina tutto",
   "system.factory_reset.held_elsewhere": "Alcuni record in {table} che non appartengono solo a questa azienda fanno riferimento ai suoi dati, quindi non può essere reimpostata. Non è stato eliminato nulla.",
   "system.factory_reset.name_mismatch": "Digita il nome dell'azienda esattamente come mostrato per reimpostare questa azienda.",
+  "system.factory_reset.reference_cycle": "Le tabelle {tables} si richiamano a vicenda in un ciclo, quindi questa azienda non può essere reimpostata. Non è stato eliminato nulla.",
   "settings.click_to_edit": "Clicca per modificare",
   "settings.click_to_change": "Clicca per cambiare",
   "settings.options_only_apply": "Le opzioni si applicano solo ai campi di selezione/stato",

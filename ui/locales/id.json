@@ -2581,6 +2581,7 @@
   "settings.delete_everything": "Hapus semuanya",
   "system.factory_reset.held_elsewhere": "Catatan di {table} yang bukan hanya milik perusahaan ini merujuk ke datanya, jadi perusahaan ini tidak dapat diatur ulang. Tidak ada yang dihapus.",
   "system.factory_reset.name_mismatch": "Ketik nama perusahaan persis seperti yang ditampilkan untuk mengatur ulang perusahaan ini.",
+  "system.factory_reset.reference_cycle": "Tabel {tables} saling merujuk dalam satu lingkaran, jadi perusahaan ini tidak dapat diatur ulang. Tidak ada yang dihapus.",
   "settings.click_to_edit": "Klik untuk mengedit",
   "settings.click_to_change": "Klik untuk mengubah",
   "settings.options_only_apply": "Opsi hanya berlaku untuk kolom pilihan/status",

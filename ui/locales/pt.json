@@ -2581,6 +2581,7 @@
   "settings.delete_everything": "Excluir tudo",
   "system.factory_reset.held_elsewhere": "Registros em {table} que não são só desta empresa fazem referência aos dados dela, por isso ela não pode ser redefinida. Nada foi excluído.",
   "system.factory_reset.name_mismatch": "Digite o nome da empresa exatamente como mostrado para redefinir esta empresa.",
+  "system.factory_reset.reference_cycle": "As tabelas {tables} fazem referência umas às outras em ciclo, por isso esta empresa não pode ser redefinida. Nada foi excluído.",
   "settings.click_to_edit": "Clique para editar",
   "settings.click_to_change": "Clique para alterar",
   "settings.options_only_apply": "As opções se aplicam apenas aos campos de seleção/status",

@@ -2701,6 +2701,7 @@
   "settings.delete_everything": "Delete everything",
   "system.factory_reset.held_elsewhere": "Records in {table} that are not only this company's refer to its data, so it cannot be reset. Nothing was deleted.",
   "system.factory_reset.name_mismatch": "Type the company name exactly as shown to reset this company.",
+  "system.factory_reset.reference_cycle": "The tables {tables} refer to each other in a loop, so this company cannot be reset. Nothing was deleted.",
   "settings.click_to_edit": "Click to edit",
   "settings.click_to_change": "Click to change",
   "settings.options_only_apply": "Options only apply to select/status fields",

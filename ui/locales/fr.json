@@ -2582,6 +2582,7 @@
   "settings.delete_everything": "Tout supprimer",
   "system.factory_reset.held_elsewhere": "Des enregistrements de {table} qui n'appartiennent pas qu'à cette entreprise font référence à ses données, elle ne peut donc pas être réinitialisée. Rien n'a été supprimé.",
   "system.factory_reset.name_mismatch": "Saisissez le nom de l'entreprise exactement comme indiqué pour réinitialiser cette entreprise.",
+  "system.factory_reset.reference_cycle": "Les tables {tables} se référencent mutuellement en boucle, cette entreprise ne peut donc pas être réinitialisée. Rien n'a été supprimé.",
   "settings.click_to_edit": "Cliquer pour modifier",
   "settings.click_to_change": "Cliquer pour changer",
   "settings.options_only_apply": "Les options s'appliquent uniquement aux champs de sélection/statut",
