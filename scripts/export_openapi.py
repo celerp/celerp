@@ -38,10 +38,9 @@ def _register_default_modules() -> None:
     most of the API. Route registration imports the modules and mounts their
     routers; it touches no database (the startup migration phase is a
     Postgres-only step that does not shape the schema)."""
-    module_dir = os.environ.get("MODULE_DIR") or str(
-        Path(celerp.main.__file__).resolve().parent.parent / "default_modules"
-    )
-    lock = Path(module_dir) / "first_party.lock.json"
+    default_dir = Path(celerp.main.__file__).resolve().parent.parent / "default_modules"
+    module_dir = os.environ.get("MODULE_DIR") or str(default_dir)
+    lock = default_dir / "first_party.lock.json"
     enabled = set(json.loads(lock.read_text(encoding="utf-8")).keys())
 
     from celerp.modules.loader import load_all, register_api_routes

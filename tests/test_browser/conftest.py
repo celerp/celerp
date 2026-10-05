@@ -23,7 +23,6 @@ import pytest
 # DATABASE_URL is provided by the root conftest (Postgres via testcontainers or a
 # preset URL); the browser servers run against that same database.
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("MODULE_DIR", "default_modules,premium_modules")
 _ALL_MODULES = (
     "celerp-accounting,celerp-ai,celerp-connectors,celerp-contacts,celerp-sales-funnel,celerp-dashboard,celerp-docs,celerp-inventory,"
     "celerp-labels,celerp-manufacturing,celerp-reports,celerp-subscriptions,celerp-verticals"
@@ -126,12 +125,9 @@ def ui_server(api_server):
 
     from ui.app import app as ui_app
 
-    # ui.app / celerp.main, imported (by the root conftest) before this file's
-    # module-level setdefault runs, rewrite MODULE_DIR to "" when it is unset at that
-    # point (with_writable_module_dir("") returns ""). The key then exists as "", so
-    # our setdefault above cannot restore it. Re-register the module UI routes here.
-    # Treat an empty MODULE_DIR as unset so the default dirs are used - otherwise
-    # load_all runs against no directories and module-gated UI (e.g. the credit-note
+    # The root conftest imports ui.app / celerp.main with MODULE_DIR set to "" (no
+    # module trees), so neither app loaded any modules. Register the module UI routes
+    # here from the default dirs - otherwise module-gated UI (e.g. the credit-note
     # Receive Returns button, which reads loaded_modules()) never renders.
     # Use absolute paths so load_all resolves correctly regardless of cwd.
     from celerp.modules.loader import load_all, register_ui_routes

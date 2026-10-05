@@ -82,13 +82,14 @@ def _filtered_logger_handle(self, record):
 
 logging.Logger.handle = _filtered_logger_handle
 
-# Module system. An unset MODULE_DIR means the bundled trees; a MODULE_DIR whose
-# first entry is the bundled default_modules/ tree is corrected so imports land in a
-# writable drop-in, never among first-party modules (the dev/bare-run footgun).
+# Module system. An unset MODULE_DIR means the bundled trees and an empty one means
+# none; a MODULE_DIR whose first entry is the bundled default_modules/ tree is
+# corrected so imports land in a writable drop-in, never among first-party modules
+# (the dev/bare-run footgun).
 import os as _os
 from pathlib import Path as _Path
 from celerp.modules.loader import with_writable_module_dir as _with_writable_module_dir
-_os.environ["MODULE_DIR"] = _with_writable_module_dir(_os.environ.get("MODULE_DIR", ""))
+_os.environ["MODULE_DIR"] = _with_writable_module_dir(_os.environ.get("MODULE_DIR"))
 _MODULE_DIR = _os.environ["MODULE_DIR"]
 
 

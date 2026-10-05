@@ -9,6 +9,9 @@ from conftest_support import is_own_test_config, resolve_worker_config
 
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
+# The suite wires the module routes it needs onto the apps itself, so the apps load no
+# module trees of their own (an unset MODULE_DIR would mean the bundled trees).
+os.environ.setdefault("MODULE_DIR", "")
 
 # Point config.toml at a per-worker temp file. Otherwise every xdist worker shares
 # ~/.config/celerp/config.toml, which ensure_instance_id() reads+writes on the

@@ -527,7 +527,7 @@ app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 # Correct a bundled-dir first entry so the UI lists imports from the writable drop-in;
 # an unset MODULE_DIR (a bare dev run) means the bundled trees.
 from celerp.modules.loader import with_writable_module_dir as _with_writable_module_dir
-os.environ["MODULE_DIR"] = _with_writable_module_dir(os.environ.get("MODULE_DIR", ""))
+os.environ["MODULE_DIR"] = _with_writable_module_dir(os.environ.get("MODULE_DIR"))
 _MODULE_DIR = os.environ["MODULE_DIR"]
 
 # Determine enabled modules from env (set by cli.py _config_to_env).

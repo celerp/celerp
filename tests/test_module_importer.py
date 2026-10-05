@@ -530,8 +530,14 @@ def test_with_writable_module_dir_defaults_an_unset_dir_to_the_bundled_trees(mon
     monkeypatch.setattr(loader, "writable_module_dir", lambda: tmp_path / "modules")
     root = loader.BUNDLED_SOURCE_DIR.parent
     bundled = [str(d) for d in loader.bundled_module_dirs(root) if d.exists()]
-    assert loader.with_writable_module_dir("").split(",") == [str(tmp_path / "modules"), *bundled]
+    assert loader.with_writable_module_dir(None).split(",") == [str(tmp_path / "modules"), *bundled]
     assert str(root / "default_modules") in bundled
+
+
+def test_with_writable_module_dir_empty_unchanged():
+    """A module dir set to empty means no module trees - the helper never invents one."""
+    from celerp.modules import loader
+    assert loader.with_writable_module_dir("") == ""
 
 
 # ── Copy-ignore is the shared digest-exclude set (DRY) ────────────────────────
