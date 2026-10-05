@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from test_helpers import make_test_token
 
 pytestmark = pytest.mark.browser
 
@@ -33,37 +32,21 @@ def _shipped_module_rows() -> list[dict]:
     return rows
 
 
-def test_installed_modules_keep_their_action_buttons_in_view_at_laptop_width(playwright):
-    """The installed list is rendered by the real route over the shipped modules and loaded
-    with the real assets, then measured at 1440px wide."""
-    from starlette.testclient import TestClient
-    from ui.app import app as ui_app
-    client = TestClient(ui_app, base_url="http://ui")
-    token = {"celerp_token": make_test_token(role="admin")}
-
-    def serve(route):
-        r = client.get(route.request.url.removeprefix("http://ui"), cookies=token)
-        route.fulfill(status=r.status_code, body=r.content,
-                      headers={"content-type": r.headers.get("content-type", "text/html")})
-
-    browser = playwright.chromium.launch()
-    try:
-        with patch("ui.api_client.get_modules", new=AsyncMock(return_value=_shipped_module_rows())), \
-                patch("ui.api_client.installation_owner", new=AsyncMock(return_value=True), create=True), \
-                patch("ui.routes.modules_page._modules_dir_display", return_value="/data/modules"):
-            page = browser.new_page(viewport={"width": 1440, "height": 900})
-            page.route("http://ui/**", serve)
-            page.goto("http://ui/modules", wait_until="load")
-            page.wait_for_selector("#local-modules-panel table tbody td:last-child button", timeout=10000)
-            m = page.evaluate("""() => {
-                const t = document.querySelector('#local-modules-panel table');
-                const edge = Math.min(innerWidth, t.parentElement.getBoundingClientRect().right);
-                const btns = [...t.querySelectorAll('tbody td:last-child button')];
-                return {buttons: btns.length, table_w: t.scrollWidth, box_w: t.parentElement.clientWidth,
-                        hidden: btns.filter(b => b.getBoundingClientRect().right > edge + 1).length};
-            }""")
-    finally:
-        browser.close()
+def test_installed_modules_keep_their_action_buttons_in_view_at_laptop_width(page, ui_server):
+    """The UI server runs in this process, so the installed list it renders is the shipped
+    modules (the harness API scans no module folder); measured at 1440px wide."""
+    with patch("ui.api_client.get_modules", new=AsyncMock(return_value=_shipped_module_rows())), \
+            patch("ui.api_client.installation_owner", new=AsyncMock(return_value=True), create=True):
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.goto(f"{ui_server}/modules", wait_until="domcontentloaded")
+        page.wait_for_selector("#local-modules-panel table tbody td:last-child button", timeout=10000)
+        m = page.evaluate("""() => {
+            const t = document.querySelector('#local-modules-panel table');
+            const edge = Math.min(innerWidth, t.parentElement.getBoundingClientRect().right);
+            const btns = [...t.querySelectorAll('tbody td:last-child button')];
+            return {buttons: btns.length, table_w: t.scrollWidth, box_w: t.parentElement.clientWidth,
+                    hidden: btns.filter(b => b.getBoundingClientRect().right > edge + 1).length};
+        }""")
     assert m["buttons"] > 0, m
     assert m["hidden"] == 0, f"action buttons pushed past the table's visible edge: {m}"
     assert m["table_w"] <= m["box_w"] + 1, f"the table scrolls sideways at 1440px: {m}"
