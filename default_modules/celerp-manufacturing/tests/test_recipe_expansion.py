@@ -94,6 +94,15 @@ def test_explode_demand_cycle_safe() -> None:
         explode_demand([("A", 1)], g.get)
 
 
+def test_explode_demand_refusal_names_the_product_by_its_sku() -> None:
+    """The pick list says which product's recipe cannot be used, as the build does."""
+    g = {"item:ring": {**_item("RING", [{"item_id": "item:gold", "quantity": 0}]), "sku": "RING-9"},
+         "item:gold": _item("GOLD")}
+    with pytest.raises(RecipeError) as exc:
+        explode_demand([("item:ring", 1)], g.get)
+    assert str(exc.value) == "RING-9: Component item:gold quantity must be greater than zero"
+
+
 # --- helpers ----------------------------------------------------------------
 
 def test_is_manufacturable() -> None:

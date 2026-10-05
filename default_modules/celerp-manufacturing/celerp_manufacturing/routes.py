@@ -44,7 +44,7 @@ from .costing import RecipeError, labor_hours, output_quantity, roll_up_cost, wh
 # Default hours-per-day for converting daily labor lines into the est-hours column.
 # Set per work center; the company's default center supplies the value.
 DEFAULT_HOURS_PER_DAY = 8.0
-from .expansion import expand_recipe, explode_demand, is_manufacturable, mfg_idem_key, output_line
+from .expansion import expand_recipe, explode_demand, for_product, is_manufacturable, mfg_idem_key, output_line
 from . import movements
 from .labor import apply_labor_providers
 from .search import _INCOMPLETE_STATUSES, search_orders
@@ -238,7 +238,7 @@ def _recipe_inputs(item_state: dict, qty: float) -> list[dict]:
     try:
         return expand_recipe(item_state, qty)
     except RecipeError as exc:
-        raise HTTPException(status_code=422, detail=f"{item_state.get('sku') or 'This product'}: {exc}")
+        raise HTTPException(status_code=422, detail=str(for_product(item_state, exc)))
 
 
 async def _emit_order_created(session: AsyncSession, company_id, order_id: str, data: dict, *, quantity: float,

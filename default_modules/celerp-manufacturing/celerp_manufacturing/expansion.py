@@ -18,6 +18,11 @@ from .costing import MAX_RECIPE_DEPTH, RecipeError, component_quantity, output_q
 ItemLookup = Callable[[str], dict | None]
 
 
+def for_product(item_state: dict | None, exc: RecipeError) -> RecipeError:
+    """A recipe refusal naming the product whose recipe it is, as the user knows it (its SKU)."""
+    return RecipeError(f"{(item_state or {}).get('sku') or 'This product'}: {exc}")
+
+
 def is_manufacturable(item_state: dict | None) -> bool:
     recipe = (item_state or {}).get("recipe") or {}
     return bool(recipe.get("components"))
@@ -98,8 +103,12 @@ def explode_demand(lines: list[tuple[str, float]], lookup: ItemLookup) -> dict:
             _walk(cid, component_quantity(c) * factor, path | {cid}, depth + 1)
 
     for item_id, qty in lines:
-        if is_manufacturable(lookup(item_id)):
-            _walk(item_id, float(qty), frozenset({item_id}), 0)
+        state = lookup(item_id)
+        if is_manufacturable(state):
+            try:
+                _walk(item_id, float(qty), frozenset({item_id}), 0)
+            except RecipeError as exc:
+                raise for_product(state, exc) from None
 
     return {
         "sub_assemblies": {k: round(v, 6) for k, v in sub.items()},
