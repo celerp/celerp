@@ -573,3 +573,50 @@ async def test_restore_refused_while_changes_are_paused_reads_as_a_sentence(ui, 
     page = _page(r)
     assert UNKNOWN.refusal()["message"] in page
     assert "message_key" not in page
+
+
+@pytest.mark.parametrize("method, path, data", [
+    ("post", "/settings/factory-reset", None),
+    ("delete", "/settings/company/deactivate", None),
+    ("post", "/settings/labels", {"name": "Shelf tag"}),
+    ("put", "/settings/labels/tmpl-1", {"name": "Shelf tag"}),
+    ("delete", "/settings/labels/tmpl-1", None),
+])
+async def test_a_settings_action_refused_while_changes_are_paused_reads_in_the_users_language(
+        ui, real_engine, monkeypatch, method, path, data):
+    """Factory reset, deactivating the company and creating, saving or deleting a label
+    template, refused because the last start held the records back, show the refusal's
+    sentence in the reader's language, never the keyed refusal's raw fields, an empty
+    flash, or a success."""
+    import celerp.main
+    from celerp.held_back import UNKNOWN
+    from test_helpers import in_language
+    monkeypatch.setattr(celerp.main.app.state, "data_current", False, raising=False)
+    monkeypatch.setattr(celerp.main.app.state, "held_back", UNKNOWN, raising=False)
+    _, _, tok = await _install_owner(real_engine)
+    ui.cookies.set("celerp_token", tok)
+    ui.cookies.set("celerp_lang", "de")
+    if path.startswith("/settings/labels"):
+        # The labels pages call the API with their own client: route it to the real API too.
+        import types
+
+        import celerp_labels.ui_routes as labels_ui
+        transport = httpx.ASGITransport(app=celerp.main.app)
+        monkeypatch.setattr(labels_ui, "httpx", types.SimpleNamespace(
+            AsyncClient=lambda **kw: httpx.AsyncClient(transport=transport, **kw)))
+        # The module's own phrases, as the module loader registers them at start.
+        from pathlib import Path
+
+        from ui.i18n import register_catalog
+        for lang in ("de", "en"):
+            register_catalog(lang, json.loads(
+                (Path(labels_ui.__file__).parent / "locales" / f"{lang}.json").read_text(encoding="utf-8")))
+
+    kw = {"data": data} if data else {}
+    r = await getattr(ui, method)(path, headers={"HX-Request": "true"}, **kw)
+    toast = json.loads(r.headers.get("HX-Trigger") or "{}").get("celerpToast", {})
+    page = _page(r) + toast.get("message", "")
+    german = in_language("de", UNKNOWN.refusal())
+    assert german != UNKNOWN.refusal()["message"]
+    assert german in page
+    assert "message_key" not in page and "message-key" not in page and "held_back." not in page

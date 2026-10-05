@@ -19,14 +19,15 @@ from __future__ import annotations
 
 import httpx
 import logging
+from ui.api_client import error_text
 from ui.i18n import t, get_lang
 
 try:
     from starlette.requests import Request
-    from starlette.responses import RedirectResponse
+    from starlette.responses import HTMLResponse, RedirectResponse
 except ImportError:  # pragma: no cover
     Request = None  # type: ignore[assignment,misc]
-    RedirectResponse = None  # type: ignore[assignment]
+    HTMLResponse = RedirectResponse = None  # type: ignore[assignment,misc]
 
 log = logging.getLogger(__name__)
 
@@ -1401,7 +1402,7 @@ def setup_ui_routes(app) -> None:
         tpl = next((x for x in templates if x["id"] == tmpl_id), None)
         if not tpl:
             return await base_shell(
-                _label_settings_root(templates, flash="Template not found.", flash_kind="error"),
+                _label_settings_root(templates, flash=t("labels.template_not_found"), flash_kind="error"),
                 title="Label Templates - Celerp",
                 nav_active="labels",
                 request=request,
@@ -1423,7 +1424,7 @@ def setup_ui_routes(app) -> None:
         name = (form.get("name") or "").strip()
         if not name:
             templates = await _fetch_templates(request)
-            return _label_settings_root(templates, flash="Template name required.", flash_kind="error")
+            return _label_settings_root(templates, flash=t("labels.name_required"), flash_kind="error")
         try:
             async with httpx.AsyncClient(timeout=5) as c:
                 r = await c.post(
@@ -1438,29 +1439,35 @@ def setup_ui_routes(app) -> None:
                     return _label_settings_root(
                         templates, active_id=new_t["id"],
                         editor=_editor_panel(new_t, global_extra, category_attrs),
-                        flash=f"Created '{name}'.",
+                        flash=t("labels.created", name=name),
                     )
-                error = r.json().get("detail", "Unknown error")
+                error = error_text(r, t("shell.unknown_error"))
         except Exception as exc:
             error = str(exc)
         templates = await _fetch_templates(request)
-        return _label_settings_root(templates, flash=f"Could not create: {error}", flash_kind="error")
+        return _label_settings_root(templates, flash=t("labels.could_not_create", error=error), flash_kind="error")
 
     @app.delete("/settings/labels/{tmpl_id}")
     async def label_settings_delete(request: Request, tmpl_id: str):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        error = None
         try:
             async with httpx.AsyncClient(timeout=5) as c:
-                await c.delete(
+                r = await c.delete(
                     f"{_api_base(request)}/api/labels/templates/{tmpl_id}",
                     headers={"Authorization": f"Bearer {token}"},
                 )
+                if r.is_error:
+                    error = error_text(r, t("shell.unknown_error"))
         except Exception as exc:
             log.warning("Delete template %s: %s", tmpl_id, exc)
+            error = str(exc)
         templates = await _fetch_templates(request)
-        return _label_settings_root(templates, flash="Template deleted.")
+        if error is not None:
+            return _label_settings_root(templates, flash=t("labels.could_not_delete", error=error), flash_kind="error")
+        return _label_settings_root(templates, flash=t("labels.template_deleted"))
 
     @app.put("/settings/labels/{tmpl_id}")
     async def label_settings_save(request: Request, tmpl_id: str):
@@ -1493,13 +1500,19 @@ def setup_ui_routes(app) -> None:
                     saved = r.json()
                     global_extra, category_attrs = await _fetch_extra_fields(request)
                     return _editor_panel(saved, global_extra, category_attrs)
+                error = error_text(r, t("shell.unknown_error"))
         except Exception as exc:
             log.warning("Save template %s: %s", tmpl_id, exc)
+            error = str(exc)
 
-        return _editor_panel({
+        # Nothing was saved: the editor keeps what was typed and says why.
+        from fasthtml.common import to_xml
+        from ui.components.shell import toast_header
+        panel = _editor_panel({
             "id": tmpl_id, "name": name, "format": fmt,
             "fields": fields, "width_mm": width_mm, "height_mm": height_mm,
         })
+        return HTMLResponse(to_xml(panel), headers=toast_header(t("labels.could_not_save", error=error), "error"))
 
     @app.get("/labels/print/{entity_id}")
     async def labels_print_single(request: Request, entity_id: str):

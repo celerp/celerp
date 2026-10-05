@@ -300,6 +300,38 @@ async def _bulk_api_client(token: str, timeout: float | httpx.Timeout = 10.0):
             yield c
 
 
+def _api_error(status: int, body, text: str) -> APIError:
+    """The APIError an error response raises: ``detail`` is the plain string the sites
+    render, in the user's language."""
+    detail = body.get("detail", text) if isinstance(body, dict) else text
+    data = None
+    if isinstance(detail, dict) and "message" in detail:
+        # Structured detail (message + extras): detail becomes the plain string
+        # the sites render, in the user's language (refusal_text); the full
+        # payload rides on APIError.data.
+        # Dict details WITHOUT a message key (e.g. {"errors": [...]} from
+        # fulfill/revert/reserve) pass through unchanged - callers json-dump them.
+        data = detail
+        detail = refusal_text(detail) or text
+    elif isinstance(body, dict) and set(body) - {"detail"}:
+        # An error body carrying structured fields beyond `detail` (a top-level
+        # machine "code" like scan_run_conflict, with a plain-string detail):
+        # keep detail the string the sites render, carry the whole body on
+        # APIError.data so callers can branch on the code.
+        data = body
+    return APIError(status, detail, data=data)
+
+
+def error_text(r: httpx.Response, fallback: str) -> str:
+    """An error response's ``detail`` as the user reads it, for pages that call the API
+    with their own client: ``fallback`` when the body carries none."""
+    try:
+        body = r.json()
+    except ValueError:
+        return fallback
+    return refusal_text(body.get("detail") if isinstance(body, dict) else None) or fallback
+
+
 def _raise(r: httpx.Response) -> httpx.Response:
     if r.is_redirect:
         raise APIError(r.status_code, f"Unexpected redirect to {r.headers.get('location', '?')}")
@@ -308,22 +340,8 @@ def _raise(r: httpx.Response) -> httpx.Response:
             body = r.json()
         except Exception:
             body = None
-        detail = body.get("detail", r.text) if isinstance(body, dict) else r.text
-        data = None
-        if isinstance(detail, dict) and "message" in detail:
-            # Structured detail (message + extras): detail becomes the plain string
-            # the sites render, in the user's language (refusal_text); the full
-            # payload rides on APIError.data.
-            # Dict details WITHOUT a message key (e.g. {"errors": [...]} from
-            # fulfill/revert/reserve) pass through unchanged - callers json-dump them.
-            data = detail
-            detail = refusal_text(detail) or r.text
-        elif isinstance(body, dict) and set(body) - {"detail"}:
-            # An error body carrying structured fields beyond `detail` (a top-level
-            # machine "code" like scan_run_conflict, with a plain-string detail):
-            # keep detail the string the sites render, carry the whole body on
-            # APIError.data so callers can branch on the code.
-            data = body
+        err = _api_error(r.status_code, body, r.text)
+        detail = err.detail
         if r.status_code == 401:
             # 401 is expected during fresh init / token expiry; not a warning
             logger.debug("API 401: %s", detail)
@@ -333,7 +351,7 @@ def _raise(r: httpx.Response) -> httpx.Response:
             logger.debug("API 409: %s", detail)
         else:
             logger.warning("API %s: %s", r.status_code, detail)
-        raise APIError(r.status_code, detail, data=data)
+        raise err
     return r
 
 
@@ -447,13 +465,12 @@ async def login_force(email: str, password: str) -> tuple[str, str]:
         return data["access_token"], data["refresh_token"]
 
 
-async def change_password(token: str, current_password: str, new_password: str) -> str:
-    """Change password for the authenticated user. Returns detail message."""
+async def change_password(token: str, current_password: str, new_password: str) -> None:
+    """Change password for the authenticated user."""
     async with _api_client(token) as c:
-        r = _raise(await c.post("/auth/change-password", json={
+        _raise(await c.post("/auth/change-password", json={
             "current_password": current_password, "new_password": new_password,
         }))
-        return r.json()["detail"]
 
 
 async def setup_code_required() -> bool:
@@ -2143,12 +2160,13 @@ async def _stream_get(token: str, path: str, *, params: dict | None = None,
         body = await resp.aread()
         await resp.aclose()
         await client.aclose()
+        text = body.decode("utf-8", "replace")
         try:
             import json as _json
-            detail = _json.loads(body).get("detail", body.decode("utf-8", "replace"))
-        except Exception:
-            detail = body.decode("utf-8", "replace")
-        raise APIError(resp.status_code, detail)
+            parsed = _json.loads(body)
+        except ValueError:
+            parsed = None
+        raise _api_error(resp.status_code, parsed, text)
     headers = {
         k: resp.headers[k]
         for k in ("content-length", "content-disposition", "content-type")

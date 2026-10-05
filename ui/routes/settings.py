@@ -1645,7 +1645,7 @@ def setup_routes(app):
                 Td(r.get("sku", "")),
                 Td(r.get("file", "")),
                 Td(Span(status, cls=f"badge badge--{cls}") if cls else Span(status)),
-                Td(r.get("tag", "") or r.get("detail", "")),
+                Td(r.get("tag", "") or refusal_text(r.get("detail"))),
                 Td(hero_icon, style="text-align:center;"),
                 data_status=status or "unknown",
             )
@@ -2369,8 +2369,7 @@ def setup_routes(app):
             async with api._local_client(token, timeout=30.0, follow_redirects=False) as c:
                 r = await c.post("/system/factory-reset")
             if r.status_code != 200:
-                detail = r.json().get("detail", t("settings.reset_failed")) if r.headers.get("content-type", "").startswith("application/json") else t("settings.reset_failed")
-                return Div(detail, cls="flash flash--error")
+                return Div(api.error_text(r, t("settings.reset_failed")), cls="flash flash--error")
         except Exception as exc:
             return Div(f"{t('shell.error_prefix')} {exc}", cls="flash flash--error")
         from starlette.responses import Response as _Resp
@@ -2392,7 +2391,7 @@ def setup_routes(app):
             async with api._local_client(token, timeout=5.0, follow_redirects=False) as c:
                 r = await c.delete("/companies/me")
             if r.status_code != 200:
-                return Div(r.json().get("detail", t("settings.deactivation_failed")), cls="flash flash--error")
+                return Div(api.error_text(r, t("settings.deactivation_failed")), cls="flash flash--error")
         except Exception as exc:
             return Div(f"{t('shell.error_prefix')} {exc}", cls="flash flash--error")
         from starlette.responses import RedirectResponse
@@ -2599,9 +2598,7 @@ def setup_routes(app):
         from fasthtml.common import Div, to_xml
         from celerp.services.backup_import import SESSION_ENDED_HEADER
         if r.status_code >= 400:
-            detail = r.text[:200]
-            if r.headers.get("content-type", "").startswith("application/json"):
-                detail = refusal_text(r.json().get("detail")) or detail
+            detail = api.error_text(r, r.text[:200])
             return Response(
                 content=to_xml(Div(detail, cls="flash flash--error", id="backup-flash")),
                 media_type="text/html",
