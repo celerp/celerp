@@ -2082,6 +2082,18 @@ async def _finalize_doc_impl(
         data=finalize_data,
         actor_id=_user_id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
     )
+    # Modules react to the finalize before its entry is booked, so stock a module makes
+    # for the document (manufacturing's make-on-finalize) is what the invoice is costed
+    # and later fulfilled from.
+    await fire_lifecycle(
+        "doc_finalize_hook",
+        session=session,
+        entity_id=entity_id,
+        doc_state=_initial_doc_state,
+        company_id=company_id,
+        user_id=_user_id,
+        doc_type=doc_type,
+    )
     # Auto-JE on finalize (invoices, direct bills, or convert to bill (POs))
     if doc_type == "invoice":
         # span_lots: the interactive finalize recognizes a line exceeding its bound
@@ -2111,16 +2123,6 @@ async def _finalize_doc_impl(
         # Pass revert_count so cycle-aware idempotency keys are used on re-finalize.
         _revert_count = int(_initial_doc_state.get("revert_count", 0))
         await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, revert_count=_revert_count)
-    # Fire doc_finalize_hook for modules (e.g. warehousing) to react — before commit.
-    await fire_lifecycle(
-        "doc_finalize_hook",
-        session=session,
-        entity_id=entity_id,
-        doc_state=_initial_doc_state,
-        company_id=company_id,
-        user_id=_user_id,
-        doc_type=doc_type,
-    )
     if commit:
         await session.commit()
     return {"event_id": entry.id}
@@ -6564,10 +6566,12 @@ async def _plan_span_draws(
     rows = list((locked_lots or await _lock_item_sku_lots(
         session, company_id, {primary_proj.entity_id}
     )).values())
+    # The bound lot stays a candidate when it is empty (a product record whose stock
+    # was made into lots of its own), as finalize's costing treats it (_span_line_lots).
     lots = [r for r in rows
             if str(r.state.get("sku") or "").strip() == sku
             and demand_claim(r.state, owner_entity_id) is not None
-            and float(r.state.get("quantity") or 0) > 1e-9
+            and (float(r.state.get("quantity") or 0) > 1e-9 or r.entity_id == primary_proj.entity_id)
             and r.entity_id not in exclude]
     by_id = {l.entity_id: l for l in lots}
     if primary_proj.entity_id not in by_id:
@@ -6888,14 +6892,15 @@ async def _fulfill_lines_impl(
 
     # Optimistically compute doc fulfillment_status. Service lines count as fulfilled (they are
     # rendered, not drawn from stock) so a service-only or mixed doc can reach "fulfilled".
+    # A line drawn wholly from other lots of its SKU (its own record held none) is fulfilled too.
     fulfilled_eids = set(to_fulfill) | service_eids
     line_items = state.get("line_items", [])
     all_statuses: list[str] = []
-    for li in line_items:
+    for _idx, li in enumerate(line_items):
         li_eid = li.get("entity_id") or li.get("item_id") or ""
         if not li_eid:
             continue
-        if li_eid in fulfilled_eids:
+        if li_eid in fulfilled_eids or _idx in fulfilled_lines:
             all_statuses.append("memo_out")
         else:
             li_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
@@ -6918,8 +6923,9 @@ async def _fulfill_lines_impl(
         doc_event_type = "doc.partially_fulfilled"
         # Lines on the doc not in this fulfill batch are still pending.
         unfulfilled_brief = _line_item_brief(
-            line_items, [li.get("entity_id") or li.get("item_id") for li in line_items
-                         if (li.get("entity_id") or li.get("item_id")) and (li.get("entity_id") or li.get("item_id")) not in fulfilled_eids])
+            line_items, [li.get("entity_id") or li.get("item_id") for _idx, li in enumerate(line_items)
+                         if (li.get("entity_id") or li.get("item_id")) and (li.get("entity_id") or li.get("item_id")) not in fulfilled_eids
+                         and _idx not in fulfilled_lines])
         doc_event_data = {
             "fulfilled_items": fulfilled_brief,
             "unfulfilled_items": unfulfilled_brief,
