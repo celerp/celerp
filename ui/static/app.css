@@ -251,6 +251,19 @@ a:hover { text-decoration: underline; }
 .page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .page-title { font-size: 18px; font-weight: 600; flex: 1; }
 .page-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* The search caption floats above its box; when the header wraps, the row gap leaves
+   it room so it never sits on the title. */
+.page-header:has(.search-scope) { row-gap: 20px; }
+/* Narrow screens: slimmer side margins, and the header stacks. Title, then the search
+   caption directly over a full-width search box, then the action buttons. */
+@media (max-width: 768px) {
+  .main-content { padding: 24px 16px; }
+  .page-header:has(.search-scope) { row-gap: 12px; }
+  .page-header .page-title, .page-header .page-actions, .page-actions .search-scope { flex-basis: 100%; }
+  .search-scope .search-scope-label { position: static; display: block; text-align: left; margin-bottom: 2px; }
+  .search-scope .page-search-wrap { display: block; }
+  .search-scope .search-input { width: 100%; }
+}
 
 /* ─── Buttons ─────────────────────────────────────────────────────────── */
 .btn {
@@ -532,6 +545,7 @@ a:hover { text-decoration: underline; }
 .search-input {
   background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text);
   border-radius: var(--radius); padding: 6px 10px; font-size: 12px; width: 220px;
+  text-overflow: ellipsis;
 }
 .search-input:focus { outline: none; border-color: var(--c-accent); }
 .table-toolbar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
@@ -964,7 +978,8 @@ a:hover { text-decoration: underline; }
 .row-menu-item--danger:hover { background: rgba(239,68,68,0.1); }
 
 /* ─── Category tabs (inventory) ───────────────────────────────────────── */
-.category-tabs { display: flex; gap: 0; margin-bottom: 12px; border: 1px solid var(--c-border); border-radius: var(--radius); overflow: hidden; }
+/* Scrolls sideways when the tabs do not fit (a phone), like .settings-tabs. */
+.category-tabs { display: flex; gap: 0; margin-bottom: 12px; border: 1px solid var(--c-border); border-radius: var(--radius); overflow-x: auto; }
 .category-tab { flex: 1; text-align: center; padding: 10px 16px; font-size: 13px; font-weight: 500; color: var(--c-text2); background: var(--c-bg2); border-right: 1px solid var(--c-border); cursor: pointer; text-decoration: none; white-space: nowrap; transition: background 0.1s, color 0.1s; }
 .category-tab:last-child { border-right: none; }
 .category-tab:hover { background: var(--c-bg3); color: var(--c-text); text-decoration: none; }
