@@ -116,3 +116,45 @@ def test_every_demo_set_fits_on_one_page_of_the_list():
     from ui.routes.inventory import _DEFAULT_PER_PAGE
     sizes = {"generic": len(_GENERIC_ITEMS), **{k: len(v) for k, v in _VERTICAL_ITEMS.items()}}
     assert max(sizes.values()) <= _DEFAULT_PER_PAGE, sizes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rows", [_EMPTY, {"items": [{"id": "item:a", "sku": "DEMO-AGR-002",
+                                                      "name": "[DEMO] Tomatoes", "status": "available"}],
+                                           "total": 1}])
+async def test_demo_list_says_it_is_filtered_and_offers_the_way_back(ui, rows):
+    """Red statement: the demo list carried no sign of its filter once the hint was
+    closed, and emptied it read "No items in inventory." with an import button while
+    the owner's own items were still there."""
+    import json
+    from pathlib import Path
+    en = json.loads((Path(__file__).resolve().parents[1] / "ui" / "locales" / "en.json").read_text())
+    static = AsyncMock(return_value=([], {}, {}, [], [], {}))
+    with patch.multiple("ui.api_client", list_items=AsyncMock(return_value=rows),
+                        get_valuation=AsyncMock(return_value={"item_count": 0, "category_counts": {}}),
+                        get_company=AsyncMock(return_value={}),
+                        list_import_batches=AsyncMock(return_value={"batches": []})), \
+         patch("ui.routes.inventory._load_inventory_static_metadata", new=static):
+        r = await ui.get("/inventory", params={"filter": DEMO_ITEMS_FILTER}, cookies=authed_cookies(role="owner"))
+    assert r.status_code == 200
+    page = html.unescape(r.text)
+    banner = re.search(r'<div class="holdings-scope-banner">.*?</a>', page, re.S)
+    assert banner, "no scope banner"
+    assert en["inventory.demo_scope_label"] in banner.group(0)
+    assert 'href="/inventory"' in banner.group(0) and en["table.clear_filter_btn"] in banner.group(0)
+    if not rows["items"]:
+        assert en["inventory.no_demo_items"] in page
+        assert en["msg.no_items_inventory"] not in page
+        assert "/inventory/import" not in re.search(r'id="data-table".*', page, re.S).group(0)[:600]
+
+
+def test_demo_list_copy_is_in_every_language():
+    import json
+    from pathlib import Path
+    locales = Path(__file__).resolve().parents[1] / "ui" / "locales"
+    en = json.loads((locales / "en.json").read_text())
+    for path in sorted(locales.glob("*.json")):
+        d = json.loads(path.read_text(encoding="utf-8"))
+        for key in ("inventory.demo_scope_label", "inventory.demo_scope_basis", "inventory.no_demo_items"):
+            assert d.get(key), (path.name, key)
+            assert path.name == "en.json" or d[key] != en[key], (path.name, key)
