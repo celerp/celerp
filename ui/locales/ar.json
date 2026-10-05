@@ -3664,5 +3664,17 @@
   "posting.older_stock.fix_holder": "الحساب {holder} يحملها: اختر {holder}.",
   "posting.older_stock.fix_move": "انقل {amount} من {source} إلى {code} بقيد يومية، ثم اختر {code} مرة أخرى.",
   "posting.older_stock.fix_reconcile": "لا يحملها أي حساب مخزون، لذا يجب تسوية الدفاتر: سجّل قيد يومية مدين {code} {amount} / دائن {equity} {amount}، ثم اختر {code} مرة أخرى.",
-  "docs.receive_draft_bill": "هذه الفاتورة لا تزال مسودة، لذا لم تسجل هذه البضائع. اعتمد الفاتورة أولًا، ثم استلمها."
+  "docs.receive_draft_bill": "هذه الفاتورة لا تزال مسودة، لذا لم تسجل هذه البضائع. اعتمد الفاتورة أولًا، ثم استلمها.",
+  "posting.problems": "{problems}",
+  "posting.added_needs_code": "يحتاج كل حساب مضاف إلى رمز.",
+  "posting.added_needs_name": "يحتاج كل حساب مضاف إلى اسم.",
+  "posting.added_needs_type": "يحتاج كل حساب مضاف إلى نوع.",
+  "posting.added_not_a_list": "يجب أن تكون الحسابات المضافة قائمة حسابات.",
+  "posting.roles_not_a_map": "يجب أن تربط حسابات الترحيل كل دور برمز حساب.",
+  "posting.unknown_role_named": "دور ترحيل غير معروف: {name}.",
+  "posting.choose_account_for": "اختر رمز حساب لـ {role}.",
+  "posting.two_accounts_chosen": "لـ {role} حسابان مختاران.",
+  "posting.code_in_use": "رمز الحساب {code} مستخدم بالفعل. اختر ذلك الحساب أو أضف حسابًا برمز آخر.",
+  "posting.already_set": "{role} مضبوط بالفعل على الحساب {code}؛ غيّره من الإعدادات بعد الانتهاء.",
+  "posting.choose_accounts_for": "اختر حساب الترحيل لـ: {roles}."
 }

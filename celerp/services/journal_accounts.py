@@ -28,7 +28,7 @@ from typing import Awaitable, Callable
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import ROLE_LABELS, SCHEMA_KEY, AccountRole, is_role
+from celerp.accounting_roles import ROLE_LABELS, SCHEMA_KEY, AccountRole, is_role, unknown_role
 from celerp.models.company import Company
 from celerp.services.account_roles import (
     PostingRoleError,
@@ -142,7 +142,7 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict) -
             continue
         for role in roles:
             if not is_role(role):
-                raise HTTPException(status_code=422, detail=f"Unknown posting role: {role}.")
+                raise HTTPException(status_code=422, detail=unknown_role(role))
             if current.get(role) == code:
                 problems = target_problems([role], current, accounts)
                 if problems:

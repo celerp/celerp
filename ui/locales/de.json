@@ -3664,5 +3664,17 @@
   "posting.older_stock.fix_holder": "Konto {holder} hält ihn: Wählen Sie {holder}.",
   "posting.older_stock.fix_move": "Buchen Sie {amount} per Journalbuchung von {source} auf {code} um und wählen Sie dann erneut {code}.",
   "posting.older_stock.fix_reconcile": "Kein Lagerkonto hält ihn, daher müssen die Bücher abgestimmt werden: Buchen Sie eine Journalbuchung Soll {code} {amount} / Haben {equity} {amount} und wählen Sie dann erneut {code}.",
-  "docs.receive_draft_bill": "Diese Rechnung ist noch ein Entwurf und hat diese Waren nicht gebucht. Schließen Sie die Rechnung zuerst ab und nehmen Sie die Waren dann an."
+  "docs.receive_draft_bill": "Diese Rechnung ist noch ein Entwurf und hat diese Waren nicht gebucht. Schließen Sie die Rechnung zuerst ab und nehmen Sie die Waren dann an.",
+  "posting.problems": "{problems}",
+  "posting.added_needs_code": "Jedes hinzugefügte Konto braucht eine Kontonummer.",
+  "posting.added_needs_name": "Jedes hinzugefügte Konto braucht einen Namen.",
+  "posting.added_needs_type": "Jedes hinzugefügte Konto braucht einen Typ.",
+  "posting.added_not_a_list": "Hinzugefügte Konten müssen eine Liste von Konten sein.",
+  "posting.roles_not_a_map": "Buchungskonten müssen jeder Verwendung eine Kontonummer zuordnen.",
+  "posting.unknown_role_named": "Unbekanntes Buchungskonto: {name}.",
+  "posting.choose_account_for": "Wählen Sie eine Kontonummer für {role}.",
+  "posting.two_accounts_chosen": "Für {role} sind zwei Konten gewählt.",
+  "posting.code_in_use": "Die Kontonummer {code} ist bereits vergeben. Wählen Sie dieses Konto oder fügen Sie eines mit einer anderen Nummer hinzu.",
+  "posting.already_set": "{role} ist bereits auf Konto {code} gesetzt; ändern Sie es nach dem Abschluss in den Einstellungen.",
+  "posting.choose_accounts_for": "Wählen Sie das Buchungskonto für: {roles}."
 }

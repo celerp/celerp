@@ -108,7 +108,7 @@ async def test_a_role_set_between_preview_and_confirm_blocks_then_refuses_the_st
 
     held, out = await _second(committed_engine, factory, set_sales_revenue_to_410, confirm_the_stale_preview)
     assert isinstance(out, migrations.MigrationError) and out.status_code == 409
-    assert "Sales revenue is already set to account 410" in out.detail
+    assert "Sales revenue is already set to account 410" in out.detail["message"]
 
     async with factory() as s:
         company = await s.get(Company, cid)
@@ -141,7 +141,7 @@ async def test_an_account_added_between_preview_and_confirm_is_refused_not_overw
         with pytest.raises(migrations.MigrationError) as exc:
             await _finalize(s, run_id, _CHOICES)
     assert exc.value.status_code == 409
-    assert "Account code 6950 is already in use" in exc.value.detail
+    assert "Account code 6950 is already in use" in exc.value.detail["message"]
 
     async with factory() as s:
         company = await s.get(Company, cid)

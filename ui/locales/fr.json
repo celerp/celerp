@@ -3664,5 +3664,17 @@
   "posting.older_stock.fix_holder": "Le compte {holder} la porte : choisissez {holder}.",
   "posting.older_stock.fix_move": "Transférez {amount} de {source} vers {code} par une écriture de journal, puis choisissez de nouveau {code}.",
   "posting.older_stock.fix_reconcile": "Aucun compte de stock ne la porte, les comptes doivent donc être rapprochés : passez une écriture de journal Débit {code} {amount} / Crédit {equity} {amount}, puis choisissez de nouveau {code}.",
-  "docs.receive_draft_bill": "Cette facture est encore un brouillon, elle n'a donc pas comptabilisé ces marchandises. Finalisez d'abord la facture, puis réceptionnez-les."
+  "docs.receive_draft_bill": "Cette facture est encore un brouillon, elle n'a donc pas comptabilisé ces marchandises. Finalisez d'abord la facture, puis réceptionnez-les.",
+  "posting.problems": "{problems}",
+  "posting.added_needs_code": "Chaque compte ajouté doit avoir un numéro.",
+  "posting.added_needs_name": "Chaque compte ajouté doit avoir un nom.",
+  "posting.added_needs_type": "Chaque compte ajouté doit avoir un type.",
+  "posting.added_not_a_list": "Les comptes ajoutés doivent être une liste de comptes.",
+  "posting.roles_not_a_map": "Les comptes d'imputation doivent associer chaque rôle à un numéro de compte.",
+  "posting.unknown_role_named": "Rôle d'imputation inconnu : {name}.",
+  "posting.choose_account_for": "Choisissez un numéro de compte pour {role}.",
+  "posting.two_accounts_chosen": "{role} a deux comptes choisis.",
+  "posting.code_in_use": "Le numéro de compte {code} est déjà utilisé. Choisissez ce compte ou ajoutez-en un avec un autre numéro.",
+  "posting.already_set": "{role} est déjà affecté au compte {code} ; modifiez-le dans les Paramètres une fois terminé.",
+  "posting.choose_accounts_for": "Choisissez le compte d'imputation pour : {roles}."
 }

@@ -3664,5 +3664,17 @@
   "posting.older_stock.fix_holder": "La cuenta {holder} lo tiene: elija {holder}.",
   "posting.older_stock.fix_move": "Traspase {amount} de {source} a {code} con un asiento de diario y vuelva a elegir {code}.",
   "posting.older_stock.fix_reconcile": "Ninguna cuenta de inventario lo tiene, así que hay que conciliar los libros: registre un asiento de diario Debe {code} {amount} / Haber {equity} {amount} y vuelva a elegir {code}.",
-  "docs.receive_draft_bill": "Esta factura aún es un borrador, así que no ha contabilizado estos bienes. Finalice primero la factura y luego recíbalos."
+  "docs.receive_draft_bill": "Esta factura aún es un borrador, así que no ha contabilizado estos bienes. Finalice primero la factura y luego recíbalos.",
+  "posting.problems": "{problems}",
+  "posting.added_needs_code": "Cada cuenta añadida necesita un código.",
+  "posting.added_needs_name": "Cada cuenta añadida necesita un nombre.",
+  "posting.added_needs_type": "Cada cuenta añadida necesita un tipo.",
+  "posting.added_not_a_list": "Las cuentas añadidas deben ser una lista de cuentas.",
+  "posting.roles_not_a_map": "Las cuentas de contabilización deben asignar a cada función un código de cuenta.",
+  "posting.unknown_role_named": "Función de contabilización desconocida: {name}.",
+  "posting.choose_account_for": "Elija un código de cuenta para {role}.",
+  "posting.two_accounts_chosen": "{role} tiene dos cuentas elegidas.",
+  "posting.code_in_use": "El código de cuenta {code} ya está en uso. Elija esa cuenta o añada una con otro código.",
+  "posting.already_set": "{role} ya está asignada a la cuenta {code}; cámbiela en Configuración al terminar.",
+  "posting.choose_accounts_for": "Elija la cuenta de contabilización para: {roles}."
 }

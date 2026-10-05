@@ -3664,5 +3664,17 @@
   "posting.older_stock.fix_holder": "A conta {holder} o tem: escolha {holder}.",
   "posting.older_stock.fix_move": "Transfira {amount} de {source} para {code} com um lançamento contábil e escolha {code} novamente.",
   "posting.older_stock.fix_reconcile": "Nenhuma conta de estoque o tem, então os livros precisam ser conciliados: faça um lançamento Débito {code} {amount} / Crédito {equity} {amount} e escolha {code} novamente.",
-  "docs.receive_draft_bill": "Esta fatura ainda é um rascunho, então não registrou estas mercadorias. Finalize a fatura primeiro e depois receba-as."
+  "docs.receive_draft_bill": "Esta fatura ainda é um rascunho, então não registrou estas mercadorias. Finalize a fatura primeiro e depois receba-as.",
+  "posting.problems": "{problems}",
+  "posting.added_needs_code": "Cada conta adicionada precisa de um código.",
+  "posting.added_needs_name": "Cada conta adicionada precisa de um nome.",
+  "posting.added_needs_type": "Cada conta adicionada precisa de um tipo.",
+  "posting.added_not_a_list": "As contas adicionadas devem ser uma lista de contas.",
+  "posting.roles_not_a_map": "As contas de lançamento devem associar cada função a um código de conta.",
+  "posting.unknown_role_named": "Função de lançamento desconhecida: {name}.",
+  "posting.choose_account_for": "Escolha um código de conta para {role}.",
+  "posting.two_accounts_chosen": "{role} tem duas contas escolhidas.",
+  "posting.code_in_use": "O código de conta {code} já está em uso. Escolha essa conta ou adicione uma com outro código.",
+  "posting.already_set": "{role} já está definida na conta {code}; altere-a em Configurações após concluir.",
+  "posting.choose_accounts_for": "Escolha a conta de lançamento para: {roles}."
 }

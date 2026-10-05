@@ -247,6 +247,11 @@ def needs_accounting() -> dict:
     return refusal("posting.needs_accounting", "Posting accounts need the accounting module.")
 
 
+def unknown_role(role) -> dict:
+    """The refusal for a posting role that does not exist."""
+    return refusal("posting.unknown_role_named", f"Unknown posting role: {role}.", name=str(role))
+
+
 def type_list(types) -> str:
     return " or ".join(sorted(types))
 

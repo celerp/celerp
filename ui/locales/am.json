@@ -3664,5 +3664,17 @@
   "posting.older_stock.fix_holder": "መለያ {holder} ይይዘዋል፤ {holder}ን ይምረጡ።",
   "posting.older_stock.fix_move": "{amount}ን ከ{source} ወደ {code} በጆርናል ግቤት ያዛውሩ፣ ከዚያ {code}ን እንደገና ይምረጡ።",
   "posting.older_stock.fix_reconcile": "ምንም የክምችት መለያ አይይዘውም፣ ስለዚህ መዛግብቱ መታረቅ አለባቸው፤ የጆርናል ግቤት ዴቢት {code} {amount} / ክሬዲት {equity} {amount} ይመዝግቡ፣ ከዚያ {code}ን እንደገና ይምረጡ።",
-  "docs.receive_draft_bill": "ይህ የአቅራቢ ክፍያ መጠየቂያ ገና ረቂቅ ነው፣ ስለዚህ እነዚህን ዕቃዎች አልመዘገበም። መጀመሪያ መጠየቂያውን ይጨርሱ፣ ከዚያ ዕቃዎቹን ይቀበሉ።"
+  "docs.receive_draft_bill": "ይህ የአቅራቢ ክፍያ መጠየቂያ ገና ረቂቅ ነው፣ ስለዚህ እነዚህን ዕቃዎች አልመዘገበም። መጀመሪያ መጠየቂያውን ይጨርሱ፣ ከዚያ ዕቃዎቹን ይቀበሉ።",
+  "posting.problems": "{problems}",
+  "posting.added_needs_code": "እያንዳንዱ የተጨመረ መለያ ኮድ ያስፈልገዋል።",
+  "posting.added_needs_name": "እያንዳንዱ የተጨመረ መለያ ስም ያስፈልገዋል።",
+  "posting.added_needs_type": "እያንዳንዱ የተጨመረ መለያ ዓይነት ያስፈልገዋል።",
+  "posting.added_not_a_list": "የተጨመሩ መለያዎች የመለያዎች ዝርዝር መሆን አለባቸው።",
+  "posting.roles_not_a_map": "የመመዝገቢያ መለያዎች እያንዳንዱን ሚና ከመለያ ኮድ ጋር ማዛመድ አለባቸው።",
+  "posting.unknown_role_named": "ያልታወቀ የመመዝገቢያ ሚና፦ {name}።",
+  "posting.choose_account_for": "ለ{role} የመለያ ኮድ ይምረጡ።",
+  "posting.two_accounts_chosen": "{role} ሁለት መለያዎች ተመርጠውለታል።",
+  "posting.code_in_use": "የመለያ ኮድ {code} አስቀድሞ ጥቅም ላይ ውሏል። ያንን መለያ ይምረጡ ወይም በሌላ ኮድ ያክሉ።",
+  "posting.already_set": "{role} አስቀድሞ ወደ መለያ {code} ተቀናብሯል፤ ከጨረሱ በኋላ በቅንብሮች ውስጥ ይቀይሩት።",
+  "posting.choose_accounts_for": "የመመዝገቢያ መለያ ይምረጡ ለ፦ {roles}።"
 }

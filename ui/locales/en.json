@@ -3664,5 +3664,17 @@
   "posting.older_stock.fix_holder": "Account {holder} holds it: choose {holder}.",
   "posting.older_stock.fix_move": "Move {amount} from {source} to {code} with a journal entry, then choose {code} again.",
   "posting.older_stock.fix_reconcile": "No inventory account holds it, so the books need reconciling: post a journal entry Dr {code} {amount} / Cr {equity} {amount}, then choose {code} again.",
-  "docs.receive_draft_bill": "This bill is still a draft, so it has not booked these goods. Finalize the bill first, then receive them."
+  "docs.receive_draft_bill": "This bill is still a draft, so it has not booked these goods. Finalize the bill first, then receive them.",
+  "posting.problems": "{problems}",
+  "posting.added_needs_code": "Each added account needs a code.",
+  "posting.added_needs_name": "Each added account needs a name.",
+  "posting.added_needs_type": "Each added account needs a type.",
+  "posting.added_not_a_list": "Added accounts must be a list of accounts.",
+  "posting.roles_not_a_map": "Posting accounts must map each role to an account code.",
+  "posting.unknown_role_named": "Unknown posting role: {name}.",
+  "posting.choose_account_for": "Choose an account code for {role}.",
+  "posting.two_accounts_chosen": "{role} has two accounts chosen.",
+  "posting.code_in_use": "Account code {code} is already in use. Choose that account or add one with another code.",
+  "posting.already_set": "{role} is already set to account {code}; change it in Settings after finishing.",
+  "posting.choose_accounts_for": "Choose the posting account for: {roles}."
 }

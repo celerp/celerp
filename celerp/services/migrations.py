@@ -888,7 +888,7 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
             await posting_readiness.apply_choices(session, run.company_id, posting_accounts)
         except posting_readiness.ReadinessError as exc:
             await session.rollback()
-            raise MigrationError(409, str(exc)) from None
+            raise MigrationError(409, exc.detail) from None
         await add_missing_required_defaults(session, run.company_id)
         if run.source_lock_date:
             write_period_lock(company, run.source_lock_date.isoformat(), run.created_by_user_id)

@@ -33,6 +33,7 @@ from celerp.accounting_roles import (
     no_account_chosen,
     refusal,
     target_problem,
+    unknown_role,
 )
 from celerp.models.company import Company
 
@@ -322,7 +323,7 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str) -> d
     from celerp.services.journal_accounts import lock_accounts
 
     if not is_role(role):
-        raise HTTPException(status_code=422, detail=f"Unknown posting role: {role}.")
+        raise HTTPException(status_code=422, detail=unknown_role(role))
     code = (code or "").strip()
     if not code:
         raise HTTPException(status_code=422, detail=no_account_chosen())

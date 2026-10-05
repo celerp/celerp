@@ -3664,5 +3664,17 @@
   "posting.older_stock.fix_holder": "Il conto {holder} lo contiene: scegli {holder}.",
   "posting.older_stock.fix_move": "Sposta {amount} da {source} a {code} con una scrittura contabile, poi scegli di nuovo {code}.",
   "posting.older_stock.fix_reconcile": "Nessun conto di magazzino lo contiene, quindi i libri vanno riconciliati: registra una scrittura Dare {code} {amount} / Avere {equity} {amount}, poi scegli di nuovo {code}.",
-  "docs.receive_draft_bill": "Questa fattura è ancora una bozza, quindi non ha registrato queste merci. Finalizza prima la fattura, poi ricevile."
+  "docs.receive_draft_bill": "Questa fattura è ancora una bozza, quindi non ha registrato queste merci. Finalizza prima la fattura, poi ricevile.",
+  "posting.problems": "{problems}",
+  "posting.added_needs_code": "Ogni conto aggiunto deve avere un codice.",
+  "posting.added_needs_name": "Ogni conto aggiunto deve avere un nome.",
+  "posting.added_needs_type": "Ogni conto aggiunto deve avere un tipo.",
+  "posting.added_not_a_list": "I conti aggiunti devono essere un elenco di conti.",
+  "posting.roles_not_a_map": "I conti di registrazione devono associare ogni ruolo a un codice conto.",
+  "posting.unknown_role_named": "Ruolo di registrazione sconosciuto: {name}.",
+  "posting.choose_account_for": "Scegli un codice conto per {role}.",
+  "posting.two_accounts_chosen": "{role} ha due conti scelti.",
+  "posting.code_in_use": "Il codice conto {code} è già in uso. Scegli quel conto o aggiungine uno con un altro codice.",
+  "posting.already_set": "{role} è già impostato sul conto {code}; modificalo nelle Impostazioni al termine.",
+  "posting.choose_accounts_for": "Scegli il conto di registrazione per: {roles}."
 }

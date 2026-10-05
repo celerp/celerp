@@ -125,7 +125,7 @@ async def test_finishing_is_refused_until_every_needed_account_is_set(session, m
     with pytest.raises(MigrationError) as exc:
         await _finalize(context, monkeypatch)
     assert exc.value.status_code == 409
-    assert "Sales revenue" in exc.value.detail and "General expenses" in exc.value.detail
+    assert "Sales revenue" in exc.value.detail["message"] and "General expenses" in exc.value.detail["message"]
     company = await _company(context)
     assert company.is_migration_staged
     assert ROLES_KEY not in (company.settings or {})
@@ -176,7 +176,7 @@ async def test_an_unsuitable_choice_is_refused_with_the_reason(session, monkeypa
     with pytest.raises(MigrationError) as exc:
         await _finalize(context, monkeypatch, {**_CHOICES, "roles": {**_CHOICES["roles"], "sales_revenue": "210"}})
     assert exc.value.status_code == 409
-    assert "Sales revenue is set to account 210, of type liability; it must be of type revenue." in exc.value.detail
+    assert "Sales revenue is set to account 210, of type liability; it must be of type revenue." in exc.value.detail["message"]
     assert (await _company(context)).is_migration_staged
 
 
@@ -213,7 +213,7 @@ async def test_an_account_set_before_finishing_is_kept(session, monkeypatch):
     await _ready_run(context, monkeypatch)
     with pytest.raises(MigrationError) as exc:
         await _finalize(context, monkeypatch, _CHOICES)
-    assert "Sales revenue is already set to account 410" in exc.value.detail
+    assert "Sales revenue is already set to account 410" in exc.value.detail["message"]
     choices = {**_CHOICES, "roles": {k: v for k, v in _CHOICES["roles"].items() if k != "sales_revenue"}}
     await _finalize(context, monkeypatch, choices)
     assert (await _company(context)).settings[ROLES_KEY]["sales_revenue"] == "410"

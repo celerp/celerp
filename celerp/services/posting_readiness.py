@@ -37,7 +37,9 @@ from celerp.accounting_roles import (
     AccountRole,
     allowed_types,
     is_role,
+    refusal,
     target_problem,
+    unknown_role,
 )
 from celerp.models.projections import Projection
 from celerp.services.account_roles import (
@@ -57,7 +59,21 @@ _GROUP_OF: dict[str, str] = {role.value: group for group, roles in ROLE_GROUPS.i
 
 
 class ReadinessError(ValueError):
-    """The posting-account choices cannot be saved; the message says why."""
+    """The posting-account choices cannot be saved; ``detail`` is the refusal saying why
+    (``accounting_roles.refusal``), or the chart's own message when the chart refused an
+    added account."""
+
+    def __init__(self, detail: dict | str):
+        super().__init__(detail["message"] if isinstance(detail, dict) else detail)
+        self.detail = detail
+
+
+def _refused(problems: list[dict]) -> ReadinessError:
+    """Every problem with the choices, in one refusal."""
+    if len(problems) == 1:
+        return ReadinessError(problems[0])
+    return ReadinessError(refusal("posting.problems", " ".join(p["message"] for p in problems),
+                                  problems=problems))
 
 
 def _line_items(state: dict) -> list[dict]:
@@ -101,6 +117,10 @@ def needed_roles(groups: set[str]) -> list[str]:
     return [role.value for group in ROLE_GROUPS if group in groups for role in ROLE_GROUPS[group]]
 
 
+def _labels(roles: list[str]) -> str:
+    return ", ".join(ROLE_LABELS[AccountRole(r)] for r in roles)
+
+
 async def notify_unmapped(session: AsyncSession, company_id) -> bool:
     """One high-priority notice when a role the company's workflows need has no
     account, deduped on the unread notice so a restart never stacks them. Returns
@@ -119,7 +139,7 @@ async def notify_unmapped(session: AsyncSession, company_id) -> bool:
     ).limit(1))).first()
     if already:
         return False
-    labels = ", ".join(ROLE_LABELS[AccountRole(r)] for r in missing)
+    labels = _labels(missing)
     await notification_service.create(
         session, company_id, NOTICE_CATEGORY, NOTICE_TITLE,
         f"Choose the account for: {labels}. Until then, anything that posts to them is refused.",
@@ -221,7 +241,7 @@ async def readiness(session: AsyncSession, company_id) -> list[dict] | None:
 
 def _text(value, what: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise ReadinessError(f"Each added account needs a {what}.")
+        raise ReadinessError(refusal(f"posting.added_needs_{what}", f"Each added account needs a {what}."))
     return value.strip()
 
 
@@ -229,12 +249,12 @@ def _new_accounts(add_accounts) -> list[dict]:
     if add_accounts is None:
         return []
     if not isinstance(add_accounts, list) or not all(isinstance(a, dict) for a in add_accounts):
-        raise ReadinessError("Added accounts must be a list of accounts.")
+        raise ReadinessError(refusal("posting.added_not_a_list", "Added accounts must be a list of accounts."))
     out = []
     for a in add_accounts:
         role = a.get("role")
         if not is_role(role):
-            raise ReadinessError(f"Unknown posting role: {role}.")
+            raise ReadinessError(unknown_role(role))
         out.append({"role": role, "code": _text(a.get("code"), "code"), "name": _text(a.get("name"), "name"),
                     "account_type": _text(a.get("account_type"), "type")})
     return out
@@ -244,15 +264,16 @@ def _chosen(roles) -> dict[str, str]:
     if roles is None:
         return {}
     if not isinstance(roles, dict):
-        raise ReadinessError("Posting accounts must map each role to an account code.")
+        raise ReadinessError(refusal("posting.roles_not_a_map", "Posting accounts must map each role to an account code."))
     out = {}
     for role, code in roles.items():
         if not is_role(role):
-            raise ReadinessError(f"Unknown posting role: {role}.")
+            raise ReadinessError(unknown_role(role))
         if code in (None, ""):
             continue
         if not isinstance(code, str):
-            raise ReadinessError(f"Choose an account code for {ROLE_LABELS[AccountRole(role)].lower()}.")
+            raise ReadinessError(refusal("posting.choose_account_for", f"Choose an account code for "
+                                         f"{ROLE_LABELS[AccountRole(role)]}.", role=role))
         out[role] = code.strip()
     return out
 
@@ -270,7 +291,7 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
 
     choices = choices or {}
     if not isinstance(choices, dict):
-        raise ReadinessError("Posting accounts must map each role to an account code.")
+        raise ReadinessError(refusal("posting.roles_not_a_map", "Posting accounts must map each role to an account code."))
     chosen = _chosen(choices.get("roles"))
     added = _new_accounts(choices.get("add_accounts"))
     company = await locked_company(session, company_id)
@@ -281,49 +302,51 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
     chart = await _chart(session, company_id)
     for account in added:
         if account["role"] in chosen and chosen[account["role"]] != account["code"]:
-            raise ReadinessError(f"{ROLE_LABELS[AccountRole(account['role'])]} has two accounts chosen.")
+            raise ReadinessError(refusal("posting.two_accounts_chosen", f"{ROLE_LABELS[AccountRole(account['role'])]} "
+                                         "has two accounts chosen.", role=account["role"]))
         chosen[account["role"]] = account["code"]
         existing = chart.get(account["code"])
         if existing is not None and (existing["name"], existing["account_type"]) != (
                 account["name"], account["account_type"]):
-            raise ReadinessError(f"Account code {account['code']} is already in use. Choose that account "
-                                 "or add one with another code.")
+            raise ReadinessError(refusal("posting.code_in_use", f"Account code {account['code']} is already in use. "
+                                         "Choose that account or add one with another code.", code=account["code"]))
     final: dict[str, str] = {}
-    problems: list[str] = []
+    problems: list[dict] = []
     unchosen: list[str] = []
     for row in rows:
         role, label = row["role"], row["label"]
         code = chosen.get(role)
         if row["current"]:
             if code and code != row["current"]:
-                problems.append(f"{label} is already set to account {row['current']}; "
-                                "change it in Settings after finishing.")
+                problems.append(refusal("posting.already_set", f"{label} is already set to account {row['current']}; "
+                                        "change it in Settings after finishing.", role=role, code=row["current"]))
             continue
         code = code or row["preselect"]
         if code:
             final[role] = code
         elif row["required"]:
-            unchosen.append(label)
+            unchosen.append(role)
     if unchosen:
-        problems.append(f"Choose the posting account for: {', '.join(unchosen)}.")
+        problems.append(refusal("posting.choose_accounts_for", f"Choose the posting account for: {_labels(unchosen)}.",
+                                roles=unchosen))
     if problems:
-        raise ReadinessError(" ".join(problems))
+        raise _refused(problems)
     for account in added:
         if account["code"] not in chart and final.get(account["role"]) == account["code"]:
             try:
                 await add_account(session, company_id, account["code"], account["name"],
                                   account["account_type"])
             except HTTPException as exc:
-                raise ReadinessError(str(exc.detail)) from None
+                raise ReadinessError(exc.detail) from None
             chart[account["code"]] = {**account, "is_active": True, "has_children": False}
     held = await lock_accounts(session, company_id, set(final.values())) or {}
     trial = {**role_map(company.settings), **final}
     for role, code in final.items():
         problem = target_problem(role, trial, held.get(code))
         if problem:
-            problems.append(problem["message"])
+            problems.append(problem)
     if problems:
-        raise ReadinessError(" ".join(problems))
+        raise _refused(problems)
     settings = {**(company.settings or {}), SCHEMA_KEY: POSTING_ROLES_SCHEMA}
     settings.setdefault(SOURCE_CONTROLS_KEY, {})
     for role, code in final.items():

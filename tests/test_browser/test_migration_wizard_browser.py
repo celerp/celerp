@@ -257,6 +257,38 @@ def test_migration_wizard_browser_existing_owner(page, fresh_company):
     assert after == before
 
 
+def test_finishing_with_posting_accounts_unchosen_is_refused_in_german(page, ui_server, fresh_company):
+    """The refusal names each posting account still unchosen by its German label."""
+    from ui import i18n
+
+    page.goto("/setup/new-company")
+    page.click('a:has-text("Move from another system")')
+    page.wait_for_url(re.compile(r"/setup/new-company/migrate$"))
+    _upload(page, "Example Bookkeeping")
+    _through_review(page, "Unchosen Goods Ltd")
+    page.click('button:has-text("Create company and migrate")')
+    page.wait_for_url(re.compile(r"/migrations/[0-9a-f-]{36}$"))
+    run_id = _run_id(page)
+    _wait_ready(page, run_id)
+    host = ui_server.split("//", 1)[1].split(":", 1)[0]
+    page.context.add_cookies([{"name": "celerp_lang", "value": "de", "domain": host, "path": "/"}])
+    try:
+        page.goto(f"/migrations/{run_id}/verify")
+        unchosen = [s.get_attribute("name").removeprefix("role.")
+                    for s in page.locator('select[name^="role."], input[type="hidden"][name^="role."]').all()
+                    if not s.input_value()]
+        assert unchosen, "every posting account was preselected"
+        page.locator(f"form[action='/migrations/{run_id}/finalize'] button[type='submit']").click()
+        page.wait_for_url(re.compile(rf"/migrations/{run_id}/finalize$"))
+        body = page.locator("body").inner_text()
+    finally:
+        page.context.clear_cookies(name="celerp_lang")
+    assert "Wählen Sie das Buchungskonto für:" in body, body[:1500]
+    assert "Choose the posting account" not in body
+    for role in unchosen:
+        assert i18n.t(f"posting.role.{role}", lang="de") in body, (role, body[:1500])
+
+
 @pytest.fixture
 def fake_migration_api(ui_server, monkeypatch):
     """Route only the UI's migration API calls to the in-test fake."""
