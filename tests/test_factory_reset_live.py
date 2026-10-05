@@ -240,6 +240,36 @@ async def test_a_user_only_the_reset_company_names_goes_with_their_sessions(real
             await conn.execute(text("DROP TABLE IF EXISTS ext_notes"))
 
 
+@pytest.mark.parametrize("action", ["SET NULL", "SET DEFAULT"])
+async def test_a_row_whose_key_clears_outlives_the_reset_company(real_client, real_engine, action):  # noqa: F811
+    """A module row with no company column names Alpha and Beta through keys that clear
+    on delete. Resetting Alpha leaves the row, with only its Alpha key cleared, as the
+    schema declares."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        await conn.execute(text(
+            "CREATE TABLE ext_transfers (id uuid PRIMARY KEY, "
+            f"from_company uuid REFERENCES companies(id) ON DELETE {action}, "
+            f"to_company uuid REFERENCES companies(id) ON DELETE {action}, label text NOT NULL)"))
+        await conn.execute(text("INSERT INTO ext_transfers VALUES (:i, :a, :b, 'alpha to beta')"),
+                           {"i": uuid.uuid4(), "a": alpha, "b": beta})
+    try:
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 200, r.text
+        async with real_engine.connect() as conn:
+            rows = (await conn.execute(text("SELECT from_company, to_company, label FROM ext_transfers"))).all()
+        assert [tuple(map(str, row)) for row in rows] == [("None", beta, "alpha to beta")]
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_transfers"))
+
+
 @pytest.mark.parametrize("typed", [None, "", "RESET", "alpha co", "Alpha Co "])
 async def test_reset_needs_the_exact_company_name(real_client, real_engine, typed):  # noqa: F811
     token = await _register(real_client, "Alpha Co")

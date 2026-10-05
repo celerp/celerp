@@ -27,7 +27,16 @@ class ForeignKey(NamedTuple):
     cols: tuple[str, ...]
     target: str
     tcols: tuple[str, ...]
-    cascades: bool  # ON DELETE CASCADE
+    on_delete: str  # pg_constraint.confdeltype: a no action, r restrict, c cascade, n set null, d set default
+
+    @property
+    def cascades(self) -> bool:
+        return self.on_delete == "c"
+
+    @property
+    def clears(self) -> bool:
+        """SET NULL or SET DEFAULT: the row outlives the one it names."""
+        return self.on_delete in ("n", "d")
 
 
 @dataclass
@@ -77,7 +86,7 @@ async def read(session: AsyncSession) -> dict[str, Table]:
         if kind == "p":
             table.pk = tuple(cols)
         else:
-            table.fks.append(ForeignKey(tuple(cols), target, tuple(tcols), on_delete == "c"))
+            table.fks.append(ForeignKey(tuple(cols), target, tuple(tcols), on_delete))
     return tables
 
 
@@ -102,13 +111,16 @@ def fk_order(tables: list[str], schema: dict[str, Table]) -> tuple[list[str], se
     return order, unordered | set(parents)
 
 
-def company_tables(schema: dict[str, Table]) -> set[str]:
-    """Every table holding a company's rows: ``companies``, each table with a company
+def company_tables(schema: dict[str, Table], *, held: bool = False) -> set[str]:
+    """Every table whose rows name a company: ``companies``, each table with a company
     column, and each table with a foreign key to one of those (a conversation's
-    messages, a run's entity maps)."""
+    messages, a run's entity maps). ``held`` follows only keys that do not clear on
+    delete: a row reached only through a clearing key outlives the company, so it is
+    not the company's to delete."""
     owned = {"companies"}
     while grown := {name for name, table in schema.items() if name not in owned
-                    and ("company_id" in table.columns or any(fk.target in owned for fk in table.fks))}:
+                    and ("company_id" in table.columns
+                         or any(fk.target in owned and not (held and fk.clears) for fk in table.fks))}:
         owned |= grown
     return owned
 

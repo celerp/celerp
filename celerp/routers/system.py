@@ -82,11 +82,12 @@ class FactoryReset(BaseModel):
 def _company_rows(schema: dict) -> dict[str, str]:
     """Every table holding rows of the company bound as ``:c``, with the condition that
     picks them: its company column, or else a foreign key to rows already picked (a
-    conversation's messages, a run's entity maps). ``schema`` is the database catalog,
-    so a switched-off module's tables are included."""
+    conversation's messages, a run's entity maps). A key that clears on delete picks
+    nothing: Postgres clears it. ``schema`` is the database catalog, so a switched-off
+    module's tables are included."""
     from celerp.db_catalog import company_tables, ident
 
-    owned = company_tables(schema)
+    owned = company_tables(schema, held=True)
     where: dict[str, str] = {"companies": "id = CAST(:c AS uuid)"}
 
     def rows(name: str) -> str:
@@ -98,7 +99,7 @@ def _company_rows(schema: dict) -> dict[str, str]:
                 where[name] = " OR ".join(
                     f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} "
                     f"FROM {ident(fk.target)} WHERE {rows(fk.target)})"
-                    for fk in table.fks if fk.target in owned and fk.target != name)
+                    for fk in table.fks if fk.target in owned and fk.target != name and not fk.clears)
         return where[name]
 
     return {name: rows(name) for name in owned}
