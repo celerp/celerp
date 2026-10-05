@@ -1789,7 +1789,7 @@
   "enum.item_status.archived": "مؤرشف",
   "enum.item_status.expired": "منتهي الصلاحية",
   "enum.item_status.sold": "مباع",
-  "enum.item_status.memo_out": "مذكرة خروج",
+  "enum.item_status.memo_out": "شحنة صادرة",
   "enum.item_status.disposed": "تم التخلص منها",
   "shell.copied": "تم النسخ!",
   "shell.unknown_request": "طلب غير معروف",

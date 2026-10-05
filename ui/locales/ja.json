@@ -1789,7 +1789,7 @@
   "enum.item_status.archived": "アーカイブ",
   "enum.item_status.expired": "期限切れ",
   "enum.item_status.sold": "売却済み",
-  "enum.item_status.memo_out": "メモ出力",
+  "enum.item_status.memo_out": "受託出荷",
   "enum.item_status.disposed": "廃棄",
   "shell.copied": "コピー完了！",
   "shell.unknown_request": "不明なリクエスト",

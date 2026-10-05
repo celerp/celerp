@@ -1789,7 +1789,7 @@
   "enum.item_status.archived": "Arquivado",
   "enum.item_status.expired": "Expirado",
   "enum.item_status.sold": "Vendido",
-  "enum.item_status.memo_out": "Saída de nota",
+  "enum.item_status.memo_out": "Consignação enviada",
   "enum.item_status.disposed": "Descartado",
   "shell.copied": "Copiado!",
   "shell.unknown_request": "solicitação desconhecida",

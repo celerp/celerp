@@ -1890,7 +1890,7 @@
   "enum.item_status.archived": "ማህደር የተደረገ",
   "enum.item_status.expired": "ጊዜው አልፏል",
   "enum.item_status.sold": "ተሽጧል",
-  "enum.item_status.memo_out": "በአደራ ወጥቷል",
+  "enum.item_status.memo_out": "ወጪ አደራ ዕቃ",
   "enum.item_status.disposed": "ተጥሏል",
   "shell.copied": "ተቀድቷል!",
   "shell.unknown_request": "ያልታወቀ ጥያቄ",

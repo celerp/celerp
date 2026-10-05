@@ -1789,7 +1789,7 @@
   "enum.item_status.archived": "Diarsipkan",
   "enum.item_status.expired": "Kedaluwarsa",
   "enum.item_status.sold": "Terjual",
-  "enum.item_status.memo_out": "Catatan Keluar",
+  "enum.item_status.memo_out": "Konsinyasi Keluar",
   "enum.item_status.disposed": "Telah dihapus",
   "shell.copied": "Telah disalin!",
   "shell.unknown_request": "Permintaan tidak dikenal",

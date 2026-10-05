@@ -1789,7 +1789,7 @@
   "enum.item_status.archived": "Đã lưu trữ",
   "enum.item_status.expired": "Hết hạn",
   "enum.item_status.sold": "Đã bán",
-  "enum.item_status.memo_out": "Ghi chú ra",
+  "enum.item_status.memo_out": "Hàng ký gửi xuất",
   "enum.item_status.disposed": "Đã thanh lý",
   "shell.copied": "Đã sao chép!",
   "shell.unknown_request": "yêu cầu không xác định",

@@ -52,3 +52,43 @@ def test_pt_es_memo_terminology():
             assert val and val != k, f"{k} not localized for {code}: {val!r}"
     test_pt_memo_terminology()
     test_es_memo_terminology()
+
+
+# Memo Out (goods out on consignment) reads with one term per language: the
+# dashboard KPI and quick link, the inventory and document status chips, and the
+# "pieces on memo" quick-link line all use the stem the sidebar's Consignment Out
+# entry uses. German shipped "Notiz gesendet" / "Auf Notiz" (a note, not goods
+# on consignment) and "Pro-forma-Rechnung"; fr, es and th had the same split.
+_CONSIGNMENT_STEM = {"de": "kommission", "fr": "consignation", "es": "consignación", "th": "ฝากขาย"}
+_MEMO_OUT_KEYS = ("inventory.status_on_memo", "documents.status_memo_out",
+                  "dashboard.pieces_on_memo", "settings.doc_type_memo")
+
+
+def _catalog(code: str) -> dict:
+    import json
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[1] / "ui" / "locales" / f"{code}.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_memo_out_kpi_matches_sidebar_term_in_every_translated_locale():
+    from pathlib import Path
+    from ui.routes.dashboard import _DASH_LABEL_KEYS
+    kpi_key = _DASH_LABEL_KEYS["Memo Out"]
+    locales = [p.stem for p in (Path(__file__).resolve().parents[1] / "ui" / "locales").glob("*.json")]
+    split = {}
+    for code in sorted(set(locales) - {"en"}):
+        cat = _catalog(code)
+        if cat[kpi_key] != cat["nav.consignment_out"]:
+            split[code] = (cat[kpi_key], cat["nav.consignment_out"])
+    assert not split, f"Memo Out KPI disagrees with the sidebar Consignment Out: {split}"
+
+
+def test_memo_out_status_and_quick_link_use_the_consignment_term():
+    off = {}
+    for code, stem in _CONSIGNMENT_STEM.items():
+        cat = _catalog(code)
+        for key in _MEMO_OUT_KEYS:
+            if stem not in cat[key].lower():
+                off[f"{code}:{key}"] = cat[key]
+    assert not off, off

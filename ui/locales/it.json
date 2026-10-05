@@ -1790,7 +1790,7 @@
   "enum.item_status.archived": "Archiviato",
   "enum.item_status.expired": "Scaduto",
   "enum.item_status.sold": "Venduto",
-  "enum.item_status.memo_out": "Memo in uscita",
+  "enum.item_status.memo_out": "Consegna in uscita",
   "enum.item_status.disposed": "Smaltito",
   "shell.copied": "Copiato!",
   "shell.unknown_request": "Richiesta sconosciuta",
