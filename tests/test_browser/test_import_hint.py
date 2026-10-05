@@ -195,10 +195,12 @@ def test_arrow_covers_no_control(page: Page, fresh_company, width, lang):
         expect(tip_el).to_be_visible()
         page.wait_for_load_state("load")
         assert page.evaluate(_OVERLAPS_JS) == [], (path, width, lang)
-        b = page.locator("[data-import-hint]").bounding_box()
-        t = tip_el.bounding_box()
-        assert t["y"] >= b["y"] + b["height"], (path, width, lang, "arrow is below the button")
-        assert t["x"] < b["x"] + b["width"] and b["x"] < t["x"] + t["width"], (path, width, lang)
+        # Both rects in one read: late shell layout (the company switcher row at phone
+        # width) moves the arrow and the button together, never one without the other.
+        t, b = page.evaluate("""() => [document.querySelector('.import-arrow'),
+            document.querySelector('[data-import-hint]')].map(e => e.getBoundingClientRect().toJSON())""")
+        assert t["top"] >= b["bottom"], (path, width, lang, "arrow is below the button", t, b)
+        assert t["left"] < b["right"] and b["left"] < t["right"], (path, width, lang, t, b)
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), (path, width)
 
 

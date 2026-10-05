@@ -1,10 +1,12 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""The dashboard's demo note carries a "Remove demo items" link while any item is
-marked [DEMO]. It opens the inventory list searched for [DEMO], with a hint pointing
-at the select-all box: "Tick the box to select them all, then choose Delete." Nothing
-is ticked for the owner; select-all plus the existing bulk Delete removes exactly the
-marked samples. The hint goes on Esc or its close button and never covers a control.
+"""The dashboard's demo note carries a "Remove demo items" link while any of setup's
+samples is untouched. It opens the inventory list filtered to those samples, with a
+hint pointing at the select-all box: "Tick the box to select them all, then choose
+Delete." Nothing is ticked for the owner; select-all plus the existing bulk Delete
+removes exactly the untouched samples, never an edited or renamed one or the owner's
+own item named "[DEMO] ...". The hint goes on Esc or its close button and never
+covers a control.
 """
 from __future__ import annotations
 
@@ -20,9 +22,13 @@ pytestmark = pytest.mark.browser
 
 _HINT = "Tick the box to select them all, then choose Delete."
 _LINK = "Remove demo items"
-_DEMO_URL = "/inventory?q=name%3A%5BDEMO%5D&hint=demo"
+_DEMO_URL = "/inventory?filter=demo&hint=demo"
 _REAL = "Real teak chair"
 _RENAMED = "House cattle feed"
+_EDITED = "[DEMO] Jasmine Rice - 25kg bag"
+_MINE = "[DEMO] My own showroom piece"
+# What the owner keeps after removing the samples.
+_KEPT = sorted([_EDITED, _MINE, _RENAMED, _REAL])
 _LOCALES = Path(__file__).resolve().parents[2] / "ui" / "locales"
 
 
@@ -70,18 +76,27 @@ def _seed_demo_items(api) -> None:
 
 
 def _seed(api) -> None:
-    """Five agricultural samples, one renamed by the owner, plus one real item."""
+    """Five agricultural samples: one renamed by the owner, one with its quantity
+    changed (name kept), three untouched. Plus a real item and the owner's own item
+    named "[DEMO] ..."."""
     _seed_demo_items(api)
-    feed = next((i for i in _items(api) if i["sku"] == "DEMO-AGR-005"), None)
-    assert feed, [(i["sku"], i["name"]) for i in _items(api)]
+    by_sku = {i["sku"]: i for i in _items(api)}
+    feed, rice = by_sku.get("DEMO-AGR-005"), by_sku.get("DEMO-AGR-001")
+    assert feed and rice, sorted(by_sku)
+    assert rice["name"] == _EDITED, rice["name"]
     r = api.patch(f"/items/{feed['id']}", json={"fields_changed": {"name": {"old": feed["name"], "new": _RENAMED}}})
     assert r.status_code == 200, r.text
-    r = api.post("/items", json={"sku": "REAL-1", "name": _REAL, "sell_by": "piece", "quantity": 1})
-    assert r.status_code in (200, 201), r.text
+    r = api.patch(f"/items/{rice['id']}", json={"fields_changed": {"quantity": {"old": rice.get("quantity"), "new": 999}}})
+    assert r.status_code == 200, r.text
+    for sku, name in (("REAL-1", _REAL), ("MINE-1", _MINE)):
+        r = api.post("/items", json={"sku": sku, "name": name, "sell_by": "piece", "quantity": 1})
+        assert r.status_code in (200, 201), r.text
 
 
-def _marked(api) -> list[dict]:
-    return [i for i in _items(api) if "[DEMO]" in i["name"]]
+def _untouched(api) -> list[dict]:
+    r = api.get("/items", params={"filter": "demo", "limit": 500})
+    assert r.status_code == 200, r.text
+    return r.json()["items"]
 
 
 def _table_names(page: Page) -> list[str]:
@@ -100,7 +115,8 @@ def test_note_link_shows_while_demo_items_exist_and_goes_when_none(page: Page, f
     link = note.locator("#remove-demo-items")
     expect(link).to_have_text(_LINK)
     assert link.get_attribute("href") == _DEMO_URL
-    ids = [i["id"] for i in _marked(fresh_company)]
+    ids = [i["id"] for i in _untouched(fresh_company)]
+    assert len(ids) == 3, ids
     assert fresh_company.post("/items/bulk/delete", json={"entity_ids": ids}).status_code == 200
     page.reload()
     expect(page.locator("h1.page-title")).to_be_visible()
@@ -118,11 +134,10 @@ def test_link_lists_only_demo_items_with_hint_and_nothing_ticked(page: Page, fre
     tip = page.locator(".import-arrow")
     expect(tip).to_contain_text(_HINT)
     assert "hint=demo" not in page.url
-    expect(page.locator("#search-input")).to_have_value("name:[DEMO]")
     rows = _table_names(page)
-    assert len(rows) == 4, rows
+    assert len(rows) == 3, rows
     assert all("[DEMO]" in r for r in rows), rows
-    assert not any(_REAL in r or _RENAMED in r for r in rows), rows
+    assert not any(name in r for r in rows for name in _KEPT), rows
     assert _ticked(page) == 0
     page.wait_for_load_state("load")
     assert page.evaluate(_OVERLAPS_JS) == [], width
@@ -138,7 +153,7 @@ def test_link_lists_only_demo_items_with_hint_and_nothing_ticked(page: Page, fre
 def _select_all_and_delete(page: Page) -> None:
     page.on("dialog", lambda d: d.accept())
     page.locator("#select-all-rows").check()
-    expect(page.locator("#bulk-count")).to_contain_text("4")
+    expect(page.locator("#bulk-count")).to_contain_text("3")
     page.select_option("#bulk-action-select", "delete")
     expect(page.locator("#data-table tbody tr.row-item, #data-table tbody tr[id^=row-]")).to_have_count(0)
 
@@ -148,7 +163,14 @@ def test_select_all_and_delete_removes_exactly_the_demo_items(page: Page, fresh_
     page.goto(_DEMO_URL)
     expect(page.locator(".import-arrow")).to_be_visible()
     _select_all_and_delete(page)
-    assert sorted(i["name"] for i in _items(fresh_company)) == [_RENAMED, _REAL]
+    assert sorted(i["name"] for i in _items(fresh_company)) == _KEPT
+    en = json.loads((_LOCALES / "en.json").read_text())
+    expect(page.locator("#data-table")).to_contain_text(en["inventory.no_demo_items"])
+    banner = page.locator(".holdings-scope-banner")
+    expect(banner).to_contain_text(en["inventory.demo_scope_label"])
+    banner.get_by_role("link", name=en["table.clear_filter_btn"]).click()
+    page.wait_for_url("**/inventory")
+    expect(page.locator("#data-table tbody tr")).to_have_count(len(_KEPT))
     page.goto("/dashboard")
     expect(page.locator("h1.page-title")).to_be_visible()
     expect(page.locator("#demo-note")).to_have_count(0)
@@ -168,7 +190,7 @@ def test_an_earlier_selection_is_not_carried_into_the_demo_delete(page: Page, fr
     expect(page.locator(".import-arrow")).to_be_visible()
     assert _ticked(page) == 0
     _select_all_and_delete(page)
-    assert sorted(i["name"] for i in _items(fresh_company)) == [_RENAMED, _REAL]
+    assert sorted(i["name"] for i in _items(fresh_company)) == _KEPT
 
 
 def test_hint_dismissed_by_esc_and_by_its_close(page: Page, fresh_company):
@@ -206,3 +228,22 @@ def test_link_and_hint_in_german(page: Page, fresh_company, width):
     page.wait_for_load_state("load")
     assert page.evaluate(_OVERLAPS_JS) == [], width
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
+
+
+def test_back_to_the_demo_list_drops_a_selection_made_elsewhere(page: Page, fresh_company):
+    """Red statement: the selection was cleared only when the one-time hint showed, so
+    Back to the demo list after ticking a real item elsewhere showed "4 selected" over
+    3 rows and Delete removed the real item with the samples."""
+    _seed(fresh_company)
+    page.goto("/dashboard")
+    page.locator("#remove-demo-items").click()
+    expect(page.locator(".import-arrow")).to_be_visible()
+    page.goto("/inventory?q=Real")
+    page.locator("#data-table tbody tr", has_text=_REAL).locator("input.row-select").check()
+    expect(page.locator("#bulk-count")).to_contain_text("1")
+    page.go_back()
+    page.wait_for_url("**/inventory?filter=demo")
+    expect(page.locator(".import-arrow")).to_have_count(0)
+    assert _ticked(page) == 0
+    _select_all_and_delete(page)
+    assert sorted(i["name"] for i in _items(fresh_company)) == _KEPT

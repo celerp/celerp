@@ -21,7 +21,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
-from ui.components.demo_items import DEMO_ITEMS_QUERY
+from ui.components.demo_items import DEMO_ITEMS_FILTER
 from ui.components.icons import import_icon
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
@@ -793,6 +793,19 @@ def _holdings_scope_banner(p: dict, holdings_total: float | None, currency: str 
     if total_text and holdings_missing:
         total_text += " (" + t("inventory.sold_without_price", n=holdings_missing) + ")"
     total_el = Span(total_text, cls="holdings-scope-total") if total_text else ""
+    return _scope_banner(label, basis, total_el)
+
+
+def _demo_scope_banner(p: dict) -> FT | str:
+    """Banner for the demo items list, so the filter stays visible after the hint is
+    closed and the list can be left for all inventory."""
+    if p.get("filter") != DEMO_ITEMS_FILTER:
+        return ""
+    return _scope_banner(t("inventory.demo_scope_label"), t("inventory.demo_scope_basis"))
+
+
+def _scope_banner(label: str, basis: str, total_el: FT | str = "") -> FT:
+    """A scoped inventory list's banner: what the list holds and a Clear filter link."""
     return Div(
         Div(Span(label, cls="holdings-scope-label"), total_el, cls="holdings-scope-heading"),
         Div(basis, cls="holdings-scope-basis"),
@@ -968,6 +981,19 @@ def _inventory_page_error(request: Request, lang: str) -> FT:
     )
 
 
+# The demo list offers Delete, and the bulk selection outlives the list it was made
+# on. So the demo list starts with nothing selected whenever it renders (the link,
+# Back, a refresh, a reload after Delete, a page restored from the back cache), and a
+# row ticked on another list never rides into Delete with the samples.
+_CLEAR_SELECTION_JS = """(function(){
+  function clear(){ document.body.dispatchEvent(new CustomEvent('celerpSelectionClear')); }
+  clear();
+  if (window.__celerpClearOnShow) return;
+  window.__celerpClearOnShow = true;
+  window.addEventListener('pageshow', function(e){ if (e.persisted) clear(); });
+})();"""
+
+
 async def _inventory_content(
     token: str,
     p: dict,
@@ -1133,6 +1159,7 @@ async def _inventory_content(
 
     return Div(
         _holdings_scope_banner(p, holdings_total, currency, holdings_missing),
+        _demo_scope_banner(p),
         _category_tabs(category_counts, p, total_scoped=total_scoped, label_map=category_label_map),
         _inventory_type_tabs(p),
         _valuation_bar(aggregates, currency, lang),
@@ -1168,6 +1195,7 @@ async def _inventory_content(
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], list_total, p["per_page"], "/inventory", extra_params),
         Script(SERVER_FILTER_JS),
+        Script(_CLEAR_SELECTION_JS) if p.get("filter") == DEMO_ITEMS_FILTER else None,
         Div(id="modal-container"),
         id="inventory-content",
     )
@@ -4935,7 +4963,7 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     active_status = (p or {}).get("status", "")
     if active_status in ("archived", "expired"):
         action_options.append(Option(t("inv.restore"), value="restore"))
-    if active_status in ("archived", "expired") or (p or {}).get("q") == DEMO_ITEMS_QUERY:
+    if active_status in ("archived", "expired") or (p or {}).get("filter") == DEMO_ITEMS_FILTER:
         action_options.append(Option(t("btn.delete"), value="delete"))
     # JS shows/hides these two based on the actual checked rows' statuses (updateBulkToolbar).
     if role_has_permission(settings or {}, role, "edit_inventory"):
@@ -5286,6 +5314,8 @@ def _inventory_empty_state(p: dict) -> FT:
     """Context-aware empty state: only show import CTA on unfiltered views."""
     active_status = p.get("status", "")
     active_q = p.get("q", "")
+    if p.get("filter") == DEMO_ITEMS_FILTER:
+        return Div(P(t("inventory.no_demo_items"), cls="empty-state-msg"), cls="empty-state", id="data-table")
     if active_status:
         label = display_enum(active_status, domain="item_status")
         return Div(P(t("inventory.no_status_items", status=label.lower()), cls="empty-state-msg"), cls="empty-state", id="data-table")
