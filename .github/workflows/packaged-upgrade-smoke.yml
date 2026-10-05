@@ -2,7 +2,15 @@ name: Packaged Upgrade Smoke
 
 # The packaged app through a user's upgrade and downgrade: the latest release,
 # then the candidate over it, then the release again over the candidate, then the
-# in-app updater. Nightly and on demand, never per pull request.
+# candidate once more. Nightly and on demand, never per pull request.
+#
+# Linux runs each copy over one data directory. The previous release registers
+# an owner, which writes the first ledger events, and creates a location; every
+# later copy must serve the same ledger events and records, and the same module
+# pages (scripts/smoke_records.py). Windows runs each installer over
+# the install the step before left, ending with the installer run the in-app
+# updater makes (--updated). The pip updater, its state file and a 2.5.0 data
+# directory are covered by scripts/e2e_update.py (E6).
 #
 # The candidate is the dev-latest build, or the Build Binaries run given as
 # candidate_run. Releases before GUARDED_SINCE do not check the version of an
@@ -47,6 +55,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download the previous release and the candidate
         shell: bash
         run: |
@@ -68,17 +78,18 @@ jobs:
           echo "previous $PREVIOUS (checks before opening: $GUARDED); candidate ${{ inputs.candidate_run || 'dev-latest' }}"
 
       # Data: each copy opens the same data directory in turn.
-      - name: Previous, candidate, downgrade, update (Linux, data)
+      - name: Previous, candidate, downgrade, reopen (Linux, data)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libfuse2 >/dev/null
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libfuse2 jq >/dev/null
           chmod +x "$RUNNER_TEMP"/previous/Celerp.AppImage "$RUNNER_TEMP"/candidate/Celerp.AppImage
           export HOME="$RUNNER_TEMP/home"; mkdir -p "$HOME"
           # Opens the data with one copy; prints "ready" or "not-ready" after $2 seconds at most.
+          # Once ready, runs each smoke_records.py command in $4.. against it, output in $3.<command>.
           open_data() {
-            local app="$1" wait="$2" log="$RUNNER_TEMP/$3.log"
+            local app="$1" wait="$2" log="$RUNNER_TEMP/$3.log" name="$3"; shift 3
             export CELERP_API_PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
             setsid xvfb-run -a "$app" >"$log" 2>&1 &
             local pid=$! deadline=$(( $(date +%s) + wait )) state=not-ready
@@ -86,6 +97,11 @@ jobs:
               if curl -fs "http://127.0.0.1:$CELERP_API_PORT/health/ready" | grep -q '"db"[[:space:]]*:[[:space:]]*"ok"'; then state=ready; break; fi
               sleep 1
             done
+            if [ "$state" = ready ]; then
+              for cmd in "$@"; do
+                python3 scripts/smoke_records.py "$cmd" "http://127.0.0.1:$CELERP_API_PORT" >"$RUNNER_TEMP/$name.$cmd" 2>&1 || state="$cmd-failed"
+              done
+            fi
             # Stop the app with its servers and bundled database, so the next copy
             # finds the data directory free.
             kill -TERM -- "-$pid" 2>/dev/null || true
@@ -98,10 +114,17 @@ jobs:
             find "$HOME/.config" \( -name 'celerp-config.json' -o -path '*/modules/*' \) -type f -print0 2>/dev/null |
               sort -z | xargs -0 -r sha256sum
           }
-          [ "$(open_data "$RUNNER_TEMP/previous/Celerp.AppImage" 180 previous)" = ready ] || { tail -100 "$RUNNER_TEMP/previous.log"; echo "::error::previous release did not open fresh data"; exit 1; }
-          echo "previous: opened fresh data"
-          [ "$(open_data "$RUNNER_TEMP/candidate/Celerp.AppImage" 240 candidate)" = ready ] || { tail -100 "$RUNNER_TEMP/candidate.log"; echo "::error::candidate did not open the previous release's data"; exit 1; }
-          echo "candidate: opened and migrated the previous release's data"
+          # A copy's view of the records, without its version.
+          records() { jq -S 'del(.version)' "$RUNNER_TEMP/$1.snapshot"; }
+          version() { jq -r .version "$RUNNER_TEMP/$1.snapshot"; }
+          state=$(open_data "$RUNNER_TEMP/previous/Celerp.AppImage" 180 previous seed snapshot)
+          [ "$state" = ready ] || { tail -100 "$RUNNER_TEMP/previous.log"; cat "$RUNNER_TEMP"/previous.seed "$RUNNER_TEMP"/previous.snapshot 2>/dev/null || true; echo "::error::previous release did not open fresh data and keep records in it ($state)"; exit 1; }
+          echo "previous: opened fresh data, $(cat "$RUNNER_TEMP/previous.seed")"
+          state=$(open_data "$RUNNER_TEMP/candidate/Celerp.AppImage" 240 candidate snapshot)
+          [ "$state" = ready ] || { tail -100 "$RUNNER_TEMP/candidate.log"; cat "$RUNNER_TEMP/candidate.snapshot" 2>/dev/null || true; echo "::error::candidate did not open the previous release's data ($state)"; exit 1; }
+          [ "$(version candidate)" != "$(version previous)" ] || { echo "::error::candidate reports the previous release's version $(version previous)"; exit 1; }
+          diff <(records previous) <(records candidate) || { echo "::error::the candidate does not serve the previous release's ledger and records"; exit 1; }
+          echo "candidate $(version candidate): opened and migrated the previous release's data; ledger and records unchanged"
           before=$(data_state)
           state=$(open_data "$RUNNER_TEMP/previous/Celerp.AppImage" 90 downgrade)
           after=$(data_state)
@@ -112,11 +135,18 @@ jobs:
           else
             echo "::notice::previous release $PREVIOUS_VERSION predates the check (from $GUARDED_SINCE); downgrade result: $state, data changed: $([ "$before" = "$after" ] && echo no || echo yes). Not asserted."
           fi
-          [ "$(open_data "$RUNNER_TEMP/candidate/Celerp.AppImage" 240 update)" = ready ] || { tail -100 "$RUNNER_TEMP/update.log"; echo "::error::candidate did not reopen the data after the downgrade attempt"; exit 1; }
-          echo "update: candidate reopened the data"
+          state=$(open_data "$RUNNER_TEMP/candidate/Celerp.AppImage" 240 reopen snapshot)
+          [ "$state" = ready ] || { tail -100 "$RUNNER_TEMP/reopen.log"; echo "::error::candidate did not reopen the data after the downgrade attempt ($state)"; exit 1; }
+          [ "$(version reopen)" = "$(version candidate)" ] || { echo "::error::reopened data reports $(version reopen), not $(version candidate)"; exit 1; }
+          if [ "$PREVIOUS_GUARDED" = true ]; then
+            diff <(records candidate) <(records reopen) || { echo "::error::the refused downgrade changed the ledger or records"; exit 1; }
+            echo "reopen: candidate reopened the data; ledger and records unchanged by the refused downgrade"
+          else
+            echo "reopen: candidate reopened the data; records changed by the unguarded downgrade: $(diff -q <(records candidate) <(records reopen) >/dev/null && echo no || echo yes). Not asserted."
+          fi
 
       # Install: each installer runs over the install the step before left.
-      - name: Previous, candidate, downgrade, update (Windows, install)
+      - name: Previous, candidate, downgrade, in-app update run (Windows, install)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
