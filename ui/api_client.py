@@ -2546,9 +2546,10 @@ async def bulk_transfer(token: str, entity_ids: list[str], to_location_id: str) 
         return _raise(await c.post("/items/bulk/transfer", json={"entity_ids": entity_ids, "to_location_id": to_location_id})).json()
 
 
-async def bulk_delete(token: str, entity_ids: list[str]) -> dict:
+async def bulk_delete(token: str, entity_ids: list[str], untouched_samples_only: bool = False) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post("/items/bulk/delete", json={"entity_ids": entity_ids})).json()
+        return _raise(await c.post("/items/bulk/delete", json={
+            "entity_ids": entity_ids, "untouched_samples_only": untouched_samples_only})).json()
 
 
 async def bulk_expire(token: str, entity_ids: list[str]) -> dict:

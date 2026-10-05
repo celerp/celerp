@@ -5521,7 +5521,7 @@ class TestItemActionRouteCompleteness:
     @pytest.mark.asyncio
     async def test_row_menu_delete_returns_200_removes_row(self, ui_client):
         """DELETE /api/items/{id} returns 200 empty body so htmx removes the row."""
-        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 1})):
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 1, "kept": 0})):
             r = await ui_client.delete("/api/items/gc:abc", cookies=_authed())
         assert r.status_code == 200
         assert r.content == b""
@@ -6467,7 +6467,7 @@ class TestInventoryBulkActions:
 
     @pytest.mark.asyncio
     async def test_bulk_delete_success(self, ui_client):
-        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 2})):
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 2, "kept": 0})):
             r = await ui_client.post(
                 "/api/items/bulk/delete",
                 content=b"selected=item%3Aa&selected=item%3Ab", headers={"content-type": "application/x-www-form-urlencoded"},
@@ -6479,9 +6479,9 @@ class TestInventoryBulkActions:
     @pytest.mark.asyncio
     async def test_bulk_delete_passes_ids(self, ui_client):
         captured = {}
-        async def _mock(token, entity_ids):
+        async def _mock(token, entity_ids, untouched_samples_only=False):
             captured["ids"] = entity_ids
-            return {"deleted": 2}
+            return {"deleted": 2, "kept": 0}
         with patch("ui.api_client.bulk_delete", new=_mock):
             await ui_client.post(
                 "/api/items/bulk/delete",
@@ -7099,7 +7099,7 @@ class TestBulkSelectionClear:
     @pytest.mark.asyncio
     async def test_bulk_delete_success_sends_selection_clear_trigger(self, ui_client):
         """Delete success response must include HX-Trigger: celerpSelectionClear."""
-        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 2})):
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 2, "kept": 0})):
             r = await ui_client.post(
                 "/api/items/bulk/delete",
                 content=b"selected=item%3Aa&selected=item%3Ab",

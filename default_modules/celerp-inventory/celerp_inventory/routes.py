@@ -2662,6 +2662,9 @@ class BulkTransferBody(BaseModel):
 
 class BulkDeleteBody(BaseModel):
     entity_ids: list[str]
+    # Sent by the demo list's Delete: delete only the ids that are still untouched
+    # samples now, so a sample edited or used since the list was shown is kept.
+    untouched_samples_only: bool = False
 
 
 @router.post("/bulk/status")
@@ -2838,6 +2841,13 @@ async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_co
     import sqlalchemy as _sa
     from celerp.models.projections import Projection as _Proj
     from celerp.models.ledger import LedgerEntry as _LE
+    entity_ids = payload.entity_ids
+    if payload.untouched_samples_only:
+        # Checked under the item locks taken above, so an edit either committed first
+        # (the item is kept) or waits and finds the item gone.
+        from celerp.services.demo import untouched_demo_item_ids
+        untouched = set(await untouched_demo_item_ids(session, company_id))
+        entity_ids = [eid for eid in entity_ids if eid in untouched]
     # Hard delete: remove projection rows and all ledger events for these items.
     # This is the correct behaviour for a user-initiated "Delete" action -
     # the item should vanish from the catalog entirely (hard delete, no event trail).
@@ -2847,18 +2857,18 @@ async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_co
         _sa.delete(_Proj).where(
             _Proj.company_id == company_id,
             _Proj.entity_type == "item",
-            _Proj.entity_id.in_(payload.entity_ids),
+            _Proj.entity_id.in_(entity_ids),
         )
     )
     await session.execute(
         _sa.delete(_LE).where(
             _LE.company_id == company_id,
             _LE.entity_type == "item",
-            _LE.entity_id.in_(payload.entity_ids),
+            _LE.entity_id.in_(entity_ids),
         )
     )
     await session.commit()
-    return {"deleted": len(payload.entity_ids)}
+    return {"deleted": len(entity_ids), "kept": len(payload.entity_ids) - len(entity_ids)}
 
 
 class BulkExpireBody(BaseModel):
