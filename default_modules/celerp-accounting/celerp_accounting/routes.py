@@ -358,6 +358,7 @@ def _account_to_dict(acc: Account) -> dict:
         "parent_code": acc.parent_code,
         "is_active": acc.is_active,
         "cash_flow_category": acc.cash_flow_category,
+        "code_generated": acc.code_generated,
     }
 
 

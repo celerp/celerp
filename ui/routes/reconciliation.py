@@ -188,7 +188,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], c
     amount = abs(float(line.get("amount", 0)))
     contact_opts = party_options(contacts or [])
     account_options = [
-        Option(account_label(a["code"], a["name"]), value=a["code"])
+        Option(account_label(a), value=a["code"])
         for a in chart
         if a.get("account_type") in ("expense", "cogs", "asset", "liability")
     ]
@@ -242,7 +242,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], cu
     amount = abs(float(line.get("amount", 0)))
     contact_opts = party_options(contacts or [])
     account_options = [
-        Option(account_label(a["code"], a["name"]), value=a["code"])
+        Option(account_label(a), value=a["code"])
         for a in chart
         if a.get("account_type") in ("expense", "cogs", "asset", "liability", "revenue")
     ]

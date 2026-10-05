@@ -19,8 +19,8 @@ may share one control. It is not collapsed into AccountRole.
 
 from __future__ import annotations
 
-import re
 import uuid
+from collections.abc import Mapping
 
 from celerp.compat import StrEnum
 
@@ -232,21 +232,19 @@ def allowed_types(role: str, role_map: dict[str, str]) -> frozenset[str]:
     return ROLE_TYPES[role]
 
 
-# The chart code a migration gives an account its source books carry without one: an
-# internal id, never a code anyone chose, so it is not shown to users. A clash with a
-# code already in the chart gets a "-n" suffix.
-_GENERATED_CODE = re.compile(r"M[0-9a-f]{8}(?:-\d+)?")
-
-
 def generated_account_code(key: uuid.UUID) -> str:
+    """The chart code a migration gives an account its source books carry without one.
+    The account is stored with code_generated set, so the code is never shown."""
     return f"M{key.hex[:8]}"
 
 
-def account_label(code: str | None, name: str | None) -> str:
-    """An account as users read it: code and name, the name alone when the code is
-    internal (generated_account_code), the code alone when there is no name."""
+def account_label(account: Mapping | None) -> str:
+    """An account as users read it: code and name, the name alone when an importer made
+    the code up (its stored code_generated flag), the code alone when there is no name."""
+    account = account or {}
+    code, name = account.get("code"), account.get("name")
     if code and name:
-        return name if _GENERATED_CODE.fullmatch(code) else f"{code} {name}"
+        return name if account.get("code_generated") else f"{code} {name}"
     return code or name or ""
 
 

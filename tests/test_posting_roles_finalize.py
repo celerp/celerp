@@ -211,7 +211,7 @@ async def test_an_account_set_before_finishing_is_kept(session, monkeypatch):
     await _import_chart(context, [*_SOURCE_CHART, ("other", "410", "Other sales", "revenue", None)])
     await set_role(session, context.company_id, "sales_revenue", "410")
     row = (await _readiness(context))["sales_revenue"]
-    assert (row["current"], row["current_name"]) == ("410", "Other sales")
+    assert (row["current"], row["current_account"]["name"]) == ("410", "Other sales")
     await _ready_run(context, monkeypatch)
     with pytest.raises(MigrationError) as exc:
         await _finalize(context, monkeypatch, _CHOICES)
@@ -283,8 +283,21 @@ async def test_an_account_the_source_gave_no_code_is_offered_by_its_name(session
     await _import_chart(context, [*_SOURCE_CHART, ("charges", None, "Bank charges", "expense", None)])
     [code] = await _codes(context) - {code for _, code, *_ in _SOURCE_CHART}
     [offered] = [c for c in (await _readiness(context))["general_expense"]["candidates"] if c["code"] == code]
-    assert account_label(offered["code"], offered["name"]) == "Bank charges"
+    assert account_label(offered) == "Bank charges"
 
     await set_role(session, context.company_id, "general_expense", code)
     row = (await _readiness(context))["general_expense"]
-    assert account_label(row["current"], row["current_name"]) == "Bank charges"
+    assert account_label(row["current_account"]) == "Bank charges"
+
+
+@pytest.mark.asyncio
+async def test_an_account_the_source_coded_like_a_generated_one_is_offered_with_its_code(session):
+    """The source's own code is shown, however it is spelled; only a code Celerp made up
+    is hidden."""
+    from celerp.accounting_roles import account_label
+
+    context = await _staged_context(session)
+    await _import_chart(context, [*_SOURCE_CHART, ("charges", "Mdeadbeef", "Bank charges", "expense", None)])
+    [offered] = [c for c in (await _readiness(context))["general_expense"]["candidates"]
+                 if c["code"] == "Mdeadbeef"]
+    assert account_label(offered) == "Mdeadbeef Bank charges"

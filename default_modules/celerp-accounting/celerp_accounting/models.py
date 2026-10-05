@@ -33,6 +33,9 @@ class Account(Base):
     # the headers whose accounts are not operating.
     cash_flow_category: Mapped[str | None] = mapped_column(String(16), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # True when an importer made the code up (the source account had none): an internal
+    # id, so users see the account by its name (accounting_roles.account_label).
+    code_generated: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa.false(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 

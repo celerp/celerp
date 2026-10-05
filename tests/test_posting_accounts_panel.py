@@ -312,3 +312,26 @@ def test_the_cost_of_goods_account_type_is_named_in_words():
     named = {lang: json.loads((locales / f"{lang}.json").read_text(encoding="utf-8"))["enum.account_type.cogs"]
              for lang in ("en", "es", "de")}
     assert named == {"en": "Cost of goods sold", "es": "Costo de ventas", "de": "Umsatzkosten"}
+
+
+@pytest.mark.asyncio
+async def test_escape_on_an_older_lot_puts_back_the_empty_account_not_the_lots_name(ui_client):
+    with patch("ui.api_client.get_posting_accounts", new=AsyncMock(return_value=_PANEL)):
+        r = await ui_client.get("/settings/accounting/posting-accounts/older-stock:item:old-1/display",
+                                cookies=_cookies())
+    body = r.content.decode()
+    assert "<span>--</span>" in body and "Older lot" not in body
+
+
+@pytest.mark.asyncio
+async def test_a_role_account_shows_its_code_unless_an_importer_made_it_up(ui_client):
+    roles = [{**_PANEL["roles"][0], "role": "receivable", "code": "Mdeadbeef", "name": "Debtors",
+              "code_generated": False},
+             {**_PANEL["roles"][1], "role": "general_expense", "code": "M73d6d4fc", "name": "Bank charges",
+              "code_generated": True, "status": "ready", "problem": None}]
+    with patch("ui.api_client.get_posting_accounts", new=AsyncMock(return_value={**_PANEL, "roles": roles})):
+        shown = {role: (await ui_client.get(f"/settings/accounting/posting-accounts/{role}/display",
+                                             cookies=_cookies())).content.decode()
+                 for role in ("receivable", "general_expense")}
+    assert "<span>Mdeadbeef Debtors</span>" in shown["receivable"]
+    assert "<span>Bank charges</span>" in shown["general_expense"] and "M73d6d4fc" not in shown["general_expense"]

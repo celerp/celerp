@@ -304,14 +304,10 @@ _OLDER_STOCK = "older-stock:"
 _POSTING_BADGE = {"ready": "active", "unused": "inactive"}
 
 
-def _posting_account_text(code: str | None, name: str | None) -> str:
-    return account_label(code, name) or EMPTY
-
-
-def _posting_display_cell(key: str, code: str | None, name: str | None, error: str | None = None) -> FT:
+def _posting_display_cell(key: str, account: dict | None, error: str | None = None) -> FT:
     """The account a role posts to; a click swaps in the picker (click-to-edit)."""
     return Td(
-        Span(_posting_account_text(code, name)),
+        Span(account_label(account) or EMPTY),
         P(error, cls="cell-error") if error else None,
         hx_get=f"/settings/accounting/posting-accounts/{key}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
@@ -345,7 +341,7 @@ def _posting_role_row(row: dict, error: str | None = None) -> FT:
     status = row["status"]
     return Tr(
         Td(role_label(row["role"], row["label"])),
-        _posting_display_cell(row["role"], row.get("code"), row.get("name"), error),
+        _posting_display_cell(row["role"], row, error),
         Td(Span(t(f"posting.status_{status}"), cls=f"badge badge--{_POSTING_BADGE.get(status, 'overdue')}"),
            P(refusal_text(row["problem"]), cls="text-muted") if row.get("problem") else None),
         Td(", ".join(row.get("earlier") or []) or EMPTY),
@@ -370,8 +366,8 @@ def _older_stock_row(lot: dict, currency: str, error: str | None = None, recorde
     key = f"{_OLDER_STOCK}{lot['item_id']}"
     return Tr(
         Td(_older_lot_label(lot)),
-        Td(Span(_posting_account_text(recorded.get("code"), recorded.get("name")))) if recorded
-        else _posting_display_cell(key, None, None, error),
+        Td(Span(account_label(recorded) or EMPTY)) if recorded
+        else _posting_display_cell(key, None, error),
         Td(P(t("posting.older_stock_recorded") if recorded
              else t("posting.older_stock_value", value=fmt_money(lot["value"], currency)), cls="text-muted")),
         Td(EMPTY),
@@ -1069,11 +1065,15 @@ def setup_routes(app):
             data = await api.get_posting_accounts(token)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        current = _older_lot(data, key) if key.startswith(_OLDER_STOCK) else next(
-            (r for r in data.get("roles", []) if r["role"] == key), None)
+        if key.startswith(_OLDER_STOCK):
+            # An older lot shown here has no account yet; its own name is not one.
+            if _older_lot(data, key) is None:
+                return P(t("posting.unknown_role"), cls="cell-error")
+            return _posting_display_cell(key, None)
+        current = next((r for r in data.get("roles", []) if r["role"] == key), None)
         if current is None:
             return P(t("posting.unknown_role"), cls="cell-error")
-        return _posting_display_cell(key, current.get("code"), current.get("name"))
+        return _posting_display_cell(key, current)
 
     @app.patch("/settings/accounting/posting-accounts/{key}")
     async def posting_account_patch(request: Request, key: str):

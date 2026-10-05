@@ -1067,7 +1067,7 @@ def _posting_accounts(roles: list[dict], chosen: dict[str, str]) -> FT:
             Thead(Tr(Th(t("posting.col_role")), Th(t("posting.col_account")))),
             Tbody(*[
                 Tr(Td(role_label(row["role"], row["label"])),
-                   Td(account_label(row["current"], row.get("current_name")) if row["current"] else account_picker(
+                   Td((account_label(row["current_account"]) or row["current"]) if row["current"] else account_picker(
                        f"{_ROLE_FIELD}{row['role']}", row["candidates"],
                        value=chosen.get(row["role"]) or row["preselect"] or "",
                        proposal=row["proposal"], aria_label=role_label(row["role"], row["label"]))))

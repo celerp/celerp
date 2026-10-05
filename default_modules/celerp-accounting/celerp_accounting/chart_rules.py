@@ -146,7 +146,7 @@ async def chart_accounts(session: AsyncSession, company_id: uuid.UUID) -> list[d
     parents = {r.parent_code for r in rows if r.parent_code}
     return [
         {"code": r.code, "name": r.name, "account_type": r.account_type,
-         "is_active": r.is_active, "has_children": r.code in parents}
+         "is_active": r.is_active, "has_children": r.code in parents, "code_generated": r.code_generated}
         for r in rows
     ]
 

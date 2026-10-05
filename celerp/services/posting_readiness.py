@@ -180,6 +180,11 @@ def _fits(role: str, account: dict) -> bool:
             and not (AccountRole(role) in POSTABLE_ROLES and account.get("has_children")))
 
 
+def _brief(account: dict) -> dict:
+    """An account as the pickers and labels need it (accounting_roles.account_label)."""
+    return {k: account[k] for k in ("code", "name", "account_type", "code_generated")}
+
+
 def _ranked(role: str, chart: dict[str, dict], controls: list[str]) -> list[dict]:
     """Accounts that can serve ``role``: the source's controls first, then accounts whose
     name shares a word with the role's, then by code. The order only helps the user find
@@ -190,8 +195,7 @@ def _ranked(role: str, chart: dict[str, dict], controls: list[str]) -> list[dict
         named = bool(words & set(str(account.get("name") or "").lower().split()))
         return (account["code"] not in controls, not named, account["code"])
 
-    return [{k: a[k] for k in ("code", "name", "account_type")}
-            for a in sorted((a for a in chart.values() if _fits(role, a)), key=rank)]
+    return [_brief(a) for a in sorted((a for a in chart.values() if _fits(role, a)), key=rank)]
 
 
 def _proposals(chart: dict[str, dict]) -> dict[str, dict]:
@@ -216,7 +220,7 @@ async def readiness(session: AsyncSession, company_id) -> list[dict] | None:
     None when accounting is not running.
 
     Each row: role, label, group, required (a workflow the company uses needs it),
-    current and current_name (the account already set), controls (the source books' control accounts),
+    current and current_account (the code already set, and that chart account), controls (the source books' control accounts),
     preselect (the single suitable control, when there is exactly one), candidates
     (suitable chart accounts, ranked) and proposal (the account to add instead)."""
     chart = await _chart(session, company_id)
@@ -234,7 +238,7 @@ async def readiness(session: AsyncSession, company_id) -> list[dict] | None:
         rows.append({
             "role": role.value, "label": ROLE_LABELS[role], "group": _GROUP_OF[role.value],
             "required": role.value in needed, "current": code,
-            "current_name": (chart.get(code) or {}).get("name") if code else None,
+            "current_account": _brief(chart[code]) if code in chart else None,
             "controls": controls, "preselect": fitting[0] if len(controls) == 1 and fitting else None,
             "candidates": _ranked(role.value, chart, controls), "proposal": proposals[role.value],
         })
@@ -384,8 +388,7 @@ async def _older_stock(session: AsyncSession, company_id, settings: dict, chart:
             for c in scope_list(settings, role)}
     return {"lots": await unrecorded_lots(session, company_id),
             "currency": str(settings.get("currency") or "USD").upper(),
-            "candidates": [{k: chart[c][k] for k in ("code", "name", "account_type")}
-                           for c in sorted(held) if c in chart]}
+            "candidates": [_brief(chart[c]) for c in sorted(held) if c in chart]}
 
 
 async def panel(session: AsyncSession, company_id) -> dict | None:
@@ -407,6 +410,7 @@ async def panel(session: AsyncSession, company_id) -> dict | None:
             "role": role.value, "label": ROLE_LABELS[role], "group": _GROUP_OF[role.value],
             "required": role.value in needed, "code": code,
             "name": (chart.get(code) or {}).get("name") if code else None,
+            "code_generated": bool((chart.get(code) or {}).get("code_generated")) if code else False,
             "status": status, "problem": problem,
             "earlier": [c for c in scope_list(settings, role.value) if c != code],
             "candidates": _ranked(role.value, chart, []),

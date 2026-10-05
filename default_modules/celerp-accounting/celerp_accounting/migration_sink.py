@@ -209,7 +209,7 @@ async def _write_account(
     code = _free_code(account.code or generated_account_code(deterministic_id(context, ACCOUNT, account.source_external_id)), taken)
     existing[code] = await import_service.create_chart_account(
         session, company_id, code=code, name=account.name, account_type=account.account_type.value,
-        parent_code=parent_code, is_active=account.is_active,
+        parent_code=parent_code, is_active=account.is_active, code_generated=not account.code,
     )
     taken.add(code)
     role = _control_role(account)

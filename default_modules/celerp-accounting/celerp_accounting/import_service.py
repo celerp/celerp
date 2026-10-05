@@ -145,9 +145,11 @@ async def create_chart_account(
     parent_code: str | None,
     cash_flow_category: str | None = None,
     is_active: bool = True,
+    code_generated: bool = False,
 ) -> Account:
     """Add one chart-of-accounts row; an account code already in use is refused, and
-    so is a parent the new account cannot sit under."""
+    so is a parent the new account cannot sit under. ``code_generated`` marks a code an
+    importer made up because the source account had none."""
     existing = (await session.execute(
         select(Account.id).where(Account.company_id == company_id, Account.code == code)
     )).scalar_one_or_none()
@@ -164,6 +166,7 @@ async def create_chart_account(
         parent_code=parent_code,
         cash_flow_category=cash_flow_category,
         is_active=is_active,
+        code_generated=code_generated,
     )
     session.add(acc)
     return acc
