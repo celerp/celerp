@@ -3619,5 +3619,6 @@
   "item.draft": "{sku} es un borrador y aún no es existencia: primero póngalo disponible.",
   "item.reserve_not_available": "{sku} está {status}: solo se puede reservar existencia disponible.",
   "item.reserve_out_of_range": "{sku} tiene {held} con {reserved} reservado: un cambio de reserva de {change} dejaría {result}, fuera de 0 a {held}.",
-  "item.invoice_not_available": "{sku} está {status}: solo se puede facturar existencia disponible."
+  "item.invoice_not_available": "{sku} está {status}: solo se puede facturar existencia disponible.",
+  "import.migration_source_reserved": "{entity_id} declara el origen \"migration\": solo una migración de datos escribe ese origen."
 }

@@ -3619,5 +3619,6 @@
   "item.draft": "{sku} เป็นแบบร่าง ยังไม่ใช่สต็อก: โปรดทำให้พร้อมใช้งานก่อน",
   "item.reserve_not_available": "{sku} อยู่ในสถานะ {status}: จองได้เฉพาะสต็อกที่พร้อมใช้งานเท่านั้น",
   "item.reserve_out_of_range": "{sku} มี {held} จองไว้ {reserved}: การเปลี่ยนการจอง {change} จะเหลือ {result} ซึ่งอยู่นอกช่วง 0 ถึง {held}",
-  "item.invoice_not_available": "{sku} อยู่ในสถานะ {status}: ออกใบแจ้งหนี้ได้เฉพาะสต็อกที่พร้อมใช้งานเท่านั้น"
+  "item.invoice_not_available": "{sku} อยู่ในสถานะ {status}: ออกใบแจ้งหนี้ได้เฉพาะสต็อกที่พร้อมใช้งานเท่านั้น",
+  "import.migration_source_reserved": "{entity_id} ระบุแหล่งที่มา \"migration\": เฉพาะการย้ายข้อมูลเท่านั้นที่เขียนแหล่งที่มานี้ได้"
 }

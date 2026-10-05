@@ -1963,7 +1963,7 @@ async def test_ie_import_with_source_ts(client):
         "entity_id": f"item:{uuid.uuid4()}",
         "event_type": "item.created",
         "data": {"sku": "TS-IMPORT", "name": "Timestamped", "sell_by": "piece", "quantity": 1},
-        "source": "migration",
+        "source": "import",
         "idempotency_key": uuid.uuid4().hex,
         "source_ts": "2025-01-15T10:30:00Z",
     }

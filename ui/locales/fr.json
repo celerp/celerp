@@ -3619,5 +3619,6 @@
   "item.draft": "{sku} est un brouillon, pas encore du stock : rendez-le d'abord disponible.",
   "item.reserve_not_available": "{sku} est {status} : seul le stock disponible peut être réservé.",
   "item.reserve_out_of_range": "{sku} contient {held} dont {reserved} réservé : une modification de réservation de {change} laisserait {result}, hors de 0 à {held}.",
-  "item.invoice_not_available": "{sku} est {status} : seul le stock disponible peut être facturé."
+  "item.invoice_not_available": "{sku} est {status} : seul le stock disponible peut être facturé.",
+  "import.migration_source_reserved": "{entity_id} déclare la source \"migration\" : seule une migration de données écrit cette source."
 }

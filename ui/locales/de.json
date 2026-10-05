@@ -3619,5 +3619,6 @@
   "item.draft": "{sku} ist ein Entwurf und noch kein Bestand: Machen Sie es zuerst verfügbar.",
   "item.reserve_not_available": "{sku} ist {status}: Nur verfügbarer Bestand kann reserviert werden.",
   "item.reserve_out_of_range": "{sku} hat {held} Bestand, davon {reserved} reserviert: Eine Änderung der Reservierung um {change} ergäbe {result}, außerhalb von 0 bis {held}.",
-  "item.invoice_not_available": "{sku} ist {status}: Nur verfügbarer Bestand kann in Rechnung gestellt werden."
+  "item.invoice_not_available": "{sku} ist {status}: Nur verfügbarer Bestand kann in Rechnung gestellt werden.",
+  "import.migration_source_reserved": "{entity_id} gibt die Quelle \"migration\" an: Nur eine Datenmigration schreibt diese Quelle."
 }

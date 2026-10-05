@@ -3619,5 +3619,6 @@
   "item.draft": "{sku} مسودة وليست مخزونًا بعد: اجعله متاحًا أولاً.",
   "item.reserve_not_available": "{sku} حالته {status}: لا يمكن حجز إلا المخزون المتاح.",
   "item.reserve_out_of_range": "{sku} يحتوي على {held} منها {reserved} محجوز: تغيير الحجز بمقدار {change} سيترك {result}، خارج النطاق من 0 إلى {held}.",
-  "item.invoice_not_available": "{sku} حالته {status}: لا يمكن إصدار فاتورة إلا للمخزون المتاح."
+  "item.invoice_not_available": "{sku} حالته {status}: لا يمكن إصدار فاتورة إلا للمخزون المتاح.",
+  "import.migration_source_reserved": "{entity_id} يدّعي المصدر \"migration\": لا يكتب هذا المصدر إلا ترحيل البيانات."
 }

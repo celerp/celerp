@@ -3619,5 +3619,6 @@
   "item.draft": "{sku} is a draft, not stock yet: make it available first.",
   "item.reserve_not_available": "{sku} is {status}: only available stock can be reserved.",
   "item.reserve_out_of_range": "{sku} holds {held} with {reserved} reserved: a reservation change of {change} would leave {result}, outside 0 to {held}.",
-  "item.invoice_not_available": "{sku} is {status}: only available stock can be invoiced."
+  "item.invoice_not_available": "{sku} is {status}: only available stock can be invoiced.",
+  "import.migration_source_reserved": "{entity_id} claims source \"migration\": only a data migration writes that source."
 }

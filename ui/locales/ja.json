@@ -3619,5 +3619,6 @@
   "item.draft": "{sku} は下書きで、まだ在庫ではありません。先に利用可能にしてください。",
   "item.reserve_not_available": "{sku} は {status} です。予約できるのは利用可能な在庫だけです。",
   "item.reserve_out_of_range": "{sku} の数量は {held}、予約済みは {reserved} です。予約を {change} 変更すると {result} になり、0 から {held} の範囲外です。",
-  "item.invoice_not_available": "{sku} は {status} です。請求できるのは利用可能な在庫だけです。"
+  "item.invoice_not_available": "{sku} は {status} です。請求できるのは利用可能な在庫だけです。",
+  "import.migration_source_reserved": "{entity_id} はソース \"migration\" を指定しています。このソースを書き込めるのはデータ移行だけです。"
 }
