@@ -145,8 +145,8 @@ async def test_undoing_an_older_sale_waits_for_the_upgrade_and_finds_the_lot_on_
     items = await _rows(committed_engine, cid, "item")
     assert (items[held].get(_FIELD), items[sold].get(_FIELD)) == ("1130-P", "1130-P")
     assert items[sold]["status"] == "available"
-    # 130 moved from 1130-OB; the invoice still carries the sold lot's cost of sales.
-    assert (await _net(committed_engine, cid, "1130-P"), await _net(committed_engine, cid, "1130-OB")) == (30.0, 0.0)
+    # 130 moved from 1130-OB; the sold lot came back into stock with its cost.
+    assert (await _net(committed_engine, cid, "1130-P"), await _net(committed_engine, cid, "1130-OB")) == (130.0, 0.0)
     await _post(own_client, tok, f"/docs/{inv}/revert-to-draft")
     assert (await _net(committed_engine, cid, "1130-P"), await _net(committed_engine, cid, "1130-OB")) == (130.0, 0.0)
 
