@@ -103,6 +103,19 @@ async def test_a_delete_waiting_on_a_reimport_still_deletes_the_item(committed_e
     assert await _left_behind(committed_engine, cid, lot) == (False, 0)
 
 
+@pytest.mark.parametrize("name", ["Widget", "Widget renamed"])
+async def test_an_item_deleted_before_a_reimport_stays_deleted(committed_engine, race, connector, name):
+    client, _ = race
+    cid, tok = await _company(committed_engine)
+    assert await connector(cid, _record("qb:3")) == "created"
+    lot = "item:qb:3"
+    assert (await _delete(client, tok, lot)()).status_code == 200
+
+    assert await connector(cid, _record("qb:3", name=name)) == "noop"
+    assert await _left_behind(committed_engine, cid, lot) == (False, 0)
+    assert await connector(cid, _record("qb:4")) == "created"  # a record never deleted still arrives
+
+
 async def test_a_changed_reimport_is_recorded_as_an_update_of_the_changed_fields(committed_engine, race, connector):
     cid, _ = await _company(committed_engine)
     assert await connector(cid, _record("qb:3", cost_price=None)) == "created"

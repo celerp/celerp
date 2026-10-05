@@ -7,7 +7,10 @@ An item may only vanish when nothing else depends on it. ``depended_on`` is the 
 test of that (a document or list line, a journal entry, a movement or note in another
 record, an import that can still be undone, a file kept on the item), and
 ``erase_items`` the one way of removing an item and its history. Callers check what
-their own operation allows first, then erase, in one transaction."""
+their own operation allows first, then erase, in one transaction.
+
+An erased item that came from a connector stays erased: its connector identity is kept
+in the company settings, and a later sync of that record writes nothing."""
 from __future__ import annotations
 
 import sqlalchemy as sa
@@ -16,8 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.models.import_batch import ImportBatch
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services.company_lock import locked_company
 
 _CHUNK = 200
+
+# The connector identities (state "idempotency_key") of erased items, sorted.
+ERASED_CONNECTOR_ITEMS = "erased_connector_items"
 
 
 _FILE_KEYS = ("files", "attachments", "preview_image_id")
@@ -75,7 +82,20 @@ async def erase_items(session: AsyncSession, company_id, entity_ids) -> None:
     ids = sorted(set(entity_ids))
     if not ids:
         return
+    keys = {(state or {}).get("idempotency_key") for (state,) in (await session.execute(
+        sa.select(Projection.state).where(Projection.company_id == company_id, Projection.entity_id.in_(ids))))}
+    keys.discard(None)
+    if keys:
+        company = await locked_company(session, company_id)
+        settings = dict(company.settings or {})
+        settings[ERASED_CONNECTOR_ITEMS] = sorted(keys | set(settings.get(ERASED_CONNECTOR_ITEMS, [])))
+        company.settings = settings
     await session.execute(sa.delete(Projection).where(
         Projection.company_id == company_id, Projection.entity_id.in_(ids)))
     await session.execute(sa.delete(LedgerEntry).where(
         LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(ids)))
+
+
+def erased_from_connector(settings: dict, idem_key: str) -> bool:
+    """True when the item a connector knows by ``idem_key`` was erased here."""
+    return idem_key in settings.get(ERASED_CONNECTOR_ITEMS, ())

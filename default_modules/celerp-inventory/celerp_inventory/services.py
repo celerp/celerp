@@ -36,7 +36,7 @@ from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
-from celerp.services.account_roles import lot_account
+from celerp.services.account_roles import current_settings, lot_account
 from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.cost_visibility import COST_ITEM_KEYS
@@ -45,6 +45,7 @@ from celerp.services.company_lock import holds_company_lock, lock_company, lock_
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.lot_origin import book_lot_value, recognize_opening_lots, self_booked
 from celerp.importers.tabular import CsvImportSpec, cell_error_code, finite_float
+from celerp.services.item_erasure import erased_from_connector
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, reject_system_item_fields
 from celerp.services.money import to_stored_float, unit_price_from_total
 from celerp.services.permissions import role_has_permission
@@ -1728,7 +1729,8 @@ async def update_item_from_connector(session: AsyncSession, entity_id: str, data
 async def upsert_from_connector(company_id: str, item) -> str:
     """
     Create or update an item from a connector payload. Returns the write outcome:
-    "created", "updated", or "noop" (this exact content was already applied).
+    "created", "updated", or "noop" (this exact content was already applied, or the user
+    erased the item here).
 
     `item` must have: sku, name, idempotency_key (stable per external item).
     Optional: sale_price, quantity, cost_price, description.
@@ -1758,6 +1760,9 @@ async def upsert_from_connector(company_id: str, item) -> str:
         data["description"] = item.description
 
     async with AsyncSessionLocal() as session:
+        # An item the user erased stays erased; the platform still holding it changes nothing.
+        if erased_from_connector(await current_settings(session, company_id), idem_key):
+            return "noop"
         # Derived price lists are computed from the base at read time; a store-synced price
         # must not be stored under a derived key (it would be masked on every read, then
         # resurface as a stale manual price if the factor is ever removed).
