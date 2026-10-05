@@ -1743,6 +1743,13 @@ async def list_modules(
     return await asyncio.to_thread(_scan_modules)
 
 
+def _running_modules() -> list[str]:
+    """The modules this process loaded: what a company with no per-module settings runs."""
+    from celerp.modules.loader import loaded_modules
+
+    return [m["name"] for m in loaded_modules()]
+
+
 @router.post("/me/modules/{module_name}/enable", dependencies=[require_permission("manage_company_settings")])
 async def enable_module(
     module_name: str,
@@ -1756,7 +1763,7 @@ async def enable_module(
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
-    company.settings = enable(company.settings or {}, module_name)
+    company.settings = enable(company.settings or {}, module_name, _running_modules())
     await session.commit()
     await asyncio.to_thread(set_enabled_modules, [module_name])
     enabled_list = sorted(get_enabled(company.settings))
@@ -1776,7 +1783,7 @@ async def disable_module(
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
-    company.settings = disable(company.settings or {}, module_name)
+    company.settings = disable(company.settings or {}, module_name, _running_modules())
     await session.commit()
     # Remove from config file so the next restart honours the disable, keeping
     # DB and file in sync.
@@ -1828,7 +1835,7 @@ async def delete_module(
 
     # Prune the freed name from both enabled stores so a later re-import starts
     # clean (mirrors disable's dual-store write: settings + config file).
-    company.settings = disable(company.settings or {}, module_name)
+    company.settings = disable(company.settings or {}, module_name, _running_modules())
     await session.commit()
     await asyncio.to_thread(remove_enabled_module, module_name)
     return {"ok": True, "name": module_name}

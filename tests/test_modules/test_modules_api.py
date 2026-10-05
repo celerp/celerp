@@ -680,3 +680,31 @@ class TestModuleDataPurge:
             names = await session.run_sync(
                 lambda s: sa_inspect(s.connection()).get_table_names())
         assert "acme_widget" not in names and "acme_meta" not in names
+
+
+class TestSettingsPredatingModuleEnablement:
+    """A company whose settings hold no enabled_modules runs every loaded module, so a
+    toggle starts from those, never from nothing."""
+
+    async def _legacy(self, client, session) -> str:
+        from celerp.models.company import Company
+
+        token = await _register(client)
+        company_id = (await client.get("/companies/me", headers=_h(token))).json()["id"]
+        company = await session.get(Company, uuid.UUID(company_id))
+        company.settings = {k: v for k, v in (company.settings or {}).items() if k != "enabled_modules"}
+        await session.commit()
+        return token
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action, change", [("enable", {"gemstones"}), ("disable", set())])
+    async def test_a_toggle_keeps_every_other_running_module(self, client, session, monkeypatch, action, change):
+        from celerp.modules import loader
+
+        running = set(loader.first_party_names())
+        monkeypatch.setattr(loader, "_loaded", [{"name": n} for n in sorted(running)])  # as a real start loads them
+        token = await self._legacy(client, session)
+        name = "gemstones" if action == "enable" else "celerp-labels"
+        r = await client.post(f"/companies/me/modules/{name}/{action}", headers=_h(token))
+        assert r.status_code == 200, r.text
+        assert set(r.json()["enabled_modules"]) == (running | change) - ({name} if action == "disable" else set())

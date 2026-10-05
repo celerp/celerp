@@ -237,7 +237,7 @@ async def test_a_held_back_start_refuses_changes_until_a_start_brings_the_record
     the startup backfills; reading and enabling modules still work. Once the missing module
     is enabled, the next start brings the records current and changes are accepted again."""
     from celerp.models.ledger import LedgerEntry
-    from celerp.modules import slots
+    from celerp.modules import loader, slots
     from celerp.services.cogs_backfill import COGS_BACKFILL_KEY
     from celerp.services.status_doc_backfill import STATUS_DOC_BACKFILL_KEY
 
@@ -260,6 +260,7 @@ async def test_a_held_back_start_refuses_changes_until_a_start_brings_the_record
     assert await _stored(session, old["company_id"]) == before
     assert before[2] == {STATUS_DOC_BACKFILL_KEY: None, COGS_BACKFILL_KEY: None}
     assert (await client.get(f"/manufacturing/{run}", headers=old["headers"])).status_code == 200
+    monkeypatch.setattr(loader, "_loaded", [{"name": n} for n in sorted(loader.first_party_names())])  # a real start's
     enabled = await client.post("/companies/me/modules/celerp-manufacturing/enable", headers=old["headers"])
     assert enabled.status_code != 503, enabled.text
     purged = await client.post("/companies/me/modules/celerp-manufacturing/purge-data", headers=old["headers"])
