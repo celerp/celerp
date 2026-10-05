@@ -20,7 +20,7 @@ from ui.components.table import EMPTY, unwrap_address
 from celerp.services.currencies import CURRENCY_CODES, currency_label
 from ui.components.currency import currency_combobox_td
 from ui.components.phone import phone_input_td as _phone_input_td, phone_head_items as _phone_head_items
-from ui.config import PRIVACY_POLICY_URL
+from ui.config import PAYMENT_TERMS_URL, PRIVACY_POLICY_URL
 from ui.config import get_token as _token
 from ui.config import get_role as _get_role
 from celerp.services.auth import MIN_PASSWORD_LENGTH
@@ -1207,7 +1207,7 @@ def setup_routes(app):
     _register_tax_crud(app, "purchasing-taxes", "get_purchasing_taxes", "patch_purchasing_taxes", "/settings/purchasing?tab=taxes")
 
     # ── Payment Terms PATCH endpoints ────────────────────────────────
-    _register_terms_crud(app, "terms", "get_payment_terms", "patch_payment_terms", "/settings/sales?tab=terms")
+    _register_terms_crud(app, "terms", "get_payment_terms", "patch_payment_terms", PAYMENT_TERMS_URL)
     _register_terms_crud(app, "purchasing-terms", "get_purchasing_payment_terms", "patch_purchasing_payment_terms", "/settings/purchasing?tab=terms")
 
     # ── Price Lists CRUD endpoints ───────────────────────────────────
