@@ -57,7 +57,7 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance, today_iso
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
@@ -8635,10 +8635,8 @@ async def undo_audit_adjust(
 
 # --- Write-off (disposal) list: seed from a selection, remove stock per line, post one JE ----------
 # Mirrors the audit trio (create / set-line / terminal / undo) but is EVENT-based: the user enters the
-# known quantity leaving stock per line, with a destination expense/cogs/equity account and a comment,
+# known quantity leaving stock per line, with a destination expense or equity account and a comment,
 # rather than counting. The terminal carves or disposes each line's stock and posts one balanced JE.
-
-_WRITEOFF_ACCOUNT_TYPES = frozenset({"expense", "cogs", "equity"})
 
 
 class WriteoffCreateBody(BaseModel):
@@ -8662,19 +8660,19 @@ async def _get_writeoff(session: AsyncSession, company_id, entity_id: str, *, fo
 
 
 async def _validate_writeoff_account(session, company_id, code: str) -> None:
-    """A write-off destination must be a real chart account of an expense/cogs/equity class (spoilage
-    and samples -> expense or cogs; owner drawings / family use -> equity). Validated at the function
-    level, never only in the picker: a direct API call cannot post to an asset or revenue account."""
+    """A write-off destination must be a real chart account of a WRITEOFF_ACCOUNT_TYPES class. Validated
+    at the function level, never only in the picker: a direct API call cannot post to an asset,
+    revenue or cost of sales account."""
     from celerp_accounting.models import Account
     acc = (await session.execute(select(Account).where(
         Account.company_id == company_id, Account.code == code))).scalar_one_or_none()
     if acc is None:
         raise HTTPException(status_code=422, detail=f"Account '{code}' is not in the chart of accounts")
-    if acc.account_type not in _WRITEOFF_ACCOUNT_TYPES:
+    if acc.account_type not in WRITEOFF_ACCOUNT_TYPES:
         raise HTTPException(
             status_code=422,
             detail=f"Account '{code}' is a {acc.account_type} account; a write-off destination must be "
-                   "an expense, cogs, or equity account",
+                   "an expense or equity account",
         )
 
 

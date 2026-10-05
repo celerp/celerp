@@ -3109,7 +3109,7 @@ class TestDocumentPolish:
 
 class TestWriteoffListDetail:
     """A draft write-off list renders qty_out / account / comment as on-page click-to-edit cells
-    (GDR 2f), the account picker is filtered to expense/cogs/equity chart accounts (function-level
+    (GDR 2f), the account picker is filtered to expense and equity chart accounts (function-level
     filter mirrored from the API), and every render path stays column-aligned."""
 
     _WO_CHART = [
@@ -3197,7 +3197,7 @@ class TestWriteoffListDetail:
         assert "/lists/list:WO-1/action/undo-write-off" in html
 
     @pytest.mark.asyncio
-    async def test_account_picker_limited_to_expense_cogs_equity(self, ui_client):
+    async def test_account_picker_limited_to_expense_and_equity(self, ui_client):
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=self._wo_list())),
             patch("ui.api_client.get_chart",
@@ -3207,8 +3207,9 @@ class TestWriteoffListDetail:
                 "/lists/list:WO-1/writeoff-line/ln-abc/account/edit", cookies=_authed())
         assert r.status_code == 200
         html = r.content.decode()
-        # Expense / cogs / equity codes are offered; asset (1130) and revenue (4000) are not.
-        assert "6100" in html and "5100" in html and "3200" in html
+        # Expense and equity codes are offered; cost of sales (5100), asset (1130) and revenue (4000) are not.
+        assert "6100" in html and "3200" in html
+        assert "5100" not in html
         assert "1130" not in html
         assert "4000" not in html
 
