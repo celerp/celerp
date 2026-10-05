@@ -719,7 +719,7 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
         assert re.search(rf"<th\b[^>]*>\s*{header}\s*</th>", verify), header
     for header in ("Source", "Celerp", "Difference"):
         assert re.search(rf'<th\b[^>]*class="[^"]*cell--number[^"]*"[^>]*>\s*{header}', verify), header
-    assert "48210.55" in verify
+    assert "$48,210.55" in verify
     assert re.search(rf'<form\b[^>]*action="/migrations/{run_id}/finalize"', verify)
     assert "Finish migration" in verify
     assert _link(verify, f"/migrations/{run_id}/pack", "Download reconciliation pack")
@@ -733,7 +733,7 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     assert r.status_code == 200
     complete = _visible(r)
     assert "Your company is ready." in complete
-    for total in ("48210.55", "3120.00", "1875.40"):
+    for total in ("$48,210.55", "$3,120.00", "$1,875.40"):
         assert total in complete
     assert _link(complete, f"/migrations/{run_id}/pack", "Download reconciliation pack")
     company_id = fake_api.runs[run_id]["company_id"]

@@ -576,6 +576,7 @@ class ReconciliationExpectation(BaseModel):
     """One source-side figure the destination must reproduce."""
     measure: ReconciliationMeasure
     key: str = ""                             # account, contact, item/location, doc type, ...
+    label: str = ""                           # the source's own name for the keyed record, shown to people
     currency: str | None = None
     expected: CIFDecimal
     tolerance: CIFTolerance

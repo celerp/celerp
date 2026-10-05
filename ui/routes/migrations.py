@@ -31,7 +31,8 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.posting_accounts import NEW_ACCOUNT, account_picker
 from ui.components.shell import auth_shell, client_scripts, flash, page_title
-from ui.components.table import searchable_select
+from ui.components.activity import fmt_qty
+from ui.components.table import display_enum, fmt_money, searchable_select
 from ui.config import (
     clear_session_cookies,
     cookie_domain,
@@ -40,7 +41,7 @@ from ui.config import (
     session_cookie_secure,
     set_session_cookies,
 )
-from ui.i18n import get_lang, role_label, t
+from ui.i18n import doc_type_label, get_lang, role_label, t
 from ui.routes.auth import auth_header
 
 SCAN_COOKIE = "celerp_migration_scan"
@@ -128,6 +129,11 @@ def wizard_page(request: Request, *content, status_code: int = 200, title: str =
     if status_code == 200:
         return page
     return HTMLResponse(to_xml(page), status_code=status_code)
+
+
+def wizard_table(*parts, cls: str = "data-table") -> FT:
+    """A wizard table: wider than the card, it scrolls sideways inside its own box."""
+    return Div(Table(*parts, cls=cls), cls="table-scroll-wrap")
 
 
 def back_link(href: str) -> FT:
@@ -471,14 +477,14 @@ def _summary(scan: dict) -> FT:
         (t("migration.lock_date"), scan.get("lock_date") or "--"),
         (t("migration.currencies"), ", ".join(scan.get("currencies") or []) or "--"),
     ]
-    return Table(Tbody(*[Tr(Td(k), Td(v)) for k, v in rows]), cls="data-table")
+    return wizard_table(Tbody(*[Tr(Td(k), Td(v)) for k, v in rows]))
 
 
 def _coverage_table(scan: dict) -> FT:
     rows = scan.get("coverage") or []
     if not rows:
         return P(t("migration.no_records"), cls="form-hint")
-    return Table(
+    return wizard_table(
         Thead(Tr(Th(t("migration.record_type")), Th(t("migration.count"), cls="cell--number"),
                  Th(t("migration.outcome")), Th(t("migration.note")))),
         Tbody(*[
@@ -491,7 +497,6 @@ def _coverage_table(scan: dict) -> FT:
             )
             for row in rows
         ]),
-        cls="data-table",
     )
 
 
@@ -585,7 +590,7 @@ def _mapping_page(request: Request, mode: WizardMode, entry: dict, errors: dict 
         flash(error) if error else "",
         Form(
             Input(type="hidden", name="step", value="mapping"),
-            Table(
+            wizard_table(
                 Thead(Tr(Th(t("migration.source_item")), Th(t("migration.celerp_item")))),
                 Tbody(*[
                     Tr(
@@ -595,7 +600,6 @@ def _mapping_page(request: Request, mode: WizardMode, entry: dict, errors: dict 
                     )
                     for q in questions
                 ]),
-                cls="data-table",
             ),
             field_error(errors, "mappings"),
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full mt-md"),
@@ -696,12 +700,11 @@ async def _review_page(request: Request, mode: WizardMode, entry: dict, *, value
         _steps(4),
         auth_header(t("migration.review_title"), t("migration.review_subtitle")),
         flash(error) if error else "",
-        Table(Tbody(*[Tr(Td(k), Td(v)) for k, v in rows]), cls="data-table"),
+        wizard_table(Tbody(*[Tr(Td(k), Td(v)) for k, v in rows])),
         H3(t("migration.records")),
-        Table(
+        wizard_table(
             Thead(Tr(Th(t("migration.record_type")), Th(t("migration.count"), cls="cell--number"))),
             Tbody(*[Tr(Td(k.replace("_", " ")), Td(str(v), cls="cell--number")) for k, v in counts.items()]),
-            cls="data-table",
         ) if counts else P(t("migration.no_records"), cls="form-hint"),
         Div(H3(t("migration.transformations")),
             Ul(*[Li(f"{row.get('source_type', '')}: {row.get('note') or '--'}") for row in changes])) if changes else "",
@@ -850,7 +853,7 @@ def _progress_fragment(run: dict, error: str | None = None) -> FT:
         flash(error) if error else "",
         P(_badge(t(f"migration.status.{status}"), _PHASE_BADGE.get(
             {"completed": "done", "failed": "failed", "running": "running"}.get(status, ""), "badge--inactive"))),
-        Table(
+        wizard_table(
             Thead(Tr(Th(t("migration.phase")), Th(t("label.status")),
                      Th(t("migration.created"), cls="cell--number"),
                      Th(t("migration.skipped"), cls="cell--number"),
@@ -866,7 +869,6 @@ def _progress_fragment(run: dict, error: str | None = None) -> FT:
                 )
                 for p in phases
             ]),
-            cls="data-table",
         ),
         Ul(*[Li(f"{k}: {v}") for k, v in errors.items()]) if errors else "",
         _run_actions(run),
@@ -1007,10 +1009,42 @@ def bind(handler, mode: WizardMode, prefix: str):
 # Verify, complete, discard
 # ---------------------------------------------------------------------------
 
+# Document states and settlement kinds a check can be keyed by, as the app already names them.
+_DOC_STATUS_KEYS = {"paid": "label.paid", "awaiting_payment": "status.awaiting_payment"}
+_SETTLEMENT_KEYS = {"receipt": "settings.doc_type_receipt", "payment": "acct.soa_kind_payment"}
+
+
+def _check_subject(row: dict) -> str:
+    """What a check is about: the source's own name for an account, contact or item, or the
+    app's name for a document type, state or settlement kind; never an internal id."""
+    check, key = row.get("check"), row.get("key") or ""
+    if row.get("label"):
+        return row["label"]
+    if check in ("document_count", "document_total"):
+        return doc_type_label(key)
+    if check == "document_status":
+        doc_type, _, status = key.partition(":")
+        state = _DOC_STATUS_KEYS.get(status)
+        return f"{doc_type_label(doc_type)}: {t(state) if state else display_enum(status)}"
+    if check == "settlement_allocation":
+        kind = _SETTLEMENT_KEYS.get(key)
+        return t(kind) if kind else display_enum(key)
+    return key
+
+
 def _check_label(row: dict) -> str:
     label = t(f"migration.check.{row.get('check', '')}")
-    extra = " ".join(x for x in (row.get("key") or "", row.get("currency") or "") if x)
+    extra = " ".join(x for x in (_check_subject(row), row.get("currency") or "") if x)
     return f"{label} {extra}".strip()
+
+
+def _figure(row: dict, column: str) -> str:
+    """A check's figure as the app shows figures: money at its currency's decimals, a count
+    or quantity as a plain number."""
+    value = row.get(column)
+    if value is None:
+        return "--"
+    return fmt_money(value, row["currency"]) if row.get("currency") else fmt_qty(value)
 
 
 _ROLE_FIELD = "role."
@@ -1025,7 +1059,7 @@ def _posting_accounts(roles: list[dict], chosen: dict[str, str]) -> FT:
     return Div(
         H3(t("posting.section_title")),
         P(t("posting.section_hint"), cls="form-hint"),
-        Table(
+        wizard_table(
             Thead(Tr(Th(t("posting.col_role")), Th(t("posting.col_account")))),
             Tbody(*[
                 Tr(Td(role_label(row["role"], row["label"])),
@@ -1060,7 +1094,7 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None,
         _steps(6),
         auth_header(t("migration.verify_title"), t("migration.verify_subtitle")),
         flash(error) if error else "",
-        Table(
+        wizard_table(
             Thead(Tr(Th(t("migration.col_check")), Th(t("migration.col_source"), cls="cell--number"),
                      Th(t("migration.col_celerp"), cls="cell--number"),
                      Th(t("migration.col_difference"), cls="cell--number"),
@@ -1068,15 +1102,14 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None,
             Tbody(*[
                 Tr(
                     Td(_check_label(row)),
-                    Td(str(row.get("source") or "--"), cls="cell--number"),
-                    Td(str(row.get("celerp") or "--"), cls="cell--number"),
-                    Td(str(row.get("difference") or "--"), cls="cell--number"),
+                    Td(_figure(row, "source"), cls="cell--number"),
+                    Td(_figure(row, "celerp"), cls="cell--number"),
+                    Td(_figure(row, "difference"), cls="cell--number"),
                     Td(_badge(t(f"migration.result.{row.get('result', 'n-a').replace('-', '_')}"),
                               _RESULT_BADGE.get(row.get("result"), "badge--inactive"))),
                 )
                 for row in rows
             ]),
-            cls="data-table",
         ) if rows else P(t("migration.no_checks"), cls="form-hint"),
         P(t("migration.lock_date_notice", date=lock_date), cls="form-hint") if lock_date else "",
         Form(_posting_accounts(roles, chosen or {}),
@@ -1109,11 +1142,10 @@ async def _complete_page(request: Request, run: dict):
     return wizard_page(
         request,
         auth_header(t("migration.success_title"), run.get("company_name", "")),
-        Table(
+        wizard_table(
             Thead(Tr(Th(t("migration.col_check")), Th(t("migration.col_celerp"), cls="cell--number"))),
-            Tbody(*[Tr(Td(_check_label(row)), Td(str(row.get("celerp") or "--"), cls="cell--number"))
+            Tbody(*[Tr(Td(_check_label(row)), Td(_figure(row, "celerp"), cls="cell--number"))
                     for row in totals]),
-            cls="data-table",
         ) if totals else "",
         pack,
         open_company,

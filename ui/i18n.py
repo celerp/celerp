@@ -145,6 +145,29 @@ def role_label(role: str, fallback: str) -> str:
     return t_or(f"posting.role.{role}", fallback)
 
 
+# Doc-type display labels: the raw doc_type stays canonical everywhere (persistence,
+# URLs, comparisons); only the shown label is translated.
+_DOC_TYPE_LABEL_KEYS = {
+    "invoice": "settings.doc_type_invoice",
+    "purchase_order": "settings.doc_type_purchase_order",
+    "quotation": "settings_sales.doc_type_quotation",
+    "credit_note": "settings.doc_type_credit_note",
+    "bill": "settings.doc_type_bill",
+    "memo": "th.memo",
+    "shipping_doc": "settings_sales.doc_type_shipping_doc",
+    "list": "enum.doc_type.list",
+    "consignment_in": "settings.doc_type_consignment_in",
+    "receipt": "settings.doc_type_receipt",
+}
+
+
+def doc_type_label(dt: str) -> str:
+    """Human label for a doc_type, in the request language; unknown types fall
+    back to a title-cased form of the raw value."""
+    key = _DOC_TYPE_LABEL_KEYS.get(dt)
+    return t(key) if key else dt.replace("_", " ").title()
+
+
 # Why a run needs reconciling, as the server records it, in the user's language.
 _RECONCILE_REASONS = {
     "books disagree": "manufacturing.reconcile_reason_books_disagree",

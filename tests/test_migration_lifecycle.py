@@ -670,10 +670,11 @@ async def test_reconciliation_pack_matches_stored_verification(client, session, 
     assert header == {"Run id": run_id, "Source": "Fake source", "Mode": "Full history", "Cutover date": "--",
                       "Lock date": "--", "Source hash": run.source_artifact_sha256, "Prepared by": "Example Accountant",
                       "Generated at": generated}
-    table = lines[lines.index(["Check", "Key", "Currency", "Source", "Celerp", "Difference", "Rule", "Result"]) + 1:]
+    table = lines[lines.index(["Check", "Key", "Name", "Currency", "Source", "Celerp", "Difference", "Rule",
+                               "Result"]) + 1:]
     assert len(table) == len(rows)
     for line, row in zip(table, rows):
-        assert line[0] == row["check"] and line[3:] == [row["source"], row["celerp"], row["difference"],
+        assert line[0] == row["check"] and line[2] == "" and line[4:] == [row["source"], row["celerp"], row["difference"],
                                                         row["rule"], row["result"]]
     assert table[1][1].startswith("'=")
 

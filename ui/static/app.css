@@ -257,7 +257,7 @@ a:hover { text-decoration: underline; }
 @media (max-width: 900px) {
   .main-content :is(div, form, section, article, aside, fieldset, details) { min-width: 0; }
   .main-content form { flex-wrap: wrap; }
-  :is(.main-content, .migration-wizard) :has(> .data-table:not(.table-scroll-wrap > .data-table)) { overflow-x: auto; }
+  .main-content :has(> .data-table:not(.table-scroll-wrap > .data-table)) { overflow-x: auto; }
 }
 
 /* ─── Page header ─────────────────────────────────────────────────────── */
