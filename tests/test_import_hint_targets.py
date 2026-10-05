@@ -156,3 +156,15 @@ async def test_every_import_target_takes_csv_or_xlsx_and_offers_a_template(owner
     page = (await owner_ui.get(target)).text
     assert 'accept=".csv,.xlsx"' in page, target
     assert _EN["btn.download_template"] in page, target
+
+
+@pytest.mark.parametrize("path", _LIST_PAGES)
+async def test_list_page_actions_share_one_order(owner_ui, path):
+    """New, then Export CSV, then Import, on every list page (subscriptions have no export)."""
+    actions = _header_actions((await owner_ui.get(path)).text)
+    new = actions.find("btn--primary")
+    export = actions.find("/export/csv")
+    imp = actions.find("data-import-hint")
+    assert new >= 0 and imp >= 0, path
+    order = [new] + ([export] if export >= 0 else []) + [imp]
+    assert order == sorted(order), (path, order)
