@@ -320,9 +320,12 @@ async def _apply_refund(session, cid, entity_id: str, refund: dict) -> bool:
 
 async def _apply_parked_refunds(session, cid, entity_id: str, reference: str) -> None:
     """Apply the kept refunds of the payment *reference*, now on its document, in the
-    order Stripe reported them. One the document still refuses stays kept: one Stripe
-    made after the payment stopped being linked to it, for good."""
-    query = select(UnmatchedRefund).where(UnmatchedRefund.reference == reference)
+    order Stripe reported them: those delivered for this company and this document
+    only. One the document still refuses stays kept: one Stripe made after the payment
+    stopped being linked to it, for good."""
+    query = select(UnmatchedRefund).where(UnmatchedRefund.reference == reference,
+                                          UnmatchedRefund.former_company == str(cid),
+                                          UnmatchedRefund.document == entity_id)
     parked = (await session.scalars(query.order_by(
         UnmatchedRefund.occurred_at.asc().nulls_last(), UnmatchedRefund.refund_id, UnmatchedRefund.cycle,
         UnmatchedRefund.transition))).all()
