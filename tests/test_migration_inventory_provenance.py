@@ -460,7 +460,8 @@ async def test_imported_invoice_cogs_corrected_like_a_native_invoice(real_engine
     INV-P recognized 25.00 for 5 widgets, 15.00 of it for the 3 delivered from a lot
     costing 15.00. Correcting that lot to 15.25 leaves 15.25 for what was shipped and the
     10.00 recognized for the 2 never delivered, 25.25 in all: 0.25 more cost of sales,
-    taken off inventory. Stock on hand is untouched."""
+    against stock gains, since the lot is no longer in stock. Stock on hand and the
+    inventory books are untouched."""
     books = await _migrated(real_engine, monkeypatch, tmp_path)
     invoice, lot = books.id("SalesInvoice", "INVE"), await _sold_lot(books, "INVE")
     start = await _position(books)
@@ -477,4 +478,4 @@ async def test_imported_invoice_cogs_corrected_like_a_native_invoice(real_engine
     r = await real_client.patch(f"/items/{partial}", headers=books.headers,
                                 json={"fields_changed": {"cost_total": {"old": None, "new": 15.25}}})
     assert r.status_code == 200, r.text
-    assert _moved(shipped, await _position(books)) == ((D("0"), D("0.00")), D("-0.25"))
+    assert _moved(shipped, await _position(books)) == ((D("0"), D("0.00")), D("0.00"))

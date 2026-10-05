@@ -11,6 +11,7 @@ import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 
 from fastapi import HTTPException
@@ -35,13 +36,14 @@ from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
+from celerp.services.account_roles import lot_account
 from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import round_basis
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
-from celerp.services.lot_origin import recognize_opening_lots
+from celerp.services.lot_origin import book_lot_value, recognize_opening_lots, self_booked
 from celerp.importers.tabular import CsvImportSpec, cell_error_code, finite_float
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, reject_system_item_fields
 from celerp.services.money import to_stored_float, unit_price_from_total
@@ -268,6 +270,7 @@ class _Restatement:
     repriced: dict[str, list[dict]]          # lot id -> per-invoice-line COGS changes
     lots: list[str]                          # the item and every merge result it reads
     docs: list[str]                          # the invoices it adjusts
+    sold: list[tuple[str, str, float]]       # (lot id, inventory account, change in its cost of sale)
 
 
 async def _restatement(session: AsyncSession, company_id, entity_id: str, event_type: str, data: dict,
@@ -351,6 +354,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     # change in its unit cost. Two invoices can both allocate one lot before either
     # ships it, so a sold lot can still be allocated on another invoice.
     repriced: dict[str, list[dict]] = {}
+    sold: list[tuple[str, str, float]] = []
     if cost_changed:
         for lot_id, before, after in restated:
             lot_status = str(before.get("status") or "").lower()
@@ -361,8 +365,10 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
             if lot_status == "sold":
                 sold_on, line_index, _ = await _invoice_line_of_sale(session, company_id, lot_id, before)
                 cycle = (await auto_je.recognized_cogs(session, company_id, sold_on)).cycle
-                records.append({"doc_id": sold_on, "cycle": cycle, "line": line_index,
-                                "amount": auto_je.lot_cost_of_sale(after) - auto_je.lot_cost_of_sale(before)})
+                change = auto_je.lot_cost_of_sale(after) - auto_je.lot_cost_of_sale(before)
+                records.append({"doc_id": sold_on, "cycle": cycle, "line": line_index, "amount": change})
+                if change:
+                    sold.append((lot_id, lot_account(before), change))
             unit_delta = auto_je.lot_unit_cost(after) - auto_je.lot_unit_cost(before)
             for (doc_id, cycle, line_index), qty in sorted(
                     (await auto_je.allocations_naming_lot(session, company_id, lot_id)).items()):
@@ -375,6 +381,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
         label=label, successors=successors, repriced=repriced,
         lots=[eid for eid, _, _ in restated],
         docs=sorted({r["doc_id"] for records in repriced.values() for r in records}),
+        sold=sold,
     )
 
 
@@ -399,7 +406,12 @@ async def restate_item_cost(
     on one of its lines, or allocated to a line not yet shipped - has the change
     recorded against that line and its COGS trued up by one adjustment JE dated
     ``day``, the business day of the operation making the change, or today,
-    leaving the invoice's own entries untouched. Every check runs before
+    leaving the invoice's own entries untouched. A sold lot is no longer in stock, so
+    its change in cost is first booked onto its inventory account against stock gains
+    or shrinkage (lot_origin.book_lot_value) and the true-up relieves it from there:
+    the account nets to nothing and cost of sales moves against the source leg. A
+    writer that books the value itself (lot_origin.self_booked, a production run) is
+    left to its own entries. Every check runs before
     the first event is written: the change lands with all of its consequences in
     the caller's transaction, or raises CostRestatementConflict.
     """
@@ -448,6 +460,11 @@ async def restate_item_cost(
         if day is None:
             company = await session.get(Company, company_id)
             day = business_date_at(datetime.now(timezone.utc), ((company.settings if company else None) or {}).get("timezone"))
+        for lot_id, account, change in ([] if self_booked(entry) else plan.sold):
+            await book_lot_value(
+                session, company_id, actor_id, account, Decimal(str(change)),
+                je_id=f"je:auto:{lot_id}:cost-restated:{identity}", idem=f"cost-restate-value:{identity}:{lot_id}",
+                day=day, metadata={"trigger": "item.cost_restated", "item_id": entity_id, "restatement": identity})
         for doc_id in plan.docs:
             try:
                 await auto_je.reconcile_doc_cogs(

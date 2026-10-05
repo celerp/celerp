@@ -674,7 +674,8 @@ _SELF_BOOKED_MARKERS = frozenset({"source_doc", "source_return", "source_receive
                                   "audit_id", "manufacturing_order_id"})
 
 
-def _self_booked(entry: LedgerEntry) -> bool:
+def self_booked(entry: LedgerEntry) -> bool:
+    """Whether the writer of ``entry`` books or moves the lot's value with its own entries."""
     if entry.source in _SELF_BOOKED_SOURCES:
         return True
     for marks in (entry.data or {}, entry.metadata_ or {}):
@@ -702,7 +703,7 @@ async def value_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
     (ProjectionEngine.apply_event). Every writer passes here, so a cost edit, a quantity
     change, a price set, a restated cost carried into a merge result or a store re-import
     is booked in the same transaction; writers that book or move the value themselves
-    (_self_booked) are left to their own entries. While the lot holds booked stock,
+    (self_booked) are left to their own entries. While the lot holds booked stock,
     nothing may change whether it is the company's own (its inventory type, a
     consignment): that is refused, never booked. With Accounting off, nothing is booked."""
     from celerp.services.auto_je import entry_day
@@ -717,7 +718,7 @@ async def value_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
             status_code=422,
             detail=f"This item holds stock booked to inventory account {code}, so its inventory type and "
                    "consignment cannot change. Sell, write off or return the stock to draft first.")
-    if _self_booked(entry):
+    if self_booked(entry):
         return None
     hb, ha = _held(before), _held(after)
     if hb is None or ha is None:
@@ -734,29 +735,42 @@ async def value_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
 
 
 async def book_value_change(session: AsyncSession, entry: LedgerEntry, change: ValueChange) -> None:
-    """Book a lot's change in value (value_boundary) on its inventory account: an
-    increase against stock gains, a decrease against stock shrinkage, keyed by the event
-    so a retry books nothing more. The account the other side posts to is checked as any
-    new entry's is (account_roles.resolve_many); a refusal rolls the event back."""
+    """Book a lot's change in value (value_boundary) on its inventory account, keyed by
+    the event so a retry books nothing more (book_lot_value)."""
+    await book_lot_value(
+        session, entry.company_id, entry.actor_id, change.code, change.delta,
+        je_id=f"je:auto:{entry.entity_id}:value-changed:{entry.id}", idem=f"lot-value:{entry.id}",
+        day=change.day, metadata={"trigger": "item.value-changed", "event": entry.event_type})
+
+
+async def book_lot_value(session: AsyncSession, company_id, actor_id, code: str, delta: Decimal, *,
+                         je_id: str, idem: str, day: str | None, metadata: dict) -> None:
+    """Book ``delta`` of value on inventory account ``code``: an increase against stock
+    gains, a decrease against stock shrinkage. The account the other side posts to is
+    checked as any new entry's is (account_roles.resolve_many); a refusal rolls the
+    caller back. With Accounting off, or a delta that rounds to nothing, nothing is booked."""
     from celerp.services.auto_je import _emit_auto_posted_je, _line, _lot_line
 
-    settings = await current_settings(session, entry.company_id)
-    amount = float(abs(change.delta))
-    if change.delta > 0:
+    settings = await current_settings(session, company_id)
+    if SCHEMA_KEY not in settings:
+        return
+    delta = round_money(delta, settings.get("currency", "USD"))
+    if not delta:
+        return
+    amount = float(abs(delta))
+    if delta > 0:
         role = AccountRole.STOCK_GAIN.value
-        other = (await resolve_many(session, entry.company_id, [role]))[role]
-        lines = [_lot_line(settings, change.code, debit=amount), _line(other, role, credit=amount)]
+        other = (await resolve_many(session, company_id, [role]))[role]
+        lines = [_lot_line(settings, code, debit=amount), _line(other, role, credit=amount)]
         memo = "Stock value increased"
     else:
         role = AccountRole.STOCK_SHRINKAGE.value
-        other = (await resolve_many(session, entry.company_id, [role]))[role]
-        lines = [_line(other, role, debit=amount), _lot_line(settings, change.code, credit=amount)]
+        other = (await resolve_many(session, company_id, [role]))[role]
+        lines = [_line(other, role, debit=amount), _lot_line(settings, code, credit=amount)]
         memo = "Stock value decreased"
     await _emit_auto_posted_je(
-        session, company_id=entry.company_id, user_id=entry.actor_id,
-        je_id=f"je:auto:{entry.entity_id}:value-changed:{entry.id}",
-        idem_create=f"lot-value:{entry.id}:c", idem_posted=f"lot-value:{entry.id}:p", memo=memo, entries=lines,
-        metadata_={"trigger": "item.value-changed", "event": entry.event_type}, ts=change.day)
+        session, company_id=company_id, user_id=actor_id, je_id=je_id,
+        idem_create=f"{idem}:c", idem_posted=f"{idem}:p", memo=memo, entries=lines, metadata_=metadata, ts=day)
 
 
 async def recognize_opening_lots(session: AsyncSession, company_id, item_ids, actor_id, operation_id: str,
