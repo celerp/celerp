@@ -4,6 +4,20 @@
 from celerp.modules import registry
 
 
+class TestIsEnabled:
+    def test_settings_predating_enablement_run_every_module(self):
+        assert registry.is_enabled(None, "celerp-accounting")
+        assert registry.is_enabled({"currency": "USD"}, "celerp-accounting")
+
+    def test_listed_module_is_enabled_and_others_are_not(self):
+        settings = {"enabled_modules": ["celerp-inventory"]}
+        assert registry.is_enabled(settings, "celerp-inventory")
+        assert not registry.is_enabled(settings, "celerp-accounting")
+
+    def test_malformed_list_enables_nothing(self):
+        assert not registry.is_enabled({"enabled_modules": "celerp-accounting"}, "celerp-accounting")
+
+
 class TestGetEnabled:
     def test_none_settings_returns_empty(self):
         result = registry.get_enabled(None)

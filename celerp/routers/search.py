@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.modules import slots
-from celerp.modules.registry import get_enabled
+from celerp.modules.registry import is_enabled
 from celerp.modules.slots import resolve_handler
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import get_current_company_settings, role_has_permission
@@ -183,12 +183,9 @@ async def global_search(
     # the stale JWT claim). A registered provider slot means the module is loaded
     # in THIS process, not that this company enabled it. When the key is present
     # every provider is gated on it; a present-but-malformed value yields an empty
-    # set from get_enabled, which fails closed (show nothing). When the key is
+    # set, which fails closed (show nothing). When the key is
     # absent entirely, a company predating per-module enablement falls back to
     # running every permitted provider.
-    enabled_key_present = "enabled_modules" in settings
-    enabled_modules = get_enabled(settings)
-
     results: dict[str, dict] = {}
     degraded_modules: list[str] = []
     rollback_failed = False
@@ -202,7 +199,7 @@ async def global_search(
 
         # Disabled for this company: not shown and not degraded (it is off, not
         # broken), and never invoked.
-        if enabled_key_present and module not in enabled_modules:
+        if not is_enabled(settings, module):
             continue
 
         # Authorization, failing closed. An unknown permission key raises KeyError

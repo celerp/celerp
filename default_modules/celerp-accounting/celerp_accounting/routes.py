@@ -302,7 +302,8 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     reconciled with its chart (account_roles.reconcile_company), and a company left
     without an account its workflows need gets one notice pointing at the fix. Stock from
     before lots recorded their inventory account is then placed once, in one savepoint per
-    company: as opening stock when Accounting is being turned on now
+    company and only once the company runs Accounting (until then its books are not
+    kept, so placing would strand its sold and archived stock): as opening stock when Accounting is being turned on now
     (lot_origin.open_inventory_origins), otherwise by the upgrade of older books, which
     also decides whether stock an older release archived is still on them
     (lot_origin.normalize_legacy_inventory_origins). A company that fails to upgrade
@@ -312,6 +313,7 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     """
     from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, UNGUESSED_ROLES
     from celerp.models.company import Company
+    from celerp.modules.registry import is_enabled
     from celerp.services import migrations
     from celerp.services.account_roles import current_settings, reconcile_company
     from celerp.services.lot_origin import (
@@ -335,7 +337,8 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
             seeded = await _add_seeded_wip_account(session, company_id)
         if await reconcile_company(session, company_id, UNGUESSED_ROLES if seeded else frozenset()):
             await notify_unmapped(session, company_id)
-        if INVENTORY_ORIGIN_KEY in await current_settings(session, company_id):
+        settings = await current_settings(session, company_id)
+        if INVENTORY_ORIGIN_KEY in settings or not is_enabled(settings, "celerp-accounting"):
             continue
         place = open_inventory_origins if company_id in unseeded else normalize_legacy_inventory_origins
         try:

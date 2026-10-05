@@ -36,6 +36,14 @@ def get_enabled(company_settings: dict[str, Any] | None) -> set[str]:
     return set()
 
 
+def is_enabled(company_settings: dict[str, Any] | None, module_name: str) -> bool:
+    """Whether the company runs ``module_name``. A company whose settings predate
+    per-module enablement (no enabled_modules key) runs every loaded module."""
+    if _SETTINGS_KEY not in (company_settings or {}):
+        return True
+    return module_name in get_enabled(company_settings)
+
+
 def set_enabled(company_settings: dict[str, Any], enabled: set[str]) -> dict[str, Any]:
     """Return an updated settings dict with the given enabled module set."""
     updated = dict(company_settings)

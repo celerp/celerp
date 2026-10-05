@@ -901,3 +901,40 @@ async def test_an_older_draft_is_booked_once_made_available_where_the_books_cann
     await _make_available(client, auth, draft)
     assert await _accounts(session, auth, draft) == ["1130-OB"]
     assert await _account_net(session, auth["company_id"], "1130-OB") == round(before + 200.0, 2)
+
+
+async def _accounting_enabled(session, auth, enabled: bool) -> None:
+    from celerp.modules.registry import disable, enable
+
+    company = await locked_company(session, auth["company_id"])
+    company.settings = (enable if enabled else disable)(company.settings, "celerp-accounting")
+    await session.commit()
+
+
+async def test_older_stock_waits_for_accounting_to_be_turned_on_then_is_placed(session, client, auth):
+    # An older company that never turned Accounting on: one lot sold and shipped, one archived.
+    cid, uid = auth["company_id"], auth["user_id"]
+    sold = await older_release_lot(session, cid, uid, 100.0)
+    inv = await _shipped_by_older_release(session, client, auth, sold, 1)
+    archived = await older_release_lot(session, cid, uid, 20.0)
+    await emit_event(session, company_id=cid, entity_id=archived, entity_type="item", event_type="item.status.set",
+                     data={"new_status": "archived"}, actor_id=uid, location_id=None, source="api",
+                     idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+    await _as_older_release(session, auth, [sold], [inv])
+    await _accounting_enabled(session, auth, False)
+
+    await _startup(session)
+    assert not await _marked(session, auth)
+    assert await _accounts(session, auth, sold, archived) == [None, None]
+
+    await _accounting_enabled(session, auth, True)
+    await _startup(session)
+    assert await _marked(session, auth)
+    assert None not in await _accounts(session, auth, sold, archived)
+    await _revert(client, auth, inv, sold)
+    assert (await client.post(f"/docs/{inv}/revert-to-draft", headers=auth["headers"], json={})).status_code == 200
+    assert await _status(session, auth, sold) == "available"
+    assert await _books_match_lots(session, auth, "1130-P", "1130-OB") == {"1130-P": 100.0, "1130-OB": 0.0}
+    await _sold(client, auth, (sold, 1))
+    await assert_settled(client, session, auth)

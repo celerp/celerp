@@ -16,7 +16,7 @@ import httpx
 from fastapi.routing import APIRoute
 
 from celerp.modules.loader import loaded_modules
-from celerp.modules.registry import get_enabled
+from celerp.modules.registry import is_enabled
 from celerp.services.permissions import role_has_permission
 
 
@@ -105,8 +105,6 @@ def _agent_route_owner(endpoint: Any, company_settings: dict[str, Any]) -> str |
     if endpoint_module == "celerp" or endpoint_module.startswith("celerp."):
         return "celerp"
 
-    enabled_key_present = "enabled_modules" in (company_settings or {})
-    enabled = get_enabled(company_settings)
     matches: list[dict] = []
     for manifest in loaded_modules():
         api_routes = manifest.get("api_routes")
@@ -123,7 +121,7 @@ def _agent_route_owner(endpoint: Any, company_settings: dict[str, Any]) -> str |
     name = str(manifest.get("name") or "")
     if not name:
         return None
-    if enabled_key_present and name not in enabled:
+    if not is_enabled(company_settings, name):
         return None
     return name
 
