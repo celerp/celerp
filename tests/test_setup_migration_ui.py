@@ -490,6 +490,25 @@ async def test_setup_failure_states_keep_typed_values(ui, router, session):
 
 
 @pytest.mark.asyncio
+async def test_setup_password_mismatch_shown_at_confirm_field(ui, router, session):
+    """A mismatch marks the confirm field and says so under it, not at the top of the form."""
+    from ui.i18n import t
+
+    r = await ui.post("/setup", data={**_GOOD_SETUP, "confirm_password": "different-horse-9"})
+    assert r.status_code == 200
+    page = _page(r)
+    confirm = _inputs(page, "confirm_password")[0]
+    assert _attr(confirm, "aria-invalid") == "true"
+    assert _attr(confirm, "aria-describedby") == "confirm_password-error"
+    assert _attr(_inputs(page, "password")[0], "aria-invalid") is None
+    msg = re.search(r'<p\b[^>]*id="confirm_password-error"[^>]*>(.*?)</p>', page, re.S)
+    assert msg and msg.group(1).strip() == t("settings.passwords_do_not_match")
+    assert "flash--error" not in page, "the message sits at the field, not in a banner"
+    assert page.index('name="confirm_password"') < page.index('id="confirm_password-error"')
+    assert await _users_companies(session) == (0, 0)
+
+
+@pytest.mark.asyncio
 async def test_setup_restore_errors_rerender_form_with_back(ui, router, session):
     from ui.i18n import t
 

@@ -879,6 +879,7 @@
   "label.your_name": "Ihr Name",
   "label.zip_archive": "ZIP-Archiv",
   "lists.shipping_intro": "Papiere für ausgehende Lieferungen. Ein Versanddokument vorbereiten, dann als Lieferschein für den Empfänger oder als Handelsrechnung für den Zoll drucken.",
+  "lists.empty_hint": "Mit einer Liste stellen Sie Artikel für ein Angebot, eine Umlagerung, eine Inventur, eine Abschreibung oder einen Versandbeleg zusammen.",
   "marketplace.buy_note": "Ein einmaliger oder monatlicher Kauf, lizenziert für diesen Computer. Celerp Connect ist nicht enthalten.",
   "marketplace.could_not_load": "Der Katalog konnte nicht geladen werden. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
   "marketplace.data_access": "Datenzugriff",

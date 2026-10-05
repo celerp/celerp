@@ -879,6 +879,7 @@
   "label.your_name": "Su nombre",
   "label.zip_archive": "ZIP archivo",
   "lists.shipping_intro": "Documentación para entregas salientes. Prepare un documento de envío y luego imprima un albarán para el destinatario o una factura comercial para la aduana.",
+  "lists.empty_hint": "Una lista reúne artículos para una cotización, un traslado de stock, una auditoría de inventario, una baja o un documento de envío.",
   "marketplace.buy_note": "Una compra única o mensual, con licencia para este equipo. No incluye Celerp Connect.",
   "marketplace.could_not_load": "No se pudo cargar el catálogo. Comprueba tu conexión e inténtalo de nuevo.",
   "marketplace.data_access": "Acceso a datos",

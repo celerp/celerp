@@ -630,11 +630,15 @@ def empty_state_cta(
     action_url: str | None = None,
     hx_post: bool = False,
     icon: FT | None = None,
+    hint: str | None = None,
 ) -> FT:
     """Centered card with message + optional action button for empty pages. ``icon``
-    goes on the button's left (an import action passes the spreadsheet icon)."""
+    goes on the button's left (an import action passes the spreadsheet icon); ``hint``
+    is a line under the message saying what the page is for."""
     label = (icon, action_label) if icon else (action_label,)
     inner: list[FT] = [P(message, cls="empty-state-cta-msg")]
+    if hint:
+        inner.append(P(hint, cls="empty-state-cta-hint"))
     if action_label:
         if hx_post and action_url:
             inner.append(

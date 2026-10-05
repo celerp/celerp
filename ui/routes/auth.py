@@ -387,7 +387,7 @@ def setup_routes(app):
         if missing or not password:
             return await _fail(t("settings.all_fields_required"), missing or "password")
         if password != confirm:
-            return await _fail(t("settings.passwords_do_not_match"), "password")
+            return await _fail(t("settings.passwords_do_not_match"), "confirm_password")
         if len(password) < MIN_PASSWORD_LENGTH:
             return await _fail(t("settings.password_min_length"), "password")
         if code_required and not values["setup_code"]:
@@ -708,7 +708,31 @@ _SETUP_FORM_JS = """
   form.addEventListener('change', save);
   window.addEventListener('pagehide', function () { if (!form.dataset.sent) save(); });
   var button = form.querySelector('button[type="submit"]');
-  form.addEventListener('submit', function () {
+  // A password mismatch is caught here so the typed passwords stay; the server
+  // checks again and says the same thing under the same field.
+  var confirm = field('confirm_password');
+  var confirmError = document.getElementById('confirm_password-error');
+  function markConfirm(message) {
+    confirmError.textContent = message;
+    confirmError.hidden = !message;
+    if (message) {
+      confirm.setAttribute('aria-invalid', 'true');
+      confirm.setAttribute('aria-describedby', confirmError.id);
+    } else {
+      confirm.removeAttribute('aria-invalid');
+      confirm.removeAttribute('aria-describedby');
+    }
+  }
+  [field('password'), confirm].forEach(function (el) {
+    el.addEventListener('input', function () { markConfirm(''); });
+  });
+  form.addEventListener('submit', function (e) {
+    if (field('password').value !== confirm.value) {
+      e.preventDefault();
+      markConfirm(form.dataset.mismatch);
+      confirm.focus();
+      return;
+    }
     form.dataset.sent = '1';
     try { sessionStorage.removeItem(KEY); } catch (e) {}
     button.disabled = true;
@@ -734,17 +758,34 @@ def _setup_form(
     from ui.routes.setup import company_choice_fields, company_choice_script
     v = {k: values.get(k, "") for k in _SETUP_KEPT_FIELDS}
 
+    # Text fields whose error is shown under the field rather than at the top.
+    at_field: list[str] = []
+
     def _text(label_key: str, name: str, *, type: str = "text", autocomplete: str, hint: str = "") -> FT:
+        bad = bool(error) and error_field == name
+        if bad:
+            at_field.append(name)
         return Div(
             Label(t(label_key), For=name, cls="form-label"),
             Input(type=type, id=name, name=name, value=v.get(name, "") if type != "password" else "",
                   required=True, autocomplete=autocomplete, cls="form-input",
+                  aria_invalid="true" if bad else None, aria_describedby=f"{name}-error" if bad else None,
                   # The first field takes focus on a fresh page; after an error the
                   # script focuses the field the error is about.
                   autofocus=(name == "company_name" and not error)),
             P(hint, cls="form-hint") if hint else "",
+            P(error if bad else "", id=f"{name}-error", cls="form-field-error", hidden=not bad),
             cls="form-group",
         )
+
+    texts = (
+        _text("label.company_name", "company_name", autocomplete="organization"),
+        _text("label.your_name", "name", autocomplete="name"),
+        _text("label.email", "email", type="email", autocomplete="email"),
+        _text("label.password", "password", type="password", autocomplete="new-password",
+              hint=t("setup.password_hint", n=MIN_PASSWORD_LENGTH)),
+        _text("label.confirm_password", "confirm_password", type="password", autocomplete="new-password"),
+    )
 
     code_field = ""
     if setup_code_required:
@@ -759,18 +800,14 @@ def _setup_form(
     return Div(
         auth_header(t("page.set_up_your_workspace"), t("msg.you_are_first_admin")),
         Form(
-            flash(error) if error else "",
-            _text("label.company_name", "company_name", autocomplete="organization"),
-            _text("label.your_name", "name", autocomplete="name"),
-            _text("label.email", "email", type="email", autocomplete="email"),
-            _text("label.password", "password", type="password", autocomplete="new-password",
-                  hint=t("setup.password_hint", n=MIN_PASSWORD_LENGTH)),
-            _text("label.confirm_password", "confirm_password", type="password", autocomplete="new-password"),
+            flash(error) if error and not at_field else "",
+            *texts,
             code_field,
             *company_choice_fields(v["currency"], v["vertical"]),
             Button(t("btn.create_workspace"), type="submit", cls="btn btn--primary btn--full"),
             method="post", action="/setup", id="setup-form", cls="auth-form",
             data_focus=error_field if error else "",
+            data_mismatch=t("settings.passwords_do_not_match"),
         ),
         Script(_SETUP_FORM_JS),
         company_choice_script(),

@@ -462,6 +462,8 @@ function initCombobox(wrap) {
   input.addEventListener('blur', function() {
     // Allow mousedown on option to fire first
     setTimeout(function() {
+      // Focus came straight back: the list the user just reopened stays open.
+      if (document.activeElement === input) return;
       list.classList.remove('open');
       // Typing filters the list in multi mode; the selection bag is the state,
       // so restore the summary rather than leaving the search text behind.

@@ -333,6 +333,37 @@ def test_activating_page_shows_failure_and_retry_after_bounded_wait(page, ui_ser
     assert urlsplit(page.url).path == "/setup/activating"
 
 
+@pytest.mark.parametrize("width", [390, 1280])
+def test_password_mismatch_shown_at_confirm_field_and_kept(playwright, fresh, width):
+    """A mismatch is caught before the form is sent: the message sits under the confirm
+    field, focus goes there, and both typed passwords stay. Fixing it clears the mark."""
+    from ui.i18n import t
+    browser, ctx = _context(playwright, width=width)
+    try:
+        page = ctx.new_page()
+        page.goto(f"{fresh.ui}/setup", wait_until="networkidle")
+        _fill_text_fields(page, "mismatch@celerp.test")
+        page.fill("#confirm_password", _PASSWORD + "x")
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        page.locator('#setup-form button[type="submit"]').click()
+        msg = page.locator("#confirm_password-error")
+        expect(msg).to_be_visible()
+        expect(msg).to_have_text(t("settings.passwords_do_not_match"))
+        expect(page.locator("#confirm_password")).to_have_attribute("aria-invalid", "true")
+        expect(page.locator("#confirm_password")).to_be_focused()
+        assert page.input_value("#password") == _PASSWORD
+        assert page.input_value("#confirm_password") == _PASSWORD + "x"
+        assert posts == [], "nothing is sent while the passwords differ"
+        assert urlsplit(page.url).path == "/setup"
+        _no_sideways_scroll(page, f"mismatch {width}")
+        page.fill("#confirm_password", _PASSWORD)
+        expect(msg).to_be_hidden()
+        expect(page.locator("#confirm_password")).not_to_have_attribute("aria-invalid", "true")
+    finally:
+        browser.close()
+
+
 def test_setup_copy_fits_one_line(playwright, fresh):
     """INV-13: at desktop width each hint and note is one line. The option boxes'
     descriptions are left out: the boxes sit side by side, and at half the card's
@@ -414,6 +445,27 @@ def test_dropdowns_stay_on_screen(playwright, fresh, width, height):
             box = wrap.locator(".combobox-list.open").bounding_box()
             assert box and box["y"] >= 0 and box["y"] + box["height"] <= height, (name, box)
             page.keyboard.press("Escape")
+        _choose(page, "vertical", "blank")
+    finally:
+        browser.close()
+
+
+def test_dropdown_stays_open_when_focus_comes_straight_back(playwright, fresh):
+    """INV-12: leaving a searchable dropdown and coming straight back leaves it open;
+    the close from the earlier blur never shuts the list the user just opened."""
+    browser, ctx = _context(playwright)
+    try:
+        page = ctx.new_page()
+        page.goto(f"{fresh.ui}/setup", wait_until="networkidle")
+        wrap = page.locator('.combobox-wrap:has(input[type="hidden"][name="vertical"])')
+        field = wrap.locator(".combobox-input")
+        field.focus()
+        expect(wrap.locator(".combobox-list.open")).to_be_visible()
+        # Out and back well inside the blur handler's delay.
+        page.evaluate("""() => { document.getElementById('company_name').focus();
+          document.querySelector('.combobox-wrap:has(input[name=vertical]) .combobox-input').focus(); }""")
+        page.wait_for_timeout(400)
+        expect(wrap.locator(".combobox-list.open")).to_be_visible()
         _choose(page, "vertical", "blank")
     finally:
         browser.close()

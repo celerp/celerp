@@ -879,6 +879,7 @@
   "label.your_name": "Seu nome",
   "label.zip_archive": "Arquivo ZIP",
   "lists.shipping_intro": "Documentos para entregas de saída. Prepare um documento de envio e depois imprima uma guia de remessa para o destinatário ou uma fatura comercial para a alfândega.",
+  "lists.empty_hint": "Uma lista reúne itens para uma cotação, uma transferência de estoque, uma auditoria de estoque, uma baixa ou um documento de envio.",
   "marketplace.buy_note": "Uma compra única ou mensal, licenciada para este computador. Não inclui o Celerp Connect.",
   "marketplace.could_not_load": "Não foi possível carregar o catálogo. Verifique sua conexão e tente novamente.",
   "marketplace.data_access": "Acesso a dados",

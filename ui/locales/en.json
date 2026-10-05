@@ -1008,6 +1008,7 @@
   "label.your_name": "Your name",
   "label.zip_archive": "ZIP archive",
   "lists.shipping_intro": "Paperwork for outbound deliveries. Prepare one shipping document, then print a Delivery Note for the receiver or a Commercial Invoice for customs.",
+  "lists.empty_hint": "Use a list to gather items for a quotation, a stock transfer, a stock audit, a write-off or a shipping document.",
   "marketplace.buy_note": "A one-time or monthly purchase, licensed to this computer. It doesn't include Celerp Connect.",
   "marketplace.community_ack": "Show Community Modules ({n}): I understand that a community module is third-party software that runs with the same access as Celerp itself, including all business data. It is recommended to read the source, or decide you trust the author before installing. Back up first.",
   "marketplace.community_unverified_note": "All information provided in the community modules is author self-declared and unverified.",

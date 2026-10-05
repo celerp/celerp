@@ -879,6 +879,7 @@
   "label.your_name": "Tên của bạn",
   "label.zip_archive": "ZIP lưu trữ",
   "lists.shipping_intro": "Chứng từ cho các lô hàng gửi đi. Chuẩn bị một chứng từ vận chuyển, sau đó in phiếu giao hàng cho người nhận hoặc hóa đơn thương mại cho hải quan.",
+  "lists.empty_hint": "Dùng danh sách để gom hàng cho báo giá, chuyển kho, kiểm kê kho, xóa sổ hoặc chứng từ vận chuyển.",
   "marketplace.buy_note": "Một lần mua hoặc hằng tháng, được cấp phép cho máy tính này. Không bao gồm Celerp Connect.",
   "marketplace.could_not_load": "Không thể tải danh mục. Kiểm tra kết nối của bạn và thử lại.",
   "marketplace.data_access": "Truy cập dữ liệu",

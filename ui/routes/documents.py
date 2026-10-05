@@ -9862,7 +9862,8 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
 def _list_table(lists: list[dict], lang: str = "en") -> FT:
     if not lists:
         return Div(
-            empty_state_cta(t("label.no_lists_yet", lang), t("btn.new_list", lang), "/lists/create-blank", hx_post=True),
+            empty_state_cta(t("label.no_lists_yet", lang), t("btn.new_list", lang), "/lists/create-blank", hx_post=True,
+                            hint=t("lists.empty_hint", lang)),
             id="list-table",
         )
 

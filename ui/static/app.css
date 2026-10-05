@@ -1414,6 +1414,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   border: 1px dashed var(--c-border); border-radius: var(--radius);
 }
 .empty-state-cta-msg { font-size: 14px; color: var(--c-text2); margin-bottom: 16px; }
+.empty-state-cta-hint { font-size: 13px; color: var(--c-muted, #888); max-width: 32rem; margin: -8px auto 16px; }
 .empty-state-cta-btn {
   display: inline-flex; align-items: center; justify-content: center;
   padding: 8px 18px; border-radius: var(--radius); border: 1px solid var(--c-accent2);
@@ -2941,6 +2942,8 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 
 /* --- Form hints --- */
 .form-hint { font-size: 0.78rem; color: var(--text-muted); margin: 2px 0 0; }
+.form-field-error { font-size: 0.78rem; color: var(--c-red-dark); margin: 4px 0 0; }
+.form-input[aria-invalid="true"] { border-color: var(--c-red); }
 
 /* --- Modal dialog (send email, etc.) --- */
 .modal-dialog {
