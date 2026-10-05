@@ -154,7 +154,7 @@ def _unmatched_payments(payments: list[dict]) -> FT | str:
     return Div(
         H3(t("pay.unmatched_head"), cls="section-title"),
         P(t("pay.unmatched_hint"), cls="form-hint"),
-        Table(
+        Div(Table(
             Thead(Tr(Th(t("pay.unmatched_received")), Th(t("pay.unmatched_paid_on")), Th(t("label.reference")),
                      Th(t("label.amount"), cls="cell--number"), Th(t("th.company")), Th(t("th.document")))),
             Tbody(*[Tr(Td(p["received_at"][:10]), Td((p.get("paid_at") or "")[:10] or EMPTY), Td(p["reference"]),
@@ -162,7 +162,7 @@ def _unmatched_payments(payments: list[dict]) -> FT | str:
                        _where(p)[0], _invoice_cell(p["reference"], p.get("document_ref")))
                     for p in payments]),
             cls="data-table",
-        ),
+        ), cls="table-scroll-wrap"),
         cls="settings-card", style="margin-top:24px;",
     )
 
@@ -173,7 +173,7 @@ def _unmatched_refunds(refunds: list[dict]) -> FT | str:
     return Div(
         H3(t("pay.unmatched_refunds_head"), cls="section-title"),
         P(t("pay.unmatched_refunds_hint"), cls="form-hint"),
-        Table(
+        Div(Table(
             Thead(Tr(Th(t("pay.unmatched_received")), Th(t("pay.unmatched_refunded_on")), Th(t("label.reference")),
                      Th(t("label.amount"), cls="cell--number"), Th(t("th.type")), Th(t("th.company")),
                      Th(t("th.document")))),
@@ -182,7 +182,7 @@ def _unmatched_refunds(refunds: list[dict]) -> FT | str:
                        Td(t(f"pay.refund_{r['transition']}")), *_where(r))
                     for r in refunds]),
             cls="data-table",
-        ),
+        ), cls="table-scroll-wrap"),
         cls="settings-card", style="margin-top:24px;",
     )
 
