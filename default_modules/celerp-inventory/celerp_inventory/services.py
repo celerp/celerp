@@ -23,7 +23,7 @@ from celerp.accounting_roles import LOT_ACCOUNT_FIELD, refusal
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp.events.engine import emit_event, find_event_by_idempotency
-from celerp.importers.results import ImportOutcome, failure_reason
+from celerp.importers.results import ImportOutcome
 from celerp.importers.schema import IMPORT_ITEM_STATUSES
 from celerp.inventory_codes import (
     PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
@@ -1812,7 +1812,7 @@ class BatchImportResult(BaseModel):
     created: int
     skipped: int
     updated: int = 0
-    errors: list[str]
+    errors: list[str | dict]
     batch_id: str | None = None
 
 
@@ -3085,6 +3085,26 @@ async def adjust_item_quantity(
     )
 
 
+def _row_refused(data: dict, reason) -> dict:
+    """Why an import row was refused, naming the row by its SKU; ``reason`` is a refusal or,
+    for a code or cost the app explains in its own words, that text."""
+    text = reason["message"] if isinstance(reason, dict) else str(reason)
+    sku = str(data.get("sku") or "?")
+    return refusal("import.row_refused", f"Row (SKU={sku}): {text}", sku=sku, refusal=reason)
+
+
+def _record_refused(entity_id: str, key: str, message: str, **params) -> dict:
+    """Why an import record was refused, naming the record by its id."""
+    return refusal("import.record_refused", f"{entity_id}: {message}", entity_id=entity_id,
+                   refusal=refusal(f"import.record.{key}", message, **params))
+
+
+def _needs_permission(fields, permission: str) -> dict:
+    names = ", ".join(sorted(fields))
+    return refusal("import.row.needs_permission", f"editing {names} requires the {permission} permission",
+                   fields=names, permission=permission)
+
+
 async def write_import_batch(
     session: AsyncSession,
     company_id,
@@ -3163,7 +3183,7 @@ async def write_import_batch(
         try:
             reject_system_item_fields(data)
         except HTTPException as exc:
-            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {failure_reason(exc)}")
+            outcome.add(entity_id, "rejected", _row_refused(data, exc.detail))
             continue
 
         if event_type == "item.patched":
@@ -3171,12 +3191,12 @@ async def write_import_batch(
                 if primary.event_type == "item.patched" and primary.entity_id == entity_id:
                     outcome.add(entity_id, "skipped")
                 else:
-                    outcome.add(entity_id, "rejected", f"{entity_id}: idempotency key was already used for another operation")
+                    outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
                 continue
         elif event_type == "item.created":
             if primary is not None:
                 if primary.event_type != "item.created" or primary.entity_id != entity_id:
-                    outcome.add(entity_id, "rejected", f"{entity_id}: idempotency key was already used for another operation")
+                    outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
                     continue
                 if not body.upsert:
                     outcome.add(primary.entity_id, "skipped")
@@ -3199,26 +3219,27 @@ async def write_import_batch(
                     if replay.event_type == "item.patched" and replay.entity_id == entity_id:
                         outcome.add(entity_id, "skipped")
                     else:
-                        outcome.add(entity_id, "rejected", f"{entity_id}: idempotency key was already used for another operation")
+                        outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
                     continue
         elif event_type == "item.snapshot":
             if primary is not None:
                 if primary.event_type == "item.snapshot" and primary.entity_id == entity_id:
                     outcome.add(entity_id, "skipped")
                 else:
-                    outcome.add(entity_id, "rejected", f"{entity_id}: idempotency key was already used for another operation")
+                    outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
                 continue
         else:
-            outcome.add(entity_id, "rejected", f"{entity_id}: event type {event_type!r} is not import-safe")
+            outcome.add(entity_id, "rejected", _record_refused(entity_id, "not_import_safe", f"event type '{event_type}' is not import-safe", event_type=str(event_type)))
             continue
 
         # A status changes through the status action, never through an upsert patch.
         if status and event_type != "item.patched":
             if status not in IMPORT_ITEM_STATUSES:
-                outcome.add(entity_id, "rejected",
-                    f"Row (SKU={data.get('sku', '?')}): an imported item cannot start as {status}; "
-                    f"use {', '.join(IMPORT_ITEM_STATUSES[:-1])} or {IMPORT_ITEM_STATUSES[-1]}"
-                )
+                statuses = f"{', '.join(IMPORT_ITEM_STATUSES[:-1])} or {IMPORT_ITEM_STATUSES[-1]}"
+                outcome.add(entity_id, "rejected", _row_refused(data, refusal(
+                    "import.row.status_not_importable",
+                    f"an imported item cannot start as {status}; use {statuses}",
+                    status=status, statuses=statuses)))
                 continue
             data["status"] = status
 
@@ -3228,14 +3249,14 @@ async def write_import_batch(
                 Projection, {"company_id": company_id, "entity_id": entity_id}
             )
             if stored_proj is None or stored_proj.entity_type != "item":
-                outcome.add(entity_id, "rejected", f"{entity_id}: upsert target was not found")
+                outcome.add(entity_id, "rejected", _record_refused(entity_id, "not_found", "upsert target was not found"))
                 continue
         else:
             existing_projection = await session.get(
                 Projection, {"company_id": company_id, "entity_id": entity_id}
             )
             if existing_projection is not None:
-                outcome.add(entity_id, "rejected", f"{entity_id}: entity already exists")
+                outcome.add(entity_id, "rejected", _record_refused(entity_id, "exists", "entity already exists"))
                 continue
 
         # Imported price values modify the same protected business data as the
@@ -3243,20 +3264,16 @@ async def write_import_batch(
         # permission to set prices.
         price_keys = price_keys_in(data, price_lists)
         if price_keys and not role_has_permission(settings, role, "set_inventory_prices"):
-            outcome.add(entity_id, "rejected",
-                f"Row (SKU={data.get('sku', '?')}): editing {sorted(price_keys)} "
-                "requires the set_inventory_prices permission"
-            )
+            outcome.add(entity_id, "rejected", _row_refused(data, _needs_permission(price_keys, "set_inventory_prices")))
             continue
 
         sell_by = str(data.get("sell_by") or "").strip()
         if event_type != "item.patched" and not sell_by:
-            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): sell_by is required")
+            outcome.add(entity_id, "rejected", _row_refused(data, refusal("import.row.sell_by_required", "sell_by is required")))
             continue
         if sell_by and valid_units and sell_by not in valid_units:
-            outcome.add(entity_id, "rejected",
-                f"Row (SKU={data.get('sku', '?')}): sell_by '{sell_by}' is not a valid unit"
-            )
+            outcome.add(entity_id, "rejected", _row_refused(data, refusal(
+                "import.row.unknown_unit", f"sell_by '{sell_by}' is not a valid unit", unit=sell_by)))
             continue
 
         if event_type == "item.patched" and stored_proj is not None:
@@ -3266,10 +3283,7 @@ async def write_import_batch(
                 if sell_by and sell_by != stored_sell_by:
                     gated.add("sell_by")
                 if gated:
-                    outcome.add(entity_id, "rejected",
-                        f"Row (SKU={data.get('sku', '?')}): editing {sorted(gated)} "
-                        "requires the edit_inventory_amounts permission"
-                    )
+                    outcome.add(entity_id, "rejected", _row_refused(data, _needs_permission(gated, "edit_inventory_amounts")))
                     continue
 
         negative_amount = None
@@ -3284,9 +3298,8 @@ async def write_import_batch(
             except (TypeError, ValueError):
                 pass
         if negative_amount is not None:
-            outcome.add(entity_id, "rejected",
-                f"Row (SKU={data.get('sku', '?')}): {negative_amount} cannot be negative"
-            )
+            outcome.add(entity_id, "rejected", _row_refused(data, refusal(
+                "import.row.negative", f"{negative_amount} cannot be negative", field=negative_amount)))
             continue
 
         # Creation follows the ordinary internal-code primitive, after replay
@@ -3309,7 +3322,7 @@ async def write_import_batch(
             validate_barcode(data.get("barcode"))
             validate_rfid_epc(data.get("rfid_epc"))
         except ValueError as exc:
-            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {exc}")
+            outcome.add(entity_id, "rejected", _row_refused(data, str(exc)))
             continue
 
         if event_type != "item.patched":
@@ -3321,7 +3334,7 @@ async def write_import_batch(
             try:
                 loc_id = uuid.UUID(str(raw_loc))
             except ValueError:
-                outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): invalid location_id")
+                outcome.add(entity_id, "rejected", _row_refused(data, refusal("import.row.invalid_location", "invalid location_id")))
                 continue
 
         # A patched goods cost is restated like an edit on the item page (merge and
@@ -3333,7 +3346,7 @@ async def write_import_batch(
             try:
                 cost_change = _pop_cost_change(data)
             except (TypeError, ValueError):
-                outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): cost must be a number")
+                outcome.add(entity_id, "rejected", _row_refused(data, refusal("import.row.cost_not_number", "cost must be a number")))
                 continue
 
         try:
@@ -3359,12 +3372,12 @@ async def write_import_batch(
                         actor_id=user.id, source=rec.source, idempotency_key=f"{idem_key}:cost",
                     )
         except CostRestatementConflict as exc:
-            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {exc}")
+            outcome.add(entity_id, "rejected", _row_refused(data, str(exc)))
             continue
         except Exception:
             # The cause stays in the server log; the caller gets a plain row error.
             logger.exception("Item import could not write %s", entity_id)
-            outcome.add(entity_id, "failed", f"Row (SKU={data.get('sku', '?')}): the item could not be written")
+            outcome.add(entity_id, "failed", _row_refused(data, refusal("import.row.not_written", "the item could not be written")))
             continue
 
         existing[idem_key] = entry

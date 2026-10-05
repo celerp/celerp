@@ -3716,5 +3716,19 @@
   "mfg.output_quantity": "Jumlah hasil resep harus lebih besar dari nol",
   "mfg.component_quantity": "Jumlah komponen {sku} harus lebih besar dari nol",
   "mfg.product_recipe": "{product}: {refusal}",
-  "mfg.this_product": "Produk ini"
+  "mfg.this_product": "Produk ini",
+  "import.row_refused": "Baris (SKU={sku}): {refusal}",
+  "import.record_refused": "{entity_id}: {refusal}",
+  "import.record.key_reused": "kunci idempotensi sudah dipakai untuk operasi lain",
+  "import.record.not_import_safe": "jenis peristiwa '{event_type}' tidak dapat diimpor",
+  "import.record.not_found": "catatan yang akan diperbarui tidak ditemukan",
+  "import.record.exists": "catatan sudah ada",
+  "import.row.status_not_importable": "barang yang diimpor tidak dapat dimulai sebagai {status}; gunakan {statuses}",
+  "import.row.needs_permission": "mengubah {fields} memerlukan izin {permission}",
+  "import.row.sell_by_required": "satuan jual (sell_by) wajib diisi",
+  "import.row.unknown_unit": "satuan jual '{unit}' bukan satuan yang valid",
+  "import.row.negative": "{field} tidak boleh negatif",
+  "import.row.invalid_location": "location_id tidak valid",
+  "import.row.cost_not_number": "biaya harus berupa angka",
+  "import.row.not_written": "barang tidak dapat disimpan"
 }

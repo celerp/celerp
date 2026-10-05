@@ -447,7 +447,7 @@ async def test_csv_cost_upsert_that_cannot_reconcile_changes_nothing(client, ses
     r = await client.post("/items/import/batch", headers=auth["headers"], json={"records": [record]})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["updated"] == 0 and any("cannot be carried" in e for e in body["errors"]), body
+    assert body["updated"] == 0 and any("cannot be carried" in e["message"] for e in body["errors"]), body
     state = await _state(session, auth, a)
     assert state["cost_total"] == 100.0 and state["name"] == "Lot"
 

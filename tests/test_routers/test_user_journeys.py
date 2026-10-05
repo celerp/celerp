@@ -1862,7 +1862,7 @@ async def test_ie_import_partial_with_errors_reports_them(client):
     assert result["created"] == 1
     assert result["skipped"] == 1
     assert len(result.get("errors", [])) == 1
-    assert "not import-safe" in result["errors"][0]
+    assert "not import-safe" in result["errors"][0]["message"]
 
 
 @pytest.mark.asyncio

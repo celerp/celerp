@@ -3716,5 +3716,19 @@
   "mfg.output_quantity": "Số lượng đầu ra của công thức phải lớn hơn 0",
   "mfg.component_quantity": "Số lượng của thành phần {sku} phải lớn hơn 0",
   "mfg.product_recipe": "{product}: {refusal}",
-  "mfg.this_product": "Sản phẩm này"
+  "mfg.this_product": "Sản phẩm này",
+  "import.row_refused": "Dòng (SKU={sku}): {refusal}",
+  "import.record_refused": "{entity_id}: {refusal}",
+  "import.record.key_reused": "khóa idempotency đã được dùng cho một thao tác khác",
+  "import.record.not_import_safe": "loại sự kiện '{event_type}' không thể nhập",
+  "import.record.not_found": "không tìm thấy bản ghi cần cập nhật",
+  "import.record.exists": "bản ghi đã tồn tại",
+  "import.row.status_not_importable": "mặt hàng được nhập không thể bắt đầu ở trạng thái {status}; hãy dùng {statuses}",
+  "import.row.needs_permission": "sửa {fields} cần quyền {permission}",
+  "import.row.sell_by_required": "bắt buộc phải có đơn vị bán (sell_by)",
+  "import.row.unknown_unit": "đơn vị bán '{unit}' không phải là đơn vị hợp lệ",
+  "import.row.negative": "{field} không được âm",
+  "import.row.invalid_location": "location_id không hợp lệ",
+  "import.row.cost_not_number": "giá vốn phải là một số",
+  "import.row.not_written": "không thể lưu mặt hàng"
 }

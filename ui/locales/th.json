@@ -3716,5 +3716,19 @@
   "mfg.output_quantity": "จำนวนผลผลิตของสูตรต้องมากกว่าศูนย์",
   "mfg.component_quantity": "จำนวนของส่วนประกอบ {sku} ต้องมากกว่าศูนย์",
   "mfg.product_recipe": "{product}: {refusal}",
-  "mfg.this_product": "สินค้านี้"
+  "mfg.this_product": "สินค้านี้",
+  "import.row_refused": "แถว (SKU={sku}): {refusal}",
+  "import.record_refused": "{entity_id}: {refusal}",
+  "import.record.key_reused": "คีย์ idempotency ถูกใช้กับการดำเนินการอื่นแล้ว",
+  "import.record.not_import_safe": "ไม่สามารถนำเข้าประเภทเหตุการณ์ '{event_type}' ได้",
+  "import.record.not_found": "ไม่พบระเบียนที่จะอัปเดต",
+  "import.record.exists": "มีระเบียนนี้อยู่แล้ว",
+  "import.row.status_not_importable": "สินค้าที่นำเข้าไม่สามารถเริ่มเป็น {status} ได้ ใช้ {statuses}",
+  "import.row.needs_permission": "การแก้ไข {fields} ต้องมีสิทธิ์ {permission}",
+  "import.row.sell_by_required": "ต้องระบุหน่วยขาย (sell_by)",
+  "import.row.unknown_unit": "หน่วยขาย '{unit}' ไม่ใช่หน่วยที่ถูกต้อง",
+  "import.row.negative": "{field} ต้องไม่ติดลบ",
+  "import.row.invalid_location": "location_id ไม่ถูกต้อง",
+  "import.row.cost_not_number": "ต้นทุนต้องเป็นตัวเลข",
+  "import.row.not_written": "ไม่สามารถบันทึกสินค้าได้"
 }

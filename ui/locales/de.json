@@ -3716,5 +3716,19 @@
   "mfg.output_quantity": "Die Ausbringungsmenge eines Rezepts muss größer als null sein",
   "mfg.component_quantity": "Die Menge der Komponente {sku} muss größer als null sein",
   "mfg.product_recipe": "{product}: {refusal}",
-  "mfg.this_product": "Dieses Produkt"
+  "mfg.this_product": "Dieses Produkt",
+  "import.row_refused": "Zeile (SKU={sku}): {refusal}",
+  "import.record_refused": "{entity_id}: {refusal}",
+  "import.record.key_reused": "der Idempotenzschlüssel wurde bereits für einen anderen Vorgang verwendet",
+  "import.record.not_import_safe": "der Ereignistyp '{event_type}' kann nicht importiert werden",
+  "import.record.not_found": "der zu aktualisierende Datensatz wurde nicht gefunden",
+  "import.record.exists": "der Datensatz existiert bereits",
+  "import.row.status_not_importable": "ein importierter Artikel kann nicht mit dem Status {status} beginnen; verwenden Sie {statuses}",
+  "import.row.needs_permission": "das Bearbeiten von {fields} erfordert die Berechtigung {permission}",
+  "import.row.sell_by_required": "die Verkaufseinheit (sell_by) fehlt",
+  "import.row.unknown_unit": "die Verkaufseinheit '{unit}' ist keine gültige Einheit",
+  "import.row.negative": "{field} darf nicht negativ sein",
+  "import.row.invalid_location": "ungültige location_id",
+  "import.row.cost_not_number": "die Kosten müssen eine Zahl sein",
+  "import.row.not_written": "der Artikel konnte nicht gespeichert werden"
 }

@@ -3716,5 +3716,19 @@
   "mfg.output_quantity": "La quantité produite d'une recette doit être supérieure à zéro",
   "mfg.component_quantity": "La quantité du composant {sku} doit être supérieure à zéro",
   "mfg.product_recipe": "{product} : {refusal}",
-  "mfg.this_product": "Ce produit"
+  "mfg.this_product": "Ce produit",
+  "import.row_refused": "Ligne (SKU={sku}) : {refusal}",
+  "import.record_refused": "{entity_id} : {refusal}",
+  "import.record.key_reused": "la clé d'idempotence a déjà servi pour une autre opération",
+  "import.record.not_import_safe": "le type d'événement '{event_type}' ne peut pas être importé",
+  "import.record.not_found": "l'enregistrement à mettre à jour est introuvable",
+  "import.record.exists": "l'enregistrement existe déjà",
+  "import.row.status_not_importable": "un article importé ne peut pas commencer en tant que {status} ; utilisez {statuses}",
+  "import.row.needs_permission": "modifier {fields} nécessite l'autorisation {permission}",
+  "import.row.sell_by_required": "l'unité de vente (sell_by) est obligatoire",
+  "import.row.unknown_unit": "l'unité de vente '{unit}' n'est pas une unité valide",
+  "import.row.negative": "{field} ne peut pas être négatif",
+  "import.row.invalid_location": "location_id non valide",
+  "import.row.cost_not_number": "le coût doit être un nombre",
+  "import.row.not_written": "l'article n'a pas pu être enregistré"
 }

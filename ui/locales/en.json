@@ -3716,5 +3716,19 @@
   "mfg.output_quantity": "A recipe's output quantity must be greater than zero",
   "mfg.component_quantity": "Component {sku} quantity must be greater than zero",
   "mfg.product_recipe": "{product}: {refusal}",
-  "mfg.this_product": "This product"
+  "mfg.this_product": "This product",
+  "import.row_refused": "Row (SKU={sku}): {refusal}",
+  "import.record_refused": "{entity_id}: {refusal}",
+  "import.record.key_reused": "idempotency key was already used for another operation",
+  "import.record.not_import_safe": "event type '{event_type}' is not import-safe",
+  "import.record.not_found": "upsert target was not found",
+  "import.record.exists": "entity already exists",
+  "import.row.status_not_importable": "an imported item cannot start as {status}; use {statuses}",
+  "import.row.needs_permission": "editing {fields} requires the {permission} permission",
+  "import.row.sell_by_required": "sell_by is required",
+  "import.row.unknown_unit": "sell_by '{unit}' is not a valid unit",
+  "import.row.negative": "{field} cannot be negative",
+  "import.row.invalid_location": "invalid location_id",
+  "import.row.cost_not_number": "cost must be a number",
+  "import.row.not_written": "the item could not be written"
 }
