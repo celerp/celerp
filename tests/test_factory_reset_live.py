@@ -298,34 +298,34 @@ async def test_a_user_another_user_names_stays(real_client, real_engine):  # noq
 
 @pytest.mark.parametrize("action", ["SET NULL", "SET DEFAULT"])
 async def test_a_row_whose_key_clears_outlives_the_reset_company(real_client, real_engine, action):  # noqa: F811
-    """A module row with no company column names Alpha and Beta through keys that clear
-    on delete. Resetting Alpha leaves the row, with only its Alpha key cleared, as the
-    schema declares."""
+    """A module row with no company column names Alpha through a key that clears on
+    delete, and nothing else. Resetting Alpha leaves the row with that key cleared, as
+    the schema declares."""
     import uuid
 
     from sqlalchemy import text
 
-    ta, tb = await _two_companies(real_client)
-    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    ta, _ = await _two_companies(real_client)
+    alpha = await _id(real_client, ta)
     async with real_engine.begin() as conn:
-        await conn.execute(text(
-            "CREATE TABLE ext_transfers (id uuid PRIMARY KEY, "
-            f"from_company uuid REFERENCES companies(id) ON DELETE {action}, "
-            f"to_company uuid REFERENCES companies(id) ON DELETE {action}, label text NOT NULL)"))
-        await conn.execute(text("INSERT INTO ext_transfers VALUES (:i, :a, :b, 'alpha to beta')"),
-                           {"i": uuid.uuid4(), "a": alpha, "b": beta})
+        await conn.execute(text(_TRANSFERS.format(action=action)))
+        await conn.execute(text("INSERT INTO ext_transfers VALUES (:i, :a, NULL, 'alpha only')"),
+                           {"i": uuid.uuid4(), "a": alpha})
     try:
         r = await _reset(real_client, ta, "Alpha Co")
 
         assert r.status_code == 200, r.text
         async with real_engine.connect() as conn:
             rows = (await conn.execute(text("SELECT from_company, to_company, label FROM ext_transfers"))).all()
-        assert [tuple(map(str, row)) for row in rows] == [("None", beta, "alpha to beta")]
+        assert [tuple(map(str, row)) for row in rows] == [("None", "None", "alpha only")]
     finally:
         async with real_engine.begin() as conn:
             await conn.execute(text("DROP TABLE IF EXISTS ext_transfers"))
 
 
+_TRANSFERS = ("CREATE TABLE ext_transfers (id uuid PRIMARY KEY, "
+              "from_company uuid REFERENCES companies(id) ON DELETE {action}, "
+              "to_company uuid REFERENCES companies(id) ON DELETE {action}, label text NOT NULL)")
 _ITEMS = ("CREATE TABLE ext_items (id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES companies(id), "
           "label text NOT NULL)")
 
@@ -373,11 +373,36 @@ async def test_a_reset_is_refused_while_another_company_points_at_its_rows(
             await conn.execute(text("DROP TABLE IF EXISTS ext_links, ext_items"))
 
 
-@pytest.mark.parametrize("action", ["CASCADE", "NO ACTION"])
-async def test_a_reset_is_refused_while_a_row_hangs_off_both_companies(
+@pytest.mark.parametrize("action", ["SET NULL", "SET DEFAULT"])
+async def test_a_reset_is_refused_while_another_companys_row_would_have_a_key_cleared(
         real_client, real_engine, action):  # noqa: F811
-    """A row with no company column hangs off one of Alpha's rows and one of Beta's. It is
-    Beta's as much as Alpha's, so resetting Alpha is refused, naming its table."""
+    """A module row with no company column names Alpha and Beta through keys that clear
+    on delete. Resetting Alpha would change a row Beta still has, so it is refused,
+    naming the table, and nothing is cleared."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        await conn.execute(text(_TRANSFERS.format(action=action)))
+        await conn.execute(text("INSERT INTO ext_transfers VALUES (:i, :a, :b, 'alpha to beta')"),
+                           {"i": uuid.uuid4(), "a": alpha, "b": beta})
+    try:
+        await _refused_untouched(real_client, real_engine, ta, alpha, ("ext_transfers",), "ext_transfers")
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_transfers"))
+
+
+@pytest.mark.parametrize("action, beta_action", [
+    ("CASCADE", "CASCADE"), ("NO ACTION", "NO ACTION"), ("CASCADE", "SET NULL"), ("CASCADE", "SET DEFAULT")])
+async def test_a_reset_is_refused_while_a_row_hangs_off_both_companies(
+        real_client, real_engine, action, beta_action):  # noqa: F811
+    """A row with no company column hangs off one of Alpha's rows and names one of Beta's,
+    by a key of any kind. It is Beta's as much as Alpha's, so resetting Alpha is refused,
+    naming its table."""
     import uuid
 
     from sqlalchemy import text
@@ -389,7 +414,7 @@ async def test_a_reset_is_refused_while_a_row_hangs_off_both_companies(
         await conn.execute(text(
             "CREATE TABLE ext_pairs (id uuid PRIMARY KEY, "
             f"left_item uuid NOT NULL REFERENCES ext_items(id) ON DELETE {action}, "
-            f"right_item uuid NOT NULL REFERENCES ext_items(id) ON DELETE {action})"))
+            f"right_item uuid REFERENCES ext_items(id) ON DELETE {beta_action})"))
         mine, theirs = uuid.uuid4(), uuid.uuid4()
         await conn.execute(text("INSERT INTO ext_items VALUES (:i, :c, 'alpha item'), (:j, :d, 'beta item')"),
                            {"i": mine, "c": alpha, "j": theirs, "d": beta})
