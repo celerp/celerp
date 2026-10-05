@@ -242,7 +242,7 @@ async def _recipe_inputs(session: AsyncSession, company_id, item_state: dict, qt
     try:
         return expand_recipe(item_state, qty, dict(rows).get)
     except RecipeError as exc:
-        raise HTTPException(status_code=422, detail=str(for_product(item_state, exc)))
+        raise HTTPException(status_code=422, detail=for_product(item_state, exc).detail)
 
 
 async def _emit_order_created(session: AsyncSession, company_id, order_id: str, data: dict, *, quantity: float,
@@ -367,7 +367,7 @@ async def set_item_recipe(
     try:
         breakdown = roll_up_cost(recipe, graph.get, _path=frozenset({item_id}))
     except RecipeError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=exc.detail)
     recipe.update(breakdown)
 
     entry = await emit_event(
@@ -1036,7 +1036,7 @@ async def bulk_requirements(
     try:
         demand = explode_demand(lines, states.get) if lines else {"sub_assemblies": {}, "raw_materials": {}}
     except RecipeError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=exc.detail)
 
     def _detail(d: dict[str, float]) -> list[dict]:
         return [

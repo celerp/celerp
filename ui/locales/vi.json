@@ -3712,5 +3712,9 @@
   "held_back.refused.modules_off.many": "Việc thay đổi đang tạm dừng vì {modules} đang tắt và hồ sơ của bạn có hồ sơ của các mô-đun này. Bạn vẫn có thể xem hồ sơ. {enable} Nếu bạn không phải quản trị viên, hãy nhờ một quản trị viên làm việc này.",
   "held_back.refused": "Việc thay đổi đang tạm dừng vì một bước cập nhật đã thất bại khi Celerp khởi động. {what_failed} Bạn vẫn có thể xem hồ sơ. {what_to_do}",
   "doctor.ask_admin": "Kiểm tra hồ sơ chỉ dành cho quản trị viên. Hãy nhờ một quản trị viên mở Chẩn đoán và chạy chúng.",
-  "doctor.start_ask_admin": "Báo cáo về lần khởi động gần nhất dành cho quản trị viên. Hãy nhờ quản trị viên mở trang này."
+  "doctor.start_ask_admin": "Báo cáo về lần khởi động gần nhất dành cho quản trị viên. Hãy nhờ quản trị viên mở trang này.",
+  "mfg.output_quantity": "Số lượng đầu ra của công thức phải lớn hơn 0",
+  "mfg.component_quantity": "Số lượng của thành phần {sku} phải lớn hơn 0",
+  "mfg.product_recipe": "{product}: {refusal}",
+  "mfg.this_product": "Sản phẩm này"
 }

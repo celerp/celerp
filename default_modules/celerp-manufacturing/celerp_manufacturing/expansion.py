@@ -22,7 +22,9 @@ ItemLookup = Callable[[str], dict | None]
 
 def for_product(item_state: dict | None, exc: RecipeError) -> RecipeError:
     """A recipe refusal naming the product whose recipe it is, as the user knows it (its SKU)."""
-    return RecipeError(f"{(item_state or {}).get('sku') or 'This product'}: {exc}")
+    sku = (item_state or {}).get("sku")
+    product = sku or {"message": "This product", "message_key": "mfg.this_product", "params": {}}
+    return RecipeError(f"{sku or 'This product'}: {exc}", "product_recipe", product=product, refusal=exc.detail)
 
 
 def mfg_idem_key(source_doc_id: str, item_id: str, operation: str) -> str:

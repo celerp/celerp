@@ -3712,5 +3712,9 @@
   "held_back.refused.modules_off.many": "Le modifiche sono sospese perché {modules} sono disattivati e i tuoi record includono i loro record. Puoi ancora visualizzare i record. {enable} Se non sei un amministratore, chiedi a un amministratore di farlo.",
   "held_back.refused": "Le modifiche sono sospese perché un passaggio di aggiornamento non è riuscito all'avvio di Celerp. {what_failed} Puoi ancora visualizzare i record. {what_to_do}",
   "doctor.ask_admin": "I controlli dei record sono riservati agli amministratori. Chiedi a un amministratore di aprire Diagnostica ed eseguirli.",
-  "doctor.start_ask_admin": "Il rapporto sull'ultimo avvio è per gli amministratori. Chieda a un amministratore di aprire questa pagina."
+  "doctor.start_ask_admin": "Il rapporto sull'ultimo avvio è per gli amministratori. Chieda a un amministratore di aprire questa pagina.",
+  "mfg.output_quantity": "La quantità prodotta di una ricetta deve essere maggiore di zero",
+  "mfg.component_quantity": "La quantità del componente {sku} deve essere maggiore di zero",
+  "mfg.product_recipe": "{product}: {refusal}",
+  "mfg.this_product": "Questo prodotto"
 }

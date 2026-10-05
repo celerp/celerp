@@ -19,7 +19,15 @@ ItemLookup = Callable[[str], dict | None]
 
 
 class RecipeError(ValueError):
-    """Raised on a cyclic or too-deeply-nested recipe graph, or one that cannot make anything."""
+    """Raised on a cyclic or too-deeply-nested recipe graph, or one that cannot make anything.
+
+    ``str()`` is the English text; ``detail`` is what a route refuses with, keyed as
+    ``mfg.<key>`` with ``params`` when the UI can say it in the user's language."""
+
+    def __init__(self, message: str, key: str | None = None, /, **params) -> None:
+        super().__init__(message)
+        self.detail = ({"message": message, "message_key": f"mfg.{key}", "params": params}
+                       if key else message)
 
 
 def output_quantity(recipe: dict) -> float:
@@ -30,7 +38,7 @@ def output_quantity(recipe: dict) -> float:
     stated = recipe.get("output_qty")
     qty = 1.0 if stated is None else float(stated)
     if not qty > 0:
-        raise RecipeError("A recipe's output quantity must be greater than zero")
+        raise RecipeError("A recipe's output quantity must be greater than zero", "output_quantity")
     return qty
 
 
@@ -41,7 +49,7 @@ def component_quantity(comp: dict, lookup: ItemLookup) -> float:
     qty = float(comp.get("quantity") or 0)
     if not qty > 0:
         sku = comp.get("sku") or (lookup(comp.get("item_id")) or {}).get("sku") or comp.get("item_id")
-        raise RecipeError(f"Component {sku} quantity must be greater than zero")
+        raise RecipeError(f"Component {sku} quantity must be greater than zero", "component_quantity", sku=sku)
     return qty
 
 

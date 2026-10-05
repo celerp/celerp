@@ -19,8 +19,17 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from test_cost_restatement import _item, _state
 from mfg_runs import product
+from ui.i18n import refusal_text, set_lang
 
 pytestmark = pytest.mark.asyncio
+
+
+def refusal_text_in(detail, lang: str) -> str:
+    set_lang(lang)
+    try:
+        return refusal_text(detail)
+    finally:
+        set_lang("en")
 
 
 async def _runs(session, auth) -> int:
@@ -148,3 +157,7 @@ async def test_an_older_zero_component_is_refused_by_its_sku(client, session, au
         _says_positive(r)
         assert f"Component {raw_sku} quantity" in r.text, r.text
         assert raw not in r.text, r.text
+        # The refusal reads in the user's language, like any other run refusal.
+        german = refusal_text_in(r.json()["detail"], "de")
+        assert raw_sku in german and "größer als null" in german, german
+        assert "greater than zero" not in german, german

@@ -3712,5 +3712,9 @@
   "held_back.refused.modules_off.many": "{modules} がオフになっており、レコードにそれらのレコードが含まれているため、変更は一時停止しています。レコードは引き続き表示できます。{enable} 管理者でない場合は、管理者に依頼してください。",
   "held_back.refused": "Celerp の起動中に更新手順が失敗したため、変更は一時停止しています。{what_failed} レコードは引き続き表示できます。{what_to_do}",
   "doctor.ask_admin": "レコードのチェックは管理者専用です。管理者に診断を開いて実行するよう依頼してください。",
-  "doctor.start_ask_admin": "前回の起動に関するレポートは管理者向けです。管理者にこのページを開くよう依頼してください。"
+  "doctor.start_ask_admin": "前回の起動に関するレポートは管理者向けです。管理者にこのページを開くよう依頼してください。",
+  "mfg.output_quantity": "レシピの出来高は0より大きくなければなりません",
+  "mfg.component_quantity": "構成品 {sku} の数量は0より大きくなければなりません",
+  "mfg.product_recipe": "{product}: {refusal}",
+  "mfg.this_product": "この製品"
 }

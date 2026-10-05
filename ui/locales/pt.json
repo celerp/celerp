@@ -3712,5 +3712,9 @@
   "held_back.refused.modules_off.many": "As alterações estão pausadas porque {modules} estão desativados e seus registros incluem registros deles. Você ainda pode ver os registros. {enable} Se você não for administrador, peça a um administrador que faça isso.",
   "held_back.refused": "As alterações estão pausadas porque uma etapa de atualização falhou ao iniciar o Celerp. {what_failed} Você ainda pode ver os registros. {what_to_do}",
   "doctor.ask_admin": "As verificações de registros são para administradores. Peça a um administrador que abra Diagnóstico e as execute.",
-  "doctor.start_ask_admin": "O relatório da última inicialização é para administradores. Peça a um administrador para abrir esta página."
+  "doctor.start_ask_admin": "O relatório da última inicialização é para administradores. Peça a um administrador para abrir esta página.",
+  "mfg.output_quantity": "A quantidade produzida de uma receita deve ser maior que zero",
+  "mfg.component_quantity": "A quantidade do componente {sku} deve ser maior que zero",
+  "mfg.product_recipe": "{product}: {refusal}",
+  "mfg.this_product": "Este produto"
 }
