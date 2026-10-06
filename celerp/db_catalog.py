@@ -78,8 +78,10 @@ async def read(session: AsyncSession) -> dict[str, Table]:
             "k.confdeltype::text "
             "FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid "
             "JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_class f ON f.oid = k.confrelid "
-            # A key into another schema names a table this catalog does not hold.
-            "WHERE n.nspname = current_schema() AND (k.contype = 'p' OR k.contype = 'f' AND f.relnamespace = n.oid) "
+            # A key into another schema names a table this catalog does not hold, and so does
+            # the copy Postgres keeps of a key for each partition of the table it names.
+            "WHERE n.nspname = current_schema() AND (k.contype = 'p' OR k.contype = 'f' "
+            "AND f.relnamespace = n.oid AND k.conparentid = 0) "
             "ORDER BY c.relname, k.conname"))).all():
         table = tables.get(rel)
         if table is None:

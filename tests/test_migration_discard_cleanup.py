@@ -28,6 +28,7 @@ from migration_support import (
     save_decisions,
     scan_upload,
 )
+from test_factory_reset_live import _PARTITIONED
 from test_helpers import create_item, default_location_id, register_admin
 
 TASKS = "migration_cleanup_tasks"
@@ -251,6 +252,33 @@ async def test_bootstrap_discard_keeps_an_owner_another_company_reaches_through_
     finally:
         async with real_engine.begin() as conn:
             await conn.execute(text("DROP TABLE IF EXISTS ext_uses, ext_prefs"))
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_discard_goes_through_a_cascading_key_into_a_partitioned_table(
+        real_client, real_engine, migration_env):
+    """A module keeps a partitioned table and a table referring to it by a cascading key.
+    The discard reads the key once, on the partitioned table, and deletes the owner."""
+    from sqlalchemy import text
+
+    r = await scan_upload(real_client, fake_bytes())
+    assert (await save_decisions(real_client, r.json()["scan_token"])).status_code == 200
+    r = await real_client.post("/migrations/bootstrap/start", json={
+        "scan_token": r.json()["scan_token"], "company_name": "Moved Co", "name": "Owner",
+        "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
+    assert r.status_code == 201, r.text
+    token, run_id = r.json()["access_token"], r.json()["run_id"]
+    async with real_engine.begin() as conn:
+        for statement in _PARTITIONED:
+            await conn.execute(text(statement))
+    try:
+        r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+
+        assert r.status_code == 200 and r.json() == {"redirect": "/setup"}, r.text
+        assert await count(real_engine, "users") == 0
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_event_refs, ext_events"))
 
 
 @pytest.mark.asyncio

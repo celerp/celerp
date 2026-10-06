@@ -860,6 +860,34 @@ async def test_a_row_naming_a_table_in_another_schema_goes_with_the_company(real
             await conn.execute(text("DROP SCHEMA IF EXISTS ext CASCADE"))
 
 
+_PARTITIONED = (
+    "CREATE TABLE ext_events (id uuid NOT NULL, PRIMARY KEY (id)) PARTITION BY HASH (id)",
+    "CREATE TABLE ext_events_p0 PARTITION OF ext_events FOR VALUES WITH (MODULUS 2, REMAINDER 0)",
+    "CREATE TABLE ext_events_p1 PARTITION OF ext_events FOR VALUES WITH (MODULUS 2, REMAINDER 1)",
+    "CREATE TABLE ext_event_refs (id uuid PRIMARY KEY, event_id uuid REFERENCES ext_events(id) ON DELETE CASCADE)")
+
+
+async def test_a_cascading_key_into_a_partitioned_table_does_not_stop_the_reset(real_client, real_engine):  # noqa: F811
+    """A module keeps a partitioned table and a table referring to it by a cascading key.
+    Postgres keeps a copy of that key for each partition; the reset reads the key once, on
+    the partitioned table, and goes through."""
+    from sqlalchemy import text
+
+    ta, _ = await _two_companies(real_client)
+    alpha = await _id(real_client, ta)
+    async with real_engine.begin() as conn:
+        for statement in _PARTITIONED:
+            await conn.execute(text(statement))
+    try:
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "companies", "id = :a", a=alpha) == 0
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_event_refs, ext_events"))
+
+
 async def test_a_reset_is_refused_while_a_table_in_another_schema_names_its_tables(
         real_client, real_engine):  # noqa: F811
     """A table kept in another schema names Alpha by a key into Celerp's own tables. The
