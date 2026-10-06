@@ -4,16 +4,16 @@
 """Keep the invoice a person recorded an unmatched online payment on, so every later
 delivery of the payment, its refunds and its release goes there.
 
-Revision ID: w0l1m2n3o4p5
-Revises: v9k0l1m2n3o4
+Revision ID: u8j9k0l1m2n3
+Revises: t7i8j9k0l1m2
 Create Date: 2026-10-05
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "w0l1m2n3o4p5"
-down_revision = "v9k0l1m2n3o4"
+revision = "u8j9k0l1m2n3"
+down_revision = "t7i8j9k0l1m2"
 branch_labels = None
 depends_on = None
 

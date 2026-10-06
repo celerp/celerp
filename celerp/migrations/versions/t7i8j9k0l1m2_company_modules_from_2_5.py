@@ -3,8 +3,8 @@
 
 """Let every company of an older installation keep using every module it had.
 
-Revision ID: v9k0l1m2n3o4
-Revises: u8j9f0a1b2c3
+Revision ID: t7i8j9k0l1m2
+Revises: s6h7c8d9e0f1
 Create Date: 2026-10-05
 
 Before each company chose its own modules, every company used every module the
@@ -25,8 +25,8 @@ from alembic import op
 from celerp.migrations._data_reconcile import get_meta, set_meta
 from celerp.migrations._json_compat import update_company_settings
 
-revision = "v9k0l1m2n3o4"
-down_revision = "u8j9f0a1b2c3"
+revision = "t7i8j9k0l1m2"
+down_revision = "s6h7c8d9e0f1"
 branch_labels = None
 depends_on = None
 
