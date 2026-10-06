@@ -952,6 +952,47 @@ async def test_a_reset_is_refused_when_tables_refer_to_each_other_in_a_loop(real
             await conn.execute(text("DROP TABLE IF EXISTS ext_b, ext_a"))
 
 
+async def test_a_reset_is_refused_when_tables_reached_through_another_refer_to_each_other(real_client, real_engine):  # noqa: F811
+    """Two module tables with no company column name each other, and reach the company only
+    through a third table that has one. The reset is refused naming the two, and nothing is
+    deleted."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, _ = await _two_companies(real_client)
+    alpha = await _id(real_client, ta)
+    async with real_engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE ext_root (id uuid PRIMARY KEY, "
+                                "company_id uuid NOT NULL REFERENCES companies(id))"))
+        await conn.execute(text("CREATE TABLE ext_a (id uuid PRIMARY KEY, "
+                                "root_id uuid NOT NULL REFERENCES ext_root(id), b_id uuid)"))
+        await conn.execute(text("CREATE TABLE ext_b (id uuid PRIMARY KEY, a_id uuid REFERENCES ext_a(id))"))
+        await conn.execute(text("ALTER TABLE ext_a ADD FOREIGN KEY (b_id) REFERENCES ext_b(id)"))
+        root, a, b = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        await conn.execute(text("INSERT INTO ext_root VALUES (:r, :c)"), {"r": root, "c": alpha})
+        await conn.execute(text("INSERT INTO ext_a VALUES (:a, :r, NULL)"), {"a": a, "r": root})
+        await conn.execute(text("INSERT INTO ext_b VALUES (:b, :a)"), {"b": b, "a": a})
+        await conn.execute(text("UPDATE ext_a SET b_id = :b"), {"b": b})
+    try:
+        before = {t: await _rows(real_engine, t) for t in ("ext_root", "ext_a", "ext_b")}
+        held = await _held(real_engine, alpha)
+
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == (
+            "system.factory_reset.reference_cycle", {"tables": "ext_a, ext_b"})
+        assert await count(real_engine, "companies", "id = :i", i=alpha) == 1
+        assert await _held(real_engine, alpha) == held
+        assert {t: await _rows(real_engine, t) for t in before} == before
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE IF EXISTS ext_a DROP COLUMN IF EXISTS b_id"))
+            await conn.execute(text("DROP TABLE IF EXISTS ext_b, ext_a, ext_root"))
+
+
 async def test_a_row_naming_a_table_in_another_schema_goes_with_the_company(real_client, real_engine):  # noqa: F811
     """Alpha's and Beta's rows name a row of a table kept in another schema, which has the
     name and the key of one of Alpha's tables in Celerp's own. Beta's row names nothing

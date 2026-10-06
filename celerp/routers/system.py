@@ -83,14 +83,23 @@ class FactoryReset(BaseModel):
 
 
 def _company_rows(schema: dict) -> dict[str, str]:
-    """Every table holding rows of the company bound as ``:c``, with the condition that
-    picks them: its company column, or else a foreign key to rows already picked (a
-    conversation's messages, a run's entity maps). A key that clears on delete picks
-    nothing: Postgres clears it. ``schema`` is the database catalog, so a switched-off
-    module's tables are included."""
-    from celerp.db_catalog import company_tables, ident
+    """Every table holding rows of the company bound as ``:c``, each before any it
+    references, with the condition that picks them: its company column, or else a
+    foreign key to rows already picked (a conversation's messages, a run's entity maps).
+    A key that clears on delete picks nothing: Postgres clears it. ``schema`` is the
+    database catalog, so a switched-off module's tables are included. Tables that refer
+    to each other in a loop have no such order, nor a condition built from one another,
+    so the reset is refused naming them."""
+    from celerp.accounting_roles import refusal
+    from celerp.db_catalog import company_tables, fk_order, ident
 
     owned = company_tables(schema, held=True)
+    order, unordered = fk_order(sorted(owned), schema)
+    if looped := ", ".join(sorted(unordered - set(order))):
+        raise HTTPException(status_code=409, detail=refusal(
+            "system.factory_reset.reference_cycle",
+            f"The tables {looped} refer to each other in a loop, so this company cannot be "
+            "reset. Nothing was deleted.", tables=looped))
     where: dict[str, str] = {"companies": "id = CAST(:c AS uuid)"}
 
     def rows(name: str) -> str:
@@ -105,7 +114,7 @@ def _company_rows(schema: dict) -> dict[str, str]:
                     for fk in table.fks if fk.target in owned and fk.target != name and not fk.clears)
         return where[name]
 
-    return {name: rows(name) for name in owned}
+    return {name: rows(name) for name in order}
 
 
 def _lock_writers(schema: dict) -> str:
@@ -177,19 +186,10 @@ def _held_elsewhere(schema: dict) -> str:
 
 def _company_deletes(schema: dict) -> list[str]:
     """The deletes that remove the company bound as ``:c``, each table before any it
-    references. Tables that refer to each other in a loop have no such order, so the
-    reset is refused naming them."""
-    from celerp import db_catalog
-    from celerp.accounting_roles import refusal
+    references."""
+    from celerp.db_catalog import ident
 
-    rows = _company_rows(schema)
-    order, unordered = db_catalog.fk_order(list(rows), schema)
-    if looped := ", ".join(sorted(unordered - set(order))):
-        raise HTTPException(status_code=409, detail=refusal(
-            "system.factory_reset.reference_cycle",
-            f"The tables {looped} refer to each other in a loop, so this company cannot be "
-            "reset. Nothing was deleted.", tables=looped))
-    return [f"DELETE FROM {db_catalog.ident(name)} WHERE {rows[name]}" for name in reversed(order)]
+    return [f"DELETE FROM {ident(name)} WHERE {where}" for name, where in reversed(_company_rows(schema).items())]
 
 
 @router.post("/factory-reset")
