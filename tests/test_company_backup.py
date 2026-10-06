@@ -43,7 +43,7 @@ from company_backup_support import (
     token,
     unchanged_except,
 )
-from migration_support import OWNER_EMAIL, auth, code_config, count, maker, real_client, real_engine  # noqa: F401
+from migration_support import OWNER_EMAIL, auth, code_config, count, maker, real_client, real_engine, rules_bind  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
 
@@ -1432,13 +1432,23 @@ _BK_POLICIES = {
 _BK_FORCED = ("ALTER TABLE zz_gadgets ENABLE ROW LEVEL SECURITY", "ALTER TABLE zz_gadgets FORCE ROW LEVEL SECURITY")
 
 
+async def _bk_whole(real_engine, real_client, tok, r, rows: int) -> None:
+    """``r`` is a backup carrying all ``rows`` gadgets, and restoring it brings them all back."""
+    assert r.status_code == 200, r.text[:200]
+    assert len(members(r.content)["tables/zz_gadgets.jsonl"].splitlines()) == rows
+    new = await _bk_restore_new(real_client, tok, r.content)
+    assert await _bk_scalar(real_engine, "SELECT count(*) FROM zz_gadgets WHERE company_id = :c",
+                            c=uuid.UUID(new)) == rows
+
+
 @pytest.mark.parametrize("policy", list(_BK_POLICIES))
 async def test_a_carried_table_under_row_security_is_refused_whole(
         real_engine, real_client, tmp_path, monkeypatch, policy):
     """Row security is forced on zz_gadgets, so a read of it returns only the rows a rule
     lets through. Whatever the rule, the backup is refused naming the table, with nothing
     written, and a backup made before the rule is refused on restore the same way, with
-    nothing restored."""
+    nothing restored. Where the rule does not bind the role Celerp connects as, nothing is
+    hidden and the backup carries every gadget."""
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch, backup={"zz_gadgets": "include"})
     _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
@@ -1454,6 +1464,8 @@ async def test_a_carried_table_under_row_security_is_refused_whole(
 
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
+        if not await rules_bind(real_engine):
+            return await _bk_whole(real_engine, real_client, tok, r, 2)
         assert r.status_code == 409, r.text[:200]
         assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
                                       "back up yet. Nothing was backed up.")
@@ -1470,7 +1482,8 @@ async def test_a_carried_table_under_row_security_is_refused_whole(
 async def test_row_security_forced_as_the_export_begins_stops_it(real_engine, real_client, tmp_path, monkeypatch):
     """Another connection forces row security on zz_gadgets, with a rule hiding every row,
     after the export has read the tables' shape. The export is refused naming the table,
-    with nothing written, and asks for another try."""
+    with nothing written, and asks for another try. Where the rule does not bind the role
+    Celerp connects as, nothing is hidden and the backup carries the gadget."""
     from celerp import db_catalog
 
     _bk_local(monkeypatch, tmp_path)
@@ -1482,6 +1495,7 @@ async def test_row_security_forced_as_the_export_begins_stops_it(real_engine, re
         hidden = db_catalog.hidden
 
         async def then_hide(session):
+            monkeypatch.setattr(db_catalog, "hidden", hidden)
             found = await hidden(session)
             await _bk_ddl(real_engine, [*_BK_FORCED, "CREATE POLICY zz_rule ON zz_gadgets USING (id::text LIKE 'x%')"])
             return found
@@ -1489,6 +1503,8 @@ async def test_row_security_forced_as_the_export_begins_stops_it(real_engine, re
         monkeypatch.setattr(db_catalog, "hidden", then_hide)
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
+        if not await rules_bind(real_engine):
+            return await _bk_whole(real_engine, real_client, tok, r, 1)
         assert r.status_code == 409, r.text[:200]
         assert r.json()["detail"] == ("The structure of zz_gadgets changed while it was being backed up. "
                                       "Nothing was backed up. Try again.")
@@ -1512,11 +1528,7 @@ async def test_a_schema_named_after_the_database_role_hides_no_table(real_engine
 
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
-        assert r.status_code == 200, r.text[:200]
-        assert len(members(r.content)["tables/zz_gadgets.jsonl"].splitlines()) == 2
-        new = await _bk_restore_new(real_client, tok, r.content)
-        assert await _bk_scalar(real_engine, "SELECT count(*) FROM zz_gadgets WHERE company_id = :c",
-                                c=uuid.UUID(new)) == 2
+        await _bk_whole(real_engine, real_client, tok, r, 2)
     finally:
         await _bk_sql(real_engine, f"DROP SCHEMA IF EXISTS {role} CASCADE")
         await _bk_drop(real_engine, "zz_gadgets")

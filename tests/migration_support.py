@@ -329,6 +329,14 @@ async def count(engine, table: str, where: str = "", **params) -> int:
         return (await conn.execute(text(sql), params)).scalar_one()
 
 
+async def rules_bind(engine) -> bool:
+    """Whether row security rules bind the role this database is reached as. A superuser
+    or a role allowed to bypass them reads and deletes every row whatever they say."""
+    async with engine.connect() as conn:
+        return not (await conn.execute(text(
+            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"))).scalar_one()
+
+
 async def staged_run(engine, *, spec: dict | None = None, decisions: dict | None = None,
                      start: bool = True, email: str = OWNER_EMAIL):
     """Commit an owner, a staged inactive company and a run built through the real

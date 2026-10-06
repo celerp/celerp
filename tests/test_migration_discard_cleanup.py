@@ -22,6 +22,7 @@ from migration_support import (
     load_run,
     maker,
     migrate_as_owner,
+    rules_bind,
     migration_env,  # noqa: F401 - fixture
     real_client,  # noqa: F401 - fixture
     real_engine,  # noqa: F401 - fixture
@@ -430,7 +431,8 @@ async def test_discard_is_refused_while_row_security_hides_records_of_the_compan
         real_client, real_engine, migration_env):
     """Row security forced on a table discard does not know hides its row of the staged
     company from every read and delete. The discard is refused naming that table, and the
-    company and the row are kept."""
+    company and the row are kept. Where the rule does not bind the role Celerp connects
+    as, nothing is hidden and the row is refused as one discard does not know."""
     from sqlalchemy import text
 
     token, run_id, company_id = await _staged(real_client, real_engine, migration_env)
@@ -446,7 +448,8 @@ async def test_discard_is_refused_while_row_security_hides_records_of_the_compan
 
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert (detail["message_key"], detail["params"]) == ("migration.discard_partition_key", {"table": "ext_notes"})
+        refusal = "migration.discard_partition_key" if await rules_bind(real_engine) else "migration.discard_unsafe_data"
+        assert (detail["message_key"], detail["params"]) == (refusal, {"table": "ext_notes"})
         assert await count(real_engine, "companies", "id = :c", c=company_id) == 1
         async with real_engine.begin() as conn:
             await conn.execute(text("ALTER TABLE ext_notes NO FORCE ROW LEVEL SECURITY"))

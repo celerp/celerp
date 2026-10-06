@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from migration_support import OWNER_EMAIL, OWNER_PASSWORD, auth, count, real_client, real_engine  # noqa: F401 - fixtures
+from migration_support import OWNER_EMAIL, OWNER_PASSWORD, auth, count, real_client, real_engine, rules_bind  # noqa: F401 - fixtures
 from test_company_backup_ui import _page, ui  # noqa: F401 - fixture
 from test_helpers import in_language
 
@@ -1214,7 +1214,9 @@ async def test_a_reset_is_refused_while_a_table_in_another_schema_names_its_tabl
 
 async def test_a_reset_is_refused_while_row_security_hides_rows_of_a_table(real_client, real_engine):  # noqa: F811
     """Row security forced on a table holding Alpha's row hides it from every read and
-    delete. The reset is refused naming that table, and nothing is deleted."""
+    delete. The reset is refused naming that table, and nothing is deleted. Where the rule
+    does not bind the role Celerp connects as, nothing is hidden and the row goes with the
+    rest of Alpha."""
     from sqlalchemy import text
 
     ta, _ = await _two_companies(real_client)
@@ -1231,6 +1233,10 @@ async def test_a_reset_is_refused_while_row_security_hides_rows_of_a_table(real_
 
         r = await _reset(real_client, ta, "Alpha Co")
 
+        if not await rules_bind(real_engine):
+            assert r.status_code == 200, r.text
+            assert await count(real_engine, "ext_hidden", "company_id = :a", a=alpha) == 0
+            return
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
         assert (detail["message_key"], detail["params"]) == ("system.factory_reset.partition_key",
