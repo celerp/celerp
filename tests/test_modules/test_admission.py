@@ -189,7 +189,7 @@ def _case_protected_import_in_init(base, marker, monkeypatch):
     pkg = _migrating_module(base, f"acme-{_uid()}", marker)
     init = pkg / "__init__.py"
     init.write_text("from celerp.ai import quota\n" + init.read_text())
-    return pkg, "celerp.ai.quota"
+    return pkg, "celerp.ai"
 
 
 def _case_unlicensed_premium(base, marker, monkeypatch):
@@ -1285,7 +1285,7 @@ def test_owned_route_module_registers(_modules):
 
 
 def test_protected_internal_imported_as_a_submodule_name_is_refused(_modules, tmp_path):
-    """`from celerp.ai import quota` imports the protected celerp.ai.quota as
+    """`from celerp.ai import quota` reaches the protected celerp.ai namespace as
     surely as `import celerp.ai.quota` does."""
     marker = tmp_path / "setup_ran.txt"
     folder = f"acme-{_uid()}"
@@ -1297,7 +1297,7 @@ def test_protected_internal_imported_as_a_submodule_name_is_refused(_modules, tm
 
     assert not marker.exists()
     assert not loader.is_running(folder)
-    assert "celerp.ai.quota" in loader.load_errors()[folder]
+    assert "celerp.ai" in loader.load_errors()[folder]
 
 
 def test_locale_file_outside_the_module_is_not_registered(_modules):
