@@ -4,7 +4,7 @@
 """Notification API router.
 
 Endpoints:
-  GET    /notifications              List notifications (X-Unread-Count header)
+  GET    /notifications              List notifications with the caller's unread count
   POST   /notifications/{id}/read    Mark one read
   POST   /notifications/read-all     Mark all read
 """
@@ -65,10 +65,10 @@ async def list_notifications(
                 body=n.body,
                 action_url=n.action_url,
                 priority=n.priority,
-                read=n.read,
+                read=read,
                 created_at=n.created_at.isoformat(),
             )
-            for n in items
+            for n, read in items
         ],
         unread_count=unread,
     )
@@ -81,8 +81,8 @@ async def mark_read(
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
 ):
-    """Mark a single notification as read."""
-    found = await notif_svc.mark_read(session, notification_id, company_id)
+    """Mark a single notification as read for the current user."""
+    found = await notif_svc.mark_read(session, notification_id, company_id, user.id)
     if not found:
         raise HTTPException(status_code=404, detail="Notification not found")
     await session.commit()
