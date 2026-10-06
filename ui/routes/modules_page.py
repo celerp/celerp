@@ -1325,14 +1325,14 @@ def setup_routes(app):
             return gate_modal_response(gate)
         m, installed = await _community_entry(token, module_id)
         try:
-            path = await catalog.download_community_archive(m.get("repo", ""), module_id)
-        except Exception:
+            path = await catalog.download_community_archive(m.get("repo", ""), m.get("commit", ""), module_id)
+        except Exception as exc:
+            reason = t("marketplace.download_unpinned" if isinstance(exc, catalog.UnpinnedModule)
+                       else "marketplace.download_failed", lang)
             if zone:
                 community, installed = await _community_and_installed(token)
-                return _toast(_community_table(community, installed, lang),
-                                         t("marketplace.download_failed", lang))
-            return _toast(_community_row(m, lang, installed),
-                                     t("marketplace.download_failed", lang))
+                return _toast(_community_table(community, installed, lang), reason)
+            return _toast(_community_row(m, lang, installed), reason)
         if zone:
             community, installed = await _community_and_installed(token)
             return _community_table(community, installed, lang,
