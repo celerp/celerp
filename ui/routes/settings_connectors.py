@@ -20,6 +20,7 @@ from ui.routes.settings import _check_permission, _token
 from ui.security import is_safe_authorize_url
 
 from celerp.connectors.base import ConnectorCategory, SyncFrequency
+from celerp.connectors.registry import service_name
 from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY, attention_entries
 from celerp.services.background import spawn_background
 
@@ -284,7 +285,7 @@ def _request_company_id(request: Request) -> str:
     company = getattr(request.state, "auth_company", None)
     company_id = company.get("id") if isinstance(company, dict) else None
     if not company_id:
-        raise RuntimeError("Current company is unavailable")
+        raise RuntimeError(t("error.company_unavailable"))
     return str(company_id)
 
 
@@ -323,16 +324,6 @@ async def _get_connector_config(company_id: str, connector: str):
             except ConnectorOwnershipError:
                 await session.rollback()
         return None
-
-
-def _service_name(platform: str) -> str:
-    """Display name of a connector (Shopify, Xero, ...), or the raw id if unknown."""
-    from celerp.connectors.registry import get as get_connector
-
-    try:
-        return get_connector(platform).display_name
-    except KeyError:
-        return platform
 
 
 def _local_connector_entry(platform: str) -> dict:
@@ -587,7 +578,7 @@ def _connector_status_view(
                  "hx_trigger": "load delay:2s", "hx_swap": "outerHTML"}
     return Div(
         _entity_status_table(runs, lang),
-        _sync_reasons(runs, _service_name(platform), lang),
+        _sync_reasons(runs, service_name(platform), lang),
         _attention_list(platform, list(attention), lang),
         id=f"connector-status-{platform}",
         cls="connector-status-view",
@@ -1002,8 +993,7 @@ async def connectors_tab_content(lang: str, token: str, category: str, company_i
                 )
             return Div(_entitlement_cta(lang), *owned_cards, cls="settings-card")
         return Div(
-            P(fetch_err or t("connectors.fetch_error", lang,
-                default="Could not load connectors from relay. Check your connection."),
+            P(fetch_err or t("connectors.fetch_error", lang),
               cls="flash flash--warning"),
             cls="settings-card",
         )
@@ -1081,10 +1071,10 @@ def setup_routes(app):
 
         url = result.get("authorize_url", "")
         if not url:
-            return Span(t("connectors.authorize_error", lang), cls="flash flash--warning")
+            return Span(t("connectors.authorize_error", lang, service=service_name(platform)), cls="flash flash--warning")
 
         if not is_safe_authorize_url(url):
-            return Span(t("connectors.authorize_error", lang), cls="flash flash--warning")
+            return Span(t("connectors.authorize_error", lang, service=service_name(platform)), cls="flash flash--warning")
 
         # Open the authorize URL in a new tab AND show an on-screen next step + fallback
         # link, so nothing is silently lost if the popup is blocked (GDR: users must
@@ -1326,7 +1316,7 @@ def setup_routes(app):
         polling = request.query_params.get("polling") == "1"
         if polling and runs and not _any_in_progress(runs):
             ok = _overall_status(runs) != "failed"
-            msg = t("connectors.sync_complete", lang) if ok else t("connectors.sync_failed", lang, service=_service_name(platform))
+            msg = t("connectors.sync_complete", lang) if ok else t("connectors.sync_failed", lang, service=service_name(platform))
             from ui.components.shell import toast_header
             return HTMLResponse(
                 to_xml(view),
@@ -1475,19 +1465,15 @@ def setup_routes(app):
 
         if not consumer_key or not consumer_secret:
             return Div(
-                Span(t("connectors.missing_credentials", lang, default="Consumer key and secret are required."),
+                Span(t("connectors.missing_credentials", lang),
                      cls="flash flash--warning"),
                 id=f"connector-card-{platform}",
                 cls="connector-card",
             )
 
         if (url_err := _store_url_error(store_url, platform)) is not None:
-            _defaults = {
-                "connectors.store_url_must_use_https": "Store URL must use https:// (API keys are sent as Basic Auth).",
-                "connectors.store_url_required": "Store URL is required.",
-            }
             return Div(
-                Span(t(url_err, lang, default=_defaults[url_err]), cls="flash flash--warning"),
+                Span(t(url_err, lang), cls="flash flash--warning"),
                 id=f"connector-card-{platform}", cls="connector-card",
             )
 
@@ -1513,7 +1499,7 @@ def setup_routes(app):
             if err == "subscription_required":
                 msg = t("connectors.no_subscription", lang)
             elif err in ("store_rejected", "store_unreachable"):
-                msg = t("connectors.connect_check_failed", lang, detail=detail)
+                msg = t("connectors.connect_check_failed", lang, detail=detail.rstrip("."))
             elif err in ("already_connected", "store_changed") and detail:
                 msg = detail
             else:

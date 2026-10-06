@@ -605,7 +605,7 @@ async def _set_order_reconciled(
         if not entry.get("signature"):
             raise HTTPException(
                 status_code=409,
-                detail="This order clears on its own once its data is fixed",
+                detail=t("error.order_clears_itself"),
             )
         if signature is not None and entry["signature"] != signature:
             raise HTTPException(
@@ -618,7 +618,7 @@ async def _set_order_reconciled(
         session, str(company_id), "woocommerce", SyncEntity.ORDERS.value, order_id, _apply
     )
     if entry is None:
-        raise HTTPException(status_code=404, detail="This order is not waiting for attention")
+        raise HTTPException(status_code=404, detail=t("error.order_no_attention"))
     try:
         await set_woocommerce_order_reconciled(
             session, str(company_id), order_id,
@@ -680,14 +680,11 @@ async def set_item_sync(
     if connector_name not in PRODUCT_CHANNEL_PLATFORMS:
         raise HTTPException(status_code=404, detail="Unsupported catalog connector")
     if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+        raise HTTPException(status_code=422, detail=t("error.sync_none_selected"))
     if len(payload.entity_ids) > _ITEM_SYNC_LIMIT:
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"At most {_ITEM_SYNC_LIMIT} items can be synchronized in one request "
-                f"(received {len(payload.entity_ids)})."
-            ),
+            detail=t("error.sync_too_many", count=len(payload.entity_ids), limit=_ITEM_SYNC_LIMIT),
         )
     from celerp.connectors.ownership import (
         ConnectorOwnershipError,
