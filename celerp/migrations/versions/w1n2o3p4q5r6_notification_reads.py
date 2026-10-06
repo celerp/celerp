@@ -6,7 +6,8 @@ read flag every user shared.
 
 A personal notice its user had read keeps that state as a receipt. A company-wide
 notice already read stays read for every current member of its company, so old
-notices do not come back as unread.
+notices do not come back as unread. A downgrade puts the shared flag back on every
+notice someone has read, personal or company-wide.
 
 The notices table is created from the models at start, not by a revision, so a new
 installation has nothing to convert here. A start of this version before the upgrade
@@ -73,8 +74,8 @@ def downgrade() -> None:
         return
     op.add_column("notifications", sa.Column("read", sa.Boolean(), server_default=sa.false(), nullable=False))
     op.execute(
-        "UPDATE notifications SET read = true WHERE user_id IS NOT NULL AND EXISTS "
+        "UPDATE notifications SET read = true WHERE EXISTS "
         "(SELECT 1 FROM notification_reads r WHERE r.notification_id = notifications.id "
-        "AND r.user_id = notifications.user_id)"
+        "AND (notifications.user_id IS NULL OR r.user_id = notifications.user_id))"
     )
     op.drop_table("notification_reads")

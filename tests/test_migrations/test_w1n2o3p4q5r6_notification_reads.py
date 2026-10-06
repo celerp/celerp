@@ -12,6 +12,7 @@ each test builds it as the previous release did.
 
 from __future__ import annotations
 
+import os
 import uuid
 
 import pytest
@@ -148,3 +149,29 @@ def test_new_installation_has_nothing_to_convert():
                 assert conn.execute(text("SELECT to_regclass('notification_reads')")).scalar() is None
         finally:
             eng.dispose()
+
+
+def test_downgrade_and_upgrade_keep_read_state():
+    """Back on the shared flag a notice someone had read is read, as it was before
+    the upgrade; upgrading again gives every current member the same receipts."""
+    from alembic import command
+
+    from celerp.alembic_config import build_alembic_config
+
+    with throwaway_db("notifreads") as (_, sync_url):
+        ids = _at_parent(sync_url, started_first=False)
+        upgrade_to(sync_url, REVISION)
+        os.environ["DATABASE_URL"] = sync_url
+        command.downgrade(build_alembic_config(), PARENT)
+        eng = create_engine(sync_url)
+        try:
+            with eng.connect() as conn:
+                read = {str(r) for r in conn.execute(text("SELECT id FROM notifications WHERE read")).scalars()}
+        finally:
+            eng.dispose()
+        upgrade_to(sync_url, REVISION)
+        receipts, _, _ = _converted(sync_url)
+
+    assert read == {ids["read"], ids["wide"]}
+    assert receipts == _expected(ids)
+

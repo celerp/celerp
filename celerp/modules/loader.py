@@ -12,12 +12,14 @@ module that is not first-party, its protected imports and premium license. The
 migration phase and the loader both consume that verdict, so a refused module
 runs nothing.
 
-Revenue protection
-------------------
-The loader enforces that no third-party module imports protected BSL internals
-(_PROTECTED_BSL_INTERNALS). If a module imports any of these, it is rejected
-with a clear error that names the violation and links to the license and the
-sanctioned alternative.
+Protected internals
+-------------------
+An admission and licensing rule, not a sandbox: code a third-party module ships
+must not statically import protected BSL internals (_PROTECTED_BSL_INTERNALS),
+and must not bind a protected object into its own namespace while it activates.
+The verdict is the same whether core modules were loaded first or not. A module
+that breaks the rule is rejected with a clear error that names the violation and
+links to the license and the sanctioned alternative.
 
 Module authors who need AI should use celerp.modules.api (public, BSL) —
 NOT celerp.ai.* directly.
@@ -1268,6 +1270,27 @@ def _own_code_modules(pkg_path: Path) -> list:
     return [m for m, location in located if location and _inside(Path(location), pkg_path)]
 
 
+_PLAIN_CONTAINERS = (dict, list, tuple, set, frozenset)
+
+
+def _held_values(namespace: dict) -> list:
+    """Every value in *namespace* and every value nested in it through plain
+    containers (dict keys and values, list, tuple, set, frozenset). Nothing else is
+    entered: not classes, functions, other objects or other modules. Each container
+    is entered once, so a container that holds itself ends the walk. sys.modules is
+    not entered: what it holds depends on what the process loaded before."""
+    held, entered, queue = [], {id(sys.modules)}, list(namespace.values())
+    while queue:
+        val = queue.pop()
+        held.append(val)
+        kind = next((t for t in _PLAIN_CONTAINERS if isinstance(val, t)), None)
+        if kind is None or id(val) in entered:
+            continue
+        entered.add(id(val))
+        queue.extend([*dict.keys(val), *dict.values(val)] if kind is dict else kind.__iter__(val))
+    return held
+
+
 def admitted_module_root(import_name: str) -> Path | None:
     """The folder of the admitted module whose code answers to *import_name*
     (a dotted ``__name__``), as admission recorded it; None for any other code."""
@@ -1320,16 +1343,19 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
         sys.modules.pop(pkg_name, None)
         raise ModuleLoadError(f"Failed to import ({type(exc).__name__}: {exc})")
 
-    # Revenue protection, second stage: admission scanned the source statically;
-    # this checks what the module's own code actually bound. What core imports on
-    # its own behalf is not the module's import, so the verdict is the same in
-    # every process. Trusted (first-party bundled) modules are exempt: they ARE
-    # the internals.
+    # Admission rule, second stage: admission scanned the module's source for
+    # imports of protected internals; this checks that the module's own code did
+    # not bind a protected object into its namespace during activation, directly
+    # or inside a plain container. It is a licensing rule, not a sandbox. Only
+    # code shipped in the module folder is examined, and what core imports on its
+    # own behalf is not the module's binding, so the verdict is the same whether
+    # core modules were loaded first or not. Trusted (first-party bundled)
+    # modules are exempt: they ARE the internals.
     if not trusted:
         violations: set[str] = set()
 
         for own in _own_code_modules(pkg_path):
-            for val in vars(own).values():
+            for val in _held_values(vars(own)):
                 candidate = getattr(val, "__name__", None) or getattr(
                     getattr(val, "__spec__", None), "name", None
                 )

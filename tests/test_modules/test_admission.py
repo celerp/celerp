@@ -1373,6 +1373,59 @@ def test_protected_internal_bound_by_the_modules_own_submodule_is_refused(_modul
     assert "celerp.ai" in loader.load_errors()[folder]
 
 
+_REACH_LLM = "importlib.import_module('celerp.' + 'ai.llm')"
+
+# What a module's own code binds while it activates, and whether the module loads.
+# A protected object in the namespace or inside a plain container (dict keys and
+# values, list, tuple, set, frozenset) refuses it; classes, functions and other
+# objects are not examined by the rule, and sys.modules is never entered.
+_BINDINGS = {
+    "in-a-list": ("HOLD = [LLM]\n", False),
+    "dict-value": ("HOLD = {'m': LLM}\n", False),
+    "dict-key": ("HOLD = {LLM: 1}\n", False),
+    "nested-in-a-frozenset": ("HOLD = frozenset({(1, (LLM,))})\n", False),
+    "list-holding-itself": ("HOLD = [LLM]\nHOLD.append(HOLD)\n", False),
+    "plain-data-holding-itself": ("HOLD = {'a': [1, (2, frozenset({3}))], 'b': {4}}\nHOLD['c'] = HOLD\n", True),
+    "class-attribute": ("class Box:\n    llm = LLM\n", True),
+    "default-argument": ("def f(m=LLM):\n    return m\n", True),
+    "holds-sys-modules": ("import sys\nHOLD = [sys.modules]\n", True),
+}
+
+_VERDICT = """
+import json, sys
+if sys.argv[2] == "preloaded":
+    import celerp.ai.llm  # noqa: F401  (as the API process)
+from celerp.modules import loader
+fresh = not [n for n in sys.modules if n.startswith("celerp.ai")]
+loaded = [m["name"] for m in loader.load_all(sys.argv[1], {sys.argv[3]})]
+print(json.dumps({"fresh": fresh, "loads": sys.argv[3] in loaded, "errors": loader.load_errors()}))
+"""
+
+
+@pytest.mark.parametrize("binding", list(_BINDINGS))
+def test_module_gets_the_same_verdict_whether_core_was_loaded_first_or_not(_modules, binding):
+    """The API process has imported protected internals before modules load; the UI
+    process has not. A module's verdict depends only on what its own code binds."""
+    import os
+    import subprocess
+
+    body, loads = _BINDINGS[binding]
+    folder = f"acme-{_uid()}"
+    _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  init_prelude="import importlib\n" + body.replace("LLM", _REACH_LLM))
+    repo = Path(__file__).resolve().parents[2]
+    results = {}
+    for process in ("preloaded", "fresh"):
+        out = subprocess.run([sys.executable, "-c", _VERDICT, str(_modules), process, folder],
+                             cwd=repo, env={**os.environ, "MODULE_DIR": str(_modules)},
+                             capture_output=True, text=True, timeout=120)
+        assert out.returncode == 0, out.stderr[-2000:]
+        results[process] = json.loads(out.stdout.strip().splitlines()[-1])
+
+    assert [r["fresh"] for r in results.values()] == [False, True]
+    assert {p: r["loads"] for p, r in results.items()} == {"preloaded": loads, "fresh": loads}, results
+
+
 def test_locale_file_outside_the_module_is_not_registered(_modules):
     from ui.i18n import t
 
