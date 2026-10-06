@@ -115,17 +115,6 @@ async def partition_key(session: AsyncSession) -> str | None:
         "AND f.relnamespace = r.relnamespace ORDER BY 1 LIMIT 1"))
 
 
-def partition_refusal(partition: str) -> dict:
-    """Why a company cannot be deleted while ``partition`` holds or is named by such a key."""
-    from celerp.accounting_roles import refusal
-
-    return refusal(
-        "system.partition_key",
-        f"This company cannot be deleted because a foreign key from or to {partition} is set on "
-        "that one partition instead of its whole table, so Celerp cannot tell whose records it "
-        "reaches. Nothing was deleted.", table=partition)
-
-
 def fk_order(tables: list[str], schema: dict[str, Table]) -> tuple[list[str], set[str]]:
     """Tables ordered so each follows every table it references, and the tables no such
     order exists for: those referencing themselves or in a reference cycle."""

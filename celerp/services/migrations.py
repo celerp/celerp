@@ -36,6 +36,7 @@ from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import db_catalog
+from celerp.accounting_roles import refusal
 from celerp.importers.adapters.base import (
     Artifact,
     MigrationDecisions,
@@ -951,7 +952,12 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     if not await _try_xact_lock(session, run.id):
         raise MigrationError(409, ALREADY_RUNNING)
     if partition := await db_catalog.partition_key(session):
-        raise MigrationError(409, db_catalog.partition_refusal(partition))
+        raise MigrationError(409, refusal(
+            "migration.discard_partition_key",
+            f"This migration cannot be discarded because the table {partition} was changed outside "
+            "Celerp (by an installed module or a direct database change) in a way discarding cannot "
+            "safely handle. Nothing was deleted. Ask whoever installed that module or changed the "
+            "database to fix it.", table=partition))
     for table in await company_tables(session):
         if table in _DISCARD_ORDER or table == MigrationCleanupTask.__tablename__:
             continue

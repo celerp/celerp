@@ -228,10 +228,17 @@ async def factory_reset(
         if outside := await db_catalog.outside_referrer(session):
             raise HTTPException(status_code=409, detail=refusal(
                 "system.factory_reset.outside_reference",
-                f"This company cannot be reset because {outside}, a table outside Celerp's own, "
-                "refers to Celerp's records. Nothing was deleted.", table=outside))
+                f"This company cannot be reset because the table {outside}, which was added outside "
+                "Celerp (by an installed module or a direct database change), refers to Celerp's "
+                "records. Nothing was deleted. Ask whoever installed that module or changed the "
+                "database to remove that reference.", table=outside))
         if partition := await db_catalog.partition_key(session):
-            raise HTTPException(status_code=409, detail=db_catalog.partition_refusal(partition))
+            raise HTTPException(status_code=409, detail=refusal(
+                "system.factory_reset.partition_key",
+                f"This company cannot be reset because the table {partition} was changed outside Celerp "
+                "(by an installed module or a direct database change) in a way the reset cannot safely "
+                "handle. Nothing was deleted. Ask whoever installed that module or changed the database "
+                "to fix it.", table=partition))
         members = list((await session.execute(
             select(UserCompany.user_id).where(UserCompany.company_id == company_id))).scalars())
         held = await session.scalar(text(_held_elsewhere(schema)), {"c": str(company_id)})

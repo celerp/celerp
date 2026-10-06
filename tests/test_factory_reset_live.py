@@ -1069,7 +1069,7 @@ async def test_a_reset_is_refused_while_a_key_is_kept_on_one_partition(real_clie
 
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert (detail["message_key"], detail["params"]) == ("system.partition_key", {"table": partition})
+        assert (detail["message_key"], detail["params"]) == ("system.factory_reset.partition_key", {"table": partition})
         assert await count(real_engine, "companies", "id = :a", a=alpha) == 1
         assert await count(real_engine, "users", "email = 'clerk@example.com'") == 1
         assert await count(real_engine, beta_table, "company_id = :b", b=beta) == 1
@@ -1102,8 +1102,10 @@ async def test_a_reset_is_refused_while_a_table_in_another_schema_names_its_tabl
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
         assert detail["message_key"] == "system.factory_reset.outside_reference", detail
-        assert detail["message"] == ("This company cannot be reset because ext.notes, a table outside "
-                                     "Celerp's own, refers to Celerp's records. Nothing was deleted.")
+        assert detail["message"] == (
+            "This company cannot be reset because the table ext.notes, which was added outside Celerp "
+            "(by an installed module or a direct database change), refers to Celerp's records. Nothing "
+            "was deleted. Ask whoever installed that module or changed the database to remove that reference.")
         assert "ext.notes" in in_language("de", detail) != detail["message"]
         assert await _held(real_engine, alpha) == held
         assert await count(real_engine, "ext.notes") == 1

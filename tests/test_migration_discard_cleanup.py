@@ -309,7 +309,7 @@ async def test_bootstrap_discard_is_refused_while_a_key_is_kept_on_one_partition
 
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert (detail["message_key"], detail["params"]) == ("system.partition_key", {"table": "ext_pt_a"})
+        assert (detail["message_key"], detail["params"]) == ("migration.discard_partition_key", {"table": "ext_pt_a"})
         assert await count(real_engine, "users", "email = :e", e=OWNER_EMAIL) == 1
         assert await count(real_engine, "companies", "name = 'Moved Co'") == 1
         assert await count(real_engine, "ext_pt", "company_id = :c", c=other) == 1

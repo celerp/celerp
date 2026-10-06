@@ -1165,9 +1165,9 @@ def _discard_page(request: Request, run: dict, error: str | None = None):
     return wizard_page(
         request,
         auth_header(t("migration.discard")),
-        flash(error) if error else "",
-        P(t("migration.discard_confirm", company=run.get("company_name", ""))),
-        Form(Button(t("migration.discard"), type="submit", cls="btn btn--danger btn--full"),
+        Form(flash(error) if error else "",
+             P(t("migration.discard_confirm", company=run.get("company_name", ""))),
+             Button(t("migration.discard"), type="submit", cls="btn btn--danger btn--full"),
              method="post", action=f"/migrations/{run_id}/discard", cls="auth-form"),
         back_link(f"/migrations/{run_id}"),
     )
