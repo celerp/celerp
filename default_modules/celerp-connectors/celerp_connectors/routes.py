@@ -96,8 +96,8 @@ async def trigger_sync(
 ) -> SyncResponse:
     try:
         connector = connectors.get(connector_name)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name))
 
     if payload.entity not in connector.supported_entities:
         raise HTTPException(
@@ -156,7 +156,7 @@ async def trigger_sync_plan(
     try:
         connector = connectors.get(connector_name)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
 
     from celerp.models.connector_config import ConnectorConfig
     from sqlalchemy import select
@@ -225,8 +225,8 @@ async def store_credentials(
 
     try:
         connector = connectors.get(connector_name)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name))
 
     if (err := _relay_https_error()) is not None:
         return err
@@ -554,8 +554,8 @@ async def reset_unassigned_connector(
 
     try:
         connectors.get(connector_name)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name))
 
     try:
         rows = await lock_unassigned_connector(session, connector_name)
