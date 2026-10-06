@@ -16,7 +16,7 @@ from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
-from ui.components.table import EMPTY, unwrap_address
+from ui.components.table import _SEARCHABLE_THRESHOLD, EMPTY, searchable_select, unwrap_address
 from celerp.services.currencies import CURRENCY_CODES
 from ui.components.currency import currency_combobox_td, currency_label
 from ui.components.phone import phone_input_td as _phone_input_td
@@ -1130,6 +1130,44 @@ def setup_routes(app):
             return P(str(e.detail), cls="cell-error")
         user = next((u for u in users if u.get("id") == user_id), {})
         return _user_display_cell(user_id, field, user.get(field))
+
+    # ── Installation owner ───────────────────────────────────────────
+    @app.get("/settings/users/installation-owner")
+    async def install_owner_display(request: Request):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            users = (await api.get_users(token)).get("items", [])
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        from ui.routes.settings_general import _is_install_owner
+        return _install_owner_cell(users, editable=await _is_install_owner(token))
+
+    @app.get("/settings/users/installation-owner/edit")
+    async def install_owner_edit(request: Request):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            users = (await api.get_users(token)).get("items", [])
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _install_owner_editor(users)
+
+    @app.patch("/settings/users/installation-owner")
+    async def install_owner_patch(request: Request):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        value = str((await request.form()).get("value", ""))
+        try:
+            await api.transfer_install_owner(token, value)
+            users = (await api.get_users(token)).get("items", [])
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        # The new installation owner holds the role now; this viewer can no longer hand it on.
+        return _install_owner_cell(users, editable=False)
 
     # ── Role permission matrix ───────────────────────────────────────
     @app.patch("/settings/roles/{perm_key}/{role_key}")
@@ -3113,7 +3151,52 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
     )
 
 
-def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en", is_owner: bool = False) -> FT:
+def _install_owner_cell(users: list[dict], editable: bool) -> FT:
+    """Who the installation owner is. Only the installation owner may hand the role
+    on, so only they see it as click-to-edit."""
+    owner = next((u for u in users if u.get("is_install_owner")), None)
+    name = (owner.get("name") or owner.get("email")) if owner else ""
+    text = Span(name or EMPTY, cls="cell-text")
+    if not editable:
+        return Td(text, cls="cell")
+    return Td(
+        text,
+        title=t("settings.click_to_edit"),
+        hx_get="/settings/users/installation-owner/edit",
+        hx_target="this", hx_swap="outerHTML", hx_trigger="click",
+        cls="cell cell--clickable",
+    )
+
+
+def _install_owner_editor(users: list[dict]) -> FT:
+    """The active members the installation owner can hand the role to. Escape puts
+    the cell back unchanged; choosing someone asks once, because only the new
+    installation owner can hand the role back."""
+    current = next((u.get("id") for u in users if u.get("is_install_owner")), "")
+    options = [(u["id"], u.get("name") or u.get("email") or u["id"])
+               for u in users if u.get("is_active", True)]
+    attrs = dict(
+        hx_patch="/settings/users/installation-owner", hx_target="closest td", hx_swap="outerHTML",
+        hx_trigger="change", hx_confirm=t("settings.install_owner_confirm"),
+    )
+    if len(options) > _SEARCHABLE_THRESHOLD:
+        field = searchable_select(name="value", options=options, value=current, **attrs)
+    else:
+        field = Select(*[Option(label, value=uid, selected=uid == current) for uid, label in options],
+                       name="value", hx_include="this", cls="cell-input cell-input--select",
+                       autofocus=True, **attrs)
+    return Td(
+        Div(field, cls="cell-input-wrap"),
+        onkeydown=(
+            "if(event.key==='Escape'){htmx.ajax('GET','/settings/users/installation-owner',"
+            "{target:this,swap:'outerHTML'});event.preventDefault();}"
+        ),
+        cls="cell cell--editing",
+    )
+
+
+def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en", is_owner: bool = False,
+               is_install_owner: bool = False) -> FT:
     def _row(u: dict) -> FT:
         uid = u.get("id", "")
         return Tr(
@@ -3133,6 +3216,13 @@ def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en"
             cls="data-table",
         ),
         A(t("btn.create_user", lang), href="/settings/users/new", cls="btn btn--primary mt-md"),
+        H3(t("settings.install_owner_title", lang), cls="settings-section-title"),
+        P(t("settings.install_owner_hint", lang), cls="settings-hint"),
+        Table(
+            Tr(Td(t("settings.install_owner_title", lang), cls="detail-label"),
+               _install_owner_cell(users, editable=is_install_owner)),
+            cls="detail-table",
+        ),
         role_matrix,
         cls="settings-card",
     )

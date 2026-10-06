@@ -50,6 +50,7 @@ from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
 from celerp.services.business_time import business_timezone
 from celerp.services.company_lock import lock_company, lock_company_for_deletion, locked_company
+from ui.i18n import t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -647,7 +648,8 @@ async def list_users(company_id=Depends(get_current_company_id), session: AsyncS
         )
     ).all()
     items = [
-        {"id": str(u.id), "email": u.email, "name": u.name, "role": normalize_role(role), "is_active": uc_active}
+        {"id": str(u.id), "email": u.email, "name": u.name, "role": normalize_role(role), "is_active": uc_active,
+         "is_install_owner": u.is_install_owner}
         for u, role, uc_active in rows
     ]
     return {"items": items, "total": len(items)}
@@ -838,19 +840,9 @@ async def patch_user(
                     )
 
             if user.is_install_owner:
-                active_memberships = (
-                    await session.execute(
-                        select(_func.count()).where(
-                            UserCompany.user_id == user_id,
-                            UserCompany.is_active.is_(True),
-                        )
-                    )
-                ).scalar()
-                if active_memberships <= 1:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cannot deactivate the installation owner's last active membership.",
-                    )
+                # The installation owner keeps access to every company: only
+                # after they hand that role to someone else can they be deactivated.
+                raise HTTPException(status_code=400, detail=t("error.install_owner_deactivate"))
 
         if payload.is_active != link.is_active:
             security_change = True
