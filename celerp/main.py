@@ -32,6 +32,7 @@ _FIRST_BOOT = not settings.gateway_instance_id
 _BOOT_ID = uuid.uuid4().hex
 ensure_instance_id()
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
+from ui.i18n import I18nMiddleware
 from celerp.models.base import Base
 
 from celerp.routers import auth, companies, company_backup, ledger, migrations
@@ -624,6 +625,9 @@ app.add_middleware(RecoveryMaintenanceMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(SlidingTokenRefreshMiddleware)
 app.add_middleware(MaxBodySizeMiddleware, max_body_size_bytes=10 * 1024 * 1024)
+# Outermost, so every message the API returns, the other middleware's included,
+# reads in the language the request asks for.
+app.add_middleware(I18nMiddleware)
 
 if settings.celerp_public_url:
     from fastapi.middleware.cors import CORSMiddleware

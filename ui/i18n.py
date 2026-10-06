@@ -258,6 +258,29 @@ def current_lang() -> str:
     return _current_lang.get()
 
 
+class I18nMiddleware:
+    """Pure ASGI middleware: sets the context language for each request, so t()
+    reads in the language the request asks for (the celerp_lang cookie, else
+    Accept-Language). Both apps use it: the UI for its pages, the API for the
+    messages it returns, which the UI client asks for in the reader's language."""
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        from starlette.requests import HTTPConnection
+        # Restored afterwards, so an app called in-process by another (the API
+        # under the UI) never leaves its language behind in the caller's context.
+        token = _current_lang.set(get_lang(HTTPConnection(scope)))
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            _current_lang.reset(token)
+
+
 def is_rtl(lang: str | None = None) -> bool:
     """Check if the given (or current) language is RTL, consulting the central
     RTL set and any module-declared RTL flag."""

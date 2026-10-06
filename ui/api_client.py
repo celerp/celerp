@@ -10,7 +10,7 @@ from typing import BinaryIO
 import httpx
 
 from celerp.capacity import REQUEST_DB_POOL_SIZE
-from ui.i18n import t
+from ui.i18n import current_lang, t
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +176,9 @@ def _local_client(
     from ui.config import API_BASE
 
     merged_headers = dict(headers or {})
+    # The API answers in the language of the page that asked, so the messages it
+    # returns read in the user's language.
+    merged_headers.setdefault("Accept-Language", current_lang())
     if token is not None:
         merged_headers["Authorization"] = f"Bearer {token}"
 
@@ -930,6 +933,11 @@ async def create_user(token: str, data: dict) -> dict:
 async def patch_user(token: str, user_id: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.patch(f"/companies/me/users/{user_id}", json=data)).json()
+
+
+async def transfer_install_owner(token: str, user_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/companies/me/users/{user_id}/installation-owner")).json()
 
 
 async def get_taxes(token: str) -> list[dict]:
