@@ -1382,110 +1382,35 @@ def test_protected_internal_imported_as_a_submodule_name_is_refused(_modules, tm
     assert "celerp.ai" in loader.load_errors()[folder]
 
 
-_CORE_SERVICES = [
-    "celerp.services.company_files", "celerp.services.company_backup",
-    "celerp.services.company_backup_files", "celerp.services.company_reset",
-    "celerp.services.migrations", "celerp.routers.company_backup",
-]
+_GETATTR_RAISES = "class G:\n    def __getattr__(self, n):\n        raise RuntimeError('no context')\n"
+_CORE_SERVICES = ("celerp.services.company_files", "celerp.services.company_backup",
+                  "celerp.services.company_backup_files", "celerp.services.company_reset",
+                  "celerp.services.migrations", "celerp.routers.company_backup")
 
-
-def _service_user(base: Path, service: str) -> str:
-    folder = f"acme-{_uid()}"
-    _write_module(base, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
-                  init_prelude=f"import {service}  # noqa: F401\n")
-    return folder
-
-
-@pytest.mark.parametrize("service", _CORE_SERVICES)
-def test_module_using_a_core_service_loads_where_core_has_imported_it(_modules, service):
-    """What a core service imports on its own behalf is not the module's import."""
-    import importlib
-
-    importlib.import_module(service)
-    folder = _service_user(_modules, service)
-
-    loaded = loader.load_all(str(_modules), {folder})
-
-    assert folder in [m["name"] for m in loaded], loader.load_errors()
-
-
-@pytest.mark.parametrize("service", _CORE_SERVICES)
-def test_module_using_a_core_service_loads_in_a_fresh_process(_modules, service):
-    """The same module loads in a process that has imported neither the service
-    nor anything protected yet, as the UI process starts."""
-    import os
-    import subprocess
-
-    folder = _service_user(_modules, service)
-    repo = Path(__file__).resolve().parents[2]
-    out = subprocess.run(
-        [sys.executable, "-c",
-         "import json, sys\n"
-         "from celerp.modules import loader\n"
-         "fresh = not [n for n in sys.modules if n.startswith('celerp.ai')]\n"
-         f"loaded = loader.load_all({str(_modules)!r}, {{{folder!r}}})\n"
-         "print(json.dumps({'fresh': fresh, 'names': [m['name'] for m in loaded],"
-         " 'errors': loader.load_errors()}))"],
-        cwd=repo, env={**os.environ, "MODULE_DIR": str(_modules)},
-        capture_output=True, text=True, timeout=120)
-    assert out.returncode == 0, out.stderr[-2000:]
-    result = json.loads(out.stdout.strip().splitlines()[-1])
-    assert result["fresh"]
-    assert folder in result["names"], result["errors"]
-
-
-@pytest.mark.parametrize("preloaded", [True, False], ids=["preloaded", "not-preloaded"])
-def test_protected_internal_bound_by_the_modules_own_submodule_is_refused(_modules, preloaded):
-    """A protected internal the module's own submodule binds at import refuses
-    the module, whether or not the process had imported it already."""
-    if preloaded:
-        import celerp.ai.llm  # noqa: F401
-    folder = f"acme-{_uid()}"
-    inner = f"acme_{_uid()}"
-    _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
-                  files={f"{inner}/__init__.py": "",
-                         f"{inner}/helper.py": ("import importlib\n"
-                                                "llm = importlib.import_module('celerp.' + 'ai.llm')\n"
-                                                "VALUE = 1\n")},
-                  init_prelude=f"from {inner}.helper import VALUE  # noqa: F401\n")
-
-    loaded = loader.load_all(str(_modules), {folder})
-
-    assert folder not in [m["name"] for m in loaded]
-    assert "celerp.ai" in loader.load_errors()[folder]
-
-
-_REACH_LLM = "importlib.import_module('celerp.' + 'ai.llm')"
-
-# What a module's own code does while it activates, and whether the module loads.
-# The values it holds, directly or in plain containers (dict keys and values, list,
-# tuple, set, frozenset), are examined for a protected object; source that looks a
-# protected internal up among what is already loaded is refused before it runs; a
-# value that cannot be examined refuses the module.
-_BINDINGS = {
-    "in-a-list": ("HOLD = [LLM]\n", False),
-    "dict-value": ("HOLD = {'m': LLM}\n", False),
-    "dict-key": ("HOLD = {LLM: 1}\n", False),
-    "nested-in-a-frozenset": ("HOLD = frozenset({(1, (LLM,))})\n", False),
-    "list-holding-itself": ("HOLD = [LLM]\nHOLD.append(HOLD)\n", False),
-    "plain-data-holding-itself": ("HOLD = {'a': [1, (2, frozenset({3}))], 'b': {4}}\nHOLD['c'] = HOLD\n", True),
-    "holds-sys-modules": ("import sys\nHOLD = [sys.modules]\n", False),
-    "loaded-internals-from-sys-modules": (
-        "import sys\nHOLD = [m for n, m in sys.modules.items() if n.startswith('celerp.' + 'ai')]\n", False),
-    "sys-modules-lookup": ("import sys\nX = sys.modules.get('celerp.' + 'ai.llm')\n", False),
-    "sys-modules-through-an-alias": ("import sys as s\nX = s.modules.get('celerp.ai.llm')\n", False),
-    "sys-modules-imported-by-name": ("from sys import modules\nX = modules.get('celerp.ai.llm')\n", False),
-    "sys-modules-by-getattr": ("import sys\nX = getattr(sys, 'modules')\n", False),
-    "internal-by-attribute": ("import celerp\ntry:\n    X = celerp.ai\nexcept AttributeError:\n    X = None\n", False),
-    "internal-by-attribute-in-a-list": (
-        "import celerp\ntry:\n    HOLD = [celerp.ai.llm]\nexcept AttributeError:\n    HOLD = []\n", False),
-    "internal-by-getattr": ("import celerp\nX = getattr(celerp, 'ai', None)\n", False),
-    "internal-by-attribute-of-an-alias": ("import celerp as c\npkg = c\nX = getattr(pkg, 'ai', None)\n", False),
-    "attribute-lookup-raises": ("class G:\n    def __getattr__(self, n):\n        raise RuntimeError('no context')\n"
-                                "X = G()\n", False),
-    "attribute-lookup-raises-in-a-list": ("class G:\n    def __getattr__(self, n):\n"
-                                          "        raise RuntimeError('no context')\nHOLD = [G()]\n", False),
-    "object-claiming-to-be-a-list": ("class F:\n    __class__ = property(lambda s: list)\nHOLD = [F()]\n", False),
+# What a third-party module's own code does as it activates, and whether it loads.
+_ACTIVATIONS = {
+    "direct-import": ("import celerp.ai.llm  # noqa: F401\n", {}, False),
+    "computed-import": ("import importlib\nimportlib.import_module('celerp.' + 'ai.llm')\n", {}, False),
+    "computed-builtin-import": ("__import__('celerp.' + 'ai.llm')\n", {}, False),
+    "computed-import-in-own-submodule": (
+        "from .reach import VALUE  # noqa: F401\n",
+        {"reach.py": "import importlib\nllm = importlib.import_module('celerp.' + 'ai.llm')\nVALUE = 1\n"}, False),
+    "computed-import-in-a-class-body": (
+        "import importlib\nclass C:\n    llm = importlib.import_module('celerp.' + 'ai.llm')\n", {}, False),
+    "computed-import-in-a-default": (
+        "import importlib\ndef f(llm=importlib.import_module('celerp.' + 'ai.llm')):\n    return llm\n", {}, False),
+    "own-submodule": ("from .helper import VALUE  # noqa: F401\n", {"helper.py": "VALUE = 1\n"}, True),
+    "core-services": ("".join(f"import {s}  # noqa: F401\n" for s in _CORE_SERVICES), {}, True),
+    "core-service-called": (
+        "import asyncio\nfrom celerp.modules.api import ai_query\n"
+        "try:\n    asyncio.run(ai_query('q', 'c'))\nexcept Exception:\n    pass\n", {}, True),
+    "sys-modules-values": ("import sys\nHOLD = list(sys.modules.values())\n", {}, True),
+    "sys-modules-copy": ("import sys\nHOLD = dict(sys.modules)\n", {}, True),
+    "sys-modules-filtered": (
+        "import sys\nHOLD = [m for n, m in sys.modules.items() if n.startswith('celerp.' + 'ai')]\n", {}, True),
+    "sys-modules-lookup": ("import sys\nX = sys.modules.get('celerp.' + 'ai.llm')\n", {}, True),
+    "raising-object": (_GETATTR_RAISES + "X = G()\n", {}, True),
+    "raising-object-in-a-list": (_GETATTR_RAISES + "HOLD = [G()]\n", {}, True),
 }
 
 # The process states modules load in: the API and UI processes as they start, a
@@ -1504,37 +1429,81 @@ elif process == "ui":
     sys.modules["ui.app"] = app
     import ui  # noqa: F401
     exec(compile(src, "ui/app.py", "exec"), app.__dict__)
+from pathlib import Path
 from celerp.modules import loader
 preloaded = bool([n for n in sys.modules if n.startswith("celerp.ai")])
-loaded = [m["name"] for m in loader.load_all(sys.argv[1], {sys.argv[3]})]
-print(json.dumps({"preloaded": preloaded, "loads": sys.argv[3] in loaded, "errors": loader.load_errors()}))
+folders = set(json.loads(sys.argv[3]))
+loaded = {m["name"] for m in loader.load_all(sys.argv[1], folders)}
+errors = loader.load_errors()
+defaults = {p.name for p in Path("default_modules").iterdir() if (p / "__init__.py").exists()}
+loader.load_all("default_modules", defaults)
+print(json.dumps({"preloaded": preloaded, "loads": {f: f in loaded for f in folders}, "errors": errors,
+                  "default_errors": loader.load_errors()}))
 """
 _PROCESSES = ("preloaded", "fresh", "api", "ui")
 
 
-@pytest.mark.parametrize("binding", list(_BINDINGS))
-def test_module_gets_the_same_verdict_whether_core_was_loaded_first_or_not(_modules, binding):
-    """The API process has imported protected internals before modules load; the UI
-    process has imported others. A module's verdict depends only on its own code."""
+def test_module_gets_the_same_verdict_in_every_process(_modules):
+    """A protected import the module's own code attempts as it activates refuses it;
+    what core imports on its own behalf, and what is already loaded, do not count.
+    The API process has imported protected internals before modules load, the UI
+    process others, so each state must give every module the same verdict."""
     import os
     import subprocess
 
-    body, loads = _BINDINGS[binding]
-    folder = f"acme-{_uid()}"
-    _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
-                  init_prelude="import importlib\n" + body.replace("LLM", _REACH_LLM))
+    folders = {}
+    for case, (prelude, files, _) in _ACTIVATIONS.items():
+        folder = f"acme-{case}-{_uid()}"
+        _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                      files=files, init_prelude=prelude)
+        folders[folder] = case
     repo = Path(__file__).resolve().parents[2]
+    runs = {p: subprocess.Popen([sys.executable, "-c", _VERDICT, str(_modules), p, json.dumps(list(folders))],
+                                cwd=repo, env={**os.environ, "MODULE_DIR": str(_modules)},
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            for p in _PROCESSES}
     results = {}
-    for process in _PROCESSES:
-        out = subprocess.run([sys.executable, "-c", _VERDICT, str(_modules), process, folder],
-                             cwd=repo, env={**os.environ, "MODULE_DIR": str(_modules)},
-                             capture_output=True, text=True, timeout=180)
-        assert out.returncode == 0, out.stderr[-2000:]
-        results[process] = json.loads(out.stdout.strip().splitlines()[-1])
+    for process, run in runs.items():
+        out, err = run.communicate(timeout=180)
+        assert run.returncode == 0, err[-2000:]
+        results[process] = json.loads(out.strip().splitlines()[-1])
 
     assert results["preloaded"]["preloaded"] and results["api"]["preloaded"]
     assert not results["fresh"]["preloaded"]
-    assert {p: r["loads"] for p, r in results.items()} == dict.fromkeys(_PROCESSES, loads), results
+    expected = {case: loads for case, (_, _, loads) in _ACTIVATIONS.items()}
+    for process, result in results.items():
+        assert {folders[f]: v for f, v in result["loads"].items()} == expected, (process, result["errors"])
+        assert result["default_errors"] == {}, process
+    for folder, case in folders.items():
+        if not expected[case]:
+            assert "celerp.ai" in results["fresh"]["errors"][folder]
+
+
+def test_core_import_on_another_thread_is_not_charged_to_an_activating_module(_modules):
+    """While a module activates, core code on another thread imports a protected
+    internal; that import is not the module's, so the module still loads."""
+    import importlib
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+    folder = f"acme-{_uid()}"
+    _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  init_prelude="import builtins\nbuiltins._acme_started.set()\nbuiltins._acme_release.wait(10)\n")
+    import builtins
+    builtins._acme_started, builtins._acme_release = started, release
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(loaded=loader.load_all(str(_modules), {folder})))
+    try:
+        worker.start()
+        assert started.wait(10)
+        importlib.import_module("celerp.ai.llm")
+        release.set()
+        worker.join(10)
+    finally:
+        release.set()
+        del builtins._acme_started, builtins._acme_release
+
+    assert folder in [m["name"] for m in result["loaded"]], loader.load_errors()
 
 
 def test_locale_file_outside_the_module_is_not_registered(_modules):
