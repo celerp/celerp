@@ -20,6 +20,7 @@ from celerp import __version__, runtime as _runtime
 _runtime.watch_supervisor_pipe()
 from celerp.db import engine, lifecycle_engine, mask_db_credentials
 from celerp.inventory_codes import CodeConflictError
+from celerp.projections.engine import UnhandledEventsError
 from celerp.services.auto_je import UnbalancedJournalEntry
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 from celerp.gateway.state import load_commercial_context
@@ -31,7 +32,7 @@ assert_secure_jwt()
 _FIRST_BOOT = not settings.gateway_instance_id
 _BOOT_ID = uuid.uuid4().hex
 ensure_instance_id()
-from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
+from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from ui.i18n import I18nMiddleware, t
 from celerp.models.base import Base
 
@@ -82,13 +83,14 @@ def _filtered_logger_handle(self, record):
 
 logging.Logger.handle = _filtered_logger_handle
 
-# Module system (opt-in: no-op if MODULE_DIR not set). Correct a MODULE_DIR whose
-# first entry is the bundled default_modules/ tree so imports land in a writable
-# drop-in, never among first-party modules (the dev/bare-run footgun).
+# Module system. An unset MODULE_DIR means the bundled trees and an empty one means
+# none; a MODULE_DIR whose first entry is the bundled default_modules/ tree is
+# corrected so imports land in a writable drop-in, never among first-party modules
+# (the dev/bare-run footgun).
 import os as _os
 from pathlib import Path as _Path
 from celerp.modules.loader import with_writable_module_dir as _with_writable_module_dir
-_os.environ["MODULE_DIR"] = _with_writable_module_dir(_os.environ.get("MODULE_DIR", ""))
+_os.environ["MODULE_DIR"] = _with_writable_module_dir(_os.environ.get("MODULE_DIR"))
 _MODULE_DIR = _os.environ["MODULE_DIR"]
 
 
@@ -268,7 +270,7 @@ async def _serve(_app: FastAPI, held):
     except Exception as exc:
         _refuse_start(exc)
 
-    # Load external modules (opt-in: no-op if MODULE_DIR not set)
+    # Load modules (none when no module tree exists)
     _loaded_modules = []
     if _MODULE_DIR:
         from celerp.modules.loader import load_all, register_api_routes
@@ -302,6 +304,11 @@ async def _serve(_app: FastAPI, held):
             from celerp.modules.outcome import publish as _publish_outcome
             async with lifecycle_engine.begin() as conn:
                 await conn.run_sync(_publish_outcome)
+            if _loaded_modules:
+                # A module that fails in the UI process stops here before any
+                # module route answers.
+                from celerp.modules.outcome import await_ui_report
+                await_ui_report()
             if update_verify:
                 # Verification proves DB/module/runtime startup without external work.
                 await _verify_runtime_dependencies()
@@ -312,11 +319,11 @@ async def _serve(_app: FastAPI, held):
             # instance that already has companies).
             from celerp.modules.slots import fire_lifecycle as _fire
             from celerp.db import LifecycleSessionLocal as _LifecycleSession
-            # Best-effort, like the two sibling blocks below: a hook that fails
-            # during flush poisons the shared session, so the commit raises.
-            # Roll back and log at ERROR rather than let that crash boot - the
-            # manufacturing seed hook, for one, must never be able to take the
-            # app down. Seed hooks can replay large ledgers, so they run on the
+            # Best-effort, like the two sibling blocks below: fire_lifecycle
+            # rolls a failed hook back to its own savepoint, and if the commit
+            # itself fails, roll back and log at ERROR rather than let that
+            # crash boot - the manufacturing seed hook, for one, must never be
+            # able to take the app down. Seed hooks can replay large ledgers, so they run on the
             # unbounded lifecycle engine, not the timeout-bounded request pool.
             async with _LifecycleSession() as _sess:
                 try:
@@ -405,10 +412,6 @@ async def _serve(_app: FastAPI, held):
     # payments close for good, a kept one's reopen). Until then they stay closed.
     from celerp.services.payments import reconcile_payments_loop
     background = [asyncio.create_task(reconcile_payments_loop())]
-    if _loaded_modules:
-        # A module that fails in the UI process stops here too.
-        from celerp.modules.outcome import watch_reported_stops
-        background.append(asyncio.create_task(watch_reported_stops(_app, lifecycle_engine)))
 
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links
@@ -622,6 +625,7 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(DrainMiddleware)
 app.add_middleware(RecoveryMaintenanceMiddleware)
+app.add_middleware(ModuleStartupMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(SlidingTokenRefreshMiddleware)
 app.add_middleware(MaxBodySizeMiddleware, max_body_size_bytes=10 * 1024 * 1024)
@@ -679,6 +683,12 @@ async def code_conflict_handler(_request: Request, exc: CodeConflictError):
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
+@app.exception_handler(UnhandledEventsError)
+async def unhandled_events_handler(_request: Request, exc: UnhandledEventsError):
+    # Every rebuild door (ledger, doctor, admin) is refused the same way before it changes anything.
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
 @app.exception_handler(UnbalancedJournalEntry)
 async def unbalanced_je_handler(_request: Request, exc: UnbalancedJournalEntry):
     # An automatic journal entry that would not balance is refused, and the write that
@@ -693,7 +703,6 @@ app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(ledger.router, prefix="/ledger", tags=["ledger"])
 app.include_router(companies.router, prefix="/companies", tags=["companies"])
 app.include_router(system.router, prefix="/system", tags=["system"])
-app.include_router(system.update_router, prefix="/system", tags=["system"])
 app.include_router(stars_router_mod.router, prefix="/stars", tags=["stars"])
 app.include_router(notifications.router)
 app.include_router(events_router_mod.router)

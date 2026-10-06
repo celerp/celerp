@@ -304,20 +304,20 @@ function initCombobox(wrap) {
   list.style.position = 'fixed';
   list.style.zIndex = '9999';
 
+  // The list is position:fixed, so keep it inside the viewport: open above the input
+  // when there is more room there, and never let it run past either side.
   function positionList() {
     var r = input.getBoundingClientRect();
-    list.style.left = r.left + 'px';
-    list.style.minWidth = r.width + 'px';
+    var gap = 8, vw = document.documentElement.clientWidth, vh = window.innerHeight;
+    list.style.maxWidth = Math.min(400, vw - 2 * gap) + 'px';
+    list.style.minWidth = Math.min(r.width, vw - 2 * gap) + 'px';
     list.style.width = 'auto';
-    // Opens upward when the list would run off the bottom of the screen and there is
-    // more room above, so every option can be reached without scrolling the page.
-    var shown = list.classList.contains('open');
-    if (!shown) list.classList.add('open');
-    var h = list.offsetHeight;
-    if (!shown) list.classList.remove('open');
-    var below = window.innerHeight - r.bottom - 4;
-    var up = h > below && r.top - 4 > below;
-    list.style.top = (up ? Math.max(r.top - 4 - h, 0) : r.bottom + 2) + 'px';
+    var below = vh - r.bottom - gap, above = r.top - gap;
+    var up = below < Math.min(list.scrollHeight, 220) && above > below;
+    list.style.maxHeight = Math.min(220, Math.max(up ? above : below, 0) - 2) + 'px';
+    list.style.top = up ? 'auto' : (r.bottom + 2) + 'px';
+    list.style.bottom = up ? (vh - r.top + 2) + 'px' : 'auto';
+    list.style.left = Math.max(gap, Math.min(r.left, vw - gap - list.offsetWidth)) + 'px';
   }
 
   // Lazy — always queries the live DOM so HTMX-swapped options are included.
@@ -998,7 +998,11 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         loadNotifications();
         if (data.priority === 'high' && Notification.permission === 'granted') {
-          new Notification(data.title, { body: data.body });
+          // The stream carries the stored message key; show the rendered copy.
+          fetch('/notifications?limit=5').then(function(r) { return r.json(); }).then(function(d) {
+            var n = (d.items || []).find(function(x) { return x.id === data.id; });
+            if (n) new Notification(n.title, { body: n.body });
+          }).catch(function() {});
         }
       } catch(err) {}
     });
@@ -1131,7 +1135,7 @@ document.addEventListener('DOMContentLoaded', function() {
           setCheckBtn(false);
           setProgress(-1);
         } else if (s.status === 'error') {
-          setState(i18n.updateCheckFailed, false);
+          setState(s.downloadFailed ? i18n.updateDownloadFailed : i18n.updateCheckFailed, false);
           resetToIdle();
         } else {
           setState(i18n.upToDate, false);
@@ -1787,6 +1791,7 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "versionReady": t("shell.js_version_ready", lang),
         "updateReady": t("shell.js_update_ready", lang),
         "updateCheckFailed": t("shell.update_check_failed", lang),
+        "updateDownloadFailed": t("shell.update_download_failed", lang),
         "checking": t("shell.checking", lang),
         "restarting": t("shell.restarting", lang),
         "updateAvailablePrefix": t("shell.update_available_prefix", lang),
@@ -1854,6 +1859,20 @@ def _favicon_links() -> tuple[FT, ...]:
     )
 
 
+def _redirect_notice(request, lang: str) -> list:
+    """Why the caller was sent here, on whichever page answers the redirect: the
+    dashboard, or the page standing in for it where the company turned it off
+    (ui.security.not_permitted_redirect), and, after setup by someone who cannot
+    restart Celerp, that the business type's modules wait for that restart."""
+    from ui.security import take_not_permitted
+    notices = []
+    if take_not_permitted(request):
+        notices.append(flash(t("perm.redirected_no_access", lang)))
+    if request is not None and request.query_params.get("modules") == "pending":
+        notices.append(flash(t("setup.modules_pending", lang), kind="info"))
+    return notices
+
+
 def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
     """The outer HTML document shared by every full-chrome page: head assets, the
     supplied nav, top bar, banners, main content, and footer.
@@ -1896,7 +1915,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
                     _backup_banner_html(lang),
                     _GLOBAL_UI_ERROR_HTML,
                     _TOAST_CONTAINER_HTML,
-                    Main(*content, id="main-content", cls="main-content"),
+                    Main(*_redirect_notice(request, lang), *content, id="main-content", cls="main-content"),
                     Div(id="account-gate-host"),
                     Footer(
                         A(t("msg.powered_by", lang), href="https://www.celerp.com", target="_blank",
@@ -2360,30 +2379,19 @@ def _resolve_active_nav_key(active: str, all_items: list[dict], request=None) ->
 def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, settings: dict | None = None) -> FT:
     """Build sidebar entirely from module nav slots + kernel entries."""
     from collections import defaultdict
-    from ui.config import get_enabled_modules
-    from celerp.modules.loader import CORE_FOLDED
+    from celerp.modules.registry import uses_module
     from celerp.services.permissions import role_has_permission
     from ui.module_slots import slot_permission_allows
 
     settings = settings or {}
-    enabled_modules = get_enabled_modules(request) if request else set()
 
     def _allowed(item: dict) -> bool:
         return slot_permission_allows(item, settings, role)
 
     def _module_enabled(item: dict) -> bool:
-        """Kernel entries (no _module key) always show, as do core-folded
-        components (wired at app construction, never subject to per-company
-        enablement - their pages do their own plan gating). Other module
-        entries only show if their module is in the company's enabled set, or
-        if enabled set is empty (old JWT without modules claim - show
-        everything as safe fallback)."""
-        mod = item.get("_module")
-        if mod is None or mod in CORE_FOLDED:
-            return True
-        if not enabled_modules:
-            return True
-        return mod in enabled_modules
+        """Kernel entries (no _module key) always show; a module's entries show
+        when the company uses the module (read from current settings)."""
+        return uses_module(settings, item.get("_module"))
 
     # Collect all nav items from loaded modules
     try:

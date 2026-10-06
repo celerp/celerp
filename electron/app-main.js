@@ -484,22 +484,6 @@ function _copyDirSync(src, dst) {
   }
 }
 
-/** Run pip install for all installed module requirements.txt files. */
-function runModuleSetup() {
-  const setupScript = path.join(APP_DIR, "scripts", "module_setup.py");
-  try {
-    execFileSync(pythonBin(), [setupScript, "--data-dir", DATA_DIR], {
-      cwd: APP_DIR,
-      env: { ...process.env, PYTHONUTF8: "1", PYTHONPATH: APP_DIR },
-      stdio: "pipe",
-    });
-    console.log("[modules] module_setup.py complete");
-  } catch (e) {
-    // Non-fatal: log and continue. Module will fail to load if deps are missing.
-    console.warn("[modules] module_setup.py failed (non-fatal):", e.message);
-  }
-}
-
 function startApi(dbUrl, cfg) {
   return new Promise(async (resolve, reject) => {
     // apiPort and uiPort are pre-allocated by the caller before startApi/startUi
@@ -1334,7 +1318,6 @@ app.whenReady().then(async () => {
         setLoadingStatus("Loading modules…");
         seedDefaultModules();
       },
-      runModuleSetup,
       runMigrations: () => {
         setLoadingStatus("Running migrations…");
         runMigrations(dbConfig.url);

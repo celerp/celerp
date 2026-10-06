@@ -182,7 +182,7 @@ async def test_batch_all_success(session, db_factory, company, user):
     await session.commit()
 
     with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, return_value=_model_result("Extracted data")):
-        with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+        with patch("celerp.notifications.service.deliver"):
             await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
 
     # Re-fetch from DB
@@ -212,7 +212,7 @@ async def test_batch_partial_failure(session, db_factory, company, user):
     await session.commit()
 
     with patch("celerp.ai.batch.call_llm", side_effect=_mock_llm):
-        with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+        with patch("celerp.notifications.service.deliver"):
             await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
 
     async with db_factory() as s:
@@ -229,7 +229,7 @@ async def test_batch_total_failure(session, db_factory, company, user):
     await session.commit()
 
     with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, side_effect=RuntimeError("All fail")):
-        with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+        with patch("celerp.notifications.service.deliver"):
             await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
 
     async with db_factory() as s:
@@ -250,7 +250,7 @@ async def test_batch_creates_notification_on_complete(session, db_factory, compa
 
     mock_create_notif = AsyncMock()
     with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, return_value=_model_result("Done")):
-        with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+        with patch("celerp.notifications.service.deliver"):
             with patch("celerp.notifications.service.create", mock_create_notif):
                 await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
 
@@ -276,7 +276,7 @@ async def test_batch_progress_callback(session, db_factory, company, user):
         progress_events.append((completed, failed, total))
 
     with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, return_value=_model_result("Done")):
-        with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+        with patch("celerp.notifications.service.deliver"):
             await run_batch(
                 job.id, company.id, user.id, "analyze", file_ids, db_factory,
                 on_progress=on_progress,
@@ -295,7 +295,7 @@ async def test_batch_missing_file_handled(session, db_factory, company, user):
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
 
-    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+    with patch("celerp.notifications.service.deliver"):
         await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
 
     async with db_factory() as s:
@@ -351,7 +351,7 @@ async def test_batch_credits_from_relay_usage(session, db_factory, company, user
         return _model_result("ok", credits=2)
 
     with patch("celerp.ai.batch.call_llm", side_effect=_mock_llm):
-        with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+        with patch("celerp.notifications.service.deliver"):
             await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
 
     async with db_factory() as s:
@@ -369,7 +369,7 @@ async def test_batch_result_carries_extraction(session, db_factory, company, use
 
     answer = 'Here it is:\n```json\n{"vendor_name": "Shop", "total": 12.5, "line_items": []}\n```'
     with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, return_value=_model_result(answer)):
-        with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+        with patch("celerp.notifications.service.deliver"):
             await run_batch(job.id, company.id, user.id, "", file_ids, db_factory)
 
     async with db_factory() as s:
@@ -394,7 +394,7 @@ async def test_batch_total_failure_records_error(session, db_factory, company, u
     await session.commit()
 
     with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, side_effect=asyncio.TimeoutError()):
-        with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+        with patch("celerp.notifications.service.deliver"):
             await run_batch(job.id, company.id, user.id, "analyze", file_ids, db_factory)
 
     async with db_factory() as s:
@@ -436,7 +436,7 @@ async def test_batch_on_progress_failure_handled(session, db_factory, company, u
         raise RuntimeError("progress callback exploded")
 
     with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, return_value=_model_result("Done")):
-        with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+        with patch("celerp.notifications.service.deliver"):
             await run_batch(
                 job.id, company.id, user.id, "analyze", file_ids, db_factory,
                 on_progress=failing_progress,
@@ -456,7 +456,7 @@ async def test_batch_notification_failure_handled(session, db_factory, company, 
     await session.commit()
 
     with patch("celerp.ai.batch.call_llm", new_callable=AsyncMock, return_value=_model_result("Done")):
-        with patch("celerp.notifications.service.publish", new_callable=AsyncMock, side_effect=RuntimeError("notification error")):
+        with patch("celerp.notifications.service.create", new_callable=AsyncMock, side_effect=RuntimeError("notification error")):
             await run_batch(
                 job.id, company.id, user.id, "analyze", file_ids, db_factory,
             )

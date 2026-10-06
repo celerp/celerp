@@ -17,11 +17,13 @@ from another API process (one that started in recovery and loaded nothing, say)
 or none at all means no module is offered. There is no deadline on the wait: the
 supervisor stops the UI if the API exits, and the UI is no use before the API.
 
-A module can still fail in the UI process (its UI routes raise, say). The UI then
-moves it, and every module it took out with it, from running to failed in the
-same record. The API process watches the record and stops each module its own
-record no longer lists as running - its routes, slots and the rest, as for a
-failure at its own startup - then records the result again.
+A module can still fail in the UI process (its UI routes raise, say). Once its
+own modules are started, the UI moves each such module, and every module it took
+out with it, from running to failed in the same record, and marks the record as
+reported. Until that report is in, the API process serves no module route; on the
+first module request after it, the API stops each module the record no longer
+lists as running - its routes, slots and the rest, as for a failure at its own
+startup - records the result again, and only then serves.
 """
 from __future__ import annotations
 
@@ -40,23 +42,45 @@ BOOT_TOKEN = uuid.uuid4().hex
 _KEY = "module_outcome"
 _POLL_SECONDS = 0.5
 _LOG_EVERY_SECONDS = 30.0
-_WATCH_SECONDS = 2.0
 
 NOT_REPORTED = ("Not running: this module didn't start and gave no reason. Restart Celerp; "
                 "if it still doesn't start, ask the module's developer.")
+STARTING = "Celerp is still starting. Try again in a moment."
+
+# API side: whether module routes wait for the UI process's report. Set once the
+# API process has recorded its modules, cleared once the report is applied.
+_awaiting_ui = False
+_confirm_lock: asyncio.Lock | None = None
+
+
+def _record(*, ui_reported: bool) -> dict:
+    from celerp.modules.loader import load_errors, loaded_modules
+
+    return {
+        "boot": BOOT_TOKEN,
+        "running": sorted(m["name"] for m in loaded_modules()),
+        "failed": load_errors(),
+        "ui_reported": ui_reported,
+    }
 
 
 def publish(conn) -> None:
     """Record what this (API) process loaded. Called once its modules' routes are
     registered, on a sync connection."""
     from celerp.migrations._data_reconcile import set_meta
-    from celerp.modules.loader import load_errors, loaded_modules
 
-    set_meta(conn, _KEY, json.dumps({
-        "boot": BOOT_TOKEN,
-        "running": sorted(m["name"] for m in loaded_modules()),
-        "failed": load_errors(),
-    }))
+    set_meta(conn, _KEY, json.dumps(_record(ui_reported=False)))
+
+
+def await_ui_report() -> None:
+    """API side, after :func:`publish`: serve no module route until the UI
+    process has reported (:func:`confirm_ui_report`)."""
+    global _awaiting_ui
+    _awaiting_ui = True
+
+
+def ui_report_applied() -> bool:
+    return not _awaiting_ui
 
 
 def read(conn, *, lock: bool = False) -> dict | None:
@@ -75,13 +99,13 @@ def read(conn, *, lock: bool = False) -> dict | None:
     return json.loads(raw) if raw else None
 
 
-def report_stopped(database_url: str, record: dict | None) -> dict[str, str]:
-    """UI side, after its modules' routes are registered: move every module the
-    API's ``record`` lists as running but this process is not running to failed,
-    with this process's reason. Returns the modules moved."""
+def report_stopped(fence, record: dict | None) -> dict[str, str]:
+    """UI side, once it holds its version *fence* and its modules' routes are
+    registered: move every module the API's ``record`` lists as running but this
+    process is not running to failed, with this process's reason, and mark the
+    record reported, writing through the fence. Returns the modules moved."""
     import sqlalchemy as sa
 
-    from celerp.db_url import sync_url
     from celerp.migrations._data_reconcile import set_meta
     from celerp.modules.loader import is_running, load_errors
 
@@ -90,33 +114,30 @@ def report_stopped(database_url: str, record: dict | None) -> dict[str, str]:
     errors = load_errors()
     stopped = {n: errors.get(n) or NOT_REPORTED
                for n in record["running"] if not is_running(n)}
-    if not stopped:
-        return {}
-    engine = sa.create_engine(sync_url(database_url))
-    try:
-        with engine.begin() as conn:
-            current = read(conn, lock=True)
-            if not current or current.get("boot") != record["boot"]:
-                return {}  # that API process is gone; the next one records afresh
-            current["running"] = [n for n in current["running"] if n not in stopped]
-            current["failed"] = {**current.get("failed", {}), **stopped}
-            set_meta(conn, _KEY, json.dumps(current))
-    finally:
-        engine.dispose()
+    with fence.engine(poolclass=sa.pool.NullPool) as engine, engine.begin() as conn:
+        current = read(conn, lock=True)
+        if not current or current.get("boot") != record["boot"]:
+            return {}  # that API process is gone; the next one records afresh
+        current["running"] = [n for n in current["running"] if n not in stopped]
+        current["failed"] = {**current.get("failed", {}), **stopped}
+        current["ui_reported"] = True
+        set_meta(conn, _KEY, json.dumps(current))
     for name, reason in stopped.items():
         log.error("Module %r failed in the UI process and is stopped: %s", name, reason)
     return stopped
 
 
-def apply_reported_stops(conn, app) -> set[str]:
-    """API side, on a sync connection: stop every module this process is running
-    that its own record no longer lists as running, with the recorded reason, and
-    record the result. Returns the modules stopped."""
+def apply_reported_stops(conn, app) -> bool:
+    """API side, on a sync connection: once the UI process has reported for this
+    process, stop every module this process is running that the record no longer
+    lists as running, with the recorded reason, and record the result. Whether
+    the report was in."""
+    from celerp.migrations._data_reconcile import set_meta
     from celerp.modules.loader import is_running, loaded_modules, stop_module
 
     record = read(conn, lock=True)
-    if not record or record.get("boot") != BOOT_TOKEN:
-        return set()
+    if not record or record.get("boot") != BOOT_TOKEN or not record.get("ui_reported"):
+        return False
     listed = set(record["running"])
     failed = record.get("failed", {})
     stopped: set[str] = set()
@@ -124,22 +145,26 @@ def apply_reported_stops(conn, app) -> set[str]:
         if name not in listed and is_running(name):
             stopped |= stop_module(app, name, failed.get(name) or NOT_REPORTED)
     if stopped:
-        publish(conn)
-    return stopped
+        set_meta(conn, _KEY, json.dumps(_record(ui_reported=True)))
+        log.error("Stopped module(s) %s: they failed in the UI process", ", ".join(sorted(stopped)))
+    return True
 
 
-async def watch_reported_stops(app, engine, interval: float = _WATCH_SECONDS) -> None:
-    """API side: :func:`apply_reported_stops` every ``interval`` seconds."""
-    while True:
-        try:
+async def confirm_ui_report(app, engine) -> bool:
+    """API side, before serving a module route: whether module routes may be
+    served yet. True once the UI process's report is in and applied
+    (:func:`apply_reported_stops`); from then on without reading the record."""
+    global _awaiting_ui, _confirm_lock
+    if not _awaiting_ui:
+        return True
+    if _confirm_lock is None:
+        _confirm_lock = asyncio.Lock()
+    async with _confirm_lock:
+        if _awaiting_ui:
             async with engine.begin() as conn:
-                stopped = await conn.run_sync(apply_reported_stops, app)
-            if stopped:
-                log.error("Stopped module(s) %s: they failed in the UI process",
-                          ", ".join(sorted(stopped)))
-        except Exception:
-            log.exception("Reading the module outcome record failed; retrying")
-        await asyncio.sleep(interval)
+                if await conn.run_sync(apply_reported_stops, app):
+                    _awaiting_ui = False
+    return not _awaiting_ui
 
 
 def _health_token(api_url: str) -> str | None:

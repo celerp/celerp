@@ -950,9 +950,9 @@ def test_a_disabled_module_cannot_take_a_section_the_enabled_one_also_offers():
     request = Request({"type": "http", "method": "GET", "path": "/reports",
                        "query_string": b"", "headers": []})
 
-    with patch("celerp.modules.slots.get", return_value=slots), \
-         patch("ui.config.get_enabled_modules", return_value={"celerp-accounting"}):
-        markup = to_xml(_sidebar("reports", request=request))
+    with patch("celerp.modules.slots.get", return_value=slots):
+        markup = to_xml(_sidebar("reports", request=request,
+                                 settings={"enabled_modules": ["celerp-accounting"]}))
 
     assert 'href="/reports"' in markup
 

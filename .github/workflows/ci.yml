@@ -164,8 +164,10 @@ jobs:
         # 6 runners with pytest-split. Each runner runs its group SERIALLY (no -n): a browser test
         # is CPU-heavy (Chromium + an API + a UI server), so intra-runner parallelism on a 2-vCPU
         # box causes contention timeouts. The thread-based timeout is required for Playwright tests.
+        # A shard takes about 6.5 minutes; the 13 minute cap leaves room for a slow runner
+        # inside the 15 minute job limit.
         run: >
-          timeout 600 pytest tests/test_browser -m browser -o addopts=""
+          timeout 780 pytest tests/test_browser -m browser -o addopts=""
           --timeout=120 --timeout-method=thread --no-cov --tb=short -p no:cacheprovider
           --splits 6 --group ${{ matrix.group }}
 

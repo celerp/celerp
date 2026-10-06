@@ -26,7 +26,8 @@ from celerp.migrations._data_reconcile import (
 )
 from celerp.models.company import Company
 from celerp.models.projections import Projection
-from celerp.services.dev_release_guard import run_upgrade_guard, unknown_event_types
+from celerp.projections.engine import unhandled_event_types
+from celerp.services.dev_release_guard import run_upgrade_guard
 
 
 @pytest.fixture(autouse=True)
@@ -168,7 +169,7 @@ async def test_guard_skips_rebuild_on_unknown_event_type(session):
 
 
 @pytest.mark.asyncio
-async def test_unknown_event_types_empty_for_known_events(session):
-    """All kernel/module event types emitted normally are in the catalog."""
+async def test_unhandled_event_types_empty_for_known_events(session):
+    """All kernel/module event types emitted normally are in the catalog with a running handler."""
     await _seed_item(session)
-    assert await unknown_event_types(session) == set()
+    assert await unhandled_event_types(session) == set()

@@ -150,15 +150,6 @@ def get_company_id(request) -> str | None:
     return str(company_id) if company_id else None
 
 
-def get_enabled_modules(request) -> set[str]:
-    """Return the set of enabled module names for the current company.
-
-    Empty set when the claim is absent or unreadable (shows all nav items as fallback).
-    """
-    raw = get_claims(request).get("modules", [])
-    return set(raw) if isinstance(raw, list) else set()
-
-
 async def get_relay_info(request) -> dict:
     """Return relay status info for the topbar indicator.
 

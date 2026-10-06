@@ -132,7 +132,7 @@ function trackUpdater(updater, send) {
     }));
   updater.on("update-downloaded", (info) =>
     apply("update-downloaded", { type: "downloaded", version: info && info.version },
-      (s) => (s.version ? "v" + s.version : "The update") + " ready. Click 'Restart to Install'"));
+      (s) => (s.version ? "v" + s.version : "The update") + " ready. Restart to install."));
   updater.on("update-not-available", () =>
     apply("update-not-available", { type: "not-available" }, () => ""));
   updater.on("error", (err) => {

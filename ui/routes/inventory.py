@@ -29,6 +29,7 @@ from ui.components.shell import base_shell, minimal_shell, page_header, search_h
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
+from ui.security import not_permitted_redirect
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.module_slots import (
     connected_connector_ids, module_contribution_visible, required_connectors, visible_slot_contributions,
@@ -1310,7 +1311,7 @@ def setup_routes(app):
         _settings = company.get("settings") or {}
         _role = _get_role(request)
         if not role_has_permission(_settings, _role, "view_inventory"):
-            return RedirectResponse("/dashboard", status_code=302)
+            return not_permitted_redirect(request)
 
         # Company is fresh and valid here; a static-metadata or list/valuation
         # failure degrades to an honest content error inside the normal shell,

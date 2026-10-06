@@ -301,6 +301,42 @@ async def test_a_kind_of_file_that_cannot_be_deleted_is_retried_until_it_is(real
     assert _left(files_b) == set(SCOPES)
 
 
+@pytest.mark.parametrize("others", ["another company", "last company"])
+async def test_a_reset_whose_commit_landed_but_reported_failure_still_deletes_the_files(
+        real_engine, real_client, tmp_path, monkeypatch, others):
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.ext.asyncio import AsyncSession
+    _local_files(monkeypatch, tmp_path)
+    if others == "another company":
+        boss, a, _b, files_a, files_b = await _harbor(real_engine)
+    else:
+        boss = await owner(real_engine)
+        a = await company(real_engine, boss, "Harbor Goods Ltd", "alpha")
+        files_a, files_b = await _seed(real_engine, a, boss, "alpha"), {}
+    real_commit = AsyncSession.commit
+    armed = [True]
+
+    async def commit_then_lose_the_connection(self):
+        gone = await self.scalar(text("SELECT count(*) FROM companies WHERE id = :c"), {"c": str(a)}) == 0
+        if armed[0] and gone:
+            armed[0] = False
+            await real_commit(self)
+            raise OperationalError("COMMIT", {}, Exception("connection lost after commit"))
+        return await real_commit(self)
+
+    monkeypatch.setattr(AsyncSession, "commit", commit_then_lose_the_connection)
+    with pytest.raises(OperationalError):
+        await _reset(real_client, real_engine, boss, a)
+    monkeypatch.undo()
+    _local_files(monkeypatch, tmp_path)
+
+    assert await count(real_engine, "companies", "id = :c", c=str(a)) == 0
+    assert _left(files_a) == set()
+    assert _company_files(tmp_path, a) == []
+    assert await _tasks(real_engine) == 0
+    assert _left(files_b) == set(files_b)
+
+
 @pytest.mark.parametrize("backend", ["local", "s3", "already gone", "s3 failing then back"])
 async def test_attachment_cleanup_on_each_storage_backend(real_engine, tmp_path, monkeypatch, backend):
     from celerp.config import settings

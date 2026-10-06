@@ -16,12 +16,13 @@ from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
-from ui.components.table import _SEARCHABLE_THRESHOLD, EMPTY, searchable_select, unwrap_address
+from ui.components.table import EMPTY, unwrap_address
 from celerp.services.currencies import CURRENCY_CODES
 from ui.components.currency import currency_combobox_td, currency_label
 from ui.components.phone import phone_input_td as _phone_input_td
 from ui.config import PAYMENT_TERMS_URL, PRIVACY_POLICY_URL
 from ui.config import get_token as _token
+from ui.security import not_permitted_redirect, owner_refusal
 from ui.config import get_role as _get_role
 from celerp.services.auth import MIN_PASSWORD_LENGTH
 from celerp.services.pricing import ROUNDING_CHOICES
@@ -32,7 +33,7 @@ from ui.routes.setup import business_type_label, business_type_options
 
 async def _check_permission(
     request: Request, key: str, *, page_view: bool = False
-) -> RedirectResponse | None:
+) -> Response | None:
     """Return None if the caller holds the named permission, else a redirect.
 
     The role and its permission overrides are read from authenticated API state
@@ -64,7 +65,7 @@ async def _check_permission(
     role = api.role_from_company(company)
     settings = company.get("settings") or {}
     if not role_has_permission(settings, role, key):
-        return RedirectResponse("/dashboard", status_code=302)
+        return not_permitted_redirect(request)
     return None
 
 
@@ -1125,43 +1126,30 @@ def setup_routes(app):
         user = next((u for u in users if u.get("id") == user_id), {})
         return _user_display_cell(user_id, field, user.get(field))
 
-    # ── Installation owner ───────────────────────────────────────────
-    @app.get("/settings/users/installation-owner")
-    async def install_owner_display(request: Request):
+    @app.post("/settings/users/{user_id}/installation-owner")
+    async def user_install_owner_post(request: Request, user_id: str):
+        """Hand installation ownership to another active user of this company and
+        redraw the users card in place. Undo: the new owner can hand it back the
+        same way; the previous owner cannot take it back alone, because the
+        installation has exactly one owner and the handover would mean nothing if
+        they could. The confirm step says so before anything changes."""
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
+        lang = get_lang(request)
         try:
             users = (await api.get_users(token)).get("items", [])
+            settings = (await api.get_company(token)).get("settings")
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
-        from ui.routes.settings_general import _is_install_owner
-        return _install_owner_cell(users, editable=await _is_install_owner(token))
-
-    @app.get("/settings/users/installation-owner/edit")
-    async def install_owner_edit(request: Request):
-        token = _token(request)
-        if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return flash(str(e.detail))
+        target = next((u for u in users if u.get("id") == user_id), {})
         try:
-            users = (await api.get_users(token)).get("items", [])
+            await api.transfer_install_owner(token, user_id)
+            notice = flash(t("settings.install_owner_moved", lang,
+                             name=target.get("name") or target.get("email") or ""), "success")
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
-        return _install_owner_editor(users)
-
-    @app.patch("/settings/users/installation-owner")
-    async def install_owner_patch(request: Request):
-        token = _token(request)
-        if not token:
-            return P(t("error.session_expired"), cls="cell-error")
-        value = str((await request.form()).get("value", ""))
-        try:
-            await api.transfer_install_owner(token, value)
-            users = (await api.get_users(token)).get("items", [])
-        except APIError as e:
-            return P(str(e.detail), cls="cell-error")
-        # The new installation owner holds the role now; this viewer can no longer hand it on.
-        return _install_owner_cell(users, editable=False)
+            notice = flash(str(e.detail))
+        return await users_tab_for(request, token, users, settings, lang, notice)
 
     # ── Role permission matrix ───────────────────────────────────────
     @app.patch("/settings/roles/{perm_key}/{role_key}")
@@ -1776,9 +1764,9 @@ def setup_routes(app):
     async def billing_portal_redirect(request: Request):
         """Open the Stripe Billing Portal for the Celerp subscription (cancel,
         change card, invoices). Linked from the Web Access connected-status card."""
+        if refused := await owner_refusal(request):
+            return refused
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         redir = await _check_permission(request, "manage_integrations")
         if redir:
             return redir
@@ -1815,6 +1803,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-activate")
     async def cloud_activate(request: Request):
         """HTMX: proxy to API process to call relay /auth/activate + start gateway."""
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
         import ui.api_client as _api
@@ -2080,6 +2070,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-send-otp")
     async def cloud_send_otp(request: Request):
         """HTMX: send OTP via API process (uses canonical instance_id)."""
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
         import ui.api_client as _api
@@ -2114,6 +2106,8 @@ def setup_routes(app):
         Using the API process ensures the same instance_id is used for both
         the /billing/claim relay call and the subsequent /auth/activate call.
         """
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
         import ui.api_client as _api
@@ -2189,6 +2183,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-disconnect")
     async def cloud_disconnect(request: Request):
         """HTMX: disconnect only after the API durably records the user's intent."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from celerp.config import ensure_instance_id
         token = _token(request)
@@ -2212,6 +2208,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-accept-tos")
     async def cloud_accept_tos(request: Request):
         """HTMX: record TOS acceptance via API, reconnect gateway, re-render tab."""
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
         import ui.api_client as _api
@@ -2476,11 +2474,11 @@ def setup_routes(app):
     @app.get("/backup/list")
     async def backup_list(request: Request):
         """HTMX fragment: list cloud snapshots (database + files)."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from fasthtml.common import Div, to_xml
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
         try:
             data = await _api.list_backups(token)
@@ -2533,11 +2531,11 @@ def setup_routes(app):
     @app.post("/backup/trigger")
     async def backup_trigger(request: Request):
         """Trigger an immediate cloud snapshot (database + files)."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from fasthtml.common import Div, to_xml
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
         try:
             await _api.trigger_backup(token)
@@ -2563,11 +2561,11 @@ def setup_routes(app):
         Streamed (not buffered) so a multi-GB backup never sits in UI memory and isn't
         bound by the short default timeout; forwarding Content-Length gives the browser a
         native download progress bar."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from starlette.responses import StreamingResponse
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         try:
             stream, headers = await _api.export_backup(token)
         except _api.APIError as exc:
@@ -2588,11 +2586,11 @@ def setup_routes(app):
 
         Streamed (not buffered) so a multi-GB snapshot never sits in UI memory; the
         browser's native download manager shows progress via the forwarded Content-Length."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from starlette.responses import StreamingResponse
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         try:
             stream, headers = await _api.export_backup(token, backup_id)
         except _api.APIError as exc:
@@ -2642,10 +2640,10 @@ def setup_routes(app):
     @app.post("/backup/restore/{backup_id}")
     async def backup_restore(request: Request, backup_id: str):
         """Restore a cloud recovery point: replaces the whole installation."""
+        if refused := await owner_refusal(request):
+            return refused
         import httpx
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         try:
             async with api._local_client(token, timeout=900.0, follow_redirects=False, bulk=True) as c:
                 r = await c.post(f"/backup/restore/{backup_id}")
@@ -2656,11 +2654,11 @@ def setup_routes(app):
     @app.post("/backup/import")
     async def backup_import(request: Request):
         """Import a .celerp-backup archive. Multipart upload forwarded to API."""
+        if refused := await owner_refusal(request):
+            return refused
 
         import httpx
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
         form = await request.form()
         file_field = form.get("file")
@@ -2689,10 +2687,10 @@ def setup_routes(app):
     @app.post("/backup/import/continue")
     async def backup_import_continue(request: Request):
         """Continue a staged System Recovery without a safety copy: replaces the whole installation."""
+        if refused := await owner_refusal(request):
+            return refused
         import httpx
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         form = await request.form()
         data = {k: str(form.get(k) or "") for k in ("confirmation_id", "digest")}
         try:
@@ -3188,81 +3186,64 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
     )
 
 
-def _install_owner_cell(users: list[dict], editable: bool) -> FT:
-    """Who the installation owner is. Only the installation owner may hand the role
-    on, so only they see it as click-to-edit."""
-    owner = next((u for u in users if u.get("is_install_owner")), None)
-    name = (owner.get("name") or owner.get("email")) if owner else ""
-    text = Span(name or EMPTY, cls="cell-text")
-    if not editable:
-        return Td(text, cls="cell")
-    return Td(
-        text,
-        title=t("settings.click_to_edit"),
-        hx_get="/settings/users/installation-owner/edit",
-        hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-        cls="cell cell--clickable",
-    )
-
-
-def _install_owner_editor(users: list[dict]) -> FT:
-    """The active members the installation owner can hand the role to. Escape puts
-    the cell back unchanged; choosing someone asks once, because only the new
-    installation owner can hand the role back."""
-    current = next((u.get("id") for u in users if u.get("is_install_owner")), "")
-    options = [(u["id"], u.get("name") or u.get("email") or u["id"])
-               for u in users if u.get("is_active", True)]
-    attrs = dict(
-        hx_patch="/settings/users/installation-owner", hx_target="closest td", hx_swap="outerHTML",
-        hx_trigger="change", hx_confirm=t("settings.install_owner_confirm"),
-    )
-    if len(options) > _SEARCHABLE_THRESHOLD:
-        field = searchable_select(name="value", options=options, value=current, **attrs)
-    else:
-        field = Select(*[Option(label, value=uid, selected=uid == current) for uid, label in options],
-                       name="value", hx_include="this", cls="cell-input cell-input--select",
-                       autofocus=True, **attrs)
-    return Td(
-        Div(field, cls="cell-input-wrap"),
-        onkeydown=(
-            "if(event.key==='Escape'){htmx.ajax('GET','/settings/users/installation-owner',"
-            "{target:this,swap:'outerHTML'});event.preventDefault();}"
-        ),
-        cls="cell cell--editing",
-    )
-
-
 def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en", is_owner: bool = False,
-               is_install_owner: bool = False) -> FT:
+               install_owner_id: str = "", notice: FT | str = "") -> FT:
+    """The users table and role matrix. The user who owns the installation carries
+    a badge for every viewer. ``install_owner_id`` is the viewer's own user id when
+    the viewer owns the installation: only then does each other active user carry
+    the control that hands installation ownership to them."""
+    def _handover_cell(u: dict) -> FT:
+        uid = u.get("id", "")
+        if uid == install_owner_id or not u.get("is_active", True):
+            return Td(cls="cell")
+        name = u.get("name") or u.get("email") or ""
+        return Td(
+            Button(t("settings.make_install_owner", lang), cls="btn btn--secondary btn--xs",
+                   hx_post=f"/settings/users/{uid}/installation-owner",
+                   hx_confirm=t("settings.confirm_make_install_owner", lang, name=name),
+                   hx_target="#users-card", hx_swap="outerHTML"),
+            cls="cell",
+        )
+
     def _row(u: dict) -> FT:
         uid = u.get("id", "")
+        name = _user_display_cell(uid, "name", u.get("name"))
+        if u.get("is_install_owner"):
+            name = name(Span(t("settings.install_owner_badge", lang), cls="badge badge--neutral ml-sm"))
         return Tr(
-            _user_display_cell(uid, "name", u.get("name")),
+            name,
             _user_display_cell(uid, "email", u.get("email")),
             _user_display_cell(uid, "role", u.get("role")),
             _user_display_cell(uid, "is_active", u.get("is_active", True)),
+            _handover_cell(u) if install_owner_id else "",
             cls="data-row",
         )
 
     role_matrix = _role_permissions_matrix(settings, is_owner, lang)
 
     return Div(
+        notice,
         Table(
-            Thead(Tr(Th(t("th.name", lang)), Th(t("th.email", lang)), Th(t("th.role", lang)), Th(t("th.active", lang)))),
+            Thead(Tr(Th(t("th.name", lang)), Th(t("th.email", lang)), Th(t("th.role", lang)), Th(t("th.active", lang)),
+                     Th(t("th.actions", lang)) if install_owner_id else "")),
             Tbody(*[_row(u) for u in users]),
             cls="data-table",
         ),
         A(t("btn.create_user", lang), href="/settings/users/new", cls="btn btn--primary mt-md"),
-        H3(t("settings.install_owner_title", lang), cls="settings-section-title"),
-        P(t("settings.install_owner_hint", lang), cls="settings-hint"),
-        Table(
-            Tr(Td(t("settings.install_owner_title", lang), cls="detail-label"),
-               _install_owner_cell(users, editable=is_install_owner)),
-            cls="detail-table",
-        ),
         role_matrix,
         cls="settings-card",
+        id="users-card",
     )
+
+
+async def users_tab_for(request: Request, token: str, users: list[dict], settings: dict | None,
+                        lang: str, notice: FT | str = "") -> FT:
+    """_users_tab for the user who asked: the role matrix is editable for an
+    owner, and the handover control shows only to the installation owner."""
+    from ui.config import get_claims
+    install_owner_id = str(get_claims(request).get("sub", "")) if await api.installation_owner(token) else ""
+    return _users_tab(users, settings, lang=lang, is_owner=_get_role(request) == "owner",
+                      install_owner_id=install_owner_id, notice=notice)
 
 
 # The fixed permissions carry no checkboxes; each states in one line why it cannot move.

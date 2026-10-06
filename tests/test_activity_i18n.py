@@ -117,3 +117,9 @@ def test_activity_table_footer_translates():
                "actor_name": "Tester", "data": {"amount": 100}} for _ in range(3)]
     html = to_xml(activity_table(ledger, max_display=2, history_url="/docs/history"))
     assert "XX_SHOWING" in html
+
+
+def test_an_untyped_document_is_named_with_a_noun_in_french():
+    """The fallback label names the thing ("Document"), never the verb "Documenter"."""
+    i18n.set_lang("fr")
+    assert detail_from_entry({"doc_number": "F-1"}, "doc.created") == "Document F-1"

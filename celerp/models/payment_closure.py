@@ -77,6 +77,11 @@ class UnmatchedPayment(Base):
     # When the payment stopped being linked to Stripe (Stripe was disconnected); applied
     # with the payment once it is recorded on its invoice. None while it is linked.
     released_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    # The company and invoice a person recorded it on from the unmatched payments
+    # (``payments.record_unmatched_payment``); every later delivery of it, its refunds
+    # and its release goes there. None while it is unmatched.
+    recorded_company: Mapped[str | None] = mapped_column(sa.String(64), nullable=True, index=True)
+    recorded_document: Mapped[str | None] = mapped_column(sa.String(255), nullable=True)
 
 
 class UnmatchedRefund(Base):

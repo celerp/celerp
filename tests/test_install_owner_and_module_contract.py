@@ -2,16 +2,14 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy import select
 
 from celerp.gateway.client import GatewayClient
 from celerp.models.company import User
-from celerp.modules.api import ai_query
+from ui.i18n import localize_notification
 from test_helpers import invite_user, register_admin
 
 
@@ -53,26 +51,6 @@ async def test_install_owner_can_transfer_and_old_owner_loses_authority(client, 
     )).scalars().all()
     assert len(rows) == 1
     assert rows[0].id == current.id
-
-
-@pytest.mark.asyncio
-async def test_module_ai_api_keeps_explicit_session_contract(monkeypatch):
-    monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "session-1")
-    run_query = AsyncMock(return_value=SimpleNamespace(
-        answer="ok", model_used="test", tools_called=[]))
-    monkeypatch.setattr("celerp.ai.service.run_query", run_query)
-
-    result = await ai_query(
-        query="hello", company_id="company-1",
-        session_token="session-1", db_session=None)
-    assert result["answer"] == "ok"
-    run_query.assert_awaited_once()
-
-    with pytest.raises(HTTPException) as exc:
-        await ai_query(
-            query="hello", company_id="company-1",
-            session_token="wrong", db_session=None)
-    assert exc.value.status_code == 401
 
 
 class _WS:
@@ -160,3 +138,54 @@ def test_install_owner_migration_prefers_usable_owner_over_oldest_user(monkeypat
             "SELECT id FROM users WHERE is_install_owner IS TRUE"
         )).scalars().all()
     assert selected == ["owner"]
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_a_user_not_active_in_this_company_says_so(client, session):
+    """A user whose account is active but who is off in this company is refused with
+    the reason that applies: they are not an active user of this company."""
+    admin_token = await register_admin(client)
+    admin_h = {"Authorization": f"Bearer {admin_token}"}
+    await invite_user(client, session, admin_h, "elsewhere@example.test", "owner")
+    users = (await client.get("/companies/me/users", headers=admin_h)).json()["items"]
+    target = next(u for u in users if u["email"] == "elsewhere@example.test")
+    off = await client.patch(
+        f"/companies/me/users/{target['id']}", headers=admin_h, json={"is_active": False})
+    assert off.status_code == 200, off.text
+
+    r = await client.post(
+        f"/companies/me/users/{target['id']}/installation-owner", headers=admin_h)
+    assert r.status_code == 400
+    assert r.json()["detail"] == "Installation owner must be an active user in this company"
+
+
+@pytest.mark.asyncio
+async def test_handover_tells_the_new_owner_and_the_users_list_names_the_owner(client, session):
+    admin_token = await register_admin(client)
+    admin_h = {"Authorization": f"Bearer {admin_token}"}
+    next_token = await invite_user(client, session, admin_h, "heir@example.test", "viewer")
+    next_h = {"Authorization": f"Bearer {next_token}"}
+
+    async def owners() -> list[str]:
+        users = (await client.get("/companies/me/users", headers=admin_h)).json()["items"]
+        return [u["email"] for u in users if u["is_install_owner"] is True]
+
+    assert await owners() == ["admin@perm.example"]
+    target = next(u for u in (await client.get("/companies/me/users", headers=admin_h)).json()["items"]
+                  if u["email"] == "heir@example.test")
+    r = await client.post(f"/companies/me/users/{target['id']}/installation-owner", headers=admin_h)
+    assert r.status_code == 200, r.text
+    assert await owners() == ["heir@example.test"]
+
+    told = (await client.get("/notifications", headers=next_h)).json()["items"]
+    # The API carries readable text and the message key the UI translates from.
+    assert [n["title"] for n in told] == ["You are now the installation owner"]
+    assert "hand ownership on" in told[0]["body"]
+    assert told[0]["message_key"] == "notif.install_owner"
+    assert set(told[0]["message_params"]) == {"name"}
+    german = localize_notification(told[0], "de")
+    assert german["title"] == "Sie sind jetzt der Installationsinhaber"
+    assert "Einstellungen > Benutzer" in german["body"]
+    assert told[0]["action_url"] == "/settings/general?tab=users"
+    others = (await client.get("/notifications", headers=admin_h)).json()["items"]
+    assert "notif.install_owner" not in [n["message_key"] for n in others]

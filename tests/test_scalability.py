@@ -831,8 +831,8 @@ class TestHotPathQueryCount:
         )
 
     @pytest.mark.asyncio
-    async def test_nonce_cache_invalidated_after_invalidate_sessions(self, session):
-        """Cache must be busted when invalidate_sessions is called."""
+    async def test_get_nonce_returns_the_rotated_nonce_after_invalidate_sessions(self, session):
+        """get_nonce reads the rotated nonce once invalidate_sessions has run."""
         from celerp.services import session_tracker as _st
         from celerp.models.auth import UserAuthState
         import uuid as _u
@@ -844,18 +844,16 @@ class TestHotPathQueryCount:
         session.add(UserAuthState(user_id=uid, nonce="old-nonce"))
         await session.commit()
 
-        # Warm the cache
         n1 = await _st.get_nonce(session, user_id)
         assert n1 == "old-nonce"
 
         # Invalidate sessions (rotates nonce)
         await _st.invalidate_sessions(session, user_id)
 
-        # Cache must be busted - next call must return the NEW nonce
         n2 = await _st.get_nonce(session, user_id)
         assert n2 != "old-nonce", (
             "get_nonce must return the rotated nonce after invalidate_sessions. "
-            "If it returns the old cached value, the security property is broken."
+            "If it returns the old value, the revoked session stays valid."
         )
 
     @pytest.mark.asyncio

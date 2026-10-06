@@ -55,3 +55,40 @@ async def test_permitted_user_receives_items_and_valuation(client, session):
     assert "items" in items.json()
     valuation = await client.get("/items/valuation", headers=ctx["admin_h"])
     assert valuation.status_code == 200, valuation.text
+
+
+_COST_KEYS = ("cost_base", "cost_landed", "landed_contributions")
+
+
+def _value(key: str):
+    return {"Freight::shipping": 1.0} if key == "landed_contributions" else 1.0
+
+
+async def _available_item(client, ctx) -> str:
+    r = await client.post("/items", headers=ctx["admin_h"], json={
+        "sku": "COST-GATE", "name": "Cost gate", "quantity": 5, "location_id": ctx["location_id"],
+        "cost_total": 500.0, "sell_by": "piece", "status": "available"})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", _COST_KEYS)
+async def test_a_cost_the_goods_cost_derives_from_takes_the_price_permission_on_edit(client, session, key):
+    ctx = await perm_setup(client, session)
+    eid = await _available_item(client, ctx)
+    r = await client.patch(f"/items/{eid}", headers=ctx["operator_h"],
+                           json={"fields_changed": {key: {"old": None, "new": _value(key)}}})
+    assert r.status_code == 403, r.text
+    item = (await client.get(f"/items/{eid}", headers=ctx["admin_h"])).json()
+    assert item["cost_total"] == 500.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", _COST_KEYS)
+async def test_a_cost_the_goods_cost_derives_from_takes_the_price_permission_on_create(client, session, key):
+    ctx = await perm_setup(client, session)
+    r = await client.post("/items", headers=ctx["operator_h"], json={
+        "sku": "COST-GATE-NEW", "name": "Cost gate", "quantity": 5, "location_id": ctx["location_id"],
+        "sell_by": "piece", "status": "available", key: _value(key)})
+    assert r.status_code == 403, r.text

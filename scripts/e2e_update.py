@@ -49,12 +49,13 @@ import sys
 import tarfile
 import tempfile
 import time
-import urllib.error
-import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from smoke_records import http, module_get  # noqa: E402  (shared with the packaged smoke)
 
 REPO = Path(__file__).resolve().parent.parent
 WINDOWS = os.name == "nt"
@@ -131,25 +132,6 @@ def free_ports(n: int) -> list[int]:
     finally:
         for s in socks:
             s.close()
-
-
-def http(method: str, url: str, token: str | None = None, body: dict | None = None,
-         timeout: float = 30) -> tuple[int, dict]:
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Content-Type", "application/json")
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-            return resp.status, json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        raw = exc.read()
-        try:
-            return exc.code, json.loads(raw) if raw else {}
-        except ValueError:
-            return exc.code, {"raw": raw.decode(errors="replace")}
 
 
 # ── Wheels ────────────────────────────────────────────────────────────────────
@@ -521,9 +503,10 @@ class Install:
         return None
 
     def db(self) -> dict:
-        """Tables, alembic revision and row counts, read straight from Postgres."""
+        """Tables, alembic revision, row counts and a digest of every ledger event,
+        read straight from Postgres."""
         out = self.py(r"""
-import asyncio, json
+import asyncio, hashlib, json
 import asyncpg
 from celerp.config import read_config
 url = read_config()["database"]["url"].replace("postgresql+asyncpg://", "postgresql://")
@@ -534,8 +517,11 @@ async def main():
             "select table_name from information_schema.tables where table_schema='public'"))
         rev = await c.fetchval("select version_num from alembic_version")
         counts = {t: await c.fetchval(f'select count(*) from "{t}"')
-                  for t in ("companies", "users", "user_companies", "locations")}
-        print(json.dumps({"tables": tables, "revision": rev, "counts": counts}))
+                  for t in ("companies", "users", "user_companies", "locations", "ledger", "projections")}
+        events = await c.fetch("select id, company_id::text, entity_id, event_type, "
+                               "data::text from ledger order by id")
+        ledger = hashlib.sha256(json.dumps([list(r) for r in events]).encode()).hexdigest()
+        print(json.dumps({"tables": tables, "revision": rev, "counts": counts, "ledger": ledger}))
     finally:
         await c.close()
 asyncio.run(main())
@@ -603,6 +589,33 @@ print(sum(1 for pid in sys.argv[1:] if serving(pid)))
         status, _ = http("POST", self.api + "/companies/me/locations", self.owner,
                          {"name": "E2E Warehouse", "type": "warehouse"})
         check(status == 200, "a location was created")
+
+    def enable_modules(self, *names: str) -> None:
+        """Turn modules on for the company, as Settings > Modules does; they run
+        from the next start."""
+        for name in names:
+            status, _ = http("POST", f"{self.api}/companies/me/modules/{name}/enable", self.owner)
+            check(status == 200, f"{name} turned on ({status})")
+
+    def seed_records(self) -> None:
+        """Records that write ledger events and projections, through the API every
+        supported release serves: a customer and a stock item."""
+        status, _ = http("POST", self.api + "/crm/contacts", self.owner,
+                         {"name": "E2E Customer", "contact_type": "customer"})
+        check(status == 200, f"a customer was created ({status})")
+        status, _ = http("POST", self.api + "/items", self.owner,
+                         {"sku": "E2E-1", "name": "E2E Item", "sell_by": "piece", "quantity": 3})
+        check(status == 200, f"an item was created ({status})")
+
+    def seeded_records_served(self) -> None:
+        """The seeded records are served by their modules, so the company still
+        uses every module it used before the upgrade."""
+        for path, field, value in (("/crm/contacts", "name", "E2E Customer"),
+                                   ("/items", "sku", "E2E-1")):
+            status, body = module_get(self.api, path, self.owner)
+            items = body.get("items", []) if isinstance(body, dict) else []
+            check(status == 200 and any(r.get(field) == value for r in items),
+                  f"{path} serves the record seeded before the upgrade ({status})")
 
     def seeded_location_present(self) -> bool:
         status, body = http("GET", self.api + "/companies/me/locations", self.owner)
@@ -792,14 +805,29 @@ def e6(work, wheels):
         inst.start(expect_version="2.5.0")
         inst.register()
         inst.seed()
+        # 2.5.x ran the modules config.toml names for every company: one turned on
+        # in Settings, one installed from the command line, as its docs describe.
+        inst.enable_modules("celerp-inventory")
+        inst.celerp("module", "install", "celerp-contacts")
+        inst.stop(group=True)
+        inst.start(expect_version="2.5.0")
+        inst.owner = inst.login("owner@example.com")
+        inst.seed_records()
+        before = inst.db()
         # 2.5.0 only handles SIGTERM once its startup banner is out, which it can
         # still be waiting on here; its users stop it with Ctrl+C or a service.
         inst.stop(group=True)
         inst.pip("install", "-q", f"celerp=={VERSIONS['base']}")
         inst.start(expect_version=VERSIONS["base"])
         inst.owner = inst.login("owner@example.com")
+        after = inst.db()
+        check(after["ledger"] == before["ledger"], "every 2.5.0 ledger event carried over unchanged")
+        check(after["counts"] == before["counts"], f"row counts unchanged ({before['counts']} -> {after['counts']})")
         check(inst.seeded_location_present(), "2.5.0 data carried to the new release")
+        inst.seeded_records_served()
+        check(inst.state() == {}, "no update state before the first update from the app")
         good_update(inst, "good")
+        inst.seeded_records_served()
         stop_and_check_clean(inst)
     finally:
         inst.stop()

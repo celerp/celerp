@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, patch
 
 from ui.api_client import APIError
 from ui.i18n import t
-from test_helpers import make_test_token
+from test_helpers import assert_not_permitted_redirect, make_test_token
 
 
 def _authed(role: str = "owner", lang: str | None = None) -> dict:
@@ -69,7 +69,7 @@ def _apply(patches):
 
 
 def _stop(patches):
-    for p in patches:
+    for p in reversed(patches):
         p.stop()
 
 
@@ -86,6 +86,29 @@ async def test_ai_page_empty_state_without_conversation(ui_client):
     assert r.status_code == 200
     assert 'id="ai-empty-state"' in r.text
     assert 'id="ai-chat-form"' in r.text
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_opening_ai_lands_on_the_dashboard_with_the_notice(ui_client):
+    """The viewer role does not hold use_ai_assistant by default: /ai sends it to
+    the dashboard, which says why."""
+    company = {"settings": {}}
+    patches = _patch_page(get_company=AsyncMock(return_value=company))
+    dashboard = [
+        patch("ui.routes.dashboard._load_dashboard", new=AsyncMock(return_value=(company, {}, {}, {}, []))),
+        patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}})),
+        patch("ui.api_client.get_activity", new=AsyncMock(return_value=[])),
+    ]
+    _apply(patches + dashboard)
+    ui_client.cookies.update(_authed(role="viewer"))
+    try:
+        refused = await ui_client.get("/ai")
+        assert_not_permitted_redirect(refused)
+        landed = await ui_client.get(refused.headers["location"])
+    finally:
+        _stop(patches + dashboard)
+        ui_client.cookies.clear()
+    assert "You do not have access to the page you opened." in landed.text
 
 
 @pytest.mark.asyncio

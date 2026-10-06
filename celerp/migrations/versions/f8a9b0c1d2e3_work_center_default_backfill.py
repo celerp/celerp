@@ -87,7 +87,7 @@ def upgrade() -> None:
         )
 
     if conn.execute(sa.text("SELECT to_regclass('notifications')")).scalar() is not None:
-        # The shared read flag exists until u8j9f0a1b2c3 moves read state to per-user
+        # The shared read flag exists until w1n2o3p4q5r6 moves read state to per-user
         # receipts; the reconcile replays this after it, when the column is gone.
         flag = conn.execute(sa.text(
             "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "

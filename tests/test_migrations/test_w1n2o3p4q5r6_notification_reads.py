@@ -19,8 +19,8 @@ from sqlalchemy import create_engine, text
 
 from .conftest import throwaway_db, upgrade_to
 
-REVISION = "u8j9f0a1b2c3"
-PARENT = "t7i8d9e0f1a2"
+REVISION = "w1n2o3p4q5r6"
+PARENT = "v0m1n2o3p4q5"
 
 
 def test_revision_follows_its_parent():

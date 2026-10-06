@@ -74,6 +74,8 @@ def _clean(entry) -> dict | None:
             v = v.strip()[: _STR_LIMITS[field]]
             if field in _URL_FIELDS and not v.startswith("https://"):
                 continue
+            if field == "repo" and github_repo(v) is None:
+                continue
             out[field] = v
     for field in ("price_monthly", "price_once"):
         v = entry.get(field)
@@ -204,15 +206,34 @@ def _valid_id(module_id: str) -> bool:
     )
 
 
-def _archive_url(repo_url, commit) -> str:
-    """The GitHub archive of ``commit`` for a listing whose source is a GitHub
-    repository, given exactly as https://github.com/<owner>/<repo>."""
+def github_repo(repo_url) -> tuple[str, str] | None:
+    """(owner, repo) for a listing source given exactly as
+    https://github.com/<owner>/<repo>, else None. The one reading of a listing's
+    repository: the catalog keeps, downloads fetch and source links open only
+    what it accepts."""
     m = _GITHUB_REPO.fullmatch(repo_url) if isinstance(repo_url, str) else None
     if m is None or m.group(2).strip(".") == "" or m.group(2).lower().endswith(".git"):
+        return None
+    return m.group(1), m.group(2)
+
+
+def _archive_url(repo_url, commit) -> str:
+    """The GitHub archive of ``commit`` for a listing whose source is a GitHub
+    repository."""
+    repo = github_repo(repo_url)
+    if repo is None:
         raise DownloadRefused("marketplace.download_not_github")
     if not _valid_commit(commit):
         raise DownloadRefused("marketplace.download_unpinned")
-    return f"https://codeload.github.com/{m.group(1)}/{m.group(2)}/zip/{commit}"
+    return f"https://codeload.github.com/{repo[0]}/{repo[1]}/zip/{commit}"
+
+
+def source_url(m: dict) -> str | None:
+    """The listing's source at the commit it pins, the code a download fetches."""
+    repo = github_repo(m.get("repo"))
+    if repo is None or not _valid_commit(m.get("commit")):
+        return None
+    return f"https://github.com/{repo[0]}/{repo[1]}/tree/{m['commit']}"
 
 
 async def download_community_archive(repo_url: str, commit: str, module_id: str) -> str:

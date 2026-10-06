@@ -119,8 +119,7 @@ class TestCallableSlots:
     @pytest.mark.parametrize("slot", list(CALLABLE))
     def test_decoy_resolving_to_core_refused(self, slot, tmp_path, monkeypatch):
         # The module ships a file at a dotted path an already-loaded core module
-        # owns. The file exists in the module's tree, but importlib returns the
-        # real core module, so the callable is not the module's own.
+        # owns. Shipping a package named after Celerp's own is refused outright.
         import importlib
         if CALLABLE[slot][1]:
             core_mod, fn, code = "celerp.ai.service", "run_query", _ASYNC_FN.replace("fn", "run_query")
@@ -134,7 +133,7 @@ class TestCallableSlots:
         name = f"slotmod_decoy_{slot}"
         _write(tmp_path, name, {slot: [_entry(slot, f"{core_mod}:{fn}")]}, files)
         msg = _refused(tmp_path, name, monkeypatch)
-        assert "outside module" in msg
+        assert "'celerp' is already used" in msg
 
     @pytest.mark.parametrize("slot", list(CALLABLE))
     def test_protected_import_refused(self, slot, tmp_path, monkeypatch):
@@ -164,12 +163,27 @@ class TestCallableSlots:
         assert "module.path:function" in msg
 
     @pytest.mark.parametrize("slot", list(CALLABLE))
-    def test_not_callable_refused(self, slot, tmp_path, monkeypatch):
+    def test_not_a_def_refused(self, slot, tmp_path, monkeypatch):
         name = f"slotmod_nc_{slot}"
         _write(tmp_path, name, {slot: [_entry(slot, f"{name}.hooks:fn")]},
                {"hooks.py": "fn = 'not a function'\n"})
         msg = _refused(tmp_path, name, monkeypatch)
-        assert "not callable" in msg
+        assert "top-level def" in msg
+
+    @pytest.mark.parametrize("slot", list(CALLABLE))
+    def test_not_callable_once_imported_refused(self, slot, tmp_path, monkeypatch):
+        """Load proves the object import returns, not the source admission read:
+        a handler file changed after admission to bind a non-callable is refused."""
+        name = f"slotmod_rb_{slot}"
+        pkg = _write(tmp_path, name, {slot: [_entry(slot, f"{name}.hooks:fn")]},
+                     {"hooks.py": _right_fn(slot)})
+        monkeypatch.setattr(loader, "_first_party_lock", lambda: {})
+        admission = loader.admit_modules(tmp_path, {name})
+        assert admission.refused == {}
+        (pkg / "hooks.py").write_text(_right_fn(slot) + "\nfn = 'not a function'\n")
+        load_all(tmp_path, {name}, admission=admission)
+        assert "not callable" in load_errors()[name]
+        assert slots.all_slots() == {}
 
     @pytest.mark.parametrize("slot", ["projection_handler", "doc_finalize_hook", "on_doc_payment"])
     def test_third_party_module_can_fill_core_event_slot(self, slot, tmp_path, monkeypatch):
@@ -254,14 +268,15 @@ class TestSlotPermission:
         _write(tmp_path, name, {"catalog_channel": [{"id": "c", "label": "C", "write_permission": perm}]})
         assert "permission" in _refused(tmp_path, name, monkeypatch)
 
-    @pytest.mark.parametrize("value", [["woocommerce"], {"id": "x"}, 5, True], ids=repr)
+    @pytest.mark.parametrize("value", [["woocommerce"], {"id": "x"}, 5, True, 0, False, [], {}],
+                             ids=repr)
     def test_malformed_requires_connector_refused(self, value, tmp_path, monkeypatch):
         name = "slotmod_conn"
         _write(tmp_path, name, {"bulk_action": [
             {"label": "L", "form_action": "/x", "requires_connector": value}]})
         assert "requires_connector" in _refused(tmp_path, name, monkeypatch)
 
-    @pytest.mark.parametrize("value", ["", 0, None, False], ids=repr)
+    @pytest.mark.parametrize("value", ["", None], ids=repr)
     def test_empty_requires_connector_means_no_connector_needed(self, value, tmp_path, monkeypatch):
         from ui.module_slots import module_contribution_visible
         name = "slotmod_noconn"

@@ -333,17 +333,20 @@ def find_safe_stamp(
 ) -> str:
     """Return the newest revision the current kernel schema safely proves.
 
-    Revisions are newest→oldest. Data-only revisions carry no schema evidence.
-    When ``expected_metadata`` is supplied, historical objects no longer owned
-    by the current kernel are ignored; this prevents a create_all database from
-    being judged against obsolete intermediate schema while still detecting a
-    missing current column/index in any older revision.
+    Revisions are newest→oldest. A revision is proven only when it and every
+    older revision with schema evidence are applied: a newer change already
+    present never covers an older one that is missing. Data-only revisions
+    carry no schema evidence. When ``expected_metadata`` is supplied,
+    historical objects no longer owned by the current kernel are ignored; this
+    prevents a create_all database from being judged against obsolete
+    intermediate schema while still detecting a missing current column/index
+    in any older revision.
     """
     revs = [r for r in revisions if getattr(r, "revision", None) is not None]
-    seen_gap = False
+    proven = "base"
     saw_evidence = False
 
-    for rev in revs:
+    for rev in reversed(revs):
         sigs = [
             sig for sig in sigs_by_rev.get(rev.revision, [])
             if _signature_expected(expected_metadata, sig)
@@ -351,12 +354,8 @@ def find_safe_stamp(
         if not sigs:
             continue
         saw_evidence = True
-        if all(_signature_applied(inspector, sig) for sig in sigs):
-            if seen_gap:
-                return rev.revision
-        else:
-            seen_gap = True
+        if not all(_signature_applied(inspector, sig) for sig in sigs):
+            return proven
+        proven = rev.revision
 
-    if not saw_evidence or seen_gap:
-        return "base"
-    return revs[0].revision if revs else "base"
+    return revs[0].revision if saw_evidence else "base"

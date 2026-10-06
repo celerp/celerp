@@ -343,6 +343,23 @@ async def test_a_refund_for_a_company_that_no_longer_exists_is_kept_with_its_pay
     assert await _kept_refunds(real_engine) == [("re_1", 1, "applied", "pi_1", 20000, str(a), invoice)]
 
 
+async def test_a_refund_kept_for_another_company_or_invoice_never_applies_to_a_payment_of_its_reference(
+        real_engine, real_client, monkeypatch):
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    other = await _invoice(real_client, real_engine, boss, a)
+    cloud = _RefundCloud(monkeypatch, real_engine)
+    cloud.refund(b, invoice, "re_b", 20000, _at(1))
+    cloud.refund(a, other, "re_other", 30000, _at(2))
+    await cloud.deliver()
+
+    cloud.pay(a, invoice, "pi_1", paid_at=PAID_AT, books=BOOKS)
+    await cloud.deliver()
+
+    await _assert_books(real_engine, invoice, refunded="0")
+    assert sorted(r[0] for r in await _kept_refunds(real_engine)) == ["re_b", "re_other"]
+
+
 async def test_refunds_delivered_before_their_payment_apply_in_order_when_it_is_recorded(
         real_engine, real_client, monkeypatch):
     boss, a, b = await _harbor(real_engine)
@@ -938,9 +955,10 @@ async def test_the_installation_owner_sees_the_refunds_kept_for_later(real_engin
     r = await real_client.get("/payments/unmatched", headers=auth(await token(real_engine, boss, a)))
 
     assert r.status_code == 200, r.text
-    assert [{k: v for k, v in item.items() if k != "received_at"} for item in r.json()["refunds"]] == [{
+    assert [{k: v for k, v in item.items() if k != "received_on"} for item in r.json()["refunds"]] == [{
         "refund_id": "re_1", "cycle": 1, "transition": "applied", "reference": "pi_1", "amount": 200.0, "currency": "USD",
-        "company_id": str(b), "document_id": "doc:gone", "occurred_at": _at(1).isoformat()}]
+        "company_id": str(b), "company_name": "Hillside Supply Co", "document_id": "doc:gone", "document_ref": None,
+        "refunded_on": _at(1).date().isoformat()}]
 
 
 # ── Hardening: the seams refunds open ────────────────────────────────────────

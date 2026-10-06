@@ -10,7 +10,7 @@ PLUGIN_MANIFEST = {
     "license": "MIT",
     "author": "Celerp",
     "api_routes": "celerp_dashboard.setup",
-    "ui_routes": None,
+    "ui_routes": "celerp_dashboard.ui_routes",
     "depends_on": [],
     "slots": {
         "nav": {"group": None, "key": "dashboard", "href": "/dashboard", "label": "Dashboard", "label_key": "nav.dashboard", "order": 1, "permission": "view_dashboards"},

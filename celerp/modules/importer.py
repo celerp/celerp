@@ -13,7 +13,8 @@ Both funnel through the same checks, so the security posture cannot drift
 between surfaces:
   - manifest must parse (PLUGIN_MANIFEST with a valid "name")
   - the installed folder name IS the manifest name (id = folder = manifest)
-  - the "celerp-" prefix is reserved for first-party modules
+  - names starting "celerp-" or "celerp_", in any letter case, are reserved
+    for Marketplace modules
   - size caps, zip-slip guards, symlink rejection
   - min_celerp_version gate against the running app
   - collision refusal (existing module of the same name must be removed first)
@@ -24,8 +25,10 @@ are separate, deliberate steps (see the modules UI).
 from __future__ import annotations
 
 import ast
+import contextlib
 import errno
 import functools
+import logging
 import os
 import re
 import shutil
@@ -38,11 +41,14 @@ from pathlib import Path
 from celerp.modules.meta import write_meta
 from ui.i18n import t
 
+log = logging.getLogger(__name__)
+
 # Compressed and uncompressed caps. Generous for code, hostile to zip bombs.
 MAX_ARCHIVE_BYTES = 50 * 1024 * 1024
 MAX_UNPACKED_BYTES = 200 * 1024 * 1024
 
 _RESERVED_PREFIX = "celerp-"
+_RESERVED_IMPORT_PREFIX = "celerp_"
 _NAME_MAX = 64
 
 # Marker file the marketplace installer drops inside a PAID module's directory.
@@ -61,7 +67,7 @@ def _validate_name_chars(name: str) -> None:
 
     Delete resolves a folder from a caller-supplied name, so it needs the same
     charset guard as install (no separators, no traversal) without the celerp-
-    prefix trust rule, which only governs where a NEW package may install.
+    prefix rule, which only governs how a NEW package may install.
     """
     if not name or len(name) > _NAME_MAX:
         raise ModuleImportError(t("module_import.name_invalid"))
@@ -72,26 +78,61 @@ def _validate_name_chars(name: str) -> None:
 
 def _validate_name(name: str, *, official: bool = False) -> None:
     _validate_name_chars(name)
-    # The celerp- prefix is the trust boundary: sideloads may never claim it, and
-    # the marketplace-download path (official=True, relay-authenticated) may ONLY
-    # install under it - so neither path can impersonate the other.
-    if official != name.startswith(_RESERVED_PREFIX):
+    # The celerp- names, in any letter case and in the celerp_ spelling, are
+    # reserved for Marketplace modules: an upload or folder import may not use
+    # one, and an official Marketplace install uses only the celerp- form.
+    if official and not name.startswith(_RESERVED_PREFIX):
+        raise ModuleImportError("Official module packages must use the 'celerp-' name prefix.")
+    if not official and name.lower().startswith((_RESERVED_PREFIX, _RESERVED_IMPORT_PREFIX)):
         raise ModuleImportError(
-            "The 'celerp-' name prefix is reserved for official modules."
-            if not official else
-            "Official module packages must use the 'celerp-' name prefix."
+            "Names starting with 'celerp-' or 'celerp_', in any letter case, are reserved "
+            "for Marketplace modules. A module of your own needs a different name."
         )
 
 
-def _manifest_node(tree: ast.AST):
-    """The `PLUGIN_MANIFEST = {...}` assignment node in a parsed module, or None."""
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == "PLUGIN_MANIFEST":
-                return node
-    return None
+def _bound_names(node) -> list[str]:
+    """The names one AST node binds (or deletes) in its scope: definitions,
+    imports, assignment targets, global and nonlocal declarations, match
+    captures and except-as names, which Python deletes again when the handler
+    ends."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return [(a.asname or a.name).split(".")[0] for a in node.names]
+    if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        return [node.id]
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return list(node.names)
+    if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.ExceptHandler)):
+        return [node.name] if node.name else []
+    if isinstance(node, ast.MatchMapping):
+        return [node.rest] if node.rest else []
+    return []
+
+
+def _manifest_node(tree: ast.Module):
+    """The `PLUGIN_MANIFEST = {...}` assignment node in a parsed module, or None.
+
+    Raises :class:`ModuleImportError` when the source binds, changes or reads
+    the name anywhere else: Python binds the last assignment and runs every
+    change, so the one literal must be the only mention for it to be what the
+    module declares."""
+    uses = [n for n in ast.walk(tree)
+            if isinstance(n, ast.Name) and n.id == "PLUGIN_MANIFEST"
+            or "PLUGIN_MANIFEST" in _bound_names(n)]
+    node = next((n for n in tree.body if isinstance(n, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == "PLUGIN_MANIFEST"
+                         for t in n.targets)), None)
+    if node is not None:  # a later star import may rebind it
+        uses += [n for n in tree.body if isinstance(n, ast.ImportFrom)
+                 and any(a.name == "*" for a in n.names) and n.lineno > node.lineno]
+    if node is None and not uses:
+        return None
+    if node is None or len(node.targets) != 1 or uses != [node.targets[0]]:
+        raise ModuleImportError(
+            "PLUGIN_MANIFEST must be bound once, as one top-level literal, "
+            "and never changed or used elsewhere in __init__.py.")
+    return node
 
 
 def _read_manifest(init_py_text: str) -> dict:
@@ -116,9 +157,11 @@ def _has_manifest(init_py: Path) -> bool:
     """True if an __init__.py declares a PLUGIN_MANIFEST, without executing it."""
     try:
         tree = ast.parse(init_py.read_text(encoding="utf-8", errors="replace"))
+        return _manifest_node(tree) is not None
+    except ModuleImportError:
+        return True  # it declares one; reading it refuses the module
     except Exception:
         return False
-    return _manifest_node(tree) is not None
 
 
 def _locate_module(tree: Path) -> tuple[Path, dict]:
@@ -365,8 +408,8 @@ def _module_dir() -> Path:
     if not first:
         raise ModuleImportError(t("module_import.no_module_dir"))
     d = Path(first)
-    # A sideload must never land in a bundled/trusted dir: a package written there
-    # would inherit first-party trust by name. Refuse rather than write into it.
+    # A sideload must never land in a bundled dir, which holds the default
+    # modules. Refuse rather than write into it.
     from celerp.modules.loader import is_bundled_dir
     if is_bundled_dir(d):
         raise ModuleImportError(t("module_import.module_dir_read_only"))
@@ -395,31 +438,64 @@ def remove_module_dir(name: str) -> None:
     traversal reach the filesystem) and each target must sit directly under its
     search entry. Removal mirrors the install landing: rename to a hidden
     `.<name>.deleting-<uuid>` then rmtree, so a crash never leaves a half-deleted
-    tree under the live module name.
+    tree under the live module name. It waits for any install in progress
+    (_one_install_at_a_time), whose checks read what is on disk.
     """
     from celerp.modules.loader import is_first_party
 
     _validate_name_chars(name)
-    removed = False
-    for entry in os.environ.get("MODULE_DIR", "").split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        base = Path(entry)
-        target = base / name
-        if not target.is_dir() or target.resolve().parent != base.resolve():
-            continue
-        if is_first_party(target):
-            continue
-        grave = base / f".{name}.deleting-{uuid.uuid4().hex}"
-        try:
-            os.replace(target, grave)
-        except OSError as exc:
-            raise ModuleImportError(t("module_import.remove_failed", exc=exc))
-        shutil.rmtree(grave, ignore_errors=True)
-        removed = True
+    with _one_install_at_a_time():
+        removed = False
+        for entry in os.environ.get("MODULE_DIR", "").split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            base = Path(entry)
+            target = base / name
+            if not target.is_dir() or target.resolve().parent != base.resolve():
+                continue
+            if is_first_party(target):
+                continue
+            grave = base / f".{name}.deleting-{uuid.uuid4().hex}"
+            try:
+                os.replace(target, grave)
+            except OSError as exc:
+                raise ModuleImportError(t("module_import.remove_failed", exc=exc))
+            shutil.rmtree(grave, ignore_errors=True)
+            removed = True
     if not removed:
         raise ModuleImportError(t("module_import.not_installed", name=name))
+
+
+@contextlib.contextmanager
+def _one_install_at_a_time():
+    """Run the block while no other install, in any process, is in its own.
+
+    What an install is checked against (the names and table prefixes already on
+    disk) only stays true until the package lands if nothing else lands first."""
+    path = _module_dir() / ".install.lock"
+    with open(path, "a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    continue
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _finish(staged: Path, manifest: dict, *, official: bool = False,
@@ -427,6 +503,11 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
     name = str(manifest.get("name", ""))
     _validate_name(name, official=official)
     _check_min_version(manifest)
+    with _one_install_at_a_time():
+        return _land(staged, manifest, name, premium=premium, source=source)
+
+
+def _land(staged: Path, manifest: dict, name: str, *, premium: bool, source: str) -> dict:
     _validate_table_prefix(name, manifest)
     _validate_company_backup(name, manifest)
     # Reconcile the marker in BOTH directions - belt and suspenders alongside
@@ -450,12 +531,8 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
     # disk-full), then os.replace the finished tree into place. On any failure
     # the partial temp dir is removed and the error is a clean ModuleImportError,
     # not a 500.
-    # os.getpid() is identical across concurrent requests in the same process
-    # (installs run via asyncio.to_thread, i.e. real OS threads sharing one
-    # PID) - two simultaneous installs of the same slug would then race on
-    # this exact path, corrupting each other's copytree/replace. A per-call
-    # random suffix makes every attempt's landing dir unique regardless of
-    # concurrency.
+    # A per-call random suffix keeps a landing dir left by a crashed install
+    # from ever being reused.
     landing = target.parent / f".{name}.incoming-{uuid.uuid4().hex}"
     try:
         shutil.rmtree(landing, ignore_errors=True)
@@ -463,10 +540,10 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
         os.replace(landing, target)
     except OSError as exc:
         shutil.rmtree(landing, ignore_errors=True)
-        # A concurrent install of the same slug can land the target between
-        # _target_for()'s check and this replace. os.replace onto a populated
-        # dir raises FileExistsError (EEXIST) or, on Linux, OSError(ENOTEMPTY) -
-        # both mean "already there", so surface the same friendly message.
+        # A folder copied in by hand can appear between _target_for()'s check
+        # and this replace. os.replace onto a populated dir raises
+        # FileExistsError (EEXIST) or, on Linux, OSError(ENOTEMPTY) - both mean
+        # "already there", so surface the same friendly message.
         if isinstance(exc, FileExistsError) or exc.errno == errno.ENOTEMPTY:
             raise ModuleImportError(t("module_import.already_installed", name=name))
         raise ModuleImportError(t("module_import.write_failed", exc=exc))

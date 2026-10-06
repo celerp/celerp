@@ -271,3 +271,42 @@ class TestCommunityDownload:
         with pytest.raises(mc.DownloadRefused) as exc:
             mc.read_staged_archive("ok", token)
         assert exc.value.key == "marketplace.import_expired"
+
+
+# ── one GitHub parser for listing, archive and source link ───────────────────
+
+_NOT_CANONICAL = [
+    "https://gitlab.com/a/b", "https://github.com.example.net/a/b", "https://evilgithub.com/a/b",
+    "https://user@github.com/a/b", "https://github.com:8443/a/b", "https://github.com/a/b/tree/main",
+    "https://github.com/a/b/", "https://github.com/a", "https://github.com/a/..",
+    "https://github.com/a/b?x=1", "https://github.com/a/b.git",
+]
+
+
+@pytest.mark.parametrize("repo", _NOT_CANONICAL)
+def test_catalog_keeps_no_repo_that_is_not_a_canonical_github_repo(repo):
+    mods = mc._parse(_doc({**GOOD, "repo": repo, "commit": PIN}))
+    assert len(mods) == 1 and "repo" not in mods[0]
+    assert mc.source_url(mods[0]) is None
+
+
+@pytest.mark.parametrize("repo", ["https://github.com/a/b", "https://github.com/acme-co/mod.v2", *_NOT_CANONICAL])
+def test_listing_archive_and_source_agree_on_the_repository(repo):
+    """The repository a listing keeps is the one its archive is fetched from and the
+    one its source link opens, at the same commit."""
+    kept = mc._parse(_doc({**GOOD, "repo": repo, "commit": PIN}))[0]
+    try:
+        archive = mc._archive_url(repo, PIN)
+    except mc.DownloadRefused:
+        archive = None
+    source = mc.source_url({"repo": repo, "commit": PIN})
+    assert ("repo" in kept) == (archive is not None) == (source is not None)
+    if archive:
+        owner_repo = repo.removeprefix("https://github.com/")
+        assert archive == f"https://codeload.github.com/{owner_repo}/zip/{PIN}"
+        assert source == f"https://github.com/{owner_repo}/tree/{PIN}"
+
+
+def test_source_link_needs_the_pinned_commit():
+    assert mc.source_url({"repo": "https://github.com/a/b"}) is None
+    assert mc.source_url({"repo": "https://github.com/a/b", "commit": "main"}) is None

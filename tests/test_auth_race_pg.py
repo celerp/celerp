@@ -68,9 +68,7 @@ async def seeded(engine, sessionmaker):
     """Seed one user, one company (plus a second for switch/create paths), an
     active membership on each, and the user's UserAuthState with nonce N0.
 
-    Truncates first so a reused database from a prior run starts clean, and busts
-    the in-process nonce cache so N0 is read from the committed row, not a stale
-    cache entry left by another test.
+    Truncates first so a reused database from a prior run starts clean.
     """
     async with sessionmaker() as s:
         # Clean slate: order respects FKs.
@@ -97,9 +95,6 @@ async def seeded(engine, sessionmaker):
             "company_b_id": company_b.id,
             "n0": n0,
         }
-
-    # The committed nonce is authoritative; drop any cache so N0 is read fresh.
-    session_tracker._nonce_cache_bust(str(ids["user_id"]))
     return ids
 
 
@@ -131,7 +126,6 @@ async def _token_is_usable(sessionmaker, access_token: str) -> bool:
     from fastapi import HTTPException
 
     async with sessionmaker() as s:
-        session_tracker._nonce_cache_bust_all()
         try:
             await auth_svc.validate_access_token(s, access_token)
             return True

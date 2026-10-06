@@ -16,6 +16,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS
 from celerp.services.money import round_rate
 
 # Price list names treated as cost (restricted to manager+ and never derivable).
@@ -59,10 +60,11 @@ def price_key(name: str) -> str:
 
 def is_price_item_key(key: str, price_lists: list[dict] = ()) -> bool:
     """True when writing *key* on an item sets a price: any ``*_price`` or ``*_price_total``
-    key, the goods cost total, or a raw price list name (stored_price reads it directly).
-    Every item writer gates these keys on the set_inventory_prices permission."""
+    key, the goods cost total or a cost it is derived from, or a raw price list name
+    (stored_price reads it directly). Every item writer gates these keys on the
+    set_inventory_prices permission."""
     return (
-        key == "cost_total" or key.endswith(("_price", "_price_total"))
+        key == "cost_total" or key in COST_DERIVED_ITEM_KEYS or key.endswith(("_price", "_price_total"))
         or any(key == pl.get("name") for pl in price_lists)
     )
 

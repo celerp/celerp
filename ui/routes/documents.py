@@ -19,6 +19,7 @@ from ui.api_client import APIError
 from celerp.services.units import default_receive_as
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
+from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
@@ -3245,6 +3246,22 @@ celerpUpdateBulkAlloc();
             return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
+    @app.post("/docs/{entity_id}/delete-payment")
+    async def delete_payment_route(request: Request, entity_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            form = await request.form()
+            payment_index = int(form.get("payment_index", -1))
+            await api.delete_payment(token, entity_id, payment_index, **submitted_operation_key(form))
+        except APIError as e:
+            if e.status == 401:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return _action_error(str(e.detail))
+        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+
     @app.post("/docs/{entity_id}/apply-credit")
     async def apply_credit_route(request: Request, entity_id: str):
         from starlette.responses import Response as _R
@@ -3373,7 +3390,7 @@ celerpUpdateBulkAlloc();
             company = {}
         currency = company.get("currency") or None
         if not role_has_permission(company.get("settings") or {}, _get_role(request), "view_payments"):
-            return RedirectResponse("/dashboard", status_code=302)
+            return not_permitted_redirect(request)
 
         # Fetch all docs and extract payments
         try:
@@ -5363,6 +5380,19 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         if voided:
             void_reason = p.get("void_reason") or ""
             void_cell = Td(Span(t("doc.voided"), cls="badge badge--void", title=void_reason))
+        elif p.get("unmatched") and is_operator:
+            # Recorded here from the unmatched payments: taking it off puts it back on that list.
+            void_cell = Td(Details(
+                Summary("🗑", cls="btn btn--ghost btn--xs", title=t("documents.return_to_unmatched")),
+                Form(
+                    Input(type="hidden", name="payment_index", value=str(p.get("index", 0))),
+                    operation_key_input(),
+                    Button(t("btn.confirm_return_to_unmatched"), type="submit", cls="btn btn--danger btn--xs"),
+                    hx_post=f"/docs/{entity_id}/delete-payment", hx_swap="none",
+                    cls="inline-form inline-form--compact",
+                ),
+                cls="void-inline",
+            ))
         elif p.get("held_by") == "stripe":
             void_cell = Td(Span(t("documents.refund_in_stripe"), cls="text-muted small"))
         elif not voided and is_operator:

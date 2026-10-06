@@ -16,7 +16,7 @@ from pathlib import Path
 
 import click
 
-from celerp.config import config_path as _config_path, read_config as _read_config, write_config as _write_config, resolve_install_order as _resolve_install_order, set_enabled_modules as _set_enabled_modules
+from celerp.config import config_path as _config_path, read_config as _read_config, write_config as _write_config
 from celerp.db_url import sync_url as _sync_url
 from celerp.services.auth import MIN_PASSWORD_LENGTH, validate_password
 
@@ -291,9 +291,9 @@ def _config_to_env(cfg: dict, root: Path | None = None) -> dict:
     # installs into MODULE_DIR.split(",")[0]), then the read-only bundled
     # default (core) and premium (opt-in add-ons) trees. Keeping the writable
     # dir separate means a sideload never lands in default_modules/.
-    from celerp.modules.loader import first_party_names, is_first_party, writable_module_dir
+    from celerp.modules.loader import bundled_module_dirs, first_party_names, is_first_party, writable_module_dir
     _pkg_root = root or runtime.package_root()
-    _mod_dirs = [_pkg_root / "default_modules", _pkg_root / "premium_modules"]
+    _mod_dirs = bundled_module_dirs(_pkg_root)
     _writable_dir = None
     try:
         _writable_dir = writable_module_dir()
@@ -461,12 +461,12 @@ def _emit_db_error(kind: str, db_url: str) -> None:
         )
         click.echo(
             "\nInstall PostgreSQL and re-run, or use a supported platform "
-            "(Linux x86_64/arm64 — glibc or musl — or Windows x64).",
+            "(Linux x86_64/arm64 with glibc or musl, or Windows x64).",
             err=True,
         )
         if sys.platform == "darwin":
             click.echo(
-                "On macOS 26 or newer: pip install celerp-postgres — then re-run "
+                "On macOS 26 or newer: pip install celerp-postgres, then re-run "
                 "`celerp init` for the bundled database.",
                 err=True,
             )
@@ -482,8 +482,8 @@ def _emit_db_error(kind: str, db_url: str) -> None:
         return
     # no_server_no_provider — embedded unavailable AND no server.
     click.echo(
-        "\nInstall PostgreSQL and start it, then re-run `celerp init` — or use a "
-        "supported platform (Linux x86_64/arm64 — glibc or musl — or Windows x64) "
+        "\nInstall PostgreSQL and start it, then re-run `celerp init`, or use a "
+        "supported platform (Linux x86_64/arm64 with glibc or musl, or Windows x64) "
         "to get the bundled database automatically.",
         err=True,
     )
@@ -628,7 +628,7 @@ def _apply_migrations(db_url: str) -> None:
                 )
                 if safe != "base" and safe != stamped:
                     click.echo(
-                        f"  · Live schema matches revision {safe} — "
+                        f"  · Live schema matches revision {safe}: "
                         f"restamping (was {stamped or 'unstamped'})..."
                     )
                     command.stamp(alembic_cfg, safe, purge=True)
@@ -883,7 +883,7 @@ def _init_external(cfg: dict, *, force: bool, db_url: str | None, purge_dirs: li
         click.echo("  ✓ Database connection OK")
         return
     if _is_root():
-        click.echo("  · Could not connect — attempting to provision database...")
+        click.echo("  · Could not connect, attempting to provision database...")
         from celerp.migrations.compatibility import IncompatibleDatabase
         try:
             _provision_db(cfg["database"]["url"])
@@ -1275,6 +1275,15 @@ def _start(cfg: dict) -> None:
     Before that, an update a previous supervisor did not live to finish is
     finished or undone. The update lock is held for the supervisor's lifetime.
     """
+    # Installed first, so a stop at any point before the servers exist (taking the
+    # lock, starting the database, finishing an update, migrating) exits normally:
+    # the lock is released below and the database this process started is stopped
+    # at exit. `_supervise` replaces it once there are servers to end as well.
+    def _stop(sig, frame):
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
     release_lock = _hold_update_lock("start")
     try:
         ensure_database(cfg, own=True)
@@ -1302,6 +1311,20 @@ def _supervise(cfg: dict, release_lock) -> None:
     api_port = cfg["server"]["api_port"]
     ui_port = cfg["server"]["ui_port"]
 
+    api_proc = ui_proc = None
+
+    # Replaces `_start`'s handler before the servers start, so a stop while they
+    # are still starting also ends them.
+    def _shutdown(sig, frame):
+        click.echo("\nShutting down...")
+        for proc in (api_proc, ui_proc):
+            if proc is not None:
+                update.stop_process(proc)
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
     click.echo("Starting Celerp...")
     click.echo(f"  API starting on port {api_port} ...")
     click.echo(f"  UI  starting on port {ui_port} ...")
@@ -1315,17 +1338,6 @@ def _supervise(cfg: dict, release_lock) -> None:
     _wait_ready((api_proc, api_port), (ui_proc, ui_port))
     click.echo("Press Ctrl+C to stop.\n")
 
-    def _shutdown(sig, frame):
-        click.echo("\nShutting down...")
-        api_proc.terminate()
-        ui_proc.terminate()
-        api_proc.wait()
-        ui_proc.wait()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
-
     while True:
         if api_proc.poll() is not None:
             sentinel = _sentinel()
@@ -1337,8 +1349,7 @@ def _supervise(cfg: dict, release_lock) -> None:
                 except update.UpdateError as exc:
                     click.echo(f"Ignoring update request: {exc}", err=True)
                     target = None
-                ui_proc.terminate()
-                ui_proc.wait()
+                update.stop_process(ui_proc)
                 if target:
                     click.echo(f"Updating Celerp to {target}...")
                     steps = _update_steps(cfg)
@@ -1363,11 +1374,11 @@ def _supervise(cfg: dict, release_lock) -> None:
                 ui_proc = spawn_ui(env, ui_port)
             else:
                 click.echo(f"API server exited with code {api_proc.returncode}", err=True)
-                ui_proc.terminate()
+                update.stop_process(ui_proc)
                 sys.exit(api_proc.returncode)
         if ui_proc.poll() is not None:
             click.echo(f"UI server exited with code {ui_proc.returncode}", err=True)
-            api_proc.terminate()
+            update.stop_process(api_proc)
             sys.exit(ui_proc.returncode)
         time.sleep(0.5)
 
@@ -1587,40 +1598,61 @@ def module() -> None:
 
 
 
+async def _enable_for_every_company(db_url: str, names: list[str]) -> int:
+    """Turn *names* on for every company and recompute the load set; the number of companies.
+
+    Refused, with nothing changed, for a name that is not an installed module."""
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from celerp.models.company import Company
+    from celerp.modules.registry import commit_with_load_set, enable_for_company, hold_module_state, is_installed
+    from celerp.services.company_lock import locked_company
+
+    engine = create_async_engine(db_url)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            await hold_module_state(session)
+            missing = [n for n in names if not is_installed(n)]
+            if missing:
+                raise ValueError(f"Module '{missing[0]}' is not installed.")
+            company_ids = (await session.scalars(select(Company.id).order_by(Company.id))).all()
+            for company_id in company_ids:
+                company = await locked_company(session, company_id)
+                for name in names:
+                    company.settings, _deps = enable_for_company(company.settings, name)
+            await commit_with_load_set(session)
+            return len(company_ids)
+    finally:
+        await engine.dispose()
+
+
 @module.command("install")
 @click.argument("names", nargs=-1, required=True)
 def module_install(names: tuple[str, ...]) -> None:
-    """Install one or more modules (auto-installs dependencies).
+    """Turn one or more installed modules on for every company (with the modules they need).
 
     Example: celerp module install celerp-crm
     """
+    import asyncio
+
     cfg = _read_config()
     if not cfg:
         click.echo("Not initialized. Run `celerp init` first.", err=True)
         sys.exit(1)
 
-    _pkg_root = Path(__file__).parent.parent
-    module_dir = _pkg_root / "default_modules"
-
-    # Validate all requested modules exist
-    for name in names:
-        if not (module_dir / name / "__init__.py").exists():
-            click.echo(f"Module '{name}' not found in {module_dir}", err=True)
-            sys.exit(1)
-
-    currently_enabled: list[str] = cfg.get("modules", {}).get("enabled", [])
-    to_install = [n for n in names if n not in currently_enabled]
-
-    if not to_install:
-        click.echo("All requested modules are already enabled.")
-        return
-
-    install_order = _resolve_install_order(list(to_install), module_dir)
-    new_modules = [n for n in install_order if n not in currently_enabled]
-
-    click.echo(f"Installing: {', '.join(new_modules)}")
-    _set_enabled_modules(list(names))
-    click.echo(f"✓ {len(new_modules)} module(s) installed.")
+    ensure_database(cfg)
+    from celerp.migrations.compatibility import mutating_scope
+    db_url = cfg["database"]["url"]
+    try:
+        with mutating_scope(_sync_url(db_url)) as held, held.write_window():
+            companies = asyncio.run(_enable_for_every_company(db_url, list(names)))
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    if not companies:
+        click.echo("No company yet. Finish setup, then turn modules on in Settings > Modules.", err=True)
+        sys.exit(1)
+    click.echo(f"\u2713 Turned on for {companies} company(ies): {', '.join(names)}.")
     click.echo("Restart Celerp for changes to take effect: celerp start")
 
 

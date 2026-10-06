@@ -164,7 +164,7 @@ async def test_config_failure_leaves_nothing_staged(
 
     def broken(names):
         raise OSError("read-only file system")
-    monkeypatch.setattr(requirements, "set_enabled_modules", broken)
+    monkeypatch.setattr(requirements, "replace_enabled_modules", broken)
     before = await _state(real_engine)
     r, _ = await _bootstrap_start(real_client)
     assert r.status_code == 503, r.text

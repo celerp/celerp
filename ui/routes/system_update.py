@@ -16,6 +16,7 @@ from starlette.responses import Response
 
 import ui.api_client as api
 from ui.config import get_token as _token
+from ui.security import owner_refusal
 
 # Checking and requesting an update ask the package index, which can take up
 # to two minutes; the rest answer at once.
@@ -46,12 +47,18 @@ def setup_routes(app):
 
     @app.post("/system/update")
     async def proxy_update_install(request: Request) -> Response:
+        if refused := await owner_refusal(request):
+            return refused
         return await _forward(request, "POST", "/system/update", _CHECK_TIMEOUT)
 
     @app.post("/system/update/check")
     async def proxy_update_check(request: Request) -> Response:
+        if refused := await owner_refusal(request):
+            return refused
         return await _forward(request, "POST", "/system/update/check", _CHECK_TIMEOUT)
 
     @app.patch("/system/update/settings")
     async def proxy_update_settings(request: Request) -> Response:
+        if refused := await owner_refusal(request):
+            return refused
         return await _forward(request, "PATCH", "/system/update/settings")

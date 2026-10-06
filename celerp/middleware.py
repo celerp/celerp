@@ -305,6 +305,35 @@ class DrainMiddleware:
 _RECOVERY_PROBES = frozenset({"/health", "/__celerp/health"})
 
 
+class ModuleStartupMiddleware:
+    """Serve no module route until the UI process has reported which modules it
+    started (celerp.modules.outcome), so a module that failed there is stopped
+    here before any of its routes answer."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        from celerp.db import lifecycle_engine
+        from celerp.modules import outcome
+        from celerp.modules.loader import route_module
+
+        if (scope["type"] != "http" or outcome.ui_report_applied()
+                or route_module(scope) is None):
+            await self.app(scope, receive, send)
+            return
+        try:
+            ready = await outcome.confirm_ui_report(scope["app"], lifecycle_engine)
+        except Exception:
+            logger.exception("Reading the module outcome record failed")
+            ready = False
+        if ready:
+            await self.app(scope, receive, send)
+            return
+        response = JSONResponse(status_code=503, content={"detail": outcome.STARTING})
+        await response(scope, receive, send)
+
+
 class RecoveryMaintenanceMiddleware:
     """Serve nothing but the liveness probes while a System Recovery is unfinished.
 
